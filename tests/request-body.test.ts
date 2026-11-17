@@ -105,6 +105,8 @@ import {
 	stepUpCode
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { giveAuthenticator, giveFactor } from './helpers/two-step';
+import { LABEL_MISSING, LABEL_TOO_LONG, LABEL_UNPRINTABLE, NEW_CODE_MALFORMED } from '$lib/server/account-two-step';
 import { STEP_UP_MISSING } from '$lib/step-up-words';
 import {
 	pathId,
@@ -2733,6 +2735,10 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		token: string;
 		/** A schedule of `owner`'s. */
 		scheduleId: number;
+		/** An API key of `owner`'s with a deadline that has not passed, to keep (card 2772). */
+		keyId: number;
+		/** The second of `owner`'s two authenticators, which may be removed (card 2772). */
+		factorId: number;
 	};
 
 	const TOKEN = 'the-token-of-the-requesters-link';
@@ -2750,6 +2756,13 @@ describe('the accounts, administration, teams, reports and requests that card 21
 			.returning()
 			.get();
 		const schedule = db.insert(reportSchedules).values({ userId: owner.id, name: 'Weekly', scopeId: A.board.id }).returning().get();
+		const key = db
+			.insert(apiKeys)
+			.values({ userId: owner.id, name: 'Made before', keyHash: 'hash-of-made-before', keyPrefix: 'df_before', deadlineAt: '2099-01-01 00:00:00' })
+			.returning()
+			.get();
+		giveFactor(owner);
+		const spare = giveAuthenticator(owner, 'Spare phone');
 		return {
 			owner,
 			outsider,
@@ -2760,7 +2773,9 @@ describe('the accounts, administration, teams, reports and requests that card 21
 			teamId: team.id,
 			requestId: request.id,
 			token: TOKEN,
-			scheduleId: schedule.id
+			scheduleId: schedule.id,
+			keyId: key.id,
+			factorId: spare.factorId
 		};
 	}
 
@@ -2805,6 +2820,33 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ currentPassword: 5 }), MISSING],
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ expiresAt: 'banana' }), 'expiresAt must be a timestamp, such as 2027-01-01T09:00:00Z'],
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ expiresAt: '2020-01-01T00:00:00Z' }), 'expiresAt must be in the future'],
+		// POST /api/account/api-keys/:id/keep (card 2772): no field of its own, only the step-up's. Refused before
+		// the password: no code.
+		['POST /api/account/api-keys/:id/keep', 'owner', (w) => `/api/account/api-keys/${w.keyId}/keep`, () => ({}), MISSING],
+		['POST /api/account/api-keys/:id/keep', 'owner', (w) => `/api/account/api-keys/${w.keyId}/keep`, () => ({ currentPassword: 5 }), MISSING],
+		// POST /api/account/two-step/authenticators (card 2772, D1, S9, E17): the name before the step-up's. Refused
+		// before the password: no code.
+		['POST /api/account/two-step/authenticators', 'owner', at('/api/account/two-step/authenticators'), () => ({ currentPassword: 'x' }), LABEL_MISSING],
+		['POST /api/account/two-step/authenticators', 'owner', at('/api/account/two-step/authenticators'), () => ({ label: ' \t ' }), LABEL_MISSING],
+		['POST /api/account/two-step/authenticators', 'owner', at('/api/account/two-step/authenticators'), () => ({ label: 5 }), 'label must be text'],
+		['POST /api/account/two-step/authenticators', 'owner', at('/api/account/two-step/authenticators'), () => ({ label: long(41) }), LABEL_TOO_LONG],
+		['POST /api/account/two-step/authenticators', 'owner', at('/api/account/two-step/authenticators'), () => ({ label: 'Work\u0007phone' }), LABEL_UNPRINTABLE],
+		['POST /api/account/two-step/authenticators', 'owner', at('/api/account/two-step/authenticators'), () => ({ label: 'Work‮phone' }), LABEL_UNPRINTABLE],
+		['POST /api/account/two-step/authenticators', 'owner', at('/api/account/two-step/authenticators'), () => ({ label: 'Work phone' }), MISSING],
+		// POST /api/account/two-step/authenticators/confirm: no step-up; the pending id and the code as text.
+		['POST /api/account/two-step/authenticators/confirm', 'owner', at('/api/account/two-step/authenticators/confirm'), () => ({ code: '123456' }), 'pendingId is required'],
+		['POST /api/account/two-step/authenticators/confirm', 'owner', at('/api/account/two-step/authenticators/confirm'), () => ({ pendingId: 5, code: '123456' }), 'pendingId must be text'],
+		['POST /api/account/two-step/authenticators/confirm', 'owner', at('/api/account/two-step/authenticators/confirm'), () => ({ pendingId: 'x', code: 123456 }), 'code must be text'],
+		['POST /api/account/two-step/authenticators/confirm', 'owner', at('/api/account/two-step/authenticators/confirm'), () => ({ pendingId: 'x', code: '12a456' }), NEW_CODE_MALFORMED],
+		// DELETE /api/account/two-step/authenticators/:id: no field of its own, only the step-up's.
+		['DELETE /api/account/two-step/authenticators/:id', 'owner', (w) => `/api/account/two-step/authenticators/${w.factorId}`, () => ({}), MISSING],
+		['DELETE /api/account/two-step/authenticators/:id', 'owner', (w) => `/api/account/two-step/authenticators/${w.factorId}`, () => ({ currentPassword: 5 }), MISSING],
+		// POST /api/account/two-step/recovery-codes: only the step-up's.
+		['POST /api/account/two-step/recovery-codes', 'owner', at('/api/account/two-step/recovery-codes'), () => ({}), MISSING],
+		['POST /api/account/two-step/recovery-codes', 'owner', at('/api/account/two-step/recovery-codes'), () => ({ currentPassword: 5 }), MISSING],
+		// DELETE /api/account/two-step/banner: the time of the warning shown, as text, before the step-up's.
+		['DELETE /api/account/two-step/banner', 'owner', at('/api/account/two-step/banner'), () => ({ currentPassword: 'x' }), 'bannerAt is required'],
+		['DELETE /api/account/two-step/banner', 'owner', at('/api/account/two-step/banner'), () => ({ bannerAt: 5 }), 'bannerAt must be text'],
 		// PUT /api/account/email: the address first, then the step-up's (card 2771).
 		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ newEmail: 'moved@example.test' }), MISSING],
 		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ currentPassword: 'x', newEmail: 5 }), 'newEmail must be text'],
@@ -2940,6 +2982,12 @@ describe('the accounts, administration, teams, reports and requests that card 21
 	/** Every handler of the slice that reads a body: each has its cases above. */
 	const HANDLERS = [
 		'POST /api/account/api-keys',
+		'POST /api/account/api-keys/:id/keep',
+		'POST /api/account/two-step/authenticators',
+		'POST /api/account/two-step/authenticators/confirm',
+		'DELETE /api/account/two-step/authenticators/:id',
+		'POST /api/account/two-step/recovery-codes',
+		'DELETE /api/account/two-step/banner',
 		'PUT /api/account/email',
 		'PUT /api/account/emoji',
 		'PUT /api/account/notifications',
@@ -2984,6 +3032,9 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		const before = snapshotDb();
 		const PATHS: [Method, string, Who, string][] = [
 			['DELETE', '/api/account/api-keys/1.5', 'owner', 'Invalid key ID'],
+			// Card 2772: Keep this key, and the removal of an authenticator.
+			['POST', '/api/account/api-keys/1.5/keep', 'owner', 'Invalid key ID'],
+			['DELETE', '/api/account/two-step/authenticators/abc', 'owner', 'Invalid authenticator ID'],
 			['POST', '/api/admin/boards/abc/clear-cards', 'admin', 'Invalid board ID'],
 			['POST', '/api/admin/boards/0/clear-categories', 'admin', 'Invalid board ID'],
 			['DELETE', '/api/report-schedules/1e3', 'owner', 'Invalid schedule ID'],
@@ -3151,7 +3202,8 @@ describe('the accounts, administration, teams, reports and requests that card 21
 
 		expect(res.status, JSON.stringify(res.body)).toBe(201);
 		expect(res.body.expiresAt).toBe('2099-01-01 07:30:00');
-		expect(db.select({ expiresAt: apiKeys.expiresAt }).from(apiKeys).get()).toEqual({ expiresAt: '2099-01-01 07:30:00' });
+		// The key made, by its id: the world holds another, to keep (card 2772).
+		expect(db.select({ expiresAt: apiKeys.expiresAt }).from(apiKeys).where(eq(apiKeys.id, res.body.id)).get()).toEqual({ expiresAt: '2099-01-01 07:30:00' });
 	});
 
 	it('holds a username and an email to POST’s rules on PUT /api/users/:id, and answers a duplicate 409 where it was a 500 (decision 14)', async () => {

@@ -31,26 +31,28 @@
  * (five end it), on its lane (`mfa_known_wrong` for a browser remembered for
  * the account, `mfa_other_wrong` for any other), which pauses code entry at
  * 5, 10, 15, 20 and 25 and locks it at 30, and on
- * `failed_codes_since_sign_in`. A recovery code always works, past a pause or
- * the lock: a wrong one counts on the challenge, on `mfa_recovery_wrong` and
+ * `failed_codes_since_sign_in`. A code is tried against every authenticator
+ * of the account, and the lane counts one for each tried (card 2772, D4): the
+ * challenge and `failed_codes_since_sign_in` count the code once. A recovery
+ * code always works, past a pause or the lock: a wrong one counts on the challenge, on `mfa_recovery_wrong` and
  * on the address's sign-in attempts, with no pause of its own (decision 14).
  */
 import { fail, redirect, type ActionFailure, type Cookies } from '@sveltejs/kit';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db, sqlite } from './db';
-import { apiKeys, boards, mfaFactors, mfaRecoveryCodes, users, webhooks, type User } from './db/schema';
+import { apiKeys, boards, mfaRecoveryCodes, users, webhooks, type User } from './db/schema';
 import { afterCommit, inTransaction } from './db/transaction';
 import { registerStampFunctions } from './db/timestamps';
-import { createSession, setSessionCookie, type NewSession } from './auth';
+import { createSession, keyEnded, setSessionCookie, type NewSession } from './auth';
 import { rememberBrowser } from './known-browsers';
 import { accountKey, countSignInAttempt, forgetWrongSignIns, refundSignInAttempts } from './rate-limit';
 import { currentMfaKey } from './mfa-key';
 import {
 	addTotpFactor,
 	endPendingSignIns,
-	factorSecret,
 	holdsFactor,
 	issueEnrolmentLink,
+	matchFactors,
 	releaseWindowOpen,
 	spendRecoveryCode,
 	spendStep,
@@ -65,7 +67,6 @@ import { canonicalRecoveryCode, newRecoveryCodes } from './recovery-codes';
 import { OTPAUTH_ISSUER, otpauthUri, qrDataUri, secretInGroups } from './otpauth';
 import {
 	CODES_LOCKED_AT,
-	codePause,
 	countChallengeWrong,
 	deleteChallenge,
 	deleteChallengeCookie,
@@ -74,6 +75,7 @@ import {
 	liveChallenge,
 	moveEnrolStage,
 	openEnrolState,
+	pauseCrossed,
 	raiseSignal,
 	setChallengeCookie,
 	takeChallenge,
@@ -145,6 +147,15 @@ const BANNER_WORDS: Record<string, string> = {
 	'wrong-code': 'Someone entered your password and then a wrong code.',
 	'unfinished-sign-in': 'Someone entered your password and did not finish signing in.'
 };
+
+/**
+ * The security banner's reason in words, as the page after a right code and
+ * the top of the Account page say it (decision 16; card 2772, D6, F3): a
+ * reason this server does not know is said as the password being known.
+ */
+export function bannerWords(reason: string): string {
+	return Object.hasOwn(BANNER_WORDS, reason) ? BANNER_WORDS[reason] : 'Someone may know your password.';
+}
 
 /** The lane's two columns on `users`. Written into SQL from here alone, never from a request. */
 const LANE_COLUMNS: Record<Lane, { wrong: string; resumesAt: string }> = {
@@ -494,19 +505,27 @@ export type SignInReport = {
 /**
  * The account's live API keys, and the webhooks it set that are on, by the
  * board and the host they send to: what the page after a right code and the
- * enrolment notice list (S2).
+ * enrolment notice list (S2), and the Account page's two-step section and
+ * the `factor-removed` notice (card 2772, D2). A live key has not ended
+ * (`keyEnded`: its expiry and its deadline, by the gate's own rule).
  */
-function keysAndWebhooksOf(
+export function keysAndWebhooksOf(
 	userId: number,
 	now: number
 ): { apiKeys: { name: string; createdAt: string; lastUsedAt: string | null }[]; webhooks: { board: string; host: string; createdAt: string }[] } {
 	const nowStamp = stamp(new Date(now));
 	const keys = db
-		.select({ name: apiKeys.name, createdAt: apiKeys.createdAt, lastUsedAt: apiKeys.lastUsedAt, expiresAt: apiKeys.expiresAt })
+		.select({
+			name: apiKeys.name,
+			createdAt: apiKeys.createdAt,
+			lastUsedAt: apiKeys.lastUsedAt,
+			expiresAt: apiKeys.expiresAt,
+			deadlineAt: apiKeys.deadlineAt
+		})
 		.from(apiKeys)
 		.where(eq(apiKeys.userId, userId))
 		.all()
-		.filter((key) => key.expiresAt === null || (toStamp(key.expiresAt) ?? '') > nowStamp)
+		.filter((key) => !keyEnded(key, nowStamp))
 		.map(({ name, createdAt, lastUsedAt }) => ({ name, createdAt, lastUsedAt }));
 	const hooks = db
 		.select({ board: boards.name, url: webhooks.url, createdAt: webhooks.createdAt })
@@ -540,7 +559,7 @@ function reportFor(user: User, now: number, withBanner: boolean): SignInReport {
 		banner:
 			!withBanner || user.securityBanner === null
 				? null
-				: { words: BANNER_WORDS[user.securityBanner] ?? 'Someone may know your password.', at: user.securityBannerAt },
+				: { words: bannerWords(user.securityBanner), at: user.securityBannerAt },
 		apiKeys: keys,
 		webhooks: hooks
 	};
@@ -566,8 +585,11 @@ function bannerRaisedSinceSignIn(user: Pick<User, 'securityBanner' | 'securityBa
  * back to 0, and the session made. Answers the new session, the account
  * as it was, and the report for the decision 16 page when there is anything
  * to report: wrong codes since the last sign-in, or the security banner
- * raised since then (CR14). The banner itself stays set, for card 2772: a
- * later sign-in is not shown it again.
+ * raised since then (CR14). A sign-in does not clear the banner, and a later
+ * sign-in is not shown it again here: it stays at the top of the Account page
+ * until its holder clears it there, with That was me (a step-up that clears
+ * only the warning the page showed), or by changing their own password (card
+ * 2772, D6).
  */
 export function finishSignIn(
 	challenge: ChallengeRow,
@@ -676,9 +698,10 @@ type Outcome =
  * synchronous transaction, in this order: a live verify challenge; the
  * account's password hash unchanged since it was issued; for an
  * authenticator code, its lane neither locked nor paused (refused uncounted)
- * and a factor that opens (503 uncounted otherwise); then counted, in one
- * statement each, and compared. A right code takes the counts back and signs
- * in; a step already spent takes them back and asks for the next code; a
+ * and at least one authenticator that opens (503 uncounted otherwise), every
+ * one tried (`matchFactors`); then counted, in one statement each, the lane
+ * by the authenticators tried (card 2772, D4). A right code takes the counts
+ * back and signs in; a step already spent takes them back and asks for the next code; a
  * wrong one leaves them, pausing or locking its lane, and the fifth on the
  * challenge ends it (decision 30). A recovery code skips the lane and the
  * factor; a malformed one is answered before anything is counted.
@@ -774,77 +797,82 @@ export function verifyStep(input: VerifyInput, cookies: Cookies, url: URL): Veri
 		const state = laneState(user, lane, now);
 		if (state !== null) return 'locked' in state ? { kind: 'locked' } : { kind: 'paused', minutes: state.paused };
 
-		// 4. A factor that opens; none is 503, uncounted, and said at ERROR (by factorSecret).
-		const factor = db.select().from(mfaFactors).where(eq(mfaFactors.userId, user.id)).get();
-		if (!factor) {
-			log.error(`${named(user)} has a pending sign-in and no second factor (challenge ${challenge.short_id})`, undefined, {
-				userId: user.id
-			});
+		// 4. Every authenticator of the account tried (card 2772, D4), with no
+		// early exit: none that opens is 503, uncounted, each said at ERROR (by
+		// factorSecret), and none at all said at ERROR here.
+		const found = matchFactors(user.id, code, now);
+		if (found.tried === 0) {
+			if (found.unusable === 0) {
+				log.error(`${named(user)} has a pending sign-in and no second factor (challenge ${challenge.short_id})`, undefined, {
+					userId: user.id
+				});
+			}
 			return { kind: 'no factor' };
 		}
-		const unsealed = factorSecret(factor);
-		if (!unsealed.usable) return { kind: 'no factor' };
 
-		// 5. Counted, each in one statement.
+		// 5. Counted, each in one statement: the lane by the authenticators tried,
+		// so that a guess against N of them, 2N candidates, moves it N (D4); the
+		// challenge and the failed codes since sign-in by the one code typed, so
+		// that the first wrong code on the challenge is still its signal (S2).
+		const weight = found.tried;
 		const columns = LANE_COLUMNS[lane];
 		const onChallenge = countChallengeWrong(challenge.token_hash);
 		const counted = sqlite
 			.prepare(
-				`UPDATE users SET ${columns.wrong} = ${columns.wrong} + 1, failed_codes_since_sign_in = ` +
+				`UPDATE users SET ${columns.wrong} = ${columns.wrong} + ?, failed_codes_since_sign_in = ` +
 					`failed_codes_since_sign_in + 1 WHERE id = ? RETURNING ${columns.wrong} AS n`
 			)
-			.get(user.id) as { n: number };
+			.get(weight, user.id) as { n: number };
 
-		// 7. Compared, both steps in constant time.
-		let step: number | null;
-		try {
-			step = matchingStep(unsealed.secret, code, now);
-		} finally {
-			unsealed.secret.fill(0);
-		}
-		if (step !== null) {
+		// 7. What the compare found: a match spends that factor's step alone; a
+		// code whose every match is spent asks for the next one. Either takes the
+		// counts back exactly.
+		const matched = found.matched;
+		if (matched !== null || found.spent) {
 			uncountChallengeWrong(challenge.token_hash);
-			if (spendStep(factor.id, step) === 'not spent') {
+			if (matched === null || spendStep(matched.factorId, matched.step) === 'not spent') {
 				sqlite
 					.prepare(
-						`UPDATE users SET ${columns.wrong} = ${columns.wrong} - 1, failed_codes_since_sign_in = ` +
-							'failed_codes_since_sign_in - 1 WHERE id = ?'
+						`UPDATE users SET ${columns.wrong} = max(${columns.wrong} - ?, 0), failed_codes_since_sign_in = ` +
+							'max(failed_codes_since_sign_in - 1, 0) WHERE id = ?'
 					)
-					.run(user.id);
+					.run(weight, user.id);
 				return { kind: 'step spent' };
 			}
 			sqlite
 				.prepare(
 					`UPDATE users SET ${columns.wrong} = 0, ${columns.resumesAt} = NULL, failed_codes_since_sign_in = ` +
-						'failed_codes_since_sign_in - 1 WHERE id = ?'
+						'max(failed_codes_since_sign_in - 1, 0) WHERE id = ?'
 				)
 				.run(user.id);
 			return { kind: 'signed in', ...finishSignIn(challenge, 'verify', now, input.address), lane, by: 'authenticator' };
 		}
 
+		// The lines and notices name the codes typed and the authenticators tried,
+		// never the lane's weighted count, which is not the number typed (E3).
 		log.warn(
-			`Wrong two-step sign-in code for ${named(user)} from IP ${fromIp} (${lane} lane: ${counted.n} in a row; challenge ` +
-				`${challenge.short_id}, ${onChallenge} of ${WRONG_CODES_PER_CHALLENGE})`,
+			`Wrong two-step sign-in code for ${named(user)} from IP ${fromIp} (${lane} lane; ${weight} authenticator${weight === 1 ? '' : 's'} ` +
+				`tried; challenge ${challenge.short_id}, ${onChallenge} of ${WRONG_CODES_PER_CHALLENGE})`,
 			undefined,
 			{ userId: user.id, ip: input.address }
 		);
 		signalFirstWrong(onChallenge);
-		const pause = codePause(counted.n);
+		const pause = pauseCrossed(counted.n - weight, counted.n);
 		if (pause === 'locked') {
-			log.warn(`Authenticator codes for ${named(user)} are locked after ${counted.n} wrong codes in a row (${lane} lane)`, undefined, {
+			log.warn(`Authenticator codes for ${named(user)} are locked after too many wrong codes in a row (${lane} lane)`, undefined, {
 				userId: user.id,
 				ip: input.address
 			});
-			notices.push([user.id, 'codes-locked', { at, address: input.address, count: counted.n }]);
+			notices.push([user.id, 'codes-locked', { at, address: input.address }]);
 		} else if (pause !== null) {
 			const until = new Date(now + pause * 60_000);
 			sqlite.prepare(`UPDATE users SET ${columns.resumesAt} = ? WHERE id = ?`).run(stamp(until), user.id);
 			log.warn(
-				`Authenticator codes for ${named(user)} are paused for ${pause} minute(s) after ${counted.n} wrong codes in a row (${lane} lane)`,
+				`Authenticator codes for ${named(user)} are paused for ${pause} minute(s) after too many wrong codes in a row (${lane} lane)`,
 				undefined,
 				{ userId: user.id, ip: input.address }
 			);
-			notices.push([user.id, 'codes-paused', { at, address: input.address, count: counted.n, until }]);
+			notices.push([user.id, 'codes-paused', { at, address: input.address, until }]);
 		}
 		// The fifth on the challenge ends it: the pause, if one began, is shown at the next sign-in (decision 30).
 		if (onChallenge >= WRONG_CODES_PER_CHALLENGE) {

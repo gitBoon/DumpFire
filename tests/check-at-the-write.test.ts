@@ -639,6 +639,13 @@ const CURRENT_PASSWORD = [
 	'src/routes/api/account/password/+server.ts PUT',
 	'src/routes/api/account/email/+server.ts PUT',
 	'src/routes/api/account/api-keys/+server.ts POST',
+	// Card 2772 (D5): Keep this key.
+	'src/routes/api/account/api-keys/[id]/keep/+server.ts POST',
+	// Card 2772 (D1-D3, D6): the two-step section's step-ups, and That was me.
+	'src/routes/api/account/two-step/authenticators/+server.ts POST',
+	'src/routes/api/account/two-step/authenticators/[id]/+server.ts DELETE',
+	'src/routes/api/account/two-step/recovery-codes/+server.ts POST',
+	'src/routes/api/account/two-step/banner/+server.ts DELETE',
 	// Card 2701, slice 1: the admin actions that ask for it again (confirmStepUp).
 	'src/routes/api/admin/reset/+server.ts POST',
 	'src/routes/api/admin/purge-archived/+server.ts POST',
@@ -1556,6 +1563,14 @@ describe('every write handler asks who the caller is at the write (card 2253)', 
 			// Slice 2253-4: accounts, users, requests, reports (internal).
 			'src/routes/api/account/api-keys/+server.ts POST',
 			'src/routes/api/account/api-keys/[id]/+server.ts DELETE',
+			// Card 2772 (D5): Keep this key.
+			'src/routes/api/account/api-keys/[id]/keep/+server.ts POST',
+			// Card 2772 (D1-D3, D6): the two-step section, the new phone's code (no step-up) among them, and That was me.
+			'src/routes/api/account/two-step/authenticators/+server.ts POST',
+			'src/routes/api/account/two-step/authenticators/[id]/+server.ts DELETE',
+			'src/routes/api/account/two-step/authenticators/confirm/+server.ts POST',
+			'src/routes/api/account/two-step/recovery-codes/+server.ts POST',
+			'src/routes/api/account/two-step/banner/+server.ts DELETE',
 			'src/routes/api/account/email/+server.ts PUT',
 			'src/routes/api/account/emoji/+server.ts PUT',
 			'src/routes/api/account/notifications/+server.ts PUT',

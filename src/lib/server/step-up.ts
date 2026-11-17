@@ -201,7 +201,14 @@ export const STEP_UP_ACTIONS = Object.freeze({
 	// Card 2771 (D7): the Account page's three forms, which asked for the password on their own.
 	'PUT /api/account/password': "Changes the account's own password, which ends its other sessions and invites",
 	'PUT /api/account/email': "Moves the address the account's invites, resets and security notices go to",
-	'POST /api/account/api-keys': 'Makes an API key: a credential that outlives a password change unless it is ended'
+	'POST /api/account/api-keys': 'Makes an API key: a credential that outlives a password change unless it is ended',
+	// Card 2772 (D5, D7): a key made on a password alone, before two-step sign-in, kept past its deadline.
+	'POST /api/account/api-keys/[id]/keep': 'Keeps an API key made before two-step sign-in past its deadline',
+	// Card 2772 (D1-D3, D6, D7): the Account page's two-step section, and the warning at its top.
+	'POST /api/account/two-step/authenticators': 'Begins adding an authenticator: a second factor that signs in as the account',
+	'DELETE /api/account/two-step/authenticators/[id]': "Removes an authenticator, and ends the account's other sessions",
+	'POST /api/account/two-step/recovery-codes': "Replaces the account's recovery codes, each of which signs in in place of a code",
+	'DELETE /api/account/two-step/banner': "Clears the warning that someone entered the account's password with a wrong code"
 } as const);
 
 /** A key of `STEP_UP_ACTIONS`. */

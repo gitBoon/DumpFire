@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.128
+version: 1.129
 status: As-Built
 date: 2026-11-17
 tags:
@@ -28,7 +28,9 @@ tags:
   - retention
   - mfa
   - two-step-sign-in
-description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+  - api-key-deadline
+  - breaking-change
+description: "REST API reference for DumpFire's external v1 API: authentication, the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -78,6 +80,15 @@ that ends keys:
 | The holder changes it on their own row of the admin page | Kept |
 | An administrator resets it | All end |
 | An invite link is used to set it | All end |
+
+**A key made before two-step sign-in has a deadline** (card 2772, migration 0069): 60 days
+after the release that brought it, the same moment for every such key. **My Account → API
+Keys** shows the date beside it, "⚠️ Made before two-step sign-in: stops working on *date
+time* UTC unless you keep it", with **Keep this key**: with your password and a code it clears
+the deadline and leaves the key itself unchanged. A key not kept ends at its deadline, and one
+past it cannot be kept: generate a new key. Each key also shows its expiry, "Expires *date
+time* UTC" or "No expiry". A key that expires, or reaches its deadline, at the current second
+has ended.
 
 A key that has ended is answered `401` `{ "message": "Invalid or expired API key" }`, as a
 revoked one is, and whatever uses it stops until it is given a new key. Before an
@@ -355,13 +366,89 @@ either.
 
 ### Changes on 2026-11-17
 
+Two changes are dated 2026-11-17: card 2772's, which is **breaking** for API keys made before
+its release, and that of cards 2770 and 2771, which is not (after it).
+
+**Breaking: API keys made before card 2772's release stop working 60 days after it unless
+kept** (card 2772; OpenAPI document version **1.8.0**, with a dated note at the top of its
+description and the deadline in `bearerAuth`). No `/api/v1` route, field, status or schema
+changes, but a key that worked is answered `401` `{ "message": "Invalid or expired API key" }`
+from its deadline on, as an expired key is.
+
+- **Which keys.** Migration 0069 gives every key that exists when it runs, with no expiry or
+  one later than the deadline, a deadline: the moment the migration ran plus 60 days, the same
+  for every key (`settings.api_key_deadline`). A key that expires before then anyway, and every
+  key made after the release, has none. A key's own `expiresAt` is never changed.
+- **Keeping a key.** Its holder presses **Keep this key** beside it on **My Account → API
+  Keys**, with their password and a code: the deadline is cleared and the key itself (its value,
+  prefix and expiry) is unchanged, so nothing that uses it needs a change. A key past its
+  deadline is never revived: generate a new one. Holders are told before the release (the
+  owner's notice, [deployment.md](deployment.md#the-release-that-gives-older-api-keys-a-deadline-card-2772)).
+- **One boundary for a key's end.** A key whose expiry is exactly the current second has
+  ended, as one whose deadline is has (`keyEnded()`), where it worked until the second after.
+- **Internal routes, additive** (DumpFire's own pages call them; a script calling them as a
+  signed-in session sends `currentPassword` and `currentCode` to each but the confirm):
+  - `GET /api/account/api-keys` answers `deadlineAt` for each key, as stored, `null` when it
+    has none.
+  - `POST /api/account/api-keys/[id]/keep`, body `{ currentPassword, currentCode }`: `200`
+    `{ "success": true }`; `404` "API key not found"; `409` "This key has no deadline to
+    clear."; `409` "This key has passed its deadline and no longer works. Generate a new key."
+  - `POST /api/account/two-step/authenticators`, body `{ label, currentPassword, currentCode }`:
+    `200` `{ pendingId, account, issuer, secret, qr, expiresAt }` with `Cache-Control:
+    no-store`; `label` required, white space collapsed, 1 to 40 characters, no control or
+    format character (`400` "Name this authenticator, such as Work phone.", "label must be at
+    most 40 characters", "The name cannot hold control or formatting characters."); `409` "You
+    have three authenticators, the most an account can hold. Remove one first."; `503` with no
+    MFA key.
+  - `POST /api/account/two-step/authenticators/confirm`, body `{ pendingId, code }`, no
+    step-up: `201` `{ id, label, createdAt }`; `400` "Enter the 6-digit code from your new
+    authenticator app." (not counted); `400` for a wrong code; `409` "This set-up has ended.
+    Start again with Add an authenticator." (none live, another session's, or a `pendingId` that
+    is neither the live one's nor one of the last two it replaced: the code review's CS2),
+    "This set-up was replaced by a newer one. Use the newest, or start again." (one of the last
+    two the live set-up replaced), "Too many wrong codes. Start again with Add an authenticator." (the
+    fifth), the password-changed `409`, or the three-authenticators `409`; `503` when its secret
+    cannot be opened.
+  - `DELETE /api/account/two-step/authenticators/[id]`, body `{ currentPassword, currentCode }`:
+    `200` `{ "success": true, "sessionsEnded": n }`, every other session of the account ended;
+    `404` "Authenticator not found"; `409` "This is your only authenticator. Add the new one
+    first, then remove this one."; `409` when no other authenticator can be checked here.
+  - `POST /api/account/two-step/recovery-codes`, body `{ currentPassword, currentCode }`: `200`
+    `{ "codes": [ten, "XXXX-XXXX-XXXX-XXXX"] }` with `Cache-Control: no-store`; every earlier
+    code no longer works.
+  - `DELETE /api/account/two-step/banner`, body `{ bannerAt, currentPassword, currentCode }`,
+    `bannerAt` the moment of the latest signal the page showed (`security_signal_last_at`, set
+    by every signal, even one inside the hour that raises no new warning: the code review's
+    CS1): `200` `{ "success": true }`, the warning, its time and the latest signal's cleared;
+    `409` "There is no warning to dismiss."; `409` "A newer warning arrived. Read it, then
+    dismiss it again." for any other moment.
+  - **Five more listed actions**, thirty-seven in all: the keep, the start, the remove, the
+    recovery codes and the banner. Their own fields are refused before the password, nothing
+    counted.
+  - **The step-up's count is weighted**: an attempt with an authenticator code counts once for
+    each authenticator that can be checked on this server (one to three; one whose secret
+    cannot be opened here is skipped and not counted), taken before the compare and the same
+    for a wrong password or a wrong code, so with two authenticators two wrong answers sign the
+    browser out, and with three one does. The confirm dialog's line counts every authenticator
+    the account holds, so where one cannot be opened it says more than is counted, never less.
+    A code from any of the account's authenticators is accepted; `code-spent` only when every
+    match is spent. A recovery code counts one. A second request from a session whose check is
+    under way is `429` `in-flight` before the count is looked at, so it never signs the session
+    out (the code review's CR1).
+  - `POST /api/admin/import` answers `apiKeyDeadlines` (how many keys of a backup made before
+    0069 were given this server's deadline) and, when above 0, `apiKeyDeadline` (`YYYY-MM-DD
+    HH:MM UTC`) and a sentence in its message.
+- See [Keys Made Before Two-Step Sign-In: the Deadline](authentication-security.md#keys-made-before-two-step-sign-in-the-deadline-card-2772)
+  and [Managing Two-Step Sign-In on the Account Page](authentication-security.md#managing-two-step-sign-in-on-the-account-page-card-2772).
+
 **Every action that asks for the current password asks for a code beside it (cards 2770 and
-2771, one release). The v1 API does not change**: still version `1.7.1`, and no `/api/v1`
+2771, one release). The v1 API does not change by that release**: still version `1.7.1`, and no `/api/v1`
 operation, answer or schema is different; no v1 route asks for a password, and a key needs
 no code. These are DumpFire's own internal routes, which its pages call; a script that calls
 them as a signed-in session must send the code too.
 
-- **`currentCode` is required on every listed internal route**: the thirty-two actions of
+- **`currentCode` is required on every listed internal route**: the thirty-two actions (of that
+  release; thirty-seven since card 2772) of
   [Step-up Before Destructive Actions](authentication-security.md#step-up-before-destructive-actions-card-2701),
   the import's confirmation (`POST /api/admin/import/confirm`) and the export
   (`POST /api/admin/export`) among them. It is a code from the account's authenticator app, or
@@ -414,7 +501,7 @@ them as a signed-in session must send the code too.
 - No migration, and nothing to set. Reload every DumpFire tab opened before the release: an old
   page sends no `currentCode` and is answered `400` `missing`, with nothing changed.
 - **The bulk attach's refusal of a card on another board names its remedy** (card 2860,
-  additive; the OpenAPI document is unchanged at `1.7.1`). On
+  additive; the OpenAPI document is unchanged at `1.7.1` (1.8.0 since card 2772)). On
   `POST /api/v1/milestones/:milestoneId/cards/bulk` to a single-board milestone, the
   `problems[]` reason reads `… Make the milestone cross-board (boardId null on PATCH
   /api/v1/milestones/<id>, or Spans every board on its plan page), or move the card.`, where it

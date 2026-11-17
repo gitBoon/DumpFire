@@ -6,8 +6,9 @@
  * made for every seal and a 16-byte tag. The additional data binds what is
  * sealed to where it belongs: a factor's secret to its account and its
  * `factor_uid` (`factorAad`), a secret being set up to its account and the
- * hash of its token (`enrolAad`). A sealed secret copied to another row, or to
- * another account, does not open.
+ * hash of its token (`enrolAad`), an authenticator being added on the Account
+ * page to its account and the hash of its pending id (`addAad`, card 2772). A
+ * sealed secret copied to another row, or to another account, does not open.
  *
  * Pure: it reads no file and no row, and holds nothing. `openSealed` does not
  * look at the key id a sealed secret names: the store does (mfa-store.ts).
@@ -67,6 +68,14 @@ export const factorAad = (userId: number, factorUid: string) => `mfa-factor:${us
 
 /** The additional data a secret being set up is sealed with. */
 export const enrolAad = (userId: number, tokenHash: string) => `mfa-enrol:${userId}:${tokenHash}`;
+
+/**
+ * The additional data an authenticator being added on the Account page is
+ * sealed with (card 2772, D1, S7): its account and the hash of its pending
+ * id. A domain of its own, so that a pending add's ciphertext never opens as
+ * an enrolment's or a factor's.
+ */
+export const addAad = (userId: number, idHash: string) => `mfa-add:${userId}:${idHash}`;
 
 /** A new `factor_uid`: 128 random bits as hex. */
 export function newFactorUid(): string {

@@ -13,6 +13,7 @@ import {
 	whilePasswordHolds
 } from '$lib/server/auth';
 import { makePasswordHash } from '$lib/server/passwords';
+import { forgetPendingAdd } from '$lib/server/pending-authenticators';
 import { rememberBrowser } from '$lib/server/known-browsers';
 import { createLogger } from '$lib/server/logger';
 import { readBody, readBoolean, readText } from '$lib/server/request-body';
@@ -27,7 +28,9 @@ const log = createLogger('AUTH');
  * PUT — Change own password. Asks for the current password and a code again
  * (`currentPassword`, `currentCode`: card 2771, D7), through the step-up that
  * every listed action asks with (step-up.ts): the wrong ones counted on the
- * session that sent them, the third ending it.
+ * session that sent them, the third ending it. The change also clears the
+ * warning that someone else entered the password, which asks for it, and
+ * forgets an authenticator being added with the old one (card 2772, D1, D6).
  */
 export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => {
 	requireUser(locals.user);
@@ -89,11 +92,17 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 			const startedAt = replacementStart(session, me.role);
 			if (startedAt === null) error(401, 'Not authenticated');
 
-			// Update password
+			// Update password. The warning that someone else entered the old one
+			// goes with it, all three of its columns (card 2772, D6, A16, and the
+			// latest signal's moment, CS1): changing the password is the remedy
+			// it asks for.
 			db.update(users)
-				.set({ passwordHash: newHash })
+				.set({ passwordHash: newHash, securityBanner: null, securityBannerAt: null, securitySignalLastAt: null })
 				.where(eq(users.id, userId))
 				.run();
+			// An authenticator being added with the old password is forgotten
+			// once the change is committed (card 2772, D1, S7).
+			afterCommit(() => forgetPendingAdd(userId));
 
 			// Every existing session of this user ends, and every invite not yet
 			// used, which would set the password again. The API keys end only if

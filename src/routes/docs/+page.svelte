@@ -301,7 +301,7 @@
 								<li>Navigate to <strong>My Account</strong> (⚙️)</li>
 								<li>Scroll to the <strong>🔑 API Keys</strong> section</li>
 								<li>Enter a descriptive name (e.g. "CI Pipeline", "n8n Automation")</li>
-								<li>Enter your current password and the code from your authenticator app (or one of your recovery codes). A wrong one is refused with "Your password or code was not right. Nothing was changed." The third wrong answer from one signed-in browser, counted with every other action that asks for your password, signs that browser out: sign in again.</li>
+								<li>Enter your current password and the code from your authenticator app (or one of your recovery codes). A wrong one is refused with "Your password or code was not right. Nothing was changed." The third wrong answer from one signed-in browser, counted with every other action that asks for your password, signs that browser out: sign in again. With two or three authenticators on your account, a wrong answer with an authenticator code counts once for each, so fewer sign it out; the dialog says so before you send.</li>
 								<li>Click <strong>Generate Key</strong></li>
 								<li><strong>Copy the key immediately</strong> — it is only displayed once</li>
 							</ol>
@@ -319,6 +319,7 @@
 								<li>An administrator's reset of your password ends them all</li>
 								<li>An invite link used to set your password ends them all</li>
 							</ul>
+							<p>A key made before two-step sign-in has a deadline 60 days after the release that brought it: keep it on your Account page, with your password and a code, or it ends then. <strong>My Account → API Keys</strong> shows the date beside each such key, with <strong>Keep this key</strong>; keeping it leaves the key itself unchanged. A key past its deadline cannot be kept: generate a new one.</p>
 							<p>A key that has ended is answered <code>401</code> with <code>Invalid or expired API key</code>, as a revoked one is, and whatever uses it stops until it is given a new key. Before an administrator resets the password of an account a script runs on, the reset dialog says how many keys it has.</p>
 						</div>
 					</section>

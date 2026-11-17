@@ -74,6 +74,8 @@
 		requestLinks?: string;
 		/** Personal decision links the import cancelled, when there were any (card 2697, Q15). */
 		decisionLinks?: string;
+		/** API keys of a backup made before migration 0069 given this server's deadline, when there were any (card 2772). */
+		keyDeadlines?: string;
 		/** Who the superadmin is now: who can sign in to export, import or reset again. */
 		superadmin?: string;
 		/** Every table restored, with its rows, for whoever wants all of it. */
@@ -101,6 +103,8 @@
 		settingsRemoved?: string;
 		attachmentsPutBack?: number;
 		requestLinksReplaced?: number;
+		apiKeyDeadlines?: number;
+		apiKeyDeadline?: string;
 		decisionLinksCleared?: number;
 		superadmins?: string[];
 	}) {
@@ -131,6 +135,9 @@
 		// Every request is given a new link by an import (card 2158), so a link
 		// mailed before it no longer works: said beside the files put back.
 		const links = typeof result.requestLinksReplaced === 'number' ? result.requestLinksReplaced : 0;
+		// The API keys of a backup made before migration 0069 given this
+		// server's deadline (card 2772): each stops working then unless kept.
+		const keyDeadlines = typeof result.apiKeyDeadlines === 'number' ? result.apiKeyDeadlines : 0;
 		// And every personal decision link is cancelled (card 2697, Q15): its
 		// holder needs a new one, which Resend sends.
 		const decisionLinks = typeof result.decisionLinksCleared === 'number' ? result.decisionLinksCleared : 0;
@@ -166,6 +173,13 @@
 				links > 0
 					? `${count(links)} request ${links === 1 ? 'link' : 'links'} replaced: a link mailed before this restore no ` +
 						'longer works, and its requester can have a new one sent from the page it opens.'
+					: undefined,
+			keyDeadlines:
+				keyDeadlines > 0
+					? `${count(keyDeadlines)} API ${keyDeadlines === 1 ? 'key' : 'keys'} from before two-step sign-in ` +
+						`${keyDeadlines === 1 ? 'was' : 'were'} given this server's deadline` +
+						(typeof result.apiKeyDeadline === 'string' ? `, ${result.apiKeyDeadline}` : '') +
+						': each stops working then unless its holder keeps it on their Account page.'
 					: undefined,
 			decisionLinks:
 				decisionLinks > 0
@@ -524,6 +538,9 @@
 			{/if}
 			{#if importReport.requestLinks}
 				<p class="import-report-detail">{importReport.requestLinks}</p>
+			{/if}
+			{#if importReport.keyDeadlines}
+				<p class="import-report-detail">{importReport.keyDeadlines}</p>
 			{/if}
 			{#if importReport.decisionLinks}
 				<p class="import-report-detail">{importReport.decisionLinks}</p>

@@ -48,7 +48,7 @@ import {
 } from '$lib/server/known-browsers';
 import { resetAllRateLimits, signInWait } from '$lib/server/rate-limit';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
-import { resetTwoStep } from '$lib/server/mfa-store';
+import { resetTwoStep, spendStep } from '$lib/server/mfa-store';
 import { newRecoveryCodes } from '$lib/server/recovery-codes';
 import { stepAt } from '$lib/server/totp';
 import {
@@ -82,7 +82,7 @@ import { action, pageLoad } from './helpers/actions';
 import { effects, type Effects } from './helpers/effects';
 import { gate } from './helpers/gate';
 import { FIXTURE_PASSWORD, FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, resetDb, sessionHashOf, sessionRow } from './helpers/fixtures';
-import { VERIFY_AT, codeFor, giveFactor, openReleaseWindow, passwordStep, signInFully, verify, wrongCodeFor, type GivenFactor } from './helpers/two-step';
+import { VERIFY_AT, codeFor, giveAuthenticator, giveFactor, openReleaseWindow, passwordStep, signInFully, verify, wrongCodeFor, type GivenFactor } from './helpers/two-step';
 
 /** Run while the password is being checked (T42): a password set meanwhile. */
 const duringCheck = vi.hoisted(() => ({ run: null as null | (() => void) }));
@@ -1076,6 +1076,113 @@ describe('the second step (slice 2)', () => {
 		expect(lines.filter((line) => line.level === 'ERROR').map((line) => line.message)).toEqual([
 			expect.stringContaining('has a pending sign-in and no second factor')
 		]);
+	});
+
+	// Card 2772, slice S1 (plan section 5.1, T4 to T6; D4): every authenticator of the account tried, the lane
+	// counting one for each, the challenge and the failed codes one for the code.
+	describe('every authenticator tried (card 2772)', () => {
+		const factorOf = (id: number) => db.select().from(mfaFactors).where(eq(mfaFactors.id, id)).get()!;
+		/** The WARN lines among `lines`, by their words. */
+		const warnLines = (lines: LogEntry[]) => lines.filter((line) => line.level === 'WARN').map((line) => line.message);
+		/** Who the lines name. */
+		const who = () => `"${user.username}" (user ${user.id})`;
+
+		it('T4 (2772): the second authenticator’s code signs in, spending its step alone, with the counts taken back', async () => {
+			const second = giveAuthenticator(user);
+			const { challenge } = await passwordStep(user);
+			const shortId = challenges()[0].short_id;
+			// One wrong code first: the lane 2, the challenge 1, the failed codes 1.
+			expect(errorOf(await verify(challenge, { code: wrongCodeFor([factor.secret, second.secret]) }))).toBe(WRONG_CODE);
+			expect(userRow()).toMatchObject({ mfaOtherWrong: 2, failedCodesSinceSignIn: 1 });
+
+			const res = await verify(challenge, { code: codeFor(second.secret) });
+
+			expectSignedIn(res);
+			// The right code's own count taken back: the report counts the one wrong code before it.
+			expect(res).toMatchObject({ type: 'success', data: { signedIn: true, report: { wrongCodes: 1 } } });
+			expect(factorOf(second.factorId)).toMatchObject({ lastStep: stepAt(Date.now()), lastUsedAt: stamp() });
+			expect(factorOf(factor.factorId)).toMatchObject({ lastStep: null, lastUsedAt: null });
+			expect(userRow()).toMatchObject({ mfaOtherWrong: 0, mfaOtherResumesAt: null, failedCodesSinceSignIn: 0 });
+			expect(challenges().filter((row) => row.short_id === shortId)).toEqual([]);
+		});
+
+		it('T5 (2772): with several authenticators a wrong code moves the lane by the number tried and the challenge by one; the first is the signal; pauses and the lock are crossed, and said with no count', async () => {
+			makeSmtp();
+			const second = giveAuthenticator(user);
+			const { challenge } = await passwordStep(user);
+			const shortId = challenges()[0].short_id;
+
+			// The first wrong code: the lane 2, the challenge 1, the failed codes 1, the banner raised and mailed.
+			const first = await logged(() => verify(challenge, { code: wrongCodeFor([factor.secret, second.secret]) }));
+			expect(errorOf(first.result)).toBe(WRONG_CODE);
+			expect(challenges()[0].wrong_count).toBe(1);
+			expect(userRow()).toMatchObject({ mfaOtherWrong: 2, failedCodesSinceSignIn: 1, securityBanner: 'wrong-code' });
+			expect(warnLines(first.lines)).toEqual([
+				`Wrong two-step sign-in code for ${who()} from IP 127.0.0.1 (other lane; 2 authenticators tried; challenge ${shortId}, 1 of 5)`
+			]);
+			expect(await subjects()).toEqual([NOTICE.wrongCode]);
+
+			// The lane at 4: the next wrong code takes it to 6, past 5, and pauses it 15 minutes.
+			db.update(users).set({ mfaOtherWrong: 4 }).where(eq(users.id, user.id)).run();
+			const crossing = await logged(() => verify(challenge, { code: wrongCodeFor([factor.secret, second.secret]) }));
+			expect(errorOf(crossing.result)).toBe(WRONG_CODE);
+			expect(challenges()[0].wrong_count).toBe(2);
+			expect(userRow().mfaOtherWrong).toBe(6);
+			expect(parseStamp(userRow().mfaOtherResumesAt)!.getTime()).toBe(parseStamp(stamp())!.getTime() + 15 * 60_000);
+			expect(warnLines(crossing.lines)).toEqual([
+				`Wrong two-step sign-in code for ${who()} from IP 127.0.0.1 (other lane; 2 authenticators tried; challenge ${shortId}, 2 of 5)`,
+				`Authenticator codes for ${who()} are paused for 15 minute(s) after too many wrong codes in a row (other lane)`
+			]);
+			expect(await subjects()).toEqual([NOTICE.wrongCode, NOTICE.paused]);
+			const paused = sent.emails[1].html;
+			expect(paused).toContain('Too many wrong authenticator codes in a row were entered for your DumpFire account');
+			expect(paused).not.toMatch(/\d+ wrong authenticator codes/);
+
+			// The challenge counts one for each code: two authenticator codes and two wrong recovery codes leave it
+			// open, and the fifth wrong code of any kind ends it.
+			const guesses = newRecoveryCodes();
+			expect(errorOf(await verify(challenge, { recoveryCode: guesses[0] }))).toBe(WRONG_RECOVERY_CODE);
+			expect(errorOf(await verify(challenge, { recoveryCode: guesses[1] }))).toBe(WRONG_RECOVERY_CODE);
+			expect(challenges()[0].wrong_count).toBe(4);
+			expect(await verify(challenge, { recoveryCode: guesses[2] })).toMatchObject({ status: 400, data: { error: TOO_MANY_WRONG_CODES, restart: true } });
+			expect(challenges()).toEqual([]);
+
+			// Three authenticators, the lane at 28: one wrong code takes it to 31, and locks it.
+			const third = giveAuthenticator(user, 'New phone');
+			db.update(users).set({ mfaOtherWrong: 28, mfaOtherResumesAt: null }).where(eq(users.id, user.id)).run();
+			const again = await passwordStep(user);
+			const lockingId = challenges()[0].short_id;
+			const locking = await logged(() => verify(again.challenge, { code: wrongCodeFor([factor.secret, second.secret, third.secret]) }));
+			expect(errorOf(locking.result)).toBe(WRONG_CODE);
+			expect(userRow().mfaOtherWrong).toBe(31);
+			expect(warnLines(locking.lines)).toEqual([
+				`Wrong two-step sign-in code for ${who()} from IP 127.0.0.1 (other lane; 3 authenticators tried; challenge ${lockingId}, 1 of 5)`,
+				`Authenticator codes for ${who()} are locked after too many wrong codes in a row (other lane)`
+			]);
+			expect(await verify(again.challenge, { code: codeFor(third.secret) })).toMatchObject({ status: 403, data: { error: CODES_LOCKED } });
+			// The banner was raised within the hour: no second wrong-code notice.
+			expect(await subjects()).toEqual([NOTICE.wrongCode, NOTICE.paused, NOTICE.locked]);
+			const locked = sent.emails[2].html;
+			expect(locked).toContain('Too many wrong authenticator codes in a row were entered for your DumpFire account');
+			expect(locked).not.toMatch(/\d+ wrong authenticator codes/);
+		});
+
+		it('T6 (2772): a code of the second authenticator’s spent step asks for the next one, the lane taken back by 2 and the challenge and failed codes by 1, the first factor untouched', async () => {
+			const second = giveAuthenticator(user);
+			const { challenge } = await passwordStep(user);
+			// One wrong code first, so that each take-back is seen exactly: the lane 2, the challenge 1, the failed codes 1.
+			await verify(challenge, { code: wrongCodeFor([factor.secret, second.secret]) });
+			const step = stepAt(Date.now());
+			expect(spendStep(second.factorId, step)).toBe('spent');
+
+			const res = await verify(challenge, { code: codeFor(second.secret) });
+
+			expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: STEP_SPENT } });
+			expect(challenges()[0].wrong_count).toBe(1);
+			expect(userRow()).toMatchObject({ mfaOtherWrong: 2, mfaOtherResumesAt: null, failedCodesSinceSignIn: 1 });
+			expect(factorOf(second.factorId).lastStep).toBe(step);
+			expect(factorOf(factor.factorId)).toMatchObject({ lastStep: null, lastUsedAt: null });
+		});
 	});
 });
 

@@ -13,7 +13,11 @@ import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
 
-/** GET — List the current user's API keys (without the secret). */
+/**
+ * GET — List the current user's API keys (without the secret). `deadlineAt`
+ * is the deadline a key made before two-step sign-in has until it is kept
+ * (migration 0069, card 2772), as stored; null when it has none.
+ */
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
@@ -23,7 +27,8 @@ export const GET: RequestHandler = async ({ locals }) => {
 		keyPrefix: apiKeys.keyPrefix,
 		lastUsedAt: apiKeys.lastUsedAt,
 		expiresAt: apiKeys.expiresAt,
-		createdAt: apiKeys.createdAt
+		createdAt: apiKeys.createdAt,
+		deadlineAt: apiKeys.deadlineAt
 	})
 		.from(apiKeys)
 		.where(eq(apiKeys.userId, locals.user.id))

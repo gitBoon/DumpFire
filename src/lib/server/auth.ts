@@ -19,13 +19,12 @@ import { createHash, randomBytes } from 'node:crypto';
 import { db, sqlite } from './db';
 import { afterCommit, inTransaction } from './db/transaction';
 import { users, sessions, apiKeys, webhooks, reportSchedules, mfaFactors, mfaRecoveryCodes, type Session, type User } from './db/schema';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { error, type Cookies } from '@sveltejs/kit';
 import { getRequestEvent } from '$app/server';
 import { endUnusedInvites } from './invites';
-import { endPendingSignIns, factorSecret, spendRecoveryCode, spendStep } from './mfa-store';
+import { endPendingSignIns, holdsFactor, matchFactors, spendRecoveryCode, spendStep, type FactorMatch } from './mfa-store';
 import { raiseSignal } from './sign-in-challenges';
-import { matchingStep } from './totp';
 import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
@@ -201,35 +200,46 @@ export function forgetChecksInFlight(): void {
  * So the attempts are counted on the session's own row
  * (`sessions.wrong_password_count`, migration 0062), for the session's whole
  * life: no window, and a restart does not clear it. One attempt counts once,
- * whichever part is wrong, and only a right password with a right code sets it
- * back to 0. The third wrong one ends the session (decisions 5 and 6, as
+ * whichever part is wrong, by its weight (one for each authenticator its code
+ * was tried against, card 2772), and only a right password with a right code
+ * sets it back to 0. A count of 3 ends the session (decisions 5 and 6, as
  * ruled again by the code review's S1 on 2026-11-04: only a check that
  * compares a password is counted). Steps 1 to 4 run in one turn, with nothing
  * awaited between them, so that no other check can come between:
  *
- *   1. The session's row is read. Gone, the answer is signed out. A count
- *      already at 3 or more ends the session, answered signed out, with no
- *      password compared.
+ *   1. The session's row is read. Gone, the answer is signed out.
  *   2. One check under way per session: a second is answered 429
- *      (`STEP_UP_IN_FLIGHT`), not counted, with no password compared. The
- *      pages send one request per press.
+ *      (`STEP_UP_IN_FLIGHT`), not counted, nothing ended, with no password
+ *      compared. The pages send one request per press. Asked before the
+ *      threshold below (card 2772's code review, CR1): the check under way
+ *      has added its weight before its compare, so with three authenticators
+ *      a right one holds the count at 3 until it clears it, and a second
+ *      request then must not end the session.
+ *      Then a count already at 3 or more ends the session, answered signed
+ *      out, with no password compared.
  *   2b. The account's second factor (card 2771, D3), not counted, with no
  *      password compared: none is 403 `no-factor` with a WARN line; for an
- *      authenticator code, a factor that does not open is 503
- *      `factor-unusable` (the ERROR line is `factorSecret`'s), and a code that
- *      matches a step at or below the last one spent is 400 `code-spent`,
- *      whatever the password (S1: decided before the compare, it says nothing
- *      of the password). A code that matches no step goes on: it is never
- *      refused here. The secret is opened only to check, and zeroed here (S3).
- *      A recovery code skips the opening.
+ *      authenticator code, every authenticator of the account is tried
+ *      (`matchFactors`, card 2772, D4): none that opens is 503
+ *      `factor-unusable` (the ERROR lines are `factorSecret`'s), and a code
+ *      whose every match is at or below its factor's last step spent is 400
+ *      `code-spent`, whatever the password (S1: decided before the compare,
+ *      it says nothing of the password). A code that matches no step goes on:
+ *      it is never refused here. Each secret is opened only to check, and
+ *      zeroed there (S3). A recovery code skips the opening. The attempt's
+ *      weight is taken here: the authenticators tried, or 1 for a recovery
+ *      code (card 2772, D4, S1).
  *   3. One of the account's five places in the first lane of password checks
  *      (passwords.ts), its sessions' current passwords and its remembered
  *      browsers' sign-ins together (the review's L1). None free is answered
  *      429 (`PASSWORDS_BUSY`), not counted, with no password compared. The
  *      first lane goes ahead of every sign-in, invite and set-up, so without
  *      it one signed-in user could keep checks in flight without end.
- *   4. Counted, in one statement (`UPDATE … RETURNING`), and then compared on
- *      a worker thread. A compare that fails on the worker stays counted: it
+ *   4. Counted, by the weight of 2b, in one statement (`UPDATE … RETURNING`),
+ *      and then compared on a worker thread: a guess against N authenticators
+ *      has 2N candidates, so it counts N, before the compare and the same for
+ *      a wrong password or a wrong code, and nothing is added after it (card
+ *      2772, D4, S1). A compare that fails on the worker stays counted: it
  *      was made.
  *   5. A wrong password: the row read again, a WARN line, and a count of 3
  *      ends the session; the code is never examined again, nor spent. A right
@@ -237,20 +247,21 @@ export function forgetChecksInFlight(): void {
  *      The session's row is read again: gone (ended by a sign-out, a password
  *      change or a reset meanwhile), the answer is signed out and nothing is
  *      spent, so that an answer given after the end never tells a right guess
- *      from a wrong one. The factor is read and opened again, the secret
- *      zeroed after; the code verified at the moment it arrived, taken at
- *      2b (the step then or the one before, so a step boundary passing
- *      during the compare does not make it wrong: the code review's CS2) and
- *      its step spent (`spendStep`), or the recovery code
+ *      from a wrong one. The authenticators are read and tried again
+ *      (`matchFactors`), each secret zeroed after; the code verified at the
+ *      moment it arrived, taken at 2b (the step then or the one before, so a
+ *      step boundary passing during the compare does not make it wrong: the
+ *      code review's CS2) and the matched factor's step alone spent
+ *      (`spendStep`), or the recovery code
  *      spent (`spendRecoveryCode`); and then the count set to 0. A wrong code,
- *      or a recovery code used or unknown, leaves the count at +1 and, the
- *      password being shown known, raises the account's signal (at most once
- *      an hour) and `failed_codes_since_sign_in` (D6): the WARN line says so,
- *      and the third ends the session. A step spent by another request since
- *      2b, or a factor gone or not opening, fails closed: nothing spent, the
- *      count left at +1, answered as a wrong one. A fault in the transaction
- *      rolls the spend and the clear back together and leaves the attempt
- *      counted.
+ *      or a recovery code used or unknown, leaves the count at its weight and,
+ *      the password being shown known, raises the account's signal (at most
+ *      once an hour) and `failed_codes_since_sign_in` (D6): the WARN line says
+ *      so, and a count of 3 ends the session. A step spent by another request
+ *      since 2b, or a factor gone or not opening, fails closed: nothing spent,
+ *      the count left at its weight, answered as a wrong one. A fault in the
+ *      transaction rolls the spend and the clear back together and leaves the
+ *      attempt counted.
  *
  * The count is the session's and not the account's. Kept on the account,
  * whoever held one session of it could keep every session of it refused, the
@@ -286,49 +297,51 @@ export async function checkCurrentProof(
 	// 1. The session as it is.
 	const row = db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(thisSession).get();
 	if (!row) return signedOut();
+	// 2. One check at a time for the session: not counted, and asked before
+	// the count's threshold, which an attempt under way has raised by its
+	// weight before its compare (card 2772's code review, CR1). With three
+	// authenticators a right attempt holds the count at 3 until it clears it;
+	// a second request meanwhile is told to wait, never signed out.
+	if (checksInFlight.has(session)) error(429, { message: STEP_UP_IN_FLIGHT, stepUp: 'in-flight' });
 	if (row.count >= WRONG_CURRENT_PASSWORDS_SIGN_OUT) {
 		endAfterWrongPasswords(sessionHash, userId, where);
 		return signedOut();
 	}
-
-	// 2. One check at a time for the session: not counted.
-	if (checksInFlight.has(session)) error(429, { message: STEP_UP_IN_FLIGHT, stepUp: 'in-flight' });
 
 	// 2b. The account's second factor: not counted, no password compared. The
 	// code is judged at the moment it arrived, here and after the compare
 	// alike: a step boundary passing during the compare does not make a code
 	// that was good when it came a wrong one (card 2771's code review, CS2).
 	const at = Date.now();
-	const factor = db.select().from(mfaFactors).where(eq(mfaFactors.userId, userId)).get();
-	if (!factor) {
+	if (!holdsFactor(userId)) {
 		log.warn(`Password not confirmed for user ${userId} on ${where}: the account has no second factor`, { where }, { userId });
 		error(403, { message: STEP_UP_NO_FACTOR, stepUp: 'no-factor' });
 	}
+	// What one attempt counts (card 2772, D4, S1): an authenticator code is
+	// tried against every authenticator of the account, so it counts one for
+	// each tried; a recovery code counts one. Taken here, before the compare,
+	// and the same whichever part turns out wrong: no answer says which.
+	let weight = 1;
+	let arrived: FactorMatch | null = null;
 	if (code.kind === 'authenticator') {
-		const opened = factorSecret(factor);
-		if (!opened.usable) error(503, { message: STEP_UP_FACTOR_UNUSABLE, stepUp: 'factor-unusable' });
-		let step: number | null;
-		try {
-			step = matchingStep(opened.secret, code.digits, at);
-		} finally {
-			opened.secret.fill(0);
-		}
-		if (step !== null && factor.lastStep !== null && step <= factor.lastStep) {
-			error(400, { message: STEP_UP_CODE_SPENT, stepUp: 'code-spent' });
-		}
+		arrived = matchFactors(userId, code.digits, at);
+		if (arrived.tried === 0) error(503, { message: STEP_UP_FACTOR_UNUSABLE, stepUp: 'factor-unusable' });
+		if (arrived.matched === null && arrived.spent) error(400, { message: STEP_UP_CODE_SPENT, stepUp: 'code-spent' });
+		weight = arrived.tried;
 	}
 
 	// 3. A place in the account's first lane: not counted.
 	const place = firstLaneChecksAt(userId);
 	if (!enterSignIn(place, FIRST_LANE_CHECKS_PER_ACCOUNT)) error(429, { message: PASSWORDS_BUSY, stepUp: 'busy' });
 
-	// 4. Counted, with nothing awaited since step 1, and then compared.
+	// 4. Counted, by the attempt's weight, with nothing awaited since step 1,
+	// and then compared.
 	checksInFlight.add(session);
 	let matches: boolean;
 	try {
 		const counted = db
 			.update(sessions)
-			.set({ wrongPasswordCount: sql`${sessions.wrongPasswordCount} + 1` })
+			.set({ wrongPasswordCount: sql`${sessions.wrongPasswordCount} + ${weight}` })
 			.where(thisSession)
 			.returning({ count: sessions.wrongPasswordCount })
 			.get();
@@ -351,17 +364,17 @@ export async function checkCurrentProof(
 		if (!held) return { kind: 'not spent' };
 		let codesLeft: number | null = null;
 		if (code.kind === 'authenticator') {
-			const opened = factorSecret(held);
-			if (!opened.usable) return { kind: 'not spent' };
-			let step: number | null;
-			try {
-				// At the arrival's moment (CS2); the spend below stays the authority.
-				step = matchingStep(opened.secret, code.digits, at);
-			} finally {
-				opened.secret.fill(0);
+			// Every authenticator tried again, at the arrival's moment (CS2), its
+			// unusable ones not said again; the spend below stays the authority,
+			// and spends the matched factor's step alone (card 2772, D4).
+			const found = matchFactors(userId, code.digits, at, { said: false });
+			if (found.matched === null) {
+				// Wrong only when no factor matched at 2b either: a match lost since
+				// (spent by another request, its factor gone or not opening) fails
+				// closed, as does a transaction with no factor that opens.
+				return found.spent || found.tried === 0 || (arrived !== null && arrived.matched !== null) ? { kind: 'not spent' } : wrongCode(userId, now);
 			}
-			if (step === null) return wrongCode(userId, now);
-			if (spendStep(held.id, step) === 'not spent') return { kind: 'not spent' };
+			if (spendStep(found.matched.factorId, found.matched.step) === 'not spent') return { kind: 'not spent' };
 		} else {
 			if (spendRecoveryCode(userId, code.typed) !== 'spent') return wrongCode(userId, now);
 			codesLeft = db
@@ -818,6 +831,17 @@ export function endSessionsOf(userId: number): number {
 }
 
 /**
+ * End every session of an account but the one whose hash is `keep`, and
+ * answer how many: for the removal of an authenticator (card 2772, D2), whose
+ * holder has just proved the password and a code in the session kept. A
+ * session made with the authenticator removed, often a lost phone's, does not
+ * outlive it.
+ */
+export function endOtherSessions(userId: number, keep: Buffer): number {
+	return db.delete(sessions).where(and(eq(sessions.userId, userId), ne(sessions.tokenHash, keep))).run().changes;
+}
+
+/**
  * End every session a sign-out names (card 2775, the code review's CS3):
  * each value of the session cookie of the name in force for a request to
  * `url`, in a code's shape, read from the raw `Cookie` header and hashed
@@ -1188,8 +1212,8 @@ export function generateApiKey(): { plaintextKey: string; keyHash: string; keyPr
 /**
  * The API key a caller presented, if it is one: its row's id, which is what
  * the gate counts the key's requests against, and the user it acts as. Null
- * for a key that is not in `api_keys`, has expired, or belongs to a user who
- * no longer exists.
+ * for a key that is not in `api_keys`, has expired, has passed its deadline,
+ * or belongs to a user who no longer exists.
  *
  * It reads and writes nothing else. `last_used_at` is the gate's to touch,
  * with `markApiKeyUsed`, once the request is let in: a key that is over its
@@ -1209,18 +1233,48 @@ export function findApiKey(key: string): { id: number; user: SessionUser } | nul
 }
 
 /**
- * The account an API key's row acts as, if the key is open: it has not
- * expired, and its account still exists. Null if not. `findApiKey` and
- * `stillAuthenticated` both ask it, so that what counts as an open key is
- * decided in one place.
+ * Whether an API key's deadline has passed at `now`, a moment in the stored
+ * form: the deadline migration 0069 gave every key made before two-step
+ * sign-in, until its holder keeps it (card 2772). A key with no deadline has
+ * none to pass. A deadline that is set and names no moment has passed, as an
+ * unreadable expiry has: the safe side.
+ *
+ * The one rule, asked by `keyHolder` (so the gate and `stillAuthenticated`),
+ * by `keysAndWebhooksOf` in second-step.ts, and by the Keep route's guard and
+ * write, so that no two of them can disagree about a key (the plan review,
+ * S5).
+ */
+export function deadlinePassed(key: { deadlineAt: string | null }, now: Stamp): boolean {
+	if (key.deadlineAt === null) return false;
+	const deadline = toStamp(key.deadlineAt);
+	return deadline === null || deadline <= now;
+}
+
+/**
+ * Whether an API key has ended at `now`, a moment in the stored form: its
+ * expiry is at or before `now`, or is set and names no moment (the P6 review,
+ * S2), or its deadline has passed (`deadlinePassed`). A key that expires at
+ * `now` has ended, as one whose deadline is `now` has: the same boundary for
+ * both (card 2772). The one rule, asked by `keyHolder` (the gate and
+ * `stillAuthenticated`) and by `keysAndWebhooksOf` in second-step.ts, so that
+ * no list calls a key live that the gate refuses.
+ */
+export function keyEnded(key: { expiresAt: string | null; deadlineAt: string | null }, now: Stamp): boolean {
+	if (key.expiresAt !== null) {
+		const expires = toStamp(key.expiresAt);
+		if (expires === null || expires <= now) return true;
+	}
+	return deadlinePassed(key, now);
+}
+
+/**
+ * The account an API key's row acts as, if the key is open: it has not ended
+ * (`keyEnded`: its expiry and its deadline), and its account still exists.
+ * Null if not. `findApiKey` and `stillAuthenticated` both ask it, so that what
+ * counts as an open key is decided in one place.
  */
 function keyHolder(apiKey: typeof apiKeys.$inferSelect): User | null {
-	// An expiry is read as the moment it names, and one that names none has
-	// passed (the P6 review, S2), as a session's is in `findSession`.
-	if (apiKey.expiresAt !== null) {
-		const expires = toStamp(apiKey.expiresAt);
-		if (expires === null || expires < stamp()) return null;
-	}
+	if (keyEnded(apiKey, stamp())) return null;
 
 	return db.select()
 		.from(users)

@@ -380,8 +380,9 @@ describe('restoring as a working copy', () => {
 		// settings are gone, and no other setting is touched.
 		const settings = settingsIn(live);
 		// With the form signing key the restore makes (card 2750), and the
-		// backup's two_step_released_at, written by migration 0066 (card 2769).
-		expect(Object.keys(settings).sort()).toEqual(['app_url', 'backup_config', 'request_form_secret', 'theme', 'two_step_released_at']);
+		// backup's two_step_released_at, written by migration 0066 (card 2769),
+		// and its api_key_deadline, written by migration 0069 (card 2772).
+		expect(Object.keys(settings).sort()).toEqual(['api_key_deadline', 'app_url', 'backup_config', 'request_form_secret', 'theme', 'two_step_released_at']);
 		expect(JSON.parse(settings['backup_config'])).toEqual(BACKUP_CONFIG_OFF);
 		expect(settings['app_url']).toBe(APP_URL);
 		expect(settings['theme']).toBe('dark');
@@ -452,7 +453,7 @@ describe('restoring as a working copy', () => {
 			expect(result.errors).toEqual([]);
 			expect(result.outside).toEqual({ ...SWITCHED_OFF, backupScheduleWasOn: false, backupDestinations: 0 });
 			// It went on to the mail settings, and the restore is committed.
-			expect(Object.keys(settingsIn(live)).sort()).toEqual(['app_url', 'request_form_secret', 'theme', 'two_step_released_at']);
+			expect(Object.keys(settingsIn(live)).sort()).toEqual(['api_key_deadline', 'app_url', 'request_form_secret', 'theme', 'two_step_released_at']);
 			expect(everythingElseIn(live)).toEqual(everythingElseIn(backup));
 		}
 	);

@@ -322,6 +322,23 @@ export function codePause(count: number): number | 'locked' | null {
 	}
 }
 
+/**
+ * What a lane's count moving from `before` to `after` in one wrong code sets
+ * (card 2772, D4): a code tried against N authenticators counts N, so the
+ * count can step over 5, 10 and the rest. `'locked'` when `after` is 30 or
+ * more; otherwise the pause of the highest count in (before, after] that
+ * `codePause` gives one for; else null. With a step of 1 it is
+ * `codePause(after)`.
+ */
+export function pauseCrossed(before: number, after: number): number | 'locked' | null {
+	if (after >= CODES_LOCKED_AT) return 'locked';
+	for (let count = after; count > before; count--) {
+		const pause = codePause(count);
+		if (pause !== null) return pause;
+	}
+	return null;
+}
+
 // ─── Stolen-password signals (decision 15) ──────────────────────────────────
 
 /** Why the account's security banner is raised: a wrong code after the right password, or a verify challenge left unused. */
@@ -331,21 +348,32 @@ export type SignalReason = 'wrong-code' | 'unfinished-sign-in';
 const SIGNAL_EVERY_MS = 60 * 60 * 1000;
 
 /**
- * Raise the account's security banner for `reason`, unless one was raised in
- * the last hour (`security_banner_at`, read through `stamp_of`, and one that
- * names no moment is long ago): one conditional UPDATE. True when it was
- * raised, and so when the owner is to be mailed.
+ * Record a signal for `reason` on the account: `security_signal_last_at` set
+ * to `now` on every one, and the security banner raised unless one was raised
+ * in the last hour (`security_banner_at`, read through `stamp_of`, and one
+ * that names no moment is long ago). Two statements, in one transaction (a
+ * savepoint in the caller's). True when the banner was raised, and so when
+ * the owner is to be mailed.
+ *
+ * The latest moment is kept apart from the throttle (card 2772's code review,
+ * CS1): That was me clears the banner only while it is the moment the page
+ * showed, so a signal absorbed inside the hour, which moves neither the
+ * banner nor its time, still makes a dismiss sent before it refused.
  */
 export function raiseSignal(userId: number, reason: SignalReason, now: number): boolean {
 	registerStampFunctions(sqlite);
-	return (
-		sqlite
-			.prepare(
-				'UPDATE users SET security_banner = ?, security_banner_at = ? WHERE id = ? AND ' +
-					'(security_banner_at IS NULL OR stamp_of(security_banner_at) IS NULL OR stamp_of(security_banner_at) <= ?)'
-			)
-			.run(reason, stamp(new Date(now)), userId, stamp(new Date(now - SIGNAL_EVERY_MS))).changes === 1
-	);
+	const at = stamp(new Date(now));
+	return inTransaction(() => {
+		sqlite.prepare('UPDATE users SET security_signal_last_at = ? WHERE id = ?').run(at, userId);
+		return (
+			sqlite
+				.prepare(
+					'UPDATE users SET security_banner = ?, security_banner_at = ? WHERE id = ? AND ' +
+						'(security_banner_at IS NULL OR stamp_of(security_banner_at) IS NULL OR stamp_of(security_banner_at) <= ?)'
+				)
+				.run(reason, at, userId, stamp(new Date(now - SIGNAL_EVERY_MS))).changes === 1
+		);
+	});
 }
 
 // ─── The sweep (decision 15b) ───────────────────────────────────────────────

@@ -147,7 +147,8 @@ import { failingWrite } from './helpers/failing-write';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 import { handlersOf } from './helpers/source-scan';
-import { giveFactor, wrongCodeFor } from './helpers/two-step';
+import { codeFor, giveAuthenticator, giveFactor, wrongCodeFor } from './helpers/two-step';
+import { factorSecret, spendStep } from '$lib/server/mfa-store';
 import { stepAt } from '$lib/server/totp';
 
 beforeEach(() => {
@@ -180,14 +181,27 @@ const WRONG = 'not the password';
 const factorRow = (user: { id: number }) => db.select().from(mfaFactors).where(eq(mfaFactors.userId, user.id)).get()!;
 /** The last step its codes spent, or null for none. */
 const lastStepOf = (user: { id: number }) => factorRow(user).lastStep;
-/** A six-digit code that is wrong for the account's authenticator now. */
-const wrongCodeOf = (user: { id: number }) => wrongCodeFor(stepUpFactor(user).secret);
+/**
+ * A six-digit code that is wrong for every authenticator of the account now
+ * (card 2772, E25): with several, not another one's right code.
+ */
+const wrongCodeOf = (user: { id: number }) =>
+	wrongCodeFor(
+		db.select().from(mfaFactors).where(eq(mfaFactors.userId, user.id)).orderBy(mfaFactors.id).all().map((factor) => {
+			const opened = factorSecret(factor);
+			if (!opened.usable) throw new Error(`factor ${factor.id} does not open`);
+			return opened.secret;
+		})
+	);
 /** The account's recovery codes used so far. */
 const recoveryUsed = (user: { id: number }) =>
 	db.select({ usedAt: mfaRecoveryCodes.usedAt }).from(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, user.id)).all().filter((code) => code.usedAt !== null).length;
 
-/** The columns a right password with a wrong code writes on the account (card 2771, D6): its banner and its failed codes. */
-const SIGNAL = ['security_banner', 'security_banner_at', 'failed_codes_since_sign_in'];
+/**
+ * The columns a right password with a wrong code writes on the account (card 2771, D6): its banner, its failed
+ * codes, and the latest signal's moment (card 2772's code review, CS1).
+ */
+const SIGNAL = ['security_banner', 'security_banner_at', 'failed_codes_since_sign_in', 'security_signal_last_at'];
 /** A snapshot with `SIGNAL` taken out of `users`. */
 const withoutSignal = (snapshot: DbSnapshot): DbSnapshot => ({
 	...snapshot,
@@ -314,6 +328,10 @@ function aLinkHolder() {
 }
 /** The link holder a case's setup made. */
 let linked: ReturnType<typeof aLinkHolder> | undefined;
+/** The row a case's setup made for its path: a key to keep, an authenticator to remove (card 2772). */
+let madeFor: number | undefined;
+/** The time of the warning a case's setup raised, as the page shows it: a moment ago (card 2772). */
+const bannerShown = new Date(Date.now() - 60_000).toISOString().slice(0, 19).replace('T', ' ');
 
 /** The reasons of the `link_revoked` events recorded on a participant row, in order. */
 const linkRevokedReasons = (participantId: number) =>
@@ -324,7 +342,7 @@ const linkRevokedReasons = (participantId: number) =>
 // ─── 1 and 2. The list, and the routes that ask ──────────────────────────────
 
 describe('the list of what asks, pinned against the routes (cases 1 and 2)', () => {
-	it("is the thirty-two actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two, card 2773's one and card 2771's three, each with why it asks", () => {
+	it("is the thirty-seven actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two, card 2773's one, card 2771's three and card 2772's five, each with why it asks", () => {
 		expect(Object.keys(STEP_UP_ACTIONS).sort()).toEqual(
 			[
 				'POST /api/admin/reset',
@@ -364,7 +382,14 @@ describe('the list of what asks, pinned against the routes (cases 1 and 2)', () 
 				// Card 2771 (D7): the Account page's three forms.
 				'PUT /api/account/password',
 				'PUT /api/account/email',
-				'POST /api/account/api-keys'
+				'POST /api/account/api-keys',
+				// Card 2772 (D5): a key made before two-step sign-in kept past its deadline.
+				'POST /api/account/api-keys/[id]/keep',
+				// Card 2772 (D1-D3, D6): the Account page's two-step section, and the warning at its top.
+				'POST /api/account/two-step/authenticators',
+				'DELETE /api/account/two-step/authenticators/[id]',
+				'POST /api/account/two-step/recovery-codes',
+				'DELETE /api/account/two-step/banner'
 			].sort()
 		);
 		for (const [action, why] of Object.entries(STEP_UP_ACTIONS)) expect(why.trim().length, action).toBeGreaterThan(20);
@@ -449,12 +474,23 @@ describe('each admin action asks for the current password (case 3)', () => {
 		path: (s: Scene) => string;
 		/** What the action is sent with but the password: nothing unless said. */
 		body?: (s: Scene) => Record<string, unknown>;
+		/** What the right ones are sent with in place of `body`'s, read after the wrong ones: unless said, `body`'s. */
+		rightBody?: (s: Scene) => Record<string, unknown>;
 		/** The method, when it is not POST. */
 		method?: 'PUT' | 'DELETE';
 		/** The status of its success, when it is not 200. */
 		status?: number;
 		/** What the action needs that the scene does not have. */
-		setup?: () => void;
+		setup?: (s: Scene) => void;
+		/**
+		 * The session's count after the first wrong answer and after the second
+		 * (card 2772, E2): one for each authenticator the account holds, as a wrong
+		 * answer counts (D4). [1, 2] unless said. `signed out` for a second
+		 * that reaches three: with two authenticators each wrong answer counts
+		 * two, so the second signs the session out, and the right one is sent
+		 * from a session of its own.
+		 */
+		counts?: readonly [number, number | 'signed out'];
 		done: (res: ApiResult, s: Scene) => void;
 	}[] = [
 		{
@@ -726,14 +762,91 @@ describe('each admin action asks for the current password (case 3)', () => {
 				expect(res.body).toMatchObject({ name: 'my script', key: expect.any(String) });
 				expect(db.select({ name: apiKeys.name }).from(apiKeys).where(eq(apiKeys.userId, s.admin.id)).all()).toEqual([{ name: 'my script' }]);
 			}
+		},
+		// Card 2772 (D5): a key made before two-step sign-in kept past its deadline.
+		{
+			action: 'POST /api/account/api-keys/[id]/keep',
+			who: 'admin',
+			path: () => `/api/account/api-keys/${madeFor!}/keep`,
+			setup: (s) => {
+				makeApiKey(s.admin, 'Made before');
+				madeFor = db.select({ id: apiKeys.id }).from(apiKeys).where(eq(apiKeys.userId, s.admin.id)).get()!.id;
+				db.update(apiKeys).set({ deadlineAt: '2099-01-01 00:00:00' }).where(eq(apiKeys.id, madeFor)).run();
+			},
+			done: (res) => {
+				expect(res.body).toEqual({ success: true });
+				expect(db.select({ deadlineAt: apiKeys.deadlineAt }).from(apiKeys).where(eq(apiKeys.id, madeFor!)).get()).toEqual({ deadlineAt: null });
+			}
+		},
+		// Card 2772 (D1-D3, D6): the Account page's two-step section, and the warning at its top.
+		{
+			action: 'POST /api/account/two-step/authenticators',
+			who: 'admin',
+			path: () => '/api/account/two-step/authenticators',
+			body: () => ({ label: 'Spare phone' }),
+			done: (res, s) => {
+				expect(res.body).toMatchObject({ pendingId: expect.any(String), account: 'admin', issuer: 'DumpFire' });
+				expect(db.select().from(mfaFactors).where(eq(mfaFactors.userId, s.admin.id)).all()).toHaveLength(1);
+			}
+		},
+		{
+			action: 'DELETE /api/account/two-step/authenticators/[id]',
+			who: 'admin',
+			method: 'DELETE',
+			path: () => `/api/account/two-step/authenticators/${madeFor!}`,
+			// Two authenticators: the step-up's, and the one removed.
+			setup: (s) => {
+				stepUpFactor(s.admin);
+				madeFor = giveAuthenticator(s.admin, 'Old phone').factorId;
+			},
+			counts: [2, 'signed out'],
+			done: (res, s) => {
+				expect(res.body).toMatchObject({ success: true });
+				expect(db.select({ label: mfaFactors.label }).from(mfaFactors).where(eq(mfaFactors.userId, s.admin.id)).all()).toEqual([{ label: 'Authenticator' }]);
+			}
+		},
+		{
+			action: 'POST /api/account/two-step/recovery-codes',
+			who: 'admin',
+			path: () => '/api/account/two-step/recovery-codes',
+			done: (res, s) => {
+				expect(res.body.codes).toHaveLength(10);
+				expect(db.select().from(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, s.admin.id)).all()).toHaveLength(10);
+			}
+		},
+		{
+			action: 'DELETE /api/account/two-step/banner',
+			who: 'admin',
+			method: 'DELETE',
+			path: () => '/api/account/two-step/banner',
+			// Raised a moment ago, so that a wrong code within the hour does not raise a newer one.
+			body: () => ({ bannerAt: bannerShown }),
+			// That wrong code is a signal all the same, and moves the latest (card 2772's code review, CS1): the
+			// right ones are sent with it, as the page read again shows it.
+			rightBody: (s) => ({
+				bannerAt: db.select({ at: users.securitySignalLastAt }).from(users).where(eq(users.id, s.admin.id)).get()!.at
+			}),
+			setup: (s) => {
+				db.update(users).set({ securityBanner: 'wrong-code', securityBannerAt: bannerShown }).where(eq(users.id, s.admin.id)).run();
+			},
+			done: (res, s) => {
+				expect(res.body).toEqual({ success: true });
+				expect(
+					db
+						.select({ banner: users.securityBanner, at: users.securityBannerAt, latest: users.securitySignalLastAt })
+						.from(users)
+						.where(eq(users.id, s.admin.id))
+						.get()
+				).toEqual({ banner: null, at: null, latest: null });
+			}
 		}
 	];
 
 	it.each(ACTIONS)(
 		'$action: none is 400 and nothing is counted, nor a password with no code; a wrong password or a wrong code 403 in the same words, changing nothing but the count and the code unspent; the right ones its success',
-		async ({ who, path, body = () => ({}), method = 'POST' as const, status = 200, setup, done }) => {
+		async ({ who, path, body = () => ({}), rightBody, method = 'POST' as const, status = 200, setup, counts = [1, 2], done }) => {
 			const s = scene();
-			setup?.();
+			setup?.(s);
 			const confirmed = stepUp(s[who], body(s));
 			const token = tokenOf(confirmed);
 			const wrongCode = wrongCodeOf(s[who]);
@@ -749,19 +862,33 @@ describe('each admin action asks for the current password (case 3)', () => {
 
 			const wrong = await api(method, path(s), { ...confirmed, body: { ...body(s), currentPassword: WRONG, currentCode: confirmed.body.currentCode } });
 			expect(answer(wrong)).toEqual({ status: 403, body: WRONG_ONE });
-			expect(countOf(token)).toBe(1);
+			expect(countOf(token)).toBe(counts[0]);
 			expectUnchanged({ ...before, sessions: snapshotDb().sessions });
 
 			// Card 2771 (D4): the right password and a wrong code, answered as a wrong password is, counted, and the
 			// code not spent; nothing else changed but the account's signal (D6).
 			const wrongOne = await api(method, path(s), { ...confirmed, body: { ...body(s), currentPassword: FIXTURE_PASSWORD, currentCode: wrongCode } });
-			expect(answer(wrongOne)).toEqual({ status: 403, body: WRONG_ONE });
-			expect(countOf(token)).toBe(2);
+			if (counts[1] === 'signed out') {
+				expect(answer(wrongOne)).toEqual({ status: 403, body: SIGNED_OUT });
+				expect(countOf(token)).toBeUndefined();
+			} else {
+				expect(answer(wrongOne)).toEqual({ status: 403, body: WRONG_ONE });
+				expect(countOf(token)).toBe(counts[1]);
+			}
 			expect(lastStepOf(s[who])).toBeNull();
 			const now = snapshotDb();
 			expectUnchanged(withoutSignal({ ...before, sessions: now.sessions }), '', withoutSignal(now));
 
-			const right = await api(method, path(s), confirmed);
+			// A session signed out sends the right ones from a new one, as its holder signs in again.
+			const right = await api(
+				method,
+				path(s),
+				counts[1] === 'signed out'
+					? stepUp(s[who], body(s))
+					: rightBody
+						? { ...confirmed, body: { ...confirmed.body, ...rightBody(s) } }
+						: confirmed
+			);
 			expect(right.status, JSON.stringify(right.body)).toBe(status);
 			done(right, s);
 		}
@@ -1785,6 +1912,122 @@ describe('the code from the authenticator app, or a recovery code, beside the pa
 		expect(answer(res)).toEqual(refused);
 		expect(stub.compared).toBe(0);
 		expect(db.select({ count: sessions.wrongPasswordCount }).from(sessions).all()).toEqual([{ count: 0 }]);
+	});
+});
+
+// ─── Card 2772, S1: every authenticator tried, the weight taken first ────────
+
+describe('every authenticator of the account tried, each wrong answer counting one for each (card 2772, T7 to T9)', () => {
+	const PURGE = '/api/admin/purge-archived';
+	/** The factor with this id as stored. */
+	const factorOf = (id: number) => db.select().from(mfaFactors).where(eq(mfaFactors.id, id)).get()!;
+
+	it('T7. takes the second authenticator’s code while the first does not open: 200, the second’s step alone spent, counted 1 (one tried) during the compare, one ERROR line, the count 0 after', async () => {
+		const s = scene();
+		const first = giveFactor(s.admin);
+		const second = giveAuthenticator(s.admin);
+		db.update(mfaFactors).set({ keyId: 'another-key' }).where(eq(mfaFactors.id, first.factorId)).run();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const at = Date.now();
+		const confirmed = stepUp(s.admin, {}, FIXTURE_PASSWORD, codeFor(second.secret, at));
+		const token = tokenOf(confirmed);
+		const release = holdChecks();
+
+		const pending = api('POST', PURGE, confirmed);
+		await vi.waitFor(() => expect(stub.compared).toBe(1));
+		// Counted before the compare, by the authenticators tried: the one that opens.
+		expect(countOf(token)).toBe(1);
+		release();
+
+		expect(answer(await pending)).toEqual({ status: 200, body: { success: true, purged: 1 } });
+		expect(factorOf(second.factorId).lastStep).toBe(stepAt(at));
+		expect(factorOf(first.factorId)).toMatchObject({ lastStep: null, lastUsedAt: null });
+		// Said once, at step 2b: the transaction's second look does not say it again.
+		expect(linesStarting('ERROR', 'A second factor could not be opened')).toHaveLength(1);
+		expect(countOf(token)).toBe(0);
+	});
+
+	it('T8. answers the second authenticator’s code at its spent step 400 code-spent at step 2b: no compare, nothing counted', async () => {
+		const s = scene();
+		giveFactor(s.admin);
+		const second = giveAuthenticator(s.admin);
+		const at = Date.now();
+		expect(spendStep(second.factorId, stepAt(at))).toBe('spent');
+		const confirmed = stepUp(s.admin, {}, FIXTURE_PASSWORD, codeFor(second.secret, at));
+		const token = tokenOf(confirmed);
+		const before = snapshotDb();
+
+		const res = await api('POST', PURGE, confirmed);
+
+		expect(answer(res)).toEqual({ status: 400, body: { message: STEP_UP_CODE_SPENT, stepUp: 'code-spent' } });
+		expect(stub.compared).toBe(0);
+		expect(countOf(token)).toBe(0);
+		expectUnchanged(before);
+	});
+
+	it('T9. takes the weight before the compare, the same for either wrong part: with two authenticators each wrong answer counts 2 and a recovery code 1; with three one wrong answer signs the session out', async () => {
+		const s = scene();
+		const first = giveFactor(s.admin);
+		const second = giveAuthenticator(s.admin);
+		const code = () => codeFor(second.secret);
+		const wrongCode = () => wrongCodeFor([first.secret, second.secret]);
+
+		// A wrong password with an authenticator code: 2, counted before the compare.
+		const wrongPassword = stepUp(s.admin, {}, WRONG, code());
+		const release = holdChecks();
+		const pending = api('POST', PURGE, wrongPassword);
+		await vi.waitFor(() => expect(stub.compared).toBe(1));
+		expect(countOf(tokenOf(wrongPassword))).toBe(2);
+		release();
+		expect(answer(await pending)).toEqual({ status: 403, body: WRONG_ONE });
+		expect(countOf(tokenOf(wrongPassword))).toBe(2);
+
+		// A right password with a wrong code: the same 2, and the same answer, so neither says which part was wrong.
+		const wrongOne = stepUp(s.admin, {}, FIXTURE_PASSWORD, wrongCode());
+		expect(answer(await api('POST', PURGE, wrongOne))).toEqual({ status: 403, body: WRONG_ONE });
+		expect(countOf(tokenOf(wrongOne))).toBe(2);
+
+		// A recovery code with a wrong password: 1.
+		const byRecovery = stepUp(s.admin, {}, WRONG, first.recoveryCodes[0]);
+		expect(answer(await api('POST', PURGE, byRecovery))).toEqual({ status: 403, body: WRONG_ONE });
+		expect(countOf(tokenOf(byRecovery))).toBe(1);
+
+		// Three authenticators: one wrong answer, either part, signs the session out.
+		const third = giveAuthenticator(s.admin, 'New phone');
+		const signedOutBy = [
+			stepUp(s.admin, {}, WRONG, codeFor(third.secret)),
+			stepUp(s.admin, {}, FIXTURE_PASSWORD, wrongCodeFor([first.secret, second.secret, third.secret]))
+		];
+		for (const sent of signedOutBy) {
+			expect(answer(await api('POST', PURGE, sent))).toEqual({ status: 403, body: SIGNED_OUT });
+			expect(countOf(tokenOf(sent))).toBeUndefined();
+		}
+		expect(archivedLeft()).toBe(1);
+	});
+
+	it('T9c. with three authenticators, a second request from the session while a right step-up compares, its count held at 3, is 429 in-flight: no compare, nothing counted, nothing ended; the first then 200, the count 0 (code review CR1)', async () => {
+		const s = scene();
+		const first = giveFactor(s.admin);
+		giveAuthenticator(s.admin);
+		giveAuthenticator(s.admin, 'New phone');
+		const right = stepUp(s.admin, {}, FIXTURE_PASSWORD, codeFor(first.secret));
+		const token = tokenOf(right);
+		const release = holdChecks();
+
+		const held = api('POST', PURGE, right);
+		await vi.waitFor(() => expect(stub.compared).toBe(1));
+		// Counted by its weight before its compare: three authenticators tried.
+		expect(countOf(token)).toBe(3);
+
+		const second = await api('POST', PURGE, right);
+
+		expect(answer(second)).toEqual({ status: 429, body: { message: STEP_UP_IN_FLIGHT, stepUp: 'in-flight' } });
+		expect(stub.compared).toBe(1);
+		expect(countOf(token)).toBe(3);
+		release();
+		expect(answer(await held)).toEqual({ status: 200, body: { success: true, purged: 1 } });
+		expect(countOf(token)).toBe(0);
+		expect(archivedLeft()).toBe(0);
 	});
 });
 

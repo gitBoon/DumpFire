@@ -160,11 +160,15 @@ describe('timestampColumns', () => {
 		const found = timestampColumns(sqlite).map((c) => `${c.table}.${c.column}`);
 		// 39, the 23 moments of the decision records (migration 0061), when each change to the people
 		// directory was made (migration 0064, card 2681), and the 13 moments of two-step sign-in
-		// (migration 0065, card 2768): eight in its four tables and five on users.
-		expect(found).toHaveLength(76);
+		// (migration 0065, card 2768): eight in its four tables and five on users; and an API key's
+		// deadline and an account's latest security signal (migration 0069, card 2772 and its code
+		// review's CS1).
+		expect(found).toHaveLength(78);
 		for (const column of [
 			'activity_log.created_at',
 			'api_keys.expires_at',
+			'api_keys.deadline_at',
+			'users.security_signal_last_at',
 			'cards.completed_at',
 			'cards.first_completed_at',
 			'cards.archived_at',

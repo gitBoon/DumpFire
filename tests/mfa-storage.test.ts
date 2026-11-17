@@ -803,7 +803,9 @@ describe('backups and restores', () => {
 			'security_banner',
 			'security_banner_at',
 			// Migration 0066 (card 2769).
-			'mfa_password_enrol'
+			'mfa_password_enrol',
+			// Migration 0069 (card 2772's code review, CS1).
+			'security_signal_last_at'
 		]) {
 			backup.exec(`ALTER TABLE users DROP COLUMN ${column}`);
 		}
@@ -837,7 +839,9 @@ describe('backups and restores', () => {
 			failedCodesSinceSignIn: 1,
 			securityBanner: null,
 			securityBannerAt: null,
-			mfaPasswordEnrol: 1
+			mfaPasswordEnrol: 1,
+			// Migration 0069 (card 2772's code review, CS1): kept with the banner.
+			securitySignalLastAt: null
 		};
 		const now = {
 			lastSignInAt: '2026-11-04 18:00:00',
@@ -845,7 +849,8 @@ describe('backups and restores', () => {
 			failedCodesSinceSignIn: 3,
 			securityBanner: 'password used elsewhere',
 			securityBannerAt: '2026-11-04 18:05:00',
-			mfaPasswordEnrol: 1
+			mfaPasswordEnrol: 1,
+			securitySignalLastAt: '2026-11-04 18:40:00'
 		};
 		for (const id of [same.id, gone.id]) db.update(users).set({ ...guessing, ...then }).where(eq(users.id, id)).run();
 		const backup = backupNow();

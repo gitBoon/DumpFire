@@ -1,10 +1,11 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.70
+version: 1.71
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2772
   - notifications
   - email
   - smtp
@@ -20,7 +21,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the seven security notices, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day)"
+description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day)"
 ---
 
 # Notifications & Email System
@@ -619,7 +620,7 @@ down. The failure shows on the panel and in the log.
 | A Question About a Decision (card 2678) | The decision's author and decider, each who may answer now and is not the asker, at their account's address, when a participant asks a question: a participant's first always, then at most one about them in 24 hours. See [The Question Notices](#the-question-notices-card-2678) | `email_decisions` | `A question about {title}` |
 | Your Question Answered (card 2678) | The asker, when a person answers their question, or publishes or replaces an agent's draft of an answer: an account holder at their account's address, a link holder at the participant's snapshot address, with no link | `email_decisions` (an account holder; a link holder has no switch) | `Your question about {title} has been answered` |
 | Decision Closing Reminder (card 2685) | Each consulted participant who has not responded in the round, once a round, about a day before the closing time, at the snapshot address: an account holder with a link to the page, a link holder with no link. Sent by a scheduled job, only where the schedulers run. See [The Closing-Date Reminder](#the-closing-date-reminder-card-2685) | `email_decisions` (an account holder; a link holder has no switch) | `Reminder: your view is asked by {closes_at} UTC: {title}` |
-| Two-Step Sign-In Notices (card 2769) | The account's owner, at its address: when two-step sign-in is set up, a recovery code is used, code entry is paused or locked, every tenth wrong recovery code in a row, and at most once an hour a wrong code after the right password or a sign-in left unfinished. See [Two-Step Sign-In Notices](#two-step-sign-in-notices-card-2769) | — (cannot be switched off) | Seven, one for each notice |
+| Two-Step Sign-In Notices (card 2769) | The account's owner, at its address: when two-step sign-in is set up, a recovery code is used, code entry is paused or locked, every tenth wrong recovery code in a row, at most once an hour a wrong code after the right password or a sign-in left unfinished, and (card 2772) when an authenticator is added or removed or a new set of recovery codes is made on the Account page. See [Two-Step Sign-In Notices](#two-step-sign-in-notices-card-2769) | — (cannot be switched off) | Ten, one for each notice |
 | The Release's Set-Up Link (card 2769) | The account's owner, at its address, when they give the right password at an account that may set up on its password and a mail host is configured: at most one a day | — | `Set up two-step sign-in for your DumpFire account` |
 
 **The backup failure mail says which kind of run failed** (card 2413, 2026-10-22). Sent by
@@ -821,16 +822,27 @@ says what to do if it was not the owner. **None holds a code, a secret, a token 
 | Notice | Subject | When | Limit |
 |---|---|---|---|
 | `enrolled` | `Two-step sign-in was set up for your DumpFire account` | Every set-up confirmed. Lists the account's live API keys (name, made, last used) and its webhooks that are on (board, host, made), and asks the owner to revoke any they do not recognise | None |
-| `recovery-code-used` | `A recovery code was used to sign in to DumpFire` | A recovery code signs in. Says how many are left, and to make a new set at 3 or fewer | None |
-| `codes-paused` | `Code entry for your DumpFire account is paused` | A lane's count of wrong codes in a row reaches 5, 10, 15, 20 or 25. Says until when | None |
-| `codes-locked` | `Authenticator codes for your DumpFire account are locked` | A lane reaches 30 | None |
+| `recovery-code-used` | `A recovery code was used to sign in to DumpFire` | A recovery code signs in. Says how many are left, and at 3 or fewer "That is few: make a new set on your Account page as soon as you can." (card 2772 added "on your Account page", where a new set is now made) | None |
+| `codes-paused` | `Code entry for your DumpFire account is paused` | A lane's count of wrong codes in a row reaches or passes 5, 10, 15, 20 or 25. Says until when. Since card 2772 it gives no count: "Too many wrong authenticator codes in a row were entered for your DumpFire account, the last on …", since a lane counts one for each authenticator a code was tried against, which is not the number typed | None |
+| `codes-locked` | `Authenticator codes for your DumpFire account are locked` | A lane reaches 30 or more. With no count since card 2772, in the same words | None |
 | `recovery-codes-guessed` | `Wrong recovery codes were entered for your DumpFire account` | Every tenth wrong recovery code in a row | None |
 | `wrong-code` | `Your DumpFire password was used with a wrong code` | The first wrong code on a sign-in that had the right password | At most once an hour, with the next |
 | `unfinished-sign-in` | `A sign-in to your DumpFire account was not finished` | A sign-in that had the right password and was left until it expired, found by the sweep: at start-up, every five minutes, and whenever a challenge is issued | At most once an hour, with the one above |
+| `factor-added` (card 2772) | `An authenticator was added to your DumpFire account` | An authenticator added on the Account page. "An authenticator, *name* (added *date* UTC), was added to your DumpFire account on *time* from *address*. It now signs in to your account with your password, as your other authenticators do." | None |
+| `factor-removed` (card 2772) | `An authenticator was removed from your DumpFire account` | An authenticator removed on the Account page. Says every other browser was signed out, that it was confirmed with the password and a code ("if it was not you, both are known to someone else"), lists the account's live API keys and webhooks that are on, then "Revoke any you do not recognise. If the device was lost, also change your password." | None |
+| `codes-regenerated` (card 2772) | `New recovery codes were made for your DumpFire account` | A new set of recovery codes made on the Account page. "A new set of ten recovery codes was made for your DumpFire account on *time* from *address*. The old codes no longer work." | None |
 
-The last two are the stolen-password signals. Each sets the account's security banner, by a
+Card 2772's three are each confirmed with the password and a code (a step-up), and sent after
+the commit of the write they report. An authenticator's name is its holder's own text: it is
+escaped in the mail, with the date it was added beside it so that two of the same name, or a
+look-alike, are told apart (`SecurityNoticeDetail.authenticator`, `{ label, createdAt }`). Each
+ends, as the others do, with what to do if it was not the owner.
+
+The `wrong-code` and `unfinished-sign-in` notices are the stolen-password signals. Each sets the account's security banner, by a
 conditional `UPDATE` of `security_banner_at` that does nothing within an hour of the last, and
-mails only when it wrote. A set-up left unfinished sends nothing. A sign-in left at its second
+mails only when it wrote. Since card 2772 the banner is shown at the top of the Account page
+until its holder clears it there (**That was me**, with the password and a code) or changes
+their own password. A set-up left unfinished sends nothing. A sign-in left at its second
 step that a restore or the host's reset command ends is not mailed: each writes one `WARN` line
 instead.
 
@@ -2887,7 +2899,7 @@ What is not sent:
 |------|---------|
 | `src/lib/server/email.ts` | SMTP config, transporter creation; `deliverMail`, the one place a mail is sent from, with `mailProblem`, `maskMailText` and the in-memory `mailStatus()` (card 2196); `sendEmail`, `trySendEmail`, `sendEmailWithAttachment`, `sendTestEmail` |
 | `src/lib/server/invite-link.ts` | `inviteMailAnswer()`: what an invite route answers about its mail, the checks read again before its link is given, and the `WARN` line (card 2196) |
-| `src/lib/server/notifications.ts` | All email notification functions with preference filtering; `sendSecurityNotice()` and `sendReleaseLinkMail()` (card 2769), which no preference filters |
+| `src/lib/server/notifications.ts` | All email notification functions with preference filtering; `sendSecurityNotice()` and `sendReleaseLinkMail()` (card 2769), which no preference filters; card 2772's three notices of the Account page's two-step section |
 | `src/lib/notification-prefs.ts` | The one list of mail preferences: `MASTER_PREF`, `NOTIFICATION_PREFS`, `defaultPrefs()`. Read by the account page, the preferences route and the mail alike (card 2146) |
 | `src/lib/escape-html.ts` | `escapeHtml()`: the one function every mail puts its texts and links through |
 | `src/lib/report-recipients.ts` | `reportRecipients()` and `MAX_REPORT_RECIPIENTS`: the one reading of who a mailed report goes to, used by the email route, the schedule routes, the scheduler and the Reports page (card 2182) |

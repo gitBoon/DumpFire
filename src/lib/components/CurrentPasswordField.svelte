@@ -36,6 +36,13 @@
   in: both fields and the switch are off, and the page goes to sign in
   (`$lib/signed-out.ts`, the code review's F5).
 
+  With more than one authenticator on the account (the layout's
+  `authenticators`), a wrong answer counts one for each (card 2772, D4), so
+  in the authenticator mode a line under the switch says so before sending:
+  two wrong answers sign the browser out with two, one with three. In the
+  recovery-code mode a wrong answer counts one, and the line goes. A dialog
+  mounted with no page data reads 0, and shows none.
+
   The password and the code are the parent's, bound in `value` and `code`:
   held there alone, never in a toast or in storage, and cleared once sent
   (decision 12). `code` has no default, so a dialog that does not bind it is
@@ -43,6 +50,7 @@
 -->
 <script lang="ts">
 	import { flushSync } from 'svelte';
+	import { page } from '$app/state';
 	import { passwordKeptAfter, STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
 
 	let {
@@ -73,6 +81,7 @@
 	const fieldId = `${id}-current-password`;
 	const codeId = `${id}-current-code`;
 	const refusalId = `${id}-current-password-refusal`;
+	const weightId = `${id}-current-code-weight`;
 
 	let input = $state<HTMLInputElement>();
 	let codeInput = $state<HTMLInputElement>();
@@ -82,6 +91,37 @@
 
 	/** The session is signed out: nothing more can be sent from it. */
 	let ended = $derived(refusal === STEP_UP_SIGNED_OUT);
+
+	/**
+	 * The account's authenticators, from the layout's load (card 2772, D4): 0
+	 * where the page's data cannot be read, as for a dialog mounted alone.
+	 */
+	let authenticators = $derived.by(() => {
+		try {
+			const held = page.data?.authenticators;
+			return typeof held === 'number' ? held : 0;
+		} catch {
+			return 0;
+		}
+	});
+
+	/**
+	 * What one wrong answer costs here, said before sending (card 2772, D4,
+	 * E2): an authenticator code counts one for each authenticator, and three
+	 * sign the browser out. Null with one, and for a recovery code.
+	 */
+	let weightLine = $derived(
+		recovery || authenticators < 2
+			? null
+			: authenticators === 2
+				? 'You have 2 authenticators, so each wrong answer here counts twice: two wrong answers sign this browser out.'
+				: `You have ${authenticators} authenticators, so one wrong answer here signs this browser out.`
+	);
+
+	/** What the code field is described by: the weight line, and the refusal. */
+	let codeDescribedBy = $derived(
+		[weightLine === null ? null : weightId, refusal === null ? null : refusalId].filter((n) => n !== null).join(' ') || undefined
+	);
 
 	/** Put the focus in the password, as a dialog that opens on it does. */
 	export function focus() {
@@ -179,12 +219,15 @@
 		disabled={disabled || ended}
 		{readonly}
 		aria-invalid={refusal !== null ? 'true' : undefined}
-		aria-describedby={refusal !== null ? refusalId : undefined}
+		aria-describedby={codeDescribedBy}
 		onkeydown={codeKeydown}
 	/>
 	<button type="button" class="code-switch" onclick={switchMode} disabled={disabled || readonly || ended}>
 		{recovery ? 'Use a code from your authenticator app instead' : 'Use a recovery code instead'}
 	</button>
+	{#if weightLine !== null}
+		<p class="current-code-weight" id={weightId}>{weightLine}</p>
+	{/if}
 	{#if refusal !== null}
 		<p class="current-password-refusal" id={refusalId} role="alert">{refusal}</p>
 	{/if}
@@ -225,6 +268,14 @@
 	.code-switch:disabled {
 		opacity: 0.5;
 		cursor: default;
+	}
+
+	/* What a wrong answer costs with several authenticators (card 2772) */
+	.current-code-weight {
+		margin: 0;
+		color: var(--text-secondary);
+		font-size: 0.78rem;
+		line-height: 1.4;
 	}
 
 	/* The server's refusal of the password or code, said beside them */

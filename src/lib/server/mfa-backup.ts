@@ -62,7 +62,9 @@ const HISTORY = [
 	'failed_codes_since_sign_in',
 	'security_banner',
 	'security_banner_at',
-	'mfa_password_enrol'
+	'mfa_password_enrol',
+	// Migration 0069 (card 2772's code review, CS1): the latest signal's moment, kept with the banner it qualifies.
+	'security_signal_last_at'
 ] as const;
 
 /**

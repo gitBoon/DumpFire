@@ -350,8 +350,20 @@ describe('every mail in notifications.ts', () => {
 		// Card 2773 (decision 7): a notice only, with no link and no token.
 		{ name: 'sendMfaResetNotice', link: false, send: () => notifications.sendMfaResetNotice('holder@example.test', MARKER, MARKER, true) },
 		// Card 2769 (4.9): each security notice, with no link, naming the owner from the row and the address as received;
-		// the enrolled notice (slice 3) with the account's API keys and webhooks, each named as a row holds it.
-		...(['enrolled', 'recovery-code-used', 'codes-paused', 'codes-locked', 'recovery-codes-guessed', 'wrong-code', 'unfinished-sign-in'] as const).map(
+		// the enrolled notice (slice 3) with the account's API keys and webhooks, each named as a row holds it. Card
+		// 2772 (D8): the three of the Account page's two-step section, the authenticator's name its holder's own text.
+		...([
+			'enrolled',
+			'recovery-code-used',
+			'codes-paused',
+			'codes-locked',
+			'recovery-codes-guessed',
+			'wrong-code',
+			'unfinished-sign-in',
+			'factor-added',
+			'factor-removed',
+			'codes-regenerated'
+		] as const).map(
 			(notice) => ({
 				name: `sendSecurityNotice (${notice})`,
 				link: false,
@@ -364,7 +376,8 @@ describe('every mail in notifications.ts', () => {
 						until: new Date(),
 						codesLeft: 2,
 						apiKeys: [{ name: MARKER, createdAt: MARKER, lastUsedAt: MARKER }],
-						webhooks: [{ board: MARKER, host: MARKER, createdAt: MARKER }]
+						webhooks: [{ board: MARKER, host: MARKER, createdAt: MARKER }],
+						authenticator: { label: MARKER, createdAt: MARKER }
 					});
 				}
 			})

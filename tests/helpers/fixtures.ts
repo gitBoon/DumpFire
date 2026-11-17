@@ -79,6 +79,7 @@ import { ensureFormSecret } from '$lib/server/request-tokens';
 import { CONFIRMATION_HEADER, STEP_UP_FIELD, forgetImportConfirmations, issueImportConfirmation } from '$lib/server/step-up';
 import { STEP_UP_CODE_FIELD } from '$lib/step-up-words';
 import { addTotpFactor, factorSecret } from '$lib/server/mfa-store';
+import { forgetPendingAuthenticators } from '$lib/server/pending-authenticators';
 import { hotp, newTotpSecret, stepAt } from '$lib/server/totp';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { resetMailStatus } from '$lib/server/email';
@@ -152,6 +153,9 @@ export function resetDb(): void {
 	// under way, which a restart ends too (card 2701).
 	forgetImportConfirmations();
 	forgetChecksInFlight();
+	// And the authenticators being added on the Account page, held in memory
+	// as the confirmations are (card 2772, D1).
+	forgetPendingAuthenticators();
 	// And which accounts' unreadable notification preferences were warned of (card 2724).
 	forgetUnreadablePrefsWarnings();
 	// And the form signing key, which a start makes, so that no check made by
@@ -238,8 +242,8 @@ export function codeFor(secret: Buffer, at: number = Date.now()): string {
 
 /**
  * The account's authenticator a step-up's code is made from (card 2771, plan
- * D10): its row id and secret. The first factor the account holds, as the
- * check reads it, is reused: one a test gave (`giveFactor`) has its secret
+ * D10): its row id and secret. The first factor the account holds, by id, is
+ * reused: one a test gave (`giveFactor`) has its secret
  * read through `factorSecret`, and a factor that does not open is a throw
  * naming the test. With none, one is written with `addTotpFactor` under the
  * test process's key: no AUTH line, no mail and no recovery codes, but the
@@ -247,7 +251,8 @@ export function codeFor(secret: Buffer, at: number = Date.now()): string {
  * `settings.mfa_key_check` row.
  */
 export function stepUpFactor(user: Pick<SessionUser, 'id'>): { factorId: number; secret: Buffer } {
-	const factor = db.select().from(mfaFactors).where(eq(mfaFactors.userId, user.id)).get();
+	// The lowest id, so that a test with several authenticators reads the same one each time (card 2772, F7).
+	const factor = db.select().from(mfaFactors).where(eq(mfaFactors.userId, user.id)).orderBy(mfaFactors.id).get();
 	if (factor === undefined) {
 		const secret = newTotpSecret();
 		const { id } = addTotpFactor(user.id, 'Authenticator', secret);

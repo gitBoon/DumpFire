@@ -10,7 +10,14 @@
 	 * its fields before it sends; a refusal of the password or the code is
 	 * said in the field's alert, and puts the password back only for the
 	 * refusals decided before it was compared (`passwordKeptAfter`). Any other
-	 * refusal is said in the form's line, as before.
+	 * refusal is said in the form's line, as before. Keeping a key made before
+	 * two-step sign-in past its deadline asks for the same, in `ConfirmModal`
+	 * (card 2772).
+	 *
+	 * Card 2772 (D6, D9): the warning that someone entered the password, at the
+	 * top of the page, with Change my password and That was me (`ConfirmModal`,
+	 * which clears only the warning shown); and the Two-step sign-in section,
+	 * after Change Password (`TwoStepSection`).
 	 */
 	import type { PageData } from './$types';
 	import { theme, themeIcon } from '$lib/stores/theme';
@@ -18,8 +25,11 @@
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import TwoStepSection from '$lib/components/account/TwoStepSection.svelte';
 	import { answerBody, failureMessage } from '$lib/api';
 	import { passwordKeptAfter, proofTyped, stepUpRefusal } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
 	import { MASTER_PREF, NOTIFICATION_PREFS, type NotificationPrefKey } from '$lib/notification-prefs';
 	import { onMount } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
@@ -292,6 +302,11 @@
 		lastUsedAt: string | null;
 		expiresAt: string | null;
 		createdAt: string;
+		/**
+		 * The deadline of a key made before two-step sign-in, until it is kept
+		 * (migration 0069, card 2772); null when it has none.
+		 */
+		deadlineAt: string | null;
 	};
 
 	let apiKeys = $state<ApiKeyInfo[]>([]);
@@ -409,6 +424,100 @@
 		}
 	}
 
+	/** The key whose Keep this key dialog is open, or null (card 2772). */
+	let keepingKey = $state<ApiKeyInfo | null>(null);
+
+	/**
+	 * Keep this key, confirmed: the key's deadline cleared, with the password
+	 * and a code (card 2772, D5). A refusal of the password or the code is
+	 * given back for the dialog to show; anything else closes it, a refusal
+	 * said in the key panel's line. The list is read again after a success
+	 * and after any refusal that is not of the password or the code, so the
+	 * row shows the key as it now is.
+	 */
+	async function keepKey(id: number, proof: StepUpProof): Promise<string | void> {
+		apiKeyError = '';
+		try {
+			const res = await fetch(`/api/account/api-keys/${id}/keep`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode })
+			});
+			if (res.ok) {
+				keepingKey = null;
+			} else {
+				// A refusal of the password or the code, in the dialog; any other in the panel's line.
+				const refusal = await stepUpRefusal(res);
+				if (refusal !== null) return refusal;
+				keepingKey = null;
+				apiKeyError = await failureMessage(res, 'The key was not kept.');
+			}
+			// Read again after a success and after any other refusal (code review CR4):
+			// the key may have been revoked, kept elsewhere, or passed its deadline, and
+			// its row shows it as the server has it, never as the page guessed.
+			await loadApiKeys();
+		} catch {
+			keepingKey = null;
+			apiKeyError = 'No answer from the server. Reload the page to see whether the key was kept.';
+		}
+	}
+
+	// The warning at the top of the page (card 2772, D6)
+	/** The That was me dialog is open. */
+	let dismissing = $state(false);
+	/** Why the warning was not cleared, under it. */
+	let bannerError = $state('');
+	/** The password form's field, which Change my password moves the focus to. */
+	let passwordField = $state<ReturnType<typeof CurrentPasswordField>>();
+
+	/** Change my password: the focus in the password form, which is scrolled to. */
+	function goToPasswordForm() {
+		const field = passwordField?.element();
+		field?.scrollIntoView({ block: 'center' });
+		field?.focus();
+	}
+
+	/**
+	 * That was me, confirmed with the password and a code: the warning cleared,
+	 * only if it is still the one shown (`bannerAt`, the latest signal's moment
+	 * as the page showed it: S3, CS1). A refusal of the
+	 * password or the code goes back to the dialog; any other, a newer warning
+	 * among them, closes it and is said under the warning.
+	 */
+	async function dismissBanner(bannerAt: string, proof: StepUpProof): Promise<string | void> {
+		bannerError = '';
+		try {
+			const res = await fetch('/api/account/two-step/banner', {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ bannerAt, currentPassword: proof.currentPassword, currentCode: proof.currentCode })
+			});
+			if (res.ok) {
+				dismissing = false;
+				await invalidateAll();
+			} else {
+				const refusal = await stepUpRefusal(res);
+				if (refusal !== null) return refusal;
+				dismissing = false;
+				bannerError = await failureMessage(res, 'The warning was not cleared.');
+				// A newer warning than the one shown: read again, so that it is the one shown.
+				if (res.status === 409) await invalidateAll();
+			}
+		} catch {
+			dismissing = false;
+			bannerError = 'No answer from the server. Reload the page to see whether the warning was cleared.';
+		}
+	}
+
+	/**
+	 * Whether a key's deadline has passed, as the server decides it
+	 * (`deadlinePassed`): one that cannot be read has passed.
+	 */
+	function pastDeadline(deadlineAt: string): boolean {
+		const at = parseStamp(deadlineAt);
+		return at === null || at.getTime() <= Date.now();
+	}
+
 	// A key's times come in the stored form, `YYYY-MM-DD HH:MM:SS` in UTC, which
 	// `new Date()` read as local time (card 2095): read as UTC.
 	function formatDate(dateStr: string | null): string {
@@ -416,6 +525,13 @@
 		const d = parseStamp(dateStr);
 		if (!d) return dateStr;
 		return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+	}
+
+	/** A key's expiry or deadline with its time and zone, `2026-11-17 09:12 UTC` (card 2772, E21). */
+	function formatMoment(dateStr: string): string {
+		const d = parseStamp(dateStr);
+		if (!d) return dateStr;
+		return `${d.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 	}
 
 	onMount(async () => {
@@ -502,6 +618,25 @@
 	</header>
 
 	<main class="account-content">
+		<!-- The warning that someone entered the password, at the top until it is cleared (card 2772, D6, E16). -->
+		{#if data.twoStep.banner}
+			{@const banner = data.twoStep.banner}
+			<section class="account-card security-banner" aria-labelledby="security-banner-heading">
+				<h2 id="security-banner-heading">⚠️ Was this you?</h2>
+				<p class="security-banner-words">
+					{banner.words}{#if banner.at} ({formatMoment(banner.at)}){/if}{#if banner.latestAt && banner.latestAt !== banner.at} It happened again, most recently {formatMoment(banner.latestAt)}.{/if}
+				</p>
+				<p class="security-banner-words">If that was not you, change your password now.</p>
+				{#if bannerError}
+					<div class="password-msg error" role="alert">{bannerError}</div>
+				{/if}
+				<div class="security-banner-actions">
+					<button class="btn-primary" onclick={goToPasswordForm}>Change my password</button>
+					<button class="btn-ghost" onclick={() => (dismissing = true)}>That was me</button>
+				</div>
+			</section>
+		{/if}
+
 		<!-- Profile section -->
 		<section class="account-card glass fade-in-up">
 			<h2>👤 Profile</h2>
@@ -594,6 +729,7 @@
 					bind:code={passwordCode}
 					refusal={passwordRefusal}
 					readonly={changingPassword}
+					bind:this={passwordField}
 				/>
 
 				<div class="form-group">
@@ -656,6 +792,9 @@
 				</div>
 			</div>
 		</section>
+
+		<!-- Two-step sign-in (card 2772, D9) -->
+		<TwoStepSection twoStep={data.twoStep} />
 
 		<!-- Email Notifications section -->
 		<section class="account-card glass fade-in-up" style="animation-delay: 0.3s">
@@ -778,7 +917,15 @@
 								<span class="apikey-meta">
 									Created {formatDate(key.createdAt)}
 									 · Last used: {formatDate(key.lastUsedAt)}
+									 · {key.expiresAt ? `Expires ${formatMoment(key.expiresAt)}` : 'No expiry'}
 								</span>
+								<!-- A key made before two-step sign-in (card 2772): its deadline, and Keep while it has not passed. -->
+								{#if key.deadlineAt !== null && pastDeadline(key.deadlineAt)}
+									<span class="apikey-deadline passed">Stopped working on {formatMoment(key.deadlineAt)}. Generate a new key.</span>
+								{:else if key.deadlineAt !== null}
+									<span class="apikey-deadline">⚠️ Made before two-step sign-in: stops working on {formatMoment(key.deadlineAt)} unless you keep it</span>
+									<button class="btn-ghost-sm apikey-keep" onclick={() => (keepingKey = key)}>Keep this key</button>
+								{/if}
 							</div>
 							{#if confirmDeleteId === key.id}
 								<div class="apikey-confirm-delete">
@@ -807,6 +954,35 @@
 		</section>
 	</main>
 </div>
+
+<!-- Keep this key asks for the password and a code (card 2772). Outside the page's cards: fixed to the window. -->
+{#if keepingKey}
+	{@const key = keepingKey}
+	<ConfirmModal
+		title="Keep this key"
+		message={`Keep “${key.name}” past its deadline? It goes on working as it is, with no deadline. ${ASKS_FOR_PASSWORD}`}
+		confirmText="Keep"
+		confirmDanger={false}
+		askPassword
+		onConfirm={(proof) => keepKey(key.id, proof)}
+		onCancel={() => (keepingKey = null)}
+	/>
+{/if}
+
+<!-- That was me asks for the password and a code, and clears only the warning shown (card 2772, D6). -->
+<!-- It sends the latest signal the page shows, not the banner's first: one that came after it is never cleared unseen (CS1). -->
+{#if dismissing && data.twoStep.banner?.latestAt}
+	{@const bannerAt = data.twoStep.banner.latestAt}
+	<ConfirmModal
+		title="That was me"
+		message={`Clear this warning? Do this only if it was you who entered your password. ${ASKS_FOR_PASSWORD}`}
+		confirmText="Clear the warning"
+		confirmDanger={false}
+		askPassword
+		onConfirm={(proof) => dismissBanner(bannerAt, proof)}
+		onCancel={() => (dismissing = false)}
+	/>
+{/if}
 
 <style>
 	.account-page { min-height: 100vh; }
@@ -842,6 +1018,15 @@
 		padding-bottom: var(--space-md);
 		border-bottom: 1px solid var(--glass-border);
 	}
+
+	/* The warning at the top of the page (card 2772) */
+	.security-banner {
+		background: rgba(245, 158, 11, 0.08);
+		border: 1px solid rgba(245, 158, 11, 0.35);
+	}
+	.security-banner h2 { margin-bottom: var(--space-md); }
+	.security-banner-words { font-size: 0.88rem; color: var(--text-primary); margin: 0 0 var(--space-sm); }
+	.security-banner-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-top: var(--space-md); }
 
 	/* Profile */
 	.profile-info { display: flex; gap: var(--space-xl); align-items: flex-start; }
@@ -1016,6 +1201,11 @@
 	.apikey-meta {
 		font-size: 0.68rem; color: var(--text-tertiary);
 	}
+	.apikey-deadline {
+		font-size: 0.68rem; color: var(--accent-amber);
+	}
+	.apikey-deadline.passed { color: var(--accent-rose); }
+	.apikey-keep { width: fit-content; margin-top: 2px; }
 
 	.apikey-confirm-delete {
 		display: flex; align-items: center; gap: var(--space-xs);

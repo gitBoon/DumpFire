@@ -527,7 +527,8 @@ describe('pageLoad(), the caller for page loads', () => {
 		expect(page.type).toBe('data');
 		expect(page.type === 'data' && page.data.board.name).toBe('Read by its page');
 
-		expect(await pageLoad('/', { user: owner, layout: true })).toEqual({ type: 'data', data: { user: owner } });
+		// The layout's count of the caller's authenticators too (card 2772, D10): none here.
+		expect(await pageLoad('/', { user: owner, layout: true })).toEqual({ type: 'data', data: { user: owner, authenticators: 0 } });
 	});
 
 	// It imports two pages' loads, and on a cold cache that once took longer

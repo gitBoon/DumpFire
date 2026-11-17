@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.40
+version: 1.41
 status: As-Built
-date: 2026-11-16
+date: 2026-11-17
 tags:
+  - api-key-deadline
+  - migration-0069
   - backup
   - reports
   - pdf
@@ -531,6 +533,37 @@ sequenceDiagram
   that was held as mailed replaced by 32 random bytes, as migration 0068 does, so no token as
   mailed reaches the running database. See
   [Invite Tokens Stored as Hashes](authentication-security.md#invite-tokens-stored-as-hashes-card-2849).
+- **A restore of a backup made before migration 0069** (card 2772), whose `api_keys` has no
+  `deadline_at`, gives its API keys this server's deadline, as 0069 gave the keys here. The
+  server's `api_key_deadline` setting is read before the restore clears `settings`; after the
+  copy, inside the restore's transaction, every key of the backup with no expiry, or one later
+  than the deadline (read as the moment it names, `stamp_of`, since an older backup may hold
+  another form), is given it, and the setting is written back where the backup held none. With
+  no readable deadline on this server, the restore's own moment is used and written as the
+  setting, so such keys end at once: the safe side. A backup made since 0069 is restored as it
+  is, so a key kept there stays kept and a key given a deadline there keeps it. The count is
+  `apiKeyDeadlines` in the restore's result; the import's answer carries it with
+  `apiKeyDeadline`, the date as `YYYY-MM-DD HH:MM UTC`, and adds the sentence "*n* API key(s)
+  from before two-step sign-in were given this server's deadline, *date time* UTC." when it is
+  above 0 (also when the restore committed but switching foreign keys back on failed). The admin
+  page's restore report says "*n* API key(s) from before two-step sign-in was/were given this
+  server's deadline, *date*: each stops working then unless its holder keeps it on their Account
+  page." See [Keys Made Before Two-Step Sign-In: the Deadline](authentication-security.md#keys-made-before-two-step-sign-in-the-deadline-card-2772).
+
+```mermaid
+flowchart TD
+    R["Restore of a backup"] --> Read["Read this server's api_key_deadline<br/>before settings is cleared"]
+    Read --> Copy["Copy the backup's rows"]
+    Copy --> Q{"The backup's api_keys<br/>has deadline_at?"}
+    Q -->|"yes: made since 0069"| Keep["Restored as it is:<br/>kept keys stay kept, apiKeyDeadlines 0"]
+    Q -->|"no: made before 0069"| D{"A readable deadline<br/>on this server?"}
+    D -->|"yes"| Give["deadline_at = it on every key with no expiry<br/>or stamp_of(expires_at) later than it"]
+    D -->|"no"| Now["deadline_at = the restore's own moment:<br/>such keys end at once"]
+    Give --> S["Setting written back where the backup held none"]
+    Now --> S
+    S --> Ans["apiKeyDeadlines and the sentence<br/>in the import's answer and the report"]
+```
+
 - **The key remembered browsers are signed with is not in the file** (the row
   `known_browser_secret` of `settings`, card 2194), and a restore never brings it in from a
   backup of any age (`rowsToRestore()` in `src/lib/server/db/restore.ts`). Whoever held it

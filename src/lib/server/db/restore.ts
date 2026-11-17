@@ -17,8 +17,8 @@ import { dev } from '$app/environment';
 import { schedulerSetting } from '../schedulers';
 import { putBackFromTrash, type UploadFile } from '../uploads';
 import { BOARDS_UNDER_DELETED_GROUPINGS, defaultsForNull, orDefault, runBackfills, type Backfill } from './migrate';
-import { normaliseTimestamps, unreadableList, type TimestampNormalisation } from './timestamps';
-import { stamp } from '$lib/timestamps';
+import { normaliseTimestamps, registerStampFunctions, unreadableList, type TimestampNormalisation } from './timestamps';
+import { stamp, toStamp } from '$lib/timestamps';
 import { KNOWN_BROWSER_SECRET_KEY } from '../known-browsers';
 import { REQUEST_FORM_SECRET_KEY, writeFormSecret } from '../request-tokens';
 import {
@@ -117,6 +117,13 @@ export type RestoreResult = {
 	 */
 	requestLinksReplaced: number;
 	/**
+	 * API keys given this server's deadline inside the restore's transaction,
+	 * for a backup made before migration 0069 (card 2772, D5): each of its keys
+	 * with no expiry, or one later than the deadline. 0 for a backup made
+	 * since, which is restored as it is.
+	 */
+	apiKeyDeadlines: number;
+	/**
 	 * Personal decision links emptied inside the restore's transaction: every
 	 * `decision_participants.link_token_hash` there is now, drafts' included
 	 * (card 2675, decision 13). Each one on a decision that is not a draft is
@@ -158,7 +165,10 @@ export type RestoreResult = {
 };
 
 /** What a restore that committed had done, for a `RestoreError` thrown after the commit. */
-export type CommittedRestore = Pick<RestoreResult, 'requestLinksReplaced' | 'decisionLinksCleared' | 'secrets' | 'sealVerified' | 'unsealed' | 'mfa'>;
+export type CommittedRestore = Pick<
+	RestoreResult,
+	'requestLinksReplaced' | 'apiKeyDeadlines' | 'decisionLinksCleared' | 'secrets' | 'sealVerified' | 'unsealed' | 'mfa'
+>;
 
 /**
  * A restore that went wrong in a way the caller has to be told about, as
@@ -246,6 +256,34 @@ const RECORD_DECISION_LINKS_ENDED = `
 /** Every personal decision link emptied, drafts' included (decision 13). */
 const CLEAR_DECISION_LINKS =
 	'UPDATE decision_participants SET link_token_hash = NULL, link_issued_at = NULL WHERE link_token_hash IS NOT NULL';
+
+/** The setting migration 0069 writes: the deadline of every API key made before two-step sign-in (card 2772). */
+const API_KEY_DEADLINE_SETTING = 'api_key_deadline';
+
+/**
+ * Migration 0069's `UPDATE`, repeated for a backup made before it (card 2772,
+ * D5, S11): every key with no expiry, or one later than the deadline, given
+ * the deadline (`@deadline`, bound). The expiry is compared as the moment it
+ * names (`stamp_of`, `registerStampFunctions`), since such a backup can hold
+ * one in another form; one that names none is left, as it has ended already.
+ */
+const GIVE_API_KEY_DEADLINES =
+	'UPDATE api_keys SET deadline_at = @deadline WHERE expires_at IS NULL OR stamp_of(expires_at) > @deadline';
+
+/** 0069's setting, kept where a backup made before it held none (card 2772). */
+const KEEP_API_KEY_DEADLINE_SETTING =
+	`INSERT INTO settings (key, value) VALUES ('${API_KEY_DEADLINE_SETTING}', @deadline) ON CONFLICT (key) DO NOTHING`;
+
+/**
+ * This server's API key deadline (migration 0069), in the stored form, read
+ * before a restore clears `settings`; null where it has none, or one that
+ * names no moment.
+ */
+function apiKeyDeadlineHere(live: Database.Database): string | null {
+	if (!columnNamesOf(live, 'settings').includes('value')) return null;
+	const row = live.prepare('SELECT value FROM settings WHERE key = ?').get(API_KEY_DEADLINE_SETTING) as { value: unknown } | undefined;
+	return row ? toStamp(row.value) : null;
+}
 
 function messageOf(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
@@ -732,6 +770,15 @@ export function defaultOutside(
  *   `UPDATE` is repeated after the copy inside the transaction as a backstop
  *   (`REPLACE_PLAIN_USED_INVITES`, in invites.ts). Rows already in hash form
  *   are left.
+ * - A backup taken before migration 0069 (card 2772) has no
+ *   `api_keys.deadline_at`. This server's `api_key_deadline` is read before
+ *   the clear, and after the copy, inside the transaction, 0069's `UPDATE` is
+ *   repeated with it: every key with no expiry, or one later than it (read as
+ *   the moment it names, `stamp_of`), is given it, and the setting is written
+ *   back where the backup held none. Where this server has no deadline that
+ *   can be read, the restore's own moment is used, so such keys end at once.
+ *   The count is `apiKeyDeadlines`. A backup taken since is restored as it
+ *   is, so a key kept there stays kept.
  *
  * A row that still cannot be copied is left out and reported in `errors`, and
  * the restore goes on, on one condition: nothing depends on that row. Before
@@ -869,6 +916,7 @@ function restoreInOneSnapshot(
 	const defaulted: RestoreResult['defaulted'] = [];
 	let outside: OutsideSwitchedOff | null = null;
 	let requestLinksReplaced = 0;
+	let apiKeyDeadlines = 0;
 	let decisionLinksCleared = 0;
 	let secrets: SecretsAccount = {
 		kept: { mailPassword: false, destinations: [], webhooks: [] },
@@ -950,6 +998,9 @@ function restoreInOneSnapshot(
 			// And its second factors, recovery codes, accounts and key check
 			// (card 2768), for restoreMfaRows below.
 			const mfaHere = readMfaHere(live);
+			// And its API key deadline (migration 0069, card 2772), for a backup
+			// made before it: see above. Null where there is none that can be read.
+			const deadlineHere = apiKeyDeadlineHere(live);
 			// The sign-ins left at their second step, which the clear below
 			// ends (card 2769, CS1): said once the restore is committed. No
 			// notice is mailed, since the accounts are the backup's from here.
@@ -1086,6 +1137,26 @@ function restoreInOneSnapshot(
 			// brings in no token a backup held.
 			if (tables.includes('invite_tokens')) live.prepare(REPLACE_PLAIN_USED_INVITES).run();
 
+			// A backup made before 0069 (its api_keys has no deadline_at): every
+			// key of it with no expiry, or one later than the deadline, given
+			// this server's deadline, or the restore's own moment where this
+			// server has none that can be read, so such keys end at once; and the
+			// setting written back where the backup held none (card 2772, D5,
+			// S11). Not caught, so that a restore that could not do it is rolled
+			// back, and brings in no key a backup held without its deadline. A
+			// backup made since is restored as it is: a key kept there stays kept.
+			if (
+				inBackup('api_keys') &&
+				!columnNamesOf(backup, 'api_keys').includes('deadline_at') &&
+				tables.includes('api_keys') &&
+				columnNamesOf(live, 'api_keys').includes('deadline_at')
+			) {
+				const deadline = deadlineHere ?? stamp();
+				registerStampFunctions(live);
+				apiKeyDeadlines = live.prepare(GIVE_API_KEY_DEADLINES).run({ deadline }).changes;
+				if (tables.includes('settings')) live.prepare(KEEP_API_KEY_DEADLINE_SETTING).run({ deadline });
+			}
+
 			// Every personal decision link ended, and recorded on its decision
 			// (card 2675, decision 13): see above. Not caught, so that a restore
 			// that could not end them is rolled back, and brings in no link a
@@ -1204,7 +1275,7 @@ function restoreInOneSnapshot(
 			throw new RestoreError(
 				'The backup was restored and committed, but foreign keys could not be switched back on. Restart the ' +
 					'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it.',
-				{ errors, committed: true, cause, done: { requestLinksReplaced, decisionLinksCleared, secrets, sealVerified, unsealed, mfa } }
+				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, mfa } }
 			);
 		}
 		throw new RestoreError(
@@ -1273,5 +1344,5 @@ function restoreInOneSnapshot(
 		);
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, decisionLinksCleared, secrets, sealVerified, unsealed, mfa };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, mfa };
 }

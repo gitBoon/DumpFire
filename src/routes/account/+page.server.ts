@@ -2,6 +2,7 @@ import type { PageServerLoad } from './$types';
 import { and, count, eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { webhooks } from '$lib/server/db/schema';
+import { twoStepView } from '$lib/server/account-two-step';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const user = locals.user!;
@@ -16,6 +17,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.get();
 	return {
 		user,
-		webhooks: hooks?.count ?? 0
+		webhooks: hooks?.count ?? 0,
+		// The Two-step sign-in section and the warning at the top of the page
+		// (card 2772, D10): never a secret, a recovery code or a pending id.
+		twoStep: twoStepView(user.id)
 	};
 };

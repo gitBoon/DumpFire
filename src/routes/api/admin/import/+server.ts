@@ -48,6 +48,11 @@
  * holds, and the key the request form signs with is not brought in. The
  * answer and the log line say how many links were replaced.
  *
+ * A backup made before migration 0069 has its API keys given this server's
+ * deadline (card 2772, D5): the answer, its `apiKeyDeadlines` (and
+ * `apiKeyDeadline`, the date) and the log line say how many, and the date,
+ * when there were any.
+ *
  * Second factors and recovery codes are restored by their own rules (card
  * 2768; `restoreMfaRows`). Once two-step sign-in is in use, every account
  * left with no factor is named in one sentence, in the answer and its
@@ -115,6 +120,7 @@ import {
 	type SecretsAccount
 } from '$lib/server/backup-secrets';
 import { mfaWithoutFactorSentence } from '$lib/server/mfa-backup';
+import { toStamp } from '$lib/timestamps';
 
 const log = createLogger('IMPORT');
 
@@ -146,6 +152,25 @@ function requestLinksSentence(count: number): string {
 		`${count} request link(s) replaced: a link mailed before this restore no longer works, and its requester ` +
 		'can have a new one sent from the page it opens.'
 	);
+}
+
+/**
+ * The API key deadline the restore left in the settings (migration 0069, card
+ * 2772), as `YYYY-MM-DD HH:MM UTC`; null where there is none that can be read.
+ */
+function apiKeyDeadlineNow(): string | null {
+	const row = sqlite.prepare("SELECT value FROM settings WHERE key = 'api_key_deadline'").get() as { value: unknown } | undefined;
+	const deadline = toStamp(row?.value);
+	return deadline ? `${deadline.slice(0, 16)} UTC` : null;
+}
+
+/**
+ * How many API keys of a backup made before migration 0069 the restore gave
+ * this server's deadline (card 2772, D5, E12), with the deadline
+ * (`apiKeyDeadlineNow`). Said only when there were any.
+ */
+function apiKeyDeadlinesSentence(count: number, deadline: string | null): string {
+	return `${count} API key(s) from before two-step sign-in were given this server's deadline${deadline ? `, ${deadline}` : ''}.`;
 }
 
 /**
@@ -467,6 +492,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// hold (card 2169): those kept from this server, and those to enter
 			// again, so that a backup made before it reads as it did.
 			const linksReplaced = result.requestLinksReplaced > 0 ? requestLinksSentence(result.requestLinksReplaced) : null;
+			// The API keys of a backup made before 0069 given this server's deadline (card 2772).
+			const keyDeadline = result.apiKeyDeadlines > 0 ? apiKeyDeadlineNow() : null;
+			const keyDeadlines = result.apiKeyDeadlines > 0 ? apiKeyDeadlinesSentence(result.apiKeyDeadlines, keyDeadline) : null;
 			// And the personal decision links it cancelled (card 2697, Q15).
 			const decisionLinks = result.decisionLinksCleared > 0 ? decisionLinksSentence(result.decisionLinksCleared) : null;
 			// What the removal above took is said after them (card 2411).
@@ -477,7 +505,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// Absent when there are none, so a restore without reads as it did.
 			const mfaLine = mfaWithoutFactorSentence(result.mfa);
 			const ending = (text: string) =>
-				[linksReplaced, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, workingCopy].reduce<string>(
+				[linksReplaced, keyDeadlines, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, workingCopy].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					text
 				);
@@ -494,6 +522,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				sizeBytes: buffer.length,
 				restored: result.restored,
 				requestLinksReplaced: result.requestLinksReplaced,
+				apiKeyDeadlines: result.apiKeyDeadlines,
+				apiKeyDeadline: keyDeadline ?? undefined,
 				decisionLinksCleared: result.decisionLinksCleared,
 				attachmentsPutBack: files.putBack,
 				workingCopy: workingCopy ?? undefined,
@@ -597,13 +627,16 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				// figures, with what is to enter at WARN on its own line too.
 				const done = err.committed ? err.done : null;
 				const linksReplaced = done && done.requestLinksReplaced > 0 ? requestLinksSentence(done.requestLinksReplaced) : null;
+				// The API keys given this server's deadline, as a restore that succeeded says them (card 2772).
+				const keyDeadline = done && done.apiKeyDeadlines > 0 ? apiKeyDeadlineNow() : null;
+				const keyDeadlines = done && done.apiKeyDeadlines > 0 ? apiKeyDeadlinesSentence(done.apiKeyDeadlines, keyDeadline) : null;
 				// The personal decision links it cancelled, as a restore that succeeded says them (card 2697, Q15).
 				const decisionLinks = done && done.decisionLinksCleared > 0 ? decisionLinksSentence(done.decisionLinksCleared) : null;
 				const secretsKept = done ? secretsKeptSentence(done.secrets.kept) : null;
 				const secretsToEnter = done ? secretsToEnterSentence(done.secrets.toEnter, false, done.unsealed) : null;
 				// The accounts left with no second factor (card 2768), as above.
 				const mfaLine = done ? mfaWithoutFactorSentence(done.mfa) : null;
-				const message = [linksReplaced, decisionLinks, secretsKept, secretsToEnter, mfaLine].reduce<string>(
+				const message = [linksReplaced, keyDeadlines, decisionLinks, secretsKept, secretsToEnter, mfaLine].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					err.message
 				);
@@ -617,6 +650,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 						errors,
 						committed: err.committed,
 						requestLinksReplaced: done?.requestLinksReplaced,
+						apiKeyDeadlines: done?.apiKeyDeadlines,
+						apiKeyDeadline: keyDeadline ?? undefined,
 						decisionLinksCleared: done?.decisionLinksCleared,
 						secretsKept: secretsKept ?? undefined,
 						secretsToEnter: secretsToEnter ?? undefined,

@@ -5,6 +5,7 @@ import { deleteSession, clearSessionCookie, endSessionsSent, sessionHashIn } fro
 import { db } from '$lib/server/db';
 import { users } from '$lib/server/db/schema';
 import { rememberBrowser } from '$lib/server/known-browsers';
+import { forgetPendingAdd } from '$lib/server/pending-authenticators';
 import { createLogger } from '$lib/server/logger';
 
 const log = createLogger('AUTH');
@@ -42,6 +43,9 @@ export const actions: Actions = {
 			if (locals.user) {
 				const account = db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, locals.user.id)).get();
 				if (account) rememberBrowser(cookies, locals.user.id, account.passwordHash, url);
+				// An authenticator the account was adding on its Account page is
+				// forgotten with any sign-out of it (card 2772, D1, S7).
+				forgetPendingAdd(locals.user.id);
 			}
 			deleteSession(session, 'user logout');
 		}

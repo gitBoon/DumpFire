@@ -112,11 +112,12 @@ const COUNTED = STEP_UP_APART;
 
 /**
  * The three writes of a right password and code: the count as it arrives,
- * the code's step spent, and the count cleared (card 2771).
+ * the code's step spent, and the count cleared (card 2771). The count goes up
+ * by the attempt's weight, a parameter (card 2772, D4).
  */
 const COUNTS = [
 	// As the run records it, to 160 characters.
-	'update "sessions" set "wrong_password_count" = "sessions"."wrong_password_count" + 1 where ("sessions"."id" = ? and "sessions"."user_id" = ?) returning "wrong_p',
+	'update "sessions" set "wrong_password_count" = "sessions"."wrong_password_count" + ? where ("sessions"."id" = ? and "sessions"."user_id" = ?) returning "wrong_p',
 	'update "mfa_factors" set "last_step" = ?, "last_used_at" = ? where ("mfa_factors"."id" = ? and ("mfa_factors"."last_step" is null or "mfa_factors"."last_step" <',
 	'update "sessions" set "wrong_password_count" = ? where ("sessions"."id" = ? and "sessions"."user_id" = ?)'
 ];

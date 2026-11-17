@@ -34,7 +34,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.7.1',
+		version: '1.8.0',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -42,6 +42,14 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-17 (version 1.8.0), breaking.** API keys made before this release stop working 60 days after it unless kept on the Account page (card 2772): ' +
+			'(1) every key that exists when this version is installed, with no expiry or an expiry later than the deadline, is given a deadline 60 days after the installation, the same moment for every such key; ' +
+			'from that moment it is answered 401 {"message": "Invalid or expired API key"}, as an expired key is, by every operation; ' +
+			'its holder keeps it with Keep this key beside it under My Account → API Keys, with their password and a code from their authenticator app, which clears the deadline and changes nothing else: ' +
+			'the key, its prefix and its expiry stay as they were, so nothing that uses it needs a change; a key past its deadline is never revived, and its holder generates a new one; ' +
+			'a key that expires before the deadline anyway, and every key made after the release, has none; ' +
+			'(2) a key whose expiry is the current second has ended, as one whose deadline is has, where it worked until the second after; ' +
+			'(3) nothing else changed: no operation, field, status or schema.\n\n' +
 			'**Changed on 2026-11-13 (version 1.7.1).** What a token costs (card 2845): ' +
 			'(1) costUsd on the token answers prices claude-fable-5-2 and claude-mythos-5-2 at $8 / $40 per million, with cache reads at $0.20, where their tokens were unpriced and counted in unpricedTokens; ' +
 			'(2) the cache reads of claude-sonnet-5-5 are priced at $0.10 per million, 0.05x its input rate, where they were priced at $0.20; ' +
@@ -499,7 +507,10 @@ const spec = {
 				type: 'http',
 				scheme: 'bearer',
 				description:
-					'API key prefixed with `df_`. Generate one from My Account → API Keys.'
+					'API key prefixed with `df_`. Generate one from My Account → API Keys. ' +
+					'A key made before this server took version 1.8.0 has a deadline 60 days after it did, shown beside it under My Account → API Keys: ' +
+					'kept there with Keep this key (the password and a code), it goes on working unchanged; not kept, it is answered 401 "Invalid or expired API key" from its deadline on, and is never revived. ' +
+					'Keys made since have no deadline.'
 			}
 		},
 		schemas: {
@@ -3247,7 +3258,7 @@ const spec = {
 				}
 			},
 			Unauthorized: {
-				description: 'No Authorization header, one that is not "Bearer <key>", or a key that is unknown, revoked or expired',
+				description: 'No Authorization header, one that is not "Bearer <key>", or a key that is unknown, revoked, expired or past its deadline (a key made before version 1.8.0 and not kept)',
 				content: {
 					'application/json': {
 						schema: { $ref: '#/components/schemas/Error' },

@@ -167,6 +167,7 @@ import {
 	testUploadsDir
 } from './helpers/fixtures';
 import { gate, gateRoutes } from './helpers/gate';
+import { giveAuthenticator } from './helpers/two-step';
 import { sendAround, type HeldCredential } from './helpers/held-body';
 import { png } from './helpers/image-bytes';
 import { watchReads } from './helpers/reads';
@@ -1094,6 +1095,12 @@ const unlinking = (fromWaiting: (w: World) => Req, fromBlocking: (w: World) => R
 	})
 ];
 
+/** The owner's second authenticator, given by the case that removes it (card 2772). */
+let spareAuthenticator: number | undefined;
+
+/** When the warning the two-step section's case clears was raised, as the page showed it (card 2772). */
+const BANNER_SHOWN = '2026-11-17 09:00:00';
+
 const TABLE: Record<string, Case | Case[]> = {
 	// ── The caller's own account ──────────────────────────────────────────
 	'GET /api/account/api-keys': signedIn(() => '/api/account/api-keys'),
@@ -1101,6 +1108,44 @@ const TABLE: Record<string, Case | Case[]> = {
 	// `withPassword`, as the route asks through the step-up (card 2771).
 	'POST /api/account/api-keys': signedIn(() => withSession('/api/account/api-keys', { name: 'A new key' })),
 	'DELETE /api/account/api-keys/[id]': own('owner', ['outsider', 'editor'], (w) => `/api/account/api-keys/${w.keyId}`),
+	// Card 2772: a key made before two-step sign-in kept past its deadline, with the password and the code
+	// (`withPassword`). The owner's key is given a deadline to keep.
+	'POST /api/account/api-keys/[id]/keep': own('owner', ['outsider', 'editor'], (w) => json(`/api/account/api-keys/${w.keyId}/keep`, {}), {
+		setup: (w) => {
+			db.update(apiKeys)
+				.set({ deadlineAt: stamp(new Date(Date.now() + 30 * 86_400_000)) })
+				.where(eq(apiKeys.id, w.keyId))
+				.run();
+		}
+	}),
+	// Card 2772 (D1-D3, D6): the two-step section. Each but the new phone's code asks through the step-up
+	// (`withPassword`); every caller here holds one authenticator, given where the world is built.
+	'POST /api/account/two-step/authenticators': signedIn(() => json('/api/account/two-step/authenticators', { label: 'Spare phone' }), {
+		writesNothing: 'the set-up is held in memory until the new phone’s code is right, and no row is written for it'
+	}),
+	// The new phone's code: no step-up, the session asked at the write.
+	'POST /api/account/two-step/authenticators/confirm': signedIn(
+		() => withSession('/api/account/two-step/authenticators/confirm', { pendingId: 'no-set-up-under-way', code: '123456' }),
+		{ answers: 409, because: 'no set-up is under way for the caller: a success needs a start and the new phone’s code' }
+	),
+	// The owner's second authenticator, given for the case: the only one cannot be removed.
+	'DELETE /api/account/two-step/authenticators/[id]': own(
+		'owner',
+		['outsider', 'editor'],
+		() => json(`/api/account/two-step/authenticators/${spareAuthenticator}`, {}),
+		{
+			setup: (w) => {
+				spareAuthenticator = giveAuthenticator(w.owner, 'Old phone').factorId;
+			}
+		}
+	),
+	'POST /api/account/two-step/recovery-codes': signedIn(() => json('/api/account/two-step/recovery-codes', {})),
+	// Every account's warning raised at one moment, the one the page showed.
+	'DELETE /api/account/two-step/banner': signedIn(() => json('/api/account/two-step/banner', { bannerAt: BANNER_SHOWN }), {
+		setup: () => {
+			db.update(users).set({ securityBanner: 'wrong-code', securityBannerAt: BANNER_SHOWN }).run();
+		}
+	}),
 	'PUT /api/account/email': signedIn(() =>
 		withSession('/api/account/email', { newEmail: 'somewhere-else@example.test' })
 	),

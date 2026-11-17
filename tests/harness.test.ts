@@ -51,12 +51,14 @@ describe('database fixture', () => {
  */
 const TEST_FILES = [
 	'access-control.test.ts',
+	'account-two-step.test.ts',
 	'activity-twins.test.ts',
 	'all-tasks.test.ts',
 	'all-tasks-page.test.ts',
 	'access-every-route.test.ts',
 	'admin-panels.test.ts',
 	'admin-reset.test.ts',
+	'api-key-deadline.test.ts',
 	'archive-answers.test.ts',
 	'atomic-accounts.test.ts',
 	'atomic-creation.test.ts',

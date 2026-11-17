@@ -2970,7 +2970,22 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'changePassword', reads: 'failureMessage', via: 'stepUpRefusal', done: ['await loadApiKeys()'] },
 		{ name: 'generateApiKey', reads: 'failureMessage', via: 'stepUpRefusal', done: ['newlyCreatedKey = result.key', 'await loadApiKeys()'] },
 		{ name: 'revokeKey', reads: 'failureMessage', done: ['apiKeys = apiKeys.filter(k => k.id !== id)'] },
+		// Card 2772: Keep this key, through ConfirmModal; a refusal of the password or the code goes back to the dialog.
+		// The list is read again from the server after a success and after any other refusal (its code review's CR4),
+		// so nothing on the page is changed by a guess either way.
+		{ name: 'keepKey', reads: 'failureMessage', via: 'stepUpRefusal' },
+		// Card 2772 (D6): That was me, the same; any other refusal, a newer warning among them, said under the warning.
+		{ name: 'dismissBanner', reads: 'failureMessage', via: 'stepUpRefusal' },
 		{ name: 'toggleNotif', reads: 'failureMessage', putsBack: ['notifPrefs = was'], done: ['notifPrefs = await res.json()'] }
+	],
+	// Card 2772 (D1-D3, D9): the Account page's two-step section. Each step-up through ConfirmModal, a refusal of
+	// the password or the code going back to the dialog; any other said on the section's own line.
+	'src/lib/components/account/TwoStepSection.svelte': [
+		{ name: 'startAdding', reads: 'failureMessage', via: 'stepUpRefusal', done: ['adding = await res.json()', 'newCodeField?.focus()'] },
+		// The new phone's code: no step-up; a set-up that has ended goes with the server's words.
+		{ name: 'confirmAdding', reads: 'failureMessage', done: ["announced = 'Authenticator added.'", 'await invalidateAll()'] },
+		{ name: 'removeAuthenticator', reads: 'failureMessage', via: 'stepUpRefusal', done: ['await invalidateAll()'] },
+		{ name: 'regenerateCodes', reads: 'failureMessage', via: 'stepUpRefusal', done: ['freshCodes = made.codes', 'await invalidateAll()'] }
 	]
 };
 
@@ -3062,6 +3077,23 @@ describe('every write of the seven pages of card 2109, of the label picker, and 
 				return found;
 			});
 		const sending = filesUnder('src/lib/components/dashboard', '.svelte').filter(sends);
+		expect(sending.length).toBeGreaterThan(0);
+		expect(sending.filter((file) => !(file in WRITES))).toEqual([]);
+	});
+
+	// Card 2772 (E9): the same for the Account page's components.
+	it('has every component of the Account page that sends a write, src/lib/components/account/', () => {
+		const sends = (file: string) =>
+			scriptOf(file).statements.some((statement) => {
+				let found = false;
+				const visit = (node: ts.Node) => {
+					if (ts.isCallExpression(node) && writeOf(node, writes)) found = true;
+					ts.forEachChild(node, visit);
+				};
+				visit(statement);
+				return found;
+			});
+		const sending = filesUnder('src/lib/components/account', '.svelte').filter(sends);
 		expect(sending.length).toBeGreaterThan(0);
 		expect(sending.filter((file) => !(file in WRITES))).toEqual([]);
 	});
@@ -4184,7 +4216,7 @@ describe('every page write of an action that asks for the password sends it, rea
 	});
 
 	// Card 2771 (D7, T13): the Account page's three forms are listed actions now.
-	it('(f) holds the Account page: its three sends are reached, each with currentPassword and a currentCode from the proof; a retired `password` is reported', () => {
+	it('(f) holds the Account page: its three sends are reached, each with currentPassword and a currentCode from the proof, and so are Keep, That was me and the two-step section’s three; a retired `password` is reported', () => {
 		const ACCOUNT = ['PUT /api/account/email', 'PUT /api/account/password', 'POST /api/account/api-keys'];
 		const account = sends.filter((send) => send.at.startsWith('src/routes/account/+page.svelte') && ACCOUNT.includes(send.action ?? ''));
 		expect(
@@ -4195,6 +4227,32 @@ describe('every page write of an action that asks for the password sends it, rea
 			[...ACCOUNT].sort().map((action) => ({ action, password: true, codeFromProof: true }))
 		);
 		expect(unaskedIn(account)).toEqual([]);
+
+		// Card 2772 (E9): Keep this key and That was me on the page, and the section's step-ups, each sent once
+		// from its own file with the password and the code from the dialog's proof.
+		const SECTION: [file: string, action: string][] = [
+			['src/routes/account/+page.svelte', 'POST /api/account/api-keys/[id]/keep'],
+			['src/routes/account/+page.svelte', 'DELETE /api/account/two-step/banner'],
+			['src/lib/components/account/TwoStepSection.svelte', 'POST /api/account/two-step/authenticators'],
+			['src/lib/components/account/TwoStepSection.svelte', 'DELETE /api/account/two-step/authenticators/[id]'],
+			['src/lib/components/account/TwoStepSection.svelte', 'POST /api/account/two-step/recovery-codes']
+		];
+		const reachedFrom = SECTION.map(([file, action]) => {
+			const found = sends.filter((send) => send.at.startsWith(`${file} ›`) && send.action === action);
+			return {
+				file,
+				action,
+				sent: found.length,
+				password: found.every((send) => send.bodyKeys?.includes(STEP_UP_FIELD)),
+				codeFromProof: found.every((send) => send.codeFromProof)
+			};
+		});
+		expect(reachedFrom).toEqual(SECTION.map(([file, action]) => ({ file, action, sent: 1, password: true, codeFromProof: true })));
+		// The new phone's code is no step-up: it sends the set-up's id and the code, and neither the password nor a proof.
+		const confirmed = sends.filter((send) => send.action === 'POST /api/account/two-step/authenticators/confirm');
+		expect(confirmed.map((send) => ({ at: send.at.split(' › ')[0], bodyKeys: send.bodyKeys }))).toEqual([
+			{ at: 'src/lib/components/account/TwoStepSection.svelte', bodyKeys: ['pendingId', 'code'] }
+		]);
 
 		const json = "headers: { 'Content-Type': 'application/json' }";
 		const source = [
@@ -4439,6 +4497,8 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 			'src/lib/components/ShareModal.svelte',
 			'src/lib/components/SubtaskModal.svelte',
 			'src/routes/account/+page.svelte',
+			// Its two-step section, on the section's own line (card 2772, E9).
+			...filesUnder('src/lib/components/account', '.svelte'),
 			// The admin page's mail panel, under the panel (card 2281, slice C1b).
 			'src/lib/components/admin/SmtpPanel.svelte'
 		];

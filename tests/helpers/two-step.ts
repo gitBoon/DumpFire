@@ -9,6 +9,8 @@
  * the store writes them, under the test process's own MFA key; `codeFor`
  * gives the code its authenticator shows at a moment; `signInFully` signs in
  * through both form actions, the password and then the code.
+ * `giveAuthenticator` gives an account a second or third authenticator, and
+ * `wrongCodeFor` a code wrong for every secret it is given (card 2772).
  *
  * `openReleaseWindow` records the release as having run now, so that an
  * account marked `mfa_password_enrol = 1` is inside its 14 days of setting up
@@ -38,6 +40,16 @@ export function giveFactor(user: Pick<SessionUser, 'id'>): GivenFactor {
 	return { factorId: id, secret, recoveryCodes };
 }
 
+/**
+ * Give the account one more authenticator, as an Account page add writes one
+ * (card 2772): the factor alone, its recovery codes left as they are.
+ */
+export function giveAuthenticator(user: Pick<SessionUser, 'id'>, label = 'Spare phone'): Pick<GivenFactor, 'factorId' | 'secret'> {
+	const secret = newTotpSecret();
+	const { id } = addTotpFactor(user.id, label, secret);
+	return { factorId: id, secret };
+}
+
 /** Record the release that turned on two-step sign-in as having run at `at` (now by default): the 14 days start then. */
 export function openReleaseWindow(at: Date = new Date()): void {
 	db.insert(settings)
@@ -53,9 +65,14 @@ export function openReleaseWindow(at: Date = new Date()): void {
  */
 export { codeFor };
 
-/** A six-digit code that is neither the current step's nor the one before: wrong whenever it is sent within the step. */
-export function wrongCodeFor(secret: Buffer, at: number = Date.now()): string {
-	const near = [hotp(secret, stepAt(at)), hotp(secret, stepAt(at) - 1), hotp(secret, stepAt(at) + 1)];
+/**
+ * A six-digit code that is neither the current step's nor the one before, nor
+ * the next, of any of `secrets`: wrong whenever it is sent within the step.
+ * Pass every secret of an account with several authenticators, so that the
+ * code is not another one's right code (card 2772, E25).
+ */
+export function wrongCodeFor(secrets: Buffer | Buffer[], at: number = Date.now()): string {
+	const near = [secrets].flat().flatMap((secret) => [hotp(secret, stepAt(at)), hotp(secret, stepAt(at) - 1), hotp(secret, stepAt(at) + 1)]);
 	for (let n = 0; ; n++) {
 		const code = String(n).padStart(6, '0');
 		if (!near.includes(code)) return code;

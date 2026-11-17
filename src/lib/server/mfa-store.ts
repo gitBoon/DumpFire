@@ -27,14 +27,15 @@ import type Database from 'better-sqlite3';
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { enrolmentLinks, mfaFactors, mfaRecoveryCodes, settings, signInChallenges, users, type MfaFactor } from './db/schema';
-import { inTransaction } from './db/transaction';
+import { afterCommit, inTransaction } from './db/transaction';
 import { endAccountAccess } from './auth';
+import { forgetPendingAdd } from './pending-authenticators';
 import { createLogger } from './logger';
 import { registerStampFunctions } from './db/timestamps';
 import { parseStamp, stamp } from '$lib/timestamps';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey } from './mfa-key';
 import { enrolAad, factorAad, newFactorUid, openSealed, sealWith, sha256Hex, type Sealed } from './mfa-crypto';
-import { TOTP_SECRET_BYTES } from './totp';
+import { TOTP_SECRET_BYTES, matchingStep } from './totp';
 import { canonicalRecoveryCode, recoveryCodeHash } from './recovery-codes';
 
 const log = createLogger('AUTH');
@@ -126,22 +127,10 @@ export function addTotpFactor(userId: number, label: string, secret: Buffer): { 
 export function factorSecret(
 	factor: Pick<MfaFactor, 'id' | 'userId' | 'factorUid' | 'keyId' | 'secretCiphertext' | 'secretNonce'>
 ): FactorSecret {
+	const opened = openFactor(factor);
+	if (opened.usable) return opened;
+	const why = opened.why;
 	const key = currentMfaKey();
-	let why: 'no key' | 'other key' | 'does not open';
-	if (key === null) {
-		why = 'no key';
-	} else if (factor.keyId !== key.id) {
-		why = 'other key';
-	} else {
-		const opened = openSealed(
-			key,
-			{ nonce: factor.secretNonce, ciphertext: factor.secretCiphertext },
-			factorAad(factor.userId, factor.factorUid)
-		);
-		if (opened !== null && opened.length === TOTP_SECRET_BYTES) return { usable: true, secret: opened };
-		opened?.fill(0);
-		why = 'does not open';
-	}
 
 	log.error(
 		`A second factor could not be opened (${why}): factor ${factor.id} of user ${factor.userId}, made with key ` +
@@ -151,6 +140,102 @@ export function factorSecret(
 		{ userId: factor.userId }
 	);
 	return { usable: false, why };
+}
+
+/**
+ * Whether a factor opens under this server's key, with no ERROR line: its
+ * secret opened only to see that it does, and zeroed (card 2772, D2, S8: an
+ * authenticator is removed only while another opens).
+ */
+export function factorOpens(
+	factor: Pick<MfaFactor, 'id' | 'userId' | 'factorUid' | 'keyId' | 'secretCiphertext' | 'secretNonce'>
+): boolean {
+	const opened = openFactor(factor);
+	if (!opened.usable) return false;
+	opened.secret.fill(0);
+	return true;
+}
+
+/** `factorSecret` without its ERROR line: the secret, or why it cannot be had. */
+function openFactor(
+	factor: Pick<MfaFactor, 'id' | 'userId' | 'factorUid' | 'keyId' | 'secretCiphertext' | 'secretNonce'>
+): FactorSecret {
+	const key = currentMfaKey();
+	if (key === null) return { usable: false, why: 'no key' };
+	if (factor.keyId !== key.id) return { usable: false, why: 'other key' };
+	const opened = openSealed(key, { nonce: factor.secretNonce, ciphertext: factor.secretCiphertext }, factorAad(factor.userId, factor.factorUid));
+	if (opened !== null && opened.length === TOTP_SECRET_BYTES) return { usable: true, secret: opened };
+	opened?.fill(0);
+	return { usable: false, why: 'does not open' };
+}
+
+/**
+ * The most authenticators an account may hold (card 2772, D4): a main phone,
+ * a spare, and a new phone during a replacement. A guess against N of them
+ * has 2N candidates, and the sign-in lane counts N for each wrong code, so the
+ * lock at 30 holds 60 candidates in a million for N of 1, 2 or 3; at 4 it
+ * would be 64. Passkeys are not codes and are not counted by it.
+ */
+export const MOST_AUTHENTICATORS = 3;
+
+/**
+ * What `matchFactors` found: the authenticators tried (those that opened),
+ * those that did not open, the factor and step to spend, and whether the code
+ * matched only steps already spent.
+ */
+export type FactorMatch = {
+	tried: number;
+	unusable: number;
+	/** The lowest id among the factors whose match is unspent, and its step; null for none. */
+	matched: { factorId: number; step: number } | null;
+	/** True only when the code matched and every match is at or below its factor's last spent step (S6). */
+	spent: boolean;
+};
+
+/**
+ * Try a code against every authenticator of the account (card 2772, D4), the
+ * one matcher of sign-in and the step-up. The account's `totp` factors are
+ * read in id order and each is opened in turn, one plaintext secret at a time,
+ * zeroed in a `finally` before the next is opened; one that does not open is
+ * skipped and counted `unusable`, its ERROR line said by `factorSecret` (not
+ * said when `said` is false: the step-up's second look, a moment after its
+ * first said it). `matchingStep` runs on every opened secret, with no early
+ * exit, so the work does not say which factor matched.
+ *
+ * `matched` prefers a match whose step is above that factor's `last_step`,
+ * the lowest id among them: a code that matches one factor's spent step and
+ * another's unspent one is the unspent one's. Nothing is spent here: the
+ * caller spends only the matched factor's step (`spendStep`).
+ */
+export function matchFactors(userId: number, digits: unknown, at: number, { said = true }: { said?: boolean } = {}): FactorMatch {
+	const factors = db
+		.select()
+		.from(mfaFactors)
+		.where(and(eq(mfaFactors.userId, userId), eq(mfaFactors.kind, 'totp')))
+		.orderBy(mfaFactors.id)
+		.all();
+	let tried = 0;
+	let unusable = 0;
+	let matched: FactorMatch['matched'] = null;
+	let matchedAny = false;
+	for (const factor of factors) {
+		const opened = said ? factorSecret(factor) : openFactor(factor);
+		if (!opened.usable) {
+			unusable++;
+			continue;
+		}
+		tried++;
+		let step: number | null;
+		try {
+			step = matchingStep(opened.secret, digits, at);
+		} finally {
+			opened.secret.fill(0);
+		}
+		if (step === null) continue;
+		matchedAny = true;
+		if (matched === null && (factor.lastStep === null || step > factor.lastStep)) matched = { factorId: factor.id, step };
+	}
+	return { tried, unusable, matched, spent: matchedAny && matched === null };
 }
 
 /** Seal a secret being set up, bound to its account and the hash of its token. Throws when no key is loaded. */
@@ -352,7 +437,9 @@ export type TwoStepReset = {
  * sign-in and failed codes since it are kept: the banner and that count are
  * about the password and the last sign-in, which a reset does not change.
  * The link is issued last, because ending the account's access deletes its
- * links.
+ * links. Once the reset is committed, an authenticator the account was adding
+ * on its Account page is forgotten (card 2772, D1, S7): its sessions are gone,
+ * and nothing is to be added to a reset account but through the link.
  *
  * Inside the caller's transaction, the one that checked the account may be
  * reset. It throws if no transaction is open.
@@ -383,6 +470,7 @@ export function resetTwoStep(userId: number, issuedBy: string = 'admin-reset'): 
 		.run();
 	const ended = endAccountAccess(userId, { apiKeys: false, reportSchedules: false });
 	const token = issueEnrolmentLink(userId, issuedBy);
+	afterCommit(() => forgetPendingAdd(userId));
 	return {
 		factors,
 		recoveryCodes,

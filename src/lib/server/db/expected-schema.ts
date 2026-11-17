@@ -57,6 +57,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\t`last_used_at` text,",
 		"\t`expires_at` text,",
 		"\t`created_at` text DEFAULT (datetime('now')) NOT NULL,",
+		"\t`deadline_at` text,",
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
@@ -860,7 +861,8 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\t`failed_codes_since_sign_in` integer DEFAULT 0 NOT NULL,",
 		"\t`security_banner` text,",
 		"\t`security_banner_at` text,",
-		"\t`mfa_password_enrol` integer DEFAULT 0 NOT NULL",
+		"\t`mfa_password_enrol` integer DEFAULT 0 NOT NULL,",
+		"\t`security_signal_last_at` text",
 		");"
 	].join('\n'),
 	"CREATE UNIQUE INDEX `users_username_unique` ON `users` (`username`);",

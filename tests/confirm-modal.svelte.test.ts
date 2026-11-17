@@ -24,6 +24,11 @@
  * to an awaited `onConfirm`, and stays open on the refusal that gives back,
  * showing it, the field cleared and focused; a 400 asking for a password the
  * dialog did not ask for shows the field.
+ *
+ * Card 2772 (T10 of `docs/planning/card-2772-account-two-step.md`): with more
+ * than one authenticator, the field says before sending what one wrong answer
+ * costs. The page's data is stood in for (`$app/state`), empty but where a
+ * case gives it `authenticators`.
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -52,6 +57,10 @@ vi.mock('svelte', async () => {
 	return await import(/* @vite-ignore */ pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href);
 });
 
+// The page's data, as the layout's load gives it: empty unless a case says (card 2772).
+const pageStub = vi.hoisted(() => ({ data: {} as Record<string, unknown> }));
+vi.mock('$app/state', () => ({ page: pageStub }));
+
 // The browser's `mount`, loaded by its path: a bare 'svelte' gives the server's (see the XP bars' file).
 const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
 const { flushSync, mount, unmount }: typeof Svelte = await import(/* @vite-ignore */ clientEntry);
@@ -62,6 +71,7 @@ let onConfirm: Mock<() => void>;
 let onCancel: Mock<() => void>;
 
 beforeEach(() => {
+	pageStub.data = {};
 	onConfirm = vi.fn<() => void>();
 	onCancel = vi.fn<() => void>();
 	// The button a page's confirm is opened from, with the focus, as a click or Enter leaves it.
@@ -627,5 +637,35 @@ describe('the confirm dialog keeps the password before the compare’s refusals 
 		expect(field.value).toBe('');
 		expect(codeFieldIn(target)!.value).toBe('');
 		expect(document.activeElement).toBe(field);
+	});
+});
+
+// Card 2772 (plan section 5.1, T10; D4, E2): a wrong answer counts one for each authenticator, said before sending.
+describe('the confirm dialog says what a wrong answer costs with several authenticators (card 2772)', () => {
+	/** The line, if the field shows one. */
+	const weightLine = (target: HTMLElement) => target.querySelector<HTMLElement>('.current-code-weight');
+
+	it('T10. shows the line for 2 and for 3 in the authenticator mode, tied to the code field, and none in the recovery-code mode; with 1, none', () => {
+		for (const [held, words] of [
+			[2, 'You have 2 authenticators, so each wrong answer here counts twice: two wrong answers sign this browser out.'],
+			[3, 'You have 3 authenticators, so one wrong answer here signs this browser out.']
+		] as const) {
+			pageStub.data = { authenticators: held };
+			const target = open({ askPassword: true });
+			const line = weightLine(target);
+
+			expect(line?.textContent?.trim(), String(held)).toBe(words);
+			expect(codeFieldIn(target)!.getAttribute('aria-describedby'), String(held)).toBe(line!.id);
+			codeSwitch(target)!.click();
+			flushSync();
+			expect(weightLine(target), String(held)).toBeNull();
+			expect(codeFieldIn(target)!.hasAttribute('aria-describedby'), String(held)).toBe(false);
+			close();
+		}
+
+		pageStub.data = { authenticators: 1 };
+		const target = open({ askPassword: true });
+		expect(weightLine(target)).toBeNull();
+		expect(codeFieldIn(target)!.hasAttribute('aria-describedby')).toBe(false);
 	});
 });

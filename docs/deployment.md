@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.117
+version: 1.118
 status: As-Built
 date: 2026-11-17
 tags:
@@ -48,7 +48,10 @@ tags:
   - release-mail
   - migration-0068
   - invites
-description: "Docker deployment, the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), and production configuration for DumpFire"
+  - migration-0069
+  - api-key-deadline
+  - card-2772
+description: "Docker deployment, the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -6188,8 +6191,9 @@ API keys (W3) again.
 ### The Release That Asks for the Code at Every Step-Up (Cards 2770 and 2771)
 
 **Cards 2770 and 2771 (build cards B3a and B3b of card 2669).** From this release every action
-that asks for the current password again (the thirty-two step-up actions, the Account page's
-email, password and Generate Key forms among them) asks for a code from the authenticator app,
+that asks for the current password again (the thirty-two step-up actions of that release,
+thirty-seven since card 2772, the Account page's email, password and Generate Key forms among
+them) asks for a code from the authenticator app,
 or a recovery code, beside it, and the server checks both: the action runs only when both are
 right. How it works is in
 [The Code Beside the Password](authentication-security.md#the-code-beside-the-password-card-2771);
@@ -6200,7 +6204,8 @@ the plan is `docs/planning/card-2771-step-up-requires-code.md`.
 - **2770 and 2771 ship in the same release.** 2770 alone asks for a code nobody checks; 2771
   alone would refuse every dialog of the old pages.
 - **2769 ships with 2773, 2849 and 2775** (above); card 2772 (a second authenticator) goes with
-  2770 and 2771 or soon after.
+  2770 and 2771 or soon after (see
+  [The Release That Gives Older API Keys a Deadline](#the-release-that-gives-older-api-keys-a-deadline-card-2772)).
 - **No migration and no setting.** Every column the check uses exists already
   (`sessions.wrong_password_count`, `mfa_factors.last_step` and `last_used_at`,
   `mfa_recovery_codes.used_at`, `users.failed_codes_since_sign_in` and the security banner).
@@ -6258,6 +6263,120 @@ authenticator set up; the plan's section 6 has the full list, H1 to H16):
 state before this release: no data to put right, as nothing was migrated. Codes spent on this
 image stay spent in `mfa_factors.last_step` and `mfa_recovery_codes.used_at`, which the older
 image honours at sign-in.
+
+### The Release That Gives Older API Keys a Deadline (Card 2772)
+
+**Card 2772 (build card B3c of card 2669), built 2026-11-17.** The Account page gains a
+**🛡️ Two-step sign-in** section (up to three authenticators, add and remove, new recovery codes),
+the stolen-password warning moves to the top of the Account page where **That was me** clears
+it, sign-in and every step-up accept a code from any of the account's authenticators, and
+**migration 0069 gives every API key that exists at this release a deadline 60 days later**. A
+key not kept by its holder by then, on the Account page with the password and a code, is
+answered `401` `Invalid or expired API key` from that moment. This is a breaking change of the
+published API by behaviour: no route, field or status changes, but a key that worked stops
+working. How it works is in
+[Managing Two-Step Sign-In on the Account Page](authentication-security.md#managing-two-step-sign-in-on-the-account-page-card-2772)
+and
+[Keys Made Before Two-Step Sign-In: the Deadline](authentication-security.md#keys-made-before-two-step-sign-in-the-deadline-card-2772);
+the plan is `docs/planning/card-2772-account-two-step.md`.
+
+**Release rules.**
+
+- **Order.** 2769 ships with 2773, 2849 and 2775; 2770 and 2771 ship together; **2772 ships
+  with 2770 and 2771 or after them, never before 2771**. In the same deploy as 2769 is fine:
+  0069 runs after 0066 to 0068.
+- **Before the deploy, tell the key holders (owner).** Run this read-only query on Production
+  as close to the deploy as you can, and tell each holder the date (the deploy's day plus 60
+  days) and that **My Account → API Keys → Keep this key**, with their password and a code,
+  keeps the key unchanged. Without the notice, their integrations stop on that date. A key made
+  after the query and before the deploy is not listed: run it again just before.
+
+  ```sql
+  SELECT u.username, u.email, k.name, k.key_prefix, k.created_at, k.last_used_at, k.expires_at
+  FROM api_keys k JOIN users u ON u.id = k.user_id
+  WHERE k.expires_at IS NULL OR k.expires_at > datetime('now', '+60 days')
+  ORDER BY u.username, k.created_at;
+  ```
+
+  With the container's own reader, as in the 2769 release above: `q "<the query on one line>"`,
+  where `q` opens the database read-only. Or `sqlite3 -readonly -header -column <database>` on a
+  copy. Every key the query lists has no expiry, or one later than the deadline: those are the
+  keys 0069 marks (a key listed whose expiry falls between the query's day and the deploy's,
+  plus 60 days, gets no deadline; telling its holder does no harm).
+- **The date is fixed when 0069 runs**: `settings.api_key_deadline` = the moment the migration
+  runs plus 60 days, written once and never moved. To read it after the deploy:
+  `q "SELECT value FROM settings WHERE key = 'api_key_deadline'"`.
+- **Deploy.** 0069 runs once at start. No setting, no new environment variable; `MFA_KEY_FILE`
+  as since card 2768 (without it, adding an authenticator is refused `503` "Two-step sign-in
+  cannot be set up on this server right now. Ask an administrator."). **Reload every open DumpFire tab**: the Account page is
+  new, and a confirm dialog of an old page knows nothing of several authenticators.
+- **After.** A fortnight before the date, list the keys still not kept and remind their holders:
+
+  ```sql
+  SELECT u.username, u.email, k.name, k.key_prefix, k.deadline_at, k.last_used_at
+  FROM api_keys k JOIN users u ON u.id = k.user_id
+  WHERE k.deadline_at IS NOT NULL
+  ORDER BY k.deadline_at, u.username;
+  ```
+
+  A key past its deadline is never revived, by Keep or anything else: its holder generates a new
+  key and puts it where the old one was used.
+- **Reset Everything** (`POST /api/admin/reset`) empties `api_keys` and `settings`: no key is
+  left to need a deadline, the setting is gone with the rest, and keys made afterwards get none
+  (the plan review's S11). A restore of a backup made before 0069 gives that backup's keys this
+  server's deadline, and the import's answer says how many (see
+  [What a Backup Holds](authentication-security.md#what-a-backup-holds-and-what-a-restore-brings-in)).
+- **Rollback is a security event.** An older image keeps the column and the setting, unread:
+  it ignores `deadline_at`, so every key past its deadline works again while it runs, and it
+  reads one authenticator of an account only, so codes from the others are refused there. Rolling forward
+  again refuses those keys once more. Do not go back past this card unless the keys' holders
+  are told, or the keys revoked.
+
+```mermaid
+flowchart TD
+    Q["Owner: run the read-only query on Production,<br/>tell every holder the date and Keep this key"] --> D["Deploy: 0069 runs once"]
+    D --> S["settings.api_key_deadline = now + 60 days,<br/>deadline_at set on every key with no expiry<br/>or one later than it"]
+    S --> R["Reload every open tab"]
+    R --> W["Holders press Keep this key<br/>(password and a code): deadline_at NULL"]
+    W --> F["A fortnight before the date:<br/>query deadline_at IS NOT NULL, remind"]
+    F --> E{"The date"}
+    E -->|"kept"| OK["The key works as before"]
+    E -->|"not kept"| End["401 Invalid or expired API key;<br/>never revived: generate a new key"]
+    D -.->|"rollback"| Old["Older image: deadlines ignored,<br/>passed keys work again: a security event"]
+```
+
+**What people notice.**
+
+- **My Account → API Keys** shows each key's expiry ("Expires *date time* UTC" or "No expiry")
+  and, for a key made before this release, "⚠️ Made before two-step sign-in: stops working on
+  *date time* UTC unless you keep it" with **Keep this key**; past the date, "Stopped working on
+  … Generate a new key."
+- **My Account → 🛡️ Two-step sign-in**: the last sign-in, the authenticators (added, last
+  used), **Add an authenticator** (a name, the password and a code, then scan the QR code and
+  type the new phone's code), **Remove** (never the last; other browsers are signed out), the
+  recovery codes left and **Make new recovery codes**. Each sends a mail to the owner.
+- **The warning** "⚠️ Was this you?" stays at the top of My Account after a wrong code at
+  sign-in until **That was me** (password and a code) or a password change.
+- **With two or three authenticators** a wrong code counts once for each: three wrong codes in a
+  row (two with three authenticators) pause sign-in, and at a confirmation two wrong answers
+  (one with three) sign the browser out. The confirm dialog says so before sending.
+- **A lost phone with a recovery code left** needs no administrator: sign in with the recovery
+  code, add the new phone, remove the lost one, make new recovery codes, change the password.
+
+**Hands-on checks** (on the dev server or a staging copy, signed in with an authenticator, a
+second phone or app at hand, mail set up or the mail log read; the plan's section 6 has the full
+list, H1 to H14):
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| K1 | A database with a key made before 0069, after the deploy | The row says "Made before two-step sign-in: stops working on …"; **Keep this key** with password and code clears it; the key still works with curl | The key's value changed; the flag stays |
+| K2 | `UPDATE api_keys SET deadline_at = '2020-01-01 00:00:00' WHERE id = <id>` on the copy, then curl `/api/v1/me` with it | `401` `Invalid or expired API key`; the row reads "Stopped working on … Generate a new key." with no Keep | The key works; Keep offered |
+| K3 | Add "Spare phone" (password and code, scan, its code) | Two listed; a mail naming "Spare phone" and its date | A factor written before the code; the secret shown again on reload |
+| K4 | Sign out, sign in with the second app's code; then confirm Reset All XP with it | Both accepted; the dialog says "You have 2 authenticators, so each wrong answer here counts twice…" | Refused; no line |
+| K5 | Remove the first authenticator from browser A, with browser B signed in | The dialog lists keys and webhooks; B signed out at its next request; A stays; a mail "…was removed…" | B still signed in |
+| K6 | **Make new recovery codes** | Ten shown once; closes only on "I have saved these codes"; an old code refused at sign-in | Codes in the page source after reload |
+| K7 | A wrong code at sign-in, then My Account | The warning at the top; **That was me** clears it; a new wrong code shows it again | Not shown again within the hour |
+| K8 | Import a backup made before 0069 | The answer says "*n* API key(s) from before two-step sign-in were given this server's deadline, …" | No sentence; keys without a deadline |
 
 ## Changing the Schema
 

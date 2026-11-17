@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.82
+version: 1.83
 status: As-Built
 date: 2026-11-17
 tags:
@@ -15,6 +15,8 @@ tags:
   - ideas-board
   - upstream
   - two-step-sign-in
+  - authenticators
+  - api-key-deadline
 description: "Non-technical overview of all DumpFire features for stakeholders, managers, and end users"
 ---
 
@@ -696,9 +698,10 @@ From 13 November 2026 (card 2769), **every account signs in in two steps**: the 
 
 - **Setting it up** — the first time, the person scans a QR code with their app, types the code it shows, and saves ten recovery codes. Each recovery code works once, for when the phone is lost
 - **Wrong codes** — five in a row pause code entry for 15 minutes, and longer each time after, up to a lock at thirty; a recovery code always works
-- **Told when something is wrong** — the owner is emailed when two-step sign-in is set up, when a recovery code is used, when codes are paused or locked, and when someone gets the password right but the code wrong. After such a thing the next sign-in shows what happened, with the account's API keys and webhooks to check
-- **A lost phone** — an administrator resets the account's two-step sign-in and hands the person a set-up link themselves; the superadmin's is reset on the server
-- **API keys are not affected** — scripts and integrations keep working
+- **Told when something is wrong** — the owner is emailed when two-step sign-in is set up, when a recovery code is used, when codes are paused or locked, when someone gets the password right but the code wrong, and when an authenticator is added or removed or new recovery codes are made. After such a thing the next sign-in shows what happened, with the account's API keys and webhooks to check, and a warning stays at the top of **My Account** until its holder clears it with **That was me** (password and a code) or changes their password
+- **Several authenticators** (card 2772, since this server took that release) — **My Account → 🛡️ Two-step sign-in** lists your authenticators, each with when it was added and last used, and lets you add one (up to three: a main phone, a spare, a new phone), remove one (never the last: add the new one first; removing one signs your other browsers out), and make a new set of ten recovery codes, shown once. A code from any of your authenticators works. Each wrong code counts once for each authenticator that can be checked on the server, so codes are no easier to guess: with two, three wrong codes in a row pause code entry and two wrong answers at a confirmation sign the browser out, and the confirmation dialog says so before you send (it counts every authenticator you hold, so it never says less than is counted)
+- **A lost phone** — now self-service while you still have a recovery code: sign in with a recovery code, add your new phone on My Account, remove the lost one, then make new recovery codes and change your password. Without a recovery code, an administrator resets the account's two-step sign-in and hands the person a set-up link themselves; the superadmin's is reset on the server
+- **API keys made before two-step sign-in** (card 2772) — each key that existed on the day of that release gets a deadline 60 days later, shown beside it on My Account with **Keep this key**: keeping it, with your password and a code, leaves the key itself unchanged. A key not kept stops working on that date. Keys made since have no deadline
 
 ```mermaid
 flowchart LR
@@ -717,7 +720,7 @@ On the day it was turned on everyone was signed out once and set it up at their 
 
 - **Roles**: Superadmin, Admin, and User
 - **Invite via email** — send password-set links to new users, who then set up two-step sign-in
-- **Reset two-step sign-in** — for someone who has lost their phone: a set-up link, shown once, to hand over in person
+- **Reset two-step sign-in** — for someone who has lost their phone and has no recovery code left: a set-up link, shown once, to hand over in person. With a recovery code they can replace the phone themselves on My Account
 - **Emoji avatars** — each user chooses their own emoji identity
 
 ### People Directory
@@ -756,7 +759,7 @@ Configure email sending from the Admin panel. Test with a single click.
 ## API Access
 
 DumpFire has a full REST API for automation:
-- **API keys** — generate and manage from your account
+- **API keys** — generate and manage from your account; each shows when it expires, and a key made before two-step sign-in its deadline and **Keep this key** (card 2772)
 - **81 operations** — boards, cards, subtasks, assignees, and more
 - **Rate limited** — 60 requests/minute per key
 - **Every field checked** — a field the API cannot use is refused with a `400` that names it, before anything is written: a priority it does not know, a date not written `YYYY-MM-DD`, text where a number belongs

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.79
+version: 1.80
 status: As-Built
 date: 2026-11-17
 tags:
@@ -39,6 +39,8 @@ tags:
   - mfa
   - recovery-codes
   - migration-0068
+  - migration-0069
+  - api-key-deadline
   - invites
   - token-hashing
 description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), and how migrations and schema reconciliation bring every database to the model"
@@ -63,6 +65,7 @@ erDiagram
         text created_at
         int mfa_known_wrong "0065, and ten more two-step sign-in columns: see below"
         int mfa_password_enrol "0066: NOT NULL DEFAULT 0; 1 may set up on the password"
+        text security_signal_last_at "0069: the latest stolen-password signal (card 2772, CS1)"
     }
 
     sessions {
@@ -104,6 +107,7 @@ erDiagram
         text last_used_at
         text expires_at
         text created_at
+        text deadline_at "0069: keep by, null once kept"
     }
 
     board_categories {
@@ -1261,6 +1265,7 @@ erDiagram
         int failed_codes_since_sign_in "NOT NULL DEFAULT 0"
         text security_banner "NULL, or why the banner is shown"
         text security_banner_at "when it was last raised"
+        text security_signal_last_at "0069 (card 2772, CS1): the latest signal, every one"
     }
     mfa_factors {
         int id PK "AUTOINCREMENT"
@@ -1328,6 +1333,23 @@ erDiagram
   email address or role, delete the account's pending sign-ins and enrolment links
   (`endPendingSignIns`), in the transaction that makes the change. Its factors and recovery
   codes stay.
+- **Several factors per account** (card 2772). An account holds one to three `totp` rows
+  (`MOST_AUTHENTICATORS = 3`, held by the code, not the schema, which always allowed many): the
+  first from enrolment, the rest added on the Account page, each with its holder's `label` (1
+  to 40 characters, white space collapsed, no control or format character). Sign-in and the
+  step-up read them in id order and try each (`matchFactors`); a spend touches only the matched
+  row's `last_step`. Removing one on the Account page deletes its row, never the last one, and
+  ends the account's other sessions and its pending sign-ins and enrolment links in the same
+  transaction. An authenticator being added is held in the server's memory until the new
+  phone's code is right, so nothing is written for it before then; a new set of recovery codes
+  replaces every `mfa_recovery_codes` row of the account.
+- **The banner** (`users.security_banner`, `users.security_banner_at`, and since migration
+  0069 `users.security_signal_last_at`, the latest signal's moment) is cleared, all three
+  columns together, only by **That was me** on the Account page (`UPDATE … WHERE id = ? AND
+  security_banner IS NOT NULL AND coalesce(security_signal_last_at, security_banner_at) = ?`,
+  the latest moment the page showed: card 2772's code review, CS1) and by the holder's own
+  password change (card 2772). A sign-in, an administrator's password reset and the rest leave
+  it.
 - **Spending.** A time step is spent by one `UPDATE mfa_factors SET last_step = ?,
   last_used_at = ? WHERE id = ? AND (last_step IS NULL OR last_step < ?)`, and a recovery code
   by one `UPDATE mfa_recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND
@@ -2866,9 +2888,12 @@ stateDiagram-v2
   (`'wrong-code'`, at most once an hour) in the same transaction; a code whose step was spent
   meanwhile, or a factor gone or not opening there, leaves it at +1 and spends nothing. A
   wrong answer that leaves it at 3 deletes the session (the code review's S1, ruled
-  2026-11-04: only a compare counts). The thirty-two step-up actions share it, the Account
-  page's three forms among them since card 2771 (card 2701's eighteen, card 2697's eight, card
-  2679's two, card 2773's one and card 2771's three). It replaced a count in memory with a 15-minute window, so a
+  2026-11-04: only a compare counts). Since card 2772 an attempt with an authenticator code
+  adds the number of the account's authenticators it was tried against (`+ w` in the same
+  statement, taken before the compare), and a count of 3 or more ends the session. The
+  thirty-seven step-up actions share it, the Account page's three forms among them since card
+  2771 and its two-step section and Keep this key since card 2772 (card 2701's eighteen, card
+  2697's eight, card 2679's two, card 2773's one, card 2771's three and card 2772's five). It replaced a count in memory with a 15-minute window, so a
   restart no longer clears it. `sessions` is not a reconciled table, so the file alone adds the
   column; every existing session reads 0 and no row is changed, so nothing is declared to the
   rehearsal. No backup holds a session row and no restore brings one in, so neither carries a
@@ -3074,7 +3099,9 @@ flowchart LR
   - `position` on `cards`, `subtasks` and `columns` is a number, never text;
   - `api_keys.expires_at` is null or a timestamp in the stored form, read from what the
     caller sent with `toStamp` (card 2095), because `findApiKey()` compares it with the
-    time as text; `cards.archived_at` sent through `PUT /api/v1/cards/{id}` is read the
+    time as text; `api_keys.deadline_at` (card 2772) is null or the stored form, written only
+    by migration 0069 and the restore of an older backup, and read through `deadlinePassed()`,
+    a set value naming no moment counting as passed; `cards.archived_at` sent through `PUT /api/v1/cards/{id}` is read the
     same way.
 
   Rows written before these rules may hold other values. They are left as they are: a
@@ -3157,8 +3184,8 @@ count at any other start means some write does not.
 
 A migration file may hold a one-off change to stored data as well as structure, as 0053
 ends every session once, 0054 every invite not yet used, 0055 gives every task request
-a new link, and 0068 ends every invite not yet used again and replaces every used invite's
-token. Such a statement comes after the structural ones, under a header
+a new link, 0068 ends every invite not yet used again and replaces every used invite's
+token, and 0069 gives every API key made before it a deadline. Such a statement comes after the structural ones, under a header
 comment that says what it changes, why, that it runs once on each database and what people
 will see; it does nothing harmful on an empty table; and it is declared, by file and table,
 in `tests/rehearsal/one-offs.ts`, so that the rehearsal reports the loss as expected. One
@@ -3251,6 +3278,67 @@ A rehearsal of a run that applies 0068 over a database with unused invites notes
 `invite_tokens had N row(s) and has M: every unused invite deleted and every used invite's token
 replaced by 0068_end_plain_invite_tokens.sql, a one-off declared in tests/rehearsal/one-offs.ts`.
 Where a run applies 0054 as well, the note names 0054, the first of the two to run.
+
+**Migration 0069 gives every API key made before two-step sign-in a deadline** (card 2772,
+built 2026-11-17). Until two-step sign-in a key was made on a password alone; from this release
+each key that exists then must be kept by its holder, with the password and a code, within 60
+days, or it stops working.
+
+- **`0069_add_api_key_deadline.sql`**, four statements: `ALTER TABLE api_keys ADD COLUMN
+  deadline_at text`; `INSERT INTO settings (key, value) VALUES ('api_key_deadline',
+  datetime('now', '+60 days')) ON CONFLICT (key) DO NOTHING`; and `UPDATE api_keys SET
+  deadline_at = (the setting) WHERE expires_at IS NULL OR expires_at > (the setting)`, compared
+  as text since every stored expiry is in the stored form (card 2095); and, last, `ALTER TABLE
+  users ADD COLUMN security_signal_last_at text` (the code review's CS1, below). A key that ends before
+  the deadline anyway keeps `deadline_at` null; `expires_at` is never written. No `IF NOT
+  EXISTS`, as 0063: a column of that name already there would be one this file did not make.
+  Not a foreign key, no index.
+- **`api_keys.deadline_at`**: the moment by which the holder must keep the key; null for a key
+  made since, or one kept (**Keep this key**, `POST /api/account/api-keys/[id]/keep`, which
+  sets it to null and touches nothing else). A key past it is refused as an expired key is
+  (`keyEnded()` in `auth.ts`), and never revived. One more `*_at` column for the timestamp
+  normalisation.
+- **`users.security_signal_last_at`** (card 2772's code review, CS1): the moment of the
+  account's latest stolen-password signal, in the stored form, set by `raiseSignal()` on
+  **every** signal, where `security_banner_at` moves at most once an hour. **That was me**
+  compares and clears on it (`coalesce(security_signal_last_at, security_banner_at)`, so a
+  banner raised before 0069, or restored from a backup made before it, is read by its own
+  time), so a signal inside the hour the page did not show makes the dismiss `409`. Cleared,
+  with the banner and its time, by That was me and the holder's own password change. NULL on
+  every account when 0069 runs; kept with the banner for the same account across a restore
+  (`HISTORY` in `mfa-backup.ts`). Not a foreign key, no index. The second new `*_at` column:
+  78 in all (`tests/timestamps.test.ts`). An older image keeps it unread and compares on
+  `security_banner_at` alone.
+- **`settings.api_key_deadline`**: the release's moment plus 60 days, written once. Kept across
+  a restore: this server's value is read before the restore clears `settings`, and a backup made
+  before 0069 has 0069's `UPDATE` repeated with it inside the restore's transaction (expiries
+  compared through `stamp_of`), the setting written back where the backup held none, and the
+  restore's own moment used where this server holds no readable deadline. **Reset Everything**
+  empties `api_keys` and `settings`: no key is left to need a deadline, and new keys get none.
+- Declared in `tests/rehearsal/one-offs.ts` for `api_keys`, with `keepsRows` ("deadline_at set
+  for every key with no expiry or one later than the deadline"). It runs once; an older image
+  keeps the column and the setting unread, so keys past their deadline work again there: a
+  rollback past card 2772 is a security event (see
+  [The Release That Gives Older API Keys a Deadline](deployment.md#the-release-that-gives-older-api-keys-a-deadline-card-2772)).
+
+```mermaid
+erDiagram
+    users ||--o{ api_keys : holds
+    users ||--o{ mfa_factors : "1 to 3 authenticators (card 2772)"
+    api_keys {
+        int id PK
+        text expires_at "the holder's choice, unchanged by 0069"
+        text deadline_at "0069: keep by; null once kept, and for keys made since"
+    }
+    settings {
+        text key PK "api_key_deadline"
+        text value "release + 60 days, written once"
+    }
+    users {
+        text security_banner_at "moved at most once an hour"
+        text security_signal_last_at "0069 (CS1): every signal, compared and cleared by That was me"
+    }
+```
 
 ### Two Lineages Share 0001 to 0005
 

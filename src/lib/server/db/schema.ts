@@ -83,7 +83,13 @@ export const users = sqliteTable('users', {
 	// mail host is configured and for 14 days from `two_step_released_at`.
 	// Set back to 0 by an enrolment, by resetTwoStep and by the host reset
 	// script, and by a restore for every account that is not this server's.
-	mfaPasswordEnrol: integer('mfa_password_enrol').notNull().default(0)
+	mfaPasswordEnrol: integer('mfa_password_enrol').notNull().default(0),
+	// The moment of the latest stolen-password signal, set on every one, where
+	// security_banner_at moves at most once an hour: That was me clears the
+	// banner only while this (or security_banner_at, where this is NULL) is
+	// the moment the page showed. Cleared with the banner (migration 0069,
+	// card 2772's code review, CS1).
+	securitySignalLastAt: text('security_signal_last_at')
 });
 
 export const sessions = sqliteTable('sessions', {
@@ -906,7 +912,12 @@ export const apiKeys = sqliteTable('api_keys', {
 	expiresAt: text('expires_at'),
 	createdAt: text('created_at')
 		.notNull()
-		.default(sql`(datetime('now'))`)
+		.default(sql`(datetime('now'))`),
+	// The moment by which a key made before two-step sign-in must be kept, or
+	// it stops working as an expired key does (deadlinePassed in auth.ts).
+	// Set by migration 0069 and by the restore of a backup made before it;
+	// cleared by Keep this key (card 2772). NULL: no deadline.
+	deadlineAt: text('deadline_at')
 }, (table) => [
 	index('idx_api_keys_user_id').on(table.userId)
 ]);

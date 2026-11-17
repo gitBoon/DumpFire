@@ -1,10 +1,15 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.120
+version: 1.121
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2772
+  - several-authenticators
+  - account-two-step
+  - api-key-deadline
+  - migration-0069
   - decision-reminders
   - authentication
   - security
@@ -71,7 +76,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the thirty-two actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows)"
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the thirty-seven actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2)"
 ---
 
 # Authentication & Security
@@ -761,8 +766,13 @@ reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, case
 | `PUT /api/account/password` (card 2771) | anyone signed in, for their own account | Changes the account's own password, which ends its other sessions and invites |
 | `PUT /api/account/email` (card 2771) | anyone signed in, for their own account | Moves the address the account's invites, resets and security notices go to |
 | `POST /api/account/api-keys` (card 2771) | anyone signed in, for their own account | Makes an API key: a credential that outlives a password change unless it is ended |
+| `POST /api/account/api-keys/[id]/keep` (card 2772) | anyone signed in, for their own key | Keeps an API key made before two-step sign-in past its deadline |
+| `POST /api/account/two-step/authenticators` (card 2772) | anyone signed in, for their own account | Begins adding an authenticator: a second factor that signs in as the account |
+| `DELETE /api/account/two-step/authenticators/[id]` (card 2772) | anyone signed in, for their own authenticator | Removes an authenticator, and ends the account's other sessions |
+| `POST /api/account/two-step/recovery-codes` (card 2772) | anyone signed in, for their own account | Replaces the account's recovery codes, each of which signs in in place of a code |
+| `DELETE /api/account/two-step/banner` (card 2772) | anyone signed in, for their own account | Clears the warning that someone entered the account's password with a wrong code |
 
-The list is thirty-two: card 2701's eighteen (the import among them, standing as its
+The list is thirty-seven: card 2701's eighteen (the import among them, standing as its
 confirmation), card 2697's eight: the five its plan listed, and the three People writes its
 code review's part B added on 2026-11-04, S1, so that every People write that sets or ends an
 address or an account asks ([Decision Access and Personal Links](#decision-access-and-personal-links)),
@@ -771,7 +781,11 @@ card 2679's two, the ruling and the release, which ask every time
 2773's one, the reset of another account's two-step sign-in, which asks every time
 ([The Administrator's Reset](#the-administrators-reset)), and card 2771's three, the Account
 page's email, password and key forms, which asked for the password with checks of their own
-and now ask through the step-up like every other. The
+and now ask through the step-up like every other, and card 2772's five, the Account page's
+Keep this key and its Two-step sign-in section's add, remove, new recovery codes and That was me
+([Managing Two-Step Sign-In on the Account Page](#managing-two-step-sign-in-on-the-account-page-card-2772)).
+The new phone's code that finishes an add (`POST /api/account/two-step/authenticators/confirm`)
+is not listed: the step-up was asked at the start, and that code is the proof of the new device. The
 conditional ones test their field with `Object.hasOwn`, as the body readers do
 (`request-body.ts`), or the row: a user change of `username` or `emoji` alone, a backup save of
 the schedule, retention or failure mail alone, an empty column's delete, a People save of name,
@@ -835,13 +849,17 @@ guard)`:
 3. the account's hash, a bcrypt hash, or `403` "This account has no password to confirm with,
    so this cannot be done from it. Nothing was changed." with a `WARN` line, nothing counted
    (none exists today: every account has one);
-4. `checkCurrentProof`, one at a time for the session: the account's second factor first (step
-   2b: `403` `no-factor`, `503` `factor-unusable`, `400` `code-spent`, nothing counted, no
-   password compared), then each compare counted on the session's row, the code verified and
-   spent with the count cleared only when the password is right, the third wrong answer ending
-   the session ([Guessing a Current Password](#guessing-a-current-password)): `403` "Your
-   password or code was not right. Nothing was changed.", `403` signed out, or `429` (in
-   flight or busy, not counted);
+4. `checkCurrentProof`, one at a time for the session (a second while one is in flight is `429`
+   before anything else is asked, nothing counted or ended: card 2772's code review, CR1): the
+   account's second factor first (step 2b, every authenticator tried: `403` `no-factor`, `503`
+   `factor-unusable`, `400` `code-spent`, nothing counted, no password compared), then each
+   compare counted on the session's row by its weight, one for each authenticator its code was
+   tried against (a recovery code one; card 2772), the code verified and spent with the count
+   cleared only when the password is right, a count of 3 or more ending the session: with one
+   authenticator the third wrong answer, with two the second, with three the first
+   ([Guessing a Current Password](#guessing-a-current-password)): `403` "Your password or code
+   was not right. Nothing was changed.", `403` signed out, or `429` (in flight or busy, not
+   counted);
 5. an `INFO` line, "Password and code confirmed by *name* (ID: *n*) for *action*", or
    "Password and a recovery code confirmed by …" with a `WARN` line "A recovery code confirmed
    *action* for *name* (ID: *n*): *k* left" and the `recovery-code-used` notice.
@@ -923,44 +941,44 @@ sequenceDiagram
     S->>D: the account's hash: a bcrypt hash, else 403, nothing counted
     S->>P: session, user, password, code, hash, action
     P->>D: 1. the session's row (gone: signed out)
-    alt count already 3
+    alt 2. another check of this session in flight (asked first, card 2772's code review CR1)
+        P-->>A: 429 in-flight, not counted, nothing ended, no compare
+    else count already 3 or more
         P->>D: deleteSession (WARN)
         P-->>A: 403 signedOut, cookie cleared, no compare
-    else 2. another check of this session in flight
-        P-->>A: 429 in-flight, not counted, no compare
     end
-    P->>D: 2b. the account's factor
+    P->>D: 2b. the account's factors, every authenticator tried (matchFactors, card 2772)
     alt none
         P-->>A: 403 no-factor (WARN), not counted, no compare
-    else an authenticator code and a factor that does not open
+    else an authenticator code and no authenticator that opens
         P-->>A: 503 factor-unusable (ERROR), not counted, no compare
-    else an authenticator code matching a step at or below last_step
+    else an authenticator code whose every match is at or below its factor's last_step
         P-->>A: 400 code-spent, whatever the password, not counted, no compare
     end
-    Note over P: the secret zeroed. A code matching no step goes on, and a recovery code skips the opening
+    Note over P: each secret zeroed after its check. A code matching no step goes on, and a recovery code skips the opening. The weight w is the authenticators tried, or 1 for a recovery code
     alt 3. the account's five first-lane places taken
         P-->>A: 429 busy, not counted, no compare
     end
-    P->>D: 4. wrong_password_count + 1 (same turn, nothing awaited)
+    P->>D: 4. wrong_password_count + w (same turn, nothing awaited)
     P->>W: compare, in the first lane
     W-->>P: matches?
     alt wrong password
-        P->>D: the session's row still there? WARN, and the third ends the session
+        P->>D: the session's row still there? WARN, and a count of 3 or more ends the session
         P-->>A: 403 Your password or code was not right. (or signed out), the code never examined again
     else right password: one transaction, nothing awaited
         P->>D: the session's row still there? (else signed out, nothing spent)
-        P->>D: the factor read and opened again (secret zeroed), matchingStep then spendStep, or spendRecoveryCode
+        P->>D: every authenticator read, opened and tried again (matchFactors, each secret zeroed), then spendStep of the matched one, or spendRecoveryCode
         alt right code, spent
             P->>D: wrong_password_count = 0, COMMIT
             S->>D: INFO Password and code confirmed by … for … (a recovery code: WARN, and the notice)
             R->>D: whilePasswordHolds: hash unchanged (else 409 changed, the code left spent)? then writeAs(guard again, the write)
             R-->>A: the route's own success
         else wrong code, or a recovery code used or unknown
-            P->>D: raiseSignal (banner), failed_codes_since_sign_in + 1, COMMIT, count left +1
-            P-->>A: 403 Your password or code was not right. (WARN, the third signs out), the wrong-code notice
+            P->>D: raiseSignal (the latest signal's moment, and the banner at most once an hour), failed_codes_since_sign_in + 1, COMMIT, count left + w
+            P-->>A: 403 Your password or code was not right. (WARN, a count of 3 or more signs out), the wrong-code notice
         else the step spent meanwhile, or the factor gone or not opening
-            P->>D: nothing spent, COMMIT, count left +1
-            P-->>A: 403 Your password or code was not right. (WARN, the third signs out)
+            P->>D: nothing spent, COMMIT, count left + w
+            P-->>A: 403 Your password or code was not right. (WARN, a count of 3 or more signs out)
         end
     end
 ```
@@ -1112,36 +1130,53 @@ released with it) has the server check it. The plan is
   two-step sign-in to confirm with, so this cannot be done from it. Nothing was changed.") and
   a `WARN` line, "Password not confirmed for user *n* on *action*: the account has no second
   factor" (defence in depth: since card 2769 no session exists without one; a recovery code
-  needs the factor row too). For an authenticator code, a factor that does not open (no MFA
-  key, another key, a secret that does not decrypt) is `503` `factor-unusable` ("Your
-  authenticator cannot be checked on this server right now. Use one of your recovery codes, or
-  ask an administrator. Nothing was changed."), with `factorSecret`'s own `ERROR` line; a
-  recovery code skips the opening and still works. A code whose matched step is at or below
-  the factor's `last_step` is `400` `code-spent` ("That code has just been used. Wait for the
-  next code from your authenticator app and enter it. Nothing was changed."), **whatever the
-  password**: it is decided before any compare, so it tells nothing of the password (the
-  plan review's S1). A code that matches no step goes on and is never refused here. The secret
-  is opened only to check, and zeroed in a `finally`.
-- **One attempt counts once, whichever part is wrong**, on the session's
-  `wrong_password_count` (step 4, as before), and the count is cleared **only** when both
-  pass. A wrong password: the code is never examined again, nor spent. A right password: one
-  synchronous transaction, nothing awaited, re-reads the session's row (gone: signed out,
-  nothing spent), reads and opens the factor again (the secret zeroed in a `finally`),
-  verifies the code at the moment it arrived, the clock read once at step 2b (that 30-second
-  step or the one before, `matchingStep`), so a step boundary passing during the compare does
-  not make a code that was good when it came a wrong one (the code review's CS2), spends it
-  (`spendStep`, the authority, or `spendRecoveryCode` for a recovery code)
-  and sets the count to 0. A fault inside rolls the spend and the clear back together and
-  leaves the attempt counted.
+  needs the factor row too). For an authenticator code, **every authenticator of the account
+  is tried** (`matchFactors` in `mfa-store.ts`, since card 2772; see
+  [Several Authenticators, Every One Tried](#several-authenticators-every-one-tried-card-2772)):
+  none that opens (no MFA key, another key, a secret that does not decrypt) is `503`
+  `factor-unusable` ("Your authenticator cannot be checked on this server right now. Use one of
+  your recovery codes, or ask an administrator. Nothing was changed."), with `factorSecret`'s
+  own `ERROR` line for each that did not open; a recovery code skips the opening and still
+  works. A code whose **every** match is at or below its factor's `last_step` is `400`
+  `code-spent` ("That code has just been used. Wait for the next code from your authenticator
+  app and enter it. Nothing was changed."), **whatever the password**: it is decided before any
+  compare, so it tells nothing of the password (the plan review's S1). A code that matches no
+  step goes on and is never refused here. Each secret is opened only to check, and zeroed in a
+  `finally` before the next is opened. **The attempt's weight is taken here** (card 2772, D4):
+  the number of authenticators tried, or 1 for a recovery code.
+- **One attempt counts once, by its weight, whichever part is wrong**, on the session's
+  `wrong_password_count` (step 4: `+ w` in one `UPDATE … RETURNING`, before the compare, the
+  same for a wrong password or a wrong code, and nothing added after it), and the count is
+  cleared **only** when both pass. A count of 3 or more ends the session: with one
+  authenticator the third wrong answer, with two the second, with three the first. A second
+  request while one is in flight is `429` before the count is looked at, so a right attempt
+  holding the count at 3 during its compare never makes it end the session (card 2772's code
+  review, CR1). A wrong password: the code is
+  never examined again, nor spent. A right password: one synchronous transaction, nothing
+  awaited, re-reads the session's row (gone: signed out, nothing spent), tries every
+  authenticator again (`matchFactors` with `said: false`, so a factor that did not open at 2b
+  is not said at `ERROR` twice; each secret zeroed in a `finally`), verifies the code at the
+  moment it arrived, the clock read once at step 2b (that 30-second step or the one before,
+  `matchingStep`), so a step boundary passing during the compare does not make a code that was
+  good when it came a wrong one (the code review's CS2), spends the matched factor's step alone
+  (`spendStep`, the authority, or `spendRecoveryCode` for a recovery code) and sets the count to
+  0. In the transaction a code is **wrong only when no factor matched it at 2b either**: a
+  match found at 2b and lost since (its step spent by another request, its factor removed or no
+  longer opening), a code whose every match is now spent, and a transaction in which no factor
+  opens all fail closed as a lost spend. A fault inside rolls the spend and the clear back
+  together and leaves the attempt counted.
 
 | When | Password | Code | Count | Code spent | Answer |
 |------|----------|------|-------|------------|--------|
-| 2b | not compared | authenticator, its step already spent | untouched | no | `400` `code-spent` |
-| 5 | wrong | not examined | stays +1; the third ends the session | no | `403` `wrong` (or signed out) |
+| 2b | not compared | authenticator, its every match already spent | untouched | no | `400` `code-spent` |
+| 5 | wrong | not examined | stays +w; 3 ends the session | no | `403` `wrong` (or signed out) |
 | 5, transaction | right | right, spent now | set to 0 | yes | the action |
-| 5, transaction | right | wrong, or a used or unknown recovery code | stays +1; the third ends the session; the signal | no | `403` `wrong` (or signed out) |
-| 5, transaction | right | right, but the step spent by another request since 2b, or the factor gone or not opening | stays +1; the third ends the session | no | `403` `wrong` (or signed out) |
+| 5, transaction | right | wrong (no factor matched at 2b or now), or a used or unknown recovery code | stays +w; 3 ends the session; the signal | no | `403` `wrong` (or signed out) |
+| 5, transaction | right | matched at 2b, but the step spent by another request since, or the factor gone or not opening | stays +w; 3 ends the session | no | `403` `wrong` (or signed out) |
 | 5, transaction | either | the session's row went while the password was compared | n/a | no | `403` signed out |
+
+w is the number of the account's authenticators the code was tried against at 2b (1, 2 or 3),
+or 1 for a recovery code.
 
 - **One answer for either wrong part.** `403` `{ message: STEP_UP_WRONG, stepUp: 'wrong' }`,
   "Your password or code was not right. Nothing was changed.", never says which. A spend lost
@@ -1171,8 +1206,8 @@ released with it) has the server check it. The plan is
   guesser holds a session and is bounded by its three, after which a new session needs a code
   at `/login/verify`, where the lanes apply. Writing them here would let a stolen session pause
   or lock the owner's sign-in; reading the lock would let whoever locked codes at sign-in block
-  the owner's step-ups. The first factor only is read, as `/login/verify` reads it (card 2772
-  makes both try each).
+  the owner's step-ups. Since card 2772 both try every authenticator of the account through the
+  one matcher, `matchFactors`: the lanes are weighted at sign-in, the session's count here.
 - **A refusal after the check leaves the code spent** (S4): the check's transaction commits
   before the route's write. A `409` `changed` from `whilePasswordHolds`, a write-time `409` or a
   `500` leaves the code or recovery code spent. The email route's `409` "Email is already in
@@ -1202,7 +1237,14 @@ released with it) has the server check it. The plan is
   with a field of their own (the import, Drive Connect, Add User, 🔑, Add from accounts, the
   Person dialog) and the Account page's three forms set the password from it on a refusal, and
   always clear the code. `CurrentPasswordField` then puts the focus in the code field; on any
-  other refusal it puts it in the password, as before.
+  other refusal it puts it in the password, as before. Since card 2772 it also says what a
+  wrong answer costs before anything is sent, in the authenticator mode, when the account holds
+  more than one (the root layout's `authenticators`, the account's `totp` factors, 0 with no
+  user): with two, "You have 2 authenticators, so each wrong answer here counts twice: two wrong
+  answers sign this browser out."; with three, "You have 3 authenticators, so one wrong answer
+  here signs this browser out." The line sits under the mode switch, tied to the code field by
+  `aria-describedby`; in the recovery-code mode (weight 1) it goes, and a dialog mounted with no
+  page data reads 0 and shows none.
 
 Covered by `tests/step-up.test.ts` (T1 to T11 of the plan, and the cases rewritten for the
 code), `tests/check-at-the-write.test.ts` (T12), `tests/page-failures.test.ts` (T13, T14),
@@ -1218,7 +1260,7 @@ code), `tests/check-at-the-write.test.ts` (T12), `tests/page-failures.test.ts` (
 | Duration | One deadline per session: the earlier of its expiry (idle limit) and its start plus the total limit. Administrators and the superadmin 12 hours idle, 24 hours in total; users 3 days idle, 7 days in total. Judged on the account's role at every check. A start or expiry more than 60 seconds beyond what the role allows counts as passed |
 | What moves the expiry | Only `slidesSession(request)`: a write (a request that is not `GET` or `HEAD`, which has passed the same-origin write check), or a `GET` or `HEAD` with `Sec-Fetch-Mode: navigate`. Every other request is checked, with every refusal, but never slides: background polls, live-event re-reads, a stream's checks, an `EventSource` open or reconnect. A client-side navigation inside the app (a link click, which is a data fetch) no longer counts as activity; a write or a full page load does. A tab left open on its own does not keep a session alive |
 | Storage | `sessions` table in SQLite: `id` holds the SHA-256 of the code, 32 bytes as a BLOB, never the code |
-| Wrong current passwords | `sessions.wrong_password_count` (migration 0062, card 2701): one added for each password compared (a check refused unchecked, in flight, busy, or at step 2b, adds none), set to 0 only by a right password with a right code (card 2771), and the third wrong answer, either part, ends the session. See [Guessing a Current Password](#guessing-a-current-password) |
+| Wrong current passwords | `sessions.wrong_password_count` (migration 0062, card 2701): for each password compared, one added for each authenticator its code was tried against, or one for a recovery code (card 2772), before the compare (a check refused unchecked, in flight, busy, or at step 2b, adds none), set to 0 only by a right password with a right code (card 2771), and a count of 3 or more ends the session: with one authenticator the third wrong answer, either part, with two the second, with three the first. See [Guessing a Current Password](#guessing-a-current-password) |
 | Made after a second factor | `sessions.two_step` (migration 0066, card 2769): `createSession()` writes 1; a session with any other value is refused and deleted. See [Older Images and Instances](#older-images-and-instances) |
 | Flags | `httpOnly`, `sameSite: lax`, `secure` where cookies are HTTPS-only or the request is HTTPS; `Path=/`, never a `Domain`; `Max-Age` runs to the session's total limit |
 
@@ -1991,7 +2033,7 @@ Covered by `tests/password-checks.test.ts` and `tests/atomic-accounts.test.ts`.
 
 ### Guessing a Current Password
 
-Thirty-two actions ask a caller who is already signed in for their current password and, since
+Thirty-seven actions ask a caller who is already signed in for their current password and, since
 card 2771 (2026-11-17), a code from their authenticator app or a recovery code: the actions of
 [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701), among
 them the Account page's three, changing your email (`PUT /api/account/email`), changing your
@@ -2008,7 +2050,11 @@ just before it compares, all of these routes counted together, once for the atte
 part of it is wrong; a check refused before any compare (one of the session's own in flight,
 the account busy, or step 2b's factor refusals) adds none. A right password with a right code
 sets it back to 0, and nothing else does: no window, and a restart does not clear it. **The
-third wrong answer ends the session**, a wrong password and a wrong code counted alike. Steps 1 to 4 below run in one turn, with nothing awaited
+third wrong answer ends the session**, a wrong password and a wrong code counted alike. Since
+card 2772 an attempt with an authenticator code counts one for each of the account's
+authenticators it was tried against (taken at step 2b, before the compare), so a count of 3 is
+reached at the second wrong answer with two authenticators and at the first with three (see
+[Several Authenticators, Every One Tried](#several-authenticators-every-one-tried-card-2772)). Steps 1 to 4 below run in one turn, with nothing awaited
 between them, so no other check can come between the read, the refusals and the count. Until card 2701 the count was ten in 15 minutes, in memory: the window
 started again every 15 minutes and at every restart, about 960 guesses a day from one stolen
 cookie, answered `429` "Too many wrong passwords. Try again in N minute(s)." That answer, its
@@ -2018,27 +2064,28 @@ window and its `current-password:<session>` key are gone.
 flowchart TD
     Ask["A step-up action<br/>(the Account page's three among them)"] --> Text{"The route's own refusals that need no password,<br/>then a password and a code that are text,<br/>the code in one of its two forms?"}
     Text -->|"no"| Bad["400, 403, 404 or 409 in the route's own words,<br/>or 400 missing or code-malformed:<br/>nothing checked, nothing counted"]
-    Text -->|"yes"| Row{"1. The session's row:<br/>there, and its count under 3?"}
+    Text -->|"yes"| Row{"1. The session's row there?"}
     Row -->|"gone"| Out["Session ended, cookie cleared:<br/>403 signedOut, no compare"]
-    Row -->|"3 or more"| Out
-    Row -->|"yes"| Flight{"2. Another check of this session in flight?"}
-    Flight -->|"yes"| R429["429 STEP_UP_IN_FLIGHT, in-flight:<br/>not counted, no compare"]
-    Flight -->|"no"| Factor{"2b. The account's factor<br/>(card 2771)"}
+    Row -->|"yes"| Flight{"2. Another check of this session in flight?<br/>(asked before the count, CR1)"}
+    Flight -->|"yes"| R429["429 STEP_UP_IN_FLIGHT, in-flight:<br/>not counted, nothing ended, no compare"]
+    Flight -->|"no"| Limit{"Its count under 3?"}
+    Limit -->|"3 or more"| Out
+    Limit -->|"yes"| Factor{"2b. The account's factors, every one tried<br/>(cards 2771, 2772): weight w"}
     Factor -->|"none"| NoFactor["403 no-factor, WARN:<br/>not counted, no compare"]
-    Factor -->|"authenticator code,<br/>factor does not open"| Unusable["503 factor-unusable, ERROR:<br/>not counted, no compare"]
-    Factor -->|"authenticator code,<br/>its step already spent"| Spent["400 code-spent, whatever the password:<br/>not counted, no compare"]
-    Factor -->|"otherwise"| Place{"3. Fewer than 5 of the account's<br/>first-lane checks in flight?"}
+    Factor -->|"authenticator code,<br/>none opens"| Unusable["503 factor-unusable, ERROR:<br/>not counted, no compare"]
+    Factor -->|"authenticator code,<br/>its every match already spent"| Spent["400 code-spent, whatever the password:<br/>not counted, no compare"]
+    Factor -->|"otherwise: w = authenticators tried,<br/>or 1 for a recovery code"| Place{"3. Fewer than 5 of the account's<br/>first-lane checks in flight?"}
     Place -->|"no"| Busy["429 The server is very busy<br/>checking passwords right now, busy:<br/>not counted, no compare"]
-    Place -->|"yes"| Count["4. sessions.wrong_password_count + 1<br/>(same turn, nothing awaited)"]
+    Place -->|"yes"| Count["4. sessions.wrong_password_count + w<br/>(same turn, nothing awaited)"]
     Count --> Check{"The right password?"}
     Check -->|"no"| Again{"The session's row still there?"}
-    Check -->|"yes"| Tx{"One transaction: the session's row there,<br/>the factor opens again, the code right,<br/>and spent now?"}
+    Check -->|"yes"| Tx{"One transaction: the session's row there,<br/>every factor tried again, a match,<br/>and the matched factor's step spent now?"}
     Tx -->|"row gone"| Out
     Tx -->|"yes"| Clear["Count set to 0,<br/>and the request goes on"]
     Tx -->|"wrong code: signal raised,<br/>failed_codes_since_sign_in + 1"| Again
     Tx -->|"spent meanwhile, or the factor<br/>gone or not opening"| Again
     Again -->|"no"| Out
-    Again -->|"yes, count 3"| Out
+    Again -->|"yes, count 3 or more"| Out
     Again -->|"yes, count 1 or 2"| Wrong["403 Your password or code was not right, wrong,<br/>and one WARN line naming the route and the user"]
 ```
 
@@ -2062,7 +2109,11 @@ flowchart TD
   for this session. Wait for that answer and try again. Nothing was changed." (`stepUp:
   "in-flight"`) with no password compared and **nothing counted**: it compared nothing (S1).
   With one check at a time, nothing else can add to the count between a check's own count and
-  its answer, so the third wrong one is always the one that ends the session. The set of
+  its answer, so the wrong one that takes the count to 3 or more is always the one that ends
+  the session. It is asked **before** the count is looked at (card 2772's code review, CR1):
+  a check under way has already added its weight, so with three authenticators a right one
+  holds the count at 3 until it clears it, and a second request from the same session in that
+  moment must be told to wait, not signed out. The set of
   sessions with a check under way is in memory, as the requests it guards are. The pages send
   one request per press and turn their buttons off while it is answered, so a person does not
   meet it.
@@ -2084,9 +2135,12 @@ flowchart TD
   [Off the Server's Thread](#off-the-servers-thread-card-2191).
 - **One function.** `checkCurrentProof(sessionHash, userId, password, code, hash, where)` in
   `src/lib/server/auth.ts` (`checkCurrentPassword` until card 2771, which replaced it rather
-  than wrapping it, and `currentPasswordMatches` until card 2191) reads the row and ends the
-  session at three, refuses a second check in flight, checks the account's factor (step 2b),
-  refuses a sixth check for the account, then counts the attempt and checks the password on a
+  than wrapping it, and `currentPasswordMatches` until card 2191) reads the row, refuses a
+  second check in flight (before the count is looked at, so a check under way that has counted
+  its weight never makes a second request end the session: card 2772's code review, CR1), ends
+  the session at a count of 3 or more, checks the account's factors (step 2b, every
+  authenticator tried, which sets the weight: one for each tried, a recovery code one),
+  refuses a sixth check for the account, then counts the attempt by its weight and checks the password on a
   worker thread in the first lane, all but the check in one turn; then, for a right password,
   verifies and spends the code and clears the count in one transaction (see
   [The Code Beside the Password](#the-code-beside-the-password-card-2771)). A check that fails
@@ -3160,16 +3214,23 @@ sequenceDiagram
 3. Neither field sent: `400`, nothing counted. A recovery code goes to step 6.
 4. **The lane neither locked nor paused**: locked is `403`, paused is `429` with the minutes
    left. Neither is counted. A pause whose time cannot be read is read as the lock.
-5. **A factor that opens** (`factorSecret()`): none is `503`, nothing counted, one `ERROR` line.
-   That is also the answer with no MFA key loaded, and for an account whose factor went while
-   it was signing in.
-6. **Counted**, one statement each: the challenge's `wrong_count`, the lane's count and
-   `failed_codes_since_sign_in`.
-7. **Compared** (`matchingStep()`, both steps in constant time). Right: the counts taken back,
-   then `spendStep()`; a step already spent is `400` "wait for the next code", with the counts
-   as they were. Wrong: the counts stand, `codePause()` on the lane's new count sets a pause or
-   reaches the lock, and the fifth wrong code on the challenge deletes it: `400` "Too many wrong
-   codes. Sign in again." (when that is also the lane's fifth, the pause and its notice are
+5. **Every authenticator of the account tried** (`matchFactors()`, since card 2772: see
+   [Several Authenticators, Every One Tried](#several-authenticators-every-one-tried-card-2772)):
+   none that opens is `503`, nothing counted, one `ERROR` line for each that did not open
+   (`factorSecret()`), or one naming the challenge when the account holds none. That is also
+   the answer with no MFA key loaded, and for an account whose factors went while it was
+   signing in.
+6. **Counted**, one statement each: the challenge's `wrong_count` by one, the lane's count by
+   the number of authenticators tried (N), and `failed_codes_since_sign_in` by one.
+7. **What the compare found** (`matchingStep()` on every opened secret, both steps in constant
+   time, no early exit). A match on a step not yet spent: the counts taken back exactly (the
+   challenge 1, the lane to 0, `failed_codes_since_sign_in` 1, each clamped at 0), then
+   `spendStep()` of the matched factor alone; a code whose every match is spent is `400` "wait
+   for the next code", with the counts taken back exactly (the lane by N). Wrong: the counts
+   stand, `pauseCrossed(before, after)` on the lane's count (built on `codePause()`: the lock at
+   30 or more, otherwise the pause of the highest step the move crossed) sets a pause or reaches
+   the lock, and the fifth wrong code on the challenge deletes it: `400` "Too many wrong codes.
+   Sign in again." (when that also crosses a step of the lane, the pause and its notice are
    recorded too, and shown at the next sign-in).
 
 **A right code** takes the challenge, writes `last_sign_in_at` and `last_sign_in_from`, sets
@@ -3190,10 +3251,12 @@ on the recovery-code field, and so does a `403` "locked" answer.
 Every wrong authenticator code is counted three ways: on the challenge (five end it), on its
 **lane**, and in `failed_codes_since_sign_in`. A lane is `mfa_known_wrong` for a browser
 remembered for the account and `mfa_other_wrong` for any other, so wrong codes from strangers do
-not pause the owner's own browser. A lane's count is of wrong codes in a row; a right code sets
-it to 0 and clears its pause. The counts live in `users`, so a restart does not empty them.
+not pause the owner's own browser. A lane's count is of wrong codes in a row, each counted once
+for every authenticator it was tried against (card 2772: one, two or three); a right code sets
+it to 0 and clears its pause. The challenge and `failed_codes_since_sign_in` count the code
+typed, once. The counts live in `users`, so a restart does not empty them.
 
-| Wrong codes in a row in the lane | What it sets |
+| The lane's count | What it sets |
 |---|---|
 | 5 | Code entry paused 15 minutes |
 | 10 | 1 hour |
@@ -3203,11 +3266,73 @@ it to 0 and clears its pause. The counts live in `users`, so a restart does not 
 | 30 | Locked: codes refused until a recovery code or a reset |
 
 - **A recovery code always works**, past a pause or the lock.
-- Each pause and the lock is one `WARN` line naming the account, the lane and the count, and a
-  notice to the owner.
+- With N authenticators the count moves by N, so it can step over 5, 10 and the rest:
+  `pauseCrossed()` sets the pause of the highest step crossed, and the lock once the count is
+  30 or more. With two, the third wrong code in a row pauses (the count passes 5 at 6); with
+  three, the second.
+- Each pause and the lock is one `WARN` line naming the account and the lane, "…paused for *m*
+  minute(s) after too many wrong codes in a row (*lane* lane)" or "…locked after too many wrong
+  codes in a row (*lane* lane)", and a notice to the owner, neither with a count (card 2772,
+  E3: the weighted count is not the number typed). Each wrong code's own `WARN` line names the
+  authenticators tried and the codes typed on the challenge: "Wrong two-step sign-in code for
+  … (*lane* lane; *N* authenticator(s) tried; challenge *id*, *k* of 5)".
 - The per-challenge five bound how fast one browser can guess within a pause window; the lane
   bounds the account across browsers; the password's own throttles bound how often a challenge
   can be had.
+
+### Several Authenticators, Every One Tried (Card 2772)
+
+Since card 2772 (2026-11-17) an account may hold **up to three authenticators**
+(`MOST_AUTHENTICATORS = 3` in `mfa-store.ts`): a main phone, a spare, and a new phone during a
+replacement. They are added and removed on the Account page (see
+[Managing Two-Step Sign-In on the Account Page](#managing-two-step-sign-in-on-the-account-page-card-2772)).
+Sign-in (`verifyStep()`) and the step-up (`checkCurrentProof()`) share one matcher,
+`matchFactors(userId, digits, at, { said })`:
+
+- It reads the account's `totp` factors in id order and opens each in turn, one plaintext secret
+  at a time, zeroed in a `finally` before the next is opened. One that does not open is skipped
+  and counted `unusable`, with `factorSecret()`'s `ERROR` line, or with none when `said` is
+  false (the step-up's second look in its transaction, a moment after its first said it, using
+  `openFactor()`, the same open without the line).
+- `matchingStep()` runs on **every** opened secret, with no early exit, so the work does not say
+  which factor matched.
+- It answers `{ tried, unusable, matched, spent }`. `matched` is the lowest id among the factors
+  whose matching step is **above** their `last_step` (an unspent match), with that step; `spent`
+  is true only when the code matched and every match is at or below its factor's `last_step`
+  (the plan review's S6), so a spent step on one phone never hides a fresh match on another.
+  Nothing is spent here: the caller spends the matched factor's step alone (`spendStep()`).
+
+**The guessing bounds are held, not loosened** (the owner's weighting rulings of 2026-11-17). A
+guess against N authenticators has 2N candidates (the step and the one before, for each):
+
+| Where | Rule | Candidates before the bound, N = 1 / 2 / 3 |
+|---|---|---|
+| Sign-in lane (`mfa_<lane>_wrong`, locked at 30) | **+N** per wrong code; `pauseCrossed(before, after)` | 2N × ⌈30/N⌉ = **60 / 60 / 60** in a million: unchanged, since 1, 2 and 3 divide 30 (at 4 it would be 64, the reason for the cap) |
+| Challenge (`wrong_count`, five end it) | **+1** per code, not weighted, so the first wrong code still raises the stolen-password signal whatever N | 10 / 20 / 30 per challenge, a speed bump under the lane |
+| `failed_codes_since_sign_in` | +1 per code | a count shown to the holder |
+| Step-up (`sessions.wrong_password_count`, 3 ends the session) | **+w before the compare**, w = the authenticators tried at 2b, 1 for a recovery code; the same for a wrong password or a wrong code; nothing added after the compare | **6 / 8 / 6** in a million per stolen session that also holds the password |
+| Recovery codes | one 80-bit candidate | unchanged |
+
+A right code sets the lane to 0 and clears its pause, and takes back 1 on the challenge and 1 on
+`failed_codes_since_sign_in`, each clamped at 0. Only a code whose every match is spent (or
+whose step another request spent meanwhile) takes back exactly what it counted: N on the lane,
+1 on the challenge and 1 on `failed_codes_since_sign_in`, each clamped at 0, leaving the lane's
+earlier wrong codes and any pause standing. A right step-up clears the session's count as
+before.
+
+**Not chosen**: an unweighted step-up (6 / 12 / 18 in a million per stolen session; recorded in
+the plan for the owner to overrule), one count per code everywhere (a lane bound of 120 and 180
+in a million), a cap of five, and asking the holder which authenticator (it would name the
+factors to whoever holds the password).
+
+**What the holder notices.** With two authenticators, three wrong codes in a row pause sign-in in
+that lane and two wrong answers at a confirmation sign the browser out; with three, two wrong
+codes pause sign-in and one wrong answer at a confirmation signs the browser out. The confirm
+dialog says so before sending (`CurrentPasswordField`, see
+[The Code Beside the Password](#the-code-beside-the-password-card-2771)).
+
+Covered by `tests/account-two-step.test.ts` (T1 to T3), `tests/two-step-sign-in.test.ts` (T4 to
+T6), `tests/step-up.test.ts` (T7 to T9) and `tests/confirm-modal.svelte.test.ts` (T10).
 
 ### Recovery Codes at Sign-In
 
@@ -3443,7 +3568,10 @@ read as raised since):
 - **Continue**, which loads the home page afresh, so the page's signed-in state is read anew.
 
 The count is then 0, and the last sign-in is written, so a banner is reported once: the next
-sign-in goes home. The banner itself stays set, for card 2772. Both forms call
+sign-in goes home. A sign-in does not clear the banner: since card 2772 it stays at the top of
+the Account page until its holder clears it there, with **That was me** (a step-up that clears
+only the warning the page showed), or by changing their own password (see
+[The Warning at the Top of the Account Page](#the-warning-at-the-top-of-the-account-page)). Both forms call
 `update({ invalidateAll: false })`, so the report is not reloaded away (the reload of a signed-in
 browser on these pages would go home); without JavaScript the page shows the report from the
 action's answer.
@@ -3458,17 +3586,23 @@ the owner. None holds a code, secret, token or link.
 | Notice | When | At most once an hour |
 |---|---|---|
 | `enrolled` | Every enrolment; lists the account's live API keys and webhooks, to revoke any not recognised | No |
-| `recovery-code-used` | A recovery code signs in, or confirms a step-up action (card 2771: worded "to confirm a change"); how many are left, and to make new ones at 3 or fewer | No |
-| `codes-paused` | A lane pauses; until when | No |
-| `codes-locked` | A lane reaches 30 | No |
+| `recovery-code-used` | A recovery code signs in, or confirms a step-up action (card 2771: worded "to confirm a change"); how many are left, and at 3 or fewer "make a new set on your Account page as soon as you can" (card 2772) | No |
+| `codes-paused` | A lane pauses; until when. Since card 2772 "Too many wrong authenticator codes in a row…", with no count | No |
+| `codes-locked` | A lane reaches 30 or more; with no count since card 2772 | No |
 | `recovery-codes-guessed` | Every tenth wrong recovery code in a row | No |
 | `wrong-code` | The first wrong code on a verify challenge, or a wrong code after a right password at a step-up (card 2771: worded "while confirming a change, and then a wrong code"); raises the security banner | Yes |
 | `unfinished-sign-in` | An unused verify challenge swept as expired; raises the banner | Yes |
+| `factor-added` | An authenticator added on the Account page (card 2772); its name and when it was added | No |
+| `factor-removed` | An authenticator removed on the Account page (card 2772); its name and when it was added, other browsers signed out, the account's live API keys and webhooks to revoke any not recognised, and "If the device was lost, also change your password." | No |
+| `codes-regenerated` | A new set of ten recovery codes made on the Account page (card 2772); the old ones no longer work | No |
 
 **The signals.** Someone who reaches a verify challenge had the password. So the first wrong
 code on one, and a verify challenge left unused until the sweep finds it expired, each set
 `security_banner` and `security_banner_at` by one conditional `UPDATE` that does nothing within
-an hour of the last (`raiseSignal()`), and mail only when it wrote. Expired challenges are
+an hour of the last (`raiseSignal()`), and mail only when it wrote. Every signal, one inside
+that hour included, also sets `security_signal_last_at` (migration 0069, card 2772's code
+review, CS1), in the same transaction: the hour throttles the banner and the mail, never the
+record of the latest, which **That was me** compares (below). Expired challenges are
 swept when a challenge is issued and, on their own, at start-up and every five minutes. An
 expired enrol challenge sends nothing. The third signal is the release mail.
 
@@ -3547,7 +3681,7 @@ code, a secret or a link.
 | # | Risk | Bound |
 |---|---|---|
 | R1 | On a server with **no mail host configured**, an account that existed at the release, with no factor and no link, can be set up first by someone who holds its password | 14 days from `two_step_released_at`, then never. An administrator's reset ends it for an account at once, and so does a reset by an older image. Where any mail host is configured, R1 does not apply, but an administrator who clears the mail settings within the 14 days reopens it: that is an administrator's action. A working copy closes it for every account. Reset every administrator's two-step sign-in before the release; the Users panel shows who still may |
-| R2 | API keys made before the release, on a password alone, keep working | A key is a non-interactive credential, a 256-bit secret kept hashed, and is recorded as such against ISO 27001 A.8.5. The enrolment notice and the report list the account's keys and webhooks; the release steps include a review. Card 2772 gives older keys a deadline |
+| R2 | API keys made before the release, on a password alone, keep working | **Closed by card 2772 (built 2026-11-17)**: migration 0069 gives every key that exists at that release a deadline 60 days after it, and one not kept on the Account page, with the password and a code, stops working then (see [Keys Made Before Two-Step Sign-In: the Deadline](#keys-made-before-two-step-sign-in-the-deadline-card-2772)). Until the deadline a key is a non-interactive credential, a 256-bit secret kept hashed, recorded as such against ISO 27001 A.8.5; the enrolment notice and the report list the account's keys and webhooks |
 | R3 | A password holder can evict the owner's live challenge: an account has at most three, the oldest goes | The owner signs in again. Each eviction needs the right password, and a verify challenge left unused is itself a signal (S12) |
 | R4 | An older image started after the release makes sessions and cookies on a password alone that it would accept | This image refuses both; the deployment guide makes a rollback a security event |
 
@@ -3555,12 +3689,301 @@ code, a secret or a link.
 
 | Control | How two-step sign-in meets it |
 |---|---|
-| A.8.5 Secure authentication | Two factors for every interactive sign-in: a password, then an authenticator code or a recovery code, before any session. No switch turns it off. Wrong codes are counted in the database, per challenge and per lane, with pauses and a lock that survive restarts. API keys are non-interactive credentials (R2). The code is asked for again, and checked, before every step-up action (cards 2770 and 2771, released together): the thirty-two destructive, privilege-changing, exfiltrating and credential-issuing actions, the Account page's email, password and key forms among them |
+| A.8.5 Secure authentication | Two factors for every interactive sign-in: a password, then an authenticator code or a recovery code, before any session. No switch turns it off. Wrong codes are counted in the database, per challenge and per lane, with pauses and a lock that survive restarts. API keys are non-interactive credentials (R2). The code is asked for again, and checked, before every step-up action (cards 2770 and 2771, released together): the thirty-seven destructive, privilege-changing, exfiltrating and credential-issuing actions, the Account page's email, password and key forms and (card 2772) its two-step section and Keep this key among them. Every authenticator of an account is tried, at sign-in and at a step-up, with the guessing bounds held (card 2772) |
 | A.5.17 Authentication information | Secrets sealed under a key kept out of the database; challenge tokens, link tokens and recovery codes kept only as hashes; nothing secret logged or answered. The owner is mailed at every enrolment, recovery-code use, pause, lock and likely stolen password, and shown the last sign-in and their keys |
 
 Covered by `tests/two-step-sign-in.test.ts`, `tests/two-step-enrol.test.ts`, and the pins in
 `tests/gate.test.ts`, `tests/atomic-accounts.test.ts`, `tests/migrations.test.ts` and
 `tests/mfa-storage.test.ts`.
+
+## Managing Two-Step Sign-In on the Account Page (Card 2772)
+
+Until card 2772 (built 2026-11-17) an account had exactly one authenticator and ten recovery
+codes, set up once at sign-in, and nothing on the Account page looked after them. The
+**🛡️ Two-step sign-in** section, after Change Password
+(`src/lib/components/account/TwoStepSection.svelte`), now lists the account's authenticators
+and lets their holder add one, remove one (never the last), and make a new set of recovery
+codes; the stolen-password warning sits at the top of the page, where it can be cleared. The
+plan is `docs/planning/card-2772-account-two-step.md`.
+
+| Route | Step-up | Body | Success |
+|---|---|---|---|
+| `POST /api/account/two-step/authenticators` | listed | `{ label, currentPassword, currentCode }` | `200` `{ pendingId, account, issuer, secret, qr, expiresAt }`, `Cache-Control: no-store` |
+| `POST /api/account/two-step/authenticators/confirm` | **not listed**: the new phone's code is the proof of the new device | `{ pendingId, code }` | `201` `{ id, label, createdAt }` |
+| `DELETE /api/account/two-step/authenticators/[id]` | listed | `{ currentPassword, currentCode }` | `200` `{ success: true, sessionsEnded }` |
+| `POST /api/account/two-step/recovery-codes` | listed | `{ currentPassword, currentCode }` | `200` `{ codes }`, ten as `XXXX-XXXX-XXXX-XXXX`, `Cache-Control: no-store` |
+| `DELETE /api/account/two-step/banner` | listed | `{ bannerAt, currentPassword, currentCode }` | `200` `{ success: true }` |
+| `POST /api/account/api-keys/[id]/keep` | listed | `{ currentPassword, currentCode }` | `200` `{ success: true }` (see [Keys Made Before Two-Step Sign-In: the Deadline](#keys-made-before-two-step-sign-in-the-deadline-card-2772)) |
+
+What each route does beyond its body and the step-up is in `src/lib/server/account-two-step.ts`
+(`authenticatorLabel`, `newPhoneCode`, `mayStartAdding`, `startAdding`, `finishAdding`,
+`removable`, `removeFactor`, `regenerateRecoveryCodes`, `dismissable`, `dismissBanner`,
+`twoStepView`). Each listed route asks its refusals in the step-up's guard, with nothing counted,
+and asks them again inside `whilePasswordHolds(writeAs(…))`; its log line and its notice wait for
+the commit. Nothing logs a name, a secret, a code or a pending id.
+
+### Adding an Authenticator
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Account page (TwoStepSection)
+    participant S as POST .../authenticators
+    participant U as confirmStepUp / checkCurrentProof
+    participant M as pending-authenticators.ts (memory)
+    participant C as POST .../authenticators/confirm
+    participant DB as SQLite
+    P->>S: label, currentPassword, currentCode (ConfirmModal, askPassword)
+    S->>S: guard, uncounted: label form (400), fewer than 3 (409), MFA key loaded (503 NO_MFA_KEY)
+    S->>U: 2b matchFactors, weight w, count +w, compare, spend the matched step
+    U-->>S: proven, password hash H
+    S->>DB: whilePasswordHolds(H) with writeAs: fewer than 3 again
+    S->>M: after that write returns: issuePendingAdd, one per account, sealed under mfa-add, 10 minutes
+    S-->>P: 200 pendingId, account, issuer, secret, qr, expiresAt (no-store), INFO line
+    P->>C: pendingId, code from the new phone
+    C->>C: code form, else 400 "Enter the 6-digit code…", uncounted
+    C->>DB: writeAs (session open, else 401)
+    C->>M: live add (else 409 ADD_ENDED), this pendingId (else 409 ADD_REPLACED for one of the last two it replaced, any other 409 ADD_ENDED), this session (else 409 ADD_ENDED)
+    C->>DB: hash still H (else forgotten, 409), 1 or 2 held (0 is forgotten, 409 ADD_ENDED, and 3 forgotten, 409)
+    C->>M: open the secret (else 503 NO_MFA_KEY, kept)
+    alt right code
+        C->>DB: addTotpFactor(label), spendStep(step)
+        C->>M: forgotten
+        C-->>P: 201, then INFO line and factor-added notice after commit
+    else wrong code
+        C->>M: wrong + 1, the fifth forgets it (409 ADD_TOO_MANY)
+        C-->>P: 400 ENROL_WRONG_CODE
+    end
+```
+
+1. **Start.** The holder types a name and presses **Add an authenticator**, which opens
+   `ConfirmModal` with `askPassword`. The guard reads `label` (required): every run of white space
+   collapsed to one space and the ends trimmed, then 1 to 40 characters, with no Unicode control
+   or format character (`\p{Cc}`, `\p{Cf}`). Refusals, all `400` and uncounted: "Name this
+   authenticator, such as Work phone.", "label must be at most 40 characters", "The name cannot
+   hold control or formatting characters." Then three already held is `409` "You have three
+   authenticators, the most an account can hold. Remove one first.", and no MFA key loaded `503`
+   "Two-step sign-in cannot be set up on this server right now. Ask an administrator." The write
+   asks the count and the key again. **Only after that write has returned** is the pending add
+   issued (the plan review's S7), and the answer shows the secret in groups of four and its QR
+   code once; the plaintext secret is zeroed once written into the answer.
+2. **The pending add** (`src/lib/server/pending-authenticators.ts`, imported by `mfa-store.ts`
+   and the routes, importing neither) is kept **in this process's memory**, as the import's
+   confirmations are: nothing of it is at rest and a restart ends it. **One per account**: a new
+   start, from any session of the account, replaces it. It holds the account, the hash of the
+   session that began it, the SHA-256 of its `pendingId` (the id itself, 32 random bytes as
+   base64url, goes to the page only), the password hash the step-up checked, the name, the new
+   secret sealed under this server's MFA key with additional data of its own,
+   `mfa-add:<user>:<idHash>` (`addAad` in `mfa-crypto.ts`, so it never opens as an enrolment's
+   or a factor's), its wrong codes, its end, ten minutes on, and the SHA-256 of the last two
+   pending ids it replaced while they were live (card 2772's code review, CS2: only those are
+   told `ADD_REPLACED`). At most 1,000 are held, the
+   oldest going first; the expired are swept as each is begun. It is **forgotten** by the
+   confirm that writes the factor, by its fifth wrong code, by a refusal that ends it (below),
+   by any sign-out of the account (`logout/+page.server.ts`), the account's own password change
+   (after commit), a reset of its two-step sign-in (`resetTwoStep()`, after commit), the removal
+   of an authenticator from another session (after commit), and a restart.
+3. **Confirm** reads `pendingId` (text, at most 64 characters) and `code`: at most 64
+   characters, then six ASCII digits once trimmed and every space dropped, else `400` "Enter the
+   6-digit code from your new authenticator app.", uncounted. Then, in one `writeAs` (the session
+   still open), in order, each refusal writing nothing:
+
+   | Check | Answer | The pending add |
+   |---|---|---|
+   | None live for the account (none, or ten minutes passed) | `409` "This set-up has ended. Start again with Add an authenticator." | gone |
+   | `pendingId` one of the last two the live one replaced (their SHA-256 kept in its entry, forgotten with it) | `409` "This set-up was replaced by a newer one. Use the newest, or start again." | kept |
+   | Any other `pendingId` not the live one's (made up, or older than those two, or one that had ended before the live one began) | `409` "This set-up has ended. …", as with none live, so that a session learns nothing of an add under way (card 2772's code review, CS2) | kept |
+   | Begun by another session of the account | `409` "This set-up has ended. …" | kept |
+   | The password changed since the start | `409` "Your password was changed while this was being saved. Nothing was changed. Try again." | forgotten |
+   | No authenticator held (the account was reset) | `409` "This set-up has ended. …" | forgotten |
+   | Three held already | `409` "You have three authenticators, …" | forgotten |
+   | Its secret does not open here (the MFA key gone or changed) | `503` "Two-step sign-in cannot be set up on this server right now. Ask an administrator." | kept |
+   | A wrong code | `400` "That code is not right. Check that your phone sets its clock automatically, then enter the current code." | wrong + 1 |
+   | The fifth wrong code | `409` "Too many wrong codes. Start again with Add an authenticator." | forgotten |
+
+   A right code: `addTotpFactor(userId, label, secret)`, `spendStep()` of the code's step (one
+   that cannot be spent is a fault and throws, rolling the write back), the pending add
+   forgotten; after the commit the `INFO` line "Authenticator *id* added by user *n*" and the
+   `factor-added` notice.
+4. **On the page**, while a set-up is shown: "Keep this page open until the new phone's code is
+   accepted.", a `beforeunload` warning, the focus moved to the field labelled "Code from the new
+   authenticator" (apart from the step-up's "Code from your authenticator app"), and an
+   `aria-live="polite"` region saying each step ("Scan the QR code with the new phone, then enter
+   the code it shows.", "Authenticator added."). A `409` from the confirm ends the set-up on the
+   page with the server's words; a `400` keeps it to try again.
+
+### An Account's Authenticators
+
+```mermaid
+stateDiagram-v2
+    [*] --> One: first enrolment at /login/enrol (card 2769)
+    One --> Adding: step-up, one pending add per account
+    Two --> Adding: step-up, one pending add per account
+    Adding --> One: ended, 5 wrong codes, replaced, sign-out, password change, reset, restart
+    Adding --> Two: the new phone's right code (from One)
+    Adding --> Three: the new phone's right code (from Two)
+    Two --> One: remove with step-up while the other opens, other sessions ended
+    Three --> Two: remove with step-up while another opens, other sessions ended
+    One --> One: remove refused 409, add the new one first
+    Three --> Three: add refused 409, at most three
+    One --> [*]: admin or host reset (card 2773)
+    Two --> [*]: admin or host reset
+    Three --> [*]: admin or host reset
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Pending: start, after the step-up's write (replaces any of the account's)
+    Pending --> Pending: wrong code (1 to 4), wrong + 1
+    Pending --> Pending: refused, kept: ADD_REPLACED, another session's, 503 secret not opening
+    Pending --> Written: right code, factor written, step spent
+    Pending --> Gone: fifth wrong code (ADD_TOO_MANY)
+    Pending --> Gone: ten minutes (ADD_ENDED at the next confirm)
+    Pending --> Gone: password changed, account reset or three held, at the confirm
+    Pending --> Gone: sign-out, own password change, two-step reset, a removal from another session, restart
+    Written --> [*]
+    Gone --> [*]
+```
+
+### Removing an Authenticator
+
+`DELETE /api/account/two-step/authenticators/[id]`. The guard, nothing counted, and again in the
+write (`removable()`): not the caller's or not there, `404` "Authenticator not found"; no other
+authenticator, `409` "This is your only authenticator. Add the new one first, then remove this
+one."; none of the others opens under this server's key (asked quietly, `factorOpens()`, with no
+`ERROR` line), `409` "Your other authenticator cannot be checked on this server right now, so
+this one cannot be removed. Ask an administrator." (S8: an account is never left with none that
+works). Then, together in the write: the factor deleted; **every other session of the account
+ended, this one kept** (`endOtherSessions(userId, sessionHash)` in `auth.ts`); every pending
+sign-in and enrolment link ended (`endPendingSignIns()`). After the commit: a pending add another
+session holds forgotten, the `WARN` line "Authenticator *id* removed by its owner, user *n*: *k*
+other session(s) ended", and the `factor-removed` notice. A removed phone is often the lost one,
+and a session made with it would otherwise outlive it; API keys are kept, since they were not
+made with the factor.
+
+The dialog reads "Remove *name* (added *date time* UTC)? Every other browser signed in to your
+account will be signed out. If the device was lost, also change your password, and check the API
+keys and webhooks below: revoke any you do not recognise.", followed by the account's live keys
+(name, made, last used) and webhooks (board, host, made). Two removals at once from two sessions
+of one account: the first to write ends the other's session, so the second is signed out with
+only its code spent.
+
+### New Recovery Codes
+
+`POST /api/account/two-step/recovery-codes` replaces every recovery code of the account with ten
+new ones (`storeRecoveryCodes(userId, newRecoveryCodes())`), only their hashes kept, and answers
+them once. A step-up proved by a recovery code spends it, and the write then replaces it with the
+rest. After the commit: the `INFO` line "Recovery codes regenerated by user *n*" and the
+`codes-regenerated` notice. The page holds the codes in the component alone, never in its loaded
+data; the box offers **Copy**, and where the clipboard cannot be written **Download** (a text file
+made in the page) and **Select all**, and closes only on **I have saved these codes**. The codes
+left are said as: 0 "You have no recovery codes left. Make a new set now: without them, a lost
+phone means asking an administrator."; 1 "1 recovery code left. Make a new set."; 2 or 3 "*n*
+recovery codes left. Make a new set."; 4 to 10 "*n* recovery codes left."
+
+### The Warning at the Top of the Account Page
+
+While `security_banner` is set, the Account page opens with **⚠️ Was this you?**, above Profile:
+the reason in words (`bannerWords()`, exported from `second-step.ts`; a reason this server does
+not know is "Someone may know your password."), when (date, time, UTC), and, when a later
+signal came inside the hour, "It happened again, most recently *date time*.", then "If that was
+not you, change your password now.", **Change my password** (the focus to that form) and **That
+was me**.
+
+**That was me** is `DELETE /api/account/two-step/banner`, a step-up, with `bannerAt`, the
+moment of the **latest signal** the page showed: `security_signal_last_at`, or
+`security_banner_at` where that is NULL (a banner raised before migration 0069, or restored
+from a backup made before it). The guard, nothing counted: none set, `409` "There is no warning
+to dismiss."; any other latest moment, `409` "A newer warning arrived. Read it, then dismiss it
+again." The write is one `UPDATE users SET security_banner = NULL, security_banner_at = NULL,
+security_signal_last_at = NULL WHERE id = ? AND security_banner IS NOT NULL AND
+coalesce(security_signal_last_at, security_banner_at) = ?`, which must change the row, else the
+same `409` (S3: a newer warning the holder never saw is never cleared).
+
+Comparing on the latest signal and not on `security_banner_at` is card 2772's code review's
+**CS1**: `raiseSignal()` moves `security_banner_at` only when it is over an hour old, so a
+second signal inside that hour, a wrong code from someone who has the password, left no trace
+the dismiss could see, and a That was me sent from a page loaded before it cleared it unseen.
+Every signal now moves `security_signal_last_at`, so the page that did not show it is refused,
+read again, and shows it. Clearing **all three** columns matters: `raiseSignal()` raises only
+when `security_banner_at` is over an hour old, so clearing the reason alone would hide the next
+signal for up to an hour. An `INFO` line, "Security banner dismissed by user *n*", after the
+commit. The holder's own password change (`PUT /api/account/password`) clears all three
+columns in its write too: it is the remedy the warning asks for. Nothing else clears it: not a
+sign-in, new recovery codes, adding an authenticator, or an administrator's password reset.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant X as Someone with the password
+    participant R as raiseSignal (sign-in-challenges.ts)
+    participant DB as users
+    participant P as Account page
+    participant B as DELETE .../banner
+    X->>R: a wrong code at 10:00
+    R->>DB: security_signal_last_at = 10:00, banner and security_banner_at = 10:00 (over an hour since the last)
+    R-->>X: the owner mailed once
+    P->>DB: load: at 10:00, latestAt 10:00
+    X->>R: another wrong code at 10:05
+    R->>DB: security_signal_last_at = 10:05 only (inside the hour, no new banner, no mail)
+    P->>B: That was me, bannerAt 10:00 (the page loaded before 10:05)
+    B->>DB: guard, nothing counted: the latest is 10:05
+    B-->>P: 409 A newer warning arrived, the page read again
+    P->>B: That was me, bannerAt 10:05, with the password and a code
+    B->>DB: UPDATE all three to NULL WHERE the latest is still 10:05
+    B-->>P: 200, INFO line after the commit
+```
+
+### What the Account Page Loads
+
+`account/+page.server.ts` adds `twoStep` (`twoStepView(userId)`): `factors` (`id`, `label`,
+`kind`, `createdAt`, `lastUsedAt`, in id order), `codesLeft`, `banner` (`{ words, at, latestAt }`
+or null: `at` when it was raised, `latestAt` the latest signal's moment that That was me sends),
+`lastSignInAt`, `lastSignInFrom`, `failedCodesSince`, `most` (3), the live `keys` and `webhooks`
+for the Remove dialog (`keysAndWebhooksOf()`, exported from `second-step.ts`), and `words`: the
+codes-left words above, "Last sign-in to your account: *date time* UTC from *address*.", and
+"Wrong codes entered since: *n*." only when above 0. Never a secret, a key id, a factor uid, a
+spent step, a recovery code or a pending id. The root layout (`src/routes/+layout.server.ts`)
+adds `authenticators`, the signed-in account's `totp` factors (0 with no user), for the line in
+`CurrentPasswordField`. Each authenticator is listed with its name, "Authenticator app", when it
+was added, and "Last used *date time* UTC" or "Never used"; Remove on the only one and Add an
+authenticator at three are greyed with their reason written under them ("Add the new one first,
+then remove this one.", "You have three: remove one first."), tied by `aria-describedby`. The
+section begins with the last sign-in line and "Lost a phone? Sign in with a recovery code, add
+your new phone here, remove the lost one, then make new recovery codes and change your
+password."
+
+### Names, Notices and Log Lines
+
+An authenticator's name is its holder's text: shown through Svelte's escaping, escaped in mail
+(with the date it was added beside it, so look-alike names are told apart), and never written to
+a log line. The notices (`sendSecurityNotice()`), each with "If this was not you…":
+
+| Notice | Words |
+|---|---|
+| `factor-added` | "An authenticator, *name* (added *date* UTC), was added to your DumpFire account on *time* from *address*. It now signs in to your account with your password, as your other authenticators do." |
+| `factor-removed` | "An authenticator, *name* (added *date* UTC), was removed from your DumpFire account on *time* from *address*. Every other browser signed in to your account was signed out. This was confirmed with your password and a code: if it was not you, both are known to someone else.", the live API keys and webhooks, then "Revoke any you do not recognise. If the device was lost, also change your password." |
+| `codes-regenerated` | "A new set of ten recovery codes was made for your DumpFire account on *time* from *address*. The old codes no longer work." |
+
+`AUTH` lines: `INFO` "Authenticator set-up begun by user *n*", `INFO` "Authenticator *id* added by
+user *n*", `WARN` on removal (above), `INFO` "Recovery codes regenerated by user *n*", `INFO`
+"Security banner dismissed by user *n*", `INFO` "API key *id* kept past its deadline by user *n*".
+
+### Inherent Risks (S12)
+
+- **Adding.** Whoever holds a signed-in session, the password and a code (or a recovery code)
+  can add an authenticator of their own. That is the same proof that signs in, so it grants
+  nothing sign-in did not; the owner is mailed `factor-added` with the name and date, and an
+  administrator's reset removes every factor.
+- **Removing.** Whoever holds a session, the password and a code can remove the owner's other
+  authenticator and sign the owner's other browsers out. A password change, which the same proof
+  allows, already does as much; the owner is mailed, and an administrator's reset is the way
+  back.
+
+Covered by `tests/account-two-step.test.ts` (T17 to T29), with rows in
+`tests/access-every-route.test.ts`, `tests/request-body.test.ts`,
+`tests/check-at-the-write.test.ts`, `tests/page-failures.test.ts`, `tests/step-up.test.ts` (case
+1, thirty-seven) and `tests/mail-escaping.test.ts`.
 
 ## Passwords, Sessions and Invites Change Together
 
@@ -4665,9 +5088,11 @@ flowchart TD
 - **Counters zeroed.** Every account's consecutive wrong codes and pauses (`mfa_known_wrong`,
   `mfa_other_wrong`, `mfa_recovery_wrong` and their three `*_resumes_at`) are set to 0 and NULL.
   The same accounts keep this server's `last_sign_in_at`, `last_sign_in_from`,
-  `failed_codes_since_sign_in`, `security_banner` and `security_banner_at`, so an older backup
-  cannot erase the warning that someone else holds the password; any other account has the
-  backup's.
+  `failed_codes_since_sign_in`, `security_banner`, `security_banner_at` and (since migration
+  0069, card 2772's code review, CS1) `security_signal_last_at`, so an older backup cannot
+  erase the warning that someone else holds the password, nor the latest signal That was me
+  compares; any other account has the backup's (a backup made before 0069 has no latest
+  signal, NULL, and its banner is read by its `security_banner_at`).
 - **Leave to set up on a password alone** (`mfa_password_enrol`, card 2769) is zeroed for every
   account, and the same accounts then have this server's back: a backup gives it to no account,
   and a reset made here since the backup stays made. A working copy then takes it from every
@@ -5036,7 +5461,10 @@ flowchart LR
 4. Each request the key is let in with updates `last_used_at`; one refused for being over
    the limit does not
 5. Expired keys are rejected at validation time, and so is a key whose expiry names no
-   moment (`zzz`, `2099-02-30 08:00:00`): compared as text, such a key never expired
+   moment (`zzz`, `2099-02-30 08:00:00`): compared as text, such a key never expired. Since
+   card 2772 a key whose expiry is exactly now has ended (`keyEnded()`: an expiry at or before
+   now), where it worked until the second after; and a key made before two-step sign-in ends at
+   its deadline unless it is kept (below)
 6. A key ends when it is revoked on the Account page, or when its account's password is set
    in a way that ends keys: an administrator's reset, an invite used, or the holder's own
    change with "End my API keys too" ticked (see
@@ -5060,13 +5488,106 @@ before the password, and counted again in the same transaction as the insert.
 | No `currentPassword` or no `currentCode`, either empty or not text (a `password` is no longer read, card 2771) | `400` `{ message: "Enter your password and a code from your authenticator app to confirm this. Nothing was changed.", stepUp: "missing" }` |
 | A `currentCode` in neither form | `400` `{ message: STEP_UP_CODE_MALFORMED, stepUp: "code-malformed" }` |
 | The account has gone | `404` `User not found` |
-| The third wrong answer from this browser, password or code, at any step-up action (card 2701; it was the eleventh attempt in 15 minutes, answered `429`) | `403` `{ message: "Nothing was changed. This session has been signed out, after three wrong passwords or codes, or because it had ended: sign in again.", signedOut: true, stepUp: "signed-out" }`, the session ended. See [Guessing a Current Password](#guessing-a-current-password) |
+| A wrong answer from this browser, password or code, at any step-up action, that takes its count to 3 or more: each counts one for each authenticator its code was tried against, a recovery code one (card 2772), so the third with one authenticator, the second with two, the first with three (card 2701; it was the eleventh attempt in 15 minutes, answered `429`) | `403` `{ message: "Nothing was changed. This session has been signed out, after three wrong passwords or codes, or because it had ended: sign in again.", signedOut: true, stepUp: "signed-out" }`, the session ended. See [Guessing a Current Password](#guessing-a-current-password) |
 | A second current-password check from a browser whose first is still being checked | `429` `Your password is already being checked for this session. Wait for that answer and try again. Nothing was changed.` |
 | No second factor; an authenticator that cannot be opened here; an authenticator code whose step is spent (card 2771, before the password is compared) | `403` `no-factor`; `503` `factor-unusable`; `400` `code-spent` |
 | A wrong password or a wrong code | `403` `{ message: "Your password or code was not right. Nothing was changed.", stepUp: "wrong" }` |
 | All of it right | `201` with the key, shown once |
 
-Keys made before the password was asked for are kept.
+Keys made before the password was asked for were kept until card 2772, which gives them a
+deadline (below).
+
+### Keys Made Before Two-Step Sign-In: the Deadline (Card 2772)
+
+Until two-step sign-in, a key was made on a password alone, so it may have been made by whoever
+held the password (risk R2 of [Accepted Risks](#accepted-risks), now closed). **Migration 0069**
+(`drizzle/0069_add_api_key_deadline.sql`) gives every key that exists at card 2772's release a
+deadline 60 days after it:
+
+1. `ALTER TABLE api_keys ADD COLUMN deadline_at text` (null: no deadline);
+2. `settings.api_key_deadline` = `datetime('now', '+60 days')`, written once (`ON CONFLICT DO
+   NOTHING`);
+3. `deadline_at` set to it on every key whose `expires_at` is null **or later than it**,
+   compared as text (every stored expiry is in the stored form since card 2095). A key that ends
+   before the deadline anyway is left alone, and `expires_at` is never written: the holder's
+   choice stands.
+
+The cut-off is this release, not `two_step_released_at`: keys made between card 2769 and card
+2771 were made on a session and no code, the setting can be absent after a restore, and a key
+made since costs its holder one press of Keep. New keys get no deadline.
+
+```mermaid
+erDiagram
+    users ||--o{ api_keys : holds
+    users ||--o{ mfa_factors : "1 to 3 authenticators"
+    users ||--o{ mfa_recovery_codes : "10 per set"
+    api_keys {
+        int id PK
+        int user_id FK
+        text expires_at "the holder's choice, unchanged by 0069"
+        text deadline_at "0069: keep by this moment; null once kept, and for keys made since"
+    }
+    settings {
+        text key PK "api_key_deadline"
+        text value "0069: release + 60 days, kept across a restore"
+    }
+    mfa_factors {
+        int id PK
+        int user_id FK
+        text label "holder's text, 1 to 40 characters, no control or format characters"
+        int last_step "spent per factor"
+    }
+    users {
+        text security_banner "cleared by That was me (compare-and-clear) or own password change"
+        text security_banner_at "cleared with it, moved at most once an hour"
+        text security_signal_last_at "0069 (CS1): every signal, compared by That was me, cleared with it"
+    }
+```
+
+**One rule decides a key's end** (the plan review's S5), in `auth.ts`:
+`deadlinePassed(key, now)` is true for a `deadline_at` that is set and names no moment, or is at
+or before `now`; `keyEnded(key, now)` is true for an expiry at or before `now`, an expiry that
+names no moment, or a passed deadline. `keyHolder()` asks `keyEnded()`, so the gate and
+`stillAuthenticated()` (every v1 write asks again in its transaction) answer a key past its
+deadline `401` `Invalid or expired API key`, as an expired one. `keysAndWebhooksOf()` in
+`second-step.ts` asks the same rule, so the page after a right code, the enrolment and removal
+notices and the Remove dialog list only keys the gate would let in. The Keep route asks
+`deadlinePassed()` in its guard and in its write.
+
+**Keep this key** (`POST /api/account/api-keys/[id]/keep`, a step-up). The guard, nothing
+counted, and again in the write: not the caller's key, `404` "API key not found"; no deadline,
+`409` "This key has no deadline to clear."; a deadline passed or unreadable, `409` "This key has
+passed its deadline and no longer works. Generate a new key." The write sets `deadline_at = NULL`
+and nothing else: the expiry, hash and prefix are untouched, so the key the holder has goes on
+working as it is. A deadline that passes while the password is compared is refused by the write,
+the code then left spent. A key past its deadline is never revived. `INFO` "API key *id* kept
+past its deadline by user *n*".
+
+**On the Account page** each key row shows "Expires *date time* UTC" or "No expiry". A key with a
+deadline not passed adds "⚠️ Made before two-step sign-in: stops working on *date time* UTC
+unless you keep it" and **Keep this key** (`ConfirmModal`, `askPassword`); one past it says
+"Stopped working on *date time* UTC. Generate a new key." with no Keep. `GET
+/api/account/api-keys` answers `deadlineAt` for each key, as stored, null when it has none.
+
+**A restore** (`db/restore.ts`). This server's `api_key_deadline` is read before the clear. A
+backup whose `api_keys` has no `deadline_at` column (made before 0069) has, after the copy and
+inside the transaction, 0069's `UPDATE` repeated with that deadline, comparing the expiry through
+`stamp_of()` (`registerStampFunctions()`), since such a backup can hold one in another form; the
+setting is written back where the backup held none. With no readable deadline here, the
+restore's own moment is used, and written as the setting: such keys end at once, the safe side.
+A backup made since 0069 is restored as it is, so a key kept there stays kept. The count is
+`apiKeyDeadlines` in `RestoreResult` (and `CommittedRestore`), said in the import's answer
+("*n* API key(s) from before two-step sign-in were given this server's deadline, *date time*
+UTC.", with `apiKeyDeadlines` and `apiKeyDeadline`) and on the admin page's restore report.
+**Reset Everything** empties `api_keys` and `settings`: no key is left to need a deadline, and
+new keys get none.
+
+**Going back to an older image** keeps the column and the setting, unread: that image ignores
+`deadline_at`, so keys past their deadline work again there. A rollback past card 2772 is a
+security event. Webhooks a key set keep their present rule when the key ends (card 2893).
+
+Covered by `tests/api-key-deadline.test.ts` (T12 to T16), `tests/migrations.test.ts` (T11) and
+`tests/timestamps.test.ts`.
 
 ### What an API Caller Is Told
 
@@ -7834,16 +8355,20 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 
 | File | Purpose |
 |------|---------|
-| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentProof()` (`checkCurrentPassword()` until card 2771), the count of current-password and code guesses on the session's row, one check in flight per session, the account's factor checked before the password (step 2b), the code verified and spent with the count cleared in one transaction, and the sign-out at the third (cards 2701 and 2771), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `httpsOnlyCookie()`, the one `Secure` rule of every cookie the server sets (an `https:` request always; otherwise `COOKIE_SECURE` when set, else `NODE_ENV=production`), with `secureCookies()`, its environment half, private since card 2850; `openSessionUser()`, which each open live stream asks at each heartbeat; and, since card 2775, `sessionTokenHash()`, `SESSION_LIMITS`, the one deadline, `slidesSession()` (which requests move the expiry), `openSession()` (the session's user and deadline, for the streams) and `sessionEndTimer()` (a stream's timer to that deadline), `readSessionCookie()`, `httpsOnlyCookie()` and the cookie helpers, `endSessionsSent()` (sign-out), `endSessionsOf()` (a role change) and `replacementStart()` (a password change) |
+| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentProof()` (`checkCurrentPassword()` until card 2771), the count of current-password and code guesses on the session's row, one check in flight per session, the account's factor checked before the password (step 2b), the code verified and spent with the count cleared in one transaction, and the sign-out at the third (cards 2701 and 2771), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `httpsOnlyCookie()`, the one `Secure` rule of every cookie the server sets (an `https:` request always; otherwise `COOKIE_SECURE` when set, else `NODE_ENV=production`), with `secureCookies()`, its environment half, private since card 2850; `openSessionUser()`, which each open live stream asks at each heartbeat; and, since card 2775, `sessionTokenHash()`, `SESSION_LIMITS`, the one deadline, `slidesSession()` (which requests move the expiry), `openSession()` (the session's user and deadline, for the streams) and `sessionEndTimer()` (a stream's timer to that deadline), `readSessionCookie()`, `httpsOnlyCookie()` and the cookie helpers, `endSessionsSent()` (sign-out), `endSessionsOf()` (a role change) and `replacementStart()` (a password change); since card 2772 `endOtherSessions()` (every session of the account but one, for the removal of an authenticator), `deadlinePassed()` and `keyEnded()`, the one rule of a key's end that `keyHolder()` and `keysAndWebhooksOf()` ask, and `checkCurrentProof()`'s weight, every authenticator tried at 2b and again in the transaction (`matchFactors()`) |
 | `src/lib/server/cookie-header.ts` | `cookieValues()`, every value of a cookie name in the raw header; `onlyCookieValue()`, exactly one value in the shape given, and `sendsCookie()`, whether the name is sent at all, both built on it; used by the session cookie and the sign-in challenge cookie (card 2775) |
-| `src/lib/server/step-up.ts` | The current password and a code asked again before a destructive action (cards 2701 and 2771): `STEP_UP_ACTIONS` (thirty-two), `confirmStepUp()`, `readStepUpCode()` (the code's form), the INFO, recovery WARN and the two notices after the check, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) and [The Code Beside the Password](#the-code-beside-the-password-card-2771) |
+| `src/lib/server/step-up.ts` | The current password and a code asked again before a destructive action (cards 2701 and 2771): `STEP_UP_ACTIONS` (thirty-seven, card 2772's five among them), `confirmStepUp()`, `readStepUpCode()` (the code's form), the INFO, recovery WARN and the two notices after the check, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) and [The Code Beside the Password](#the-code-beside-the-password-card-2771) |
 | `src/lib/step-up-words.ts` | The step-up's words and codes, which the server answers with and the pages read: `STEP_UP_FIELD`, the refusals, `PASSWORD_CHANGED_MEANWHILE`, `CONFIRMATION_HEADER`, `StepUpCode`, `STEP_UP_CODE_FIELD` (`currentCode`), the `StepUpProof` type and `NO_PROOF` (card 2770), `STEP_UP_CODE_MALFORMED`, `STEP_UP_CODE_SPENT`, `STEP_UP_NO_FACTOR`, `STEP_UP_FACTOR_UNUSABLE` and `passwordKeptAfter()` (card 2771), and `stepUpRefusal()`, `refusalWatch()` and `isStepUpSignOut()`, which tell a refusal of the password from any other by its `stepUp` code |
-| `src/lib/components/CurrentPasswordField.svelte` | The one field for the caller's own password, asked again (card 2701's code review, F7): label, `autocomplete="current-password"`, the refusal in an alert, `aria-invalid` and `aria-describedby`, the focus on a refusal, and no field to type in once the session is signed out; since card 2770 also the code field under it, with its recovery-code switch and a required bindable `code`; since card 2771 the focus goes to the code field on the refusals that keep the password (`code-spent`, `code-malformed`, `factor-unusable`) |
+| `src/lib/components/CurrentPasswordField.svelte` | The one field for the caller's own password, asked again (card 2701's code review, F7): label, `autocomplete="current-password"`, the refusal in an alert, `aria-invalid` and `aria-describedby`, the focus on a refusal, and no field to type in once the session is signed out; since card 2770 also the code field under it, with its recovery-code switch and a required bindable `code`; since card 2771 the focus goes to the code field on the refusals that keep the password (`code-spent`, `code-malformed`, `factor-unusable`); since card 2772 the line under the code field that says what a wrong answer costs with two or three authenticators (the layout's `authenticators`) |
+| `src/lib/server/account-two-step.ts` | The Account page's Two-step sign-in section and the warning at its top (card 2772): `authenticatorLabel()`, `newPhoneCode()`, `mayStartAdding()`, `startAdding()`, `finishAdding()`, `removable()`, `removeFactor()`, `regenerateRecoveryCodes()`, `dismissable()`, `dismissBanner()`, `twoStepView()`, and the words of every refusal. See [Managing Two-Step Sign-In on the Account Page](#managing-two-step-sign-in-on-the-account-page-card-2772) |
+| `src/lib/server/pending-authenticators.ts` | An authenticator being added, between the step-up and the new phone's code (card 2772): one per account, in memory, sealed under `mfa-add:`, ten minutes, at most 1,000; `issuePendingAdd()`, `pendingAddOf()`, `isPendingId()`, `openPendingSecret()`, `countPendingWrong()`, `forgetPendingAdd()`, `forgetPendingAuthenticators()` (tests) |
+| `src/lib/components/account/TwoStepSection.svelte` | The section on the Account page (card 2772): the last sign-in, the lost-phone line, the authenticators with Remove, adding one, and the recovery codes left with Make new recovery codes |
+| `src/routes/api/account/two-step/` | The section's five routes (card 2772): `authenticators/+server.ts` (start), `authenticators/confirm/+server.ts`, `authenticators/[id]/+server.ts` (remove), `recovery-codes/+server.ts`, `banner/+server.ts` (That was me); and `src/routes/api/account/api-keys/[id]/keep/+server.ts`, Keep this key |
 | `src/lib/server/write-as.ts` | Who the caller is, asked again at the write (card 2253): `writeAs(locals, (caller) => …)`, the one transaction every write handler writes in, beginning with `stillAuthenticated()`; `stillCallerNow(locals)`, the same question in a transaction of its own, for the nine handlers whose work cannot run in one (the export the ninth, card 2701); `inWrite()`, the first statement of every service write, refused unless a `writeAs` callback is running, and `ServiceOptions`, what every service write is handed beside the caller (card 2012). See [Asked Again at the Write](#asked-again-at-the-write-card-2253) |
 | `src/lib/server/passwords.ts` | Every bcrypt hash and check, on worker threads in two lanes (card 2191): `checkPassword()`, `makePasswordHash()`, `CheckNotMade`, `callerHasGone()`, `passwordChecks()`, `BCRYPT_ROUNDS` and `DUMMY_HASH`. The only importer of bcryptjs |
 | `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME`; the MAC's domain, `known-browser:2:` since card 2769 |
-| `src/lib/server/sign-in-challenges.ts` | The pending sign-in of two-step sign-in (card 2769): the challenge cookie (`challengeCookieName()`, `readChallengeToken()`, `setChallengeCookie()`, `deleteChallengeCookie()`) and the set-up link's (`ENROL_LINK_COOKIE`); `issueChallenge()`, `liveChallenge()`, `takeChallenge()`, the counts, the enrol stages (`openEnrolState()`, `moveEnrolStage()`), `codePause()`, `raiseSignal()`, and the sweep of expired challenges, `sweepExpiredChallenges()` and `startChallengeSweep()` (at start-up and every five minutes). See [The Pending Sign-In](#the-pending-sign-in) |
-| `src/lib/server/second-step.ts` | What a right password leads to and the second step (card 2769): `afterPassword()` and the release mail, `verifyView()`, `verifyStep()`, `finishSignIn()`, `enrolView()`, `enrolCode()`, `enrolConfirm()`, `issueSetUpChallenge()` and `goToSetUp()` for the invite and the set-up, their helpers (`laneOf()`, `refuse()`, `openChallenge()`, `signedInAnswer()`), and every answer's words. Takes values, never a request body |
+| `src/lib/server/sign-in-challenges.ts` | The pending sign-in of two-step sign-in (card 2769): the challenge cookie (`challengeCookieName()`, `readChallengeToken()`, `setChallengeCookie()`, `deleteChallengeCookie()`) and the set-up link's (`ENROL_LINK_COOKIE`); `issueChallenge()`, `liveChallenge()`, `takeChallenge()`, the counts, the enrol stages (`openEnrolState()`, `moveEnrolStage()`), `codePause()`, `pauseCrossed()` (card 2772: the pause a lane's count crosses when it moves by more than one), `raiseSignal()`, and the sweep of expired challenges, `sweepExpiredChallenges()` and `startChallengeSweep()` (at start-up and every five minutes). See [The Pending Sign-In](#the-pending-sign-in) |
+| `src/lib/server/second-step.ts` | What a right password leads to and the second step (card 2769): `afterPassword()` and the release mail, `verifyView()`, `verifyStep()`, `finishSignIn()`, `enrolView()`, `enrolCode()`, `enrolConfirm()`, `issueSetUpChallenge()` and `goToSetUp()` for the invite and the set-up, their helpers (`laneOf()`, `refuse()`, `openChallenge()`, `signedInAnswer()`), and every answer's words; since card 2772 `bannerWords()` and `keysAndWebhooksOf()`, exported for the Account page. Takes values, never a request body |
 | `src/lib/server/otpauth.ts` | `base32()`, `otpauthUri()`, `secretInGroups()` and `qrDataUri()`, the QR code drawn by `uqr` as a `data:` image (card 2769). Pure |
 | `src/routes/login/verify/+page.server.ts`, `src/routes/login/enrol/+page.server.ts`, `src/routes/enrol/[token]/+page.server.ts` | The code page, the set-up page and a set-up link's page (card 2769). Each action awaits only its form, then hands the values on |
 | `src/lib/components/SignInReport.svelte` | The report after a right code or a confirm: wrong codes since the last sign-in, the banner, the account's keys and webhooks (card 2769) |
@@ -7880,16 +8405,16 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/lib/server/decision-cards.ts` | What is read of card-decision links (card 2680): `linkedCardsFor()` (cards on boards the viewer can open), `readCardDecisions()` (decisions the viewer may view), and `decisionLinksOfCardsUnchecked()`, which checks no access and whose callers a test pins |
 | `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]`, `/decision-link/[token]` (card 2675) and `/enrol/[token]` (card 2773), written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start (since card 2849 by those paths alone: there is no invite token in the database to look for), and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
 | `src/lib/server/mfa-key.ts` | The key that protects authenticator secrets (card 2768): `loadMfaKey()` and the cached `mfaKeyLoad()` and `currentMfaKey()`, read at the first call and never at import; `productionRules()`; the key file's checks, its atomic making outside production, and whether it is inside the database's folder; `keyFromBytes()`, the AES key, key id and key check; `mfaStartVerdict()`, with `reseal` for a change of key; `loadPreviousMfaKey()`, the old key named by `MFA_KEY_FILE_PREVIOUS`, never kept (card 2773). See [Second-Factor Secrets at Rest](#second-factor-secrets-at-rest-card-2768) and [Changing the Key at Start](#changing-the-key-at-start) |
-| `src/lib/server/mfa-crypto.ts` | `sealWith()` and `openSealed()`, AES-256-GCM bound to `factorAad()` or `enrolAad()`; `newFactorUid()`; `sha256Hex()`. Pure |
+| `src/lib/server/mfa-crypto.ts` | `sealWith()` and `openSealed()`, AES-256-GCM bound to `factorAad()`, `enrolAad()` or (card 2772) `addAad()`; `newFactorUid()`; `sha256Hex()`. Pure |
 | `src/lib/server/totp.ts` | Authenticator codes (RFC 6238 over RFC 4226): `hotp()`, `stepAt()`, `matchingStep()` (the current step and the one before, both compared in constant time), `newTotpSecret()`. Pure |
 | `src/lib/server/recovery-codes.ts` | `newRecoveryCodes()`, `canonicalRecoveryCode()` and `recoveryCodeHash()`, bound to the account. Pure |
-| `src/lib/server/mfa-store.ts` | The rows: `addTotpFactor()` with the key check, `factorSecret()`, `sealEnrolment()` and `openEnrolment()`, `spendStep()` and `spendRecoveryCode()` (one conditional `UPDATE` each), `storeRecoveryCodes()`, `endPendingSignIns()`, and `readMfaKeyCheck()`; `issueEnrolmentLink()` and `resetTwoStep()` (card 2773), each inside the caller's transaction; `usableEnrolmentLink()`, `releaseWindowOpen()` and `passwordSetUpEnds()` (card 2769) |
+| `src/lib/server/mfa-store.ts` | The rows: `addTotpFactor()` with the key check, `factorSecret()`, `sealEnrolment()` and `openEnrolment()`, `spendStep()` and `spendRecoveryCode()` (one conditional `UPDATE` each), `storeRecoveryCodes()`, `endPendingSignIns()`, and `readMfaKeyCheck()`; `issueEnrolmentLink()` and `resetTwoStep()` (card 2773), each inside the caller's transaction; `usableEnrolmentLink()`, `releaseWindowOpen()` and `passwordSetUpEnds()` (card 2769); `MOST_AUTHENTICATORS`, `matchFactors()` and `factorOpens()` (card 2772), and `resetTwoStep()` forgetting a pending add after its commit |
 | `src/routes/api/users/[id]/mfa/reset/+server.ts` | An administrator's reset of another account's two-step sign-in (card 2773): the refusals before the password and in the transaction, the notice after the commit, and the three checks before the link is put in the answer. See [The Administrator's Reset](#the-administrators-reset) |
 | `scripts/mfa-reset.mjs` | The host's reset of an account's two-step sign-in by its username (card 2773), standalone, in the image at `/app/scripts/`. See [The Host's Command](#the-hosts-command) |
 | `src/lib/server/mfa-backup.ts` | What a restore does with second factors (card 2768): `readMfaHere()`, `restoreMfaRows()`, `readBackupMfaKeyCheck()` (the backup's key check from its table storage), `MFA_ROWS_NOT_RESTORED` and `mfaWithoutFactorSentence()` |
 | `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites (the used ones it keeps hold only hashes since card 2849), pending sign-ins and enrolment links (card 2768), the key remembered browsers are signed with, every request's link and the request form's key, and every secret, then sealed (`withoutSecrets()`); `runBackup()` does not try a destination whose credentials are not entered |
 | `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
-| `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`, which since card 2849 gives a used invite an older backup held in plain 32 random bytes as it reads it, with 0068's `UPDATE` repeated after the copy as a backstop; `backupLacksSuperadmin()` |
+| `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`, which since card 2849 gives a used invite an older backup held in plain 32 random bytes as it reads it, with 0068's `UPDATE` repeated after the copy as a backstop; since card 2772 0069's `UPDATE` repeated for a backup made before it, with this server's API key deadline (`RestoreResult.apiKeyDeadlines`); `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
 | `src/lib/server/startup-checks.ts` | `reportInstallation()`, the fourteen checks the server makes at start, each a line when it finds something (the secrets a backup lacks, `WEBHOOK_ALLOW_INSIDE` entries ignored, boards over the webhook cap, webhooks refused and SFTP destinations without a confirmed host key are described under their own cards); among them: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `reportPlainOriginBehindHttps()` (card 2850), one `WARN` in a built server whose App URL is `https:` while `ORIGIN` is set and `http:` and plain-HTTP cookies would not be `Secure` (see [Every Cookie DumpFire Sets](#every-cookie-dumpfire-sets-card-2850)); `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start; and `endPlainInvites()` (card 2849), which at every start ends each unused invite an older image stored in plain and gives each used one 32 random bytes, in one transaction, with one `WARN` line built from what changed; and `endPlainSessions()` (card 2775), which at every start, before the clean-up of ended sessions, deletes each session an older image stored in plain, with one `WARN` line |
 | `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194); `accountKey()`, the `user:<id>` key the password step and the second step both count under (card 2769) |

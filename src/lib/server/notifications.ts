@@ -430,13 +430,21 @@ export type SecurityNotice =
 	| 'codes-locked'
 	| 'recovery-codes-guessed'
 	| 'wrong-code'
-	| 'unfinished-sign-in';
+	| 'unfinished-sign-in'
+	// Card 2772 (D8): the Account page's two-step section.
+	| 'factor-added'
+	| 'factor-removed'
+	| 'codes-regenerated';
 
 /**
  * What a security notice names: when (said in UTC) and from which address, as
- * received, null where there is none; and, by notice, how many wrong codes,
- * until when code entry is paused, how many recovery codes are left, and the
- * account's live API keys and the webhooks it set that are on (S2).
+ * received, null where there is none; and, by notice, how many wrong
+ * recovery codes (`codes-paused` and `codes-locked` name none: a sign-in lane
+ * counts one for each authenticator a code was tried against, which is not
+ * the number typed, card 2772, E3), until when code entry is paused, how
+ * many recovery codes are left, the account's live API keys and the
+ * webhooks it set that are on (S2), and the authenticator added or removed:
+ * its name, the holder's own text, and when it was added (card 2772, S9).
  */
 export type SecurityNoticeDetail = {
 	at: Date;
@@ -446,6 +454,8 @@ export type SecurityNoticeDetail = {
 	codesLeft?: number;
 	apiKeys?: { name: string; createdAt: string; lastUsedAt: string | null }[];
 	webhooks?: { board: string; host: string; createdAt: string }[];
+	/** The authenticator's name and when it was added, in the stored form (card 2772). */
+	authenticator?: { label: string; createdAt: string };
 	/**
 	 * The notice is of a step-up, a change confirmed with the password and a
 	 * code (card 2771, D12), not of a sign-in: `recovery-code-used` and
@@ -463,7 +473,10 @@ export type SecurityNoticeDetail = {
  * Each says when and from where, and what to do if it was not them. Never a
  * code, a secret, a token or a link. A recovery code used, or a wrong code
  * after the right password, at a step-up (card 2771) is the same notice,
- * worded for confirming a change (`confirming`).
+ * worded for confirming a change (`confirming`). An authenticator added or
+ * removed, and a new set of recovery codes, on the Account page (card 2772,
+ * D8), each confirmed with the password and a code; a removal lists the
+ * account's live API keys and webhooks, to revoke any not recognised (S4).
  *
  * Nothing is sent unless a mail host is set up and its password is not
  * missing. Called once the write it follows from is committed, and never
@@ -487,6 +500,11 @@ export function sendSecurityNotice(userId: number, notice: SecurityNotice, detai
 	const hooks = (detail.webhooks ?? []).map(
 		(hook) => `<li>${escapeHtml(hook.board)}, to ${escapeHtml(hook.host)}: made ${escapeHtml(hook.createdAt)} UTC</li>`
 	);
+	// The authenticator added or removed, by its name and when it was added (card 2772, S9).
+	const authenticator =
+		detail.authenticator === undefined
+			? 'an authenticator'
+			: `${escapeHtml(detail.authenticator.label)} (added ${escapeHtml(detail.authenticator.createdAt)} UTC)`;
 	const listed = (heading: string, items: string[]) =>
 		`</p><p style="color: #334155; line-height: 1.6;">${heading}</p>` +
 		(items.length === 0 ? '<p style="color: #64748b;">None.</p>' : `<ul style="color: #334155;">${items.join('')}</ul>`) +
@@ -513,14 +531,14 @@ export function sendSecurityNotice(userId: number, notice: SecurityNotice, detai
 					? `A recovery code was used to confirm a change on your DumpFire account on ${escapeHtml(when)}${from}. `
 					: `A recovery code was used to sign in to your DumpFire account on ${escapeHtml(when)}${from}. `) +
 				`You have ${detail.codesLeft ?? 0} recovery code${detail.codesLeft === 1 ? '' : 's'} left.` +
-				((detail.codesLeft ?? 0) <= 3 ? ' That is few: make a new set as soon as you can.' : ''),
+				((detail.codesLeft ?? 0) <= 3 ? ' That is few: make a new set on your Account page as soon as you can.' : ''),
 			after: 'If this was not you, someone holds your password and a recovery code: change your password straight away, and tell an administrator.'
 		},
 		'codes-paused': {
 			subject: 'Code entry for your DumpFire account is paused',
 			title: 'Code entry is paused',
 			body:
-				`${detail.count ?? 0} wrong authenticator codes in a row were entered for your DumpFire account, the last on ${escapeHtml(when)}${from}. ` +
+				`Too many wrong authenticator codes in a row were entered for your DumpFire account, the last on ${escapeHtml(when)}${from}. ` +
 				`Code entry is paused until ${escapeHtml((detail.until ?? detail.at).toUTCString())}. A recovery code still works.`,
 			after: notYou
 		},
@@ -528,7 +546,7 @@ export function sendSecurityNotice(userId: number, notice: SecurityNotice, detai
 			subject: 'Authenticator codes for your DumpFire account are locked',
 			title: 'Authenticator codes are locked',
 			body:
-				`${detail.count ?? 0} wrong authenticator codes in a row were entered for your DumpFire account, the last on ${escapeHtml(when)}${from}. ` +
+				`Too many wrong authenticator codes in a row were entered for your DumpFire account, the last on ${escapeHtml(when)}${from}. ` +
 				'Authenticator codes are locked: sign in with a recovery code, or ask an administrator to reset your two-step sign-in.',
 			after: notYou
 		},
@@ -552,6 +570,35 @@ export function sendSecurityNotice(userId: number, notice: SecurityNotice, detai
 			body:
 				`Someone entered your DumpFire password correctly on ${escapeHtml(when)}${from}, and did not finish signing in ` +
 				'with a two-step sign-in code.',
+			after: notYou
+		},
+		// Card 2772 (D8): each confirmed with the password and a code; the name is the holder's own text, escaped.
+		'factor-added': {
+			subject: 'An authenticator was added to your DumpFire account',
+			title: 'An authenticator was added',
+			body:
+				`An authenticator, ${authenticator}, was added to your DumpFire account on ${escapeHtml(when)}${from}. ` +
+				'It now signs in to your account with your password, as your other authenticators do.',
+			after: notYou
+		},
+		'factor-removed': {
+			subject: 'An authenticator was removed from your DumpFire account',
+			title: 'An authenticator was removed',
+			body:
+				`An authenticator, ${authenticator}, was removed from your DumpFire account on ${escapeHtml(when)}${from}. ` +
+				'Every other browser signed in to your account was signed out. This was confirmed with your password and a ' +
+				'code: if it was not you, both are known to someone else.' +
+				listed('Your API keys:', keys) +
+				listed('Your webhooks:', hooks) +
+				'Revoke any you do not recognise. If the device was lost, also change your password.',
+			after: notYou
+		},
+		'codes-regenerated': {
+			subject: 'New recovery codes were made for your DumpFire account',
+			title: 'New recovery codes were made',
+			body:
+				`A new set of ten recovery codes was made for your DumpFire account on ${escapeHtml(when)}${from}. ` +
+				'The old codes no longer work.',
 			after: notYou
 		}
 	};
