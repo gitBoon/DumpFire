@@ -10,10 +10,12 @@ import type { RequestHandler } from './$types';
 
 /**
  * GET /api/v1/cards/:cardId/attachments/:attachmentId — One file on a card,
- * as a download (card 2754, D8). It has to be on the card the path names: one
- * that is not is answered as one that is not there, before any question of
- * access, as the card window's route answers it (card 2361). Then view access
- * to the card's board (403), and the file itself (404 when it is not on disk).
+ * as a download (card 2754, D8). The card the path names is asked first (card
+ * 2762): one that is not there, or that the key's user cannot open, is `404
+ * Card not found` whatever attachment id follows it (card 2719). Then the file
+ * has to be on that card: one that is not is answered as one that is not
+ * there, as the card window's route answers it (card 2361). Then the file
+ * itself (404 when it is not on disk).
  *
  * The answer is the file and not JSON: always `attachment`, typed as an image
  * only when the bytes are the image type stored (`downloadHeaders`), with
@@ -24,10 +26,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	const cardId = pathId(params.cardId, 'card');
 	const attachmentId = pathId(params.attachmentId, 'attachment');
+	requireCard(locals.user, cardId, 'view');
+
 	const attachment = db.select().from(cardAttachments).where(eq(cardAttachments.id, attachmentId)).get();
 	if (!attachment || attachment.cardId !== cardId) throw error(404, 'Attachment not found');
-
-	requireCard(locals.user, attachment.cardId, 'view');
 
 	let filePath: string;
 	try {

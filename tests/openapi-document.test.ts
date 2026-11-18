@@ -2920,7 +2920,7 @@ describe('what a route answers, against the schema the document gives for it', (
 		// First of the dated notes, and marked breaking.
 		expect(note.match(/\*\*Changed on [^*]+\*\*/)?.[0]).toBe(heading);
 		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-17 (version 1.9.1).**'));
-		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7]);
+		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
 		for (const words of [
 			'(card 2719)',
 			'or anything on a board they cannot open',
@@ -2933,10 +2933,17 @@ describe('what a route answers, against the schema the document gives for it', (
 			'403 now means the user can open the board and their role does not allow the operation',
 			// The code review's CS2.
 			'GET /cards/{cardId}/board-history gives a span on a board the user cannot open by its dates alone, `boardId` null and `withheld` true',
-			'nothing else changed'
+			// Card 2762: under a card's address, the card is asked first.
+			'(7) under a card\'s address, the card is asked first: a card the key\'s user cannot open is 404 {"message": "Card not found"} whatever attachment id follows it (card 2762)',
+			'(8) nothing else changed'
 		]) {
 			expect(changes, words).toContain(words);
 		}
+		// The download says the same order (card 2762).
+		const download = spec.paths['/api/v1/cards/{cardId}/attachments/{attachmentId}'].get;
+		expect(download.description).toContain('The card is asked first');
+		expect(download.description).not.toContain('before any question of access');
+		expect(download.responses['404'].description).toContain('`Card not found`');
 
 		// The two shared answers say so: a 403 is the role, and a 404 is either.
 		const forbidden = spec.components.responses.Forbidden.description as string;

@@ -562,7 +562,7 @@ describe('GET /api/v1/cards/{cardId}/attachments/{attachmentId} (33)', () => {
 		}
 	});
 
-	it('answers a file on another card 404 before any question of access, no access 404 (card 2719), a file gone from disk 404, and a bad id 400', async () => {
+	it('answers a card the user cannot open 404 Card not found whatever the id (cards 2719, 2762), then a file on another card 404, a file gone from disk 404, and a bad id 400', async () => {
 		const other = makeCard(makeBoard({ owner: outsider, name: 'Not yours' }).cols['To Do'], { title: 'Elsewhere' });
 		const theirs = makeAttachment(other, { name: 'theirs.png', mimeType: 'image/png', content: png() });
 		const gone = makeAttachment(card, { name: 'gone.png', mimeType: 'image/png', file: false });
@@ -571,6 +571,8 @@ describe('GET /api/v1/cards/{cardId}/attachments/{attachmentId} (33)', () => {
 		expect(await download(owner, card.id, theirs.id)).toMatchObject({ status: 404, body: { message: 'Attachment not found' } });
 		expect(await download(owner, other.id, theirs.id)).toMatchObject({ status: 404, body: { message: 'Card not found' } });
 		expect(await download(outsider, card.id, mine.id)).toMatchObject({ status: 404, body: { message: 'Card not found' } });
+		// Their own file, under a card they cannot open: the card is asked first (card 2762).
+		expect(await download(outsider, card.id, theirs.id)).toMatchObject({ status: 404, body: { message: 'Card not found' } });
 		expect(await download(owner, card.id, gone.id)).toMatchObject({ status: 404, body: { message: 'File not found on disk' } });
 		expect(await download(owner, card.id, mine.id + 1000)).toMatchObject({ status: 404, body: { message: 'Attachment not found' } });
 		expect(await api('GET', `/api/v1/cards/${card.id}/attachments/x`, { user: owner })).toMatchObject({ status: 400, body: { message: 'Invalid attachment ID' } });

@@ -56,7 +56,9 @@ const spec = {
 			'(5) GET /cards/{cardId}/board-history gives a span on a board the user cannot open by its dates alone, `boardId` null and `withheld` true, where it gave the board\'s id; ' +
 			'(6) 403 now means the user can open the board and their role does not allow the operation; a milestone\'s own visibility is unchanged: ' +
 			'one the user cannot see is still 403 {"message": "No access to this milestone"}; ' +
-			'(7) nothing else changed: a script that took 403 for no access takes 404 the same way.\n\n' +
+			'(7) under a card\'s address, the card is asked first: a card the key\'s user cannot open is 404 {"message": "Card not found"} whatever attachment id follows it (card 2762), ' +
+			'where an id not on it was 404 {"message": "Attachment not found"}, so the ids on it could be told apart; ' +
+			'(8) nothing else changed: a script that took 403 for no access takes 404 the same way.\n\n' +
 			'**Changed on 2026-11-17 (version 1.9.1).** An account\'s image uploads through the card window count against the same allowances, and a JPEG keeps its orientation (card 2761): ' +
 			'(1) the 30 images an hour and 100 MB a day of a key\'s user also count the images that user uploads through DumpFire\'s own card window, and those count these, so a key can be answered 429 sooner; ' +
 			'(2) a JPEG uploaded through POST /api/v1/cards/{cardId}/attachments keeps its EXIF orientation, a value of 2 to 8, as one EXIF segment that holds nothing else, so a photo taken upright shows upright; ' +
@@ -5266,7 +5268,8 @@ const spec = {
 					'One file on a card, as its bytes and not JSON. It is always a download (Content-Disposition: attachment, with its name), never shown, with ' +
 					'X-Content-Type-Options: nosniff, Content-Security-Policy: sandbox and Cache-Control: no-store. Its Content-Type is image/png, image/jpeg, image/gif or image/webp ' +
 					'only when it was stored as that type and its bytes are that image; anything else, a text file among them, is application/octet-stream. ' +
-					'Needs view access to the card\'s board. A file on another card is answered as one that is not there, before any question of access. A failure is answered as JSON, as everywhere else.',
+					'Needs view access to the card\'s board. The card is asked first: one that is not there, or on a board the key\'s user cannot open, is 404 `Card not found` whatever attachment id follows it (since 1.10.0, card 2762). ' +
+					'Then a file on another card is answered as one that is not there, and then the file itself. A failure is answered as JSON, as everywhere else.',
 				operationId: 'getAttachment',
 				parameters: [
 					{ $ref: '#/components/parameters/cardId' },
@@ -5303,7 +5306,9 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'404': {
-						description: 'There is no such file on this card (`Attachment not found`), or its file is not on the server (`File not found on disk`)',
+						description:
+							'In this order: there is no such card, or it is on a board the key\'s user cannot open (`Card not found`, whatever attachment id follows it, since 1.10.0); ' +
+							'there is no such file on this card (`Attachment not found`); or its file is not on the server (`File not found on disk`)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Attachment not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },

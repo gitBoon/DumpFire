@@ -13,24 +13,25 @@ import type { RequestHandler } from './$types';
 
 
 /**
- * GET — download/serve a file. It has to be on the card the path names: one
- * that is not is answered as one that is not there (card 2361), before any
- * question of access, as a comment is. The card in the path was never read,
- * so a file was served under the address of any card.
+ * GET — download/serve a file. The card the path names is asked first (card
+ * 2762): one that is not there, or that the caller cannot open, is `404 Card
+ * not found` whatever attachment id follows it (card 2719's words). Then the
+ * file has to be on that card: one that is not is answered as one that is not
+ * there (card 2361; the card in the path was never read, so a file was served
+ * under the address of any card). It was looked up before the card, so the
+ * ids on a card the caller could not open could be told apart.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const cardId = pathId(params.id, 'card');
 	const attachmentId = pathId(params.attachmentId, 'attachment');
+	requireCard(locals.user, cardId, 'view');
+
 	const attachment = db.select().from(cardAttachments)
 		.where(eq(cardAttachments.id, attachmentId))
 		.get();
 	if (!attachment || attachment.cardId !== cardId) throw error(404, 'Attachment not found');
-
-	// The board is the one the attachment's own card is on. A card that could
-	// not be resolved used to skip the check instead of failing it.
-	requireCard(locals.user, attachment.cardId, 'view');
 
 	let filePath: string;
 	try {
@@ -54,7 +55,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	});
 };
 
-/** DELETE — remove an attachment, on the card the path names (404 otherwise, card 2361). */
+/**
+ * DELETE — remove an attachment, on the card the path names. The card is asked
+ * first, then whether the file is on it (404 otherwise, card 2361), then edit
+ * access (403): `deleteAttachment` (card 2762).
+ */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	requireUser(locals.user);
 

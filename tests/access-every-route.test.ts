@@ -3287,6 +3287,89 @@ for (const [key, entry] of Object.entries(TABLE)) {
 	});
 }
 
+// ─── An id under a card the caller cannot open (card 2762) ────────────────
+
+/**
+ * The routes whose path names a card and then something on it: an attachment
+ * or a comment. They are asked about the card first (card 2762): a caller who
+ * cannot open it is answered `404 Card not found` whatever id follows it, as a
+ * card that is not there is (card 2719), and the thing's own table is never
+ * read. They looked the thing up first, so an outsider could try ids under a
+ * card's address and learn which were that card's: `Attachment not found` for
+ * one that was not, `Card not found` (403 before card 2719) for one that was.
+ *
+ * The routes are found in the tree, every method of every pattern with a card's
+ * id and then another id, and held to the five known here: a route renamed or
+ * added fails each case rather than passing by matching nothing, or something
+ * new nobody has looked at (E11).
+ */
+const UNDER_A_CARD = [
+	'DELETE /api/cards/[id]/attachments/[attachmentId]',
+	'DELETE /api/cards/[id]/comments/[commentId]',
+	'GET /api/cards/[id]/attachments/[attachmentId]',
+	'GET /api/v1/cards/[cardId]/attachments/[attachmentId]',
+	'PUT /api/cards/[id]/comments/[commentId]'
+];
+const FOUND_UNDER_A_CARD: string[] = [];
+for (const pattern of routePatterns().filter((p) => /\/cards\/\[(?:id|cardId)\]\/[^/]+\/\[[^\]]+\]/.test(p))) {
+	for (const method of await routeMethods(pattern)) FOUND_UNDER_A_CARD.push(`${method} ${pattern}`);
+}
+
+describe('an id under a card the caller cannot open (card 2762)', () => {
+	/** The table a route's child id is a row of. */
+	const TABLE_OF: Record<string, string> = { attachments: 'card_attachments', comments: 'card_comments' };
+
+	/**
+	 * The ids `outsider` tries under board A's card, by what each is: the row's
+	 * own, one on another card of board A, one that is no row, and an
+	 * attachment whose file is not on disk or the outsider's own comment.
+	 */
+	function idsFor(child: string, own: number): [string, number][] {
+		if (child === 'attachments') {
+			const other = makeAttachment(w.A.other, { name: 'other.txt', uploadedBy: w.editor });
+			const noFile = makeAttachment(w.A.card, { name: 'gone.txt', uploadedBy: w.editor, file: false });
+			return [['its own', own], ['on another card of board A', other.id], ['whose file is not on disk', noFile.id], ['that is no row', noFile.id + 1]];
+		}
+		const other = makeComment(w.A.other, w.editor, `${MARK} comment on another card`);
+		return [['its own', own], ['on another card of board A', other.id], ["the outsider's own", w.formerComment.id], ['that is no row', other.id + 1]];
+	}
+
+	for (const key of UNDER_A_CARD) {
+		const [method, pattern] = key.split(' ') as [Method, string];
+		const child = pattern.split('/').at(-2)!;
+
+		it(`${key}: answers a caller who cannot open the card 404 Card not found, whatever id follows it, reading none`, async () => {
+			expect([...FOUND_UNDER_A_CARD].sort(), 'the routes with an id under a card').toEqual(UNDER_A_CARD);
+			// The table's own request for the route, with only its child id swapped.
+			const c = [TABLE[key]].flat()[0];
+			expect(unopenableOf(c), 'outsider cannot open the card').toContain('outsider');
+			const { path, body, headers } = parts(c.req(w));
+			const own = Number(path.split('/').at(-1));
+			expect(own, `the child id at the end of ${path}`).toBeGreaterThan(0);
+
+			for (const [what, id] of idsFor(child, own)) {
+				const req = { path: path.replace(/\/\d+$/, `/${id}`), body, headers };
+				const before = snapshotDb();
+				const filesBefore = uploadedFiles();
+				const reads = watchReads(TABLE_OF[child]);
+				let res: ApiResult;
+				try {
+					res = await call(method, pattern, req, 'outsider');
+				} finally {
+					reads.restore();
+				}
+				await sent.settle();
+
+				expect([res.status, res.body], `an id ${what}`).toEqual([404, { message: 'Card not found' }]);
+				expect(reads.inTransaction, `an id ${what}: the reads of ${TABLE_OF[child]}`).toEqual([]);
+				expectUnchanged(before);
+				expect(uploadedFiles(), `an id ${what}: the files`).toEqual(filesBefore);
+				expect(sent.all).toEqual([]);
+			}
+		});
+	}
+});
+
 // ─── Asked again at the write (card 2253) ──────────────────────────────────
 
 /**

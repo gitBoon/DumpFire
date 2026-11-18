@@ -6818,7 +6818,7 @@ board X, B has no access to X, and a key for B):
 | H6 | Unshare; with B's key `POST /api/v1/dependencies/bulk` with a link from B's card to a card of X, and the same with `999999` | Both 409 with `does not exist or is archived` for that end | "No edit access", or a duplicate or cycle |
 | H7 | As B, the burndown page with `?boardIds=<X>` | "Not found" | "No access" |
 | H8 | `GET /api/v1/openapi.json` | `info.version` `1.10.0`; the note first, "breaking" | 1.9.x |
-| H9 | Admin → ISO 27001 checklist, A.8.3 | Gap cards 2730 and 2762; accepted risk R5 | 2719 still listed |
+| H9 | Admin → ISO 27001 checklist, A.8.3 | Gap cards 2730 and 2917 (card 2762 ships in the same release); accepted risk R5 | 2719 or 2762 still listed |
 
 ## Changing the Schema
 

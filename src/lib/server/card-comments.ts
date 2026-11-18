@@ -163,7 +163,12 @@ export function addComment(
  * change (or the caller is an administrator), with its card and that card's
  * board. Authorship alone used to be enough, so someone removed from a board
  * could go on changing what they had written there. With `cardId`, the
- * page's routes, the comment must be on that card (404 otherwise).
+ * page's routes, that card is asked first (card 2762): one that is not there
+ * or that the caller cannot open is `404 Card not found` whatever comment id
+ * follows it (card 2719), the caller's own comment included; then the comment
+ * must be on that card (404 otherwise), and only then is edit access asked.
+ * The comment was looked for first, so the ids on a card the caller could not
+ * open could be told apart.
  */
 function requireOwnComment(
 	user: SessionUser,
@@ -171,10 +176,12 @@ function requireOwnComment(
 	cardId: number | undefined,
 	verb: string
 ): { comment: CardComment; card: Card; boardId: number } {
+	if (cardId !== undefined) requireCard(user, cardId, 'view');
 	const comment = db.select().from(cardComments).where(eq(cardComments.id, commentId)).get();
 	if (!comment || (cardId !== undefined && comment.cardId !== cardId)) throw error(404, 'Comment not found');
 
-	// A comment on a board the caller cannot open is answered as one that is not there (card 2719).
+	// A comment on a board the caller cannot open is answered as one that is not there (card 2719): reached only
+	// without `cardId` (v1), the card in the path having been asked first.
 	const { card, boardId } = requireCard(user, comment.cardId, 'edit', undefined, 'Comment not found');
 
 	if (comment.userId !== user.id && !isAdmin(user)) {

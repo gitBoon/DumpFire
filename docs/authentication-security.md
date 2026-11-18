@@ -1,10 +1,11 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.135
+version: 1.136
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2762
   - card-2719
   - not-found-not-forbidden
   - accepted-risk-r5
@@ -88,7 +89,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870)"
+description: "Deep-dive into DumpFire's authentication system, what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870)"
 ---
 
 # Authentication & Security
@@ -6377,10 +6378,13 @@ sequenceDiagram
 ```
 
 **Carried.** Card 2703's key scopes map onto these as a read scope (list, download) and a
-write scope (upload). The code review's F3, that a download answers `404` for a file on
-another card before it asks access, so ids on a card the caller cannot open can be told
-apart (`403` against `404`), is shared with the web tree (card 2361) and goes to its own card,
-both trees together. The card window's upload took the browser's claimed type and had no
+write scope (upload). The code review's F3, that a download answered `404` for a file on
+another card before it asked access, so ids on a card the caller cannot open could be told
+apart (`403` against `404`, and after card 2719 `Attachment not found` against `Card not
+found`), was shared with the web tree (card 2361) and is closed by card 2762 in both trees:
+the card in the path is asked first, and a caller who cannot open it is answered `404 Card
+not found` whatever attachment id follows it; then a file not on the card is `404 Attachment
+not found`; then edit access, for a delete, is `403`. The card window's upload took the browser's claimed type and had no
 per-card or per-user cap (the plan's D20): since card 2761 its images are held to every control
 above, and the allowances are shared, below.
 
@@ -6730,10 +6734,11 @@ rule by its table (`RULES[kind].unopenable`, with per-row overrides, `stillForbi
 
 In the ISO register (`/admin/iso-27001`, `src/lib/server/iso-27001.ts`), A.8.3 Information
 access restriction is partly met: this card is its evidence (`requireBoard`, the new test
-file), what is still open is card 2762 (attachment and comment routes ask about the
-attachment or comment before the card), the dependency lists' numbered withheld ends (CS1,
-above, a card of its own) and card 2730 (reads under an API key rest on a test scan), and R5
-is named among its accepted risks.
+file), with card 2762's (`deleteAttachment`: an attachment or comment id under a card's
+address is asked about only once the caller can open the card); what is still open is card
+2917 (the dependency lists' numbered withheld ends, CS1 above, awaiting the owner's ruling) and
+card 2730 (reads under an API key rest on a test scan), and R5 is named among its accepted
+risks.
 
 Every route that reads a body reads it first and calls its guard after it, and nothing is
 awaited between a guard and the write it allows. The row that was checked is then the row
@@ -9260,9 +9265,11 @@ DumpFire and run its script with the reader's session. `attachmentHeaders()` in
 
 ```mermaid
 flowchart TD
-    Get["GET /api/cards/:id/attachments/:attachmentId"] --> View{"Can the caller view<br/>the attachment's card?"}
-    View -->|"No"| R403["401, 403 or 404"]
-    View -->|"Yes"| Name{"Is the stored file name a plain name<br/>in the card's own folder?"}
+    Get["GET /api/cards/:id/attachments/:attachmentId"] --> View{"Can the caller open<br/>the card in the path?"}
+    View -->|"No, or no such card"| R404Card["401, or 404 Card not found<br/>whatever the attachment id (card 2762)"]
+    View -->|"Yes"| OnCard{"Is the attachment<br/>on that card?"}
+    OnCard -->|"No"| R404Att["404 Attachment not found<br/>(card 2361)"]
+    OnCard -->|"Yes"| Name{"Is the stored file name a plain name<br/>in the card's own folder?"}
     Name -->|"No"| R404["404 File not found on disk"]
     Name -->|"Yes"| Inert{"Is it PNG, JPEG, GIF, WebP or .txt,<br/>by BOTH its extension AND the type<br/>stored at upload?"}
     Inert -->|"No: PDF, HTML and SVG among them"| Download["Content-Disposition: attachment<br/>Content-Type: application/octet-stream<br/>nosniff, CSP sandbox"]
@@ -9288,7 +9295,11 @@ Uploading needs edit access to the card and is limited to 25 MB. Since card 2761
 browser declares as one of the four image types is checked and capped as a key's image is, and
 counts against the account's shared hour and day: see
 [The Card Window's Images](#the-card-windows-images-card-2761). Deleting an attachment
-needs edit access; its row is deleted in a transaction and its file is moved to the
+needs edit access, asked last: the card in the path first (`404 Card not found` to a caller
+who cannot open it, whatever the attachment id), then whether the attachment is on it (`404
+Attachment not found`), then edit access (`403`), so only a caller who can open the card
+learns which ids are its (card 2762; the comment edit and delete under a card's address ask in
+the same order). Its row is deleted in a transaction and its file is moved to the
 [uploads trash](architecture.md#uploads-and-the-trash) once that has committed. Both trees
 write an upload's file through `writeUploadFile()` and remove it through `removeUploadFile()`
 when its row is refused.

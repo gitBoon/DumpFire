@@ -251,12 +251,16 @@ function imageName(asked: string | null, extension: string, now: Date): string {
 /**
  * Delete a file's row (`DELETE /api/cards/:id/attachments/:attachmentId`),
  * with its entry `Deleted the file "<file>" from "<card>"` and the live
- * event. The attachment is looked for on the card the path names, `at.cardId`
- * (404 for one that is not there or is on another card, card 2361: the card in
- * the path was never read), and the caller asked for edit access to that card
- * (403). Its uploader is not named: the upload's own entry says who attached
- * it. The row deleted is handed back, for the route to move its file to the
- * trash once this is committed.
+ * event. The card the path names, `at.cardId`, is asked first (card 2762): one
+ * that is not there or that the caller cannot open is `404 Card not found`,
+ * whatever attachment id follows it (card 2719). Then the attachment is looked
+ * for on that card (404 for one that is not there or is on another card, card
+ * 2361: the card in the path was never read), and only then is the caller
+ * asked for edit access to it (403). The attachment was looked for first, so
+ * the ids on a card the caller could not open could be told apart. Its
+ * uploader is not named: the upload's own entry says who attached it. The row
+ * deleted is handed back, for the route to move its file to the trash once
+ * this is committed.
  */
 export function deleteAttachment(
 	caller: SessionUser | null,
@@ -266,9 +270,10 @@ export function deleteAttachment(
 ): CardAttachment {
 	inWrite();
 	const user = requireUser(caller);
+	requireCard(user, at.cardId, 'view');
 	const attachment = db.select().from(cardAttachments).where(eq(cardAttachments.id, at.attachmentId)).get();
 	if (!attachment || attachment.cardId !== at.cardId) throw error(404, 'Attachment not found');
-	const { card, boardId } = requireCard(user, attachment.cardId, 'edit', opts.says);
+	const { card, boardId } = requireCard(user, at.cardId, 'edit', opts.says);
 
 	db.delete(cardAttachments).where(eq(cardAttachments.id, at.attachmentId)).run();
 

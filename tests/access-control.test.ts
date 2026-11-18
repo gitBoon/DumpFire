@@ -760,9 +760,26 @@ describe('comments and assigned work do not outlive board access', () => {
 
 		const edit = await api('PUT', path, { user: outsider, body: { content: 'Edited later' } });
 		const remove = await api('DELETE', path, { user: outsider });
-		expect([edit.status, edit.body.message]).toEqual([404, 'Comment not found']);
-		expect([remove.status, remove.body.message]).toEqual([404, 'Comment not found']);
+		// The card is asked first (card 2762): one they cannot open is not there, their own comment on it or not.
+		expect([edit.status, edit.body.message]).toEqual([404, 'Card not found']);
+		expect([remove.status, remove.body.message]).toEqual([404, 'Card not found']);
 		expect(db.select().from(cardComments).get()?.content).toBe('Written while a member');
+	});
+
+	// Card 2762, case 7: to a caller who can open the card, whether the comment is on it comes before whether they may edit.
+	it('tells a viewer of the card 403 for a comment on it and 404 for one on another card, changing nothing (card 2762)', async () => {
+		const card = makeCard(A.cols['To Do']);
+		const other = makeCard(A.cols['To Do']);
+		const write = (on: number) =>
+			db.insert(cardComments).values({ cardId: on, userId: editor.id, content: 'As written' }).returning().get();
+		const onIt = write(card.id);
+		const elsewhere = write(other.id);
+
+		const refused = await api('PUT', `/api/cards/${card.id}/comments/${onIt.id}`, { user: viewer, body: { content: 'Edited' } });
+		expect([refused.status, refused.body.message]).toEqual([403, 'No edit access to this board']);
+		const notOnIt = await api('PUT', `/api/cards/${card.id}/comments/${elsewhere.id}`, { user: viewer, body: { content: 'Edited' } });
+		expect([notOnIt.status, notOnIt.body.message]).toEqual([404, 'Comment not found']);
+		expect(db.select({ content: cardComments.content }).from(cardComments).all()).toEqual([{ content: 'As written' }, { content: 'As written' }]);
 	});
 
 	it('drops cards on a board the caller can no longer open from their task list', async () => {

@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.136
+version: 1.137
 status: As-Built
 date: 2026-11-18
 tags:
@@ -36,7 +36,8 @@ tags:
   - exif
   - card-2719
   - not-found-not-forbidden
-description: "REST API reference for DumpFire's external v1 API: authentication, a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+  - card-2762
+description: "REST API reference for DumpFire's external v1 API: authentication, a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -407,6 +408,11 @@ they will never see. From this release:
    operation (a viewer asking to edit, anyone but the owner asking to share, an author rule).
    A milestone's own visibility is unchanged: one the user cannot see is still `403 No access
    to this milestone` (card 2911).
+7. Under a card's address, the card is asked first: `GET /cards/:cardId/attachments/:attachmentId`
+   for a card the key's user cannot open is `404 Card not found` whatever attachment id
+   follows it, where an id not on that card was `404 Attachment not found` and so the ids on
+   it could be told apart (card 2762). Only a user who can open the card is told whether a
+   file is on it.
 
 The rule is about an id the key's user asks for. The dependency lists of their own cards and
 subtasks still give the id of linked work on a board they cannot open, withheld with no title
@@ -5184,10 +5190,11 @@ The file's bytes, not JSON, always as a download, whatever the file is:
 | `Content-Length` | The file's size |
 
 Errors, in order, as JSON: `401`, `429` (the gate); `400` `Invalid card ID` or
-`Invalid attachment ID`; `404` `Attachment not found`, also for a file on another card, before
-any question of access (as the card window's route answers it, card 2361); `404`
-`Card not found` for a card on a board the key's user cannot open (card 2719); `404` `File
-not found on disk`.
+`Invalid attachment ID`; `404` `Card not found` for a card that is not there or is on a board
+the key's user cannot open, whatever attachment id follows it (cards 2719 and 2762, since
+1.10.0); `404` `Attachment not found` for a file that is not on this card, another card's
+among them (as the card window's route answers it, card 2361); `404` `File not found on
+disk`.
 
 #### In the web application
 

@@ -351,8 +351,10 @@ describe('deleting an attachment', () => {
 
 	// Card 2361: the attachment was found by its own id and the card in the
 	// path was never read, so a file was deleted under the address of any card.
-	// Now one not on the card named is answered as one that is not there, before
-	// any question of access, as a comment is (card 2117's `requireOwnComment`).
+	// Now one not on the card named is answered as one that is not there. Since
+	// card 2762 the card is asked first: a caller who cannot open it is answered
+	// `Card not found` whatever the id (card 2719's words); only one who can open
+	// it is told whether the file is on it, and only then whether they may edit.
 	it('is 404 under the address of a card it is not on, with the row and the file left and nothing told (card 2361)', async () => {
 		const other = makeCard(A.cols['To Do'], { title: 'Has none' });
 		const file = makeAttachment(card);
@@ -380,6 +382,28 @@ describe('deleting an attachment', () => {
 		expect(said).toEqual({ entries: [], events: [], webhooks: [] });
 		expectUnchanged(before);
 		expect(fileIn(card.id, file.filename)).toBe(true);
+	});
+
+	// Card 2762, case 6: to a caller who can open the card, whether the file is on it comes before whether they may edit.
+	it('tells a viewer of the card 403 for a file on it and 404 for one on another card of the board, removing nothing (card 2762)', async () => {
+		const viewer = makeUser({ username: 'viewer' });
+		db.insert(boardMembers).values({ boardId: A.board.id, userId: viewer.id, role: 'viewer' }).run();
+		const file = makeAttachment(card);
+		const elsewhere = makeAttachment(makeCard(A.cols['To Do'], { title: 'Another card' }));
+		makeWebhook(A.board);
+		const before = snapshotDb();
+
+		const said = await told(async () => {
+			const onIt = await api('DELETE', `/api/cards/${card.id}/attachments/${file.id}`, { user: viewer });
+			expect([onIt.status, onIt.body]).toEqual([403, { message: 'No edit access to this board' }]);
+			const notOnIt = await api('DELETE', `/api/cards/${card.id}/attachments/${elsewhere.id}`, { user: viewer });
+			expect([notOnIt.status, notOnIt.body]).toEqual([404, { message: 'Attachment not found' }]);
+		});
+
+		expect(said).toEqual({ entries: [], events: [], webhooks: [] });
+		expectUnchanged(before);
+		expect(fileIn(card.id, file.filename)).toBe(true);
+		expect(fileIn(elsewhere.cardId, elsewhere.filename)).toBe(true);
 	});
 
 	it('records the delete in the board’s log, by whoever deleted it, and tells the board once it is committed; no webhook (card 2337)', async () => {
@@ -1176,8 +1200,9 @@ describe('serving an attachment', () => {
 		expect(gone.body.message).toBe('File not found on disk');
 	});
 
-	// Card 2361: served under the address of any card, as the delete was.
-	it('is 404 under the address of a card it is not on, before any question of access (card 2361)', async () => {
+	// Card 2361: served under the address of any card, as the delete was. Since card 2762 the card is asked
+	// first, so only a caller who can open it is told whether the file is on it.
+	it('is 404 under the address of a card it is not on, once the caller can open that card (cards 2361, 2762)', async () => {
 		const file = makeAttachment(card, { name: 'notes.txt' });
 		const other = makeCard(A.cols['To Do'], { title: 'Has none' });
 		const B = makeBoard({ name: 'B' });
