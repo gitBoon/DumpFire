@@ -2201,16 +2201,17 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'v1 cost, an outsider': '404 Card not found',
 			'internal cost, no card': '404 Card not found',
 			'v1 cost, no card': '404 Card not found',
-			'internal milestone, an outsider': '403 No access to this milestone',
-			'v1 milestone, an outsider': '403 No access to this milestone',
+			// And so is a milestone the caller cannot see (card 2911).
+			'internal milestone, an outsider': '404 Milestone not found',
+			'v1 milestone, an outsider': '404 Milestone not found',
 			'internal milestone, none': '404 Milestone not found',
 			'v1 milestone, none': '404 Milestone not found',
-			'internal plan, an outsider': '403 No access to this milestone',
-			'v1 plan, an outsider': '403 No access to this milestone',
+			'internal plan, an outsider': '404 Milestone not found',
+			'v1 plan, an outsider': '404 Milestone not found',
 			'internal plan, none': '404 Milestone not found',
 			'v1 plan, none': '404 Milestone not found',
-			'internal plan PDF, an outsider': '403 No access to this milestone',
-			'v1 plan PDF, an outsider': '403 No access to this milestone'
+			'internal plan PDF, an outsider': '404 Milestone not found',
+			'v1 plan PDF, an outsider': '404 Milestone not found'
 		});
 	});
 

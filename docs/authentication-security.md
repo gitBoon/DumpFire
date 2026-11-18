@@ -1,10 +1,13 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.140
+version: 1.141
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2911
+  - hidden-milestone-not-found
+  - accepted-risk-r6
   - card-2894
   - report-schedules-paused
   - card-2893
@@ -96,7 +99,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
+description: "Deep-dive into DumpFire's authentication system, what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), a milestone the caller cannot see answered 404 Milestone not found, the goal a card is in refused in words of its own, and the id counter accepted as R6 (card 2911), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
 ---
 
 # Authentication & Security
@@ -4156,7 +4159,8 @@ code, a secret or a link.
 | R2 | API keys made before the release, on a password alone, keep working | **Closed by card 2772 (built 2026-11-17)**: migration 0069 gives every key that exists at that release a deadline 60 days after it, and one not kept on the Account page, with the password and a code, stops working then (see [Keys Made Before Two-Step Sign-In: the Deadline](#keys-made-before-two-step-sign-in-the-deadline-card-2772)). Until the deadline a key is a non-interactive credential, a 256-bit secret kept hashed, recorded as such against ISO 27001 A.8.5; the enrolment notice and the report list the account's keys and webhooks |
 | R3 | A password holder can evict the owner's live challenge: an account has at most three, the oldest goes | The owner signs in again. Each eviction needs the right password, and a verify challenge left unused is itself a signal (S12) |
 | R4 | An older image started after the release makes sessions and cookies on a password alone that it would accept | This image refuses both; the deployment guide makes a rollback a security event |
-| R5 | A missing id is answered a little faster than one on a board the caller cannot open (card 2719): the first after one query, the second after the access queries, so the two could in principle be told apart by timing | The answers are identical in status and body. The difference is a query or two on a local SQLite file, well under the jitter of a network round trip, and every probe is bounded by the gate's 60 requests a minute per key or address. Equalising the time was not chosen (card 2719, D13). Named in A.8.3's accepted risks |
+| R5 | A missing id is answered a little faster than one the caller cannot open: a board or a card (card 2719), a milestone (card 2911). The first is answered after one query, the second after a few (one per board for a goal across boards), so the two could in principle be told apart by timing. The public new-link route (`POST /api/requests/:id/link`) is not in it: it does the same work for every id before it answers (card 2158) | The answers are identical in status and body. The difference is a few queries on a local SQLite file, well under the jitter of a network round trip, and every probe is bounded by the gate's 60 requests a minute per key or address. Equalising the time was not chosen (card 2719, D13). Named in A.8.3's accepted risks |
+| R6 | Ids are counted up one at a time, so anyone who can make a board, a card or a milestone learns from its id how many were made since their last (card 2911, S6): a count, not which ids exist on what they cannot see | No content is given, and making things is bounded by the gate's rate limits. Opaque ids were not chosen. Named in A.8.3's accepted risks |
 
 ### ISO/IEC 27001:2022
 
@@ -6749,9 +6753,10 @@ on a board they can open and may not edit (card 2719, below).
 
 Board and card ids are counted up one at a time. Until card 2719, a board or card that
 existed on a board the caller could not open was answered `403`, and one that did not exist
-`404`, so anyone with an account or an API key could walk the numbers and learn which boards
-and cards exist, how many there are and how fast they are made, on boards they will never
-see. Since card 2719 (built 2026-11-18):
+`404`, so anyone with an account or an API key could walk the numbers and learn which ids
+exist on what they cannot see: boards and cards, and until card 2911 milestones. How many are
+made at all can still be counted, by making one and reading its id: an accepted risk, R6. Since
+card 2719 (built 2026-11-18), and card 2911 for milestones (built 2026-11-18):
 
 - **The rule (D1, D2).** A board, a card, a dashboard grouping holding only boards the caller
   cannot open, or anything on a board they cannot open (a column, a label, a subtask, a
@@ -6782,16 +6787,29 @@ see. Since card 2719 (built 2026-11-18):
 - **Loops (D12, step 5).** A dependency that would close a loop through work the caller cannot
   open names that node withheld: `{ kind, id: null, withheld: true }` in `cycle`, and `A card
   on a board you cannot open` in the message, by the single add and the batch alike.
+- **Milestones (card 2911).** A milestone the caller cannot see (`canViewMilestone`: the
+  board it belongs to, or for a goal across boards every board its cards are on), named by
+  its id in a path, a body's `milestoneId`, the burndown's `?milestoneId=` or `/plan/:id`, is
+  answered `404 Milestone not found`, the words one that is not there gets, in both trees and
+  on both pages. `requireMilestone` asks it in one line. That includes a goal across boards
+  its caller made, once it holds a card on a board they cannot open: such a goal is its
+  maker's only while it has no card (S9). A goal the caller can see and may not change is
+  still `403 No edit access to this milestone`.
 - **What stays 403 (D6).** A viewer or guest asking to edit; anyone but the owner asking to
   share, link or make public; an author rule (`You can only delete your own comments`); an
-  administrator-only rule; a key refused a person's act; the step-up; a milestone's own
-  visibility (`No access to this milestone`, card 2911); a task request a signed-in caller is
-  not let into (it is on no board until accepted). `POST /api/reports` and the report mail
-  answer a board that is not there and one the caller cannot open in one `403` sentence
-  already.
-- **Timing (R5).** A missing id is answered after one query and an unopenable one after the
-  access queries, so the difference could in principle be timed. It is an accepted risk:
-  see [Accepted Risks](#accepted-risks), R5.
+  administrator-only rule; a key refused a person's act; the step-up; a milestone the caller
+  can see and may not change; the goal a card is in, when the caller puts that card in another
+  milestone or takes it out and cannot see that goal, `403 No access to the milestone this card
+  is in` (`requireGoalLeft`, card 2911, D3): the request did not name it and its id is on the
+  card already, and "Milestone not found" would read as if the goal named were missing; a task
+  request a signed-in caller is not let into (it is on no board until accepted). `POST
+  /api/reports` and the report mail answer a board that is not there and one the caller cannot
+  open in one `403` sentence already.
+- **Timing (R5) and counting (R6).** A missing id is answered after one query and one the
+  caller cannot open after a few (one per board for a goal across boards), so the difference
+  could in principle be timed. And ids are counted up one at a time, so anyone who can make a
+  board, a card or a milestone learns from its id how many were made since their last. Both
+  are accepted risks: see [Accepted Risks](#accepted-risks), R5 and R6.
 - **What it does not yet cover (card 2719's code review, CS1).** The rule is about an id the
   caller asks for. The dependency lists of the caller's own cards and subtasks (`GET
   …/dependencies`, a card's `blockedBy` and `blocks`, a plan's nodes) still give the id of
@@ -6816,19 +6834,43 @@ flowchart TD
     E -->|yes| OK["handler goes on: body 400s, 409s, the write"]
 ```
 
+A milestone (card 2911): the goal the request names, and the goal a card is in, which it
+leaves when it is put in another or taken out.
+
+```mermaid
+flowchart TD
+    R["Request names a milestone by id<br/>(path, body milestoneId, ?milestoneId=, /plan/:id)"] --> I{"id a whole number?"}
+    I -->|no| B400["400 Invalid milestone ID"]
+    I -->|yes| L{"milestone exists?"}
+    L -->|no| N404["404 Milestone not found"]
+    L -->|yes| V{"canViewMilestone?<br/>its board, or every board its cards are on"}
+    V -->|no| N404
+    V -->|yes| E{"forEdit and not canEditMilestone?"}
+    E -->|yes| F403["403 No edit access to this milestone"]
+    E -->|no| OK["handler goes on"]
+    C["The goal a card is in, which putting it in<br/>another or taking it out leaves (not named)"] --> G{"canViewMilestone?"}
+    G -->|no| K403["403 No access to the milestone this card is in"]
+    G -->|yes| GE{"canEditMilestone?"}
+    GE -->|no| F403
+    GE -->|yes| OK
+```
+
 `tests/not-found-not-forbidden.test.ts` asks each place a not-found sentence is chosen twice,
 for a thing on a board the caller cannot open and for an id that is no row, and expects the
 same status and the same body; `tests/access-every-route.test.ts` holds every route to the
-rule by its table (`RULES[kind].unopenable`, with per-row overrides, `stillForbids` for card
-2911's milestone rows, and the meta cases M1 to M3).
+rule by its table (`RULES[kind].unopenable`, with per-row overrides, `unopenableSays` as one
+sentence or a sentence per caller, and the meta cases M1 and M3). Card 2911 adds its own block
+of rows to the first file (G1 to G10b) and took card 2719's `stillForbids` marker, its 44
+expected-to-fail tests and the meta case M2 out of the second.
 
 In the ISO register (`/admin/iso-27001`, `src/lib/server/iso-27001.ts`), A.8.3 Information
 access restriction is partly met: this card is its evidence (`requireBoard`, the new test
 file), with card 2762's (`deleteAttachment`: an attachment or comment id under a card's
-address is asked about only once the caller can open the card); what is still open is card
+address is asked about only once the caller can open the card) and card 2911's (a milestone
+the caller cannot see answered as one that is not there); what is still open is card
 2917 (the dependency lists' numbered withheld ends, CS1 above, awaiting the owner's ruling) and
-card 2730 (reads under an API key rest on a test scan), and R5 is named among its accepted
-risks.
+card 2730 (reads under an API key rest on a test scan), and R5 and R6 are named among its
+accepted risks.
 
 Every route that reads a body reads it first and calls its guard after it, and nothing is
 awaited between a guard and the write it allows. The row that was checked is then the row
@@ -7054,8 +7096,8 @@ flowchart LR
 | Recent activity | The caller's own entries on boards they can open, the 20 or 10 newest counted after the filter. The completed count and streak beside it are not filtered: they are the caller's own entries in the log, and name nothing | `GET /api/v1/me/stats`, the dashboard | 2126, decision 13 |
 | Personal figures from assignments | Only the assigned cards on boards the caller can open: the open count (`activeCards`) and the average cycle time (`avgCycleTimeDays`), `0` and `null` to a caller who opens no board, and the Velocity window's completions; every board to an administrator. They counted every board, so a figure moved when a card on a board the caller had lost was completed, archived or unassigned | `GET /api/v1/me/stats`, `GET /api/velocity` (the dashboard's Velocity window) | 2292, reversing 2126's decision 13 for these two counts |
 | The other end of a dependency, and a plan's nodes | Still listed, so that blocked work stays blocked, but withheld when it is on a board the caller cannot open: its title reads "A card on a board you cannot open" or "A subtask on a board you cannot open", its board "A board you cannot open", its column is empty and its board, column, priority and milestone are null, with `withheld: true`. See [Critical-Path Planning](critical-path-planning.md#design-decisions-inside-that-flow) | Both trees' dependency routes and their answers, `GET /api/v1/cards/:id`, both summaries and both PDFs, the board page's Blocked chips, All Tasks, the plan page | 2129, decisions 7 and 8 |
-| A card's milestone, by name | Only for a milestone the caller may open (`canViewMilestone`): a board's milestone to whoever can open that board, a goal across boards to whoever can open every board its cards are on. Otherwise no name, so the page shows no chip, and `milestoneName: null` in the report; the card's `milestoneId` is still given, as its own field. The board page and the card window already read `milestonesForBoard`, which asks the same | All Tasks, All To Do (`milestoneNamesForCards`, through `readCrossBoardCards`), `GET /api/v1/reports/activity` (each card's `milestoneName`, and its `milestones` list) | 2257 |
-| A milestone's cards, and its burndown | A card on a board the caller cannot open is listed withheld, as a plan's node is. Since card 2155 a card moved off a milestone's board leaves the milestone, and migration 0057 took out those already moved; the withholding stays for a goal across boards and for an older backup restored. The goal's archived cards, listed apart in `archivedCards` since card 2346 so that the ones stopping a board change can be found, are withheld the same way, with `archivedAt` `null`; a non-administrator reads a goal across boards only if they open every board its cards are on, archived ones included (`canViewMilestone`), so a withheld one, in either list, comes only from a stray row in a board's goal. The burndown by milestone charts only the cards on boards the caller can open, and its notes say how many it leaves out | `GET /api/v1/milestones/:id`, `GET /api/burndown` and `GET /api/v1/burndown` with `milestoneId`, the burndown page | 2129's review, 2346 |
+| A card's milestone, by name | Only for a milestone the caller may open (`canViewMilestone`): a board's milestone to whoever can open that board, a goal across boards to whoever can open every board its cards are on. Otherwise no name, so the page shows no chip, and `milestoneName: null` in the report; the card's `milestoneId` is still given, as its own field. The board page and the card window already read `milestonesForBoard`, which asks the same. Asked for by that id, a milestone the caller cannot see is `404 Milestone not found`, as one that is not there (card 2911) | All Tasks, All To Do (`milestoneNamesForCards`, through `readCrossBoardCards`), `GET /api/v1/reports/activity` (each card's `milestoneName`, and its `milestones` list) | 2257, 2911 |
+| A milestone's cards, and its burndown | A card on a board the caller cannot open is listed withheld, as a plan's node is. Since card 2155 a card moved off a milestone's board leaves the milestone, and migration 0057 took out those already moved; the withholding stays for a goal across boards and for an older backup restored. The goal's archived cards, listed apart in `archivedCards` since card 2346 so that the ones stopping a board change can be found, are withheld the same way, with `archivedAt` `null`; a non-administrator reads a goal across boards only if they open every board its cards are on, archived ones included (`canViewMilestone`), so a withheld one, in either list, comes only from a stray row in a board's goal. To anyone else a goal is `404 Milestone not found`, the words one that is not there gets, by these routes, the plan page and every other that names it (card 2911); that includes a goal across boards to its own maker, once it holds a card on a board they cannot open. The burndown by milestone charts only the cards on boards the caller can open, and its notes say how many it leaves out | `GET /api/v1/milestones/:id`, `GET /api/burndown` and `GET /api/v1/burndown` with `milestoneId`, the burndown page | 2129's review, 2346, 2911 |
 | A card's sub-boards | Those the caller can open. The dashboard's sub-board count, its All Tasks figures, their token cost and the spend by person cover only those | The board page, the card context, the dashboard | 2130, decision 9 |
 | A sub-board's breadcrumbs | A board above it that the caller cannot open, as "🔒 A board you cannot open" with no link. It stays in the chain, so the page still offers Delete Sub-board; the boards above that the caller can open keep their names and links | The board page | 2130, decision 10 |
 | "Link existing board" | The top-level boards the caller owns (card 2139), which they can always open | The board page | 2130, decision 11 |

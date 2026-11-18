@@ -285,12 +285,28 @@ export function logCardLeftGoal(
 	});
 }
 
-/** Load a milestone, or throw the right HTTP status. */
+/**
+ * The milestone the request names, or throw: one that is not there, or that the caller cannot
+ * see, is 404 in one sentence (card 2911); one they can see and may not change, 403.
+ */
 export function requireMilestone(user: SessionUser, milestoneId: number, forEdit = false): MilestoneRow {
 	const m = db.select().from(milestones).where(eq(milestones.id, milestoneId)).get();
-	if (!m) throw new MilestoneError(404, 'Milestone not found');
-	if (!canViewMilestone(user, m)) throw new MilestoneError(403, 'No access to this milestone');
+	if (!m || !canViewMilestone(user, m)) throw new MilestoneError(404, 'Milestone not found');
 	if (forEdit && !canEditMilestone(user, m)) throw new MilestoneError(403, 'No edit access to this milestone');
+	return m;
+}
+
+/**
+ * The goal a card is in, which putting it in another or taking it out leaves (R5 of card 2117).
+ * Not named by the request: its id is on the card the caller can open (card 2257), so a goal they
+ * cannot see is refused in words that name it as the card's (card 2911, D3), and a goal they may
+ * not change as such.
+ */
+function requireGoalLeft(user: SessionUser, milestoneId: number): MilestoneRow {
+	const m = db.select().from(milestones).where(eq(milestones.id, milestoneId)).get();
+	if (!m) throw new MilestoneError(404, 'Milestone not found');
+	if (!canViewMilestone(user, m)) throw new MilestoneError(403, 'No access to the milestone this card is in');
+	if (!canEditMilestone(user, m)) throw new MilestoneError(403, 'No edit access to this milestone');
 	return m;
 }
 
@@ -667,7 +683,7 @@ export function setCardMilestone(
 	return inTransaction(() => {
 		const { card, boardId } = editableCard(user, cardId);
 
-		const left = card.milestoneId !== null && card.milestoneId !== milestoneId ? requireMilestone(user, card.milestoneId, true) : null;
+		const left = card.milestoneId !== null && card.milestoneId !== milestoneId ? requireGoalLeft(user, card.milestoneId) : null;
 		const m = requireMilestone(user, milestoneId, true);
 		if (card.archivedAt !== null) throw new MilestoneError(400, ARCHIVED_CARD);
 		if (m.boardId !== null && m.boardId !== boardId) {
@@ -696,9 +712,12 @@ export function setCardMilestone(
  * card is in: someone who may edit a board, and neither made a cross-board
  * goal nor is an administrator, could not put a card in that goal and cannot
  * take one out of it. Where the route names a milestone (`named`), it must be
- * there and the caller able to change it (404, 403), and the card must be in
- * it: `404 Card is not in this milestone`. Taking a card out through another
- * milestone's id took it out of its own.
+ * there and one the caller can see (404 in the same words, card 2911) and
+ * may change (403), and the card must be in it: `404 Card is not in this
+ * milestone`. Taking a card out through another milestone's id took it out of
+ * its own. The goal the card is in, when the route names none, is refused
+ * `403 No access to the milestone this card is in` if the caller cannot see
+ * it (`requireGoalLeft`, card 2911 D3): its id is on the card already.
  *
  * One transaction: the card's milestone is read in the one that clears it.
  *
@@ -717,7 +736,7 @@ export function takeCardOutOfMilestone(
 		const { card, boardId } = editableCard(user, cardId);
 
 		if (named !== undefined && card.milestoneId !== named) throw new MilestoneError(404, 'Card is not in this milestone');
-		const left = card.milestoneId !== null ? requireMilestone(user, card.milestoneId, true) : null;
+		const left = card.milestoneId !== null ? requireGoalLeft(user, card.milestoneId) : null;
 		if (left === null) return { cardId, milestoneId: null, boardId, written: false };
 
 		db.update(cards).set({ milestoneId: null, updatedAt: stamp() }).where(eq(cards.id, cardId)).run();

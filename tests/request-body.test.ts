@@ -1896,8 +1896,9 @@ describe('the handlers of /api/v1/ that card 2117’s second slice moved onto th
 		expect(await answered('PUT', `/api/v1/subtasks/${w.subtaskId}`, { completed: 'false' })).toEqual([404, 'Subtask not found']);
 		// These looked at the body first, and answered 400.
 		expect(await answered('PUT', `/api/v1/comments/${w.commentId}`, { content: '' })).toEqual([404, 'Comment not found']);
-		expect(await answered('POST', `/api/v1/milestones/${w.milestoneId}/cards`, {})).toEqual([403, 'No access to this milestone']);
-		expect(await answered('DELETE', `/api/v1/milestones/${w.milestoneId}/cards`, {})).toEqual([403, 'No access to this milestone']);
+		// A milestone the caller cannot see is 404 too (card 2911).
+		expect(await answered('POST', `/api/v1/milestones/${w.milestoneId}/cards`, {})).toEqual([404, 'Milestone not found']);
+		expect(await answered('DELETE', `/api/v1/milestones/${w.milestoneId}/cards`, {})).toEqual([404, 'Milestone not found']);
 		// And a row that is not there is 404, whatever was sent.
 		expect(await answered('PUT', '/api/v1/comments/99999', { content: '' })).toEqual([404, 'Comment not found']);
 		expectUnchanged(before);
@@ -2400,7 +2401,8 @@ describe('the web application’s work routes that card 2117’s third slice mov
 		expect(await said('POST', '/api/categories', { boardId: w.boardId, name: 5 })).toEqual([404, 'Board not found']);
 		expect(await said('POST', '/api/templates', { boardId: w.boardId, name: 5 })).toEqual([404, 'Board not found']);
 		expect(await said('POST', '/api/milestones', { boardId: w.boardId, name: 5 })).toEqual([404, 'Board not found']);
-		expect(await said('PATCH', `/api/milestones/${w.milestoneId}`, { name: 5 })).toEqual([403, 'No access to this milestone']);
+		// A milestone the caller cannot see is 404 too (card 2911).
+		expect(await said('PATCH', `/api/milestones/${w.milestoneId}`, { name: 5 })).toEqual([404, 'Milestone not found']);
 		expect(await said('POST', `/api/cards/${w.cardId}/assignees`, { userId: 'x' })).toEqual([404, 'Card not found']);
 		expect(await said('PUT', '/api/cards/reorder', { updates: [{ id: w.cardId, columnId: w.columnId, position: 'top' }] })).toEqual([
 			404,

@@ -12,8 +12,9 @@ import type { RequestHandler } from './$types';
  * whatever it was in before rather than erroring. An archived card is refused,
  * as the batch refuses one.
  *
- * The milestone is looked for and the caller checked (404, then 403), then
- * `cardId` is read (400), then the card is looked for. The work is
+ * The milestone is looked for and the caller checked (404 for one that is not
+ * there or that the caller cannot see, card 2911, then 403 for one they can
+ * see and may not change), then `cardId` is read (400), then the card is looked for. The work is
  * `attachCardToMilestone` in `$lib/server/milestone-service`, which the
  * internal milestone PATCH shares (card 2012).
  */

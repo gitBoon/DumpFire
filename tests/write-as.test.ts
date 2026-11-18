@@ -2639,7 +2639,8 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 		const sent = effects();
 		onTestFinished(() => sent.restore());
 		const NO_CARD = 'Card not found';
-		const MILESTONE = 'No access to this milestone';
+		// A milestone the caller cannot see is answered as one that is not there (card 2911).
+		const MILESTONE = 'Milestone not found';
 
 		// Each request with a body, as HELD sends it, and the deletes, with the
 		// refusal a user who is on nothing of the owner's is given.
@@ -2662,12 +2663,12 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 			// The board is asked about before whose comment it is (card 2283).
 			['DELETE', `/api/v1/comments/${s.comment.id}`, 404, { message: 'Comment not found' }],
 			['POST', '/api/v1/milestones', 404, { message: 'Board not found' }],
-			['PATCH', `/api/v1/milestones/${s.milestone.id}`, 403, { message: MILESTONE }],
-			['DELETE', `/api/v1/milestones/${s.milestone.id}`, 403, { message: MILESTONE }],
-			['POST', `/api/v1/milestones/${s.milestone.id}/cards`, 403, { message: MILESTONE }],
-			['DELETE', `/api/v1/milestones/${s.milestone.id}/cards`, 403, { message: MILESTONE }],
-			['POST', `/api/v1/milestones/${s.milestone.id}/cards/bulk`, 403, { message: MILESTONE }],
-			['DELETE', `/api/v1/milestones/${s.milestone.id}/cards/bulk`, 403, { message: MILESTONE }],
+			['PATCH', `/api/v1/milestones/${s.milestone.id}`, 404, { message: MILESTONE }],
+			['DELETE', `/api/v1/milestones/${s.milestone.id}`, 404, { message: MILESTONE }],
+			['POST', `/api/v1/milestones/${s.milestone.id}/cards`, 404, { message: MILESTONE }],
+			['DELETE', `/api/v1/milestones/${s.milestone.id}/cards`, 404, { message: MILESTONE }],
+			['POST', `/api/v1/milestones/${s.milestone.id}/cards/bulk`, 404, { message: MILESTONE }],
+			['DELETE', `/api/v1/milestones/${s.milestone.id}/cards/bulk`, 404, { message: MILESTONE }],
 			['PUT', `/api/v1/subtasks/${s.subtask.id}`, 404, { message: 'Subtask not found' }],
 			['DELETE', `/api/v1/subtasks/${s.subtask.id}`, 404, { message: 'Subtask not found' }],
 			['POST', `/api/v1/subtasks/${s.subtask.id}/dependencies`, 404, { message: 'Subtask not found' }],

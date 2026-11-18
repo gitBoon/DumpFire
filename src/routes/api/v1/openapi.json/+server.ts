@@ -34,7 +34,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.11.0',
+		version: '1.12.0',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -42,6 +42,14 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-18 (version 1.12.0), breaking.** A milestone the key\'s user cannot see is answered as one that is not there (card 2911): ' +
+			'(1) every operation that names a milestone by its id, under /milestones/{milestoneId}, as milestoneId on PUT /cards/{cardId}, and as milestoneId on GET /burndown, ' +
+			'answers a milestone the user cannot see (of a board they cannot open, or across boards with a card on a board they cannot open, their own included) ' +
+			'`404 {"message": "Milestone not found"}`, the words one that is not there gets, where it answered `403 {"message": "No access to this milestone"}`; ' +
+			'(2) a milestone the user can see and may not change is still `403 {"message": "No edit access to this milestone"}`; ' +
+			'(3) putting a card in another milestone, or taking it out, when the user cannot see the milestone the card is in, is answered ' +
+			'`403 {"message": "No access to the milestone this card is in"}`, where it was `403 No access to this milestone`, as that milestone\'s id is on the card; ' +
+			'(4) nothing else changed: no operation, field or schema.\n\n' +
 			'**Changed on 2026-11-18 (version 1.11.0), breaking.** A webhook whose setter can no longer open its board is switched off for good (card 2752), and so is one whose API key has ended (card 2893): ' +
 			'(1) a webhook whose setter, the account that created it or last set its url or secret or switched it on, can no longer open its board, and one nobody is recorded as having set up, ' +
 			'is switched off, active false: at the change that takes the access away (a person or a team taken off the board, the setter taken out of a team, a team deleted, the board made private, ' +
@@ -3353,7 +3361,8 @@ const spec = {
 				description:
 					'The key\'s user can open the board the resource is on, and their role does not allow this: view access where edit access is needed, ' +
 					'or a rule of the resource\'s own (its owner, its author, an administrator). A board the key\'s user cannot open is answered 404, ' +
-					'as one that is not there (since 1.10.0). Nothing was written.',
+					'as one that is not there (since 1.10.0). Nothing was written. A milestone the key\'s user can see and may not change is answered 403 too (since 1.12.0), ' +
+					'and so is the milestone a card is in, when putting it in another or taking it out (`No access to the milestone this card is in`).',
 				content: {
 					'application/json': {
 						schema: { $ref: '#/components/schemas/Error' },
@@ -3364,7 +3373,7 @@ const spec = {
 			NotFound: {
 				description:
 					'The resource the path names does not exist, or is on a board the key\'s user cannot open; the two are answered alike, in the same words ' +
-					'(since 1.10.0). The message says what was not found.',
+					'(since 1.10.0); so is a milestone the key\'s user cannot see (since 1.12.0). The message says what was not found.',
 				content: {
 					'application/json': {
 						schema: { $ref: '#/components/schemas/Error' },
@@ -4529,11 +4538,13 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'No edit access to this card\'s board, to the milestone it is to join, or to the milestone it is in, which it leaves with milestoneId null or another milestone. Nothing was written.',
+						description:
+							'No edit access to this card\'s board, to the milestone it is to join, or to the milestone it is in, which it leaves with milestoneId null or another milestone, ' +
+							'or the user cannot see the milestone the card is already in (`No access to the milestone this card is in`). Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this card\'s board' } } }
 					},
 					'404': {
-						description: 'There is no such card, no milestone with the id given as milestoneId, or categoryId names a category neither of the card\'s board nor of no board (`Category not found on this board`). Nothing was written.',
+						description: 'There is no such card, no milestone with the id given as milestoneId, or one the key\'s user cannot see, or categoryId names a category neither of the card\'s board nor of no board (`Category not found on this board`). Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
@@ -7014,14 +7025,10 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Use boardIds or boardCategoryId, not both' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the requested milestone',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this milestone' } } }
-					},
 					'404': {
 						description:
 							'A requested board, board category or milestone does not exist; a board the key\'s user cannot open, or a board category ' +
-							'holding only boards they cannot open, is answered alike (`Board category 3 not found`)',
+							'holding only boards they cannot open, is answered alike (`Board category 3 not found`); so is a milestone they cannot see (`Milestone not found`, since 1.12.0)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board 7 not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -7338,12 +7345,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid milestone ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'The key\'s user cannot see this milestone: the board it belongs to, or for one that spans boards a board one of its cards is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this milestone' } } }
-					},
 					'404': {
-						description: 'There is no such milestone',
+						description: 'There is no such milestone, or one the key\'s user cannot see: the two are answered alike (since 1.12.0)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -7414,11 +7417,11 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'The key\'s user cannot see or cannot change this milestone, or cannot edit the board sent as boardId. Nothing was written.',
+						description: 'The key\'s user can see this milestone and cannot change it, or cannot edit the board sent as boardId. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this milestone' } } }
 					},
 					'404': {
-						description: 'There is no such milestone, or no board has the id sent as boardId ("Board not found")',
+						description: 'There is no such milestone, or one they cannot see, or no board has the id sent as boardId ("Board not found")',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
@@ -7460,11 +7463,11 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'The key\'s user cannot see or cannot change this milestone. Nothing was deleted.',
+						description: 'The key\'s user can see this milestone and cannot change it. Nothing was deleted.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this milestone' } } }
 					},
 					'404': {
-						description: 'There is no such milestone',
+						description: 'There is no such milestone, or one they cannot see',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -7526,11 +7529,13 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'No edit access to the card\'s board, or the key\'s user cannot see or cannot change this milestone, or the one the card is in. Nothing was written.',
+						description:
+							'No edit access to the card\'s board, or the key\'s user can see this milestone and cannot change it, or cannot change (`No edit access to this milestone`) ' +
+							'or cannot see (`No access to the milestone this card is in`) the milestone the card is already in. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this card\'s board' } } }
 					},
 					'404': {
-						description: 'There is no such card, or no such milestone',
+						description: 'There is no such card, or no such milestone, or one the key\'s user cannot see',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Card not found' } } }
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
@@ -7579,11 +7584,11 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'The key\'s user cannot see this milestone (`No access to this milestone`, as for one with cards on a board they cannot open) or cannot change it (`No edit access to this milestone`), or has no edit access to the card\'s board. Nothing was written.',
+						description: 'The key\'s user can see this milestone and cannot change it (`No edit access to this milestone`), or has no edit access to the card\'s board. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this milestone' } } }
 					},
 					'404': {
-						description: 'There is no such milestone, or no such card, or the card is not in this milestone (`Card is not in this milestone`). Nothing was written.',
+						description: 'There is no such milestone, or one the key\'s user cannot see, or no such card, or the card is not in this milestone (`Card is not in this milestone`). Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Card not found' } } }
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
@@ -7651,11 +7656,11 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'The key\'s user cannot see or cannot change this milestone. Nothing was written.',
+						description: 'The key\'s user can see this milestone and cannot change it. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this milestone' } } }
 					},
 					'404': {
-						description: 'There is no such milestone',
+						description: 'There is no such milestone, or one they cannot see',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
 					},
 					'409': {
@@ -7726,11 +7731,11 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'The key\'s user cannot see or cannot change this milestone. Nothing was written.',
+						description: 'The key\'s user can see this milestone and cannot change it. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this milestone' } } }
 					},
 					'404': {
-						description: 'There is no such milestone',
+						description: 'There is no such milestone, or one they cannot see',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
 					},
 					'409': {
@@ -7786,12 +7791,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid milestone ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'The key\'s user cannot see this milestone',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this milestone' } } }
-					},
 					'404': {
-						description: 'There is no such milestone',
+						description: 'There is no such milestone, or one the key\'s user cannot see: the two are answered alike (since 1.12.0)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -7827,12 +7828,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid milestone ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'The key\'s user cannot see this milestone',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this milestone' } } }
-					},
 					'404': {
-						description: 'There is no such milestone',
+						description: 'There is no such milestone, or one the key\'s user cannot see: the two are answered alike (since 1.12.0)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Milestone not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },

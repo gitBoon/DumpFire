@@ -244,7 +244,8 @@ describe("milestones: a goal's name goes only to those who can open it (card 225
 
 	it('All Tasks and All To Do do not name the goal to a member of one of its boards, and still give the card its milestone id', async () => {
 		const { onA, goal } = world();
-		expect((await api('GET', `/api/v1/milestones/${goal.id}`, { user: editor })).status).toBe(403);
+		// A goal the member cannot see is answered as one that is not there (card 2911).
+		expect((await api('GET', `/api/v1/milestones/${goal.id}`, { user: editor })).status).toBe(404);
 
 		for (const path of ['/all', '/todo'] as const) {
 			const data = await load(path, editor);

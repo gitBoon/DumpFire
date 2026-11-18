@@ -19,8 +19,10 @@
  * `takeCardOutOfMilestone`), which other callers use and which is no service;
  * their own transactions are savepoints inside the caller's. Each write here
  * has the one shape of a service (`ServiceOptions` in `write-as.ts`):
- * `inWrite()` first, then `requireUser(caller)` (401), the guard (404, then
- * 403), then every field read from the body (400), and the write. A new
+ * `inWrite()` first, then `requireUser(caller)` (401), the guard (404 for a
+ * milestone that is not there or that the caller cannot see, card 2911, then
+ * 403 for one they may not change), then every field read from the body
+ * (400), and the write. A new
  * milestone's guard is its board, read from the body first, as the row the
  * guard is asked of. A `MilestoneError` is turned into the kit `error()` of
  * its status and words, as every route turned it.
@@ -144,7 +146,8 @@ function recordGoalChange(user: SessionUser, { milestone, was, changed }: Milest
 /**
  * One milestone: `GET /api/milestones/:id`, and `GET
  * /api/v1/milestones/:milestoneId` with `withCards`. The caller must be able
- * to read it (404, then 403).
+ * to read it: one they cannot see is 404, in the words of one that is not
+ * there (card 2911).
  *
  * With its cards, a card on a board the caller cannot open is listed
  * withheld, as the summary lists it (card 2129): its id, with `withheld:
@@ -221,7 +224,8 @@ export function readMilestone(user: SessionUser, at: { milestoneId: number }, op
  * A milestone's whole plan, made for the caller: work on a board they cannot
  * open is withheld (card 2129). `GET .../summary` and `GET .../pdf` of both
  * trees. Exporting a plan is reading it, so it is governed by the same rule:
- * the caller must be able to read the milestone (404, then 403).
+ * the caller must be able to read the milestone: one they cannot see is 404,
+ * in the words of one that is not there (card 2911).
  */
 export function readMilestoneSummary(user: SessionUser, at: { milestoneId: number }, opts: Record<string, never>) {
 	try {
@@ -297,8 +301,9 @@ export type ChangeMilestoneOptions = ServiceOptions & {
 /**
  * Change a milestone: `PATCH /api/milestones/:id` and `PATCH
  * /api/v1/milestones/:milestoneId`. The milestone is looked for and the
- * caller checked first (404, then 403), and then every field is read (card
- * 2117, R1).
+ * caller checked first (404 for one that is not there or that the caller
+ * cannot see, card 2911, then 403 for one they may not change), and then
+ * every field is read (card 2117, R1).
  *
  * With `allowCard`, `cardId` in the body puts that card in, or with `attach:
  * false` takes it out (`attach` is true or false: `"false"` put the card in),
@@ -384,8 +389,9 @@ export function deleteMilestoneFor(
 
 /**
  * Put a card in the milestone: `POST /api/v1/milestones/:milestoneId/cards`,
- * body `{ cardId }`. The milestone is looked for and the caller checked (404,
- * then 403), then `cardId` is read (400), then the card is looked for. The
+ * body `{ cardId }`. The milestone is looked for and the caller checked (404
+ * for one that is not there or that the caller cannot see, card 2911, then
+ * 403), then `cardId` is read (400), then the card is looked for. The
  * card's board is told once it has committed.
  */
 export function attachCardToMilestone(caller: SessionUser | null, at: { milestoneId: number }, body: RequestBody, opts: ServiceOptions) {

@@ -173,8 +173,8 @@ Every answer DumpFire's gate gives carries `X-Content-Type-Options: nosniff`, `X
 | `201` | Resource created |
 | `400` | Bad request: a field is missing, is of the wrong type or holds what it may not (see [What a Field May Hold](#what-a-field-may-hold)), an id in the path or the query string is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not a JSON object |
 | `401` | Unauthorized: no `Authorization: Bearer <key>` header, or a key that is unknown or expired |
-| `403` | Forbidden: the key's user can open the board the resource is on, and their role does not allow this (since 1.10.0, card 2719); a milestone's own visibility is still `403 No access to this milestone` (card 2911) |
-| `404` | The resource in the path does not exist, whoever asks, or is on a board the key's user cannot open: the two are answered alike, in the same words (since 1.10.0, card 2719); an id in the body names nothing (a category, a user, a milestone); something to be removed is not there (an assignee, a label on a card, a card in the milestone named); or the path is no route: `{ "message": "Not found" }` |
+| `403` | Forbidden: the key's user can open the board the resource is on, and their role does not allow this (since 1.10.0, card 2719), or can see a milestone and may not change it (since 1.12.0, card 2911), or the milestone a card is in, when putting it in another or taking it out (`No access to the milestone this card is in`) |
+| `404` | The resource in the path does not exist, whoever asks, or is on a board the key's user cannot open: the two are answered alike, in the same words (since 1.10.0, card 2719), and so is a milestone they cannot see (since 1.12.0, card 2911); an id in the body names nothing (a category, a user, a milestone); something to be removed is not there (an assignee, a label on a card, a card in the milestone named); or the path is no route: `{ "message": "Not found" }` |
 | `405` | The route does not have this method: `{ "message": "PATCH method not allowed" }`. The `Allow` header names the methods it has |
 | `409` | Conflict: a card moved to a Complete column while it has open subtasks or sub-boards, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep (made under a card, or carried by a card moved to another board), a column renamed into or out of Complete or Done while it holds a card, a dependency that already exists or would close a loop, a board's 11th webhook, or a rejected batch |
 | `413` | The request body is over the size limit, 512 KB: `{ "message", "limitBytes" }`. See [The Request Body](#the-request-body) |
@@ -254,6 +254,8 @@ Three answers are not JSON. Each is made by SvelteKit before DumpFire's gate is 
 A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retries](#writes-failures-and-retries).
 
 ### Changes on 2026-11-18
+
+**Breaking: a milestone the key's user cannot see is answered 404, not 403** (card 2911; the OpenAPI document is version **1.12.0**, with a dated note, marked breaking, at the top of its description). Milestone ids are counted up one at a time, and a `403 No access to this milestone` for one that exists beside a `404 Milestone not found` for one that does not told any key holder which goals exist among those they cannot see. (1) Every operation that names a milestone by its id (under `/milestones/:milestoneId`, as `milestoneId` on `PUT /cards/:cardId`, and as `milestoneId` on `GET /burndown`) answers a milestone the user cannot see (of a board they cannot open, or across boards with a card on a board they cannot open, their own goal included once it holds such a card) `404 {"message": "Milestone not found"}`, the words one that is not there gets, where it was `403 {"message": "No access to this milestone"}`. (2) A milestone the user can see and may not change is still `403 {"message": "No edit access to this milestone"}`. (3) Putting a card in another milestone, or taking it out, when the user cannot see the milestone the card is in, is answered `403 {"message": "No access to the milestone this card is in"}`, where it was `403 No access to this milestone`: that milestone's id is on the card, and the request did not name it. (4) Nothing else changed: no operation, field or schema. A script that treats `403` as "no access" to a milestone should treat `404` the same way. See [Authentication and Security](docs/authentication-security.md#not-found-not-forbidden-card-2719).
 
 **Internal routes: changing your own password and a two-step reset pause your report schedules** (card 2894; the v1 API does not change, still **1.11.0**). `PUT /api/account/password` now always pauses the account's report schedules that are on, whatever `endApiKeys` says, and answers `{ success, apiKeysEnded, webhooksSwitchedOff, reportSchedulesPaused }`. `POST /api/users/{id}/mfa/reset` pauses them too and answers `reportSchedulesPaused`; both branches of its `message` add the count, and the branch that gives the link adds how many live API keys the account has and webhooks it set that are on, with the day each was made and no name (the notice mailed to the account names them). The owner turns a schedule back on with `PUT /api/report-schedules/{id}`, which asks for the password and a code. See [What Setting a Password Ends](docs/authentication-security.md#what-setting-a-password-ends).
 
@@ -1333,7 +1335,9 @@ card's stored `archivedAt`, sent back, changes nothing.
 that milestone, a milestone of one board takes only that board's cards, and an archived
 card is refused with `400` `Card does not exist or is archived`. Taking a card out with
 `null`, or putting it in another milestone, needs edit access to the milestone it is in,
-as putting it in did (`403` `No edit access to this milestone`). `archivedAt: null` sent
+as putting it in did (`403` `No edit access to this milestone`). A milestone named that the
+key's user cannot see is `404` `Milestone not found`; the one the card is in, when they cannot
+see it, is `403` `No access to the milestone this card is in` (card 2911). `archivedAt: null` sent
 with a `milestoneId` restores the card first. See [Attach and Detach Cards](#attach-and-detach-cards).
 A changed `milestoneId` logs `api:milestone_card_added` or `api:milestone_card_removed`, as
 the milestone routes do, and is not named in `api:card_updated`: a milestone alone sends no
@@ -2182,20 +2186,26 @@ milestone cross-board first, or move the card. An archived card is not put in on
 `Card does not exist or is archived`, as the batch reports one.
 
 Both look for the milestone in the path and check the caller first (`404`
-`Milestone not found`, then `403`), then read `cardId`
+`Milestone not found` for one that is not there or that the caller cannot see, in the same
+words, card 2911; then `403` `No edit access to this milestone` for one they can see and may
+not change), then read `cardId`
 (an id, `400` otherwise), then look for the card and check the caller on its board.
 
 Taking a card out is one rule, here, with `milestoneId: null` on `PUT /cards/:cardId`, and
 in the batch below: the caller needs edit access to the card's board **and** to the
-milestone the card is in (`403` `No edit access to this milestone`, or
-`No access to this milestone` for a goal with cards on a board the caller cannot open). So
+milestone the card is in (`403` `No edit access to this milestone`). So
 someone who may edit a board, and neither made a cross-board goal nor is an administrator,
 can no more take a card out of that goal than put one in. Putting a card in another
 milestone takes it out of the one it is in, so the `POST` above, `milestoneId` on
 `PUT /cards/:cardId` and the batch ask the same of that one. The
 `DELETE` takes a card out only of the milestone it names: a card that is not in it is `404`
 `Card is not in this milestone`. Until 2026-10-14 it took the card out of whichever
-milestone it was in.
+milestone it was in. A milestone the caller cannot see is answered `404` `Milestone not
+found` wherever it is named, here and in the batch, before the card is looked at (card
+2911). Only where the request does not name the milestone the card is in, `milestoneId`
+(`null` or another id) on `PUT /cards/:cardId` and the single `POST` above, is a caller who
+cannot see that one answered `403` `No access to the milestone this card is in`: its id is on
+the card already. The batch reports such a card under `problems`, as one it may not change.
 
 Every route that puts a card in or takes it out logs it on the card's board, with its id
 (card 2289): `api:milestone_card_added`, `Added "First" to milestone "Launch"`, or
@@ -2424,7 +2434,8 @@ too: a card in one they cannot change is listed under `problems`,
 
 The `DELETE` answers `200` with `milestoneId`, `detached`, `skippedNotInMilestone` and
 `boardsTouched`. Both still answer `403` and `404` for the milestone itself, before the list
-is read. The `POST` refuses a card that is archived, as the single-card `POST` above does:
+is read: `404 Milestone not found` for one that is not there or that the caller cannot see
+(card 2911), `403` for one they can see and may not change. The `POST` refuses a card that is archived, as the single-card `POST` above does:
 `Card does not exist or is archived`. **The `DELETE` takes an archived card out** (card
 2290), as the single-card `DELETE` and `milestoneId: null` on `PUT /cards/:cardId` do, with
 its entry and a live update to its board: an archived card keeps its milestone and still
@@ -2874,7 +2885,8 @@ it is now, so a card returned to options leaves the past days' scope too.
 
 **Errors:** every invalid parameter is a `400` naming it; `404` for a board, milestone or
 board category that does not exist, and for a board or board category you cannot see, in the
-same words (card 2719); `403` for a milestone you cannot see (card 2911).
+same words (card 2719); a milestone you cannot see is `404 Milestone not found` too, in the
+same words as one that is not there (card 2911).
 
 ### Webhooks
 

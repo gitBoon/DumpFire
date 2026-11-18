@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.127
+version: 1.128
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2911
   - card-2894
   - card-2893
   - card-2752
@@ -63,7 +64,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Docker deployment, the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Docker deployment, the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -6796,14 +6797,9 @@ WHERE k.expires_at IS NULL OR k.expires_at > datetime('now')
 ORDER BY u.username, k.created_at;
 ```
 
-and sends each holder this notice, as written:
-
-> From the next DumpFire release, a request for a board, card, or anything on a board your
-> account cannot open is answered `404` with the same message as one that does not exist, where
-> it was `403`. `403` now means you can open the board but your role does not allow the action.
-> In a dependency batch, an end you cannot open is reported as not existing, and a loop through
-> work you cannot open names it as withheld. If a script treats `403` as 'no access', treat
-> `404` the same way.
+and sends each holder a notice. Cards 2719, 2762 and 2911 go out in one release, so the notice
+is card 2911's, which covers all three and replaces the one written here: see
+[The Release That Answers a Milestone the Caller Cannot See as Not There](#the-release-that-answers-a-milestone-the-caller-cannot-see-as-not-there-card-2911).
 
 **What people notice.** Someone who loses access to a board and follows an old link sees
 "Board not found" where they saw "You do not have access to this board". The board page's
@@ -7068,6 +7064,72 @@ configured, an owner and an editor E, each with a key):
 | K4 | Make key L expiring in a few minutes; `create-webhook`; wait; move a card | Nothing delivered; off | Delivered |
 | K5 | The owner, key M: `PUT {"active": true}` | On; a new secret in the answer | Refused, or the old secret |
 | K6 | Upgrade a dev copy holding webhooks from before the release, schedulers on | One mail per owner listing them with dates; a second start sends nothing | No mail, or a second one |
+
+### The Release That Answers a Milestone the Caller Cannot See as Not There (Card 2911)
+
+**Card 2911, built 2026-11-18.** Card 2719 left milestones at `403 No access to this milestone`
+for one the caller cannot see, beside `404 Milestone not found` for one that is not there, so
+anyone with an account or an API key could still try milestone ids and learn which goals exist
+among those they cannot see. From this release **a milestone the caller cannot see, named by its
+id anywhere (the API, the plan page, the burndown chart, a card's milestone), is answered `404
+Milestone not found`, the words one that is not there gets**. That includes a goal across boards
+a user made, once it holds a card on a board they cannot open. `403 No edit access to this
+milestone` is kept for a goal the caller can see and may not change; putting a card in another
+milestone, or taking it out, when the caller cannot see the milestone it is in, is answered `403
+No access to the milestone this card is in`. How it works is in
+[Not Found, Not Forbidden](authentication-security.md#not-found-not-forbidden-card-2719); the
+plan is `docs/planning/card-2911-hidden-milestone-not-found.md`.
+
+**This is a breaking change for API keys** (OpenAPI document `1.12.0`, a dated note marked
+breaking at the top of its description): a script that read `403 No access to this milestone`
+is answered `404 Milestone not found` instead. The changelog entry is in
+[the API reference](api-reference.md#changes-on-2026-11-18).
+
+**Nothing to migrate.** No schema, setting or file changes. Going back to the previous image
+needs no step; it answers `403 No access to this milestone` again.
+
+**Before the release, tell the key holders (owner).** Cards 2719, 2762 and 2911 go out in one
+release, so one notice covers all three and replaces card 2719's (above). Find the holders with
+the read-only query in card 2719's section, and send each this notice, as written:
+
+> From the next DumpFire release, a request naming a board, card, milestone, or anything on a
+> board that your account cannot open or see is answered `404` with the same message as one
+> that does not exist, where it was `403`. `403` now means you can see it but your role does not
+> allow the action. In a dependency batch, an end you cannot open is reported as not existing,
+> and a loop through work you cannot open names it as withheld. `404 Milestone not found` is
+> also the answer for a milestone you cannot see, where it was `403 No access to this
+> milestone`. One case keeps a `403`: putting a card in another milestone, or taking it out,
+> when you cannot see the milestone the card is in is answered `403 No access to the milestone
+> this card is in`. If a script treats `403` as 'no access', treat `404` the same way.
+
+**What people notice.** Someone who follows an old plan link to a goal they can no longer see
+gets the "Milestone not found" error page where they got "No access to this milestone"; the
+burndown page labels the problem "Not found".
+
+**Accepted risks.** A missing id is answered a little faster than one the caller cannot open, a
+milestone now among them (R5), and ids are counted up one at a time, so anyone who can make a
+board, a card or a milestone learns how many were made since their last (R6). Both are in
+[Accepted Risks](authentication-security.md#accepted-risks), bounded by the gate's rate limits.
+
+**Hands-on checks** (the plan's section 6, H1 to H8; on the dev server: account A owns board X
+with a goal Gx; account B owns board Y and has no access to X; a goal Gxy across boards, made by
+A, holds a card of X and B's card on Y; a key for B):
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | As B, open `/plan/<Gx>`, then `/plan/<Gx + 99999>` | The same "Milestone not found" error page | "No access to this milestone" for the first |
+| H2 | With B's key: `GET /api/v1/milestones/<Gx>` and `/999999` | Both `404 {"message":"Milestone not found"}` | A 403, or different words |
+| H3 | With B's key: `GET /api/v1/milestones/<Gxy>` | `404 Milestone not found` | 403, or the goal |
+| H4 | As B, the burndown page with `?milestoneId=<Gx>`, then `?milestoneId=999999` | "Not found", the same both times | "No access" |
+| H5 | Share X with B as viewer; with B's key `PATCH /api/v1/milestones/<Gx>` `{ "name": "x" }` | `403 No edit access to this milestone`, name unchanged | 404 |
+| H6 | Unshare; B makes a goal of no board; with B's key `PUT /api/v1/cards/<B's card in Gxy>` `{ "milestoneId": <B's goal> }`, then `{ "milestoneId": null }` | Both `403 No access to the milestone this card is in`, the card still in Gxy | 404, the old words, or the card moved |
+| H7 | `GET /api/v1/openapi.json` | `info.version` `1.12.0`; its note first, "breaking" | 1.11.0 |
+| H8 | `/docs`, Error Format | The 403 row no longer says a milestone is still 403, and names the milestone a card is in; the 404 row names a milestone the user cannot see | The old rows |
+
+Released together with cards 2719, 2752 and 2893, the earlier sections' checks of the
+document's version (card 2719's H8, card 2752's D8) read `1.12.0`, with its note first and the
+1.11.0 and 1.10.0 notes after it; and card 2719's H9 finds A.8.3 listing the accepted risks R5
+and R6.
 
 ## Changing the Schema
 

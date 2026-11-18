@@ -261,9 +261,10 @@ describe('PUT /api/v1/cards/:cardId', () => {
 	it('refuses a milestone the caller may not use, and writes none of the other fields', async () => {
 		const s = withGoals();
 
+		// One the caller cannot see is answered as the missing one beside it (card 2911).
 		expect(
-			(await expectRefused(put(s.owner, s.first.id, { title: 'Renamed', milestoneId: s.hidden.id }), 403)).body.message
-		).toBe('No access to this milestone');
+			(await expectRefused(put(s.owner, s.first.id, { title: 'Renamed', milestoneId: s.hidden.id }), 404)).body.message
+		).toBe('Milestone not found');
 		expect(
 			(await expectRefused(put(s.owner, s.first.id, { title: 'Renamed', milestoneId: 99999 }), 404)).body.message
 		).toBe('Milestone not found');

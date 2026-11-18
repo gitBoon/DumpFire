@@ -1,11 +1,13 @@
 ---
 title: "Burndown Charts"
 category: Reporting & Analytics
-version: 1.9
+version: 1.10
 status: As-Built
-date: 2026-10-27
+date: 2026-11-18
 tags:
   - burndown
+  - card-2911
+  - not-found-not-forbidden
   - burn-up
   - forecast
   - delivery-estimate
@@ -16,7 +18,7 @@ tags:
   - reporting
   - api
   - upstream
-description: "How DumpFire draws burndown and burn-up charts for any board, board group, milestone or filter — rebuilt from card timestamps, with an honest forecast, a time-to-deliver estimate and plain-English explanations"
+description: "How DumpFire draws burndown and burn-up charts for any board, board group, milestone or filter — rebuilt from card timestamps, with an honest forecast, a time-to-deliver estimate and plain-English explanations; a board or milestone you cannot see is answered 404 as one that is not there (cards 2719, 2911)"
 ---
 
 # Burndown Charts
@@ -135,7 +137,7 @@ sequenceDiagram
     L->>P: URLSearchParams
     P-->>L: BurndownQuery (or 400 with the parameter named)
     L->>G: user + query
-    G->>G: resolve scope and check access (403 / 404)
+    G->>G: resolve scope and check access (404 for a board, group or milestone you cannot see, as for one not there)
     G->>DB: one query: cards joined to columns in scope
     G->>DB: labels / assignees for those cards (only if needed)
     G->>G: lifelines → daily series → summary, forecast, target, groups, facets
@@ -528,9 +530,9 @@ portalled to `<body>`, so nothing can clip them.
 
 | Param | Default | Meaning |
 |---|---|---|
-| `boardIds` | — | Comma-separated. View access to each is required (403 names the board). |
+| `boardIds` | — | Comma-separated. View access to each is required: a board you cannot see is `404 Board N not found`, as one that is not there (card 2719). |
 | `boardCategoryId` | — | Every board in the group **that you can see**. Not with `boardIds`. |
-| `milestoneId` | — | The milestone's cards; combine with `boardIds` to narrow. |
+| `milestoneId` | — | The milestone's cards; combine with `boardIds` to narrow. A milestone you cannot see is `404 Milestone not found`, as one that is not there (card 2911). |
 | *(none of those)* | — | Every board you can see. |
 | `categoryIds` | any | Card categories; `none` = uncategorised. |
 | `labelIds` | any | A card matches if it carries any of them. |
@@ -667,13 +669,16 @@ curl -H "Authorization: Bearer $DUMPFIRE_KEY" \
 
 ## Access
 
-- Explicit boards need view access to **each** one; one forbidden board fails the
-  whole request with a 403 that names it.
+- Explicit boards need view access to **each** one; one board you cannot open fails
+  the whole request with `404 Board N not found`, the words a board that is not there
+  gets (card 2719).
 - A board group is intersected with your accessible boards and never widened. A
   note says how many of its boards are hidden from you.
 - A milestone goes through `requireMilestone`. For a cross-board goal that already
   requires view access to every board its cards touch, so its cards can be loaded
-  without a board list.
+  without a board list. A milestone you cannot see is `404 Milestone not found`, as
+  one that is not there, on the API and on the burndown page, which labels it "Not
+  found" (card 2911).
 - *All boards* means `getAccessibleBoardIds`: everything for an admin, and owned,
   member, team and public boards for everyone else.
 

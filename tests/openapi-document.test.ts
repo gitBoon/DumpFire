@@ -450,10 +450,12 @@ const QUERY_READ_ELSEWHERE: Record<string, { file: string; fn: string; params: s
  * reading does not follow which of them can reach the handler. One operation
  * is answered by a function that catches some of them on the way.
  *
- * Three entries. An entry is not a pass. Check 4 fails if the reading no longer
+ * Seven entries. An entry is not a pass. Check 4 fails if the reading no longer
  * finds a status listed here, because the entry has then outlived its reason,
  * and fails if the document lists one, because nothing answers it. And a test
- * at the end of this file calls the route and shows what is answered instead.
+ * calls the route and shows what is answered instead: at the end of this file,
+ * or, for the four milestone reads of card 2911, in `not-found-not-forbidden`
+ * and `access-every-route`.
  */
 const READ_AND_NEVER_ANSWERED: Record<string, { statuses: number[]; why: string }> = {
 	'POST /api/v1/tokens/bulk': {
@@ -477,7 +479,30 @@ const READ_AND_NEVER_ANSWERED: Record<string, { statuses: number[]; why: string 
 		why:
 			'updateGroup asks requireUnusedGroupName, the 409, only for a new name. refuseKeyRename, asked first, refuses a body ' +
 			'with name 403 for a key, whatever it holds (card 2681, D17), so it is not reached.'
-	}
+	},
+	// Card 2911: a milestone the caller cannot see is 404, and a read asks only that. The 403 is a MilestoneError's
+	// status elsewhere in milestones.ts: a goal the caller may not change, and the goal a card is in.
+	...Object.fromEntries(
+		[
+			['GET /api/v1/milestones/{milestoneId}', 'readMilestone'],
+			['GET /api/v1/milestones/{milestoneId}/summary', 'readMilestoneSummary'],
+			['GET /api/v1/milestones/{milestoneId}/pdf', 'readMilestoneSummary'],
+			['GET /api/v1/burndown', 'getBurndown, which turns a MilestoneError into a BurndownError of its status,']
+		].map(([name, by]) => [
+			name,
+			{
+				statuses: [403],
+				why:
+					`${by} asks requireMilestone without forEdit, which answers a milestone that is not there or that the ` +
+					'key\'s user cannot see 404 Milestone not found (card 2911) and nothing else. The reading counts every status ' +
+					'MilestoneError is made with anywhere in milestones.ts, and none of the places there that make a 403 is reached ' +
+					'by these reads: requireMilestone\'s forEdit branch, requireGoalLeft (the goal a card leaves), requireMilestoneBoard ' +
+					'(the board a goal is made on or given to) and editableCard (a card put in or taken out), each asked only by a write. ' +
+					'not-found-not-forbidden (G1, G5) and access-every-route ' +
+					'call these and show the 404.'
+			}
+		])
+	)
 };
 
 /** The query parameter names `fn` reads from the URLSearchParams it calls `params`. */
@@ -2850,20 +2875,21 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.11.0, with its dated notes newest first, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.12.0, with its dated notes newest first, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.11.0');
+		expect(res.body.info.version).toBe('1.12.0');
 
 		// Card 2761 (E8): every dated note's heading, in the order the description gives them, newest first, in
 		// one list, in place of each note's test counting the notes before it. A new version's note is added at
 		// its head, and nothing else here moves.
 		const note = res.body.info.description as string;
 		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])).toEqual([
+			'**Changed on 2026-11-18 (version 1.12.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.11.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.10.0), breaking.**',
 			'**Changed on 2026-11-17 (version 1.9.1).**',
@@ -2922,12 +2948,65 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(res.body.tags.map((t: Json) => t.name)).toContain(itself.tags[0]);
 	});
 
-	// Card 2752: a webhook whose setter can no longer open its board is switched off for good.
-	it('announces in the 1.11.0 note, first and breaking, that a webhook whose setter lost the board is switched off for good, and holds the document to it (card 2752)', () => {
+	// Card 2911, G11 (D5): a milestone the key's user cannot see is answered as one that is not there.
+	it("G11 announces in the 1.12.0 note, first and breaking, that a milestone the key's user cannot see is answered 404, and holds the document to it (card 2911)", () => {
 		const note = spec.info.description as string;
-		const heading = '**Changed on 2026-11-18 (version 1.11.0), breaking.**';
+		const heading = '**Changed on 2026-11-18 (version 1.12.0), breaking.**';
 		// First of the dated notes, and marked breaking.
 		expect(note.match(/\*\*Changed on [^*]+\*\*/)?.[0]).toBe(heading);
+		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-18 (version 1.11.0), breaking.**'));
+		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4]);
+		for (const words of [
+			'(card 2911)',
+			'under /milestones/{milestoneId}, as milestoneId on PUT /cards/{cardId}, and as milestoneId on GET /burndown',
+			'or across boards with a card on a board they cannot open, their own included',
+			'`404 {"message": "Milestone not found"}`, the words one that is not there gets, where it answered `403 {"message": "No access to this milestone"}`',
+			'(2) a milestone the user can see and may not change is still `403 {"message": "No edit access to this milestone"}`',
+			'(3) putting a card in another milestone, or taking it out, when the user cannot see the milestone the card is in, is answered `403 {"message": "No access to the milestone this card is in"}`',
+			'(4) nothing else changed'
+		]) {
+			expect(changes, words).toContain(words);
+		}
+
+		// The milestone reads and the burndown document no 403: a milestone they cannot see is their 404.
+		for (const [path, method] of [
+			['/api/v1/milestones/{milestoneId}', 'get'],
+			['/api/v1/milestones/{milestoneId}/summary', 'get'],
+			['/api/v1/milestones/{milestoneId}/pdf', 'get'],
+			['/api/v1/burndown', 'get']
+		] as const) {
+			const responses = spec.paths[path][method].responses;
+			expect(Object.keys(responses), path).not.toContain('403');
+			expect(responses['404'].description, path).toMatch(/(milestone|one) (the key's user|they) cannot see/);
+		}
+
+		// The two shared answers, each clause appended to card 2719's words.
+		expect(spec.components.responses.NotFound.description).toContain("so is a milestone the key's user cannot see (since 1.12.0)");
+		expect(spec.components.responses.Forbidden.description).toContain("A milestone the key's user can see and may not change is answered 403 too (since 1.12.0)");
+
+		// The three operations on one card (S1, E5): the goal a card is in, in its own words; a named goal is not "cannot see".
+		const remove = spec.paths['/api/v1/milestones/{milestoneId}/cards'].delete.responses;
+		expect(remove['403'].description).not.toContain('cannot see');
+		expect(remove['404'].description).toContain("or one the key's user cannot see");
+		const add = spec.paths['/api/v1/milestones/{milestoneId}/cards'].post.responses;
+		expect(add['403'].description).toContain(
+			'cannot change (`No edit access to this milestone`) or cannot see (`No access to the milestone this card is in`) the milestone the card is already in'
+		);
+		expect(add['404'].description).toContain("or one the key's user cannot see");
+		const put = spec.paths['/api/v1/cards/{cardId}'].put.responses;
+		expect(put['403'].description).toContain('or the user cannot see the milestone the card is already in (`No access to the milestone this card is in`)');
+		expect(put['404'].description).toContain("no milestone with the id given as milestoneId, or one the key's user cannot see");
+
+		// No operation's own words still answer a goal it names "No access to this milestone".
+		expect(JSON.stringify(spec.paths)).not.toContain('No access to this milestone');
+	});
+
+	// Card 2752: a webhook whose setter can no longer open its board is switched off for good.
+	it('announces in the 1.11.0 note, breaking, that a webhook whose setter lost the board is switched off for good, and holds the document to it (card 2752)', () => {
+		const note = spec.info.description as string;
+		const heading = '**Changed on 2026-11-18 (version 1.11.0), breaking.**';
+		// Among the dated notes, and marked breaking; where it stands is the ordered list's (card 2911 put 1.12.0 before it).
+		expect(note).toContain(heading);
 		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-18 (version 1.10.0), breaking.**'));
 		// Card 2893 ships with card 2752, and adds (9) and (10) to its note: "nothing else changed" is last, (11).
 		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);

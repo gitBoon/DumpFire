@@ -16,6 +16,12 @@
  *
  * The rows are numbered as the plan numbers them
  * (`docs/planning/card-2719-not-found-not-forbidden.md`, 5.1).
+ *
+ * Card 2911 does the same for a milestone the caller cannot see: of a board
+ * they cannot open, or across boards with a card on one. Its rows are numbered
+ * as its plan numbers them (`docs/planning/card-2911-hidden-milestone-not-found.md`,
+ * 5.1), and ask as the rows above do, naming the hidden goal and an id that is
+ * no row of `milestones`.
  */
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { db, sqlite } from '$lib/server/db';
@@ -23,6 +29,7 @@ import {
 	activityLog,
 	boardCategories,
 	boards,
+	cards,
 	cardTemplates,
 	categories,
 	tokenUsage,
@@ -33,6 +40,7 @@ import {
 	type Category,
 	type Column,
 	type Label,
+	type Milestone,
 	type Subtask
 } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
@@ -82,6 +90,19 @@ type World = {
 	ownMilestoneId: number;
 	/** A label of a board the outsider can open, as a viewer, and which is not their card's. */
 	viewableLabel: Label;
+	/** Card 2911: a goal of board A. */
+	goalOfA: Milestone;
+	/**
+	 * Card 2911: a goal across boards, made by the owner, holding a card of A and
+	 * `inAcross`: the outsider opens one of its boards, not both.
+	 */
+	acrossA: Milestone;
+	/** A card of the outsider's own board, in `acrossA`. */
+	inAcross: Card;
+	/** Card 2911: a goal across boards, made by the owner, holding only `inSeen`: the outsider sees it and did not make it. */
+	seenGoal: Milestone;
+	/** A card of the outsider's own board, in `seenGoal`. */
+	inSeen: Card;
 };
 
 let w: World;
@@ -97,6 +118,15 @@ beforeEach(() => {
 	const ownColumn = makeBoard({ owner: outsider, name: 'Outsider' }).cols['To Do'];
 	const viewable = makeBoard({ owner, name: 'Shown to the outsider' }).board;
 	addBoardMember(viewable, outsider, 'viewer');
+	// Card 2911's goals. `card` and `ownCard` stay in none, so card 2719's rows are as they were.
+	const inAcross = makeCard(ownColumn, { title: 'The outsider’s, in a goal across boards' });
+	const inSeen = makeCard(ownColumn, { title: 'The outsider’s, in a goal they see' });
+	const acrossA = makeMilestone({
+		createdBy: owner,
+		name: 'Across A and the outsider’s board',
+		cards: [makeCard(cols['To Do'], { title: 'On A, in a goal across boards' }), inAcross]
+	});
+	const seenGoal = makeMilestone({ createdBy: owner, name: 'Seen by the outsider', cards: [inSeen] });
 	w = {
 		owner,
 		outsider,
@@ -114,7 +144,12 @@ beforeEach(() => {
 		ownColumn,
 		ownCard: makeCard(ownColumn, { title: 'The outsider’s' }),
 		ownMilestoneId: makeMilestone({ createdBy: outsider, name: 'The outsider’s goal' }).id,
-		viewableLabel: makeLabel(viewable)
+		viewableLabel: makeLabel(viewable),
+		goalOfA: makeMilestone({ board, createdBy: owner, name: 'A goal of A' }),
+		acrossA,
+		inAcross,
+		seenGoal,
+		inSeen
 	};
 });
 
@@ -129,7 +164,7 @@ type Row = {
 	name: string;
 	/** The table the thing named is a row of. */
 	table: string;
-	/** The id of the thing on board A. */
+	/** The id of the thing on board A; in card 2911's rows, of the goal the outsider cannot see. */
 	onA: (w: World) => number;
 	/** The request, as the outsider, naming `id`. */
 	ask: (w: World, id: number) => Promise<Answer>;
@@ -346,26 +381,31 @@ const ROWS: Row[] = [
 	}
 ];
 
+/** A row asked twice, naming what the outsider cannot open and an id that is no row: the same answer, and nothing written. */
+async function answeredAsMissing(row: Row): Promise<void> {
+	const onA = row.onA(w);
+	const missing = missingIn(row.table);
+	const before = snapshotDb();
+
+	const there = await row.ask(w, onA);
+	const notThere = await row.ask(w, missing);
+
+	// Byte for byte, the same keys in the same order; the id each was asked about, where the
+	// answer names it, taken out to compare the rest.
+	const said = (answer: Answer, id: number) => {
+		const text = JSON.stringify(answer.body);
+		return row.numbered ? text.replace(new RegExp(`\\b${id}\\b`, 'g'), '<id>') : text;
+	};
+
+	expect(notThere.status).toBe(row.status ?? 404);
+	expect(there.status).toBe(row.status ?? 404);
+	expect(said(there, onA)).toBe(said(notThere, missing));
+	expectUnchanged(before);
+}
+
 describe('card 2719: an id on a board the caller cannot open', () => {
 	it.each(ROWS.map((row) => [row.name, row] as const))('is answered exactly as an id that is not there: %s', async (_name, row) => {
-		const onA = row.onA(w);
-		const missing = missingIn(row.table);
-		const before = snapshotDb();
-
-		const there = await row.ask(w, onA);
-		const notThere = await row.ask(w, missing);
-
-		// Byte for byte, the same keys in the same order; the id each was asked about, where the
-		// answer names it, taken out to compare the rest.
-		const said = (answer: Answer, id: number) => {
-			const text = JSON.stringify(answer.body);
-			return row.numbered ? text.replace(new RegExp(`\\b${id}\\b`, 'g'), '<id>') : text;
-		};
-
-		expect(notThere.status).toBe(row.status ?? 404);
-		expect(there.status).toBe(row.status ?? 404);
-		expect(said(there, onA)).toBe(said(notThere, missing));
-		expectUnchanged(before);
+		await answeredAsMissing(row);
 	});
 
 	// The code review's CS2: a card's board history gives a stay on a board the caller cannot open by its dates
@@ -419,6 +459,106 @@ describe('card 2719: an id on a board the caller cannot open', () => {
 		for (const body of [single.body, batch.body]) {
 			expect(JSON.stringify(body)).not.toMatch(new RegExp(`(#|"id":)${w.card.id}\\b`));
 		}
+		expectUnchanged(before);
+	});
+});
+
+/** A page's load as an answer: its error, or its data. */
+const loaded = async (path: string, user: SessionUser): Promise<Answer> => {
+	const res = await pageLoad(path, { user });
+	return res.type === 'error' ? { status: res.status, body: res.body } : { status: 200, body: res };
+};
+
+/** The milestone a card is in, as the table holds it. */
+const goalOf = (cardId: number) => db.select({ milestoneId: cards.milestoneId }).from(cards).where(eq(cards.id, cardId)).get()?.milestoneId;
+
+/** Card 2911's rows: a goal the outsider cannot see, named by its id, answered as one that is not there. */
+const GOAL_ROWS: Row[] = [
+	{
+		name: 'G1 GET /api/v1/milestones/:id, a goal of A (requireMilestone, through the service)',
+		table: 'milestones',
+		onA: (w) => w.goalOfA.id,
+		ask: (w, id) => api('GET', `/api/v1/milestones/${id}`, { user: w.outsider })
+	},
+	{
+		name: 'G2 GET /api/v1/milestones/:id, a goal across boards the outsider sees part of (canViewMilestone across boards)',
+		table: 'milestones',
+		onA: (w) => w.acrossA.id,
+		ask: (w, id) => api('GET', `/api/v1/milestones/${id}`, { user: w.outsider })
+	},
+	{
+		name: 'G5 GET /api/burndown?milestoneId=<a goal of A> (burndown, a milestone)',
+		table: 'milestones',
+		onA: (w) => w.goalOfA.id,
+		ask: (w, id) => api('GET', `/api/burndown?milestoneId=${id}`, { user: w.outsider })
+	},
+	{
+		name: "G6 the plan page's load for a goal of A, called directly",
+		table: 'milestones',
+		onA: (w) => w.goalOfA.id,
+		ask: (w, id) => loaded(`/plan/${id}`, w.outsider)
+	},
+	{
+		name: "G7 POST /api/v1/milestones/:id/cards/bulk, a goal of A, with the outsider's card (the milestone bulk)",
+		table: 'milestones',
+		onA: (w) => w.goalOfA.id,
+		ask: (w, id) => api('POST', `/api/v1/milestones/${id}/cards/bulk`, { user: w.outsider, body: { cardIds: [w.ownCard.id] } })
+	},
+	{
+		name: "G8 PUT /api/v1/cards/:cardId, the outsider's card, with milestoneId a goal of A (setCardMilestone)",
+		table: 'milestones',
+		onA: (w) => w.goalOfA.id,
+		ask: (w, id) => api('PUT', `/api/v1/cards/${w.ownCard.id}`, { user: w.outsider, body: { milestoneId: id } })
+	}
+];
+
+describe('card 2911: a milestone the caller cannot see', () => {
+	it.each(GOAL_ROWS.map((row) => [row.name, row] as const))('is answered exactly as a milestone that is not there: %s', async (_name, row) => {
+		await answeredAsMissing(row);
+	});
+
+	it("G5b the burndown page's load gives a goal of A the problem it gives a milestone that is not there", async () => {
+		const before = snapshotDb();
+		const problem = async (id: number) => {
+			const res = await pageLoad(`/burndown?milestoneId=${id}`, { user: w.outsider });
+			expect(res.type).toBe('data');
+			return res.type === 'data' ? res.data.problem : undefined;
+		};
+
+		const there = await problem(w.goalOfA.id);
+		const notThere = await problem(missingIn('milestones'));
+
+		expect(there).toEqual({ status: 404, message: 'Milestone not found' });
+		expect(JSON.stringify(there)).toBe(JSON.stringify(notThere));
+		expectUnchanged(before);
+	});
+
+	it('G9 a goal the outsider can see and may not change is still 403 No edit access to this milestone', async () => {
+		const before = snapshotDb();
+
+		const res = await api('PATCH', `/api/v1/milestones/${w.seenGoal.id}`, { user: w.outsider, body: { name: 'Renamed' } });
+
+		expect([res.status, res.body]).toEqual([403, { message: 'No edit access to this milestone' }]);
+		expectUnchanged(before);
+	});
+
+	it("G10 putting the outsider's card in their own goal, out of a goal they cannot see, is refused in that goal's own words", async () => {
+		const before = snapshotDb();
+
+		const res = await api('PUT', `/api/v1/cards/${w.inAcross.id}`, { user: w.outsider, body: { milestoneId: w.ownMilestoneId } });
+
+		expect([res.status, res.body]).toEqual([403, { message: 'No access to the milestone this card is in' }]);
+		expect(goalOf(w.inAcross.id)).toBe(w.acrossA.id);
+		expectUnchanged(before);
+	});
+
+	it("G10b taking the outsider's card out of a goal they cannot see is refused in that goal's own words", async () => {
+		const before = snapshotDb();
+
+		const res = await api('PUT', `/api/v1/cards/${w.inAcross.id}`, { user: w.outsider, body: { milestoneId: null } });
+
+		expect([res.status, res.body]).toEqual([403, { message: 'No access to the milestone this card is in' }]);
+		expect(goalOf(w.inAcross.id)).toBe(w.acrossA.id);
 		expectUnchanged(before);
 	});
 });

@@ -418,10 +418,10 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 	},
 	'the burndown page, a goal across boards': {
 		owner: { reads: 21, access: 1, hash: '88738a2ff1c93e27' }, // 34 → 26, 3 → 1; re-pinned; 26 → 22 (card 2399); 22 → 21 (card 2402)
-		member: { reads: 16, access: 1, hash: 'e244bd069fc1bce6' }, // 31 → 27, 2 → 1 (refused in the page); re-pinned; 27 → 17 (card 2399); 17 → 16 (card 2402)
-		mate: { reads: 20, access: 1, hash: '49d71ada95f45d18' }, // 42 → 37, 2 → 1 (refused in the page); re-pinned; 37 → 21 (card 2399); 21 → 20 (card 2402)
+		member: { reads: 16, access: 1, hash: 'c81bca032d2dafa9' }, // 31 → 27, 2 → 1 (refused in the page); re-pinned; 27 → 17 (card 2399); 17 → 16 (card 2402); re-pinned (2911: 404, was 403)
+		mate: { reads: 20, access: 1, hash: 'd299b2dd06aab594' }, // 42 → 37, 2 → 1 (refused in the page); re-pinned; 37 → 21 (card 2399); 21 → 20 (card 2402); re-pinned (2911: 404, was 403)
 		admin: { reads: 13, access: 0, hash: '6610a45dab3fb08e' }, // 13 → 13, 0 → 0; re-pinned
-		outsider: { reads: 12, access: 1, hash: 'f86a5cc151b8126e' } // 22 → 22, 1 → 1 (refused in the page); 22 → 13 (card 2399); 13 → 12 (card 2402)
+		outsider: { reads: 12, access: 1, hash: 'ba57b4f3869de097' } // 22 → 22, 1 → 1 (refused in the page); 22 → 13 (card 2399); 13 → 12 (card 2402); re-pinned (2911: 404, was 403)
 	},
 	'the burndown page, a goal and a grouping': {
 		owner: { reads: 20, access: 1, hash: '6603660dd9f2af3f' }, // 37 → 25, 4 → 1; re-pinned; 25 → 21 (card 2399); 21 → 20 (card 2402)
@@ -453,10 +453,10 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 	},
 	'GET /api/v1/burndown, a goal across boards': {
 		owner: { reads: 11, access: 1, hash: '8f66c22e835bc6ca' }, // 11 → 11, 1 → 1
-		member: { reads: 7, access: 0, hash: 'ea9084c69a11a14b' }, // 7 → 7, 0 → 0 (refused)
-		mate: { reads: 10, access: 0, hash: 'ea9084c69a11a14b' }, // 10 → 10, 0 → 0 (refused)
+		member: { reads: 7, access: 0, hash: '3606727ae95eb894' }, // 7 → 7, 0 → 0 (refused); re-pinned (2911: 404, was 403)
+		mate: { reads: 10, access: 0, hash: '3606727ae95eb894' }, // 10 → 10, 0 → 0 (refused); re-pinned (2911: 404, was 403)
 		admin: { reads: 3, access: 0, hash: '8f66c22e835bc6ca' }, // 3 → 3, 0 → 0
-		outsider: { reads: 5, access: 0, hash: 'ea9084c69a11a14b' } // 5 → 5, 0 → 0 (refused)
+		outsider: { reads: 5, access: 0, hash: '3606727ae95eb894' } // 5 → 5, 0 → 0 (refused); re-pinned (2911: 404, was 403)
 	},
 	'GET /api/v1/burndown, board A': {
 		owner: { reads: 5, access: 0, hash: '1035ef7d1a78f56f' }, // 5 → 5, 0 → 0

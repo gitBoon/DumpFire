@@ -21,8 +21,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * take one out, as `PATCH /api/v1/milestones/:milestoneId` and
  * `POST` and `DELETE /api/v1/milestones/:milestoneId/cards` do.
  *
- * The milestone is looked for and the caller checked first (404, then 403),
- * and then every field is read (card 2117, R1).
+ * The milestone is looked for and the caller checked first (404 for one that
+ * is not there or that the caller cannot see, card 2911, then 403 for one
+ * they can see and may not change), and then every field is read (card 2117,
+ * R1).
  *
  * `cardId` in the body puts that card in, or with `attach: false` takes it
  * out. `attach` is true or false: `"false"` put the card in. Taking a card

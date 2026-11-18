@@ -24,8 +24,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 /**
  * PATCH /api/v1/milestones/:milestoneId — update name/description/targetDate/status/boardId.
  *
- * The milestone is looked for and the caller checked (404, then 403), then
- * every field is read (400): `name` text, trimmed, of 1 to 200 characters;
+ * The milestone is looked for and the caller checked (404 for one that is not
+ * there or that the caller cannot see, card 2911, then 403 for one they can
+ * see and may not change), then every field is read (400): `name` text, trimmed, of 1 to 200 characters;
  * `description` text of at most 50,000; `targetDate` a date written
  * `YYYY-MM-DD`, or null; `status` `open` or `closed`; `boardId` an id, or null
  * for a goal across boards. A value the milestone already holds, sent back

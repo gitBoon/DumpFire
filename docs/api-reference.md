@@ -1,11 +1,13 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.141
+version: 1.142
 status: As-Built
 date: 2026-11-18
 tags:
   - api
+  - card-2911
+  - hidden-milestone-not-found
   - card-2894
   - card-2893
   - card-2752
@@ -41,7 +43,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "REST API reference for DumpFire's external v1 API: authentication, the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -168,8 +170,8 @@ have at most 10: delete 1 before adding another.`).
 | `201` | Created |
 | `400` | Bad request: a field is missing, is of the wrong type or holds what it may not (see [What a Field May Hold](#what-a-field-may-hold)), an id in the path or the query string is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not a JSON object |
 | `401` | No `Authorization: Bearer <key>` header, or a key that is unknown or expired |
-| `403` | The key's user can open the board the resource is on, and their role does not allow this (since 1.10.0, card 2719); a milestone's own visibility is still `403 No access to this milestone` (card 2911) |
-| `404` | The resource in the path does not exist, whoever asks, or is on a board the key's user cannot open: the two are answered alike, in the same words (since 1.10.0, card 2719); an id in the body names nothing (a category, a user, a milestone); something to be removed is not there (an assignee, a label on a card, a card in the milestone named); or the path is no route: `{ "message": "Not found" }` |
+| `403` | The key's user can open the board the resource is on, and their role does not allow this (since 1.10.0, card 2719), or can see a milestone and may not change it (since 1.12.0, card 2911), or the milestone a card is in, when putting it in another or taking it out (`No access to the milestone this card is in`) |
+| `404` | The resource in the path does not exist, whoever asks, or is on a board the key's user cannot open: the two are answered alike, in the same words (since 1.10.0, card 2719), and so is a milestone they cannot see (since 1.12.0, card 2911); an id in the body names nothing (a category, a user, a milestone); something to be removed is not there (an assignee, a label on a card, a card in the milestone named); or the path is no route: `{ "message": "Not found" }` |
 | `405` | The route does not have this method: `{ "message": "PATCH method not allowed" }`. The `Allow` header names the methods it has |
 | `409` | Conflict: a card moved to a Complete column while it has open subtasks or sub-boards, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep (made under a card, or carried by a card moved to another board), a dependency that already exists or would close a loop, a board's 11th webhook, a card's 21st image or an image sent to a card whose images retention is moving to the trash, or a rejected batch |
 | `413` | The request body is over the size limit, 512 KB (5 MB for the image upload): `{ "message", "limitBytes" }`. See [The Request Body](#the-request-body) |
@@ -380,6 +382,32 @@ some fields were answered in that form, which names no zone, and the same field 
 either.
 
 ### Changes on 2026-11-18
+
+**Breaking: a milestone the key's user cannot see is answered 404, not 403** (card 2911;
+OpenAPI document version `1.12.0`, with a dated note, marked breaking, at the top of its
+description). Milestone ids are counted up one at a time, and a `403 No access to this
+milestone` for one that exists beside a `404 Milestone not found` for one that does not let any
+key holder learn which goals exist among those they cannot see. From this release:
+
+1. Every operation that names a milestone by its id (under `/milestones/:milestoneId`, as
+   `milestoneId` on `PUT /cards/:cardId`, and as `milestoneId` on `GET /burndown`) answers a
+   milestone the user cannot see (of a board they cannot open, or across boards with a card on
+   a board they cannot open) `404 {"message": "Milestone not found"}`, the words one that is not
+   there gets, where it answered `403 {"message": "No access to this milestone"}`. That
+   includes a goal across boards the user made, once it holds a card on a board they cannot
+   open: such a goal is its maker's only while it has no card.
+2. A milestone the user can see and may not change is still `403 {"message": "No edit access
+   to this milestone"}`.
+3. Putting a card in another milestone, or taking it out (`milestoneId` another id or `null` on
+   `PUT /cards/:cardId`, `POST /milestones/:milestoneId/cards`), when the user cannot see the
+   milestone the card is in, is answered `403 {"message": "No access to the milestone this card
+   is in"}`, where it was `403 No access to this milestone`: that milestone's id is on the card,
+   and the request did not name it.
+4. Nothing else changed: no operation, field or schema.
+
+**What to do.** A script that treats `403` as "no access" to a milestone should treat `404` the
+same way. Nothing to migrate. The rule is in
+[Authentication and Security](authentication-security.md#not-found-not-forbidden-card-2719).
 
 **Breaking: a webhook whose setter can no longer open its board is switched off for good, and
 so is one whose API key has ended** (cards 2752 and 2893; OpenAPI document version `1.11.0`,
@@ -4182,7 +4210,10 @@ was written and named, changed or not.
   `Card does not exist or is archived`. `null` takes the card out of its milestone, which
   needs edit access to that milestone as putting it in did (`403`
   `No edit access to this milestone`), and so does putting the card in another milestone,
-  which takes it out of this one. `archivedAt: null` sent with a `milestoneId` restores the
+  which takes it out of this one. A milestone named that the key's user cannot see is `404`
+  `Milestone not found`, as one that is not there; the milestone the card is in, when they
+  cannot see it, is `403` `No access to the milestone this card is in` (card 2911): its id
+  is on the card already. `archivedAt: null` sent with a `milestoneId` restores the
   card first. A change logs `api:milestone_card_added` or `api:milestone_card_removed`, as
   the milestone routes do, and is not named in `api:card_updated`, so a milestone alone
   sends no `card.updated` webhook; until 2026-10-14 it was "Updated fields: milestoneId"
@@ -4484,8 +4515,9 @@ entry naming the subtask. Until 2026-10-14 no entry was written.
 ### `PATCH /api/v1/milestones/:milestoneId`
 
 Change a milestone's `name`, `description`, `targetDate`, `status` or `boardId`. The
-milestone is looked for and the caller checked first (`404`, then `403`), then each field
-is read. A `boardId` gives the milestone to a board only when every card in it, archived
+milestone is looked for and the caller checked first (`404` for one that is not there or
+that the key's user cannot see, in the same words, card 2911; then `403` for one they can see
+and may not change), then each field is read. A `boardId` gives the milestone to a board only when every card in it, archived
 cards included, is on that board (card 2179): the board is looked for (`404`
 `Board not found`), the caller must be able to edit it (`403`
 `No edit access to that board`), and a card of the milestone on another board is `400`
@@ -4500,7 +4532,8 @@ Who may change the goal follows its board (card 2860). Before, a goal of one boa
 changed by anyone who can edit that board, so any of its editors may make it cross-board
 with `boardId: null`. After, only its creator or an administrator can change it, and only
 someone who can open every board its cards are on can see it (with no cards, only its
-creator). The plan page does the same with its Board select, asked first in a dialog that
+creator). To anyone else it is `404 Milestone not found`, its creator included once it holds a
+card on a board they cannot open (card 2911). The plan page does the same with its Board select, asked first in a dialog that
 says so; the wrapper with `update-milestone -MilestoneId N -BoardId none`. A goal made
 cross-board is no longer listed by `GET /api/v1/milestones?boardId=N`; since card 2891 it is
 with `&touching=true`, while it has a card on N that is not archived.

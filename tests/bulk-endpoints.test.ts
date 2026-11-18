@@ -381,8 +381,9 @@ describe('POST /api/v1/milestones/:milestoneId/cards/bulk', () => {
 		expect((await expectRefused(post(99999, s.owner, { cardIds: 'no' }), 404)).body.message).toBe(
 			'Milestone not found'
 		);
-		expect((await expectRefused(post(s.goal.id, s.outsider, { cardIds: [s.a[0].id] }), 403)).body.message).toBe(
-			'No access to this milestone'
+		// One the caller cannot see is answered as one that is not there (card 2911).
+		expect((await expectRefused(post(s.goal.id, s.outsider, { cardIds: [s.a[0].id] }), 404)).body.message).toBe(
+			'Milestone not found'
 		);
 		expect((await expectRefused(post(s.goal.id, s.owner, { cardIds: [] }), 400)).body.message).toBe(
 			'cardIds is empty'
