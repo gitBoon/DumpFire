@@ -121,6 +121,9 @@
 	/** `1 webhook`, `2 webhooks`. */
 	const webhooksInWords = (n: number) => `${n} webhook${n === 1 ? '' : 's'}`;
 
+	/** `1 report schedule`, `2 report schedules`. */
+	const schedulesInWords = (n: number) => `${n} report schedule${n === 1 ? '' : 's'}`;
+
 	/**
 	 * What ticking the box ends, in the words beside it: the keys, the
 	 * webhooks the account set up, or both. The box is there for a webhook
@@ -230,16 +233,22 @@
 			});
 
 			if (res.ok) {
-				// How many keys the server ended and webhooks it switched off, from its answer.
+				// How many keys the server ended, webhooks it switched off and report schedules it paused, from its answer.
 				const answer = await answerBody(res);
 				const keysEnded = typeof answer?.apiKeysEnded === 'number' ? answer.apiKeysEnded : 0;
 				const hooksOff = typeof answer?.webhooksSwitchedOff === 'number' ? answer.webhooksSwitchedOff : 0;
+				const paused = typeof answer?.reportSchedulesPaused === 'number' ? answer.reportSchedulesPaused : 0;
 				const ended = [
 					keysEnded > 0 ? `your ${keysInWords(keysEnded)} ${keysEnded === 1 ? 'was' : 'were'} ended` : '',
 					hooksOff > 0 ? `the ${webhooksInWords(hooksOff)} you set up ${hooksOff === 1 ? 'was' : 'were'} switched off` : ''
 				].filter(Boolean);
+				// Card 2894 (D1): the schedules paused, always, and where to turn them on again.
+				const pausedWords =
+					paused > 0
+						? `; your ${schedulesInWords(paused)} ${paused === 1 ? 'was' : 'were'} paused: turn ${paused === 1 ? 'it' : 'them'} on again on the Reports page.`
+						: '.';
 				passwordMessage =
-					'Password changed. Your other sessions were signed out' + (ended.length > 0 ? `; ${ended.join(' and ')}.` : '.');
+					'Password changed. Your other sessions were signed out' + (ended.length > 0 ? `; ${ended.join(' and ')}` : '') + pausedWords;
 				passwordError = false;
 				newPassword = '';
 				confirmPassword = '';
@@ -247,11 +256,12 @@
 				if (endApiKeys) {
 					// A key made a moment ago went with the others: its panel goes too.
 					newlyCreatedKey = '';
-					// The list is read again, so that it no longer shows keys that have gone,
-					// and so is the count of webhooks, which were switched off with them.
+					// The list is read again, so that it no longer shows keys that have gone.
 					await loadApiKeys();
-					await invalidateAll();
 				}
+				// The page is read again for the counts the form shows: the webhooks
+				// switched off with the keys, and the schedules that are on (none now).
+				if (endApiKeys || paused > 0) await invalidateAll();
 			} else {
 				// A refusal of the password or the code, in the field; any other in the form's line.
 				const refusal = await stepUpRefusal(res);
@@ -339,6 +349,8 @@
 
 	/** How many webhooks this account set up that are on, from the page's load (card 2168). */
 	let webhooksSet = $derived(data.webhooks ?? 0);
+	/** How many of this account's report schedules are on, from the page's load (card 2894): a password change pauses them. */
+	let schedulesOn = $derived(data.reportSchedulesOn ?? 0);
 	/**
 	 * Whether the box is offered: while the list holds a key, or, once the
 	 * list has been read, while a webhook the account set is on.
@@ -812,6 +824,11 @@
 							<span>{whatTheBoxEnds(apiKeys.length, webhooksSet)}</span>
 						</label>
 					</div>
+				{/if}
+
+				{#if schedulesOn > 0}
+					<!-- Card 2894 (D1): a change always pauses the account's report schedules; said before the button. -->
+					<p class="end-keys-note">Changing your password pauses your {schedulesInWords(schedulesOn)}. Turn on the ones you recognise on the <a href="/reports">Reports page</a> afterwards: it asks for your password and a code.</p>
 				{/if}
 
 				<div class="password-actions">

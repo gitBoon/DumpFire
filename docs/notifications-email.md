@@ -1,10 +1,11 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.81
+version: 1.82
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2894
   - card-2893
   - card-2752
   - webhook-switched-off
@@ -29,7 +30,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
+description: "Complete guide to DumpFire's notification pipeline: the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -850,7 +851,7 @@ says what to do if it was not the owner. **None holds a code, a secret, a token 
 | `wrong-code` | `Your DumpFire password was used with a wrong code` | The first wrong code on a sign-in that had the right password | At most once an hour, with the next |
 | `unfinished-sign-in` | `A sign-in to your DumpFire account was not finished` | A sign-in that had the right password and was left until it expired, found by the sweep: at start-up, every five minutes, and whenever a challenge is issued | At most once an hour, with the one above |
 | `factor-added` (card 2772) | `An authenticator was added to your DumpFire account` | An authenticator added on the Account page. "An authenticator, *name* (added *date* UTC), was added to your DumpFire account on *time* from *address*. It now signs in to your account with your password, as your other authenticators do." | None |
-| `factor-removed` (card 2772) | `An authenticator was removed from your DumpFire account` | An authenticator removed on the Account page. Says every other browser was signed out, that it was confirmed with the password and a code ("if it was not you, both are known to someone else"), lists the account's live API keys and webhooks that are on, then "Revoke any you do not recognise. If the device was lost, also change your password." | None |
+| `factor-removed` (card 2772) | `An authenticator was removed from your DumpFire account` | An authenticator removed on the Account page. Says every other browser was signed out, that it was confirmed with the password and a code ("if it was not you, both are known to someone else"), lists the account's live API keys and webhooks that are on, and, since card 2894, "Your report schedules that are on:" with each one's name, what it covers and its addresses (`schedulesOnOf()` in `reports.ts`; listed, never paused), then "Revoke or delete any you do not recognise. If the device was lost, also change your password." | None |
 | `codes-regenerated` (card 2772) | `New recovery codes were made for your DumpFire account` | A new set of recovery codes made on the Account page. "A new set of ten recovery codes was made for your DumpFire account on *time* from *address*. The old codes no longer work." | None |
 | `report-schedule-set` (card 2751) | `A report schedule was made on your DumpFire account`; for a change, `A report schedule of yours was changed on DumpFire` | A report schedule made, given an address, turned on or widened, each confirmed with the password and a code. Names what was done, when and from where, the schedule's name, what it covers and every address it is sent to. See [Report Schedule Notices](#report-schedule-notices-card-2751) | None |
 | `report-schedules-running` (card 2751) | `Your DumpFire report schedules` | Once, at the first start after card 2751's release, to each owner of a report schedule that is on, listing each of theirs that is on. See [Report Schedule Notices](#report-schedule-notices-card-2751) | Once |
@@ -902,6 +903,36 @@ the address and the keys' and webhooks' names (and, since card 2751, a schedule'
 covers and its addresses), and the release mail with its link (`link:
 true`). The administrator's reset notice of card 2773 (`sendMfaResetNotice()`) is apart from
 these, and holds no link either.
+
+**The two-step reset's notice** (`sendMfaResetNotice(email, username, resetBy, hadFactor,
+kept)`), sent by the reset route once its transaction has committed, and awaited: "Your DumpFire
+two-step sign-in was reset", who reset it and when, what stopped working, and that an
+administrator gives the set-up link by hand. Since card 2894 (D2, S14, E24) `kept` is `{
+schedulesPaused, apiKeys, webhooks }`: where the reset paused a report schedule it says "Your 1
+report schedule was paused" or "Your N report schedules were paused", that each emails a report
+whether or not they are signed in, and to turn on the ones they recognise on the Reports page
+once the new authenticator is set up (nothing for none); then "The reset kept your API keys and
+the webhooks you set up.", "Your API keys:" and "Your webhooks:" listed as the security notices
+list them (`keyItem`, `hookItem`: when each was made, a key's last use, a webhook's board and
+host), "None." for an empty list, and "Revoke any you do not recognise." Every text is escaped
+(`tests/mail-escaping.test.ts`, with markup in the keys' and webhooks' names). The
+administrator's message gives the same counts and the day each was made, and no name (card
+2894's code review, CS2), and is the channel that reaches the holder for certain (S16): this mail
+may not go, and the mailbox may be what was taken. The names are this mail's alone.
+
+```mermaid
+sequenceDiagram
+    participant A as Administrator
+    participant R as Reset route
+    participant D as Database
+    participant M as Mail server
+    A->>R: POST /api/users/{id}/mfa/reset, password and code
+    R->>D: resetTwoStep, schedules paused, keys and webhooks read
+    D-->>R: counts, schedule ids, keys and webhooks kept
+    R->>M: sendMfaResetNotice with the count and both lists, awaited
+    M-->>R: sent or not
+    R-->>A: message with the counts and days, no names, the link once
+```
 
 ### Report Schedule Notices (Card 2751)
 

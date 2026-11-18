@@ -25,16 +25,19 @@ import Database from 'better-sqlite3';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { db, sqlite } from '$lib/server/db';
-import { enrolmentLinks, inviteTokens, settings, signInChallenges, users } from '$lib/server/db/schema';
+import { enrolmentLinks, inviteTokens, reportSchedules, settings, signInChallenges, users } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
 import { sha256Hex } from '$lib/server/mfa-crypto';
-import { ENROLMENT_LINK_LIFETIME_MS, addTotpFactor, resetTwoStep, storeRecoveryCodes } from '$lib/server/mfa-store';
+import { ENROLMENT_LINK_LIFETIME_MS, addTotpFactor, resetTwoStep, storeRecoveryCodes, twoStepResetMeta } from '$lib/server/mfa-store';
 import { newRecoveryCodes } from '$lib/server/recovery-codes';
 import { newTotpSecret } from '$lib/server/totp';
 import { isStamp, parseStamp, stamp } from '$lib/timestamps';
-import { inviteHashOf, makeApiKey, makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { inviteHashOf, makeApiKey, makeApiKeyRow, makeBoard, makeSession, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
 
 const SCRIPT = join(process.cwd(), 'scripts', 'mfa-reset.mjs');
+
+/** When a seeded report schedule was last changed: a day before the case runs (card 2894). */
+const EARLIER = stamp(new Date(Date.now() - 24 * 60 * 60 * 1000));
 
 let scratch: string;
 /** The scratch copy of the database the command is run on. */
@@ -79,9 +82,11 @@ type Row = Record<string, unknown>;
  * Every row of every table of `database`, in rowid order, the id counters
  * included. Left out unless `logs` is set: `system_logs` and its counter. An
  * enrolment link's hash and its two times are made fresh by each reset, so
- * they are masked; the link itself, its account and `issued_by` are not.
+ * they are masked; the link itself, its account and `issued_by` are not. So
+ * is the moment each reset stamps on the report schedules it paused (card
+ * 2894, E23): of the ids in `paused` only, each checked to be a stamp.
  */
-function dumpOf(database: Database.Database, { logs = false } = {}): Record<string, Row[]> {
+function dumpOf(database: Database.Database, { logs = false, paused = [] as number[] } = {}): Record<string, Row[]> {
 	const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[])
 		.map((table) => table.name)
 		.filter((name) => logs || name !== 'system_logs');
@@ -90,13 +95,20 @@ function dumpOf(database: Database.Database, { logs = false } = {}): Record<stri
 		let rows = database.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).all() as Row[];
 		if (table === 'sqlite_sequence' && !logs) rows = rows.filter((row) => row.name !== 'system_logs');
 		if (table === 'enrolment_links') rows = rows.map((row) => ({ ...row, token_hash: '(masked)', created_at: '(masked)', expires_at: '(masked)' }));
+		if (table === 'report_schedules') {
+			rows = rows.map((row) => {
+				if (!paused.includes(row.id as number)) return row;
+				expect(isStamp(row.updated_at), `report schedule ${row.id}`).toBe(true);
+				return { ...row, updated_at: '(masked)' };
+			});
+		}
 		dump[table] = rows;
 	}
 	return dump;
 }
 
 /** The scratch copy's dump, opened read-only and closed again. */
-function fileDump(options: { logs?: boolean } = {}): Record<string, Row[]> {
+function fileDump(options: { logs?: boolean; paused?: number[] } = {}): Record<string, Row[]> {
 	const copy = new Database(file, { readonly: true, fileMustExist: true });
 	try {
 		return dumpOf(copy, options);
@@ -109,7 +121,8 @@ function fileDump(options: { logs?: boolean } = {}): Record<string, Row[]> {
  * An account with everything a reset ends or keeps, as T1 of
  * tests/mfa-reset.test.ts seeds one: a factor, ten recovery codes, two
  * sessions, a pending sign-in, an enrolment link, an unused invite and a used
- * one, an API key, wrong-code counts with their pauses, and the banner.
+ * one, an API key, wrong-code counts with their pauses, and the banner; and a
+ * report schedule that is on, last changed `EARLIER` (card 2894).
  */
 function seedAccount(username: string) {
 	const user = makeUser({ username });
@@ -135,6 +148,7 @@ function seedAccount(username: string) {
 	db.insert(inviteTokens).values({ tokenHash: inviteHashOf(`unused-${username}-${randomBytes(4).toString('hex')}`), userId: user.id, expiresAt: week }).run();
 	db.insert(inviteTokens).values({ tokenHash: inviteHashOf(`used-${username}-${randomBytes(4).toString('hex')}`), userId: user.id, expiresAt: week, used: true }).run();
 	makeApiKey(user);
+	db.insert(reportSchedules).values({ userId: user.id, name: 'Weekly', scope: 'all', enabled: true, updatedAt: EARLIER }).run();
 	const later = stamp(new Date(Date.now() + 60 * 60 * 1000));
 	db.update(users)
 		.set({
@@ -155,6 +169,14 @@ function seedAccount(username: string) {
 		.run();
 	return user;
 }
+
+/** The account's report schedules, id, switch and when last changed, read from `database`. */
+const schedulesIn = (database: Database.Database, userId: number) =>
+	database.prepare('SELECT id, enabled, updated_at AS updatedAt FROM report_schedules WHERE user_id = ? ORDER BY id').all(userId) as {
+		id: number;
+		enabled: number;
+		updatedAt: string;
+	}[];
 
 /** The token of the link the command printed, from its line of stdout, and that line. */
 function printedLink(stdout: string): { line: string; token: string } {
@@ -186,24 +208,57 @@ describe('scripts/mfa-reset.mjs', () => {
 	it("T21: leaves every table and column as resetTwoStep leaves them, issues a 'host-reset' link whose printed token is the one stored, logs one CRITICAL line, and exits 0", () => {
 		// Two accounts alike: the one reset, and one beside it that nothing may touch.
 		const holder = seedAccount('holder');
-		seedAccount('twin');
+		const twin = seedAccount('twin');
+		// Card 2894's code review (CS1): a webhook the holder set, its address holding a secret, and a key
+		// that has ended beside the live one the seed gave.
+		const hook = makeWebhook(makeBoard({ owner: holder, name: 'Ops board' }).board, { url: 'https://hooks.example.test/x?secret=s', setBy: holder });
+		const ended = makeApiKeyRow(holder, { expiresAt: stamp(new Date(Date.now() - 24 * 60 * 60 * 1000)) });
+		const keysOfHolder = sqlite.prepare('SELECT id, name, created_at AS createdAt FROM api_keys WHERE user_id = ? ORDER BY id').all(holder.id) as {
+			id: number;
+			name: string;
+			createdAt: string;
+		}[];
+		const live = keysOfHolder.filter((key) => key.id !== ended.id);
+		const endedName = keysOfHolder.find((key) => key.id === ended.id)!.name;
+		expect(live).toHaveLength(1);
 		writeCopy();
 		const logsBefore = (sqlite.prepare('SELECT COUNT(*) AS n FROM system_logs').get() as { n: number }).n;
+		const [schedule] = schedulesIn(sqlite, holder.id);
+		const twinsSchedules = schedulesIn(sqlite, twin.id);
 
 		// What the server's own reset leaves of the same database.
-		inTransaction(() => resetTwoStep(holder.id, 'host-reset'));
-		const expected = dumpOf(sqlite);
+		const reset = inTransaction(() => resetTwoStep(holder.id, 'host-reset'));
+		// Card 2894 (case 3, E23): the holder's schedule paused by each, its stamp masked; the twin's as it was.
+		expect(reset.reportScheduleIds).toEqual([schedule.id]);
+		const expected = dumpOf(sqlite, { paused: [schedule.id] });
 
 		// The username as typed, with spaces round it: trimmed, as sign-in trims it (decision 12).
 		const ran = run(['  holder  ']);
 
 		expect(ran.status, ran.stderr).toBe(0);
 		expect(ran.stderr).toBe('');
-		expect(fileDump()).toEqual(expected);
+		expect(fileDump({ paused: [schedule.id] })).toEqual(expected);
+		const copied = new Database(file, { readonly: true, fileMustExist: true });
+		try {
+			const [paused] = schedulesIn(copied, holder.id);
+			expect(paused.enabled).toBe(0);
+			expect(paused.updatedAt).not.toBe(EARLIER);
+			expect(schedulesIn(copied, twin.id)).toEqual(twinsSchedules);
+		} finally {
+			copied.close();
+		}
 		expect(ran.stdout).toContain(
 			'Two-step sign-in was reset for "holder" (user ' +
-				`${holder.id}): removed 1 factor(s) and 10 recovery code(s), ended 2 session(s), 1 pending sign-in(s) and 1 invite(s).`
+				`${holder.id}): removed 1 factor(s) and 10 recovery code(s), ended 2 session(s), 1 pending sign-in(s) and 1 invite(s), ` +
+				"and paused 1 report schedule(s). The account's owner turns back on the ones they recognise on the Reports page."
 		);
+		// What the reset kept, on stdout: the live key by its name and day, the webhook by its board and host and day,
+		// never the ended key, the webhook's path or its query (card 2894's code review, CS1).
+		expect(ran.stdout).toContain(`They keep 1 API key(s): ${live[0].name} (made ${live[0].createdAt.slice(0, 10)}).`);
+		expect(ran.stdout).toContain(`They keep 1 webhook(s) they set up: Ops board, to hooks.example.test (made ${hook.createdAt.slice(0, 10)}).`);
+		expect(ran.stdout).toContain('Revoke any they do not recognise: a password reset ends them.');
+		expect(ran.stdout).not.toContain(endedName);
+		expect(ran.stdout).not.toContain('secret=s');
 
 		// One link, the holder's, issued by the host, for seven days, stored as the hash of the token printed.
 		const { token } = printedLink(ran.stdout);
@@ -223,8 +278,11 @@ describe('scripts/mfa-reset.mjs', () => {
 		expect(isStamp(line.timestamp)).toBe(true);
 		expect(line.message).toBe(
 			`Two-step sign-in reset for user ${holder.id} ("holder") on the server's host, with scripts/mfa-reset.mjs: removed ` +
-				'1 factor(s) and 10 recovery code(s), ended 2 session(s), 1 pending sign-in(s) and 1 invite(s); an enrolment link was issued'
+				'1 factor(s) and 10 recovery code(s), ended 2 session(s), 1 pending sign-in(s) and 1 invite(s), and paused 1 report ' +
+				`schedule(s) (id ${schedule.id}); an enrolment link was issued`
 		);
+		// The route's meta for the same reset, field for field, the host as who reset it (card 2894, S15, E23).
+		expect(JSON.parse(line.meta as string)).toEqual(twoStepResetMeta(holder.id, 'host', reset));
 		expect(JSON.parse(line.meta as string)).toEqual({
 			targetUserId: holder.id,
 			resetBy: 'host',
@@ -232,9 +290,13 @@ describe('scripts/mfa-reset.mjs', () => {
 			recoveryCodesRemoved: 10,
 			sessionsEnded: 2,
 			challengesEnded: 1,
-			invitesEnded: 1
+			invitesEnded: 1,
+			reportSchedulesPaused: 1,
+			reportScheduleIds: [schedule.id]
 		});
 		expect(JSON.stringify(lines)).not.toContain(token);
+		// The kept keys and webhooks are on stdout only, never in the log (CS1).
+		for (const text of [live[0].name, 'Ops board', 'hooks.example.test']) expect(JSON.stringify(lines)).not.toContain(text);
 	});
 
 	it.each([
@@ -248,11 +310,26 @@ describe('scripts/mfa-reset.mjs', () => {
 			database: 'unmigrated',
 			status: 1,
 			says: 'this database has no two-step sign-in tables; start the server once to migrate it'
+		},
+		// Card 2894 (case 4, S15): the schedules it pauses, or nothing at all.
+		{
+			case: 'T31',
+			refusal: 'a database without report_schedules',
+			args: ['holder'],
+			database: 'no schedules',
+			status: 1,
+			says: 'this database has no report schedules table; start the server once to migrate it'
 		}
 	])('$case: refuses $refusal with exit $status, saying so, and changes nothing', ({ args, database, status, says }) => {
-		if (database === 'seeded') {
+		if (database === 'seeded' || database === 'no schedules') {
 			seedAccount('holder');
 			writeCopy();
+			if (database === 'no schedules') {
+				const old = new Database(file);
+				old.pragma('foreign_keys = OFF');
+				old.exec('DROP TABLE report_schedules');
+				old.close();
+			}
 		} else if (database === 'unmigrated') {
 			const old = new Database(file);
 			old.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL); INSERT INTO users (username) VALUES ('holder');");

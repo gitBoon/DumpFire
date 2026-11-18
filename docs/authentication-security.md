@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.139
+version: 1.140
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2894
+  - report-schedules-paused
   - card-2893
   - webhook-key-ended
   - card-2752
@@ -94,7 +96,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893)"
+description: "Deep-dive into DumpFire's authentication system, what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
 ---
 
 # Authentication & Security
@@ -782,7 +784,7 @@ reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, case
 | `POST /api/decisions/[id]/withdraw`, **once the decision was opened** (card 2697) | its author, its decider, or admin | Ends it for good and mails every participant the caller's words |
 | `POST /api/decisions/[id]/rule` (card 2679) | its decider | Rules on a decision for good, and mails every participant the ruling and its reason |
 | `POST /api/decisions/[id]/release` (card 2679) | its decider | Shows a ruled decision's totals and comments, for good, to everyone who can see it |
-| `PUT /api/account/password` (card 2771) | anyone signed in, for their own account | Changes the account's own password, which ends its other sessions and invites |
+| `PUT /api/account/password` (card 2771) | anyone signed in, for their own account | Changes the account's own password, which ends its other sessions and invites and pauses its report schedules (card 2894) |
 | `PUT /api/account/email` (card 2771) | anyone signed in, for their own account | Moves the address the account's invites, resets and security notices go to |
 | `POST /api/account/api-keys` (card 2771) | anyone signed in, for their own account | Makes an API key: a credential that outlives a password change unless it is ended |
 | `POST /api/account/api-keys/[id]/keep` (card 2772) | anyone signed in, for their own key | Keeps an API key made before two-step sign-in past its deadline |
@@ -1360,10 +1362,14 @@ sequenceDiagram
   sub-boards likewise. Storing the boards approved at the step-up and reporting on those alone is
   **card 2897**.
 - **A schedule made before the release by a stolen session** keeps sending until its owner deletes
-  it, an administrator resets the password, or the owner loses access; the first-start notice is
-  what tells the owner.
-- **The owner's own password change and an administrator's two-step reset do not pause it**:
-  **card 2894**, widened to every recovery path.
+  it or changes their password, an administrator resets the password or the two-step sign-in
+  (card 2894), or the owner loses access; the first-start notice is what tells the owner.
+- **A run already claimed when a pause commits (accepted residual, card 2894's S15).** Every way
+  of setting a password and a two-step reset pause the account's schedules (card 2894; see
+  [What Setting a Password Ends](#what-setting-a-password-ends)). A scheduled run claims itself
+  (`claimScheduleRun`, which moves its last and next run while the schedule is on) before it
+  builds and sends; a run that claimed before the pause committed still sends once, to the
+  addresses it held. The next run finds the schedule paused.
 - **A session with no password can still drain the owner's daily allowance.** Re-timing a schedule
   that is on asks nothing but takes all its addresses: ten re-times of a 10-address schedule use
   the 100, each bringing a send forward to the approved addresses, and the owner's own asked
@@ -3149,14 +3155,25 @@ outside a transaction):
 |-------------------|------|
 | Every authenticator (`mfa_factors`) and recovery code of the account, deleted | The password |
 | `mfa_known_wrong`, `mfa_other_wrong`, `mfa_recovery_wrong` set to 0, and their three `*_resumes_at` pauses cleared; `mfa_password_enrol` set to 0 (card 2769) | API keys, and the webhooks the account set |
-| Every session, so it is signed out everywhere | Report schedules |
-| Every invite not yet used | `security_banner`, `last_sign_in_*` and `failed_codes_since_sign_in`, which are about the password and the last sign-in, which a reset does not change |
+| Every session, so it is signed out everywhere | `security_banner`, `last_sign_in_*` and `failed_codes_since_sign_in`, which are about the password and the last sign-in, which a reset does not change |
+| Every invite not yet used | |
 | Every sign-in waiting for its second factor, and every enrolment link | |
+| Every report schedule of the account that is on, paused (`enabled = 0`, `updated_at` stamped; card 2894) | |
 | Then one new enrolment link | |
 
-The sessions, invites, pending sign-ins and links end through
-`endAccountAccess(userId, { apiKeys: false, reportSchedules: false })`, and the link is issued
-after it, since that deletes the account's links. **The link** (`issueEnrolmentLink()`, also
+The sessions, invites, pending sign-ins and links end, and the schedules are paused, through
+`endAccountAccess(userId, { apiKeys: false })`, and the link is issued after it, since that
+deletes the account's links. **Why the schedules are paused** (card 2894, D2): a schedule sends a
+board's activity whether or not anyone is signed in, so one made by whoever took the device and
+the password would outlive the reset. The holder turns back on the ones they recognise on the
+Reports page, which asks for the password and a code (card 2751). `resetTwoStep` returns how many
+and which (`reportSchedules`, `reportScheduleIds`). **The keys and webhooks are kept, and
+listed** (S14): the route reads the account's live API keys and the webhooks it set that are on
+(`keysAndWebhooksOf()` in `second-step.ts`) in the same write, since they are what someone who
+held the password may have left behind. The notice mailed to the holder names each, with when it
+was made; the administrator's message gives only how many and the day each was made (card 2894's
+code review, CS2): the administrator may not be able to open the board a webhook is on, and the
+admin pages never show a key's name. An option to end the keys at a reset is card 2915. **The link** (`issueEnrolmentLink()`, also
 inside the caller's transaction): its token is 32 random bytes as base64url; only its SHA-256 is
 stored, in `enrolment_links` with `issued_by` (`admin-reset` here; `admin-create` for a new
 account's, card 2851; `host-reset` and `release-mail` elsewhere), `created_at` and an
@@ -3174,9 +3191,22 @@ sends the holder to sign in with the account's password first (card 2769). The a
 ```json
 { "success": true, "enrolmentUrl": "https://dumpfire.example.com/enrol/<token>", "mailSent": true,
   "factorsRemoved": 1, "recoveryCodesRemoved": 10, "sessionsEnded": 2, "challengesEnded": 0,
-  "invitesEnded": 0,
-  "message": "ann's two-step sign-in was reset. Give them the link yourself: it is shown once, and works for seven days. ann was sent a notice that holds no link." }
+  "invitesEnded": 0, "reportSchedulesPaused": 2,
+  "message": "ann's two-step sign-in was reset. Give them the link yourself: it is shown once, and works for seven days. Their 2 report schedules were paused. They keep 2 API keys (made 2026-11-01 and 2026-11-10) and 1 webhook they set up (made 2026-11-12); the lists are in the notice mailed to them. A password reset ends them. ann was sent a notice that holds no link." }
 ```
+
+**The message is the channel that reaches the holder for certain** (card 2894, S16): the mail may
+not go, and the mailbox may be what was taken, so the administrator passes on what it says. Both
+of its branches (the link shown, and withheld below) carry, after their first sentences, "Their N
+report schedules were paused." where one was on ("Their 1 report schedule was paused." for one,
+nothing for none). Where the link is shown it goes on with what the reset kept, by count and day
+alone (card 2894's code review, CS2): "They keep N API key(s) (made *day* and *day*) and N
+webhook(s) they set up (made *day*); the lists are in the notice mailed to them. A password reset
+ends them.", either part "no API key" or "no webhook they set up" where there is none, or "They
+have no API key and no webhook they set up." where there is neither; where the notice did not go,
+"the notice with the lists was not sent: ask them to look over their keys and webhooks" in place
+of where the lists are. Where the link is withheld it says nothing of what was kept: the caller
+may no longer manage the account. No key's name, board's name or host is ever in it.
 
 `mailProblem`, why the notice was not sent in the words an invite's failure uses
 (`MAIL_PROBLEM_WORDS`), is there only when mail is set up and the notice was not sent, its
@@ -3190,7 +3220,13 @@ removed an authenticator (`hadFactor`), it says the authenticator and recovery c
 work and the account has been signed out everywhere; where the account had none, it says so
 instead, and that its two-step sign-in was reset and a new set-up link issued, and that it has
 been signed out everywhere. Either way an administrator will give the holder the link themselves,
-and it is never sent by email. Its footer: "If you did not ask for this, tell an administrator
+and it is never sent by email. Since card 2894 (S14, E24) it says, where the reset paused one,
+"Your 1 report schedule was paused" or "Your N report schedules were paused", that each emails a
+report whether or not they are signed in, and to turn on the ones they recognise on the Reports
+page once their new authenticator is set up; then "The reset kept your API keys and the webhooks
+you set up." with both lists, each key with when it was made and last used and each webhook with
+its board, host and when it was made (in UTC, as the `factor-removed` notice lists them), and
+"Revoke any you do not recognise." Its footer: "If you did not ask for this, tell an administrator
 straight away. Use only a link an administrator hands you directly." It holds no link and no
 token, and every text in it is escaped. The reset stands whether or not it goes.
 
@@ -3211,8 +3247,10 @@ account's>`.
 
 **The log.** After the commit, one `CRITICAL` line under `AUTH`, filed under the caller:
 `Two-step sign-in reset for user <id> ("<name>") by "<admin>": removed <n> factor(s) and <m>
-recovery code(s), ended <s> session(s), <c> pending sign-in(s) and <i> invite(s); an enrolment
-link was issued`, its meta the counts and both ids. Never the token or the link.
+recovery code(s), ended <s> session(s), <c> pending sign-in(s) and <i> invite(s), and paused <r>
+report schedule(s) (ids …); an enrolment link was issued`, its meta the counts, both ids, and
+`reportSchedulesPaused` and `reportScheduleIds` (card 2894), built by `twoStepResetMeta()` in
+`mfa-store.ts`, which the host's command matches field for field. Never the token or the link.
 
 ```mermaid
 sequenceDiagram
@@ -3266,11 +3304,24 @@ for statement, in raw SQL in one `BEGIN IMMEDIATE` transaction, with `issued_by`
   inside the transaction.
 - **The log row** is written in the same transaction, so there is no reset without it: `CRITICAL`
   under `AUTH`, `user_id` the account, no address, `Two-step sign-in reset for user <id>
-  ("<name>") on the server's host, with scripts/mfa-reset.mjs: …`, its meta the counts and
-  `resetBy: "host"`. The username is made printable as the logger makes every line. Where the
+  ("<name>") on the server's host, with scripts/mfa-reset.mjs: …, and paused <r> report
+  schedule(s) (ids …); an enrolment link was issued`, its meta the route's fields
+  (`twoStepResetMeta`), the schedules paused and their ids included, with `resetBy: "host"`
+  (card 2894, S15; T21 holds the two equal). The username is made printable as the logger makes every line. Where the
   reset ended sign-ins left at their second step (card 2769), a second row at `WARN` says so,
   "The reset ended N sign-in(s) of user <id> ("<name>") left at their second step; no notice
   was mailed".
+- **The schedules** (card 2894, S15): the account's report schedules that are on are paused with
+  the same statement `endAccountAccess` runs (`UPDATE report_schedules SET enabled = 0,
+  updated_at = ? WHERE user_id = ? AND enabled = 1 RETURNING id`), after the pending sign-ins and
+  before the link, and stdout says how many.
+- **What it kept goes to stdout only** (card 2894's code review, CS1): the account's live API keys,
+  each by its name and the day it was made, and the webhooks it set that are on, each by its board,
+  its host alone and the day it was made, read in the same transaction as `keysAndWebhooksOf()`
+  reads them (a copy of `keyEnded`, so an expired key or one past its deadline is not listed), then
+  "Revoke any they do not recognise: a password reset ends them."; or "They have no API key and
+  no webhook they set up." Never in the log row: the host may read these names, and passes on
+  any the holder should check.
 - **The link goes to stdout only**: the counts, where its address came from, and the link.
   The address is the host's own configuration before a setting any administrator can change:
   `APP_URL`; then `ORIGIN` unless it is the image's placeholder `http://localhost:3000`; then the
@@ -3283,7 +3334,8 @@ for statement, in raw SQL in one `BEGIN IMMEDIATE` transaction, with `issued_by`
 - **Refusals**, each with nothing changed: no username, or more than one argument (exit 2); run
   as root on POSIX, since root-owned `-wal` and `-shm` files would stop the server, which runs as
   `node` (card 2776); a `DB_PATH` (or `./dumpfire.db`) that names no file, opened with
-  `fileMustExist` so none is made; a database without migration 0065's tables; no such account;
+  `fileMustExist` so none is made; a database without migration 0065's tables, or without
+  `report_schedules` (card 2894: "this database has no report schedules table"); no such account;
   and the database still busy after `busy_timeout = 5000` (each exit 1). It opens the database
   with `foreign_keys = ON`, as the server does.
 
@@ -4007,7 +4059,7 @@ the owner. None holds a code, secret, token or link.
 | `wrong-code` | The first wrong code on a verify challenge, or a wrong code after a right password at a step-up (card 2771: worded "while confirming a change, and then a wrong code"); raises the security banner | Yes |
 | `unfinished-sign-in` | An unused verify challenge swept as expired; raises the banner | Yes |
 | `factor-added` | An authenticator added on the Account page (card 2772); its name and when it was added | No |
-| `factor-removed` | An authenticator removed on the Account page (card 2772); its name and when it was added, other browsers signed out, the account's live API keys and webhooks to revoke any not recognised, and "If the device was lost, also change your password." | No |
+| `factor-removed` | An authenticator removed on the Account page (card 2772); its name and when it was added, other browsers signed out, the account's live API keys and webhooks and its report schedules that are on (card 2894, listed and not paused) to revoke or delete any not recognised, and "If the device was lost, also change your password." | No |
 | `codes-regenerated` | A new set of ten recovery codes made on the Account page (card 2772); the old ones no longer work | No |
 
 **The signals.** Someone who reaches a verify challenge had the password. So the first wrong
@@ -4285,7 +4337,10 @@ sign-in and enrolment link ended (`endPendingSignIns()`). After the commit: a pe
 session holds forgotten, the `WARN` line "Authenticator *id* removed by its owner, user *n*: *k*
 other session(s) ended", and the `factor-removed` notice. A removed phone is often the lost one,
 and a session made with it would otherwise outlive it; API keys are kept, since they were not
-made with the factor.
+made with the factor. Report schedules are kept on too, and listed in the notice (card 2894, D4,
+through `schedulesOnOf()` in `reports.ts`): whoever removes an authenticator holds the password
+and a code and could turn a paused schedule straight back on, while the real owner removing a lost
+phone would only lose their reports; the list lets them spot one they did not make.
 
 The dialog reads "Remove *name* (added *date time* UTC)? Every other browser signed in to your
 account will be signed out. If the device was lost, also change your password, and check the API
@@ -4388,7 +4443,7 @@ a log line. The notices (`sendSecurityNotice()`), each with "If this was not you
 | Notice | Words |
 |---|---|
 | `factor-added` | "An authenticator, *name* (added *date* UTC), was added to your DumpFire account on *time* from *address*. It now signs in to your account with your password, as your other authenticators do." |
-| `factor-removed` | "An authenticator, *name* (added *date* UTC), was removed from your DumpFire account on *time* from *address*. Every other browser signed in to your account was signed out. This was confirmed with your password and a code: if it was not you, both are known to someone else.", the live API keys and webhooks, then "Revoke any you do not recognise. If the device was lost, also change your password." |
+| `factor-removed` | "An authenticator, *name* (added *date* UTC), was removed from your DumpFire account on *time* from *address*. Every other browser signed in to your account was signed out. This was confirmed with your password and a code: if it was not you, both are known to someone else.", the live API keys and webhooks, "Your report schedules that are on:" with each one's name, what it covers and its addresses (card 2894), then "Revoke or delete any you do not recognise. If the device was lost, also change your password." |
 | `codes-regenerated` | "A new set of ten recovery codes was made for your DumpFire account on *time* from *address*. The old codes no longer work." |
 
 `AUTH` lines: `INFO` "Authenticator set-up begun by user *n*", `INFO` "Authenticator *id* added by
@@ -4417,11 +4472,11 @@ Every request that changes who can sign in makes its writes in one transaction (
 
 | Request | Changes together, or not at all | The account's invites not yet used | The account's API keys |
 |---------|---------------------------------|------------------------------------|------------------------|
-| Change your own password (`PUT /api/account/password`) | The new password, the end of every session the user has, and the new session that keeps this browser signed in, which keeps the start of the one it replaces (card 2775), so the total limit does not restart | All end | Kept, unless the body says `endApiKeys: true`, which the Account page's box sends |
+| Change your own password (`PUT /api/account/password`) | The new password, the end of every session the user has, the pause of every report schedule of theirs that is on (card 2894), and the new session that keeps this browser signed in, which keeps the start of the one it replaces (card 2775), so the total limit does not restart | All end | Kept, unless the body says `endApiKeys: true`, which the Account page's box sends |
 | An administrator sets a user's password (`PUT /api/users/:id/password`) | The new password and the end of every session that user has. Nobody sets their own password by this route, an administrator included: the caller's own id is answered 403 and told to use the Account page | All end | All end |
 | Create a user (`POST /api/users`) | The user and, where no password was given, their invite. The invite email is sent after the commit, and waited for (card 2196) | A new account has none | A new account has none |
 | Send an invite again (`POST /api/users/:id/invite`) | The new invite. The email is sent after the commit, and waited for (card 2196). Refused `409` for an account with a second factor (card 2773) | All earlier ones end | Kept |
-| An administrator resets an account's two-step sign-in (`POST /api/users/:id/mfa/reset`, card 2773) | Its second factors and recovery codes deleted, its wrong-code counts set back, the end of every session, pending sign-in and enrolment link, and one new enrolment link. The password is not changed. The notice mail is sent after the commit, and waited for | All end | Kept |
+| An administrator resets an account's two-step sign-in (`POST /api/users/:id/mfa/reset`, card 2773) | Its second factors and recovery codes deleted, its wrong-code counts set back, the end of every session, pending sign-in and enrolment link, the pause of every report schedule of it that is on (card 2894), and one new enrolment link. The password is not changed. The notice mail is sent after the commit, and waited for | All end | Kept |
 | An administrator changes an account's email or role (`PUT /api/users/:id`) | The change, the end of the account's invites when its email or role is changed, and the end of the account's sessions when its role is changed (card 2775) | All end, when the email or role written differs from the one stored | Kept |
 | Change your own email (`PUT /api/account/email`) | The new address and the end of the account's invites | All end, when the address differs from the one stored | Kept |
 | Use an invite (`/invite/:token`) | The password, the invite marked used, the end of every session, pending sign-in and enrolment link the account had, and one set-up challenge (card 2769). No session: the set-up's confirm makes it | All others end | All end |
@@ -4438,24 +4493,28 @@ So a password is never changed while the old sessions stay good, an invite never
 change with their current password, and chose to keep their keys. Every other way of
 setting a password ends the account's keys. Every way of setting a password ends its
 sessions and its invites that have not been used. The webhooks the account set go with its
-keys, switched off; its report schedules are paused by a reset and an invite, never by the
-holder's own change** (card 2168).
+keys, switched off** (card 2168). **Every way of setting a password pauses the account's report
+schedules that are on, the holder's own change included, and so does a reset of its two-step
+sign-in** (card 2894).
 
 ```mermaid
 flowchart TD
     Set["A password is set"] --> How{"How?"}
-    How -->|"own change, with the current password<br/>(Account page, or the admin page's own row)"| Own["Every session ends, and this browser gets a new one<br/>(it keeps the old one's start)<br/>Every unused invite ends<br/>API keys end, and the webhooks the account set are switched off,<br/>only if the Account page's box is ticked (not by default)<br/>Report schedules are left on"]
+    How -->|"own change, with the current password<br/>(Account page, or the admin page's own row)"| Own["Every session ends, and this browser gets a new one<br/>(it keeps the old one's start)<br/>Every unused invite ends<br/>API keys end, and the webhooks the account set are switched off,<br/>only if the Account page's box is ticked (not by default)<br/>Every report schedule of the account is paused (card 2894)"]
     How -->|"an administrator's reset of an ordinary user,<br/>or the superadmin's of an administrator or a user"| Reset["Every session ends<br/>Every unused invite ends<br/>Every API key ends<br/>Every webhook the account set is switched off<br/>Every report schedule of the account is paused"]
     How -->|"an invite is used"| Invite["The invite is marked used<br/>Every other unused invite ends<br/>Every session ends, and the user is signed in afresh<br/>Every API key ends<br/>Every webhook the account set is switched off<br/>Every report schedule of the account is paused"]
-    Own --> One["endAccountAccess(userId, { apiKeys, reportSchedules }),<br/>in the transaction that sets the password"]
+    Two["a two-step reset<br/>(the admin page)"] --> Kept["Sessions, invites, pending sign-ins and links end<br/>Keys and webhooks kept: counted in its message, listed in its mail<br/>Every report schedule of the account is paused"]
+    Host["the host's command<br/>(scripts/mfa-reset.mjs)"] --> HostSQL["The same statements in its own SQL,<br/>not through endAccountAccess<br/>Keys and webhooks kept, listed on stdout only"]
+    Own --> One["endAccountAccess(userId, { apiKeys }),<br/>in the transaction that sets the password"]
     Reset --> One
     Invite --> One
-    One --> Order["Sessions, then invites, then pending sign-ins<br/>and enrolment links (card 2768), then under apiKeys the keys<br/>and the webhooks whose set_by is the account and are on,<br/>then under reportSchedules the schedules that are on"]
+    Kept --> One
+    One --> Order["Sessions, then invites, then pending sign-ins<br/>and enrolment links (card 2768), then under apiKeys the keys<br/>and the webhooks whose set_by is the account and are on,<br/>then always the schedules that are on"]
 ```
 
 | How the password is set | Sessions | Invites not yet used | API keys | Webhooks the account set | Its report schedules |
 |-------------------------|----------|----------------------|----------|--------------------------|----------------------|
-| Your own change, with your current password, on the Account page or your own row of the admin page. The superadmin's included | All end; this browser gets a new one | All end | **Kept, unless you tick "End my N API keys too"**, which is not ticked by default. The admin page's dialog sends no choice, so it keeps them, and says so | **Kept on, unless the box is ticked**, with the keys. The box is offered for a webhook alone too, "Switch off the N webhooks I set up", once the key list has loaded. The admin page's own-row dialog keeps them | Left on |
+| Your own change, with your current password, on the Account page or your own row of the admin page. The superadmin's included | All end; this browser gets a new one | All end | **Kept, unless you tick "End my N API keys too"**, which is not ticked by default. The admin page's dialog sends no choice, so it keeps them, and says so | **Kept on, unless the box is ticked**, with the keys. The box is offered for a webhook alone too, "Switch off the N webhooks I set up", once the key list has loaded. The admin page's own-row dialog keeps them | **All paused**, always (card 2894): the Account page says so above the button, and both it and the admin page's own-row dialog say after how many |
 | An administrator resets an ordinary user's password, or the superadmin an administrator's or a user's | All end | All end | **All end** | **All switched off** | **All paused** |
 | An invite is used | All end, and the user is signed in with one new session | All others end; the one used is kept, marked used | **All end** | **All switched off** | **All paused** |
 | A restore, an import, Reset Everything | Not a password change: these replace the whole database. See [What a Backup Holds](#what-a-backup-holds-and-what-a-restore-brings-in) | | | | |
@@ -4475,10 +4534,13 @@ switched it on, not the one that first made it: an administrator's key that poin
 else's webhook at an address of its holder's choosing becomes its setter, and that
 administrator's reset reaches it; so does the owner's or administrator's key that switches on
 again a webhook a reset switched off, since whoever starts its deliveries again answers for
-them. A report schedule keeps mailing its recipients, so a reset and an invite pause
-every one of the account's that is on (`enabled = 0`, `updated_at` stamped); the holder's own
-change leaves them, since they are made with a session, which that change ends, and their
-owner sees them on the Reports page. Neither is deleted: the account's own integrations and
+them. A report schedule keeps mailing its recipients whether or not anyone is signed in, so
+every way of setting a password pauses every one of the account's that is on (`enabled = 0`,
+`updated_at` stamped), and so does a two-step reset. Before card 2894 the holder's own change
+left them on; it now pauses them always, because the server cannot tell a routine change from a
+recovery, and a schedule an intruder made would otherwise outlive the change that took the
+account back. The owner turns back on the ones they recognise on the Reports page, which asks for
+the password and a code (card 2751); a routine change costs them that. Neither is deleted: the account's own integrations and
 reports would go with an intruder's, and a webhook's secret with it. A switched-off webhook
 is switched on again by the board's owner or an administrator with `PUT
 /api/v1/webhooks/{id}` and `{"active": true}` (an editor is refused: see
@@ -4539,16 +4601,18 @@ was switched on in between. After taking an account back, look over once the web
 setter on the boards it could edit (no page lists them: `GET /api/v1/boards/{id}/webhooks`).
 Delete any that nobody recognises.
 
-- **One function.** `endAccountAccess(userId, { apiKeys, reportSchedules })` in
-  `src/lib/server/auth.ts` deletes the account's sessions, then its invites with `used = 0`,
-  then, under `apiKeys`, its API keys and switches off the webhooks it set that are on, then,
-  under `reportSchedules`, pauses its report schedules that are on. Each statement runs only
-  under its option, whether or not a row matches. It returns how many of each and which
-  (`AccessEnded`: `{ sessions, invites, apiKeys, webhooks, reportSchedules, webhookIds,
-  reportScheduleIds }`, the ids sorted). Each caller states both options: the reset and the
-  invite `{ apiKeys: true, reportSchedules: true }`, the holder's own change `{ apiKeys:
-  endApiKeys, reportSchedules: false }`. All three password routes call it inside the
-  transaction that writes the password, and it throws if no transaction is open. Ending a key
+- **One function.** `endAccountAccess(userId, { apiKeys })` in `src/lib/server/auth.ts`
+  deletes the account's sessions, then its invites with `used = 0`, then its pending sign-ins and
+  enrolment links, then, under `apiKeys`, its API keys and switches off the webhooks it set that
+  are on, then pauses its report schedules that are on, always. The keys' and webhooks'
+  statements run only under `apiKeys`; each statement runs whether or not a row matches. It
+  returns how many of each and which (`AccessEnded`: `{ sessions, invites, apiKeys, webhooks,
+  reportSchedules, webhookIds, reportScheduleIds }`, the ids sorted). Each caller states
+  `apiKeys`: the reset and the invite `{ apiKeys: true }`, the holder's own change `{ apiKeys:
+  endApiKeys }`, the two-step reset `{ apiKeys: false }`. Its `reportSchedules` option is gone
+  (card 2894): every caller paused schedules, so it pauses them always. All three password
+  routes call it inside the transaction that writes the password, and it throws if no
+  transaction is open. Ending a key
   is deleting its row, as Revoke does; the gate then answers the key `401` `Invalid or
   expired API key`.
 - **One invite per account.** `issueInvite(userId)` in `src/lib/server/invites.ts` deletes
@@ -4641,22 +4705,29 @@ Delete any that nobody recognises.
   out everywhere else.", each part only above zero, and no notice when all three are zero. The
   admin page's own-row dialog says "Your API keys and the webhooks you set up keep working. To
   end the keys and switch off those webhooks too, change your password on the Account page."
+  Since card 2894 the own change pauses the account's report schedules: the Account page says,
+  above the button and only while one is on (its load's `reportSchedulesOn`), "Changing your
+  password pauses your 2 report schedules. Turn on the ones you recognise on the Reports page
+  afterwards: it asks for your password and a code.", and the own-row dialog adds "Your report
+  schedules are paused."
 - **And afterwards.** Your own change answers `{ success: true, apiKeysEnded,
-  webhooksSwitchedOff }`, and the page says what was ended: "Password changed. Your other
-  sessions were signed out; your 2 API keys were ended and the 1 webhook you set up was
-  switched off." A reset answers `{ success: true, sessionsEnded, apiKeysEnded,
+  webhooksSwitchedOff, reportSchedulesPaused }` (card 2894), and the page says what was ended:
+  "Password changed. Your other sessions were signed out; your 2 API keys were ended and the 1
+  webhook you set up was switched off; your 2 report schedules were paused: turn them on again on
+  the Reports page.", and reads its counts again. The own-row dialog's toast says "Password
+  changed: 2 report schedules paused", from the answer, zero included. A reset answers `{ success: true, sessionsEnded, apiKeysEnded,
   webhooksSwitchedOff, reportSchedulesPaused }`, and the toast gives all four counts, zeros
   included: "Password reset: 1 session and 1 API key ended, 3 webhooks switched off and 1
   report schedule paused". The user whose password was reset is not mailed: the administrator
   gives them the new password and tells them then.
 - **The system log.** Each writes one `INFO` line under `AUTH`, after the commit, naming the
   webhooks and schedules by id:
-  `Password changed by user — ended S session(s), I invite(s) and K API key(s), and switched off W webhook(s) they set up (ids 4, 9)`;
+  `Password changed by user — ended S session(s), I invite(s) and K API key(s), switched off W webhook(s) they set up (ids 4, 9) and paused R report schedule(s) (ids 3, 5)` (card 2894);
   `Password reset for user N ("name") by "actor" — ended S session(s), I invite(s) and K API key(s), switched off W webhook(s) they set up (ids 4, 9, 12) and paused R report schedule(s) (id 2)`;
   `Password set with an invite for user N — ended S session(s), I other invite(s) and K API key(s), switched off W webhook(s) they set up (…) and paused R report schedule(s) (…)`.
   The ids are left out where there are none. The line's meta adds `webhooksSwitchedOff`,
-  `webhookIds`, and for the reset and the invite `reportSchedulesPaused` and
-  `reportScheduleIds`.
+  `webhookIds`, `reportSchedulesPaused` and `reportScheduleIds` (the own change's too since card
+  2894).
 - **A script's key.** A key on an account whose keys end is answered `401` `Invalid or
   expired API key` from then on, and whatever uses it stops until it is given a new key.
   Before resetting the password of an account a script or an integration runs on, look at

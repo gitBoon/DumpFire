@@ -59,7 +59,7 @@ vi.mock('$lib/server/mfa-key', async (importOriginal) => {
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
-import { mfaFactors, mfaRecoveryCodes, sessions, signInChallenges, users } from '$lib/server/db/schema';
+import { mfaFactors, mfaRecoveryCodes, reportSchedules, sessions, signInChallenges, users } from '$lib/server/db/schema';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import {
 	ADD_ENDED,
@@ -523,12 +523,19 @@ describe('the Two-step sign-in section (card 2772, S3)', () => {
 		expect((await confirm(other, reset.token, reset.pendingId, codeFor(reset.secret))).status).toBe(401);
 	});
 
-	it('T24. remove: 200; the factor gone; the account’s other sessions ended and this one kept; pending sign-ins ended; another session’s set-up forgotten; a WARN line; one factor-removed notice with the live key and webhook, what to revoke, and the lost device', async () => {
+	it('T24. remove: 200; the factor gone; the account’s other sessions ended and this one kept; pending sign-ins ended; another session’s set-up forgotten; a WARN line; one factor-removed notice with the live key and webhook, the report schedule that is on (left on, card 2894), what to revoke, and the lost device', async () => {
 		const user = makeUser();
 		giveFactor(user);
 		const spare = giveAuthenticator(user, 'Old phone');
 		makeApiKey(user, 'Deploy script');
-		makeWebhook(makeBoard({ owner: user, name: 'Ops' }).board, { url: 'https://hooks.example.test/x?secret=s', setBy: user });
+		const { board: ops } = makeBoard({ owner: user, name: 'Ops' });
+		makeWebhook(ops, { url: 'https://hooks.example.test/x?secret=s', setBy: user });
+		// Card 2894 (case 6, D4): a report schedule that is on, listed in the notice and left on.
+		const schedule = db
+			.insert(reportSchedules)
+			.values({ userId: user.id, name: 'Weekly ops', scope: 'board', scopeId: ops.id, recipients: 'a@example.test, b@example.test' })
+			.returning()
+			.get();
 		// Another browser, a sign-in waiting for its code, and a set-up begun in another session.
 		const other = makeSession(user);
 		await passwordStep(user);
@@ -554,8 +561,12 @@ describe('the Two-step sign-in section (card 2772, S3)', () => {
 		expect(notices[0].html).toContain('Deploy script');
 		expect(notices[0].html).toContain('Ops, to hooks.example.test');
 		expect(notices[0].html).not.toContain('secret=s');
-		expect(notices[0].html).toMatch(/revoke any you do not recognise/i);
+		expect(notices[0].html).toContain('Your report schedules that are on:');
+		expect(notices[0].html).toContain('<li>Weekly ops, a report of the board &quot;Ops&quot;, emailed to: a@example.test, b@example.test</li>');
+		expect(notices[0].html).toMatch(/revoke or delete any you do not recognise/i);
 		expect(notices[0].html).toContain('If the device was lost, also change your password');
+		// Listed, and not paused.
+		expect(db.select().from(reportSchedules).where(eq(reportSchedules.id, schedule.id)).get()).toEqual(schedule);
 	});
 
 	it('T25. remove refused in the guard: the only authenticator 409, two with the other not opening 409, another account’s or an unknown id 404; no compare and the count 0 for each', async () => {

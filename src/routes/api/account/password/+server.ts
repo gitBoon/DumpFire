@@ -31,6 +31,9 @@ const log = createLogger('AUTH');
  * session that sent them, the third ending it. The change also clears the
  * warning that someone else entered the password, which asks for it, and
  * forgets an authenticator being added with the old one (card 2772, D1, D6).
+ * It pauses the account's report schedules that are on, always (card 2894),
+ * and answers `{ success, apiKeysEnded, webhooksSwitchedOff,
+ * reportSchedulesPaused }`.
  */
 export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => {
 	requireUser(locals.user);
@@ -81,7 +84,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 	// awaited, and a session can end meanwhile. Asked before the sessions end
 	// below, the session this request came by among them; nothing in this
 	// request asks it after that, when it has gone.
-	const { accountId, newSession, apiKeysEnded, webhooksSwitchedOff } = await whilePasswordHolds(userId, hash, () =>
+	const { accountId, newSession, apiKeysEnded, webhooksSwitchedOff, reportSchedulesPaused } = await whilePasswordHolds(userId, hash, () =>
 		writeAs(locals, (caller) => {
 			const me = requireUser(caller);
 			const userId = me.id;
@@ -110,19 +113,26 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 			// used, which would set the password again. The API keys end only if
 			// the user asked, and the webhooks they set are switched off with them
 			// (card 2168): a change that keeps the keys keeps their webhooks. Their
-			// report schedules are left on: they see them on the Reports page.
-			const ended = endAccountAccess(userId, { apiKeys: endApiKeys, reportSchedules: false });
+			// report schedules that are on are paused, always (card 2894, D1): a
+			// schedule sends a board's activity whether or not anyone is signed
+			// in, and the server cannot tell a routine change from a recovery.
+			// The Account page says so before the change; the holder turns back
+			// on the ones they recognise through the step-up (card 2751).
+			const ended = endAccountAccess(userId, { apiKeys: endApiKeys });
 			afterCommit(() =>
 				log.info(
 					`Password changed by user — ended ${ended.sessions} session(s), ${ended.invites} invite(s) and ` +
-						`${ended.apiKeys} API key(s), and switched off ${ended.webhooks} webhook(s) they set up` +
-						namingIds(ended.webhookIds),
+						`${ended.apiKeys} API key(s), switched off ${ended.webhooks} webhook(s) they set up` +
+						`${namingIds(ended.webhookIds)} and paused ${ended.reportSchedules} report schedule(s)` +
+						namingIds(ended.reportScheduleIds),
 					{
 						sessionsEnded: ended.sessions,
 						invitesEnded: ended.invites,
 						apiKeysEnded: ended.apiKeys,
 						webhooksSwitchedOff: ended.webhooks,
-						webhookIds: ended.webhookIds
+						webhookIds: ended.webhookIds,
+						reportSchedulesPaused: ended.reportSchedules,
+						reportScheduleIds: ended.reportScheduleIds
 					},
 					{ userId }
 				)
@@ -134,7 +144,8 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 				accountId: userId,
 				newSession: createSession(userId, { startedAt }),
 				apiKeysEnded: ended.apiKeys,
-				webhooksSwitchedOff: ended.webhooks
+				webhooksSwitchedOff: ended.webhooks,
+				reportSchedulesPaused: ended.reportSchedules
 			};
 		}));
 
@@ -143,5 +154,5 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 	// which made the change, is remembered again (card 2194).
 	rememberBrowser(cookies, accountId, newHash, url);
 
-	return json({ success: true, apiKeysEnded, webhooksSwitchedOff });
+	return json({ success: true, apiKeysEnded, webhooksSwitchedOff, reportSchedulesPaused });
 };

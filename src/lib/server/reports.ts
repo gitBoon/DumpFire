@@ -21,7 +21,7 @@ import { escapeHtml } from '$lib/escape-html';
 import { isSmtpConfigured, sendEmailWithAttachment } from './email';
 import type { SessionUser } from './auth';
 import { createLogger } from './logger';
-import { sendSecurityNotice, type SecurityNoticeDetail } from './notifications';
+import { sendSecurityNotice, type NoticeSchedule, type SecurityNoticeDetail } from './notifications';
 import { allowanceState, noteAllowanceRefused, takeAllowance } from './rate-limit';
 import { readId, readQueryDate, readText, type RequestBody } from './request-body';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
@@ -748,6 +748,35 @@ export function reportCovers(scope: string, scopeId: number | null): string {
 		return cat ? `the grouping "${cat.name}"` : `grouping ${scopeId}, which is gone`;
 	}
 	return 'every board';
+}
+
+/**
+ * A report schedule as a notice names it (card 2751): its name, what it
+ * covers (`reportCovers`), and every address it is sent to. The start-up
+ * announcement names each schedule that is on through this (card 2894), and
+ * `schedulesOnOf` each of one account's.
+ */
+export function noticeScheduleOf(schedule: { name: string; scope: string; scopeId: number | null; recipients: string }): NoticeSchedule {
+	return {
+		name: schedule.name,
+		covers: reportCovers(schedule.scope, schedule.scopeId),
+		addresses: reportRecipients(schedule.recipients).addresses
+	};
+}
+
+/**
+ * The account's report schedules that are on, in the order they were made,
+ * each as a notice names it (card 2894, D4): what the `factor-removed` notice
+ * lists, so the holder can spot one they did not make. Reads only.
+ */
+export function schedulesOnOf(userId: number): NoticeSchedule[] {
+	return db
+		.select({ name: reportSchedules.name, scope: reportSchedules.scope, scopeId: reportSchedules.scopeId, recipients: reportSchedules.recipients })
+		.from(reportSchedules)
+		.where(and(eq(reportSchedules.userId, userId), eq(reportSchedules.enabled, true)))
+		.orderBy(reportSchedules.id)
+		.all()
+		.map(noticeScheduleOf);
 }
 
 export function generateBoardReport(

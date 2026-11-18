@@ -443,8 +443,10 @@ async function changeOwn(user: SessionUser | null, body: unknown, session = 'my-
 
 describe('PUT /api/account/password', () => {
 	/**
-	 * Signed in on two devices, with two API keys and an invite not yet used,
-	 * and somebody else signed in on one, with a key and an invite of their own.
+	 * Signed in on two devices, with two API keys, an invite not yet used and
+	 * a report schedule that is on, and somebody else signed in on one, with a
+	 * key, an invite and a schedule of their own. A failed write leaves the
+	 * schedule on: `eachWriteInTurn` checks every row (card 2894).
 	 */
 	const signedInTwice = () => {
 		const me = withPassword(makeUser({ username: 'me' }));
@@ -457,19 +459,27 @@ describe('PUT /api/account/password', () => {
 		makeApiKey(other, 'their script');
 		makeInvite(me, 'my-invite');
 		makeInvite(other, 'their-invite');
+		for (const owner of [me, other]) db.insert(reportSchedules).values({ userId: owner.id, name: 'Weekly', scope: 'all' }).run();
 		// The factor the code is made from (card 2771).
 		stepUpFactor(me);
 		return { me, other };
 	};
 
-	it('changes the password, ends every session and invite and starts a new session, keeping the keys, or does none of it', async () => {
+	/** Whether each of the account's report schedules is on, in the order they were made. */
+	const schedulesOnOf = (userId: number) =>
+		db.select({ enabled: reportSchedules.enabled }).from(reportSchedules).where(eq(reportSchedules.userId, userId)).orderBy(reportSchedules.id).all().map((row) => row.enabled);
+
+	it('changes the password, ends every session and invite, pauses the schedules and starts a new session, keeping the keys, or does none of it', async () => {
 		const run = await eachWriteInTurn({
 			build: signedInTwice,
 			request: ({ me }) => changeOwn(me, { currentPassword: OLD, newPassword: NEW }),
 			apart: [...STEP_UP_APART],
 			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
-				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0 });
+				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, reportSchedulesPaused: 1 });
+				// Card 2894 (D1): the holder's schedule paused, with the keys kept; nobody else's.
+				expect(schedulesOnOf(me.id)).toEqual([false]);
+				expect(schedulesOnOf(other.id)).toEqual([true]);
 
 				expect(await matches(NEW, hashOf(me.id))).toBe(true);
 				expect(await matches(OLD, hashOf(me.id))).toBe(false);
@@ -505,6 +515,8 @@ describe('PUT /api/account/password', () => {
 			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
 			'delete from sign_in_challenges',
 			'delete from enrolment_links',
+			// The report schedules that are on (card 2894), always.
+			'update report_schedules set',
 			'insert into sessions'
 		]);
 		expect(run.effects).toEqual([]);
@@ -518,7 +530,7 @@ describe('PUT /api/account/password', () => {
 			apart: [...STEP_UP_APART],
 			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
-				expect(res.body).toEqual({ success: true, apiKeysEnded: 2, webhooksSwitchedOff: 0 });
+				expect(res.body).toEqual({ success: true, apiKeysEnded: 2, webhooksSwitchedOff: 0, reportSchedulesPaused: 1 });
 				expect(await matches(NEW, hashOf(me.id))).toBe(true);
 				expect(sessionsOf(me.id)).toEqual([sessionHashOf(res.cookie!.value)]);
 				expect(invitesOf(me.id)).toEqual([]);
@@ -543,6 +555,7 @@ describe('PUT /api/account/password', () => {
 			// The webhooks the account set (card 2168): written whether or not one
 			// matches, and only when the keys end.
 			'update webhooks set',
+			'update report_schedules set',
 			'insert into sessions'
 		]);
 		expect(run.effects).toEqual([]);
@@ -559,14 +572,14 @@ describe('PUT /api/account/password', () => {
 
 		const kept = await changeOwn(chief, { currentPassword: OLD, newPassword: NEW, endApiKeys: false });
 		expect(kept.status).toBe(200);
-		expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0 });
+		expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, reportSchedulesPaused: 0 });
 		expect((await meWithKey(key)).status).toBe(200);
 
 		// From the session the change started: it ended the one it was asked from.
 		// The code made again: the first spent its step (card 2771).
 		stepUpCode(chief);
 		const ended = await changeOwn(chief, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true }, kept.cookie!.value);
-		expect(ended.body).toEqual({ success: true, apiKeysEnded: 1, webhooksSwitchedOff: 0 });
+		expect(ended.body).toEqual({ success: true, apiKeysEnded: 1, webhooksSwitchedOff: 0, reportSchedulesPaused: 0 });
 		expect(keysOf(chief.id)).toEqual([]);
 		const refused = await meWithKey(key);
 		expect(refused.status).toBe(401);
@@ -1571,8 +1584,9 @@ describe('the invite page', () => {
 // (`webhooks.set_by`, migration 0056). An administrator's reset and an invite
 // used switch off every webhook the account set and pause its report
 // schedules; the holder's own change switches off the webhooks only when they
-// end their keys, and pauses no schedule. A webhook nobody is recorded as
-// having set, and one somebody else set, are left alone.
+// end their keys, and pauses every schedule of theirs that is on, always
+// (card 2894). A webhook nobody is recorded as having set, and one somebody
+// else set, are left alone.
 
 describe('what taking an account back switches off (card 2168)', () => {
 	/** A webhook's switch and its setter, as stored. */
@@ -1808,41 +1822,68 @@ describe('what taking an account back switches off (card 2168)', () => {
 		});
 	});
 
-	it("on the holder's own change, switches off the webhooks they set only when they end their keys, and pauses no schedule", async () => {
+	// Card 2894 (case 1, E20): reworked from "… and pauses no schedule".
+	it("on the holder's own change, pauses every report schedule of theirs that is on and says how many, and switches off the webhooks they set only when they end their keys", async () => {
 		await atInfo(async () => {
 			const s = scene();
+			// Two of theirs on (the scene's and this one) and one off; the editor's on.
+			const second = makeSchedule(s.target);
 			// The session the change is asked from, which counts its current
 			// password (card 2701), and which the change ends; and the factor of
 			// their code (card 2771).
 			makeSession(s.target, 'my-laptop');
 			stepUpFactor(s.target);
 
-			// A change that keeps the keys keeps their webhooks.
-			const kept = await changeOwn(s.target, { currentPassword: OLD, newPassword: NEW });
-			expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0 });
+			// A change that keeps the keys keeps their webhooks, and pauses both
+			// schedules all the same: the flag does not split the pause.
+			const kept = await changeOwn(s.target, { currentPassword: OLD, newPassword: NEW, endApiKeys: false });
+			expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, reportSchedulesPaused: 2 });
 			expect(hookRow(s.hooks.theirs)).toEqual({ active: 1, setBy: s.target.id });
-			expect(scheduleRow(s.schedules.theirs)).toEqual({ enabled: 1, updatedAt: LONG_AGO });
+			for (const id of [s.schedules.theirs, second]) {
+				const paused = scheduleRow(id);
+				expect(paused.enabled).toBe(0);
+				expect(paused.updatedAt).not.toBe(LONG_AGO);
+				expect(parseStamp(paused.updatedAt)).not.toBeNull();
+			}
+			expect(scheduleRow(s.schedules.alreadyPaused)).toEqual({ enabled: 0, updatedAt: LONG_AGO });
+			expect(scheduleRow(s.schedules.editors)).toEqual({ enabled: 1, updatedAt: LONG_AGO });
 
 			// Asked to end the keys, with none to end: the webhook they set is
-			// switched off all the same (R-S5), and the schedule stays on. The code
-			// made again: the first spent its step (card 2771).
+			// switched off all the same (R-S5), and no schedule is left on to
+			// pause. The code made again: the first spent its step (card 2771).
 			stepUpCode(s.target);
 			const ended = await changeOwn(s.target, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true }, kept.cookie!.value);
-			expect(ended.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 1 });
-			expectTakenBack(s, { schedules: false });
+			expect(ended.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 1, reportSchedulesPaused: 0 });
+			expectTakenBack(s, { schedules: true });
 
-			expect(authLines('Password changed by user%').map((line) => line.message)).toEqual([
-				'Password changed by user — ended 1 session(s), 0 invite(s) and 0 API key(s), and switched off 0 webhook(s) they set up',
+			const lines = authLines('Password changed by user%');
+			expect(lines.map((line) => line.message)).toEqual([
+				'Password changed by user — ended 1 session(s), 0 invite(s) and 0 API key(s), switched off 0 webhook(s) they set up ' +
+					`and paused 2 report schedule(s) (ids ${s.schedules.theirs}, ${second})`,
 				// The session the first change started is among those the second ends.
-				`Password changed by user — ended 1 session(s), 0 invite(s) and 0 API key(s), and switched off 1 webhook(s) they set up (id ${s.hooks.theirs})`
+				`Password changed by user — ended 1 session(s), 0 invite(s) and 0 API key(s), switched off 1 webhook(s) they set up (id ${s.hooks.theirs}) ` +
+					'and paused 0 report schedule(s)'
 			]);
-			expect(authLines('Password changed by user%')[1].meta).toEqual({
-				sessionsEnded: 1,
-				invitesEnded: 0,
-				apiKeysEnded: 0,
-				webhooksSwitchedOff: 1,
-				webhookIds: [s.hooks.theirs]
-			});
+			expect(lines.map((line) => line.meta)).toEqual([
+				{
+					sessionsEnded: 1,
+					invitesEnded: 0,
+					apiKeysEnded: 0,
+					webhooksSwitchedOff: 0,
+					webhookIds: [],
+					reportSchedulesPaused: 2,
+					reportScheduleIds: [s.schedules.theirs, second]
+				},
+				{
+					sessionsEnded: 1,
+					invitesEnded: 0,
+					apiKeysEnded: 0,
+					webhooksSwitchedOff: 1,
+					webhookIds: [s.hooks.theirs],
+					reportSchedulesPaused: 0,
+					reportScheduleIds: []
+				}
+			]);
 		});
 	});
 

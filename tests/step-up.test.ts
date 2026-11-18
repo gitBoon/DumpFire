@@ -789,7 +789,7 @@ describe('each admin action asks for the current password (case 3)', () => {
 			path: () => '/api/account/password',
 			body: () => ({ newPassword: 'a long new password' }),
 			done: (res, s) => {
-				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0 });
+				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, reportSchedulesPaused: 0 });
 				expect(db.select({ hash: users.passwordHash }).from(users).where(eq(users.id, s.admin.id)).get()!.hash).not.toBe(FIXTURE_PASSWORD_HASH);
 				// A new session, in place of the one the change ended.
 				expect(db.select().from(sessions).where(eq(sessions.userId, s.admin.id)).all()).toHaveLength(1);

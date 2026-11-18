@@ -424,8 +424,33 @@ export type TwoStepReset = {
 	sessions: number;
 	invites: number;
 	challenges: number;
+	/** How many of the account's report schedules that were on it paused, and their ids, in order (card 2894, D2). */
+	reportSchedules: number;
+	reportScheduleIds: number[];
 	token: string;
 };
+
+/**
+ * The meta of a two-step reset's CRITICAL line (card 2894, S15): the
+ * account, who reset it (an administrator's id, or `'host'` for
+ * scripts/mfa-reset.mjs), and the counts, with the ids of the report
+ * schedules paused. The script writes the same fields from its own SQL, and
+ * tests/mfa-reset-script.test.ts (T21) holds its meta equal to this for the
+ * same reset.
+ */
+export function twoStepResetMeta(targetUserId: number, resetBy: number | 'host', reset: TwoStepReset) {
+	return {
+		targetUserId,
+		resetBy,
+		factorsRemoved: reset.factors,
+		recoveryCodesRemoved: reset.recoveryCodes,
+		sessionsEnded: reset.sessions,
+		challengesEnded: reset.challenges,
+		invitesEnded: reset.invites,
+		reportSchedulesPaused: reset.reportSchedules,
+		reportScheduleIds: reset.reportScheduleIds
+	};
+}
 
 /**
  * Set the account's two-step sign-in back to nothing, and issue the link that
@@ -433,9 +458,14 @@ export type TwoStepReset = {
  * are deleted, its wrong-code counts set to 0 and their pauses cleared, its
  * leave to set up on its password alone taken away (card 2769), and its
  * sessions, unused invites, pending sign-ins and enrolment links ended.
- * Its password, API keys, webhooks, report schedules, security banner, last
- * sign-in and failed codes since it are kept: the banner and that count are
- * about the password and the last sign-in, which a reset does not change.
+ * Its report schedules that are on are paused (card 2894, D2): a schedule
+ * sends a board's activity whether or not anyone is signed in, so one made by
+ * whoever took the device would outlive the reset; the holder turns back on
+ * the ones they recognise through the step-up (card 2751).
+ * Its password, API keys, webhooks, security banner, last sign-in and failed
+ * codes since it are kept: the banner and that count are about the password
+ * and the last sign-in, which a reset does not change. The keys and webhooks
+ * kept are listed in the administrator's message and the holder's mail (S14).
  * The link is issued last, because ending the account's access deletes its
  * links. Once the reset is committed, an authenticator the account was adding
  * on its Account page is forgotten (card 2772, D1, S7): its sessions are gone,
@@ -468,7 +498,7 @@ export function resetTwoStep(userId: number, issuedBy: string = 'admin-reset'): 
 		})
 		.where(eq(users.id, userId))
 		.run();
-	const ended = endAccountAccess(userId, { apiKeys: false, reportSchedules: false });
+	const ended = endAccountAccess(userId, { apiKeys: false });
 	const token = issueEnrolmentLink(userId, issuedBy);
 	afterCommit(() => forgetPendingAdd(userId));
 	return {
@@ -477,6 +507,8 @@ export function resetTwoStep(userId: number, issuedBy: string = 'admin-reset'): 
 		sessions: ended.sessions,
 		invites: ended.invites,
 		challenges: ended.challenges,
+		reportSchedules: ended.reportSchedules,
+		reportScheduleIds: ended.reportScheduleIds,
 		token
 	};
 }

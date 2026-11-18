@@ -100,9 +100,8 @@ import {
 	storedAppUrlText
 } from './email';
 import { notifyWebhooksBeforeKeys, securityNoticeSent, type NoticeSchedule, type WebhookBeforeKeys } from './notifications';
-import { reportCovers } from './reports';
+import { noticeScheduleOf } from './reports';
 import { schedulerSetting } from './schedulers';
-import { reportRecipients } from '$lib/report-recipients';
 // `printable` is the logger's cleaner (card 2214), which `emit` applies to
 // every line as well. Names are still put through it where they sit inside
 // quotes, and the line printed past LOG_LEVEL below does not go through `emit`.
@@ -1067,8 +1066,9 @@ export async function announceReportSchedules(
 			.all() as { id: number; userId: number; name: string; scope: string; scopeId: number | null; recipients: string; username: string }[];
 		const owners = new Map<number, { username: string; schedules: NoticeSchedule[] }>();
 		for (const schedule of running) {
-			const covers = reportCovers(schedule.scope, schedule.scopeId);
-			const addresses = reportRecipients(schedule.recipients).addresses;
+			// As a notice names it, as the factor-removed notice names one (card 2894, `noticeScheduleOf`).
+			const notice = noticeScheduleOf(schedule);
+			const { covers, addresses } = notice;
 			reportsLog.warn(
 				`Report schedule ${schedule.id} "${schedule.name}" of "${schedule.username}" (user ${schedule.userId}) is on at this release, ` +
 					`a report of ${covers}, sent to: ${addresses.length === 0 ? 'no address' : addresses.join(', ')}`,
@@ -1076,7 +1076,7 @@ export async function announceReportSchedules(
 				{ userId: schedule.userId }
 			);
 			const owner = owners.get(schedule.userId) ?? { username: schedule.username, schedules: [] };
-			owner.schedules.push({ name: schedule.name, covers, addresses });
+			owner.schedules.push(notice);
 			owners.set(schedule.userId, owner);
 		}
 		const at = new Date();

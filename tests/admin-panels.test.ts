@@ -1763,7 +1763,8 @@ describe('the two-step sign-in reset on the users panel and its dialog, mounted 
 		expect(confirm).toHaveBeenCalledTimes(1);
 		expect(confirm.mock.calls[0][0]).toBe('Reset Two-Step Sign-In');
 		expect(confirm.mock.calls[0][1]).toBe(
-			"Reset bob's two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, and you are given a link, once, to pass on to them yourself. " +
+			// Card 2894 (case 8, E24): the reset pauses the account's report schedules, and the confirm says so first.
+			"Reset bob's two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their report schedules are paused, and you are given a link, once, to pass on to them yourself. " +
 				ASKS_FOR_PASSWORD
 		);
 		expect(confirm.mock.calls[0][3]).toEqual({ askPassword: true });
@@ -2068,6 +2069,35 @@ describe('the password dialog, mounted', () => {
 		await settle();
 
 		expect(asked('PUT /api/account/password').map((request) => request.body)).toEqual([{ currentPassword: 'the-old-one', currentCode: CODE, newPassword: 'a-new-password' }]);
+	});
+
+	// Card 2894 (case 8, D1, E22): the own row's change always pauses the caller's report schedules; the dialog says so
+	// before, and the toast gives the answer's count after.
+	it('says on the own row that the report schedules are paused, and gives the count the answer gives in the toast', async () => {
+		answer = (what) =>
+			what === 'PUT /api/account/password'
+				? Response.json({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, reportSchedulesPaused: 2 })
+				: undefined;
+		/** The toasts up now, by kind and words. */
+		const toastsShown = () => {
+			let shown: { id: number; message: string; type: string }[] = [];
+			toasts.subscribe((list) => (shown = list as typeof shown))();
+			return shown;
+		};
+		for (const toast of toastsShown()) toasts.dismiss(toast.id);
+		const target = draw(ResetPasswordDialog, { data: pageData });
+		await (drawn!.component as unknown as { openResetDialog: (userId: number) => Promise<void> }).openResetDialog(1);
+		flushSync();
+		expect(target.textContent).toContain('Your other sessions will be signed out. Your report schedules are paused.');
+
+		type(target.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!, 'the-old-one');
+		typeCode(target);
+		type(target.querySelector<HTMLInputElement>('input[placeholder="New password (min 8 chars)"]')!, 'a-new-password');
+		buttonNamed(target, 'Change Password').click();
+		await settle();
+
+		expect(toastsShown().map((toast) => [toast.type, toast.message])).toEqual([['success', 'Password changed: 2 report schedules paused']]);
+		for (const toast of toastsShown()) toasts.dismiss(toast.id);
 	});
 
 	// Card 2886 (plan section 5, case 1; D1, D2, F1): the dialog held no focus, kept no Tab, took no Escape and had no name.

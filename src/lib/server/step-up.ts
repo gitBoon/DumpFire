@@ -197,7 +197,7 @@ export const STEP_UP_ACTIONS = Object.freeze({
 	'POST /api/decisions/[id]/rule': 'Rules on a decision for good, and mails every participant the ruling and its reason',
 	'POST /api/decisions/[id]/release': "Shows a ruled decision's totals and comments, for good, to everyone who can see it",
 	// Card 2771 (D7): the Account page's three forms, which asked for the password on their own.
-	'PUT /api/account/password': "Changes the account's own password, which ends its other sessions and invites",
+	'PUT /api/account/password': "Changes the account's own password, which ends its other sessions and invites and pauses its report schedules",
 	'PUT /api/account/email': "Moves the address the account's invites, resets and security notices go to",
 	'POST /api/account/api-keys': 'Makes an API key: a credential that outlives a password change unless it is ended',
 	// Card 2772 (D5, D7): a key made on a password alone, before two-step sign-in, kept past its deadline.

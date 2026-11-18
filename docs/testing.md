@@ -1,10 +1,11 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.261
+version: 1.262
 status: Living
 date: 2026-11-18
 tags:
+  - card-2894
   - card-2893
   - card-2752
   - card-2762
@@ -49,7 +50,7 @@ tags:
   - attachments
   - two-step-sign-in
   - invites
-description: "How DumpFire's automated tests are built and run: the in-memory database fixture, the route and form-action helpers, the harness that sends a request through the gate, the table that says who may call every API route and the tests made from it, the tests that read the source to keep every API failure one shape and the OpenAPI document true, the helpers that prove a request is all or nothing, the faults the suite records without hiding, the components mounted under jsdom, the board page's state, refresh and card window run without a page, the split admin, dashboard, All Tasks and plan pages mounted whole, the expected schema, what each suite covers, the MFA key the tests use and how the two-step sign-in storage is tested (card 2768), how two-step sign-in itself is tested (card 2769: the two new files, tests/helpers/two-step.ts, action()'s Cookie header, the frozen Date, the source scans and why the older sign-in tests give the account a factor), the tests of invite tokens stored as hashes and the start-up sweep (card 2849), the tests of session codes stored as hashes, limits by role and the __Host- cookie (card 2775), the tests of report schedules and report mail behind the password and a code (card 2751, T1 to T21), the tests of requester links kept as hashes and the sweep after an older image (card 2870, T1 to T9), the tests of the card window's image upload, a JPEG's kept orientation and the one-off check of the images stored before (card 2761, cases 1 to 13), and how to rehearse the migration runner against a copy of a real database"
+description: "How DumpFire's automated tests are built and run: card 2894's pins of the report schedules paused by a password change and a two-step reset, the in-memory database fixture, the route and form-action helpers, the harness that sends a request through the gate, the table that says who may call every API route and the tests made from it, the tests that read the source to keep every API failure one shape and the OpenAPI document true, the helpers that prove a request is all or nothing, the faults the suite records without hiding, the components mounted under jsdom, the board page's state, refresh and card window run without a page, the split admin, dashboard, All Tasks and plan pages mounted whole, the expected schema, what each suite covers, the MFA key the tests use and how the two-step sign-in storage is tested (card 2768), how two-step sign-in itself is tested (card 2769: the two new files, tests/helpers/two-step.ts, action()'s Cookie header, the frozen Date, the source scans and why the older sign-in tests give the account a factor), the tests of invite tokens stored as hashes and the start-up sweep (card 2849), the tests of session codes stored as hashes, limits by role and the __Host- cookie (card 2775), the tests of report schedules and report mail behind the password and a code (card 2751, T1 to T21), the tests of requester links kept as hashes and the sweep after an older image (card 2870, T1 to T9), the tests of the card window's image upload, a JPEG's kept orientation and the one-off check of the images stored before (card 2761, cases 1 to 13), and how to rehearse the migration runner against a copy of a real database"
 ---
 
 # Testing
@@ -72,11 +73,11 @@ run exits 1. `npm test` leaves the choice to vitest, which allows `.only` unless
 environment variable `CI` is set: at a desk it can be used, and nothing in the image
 build sets `CI`, which is why the build's command carries the flag.
 
-The suite is 153 test files and 12,807 tests (card 2893 and its code review, 2026-11-18), and takes
-about three to four minutes. A run that passes on Windows reports `12758 passed | 44 expected fail | 5 skipped`:
+The suite is 153 test files and 12,821 tests (card 2894 and its code review, 2026-11-18), and takes
+about three to four minutes. A run that passes on Windows reports `12772 passed | 44 expected fail | 5 skipped`:
 the 44 are card 2911's `it.fails` tests in `access-every-route` (below), which vitest counts
 apart, and the five the POSIX-only cases below; on Linux, with three or more CPUs, none is skipped (card
-2860's Linux run reported `12354 passed`; card 2772's 137 more tests, card 2751's 29, card 2870's 11, card 2670's 17, the 55 of the cards since, to card 2891, card 2761's 17, card 2719's 81, card 2762's 7, card 2752's 45 and card 2893's 29 were run on Windows only). The figures move with every card: the one rule is that nothing fails
+2860's Linux run reported `12354 passed`; card 2772's 137 more tests, card 2751's 29, card 2870's 11, card 2670's 17, the 55 of the cards since, to card 2891, card 2761's 17, card 2719's 81, card 2762's 7, card 2752's 45, card 2893's 29 and card 2894's 14 were run on Windows only). The figures move with every card: the one rule is that nothing fails
 and nothing is skipped but the cases below.
 
 - **None is expected to fail.** A test of a fault that is known and not yet fixed states
@@ -2378,6 +2379,44 @@ header); and the route lists of `gate.test.ts`, `access-every-route.test.ts`,
 case, two rows (a backslash before `@`, an encoded slash in a user name), each stored with only
 the image's placeholder `ORIGIN`, prints the path alone with its instruction and nothing of
 `evil` (shown failing with the row read as `appUrlAsRead` reads it). T29's warning prefix holds.
+
+**Card 2894: a password change and a two-step reset pause the report schedules** (plan cases 1
+to 8, 17 rows; 14 tests added, 5 of them by its code review). `atomic-accounts.test.ts` (case 1, reworking the case that said
+the own change "pauses no schedule"): two of the holder's schedules on and one off, another
+account's on; the own change with `endApiKeys: false` answers `reportSchedulesPaused: 2`, both
+rows paused and stamped, the others as they were, and the `INFO` lines and meta name the ids;
+`signedInTwice` gains a schedule per account, so `eachWriteInTurn` sees each failed write leave
+them on, and the write shapes gain `update report_schedules set`. `mfa-reset.test.ts`: T17 (case
+2, the link shown and withheld): two of the holder's paused and stamped, one off and another
+account's untouched, `reportSchedulesPaused: 2`, the message's count, and, where the link is
+shown, the key and webhook kept by count and day alone (none where it is withheld), never a
+key's name, a board's name or a host (the code review's CS2), the `CRITICAL` line's count and
+ids; T18 (case 5 and the code review's CR1, eight rows, one per wording): the mail's sentence in
+the singular and the plural, none for none, and each key and webhook with when it was made,
+never the webhook's query; the message's count, singular and plural, and what was kept for a
+key and a webhook, neither, a key alone, a webhook alone, two keys ("made D and D") and a notice
+not sent. `mfa-reset-script.test.ts`: T21 (case 3) seeds a schedule on for both accounts, masks
+`updated_at` of the holder's paused row only, each checked a stamp, keeps the twin's as it was,
+holds the script's meta equal to `twoStepResetMeta()` for the same reset, pins stdout's count,
+and (the code review's CS1) a live key by its name and day and a webhook by its board, host and
+day on stdout, an expired key and the webhook's query never, and none of them in the log; T31 (case 4) refuses a database
+without `report_schedules`, exit 1, nothing changed. `account-two-step.test.ts` T24 (case 6):
+the `factor-removed` notice names the schedule, what it covers and its addresses, and the row is
+unchanged. `page-failures.test.ts` (case 7): the Account page's line only under `schedulesOn >
+0`, before the button; the `changePassword` pins read `reportSchedulesPaused`, say the paused
+sentence and read the page again under `endApiKeys || paused > 0`; the own-row toast's words.
+`admin-panels.test.ts` (case 8): the own-row dialog's line and its toast, "Password changed: 2
+report schedules paused", and the two-step reset's confirm saying the schedules are paused (T18).
+Whole answers in `atomic-accounts.test.ts`, `step-up.test.ts` and `mfa-reset.test.ts` T1 gain
+`reportSchedulesPaused`; `mail-escaping.test.ts` gives `sendMfaResetNotice` its detail and adds
+a `factor-removed` row where only the schedule carries markup; `mfa-storage.test.ts` and
+`webhooks.test.ts` call `endAccountAccess` without the option it no longer has. Shown failing:
+the own change not pausing, the two-step reset not pausing, the script's `UPDATE` matching
+nothing, `report_schedules` out of `NEEDED_TABLES`, the mail's sentence and the notice's list
+taken out, the page's condition made `>= 0`, the own-row toast's count and the confirm's words
+taken out; and, for the code review, the kept words given where the link is withheld, a key's
+name put in the message, the "no API key" and "no key and no webhook" words changed, the
+script listing an expired key, and the script printing a webhook's whole address.
 
 **Card 2849's pins in older files.** Every fixture that writes an invite as this image keeps it
 stores the token's hash, `inviteHashOf(token)` from `tests/helpers/fixtures.ts` (the 32-byte

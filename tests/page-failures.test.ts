@@ -1675,10 +1675,28 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 		expect(changing.getText()).toContain(
 			"`the ${webhooksInWords(hooksOff)} you set up ${hooksOff === 1 ? 'was' : 'were'} switched off`"
 		);
+		// Card 2894 (D1, E22): the schedules the change paused, from the answer, and where to turn them on again.
+		expect(changing.getText()).toContain("typeof answer?.reportSchedulesPaused === 'number'");
+		expect(changing.getText()).toContain(
+			"`; your ${schedulesInWords(paused)} ${paused === 1 ? 'was' : 'were'} paused: turn ${paused === 1 ? 'it' : 'them'} on again on the Reports page.`"
+		);
 		expect(branches(page, 'changePassword', 'loadApiKeys')).toEqual(['ok']);
-		// And the count of webhooks is read again once they were switched off.
+		// And the counts are read again once webhooks were switched off or schedules paused.
 		expect(branches(page, 'changePassword', 'invalidateAll')).toEqual(['ok']);
+		expect(changing.getText()).toContain('if (endApiKeys || paused > 0) await invalidateAll();');
 		expect(branches(page, 'changePassword', 'failureMessage')).toEqual(['failed']);
+	});
+
+	// Card 2894 (case 7, D1, E22): a change always pauses the account's report schedules, said above the button, and
+	// only while one is on.
+	it('says before the change that it pauses the report schedules, only while one is on', () => {
+		const line =
+			'Changing your password pauses your {schedulesInWords(schedulesOn)}. Turn on the ones you recognise on the ' +
+			'<a href="/reports">Reports page</a> afterwards: it asks for your password and a code.';
+		expect(around(line)).toEqual([{ condition: 'schedulesOn > 0', inElse: false }]);
+		expect(markup.indexOf(line)).toBeLessThan(markup.indexOf('onclick={changePassword}'));
+		expect(page.getText()).toContain('let schedulesOn = $derived(data.reportSchedulesOn ?? 0);');
+		expect(page.getText()).toContain("const schedulesInWords = (n: number) => `${n} report schedule${n === 1 ? '' : 's'}`;");
 	});
 
 	it('hides a key just made once a change has ended it, and is never left at "Changing..."', () => {
@@ -1818,6 +1836,10 @@ describe('the admin page’s password dialog, src/lib/components/admin/ResetPass
 			expect(resetting.getText()).toContain(`const ${count} = result?.${count};`);
 			expect(resetting.getText()).toContain(`typeof ${count} === 'number'`);
 		}
+		// Card 2894 (D1, E22): the own row's change, with the schedules it paused, from the answer.
+		expect(resetting.getText()).toContain(
+			"showToast(typeof ownPaused === 'number' ? `Password changed: ${counted(ownPaused, 'report schedule')} paused` : 'Password changed');"
+		);
 		expect(branches(page, 'resetPassword', 'invalidateAll')).toEqual(['ok']);
 		expect(branches(page, 'resetPassword', 'failureMessage')).toEqual(['failed']);
 	});
@@ -3150,7 +3172,8 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'changeEmoji', reads: 'failureMessage', putsBack: ['currentEmoji = was'], done: ['await invalidateAll()'] },
 		// Card 2771: a refusal of the password or the code is read first, by `stepUpRefusal`, and said in the field.
 		{ name: 'changeEmail', reads: 'failureMessage', via: 'stepUpRefusal', done: ["emailMessage = 'Email updated successfully!'", 'displayedEmail = result.email'] },
-		{ name: 'changePassword', reads: 'failureMessage', via: 'stepUpRefusal', done: ['await loadApiKeys()'] },
+		// Card 2894 (E22): the page read again once schedules were paused or webhooks switched off.
+		{ name: 'changePassword', reads: 'failureMessage', via: 'stepUpRefusal', done: ['await loadApiKeys()', 'await invalidateAll()'] },
 		{ name: 'generateApiKey', reads: 'failureMessage', via: 'stepUpRefusal', done: ['newlyCreatedKey = result.key', 'await loadApiKeys()'] },
 		// Card 2893 (D5, E18): the key gone, the line saying how many webhooks it switched off, from the answer, and the
 		// page read again for the password form's count; each only once the server has said yes.

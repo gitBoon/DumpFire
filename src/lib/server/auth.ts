@@ -897,8 +897,8 @@ export const namingIds = (ids: number[]): string =>
  * the account, every invite of it that has not been used, every pending
  * sign-in and enrolment link of it (card 2768), and, when `apiKeys`
  * is true, every API key it has and every webhook it set that is on, which is
- * switched off; when `reportSchedules` is true, every report schedule of it
- * that is on, which is paused. In that order. Returns how many of each, and
+ * switched off; and every report schedule of it that is on, which is paused,
+ * always (card 2894: no option). In that order. Returns how many of each, and
  * which webhooks and schedules.
  *
  * Every way of setting a password ends the sessions and the waiting invites:
@@ -915,10 +915,13 @@ export const namingIds = (ids: number[]): string =>
  * or secret. It is switched off, not deleted, so that the board's owner or an
  * administrator can switch on again one they recognise (`PUT
  * /api/v1/webhooks/{id}`), and it keeps naming its setter. A report schedule
- * is paused on an administrator's reset and when an invite is used, and not on
- * the holder's own change: it is made with a session, which every change
- * ends, and its owner sees it, and switches it on again, on the Reports page.
- * Each statement runs only under its option, whether or not a row matches.
+ * is paused on every way of setting the password, the holder's own change
+ * included, and on a reset of the account's two-step sign-in (card 2894): it
+ * sends a board's activity whether or not anyone is signed in, so one made by
+ * whoever held the account outlives every session. Its owner turns it on
+ * again on the Reports page, which asks for the password and a code (card
+ * 2751). The keys' and webhooks' statements run only under `apiKeys`; each
+ * statement runs whether or not a row matches.
  *
  * An invite that was used is left, marked used: that is how the invite page
  * and the backup tell a spent invite from a waiting one. The invites end
@@ -941,7 +944,7 @@ export const namingIds = (ids: number[]): string =>
  *
  * It throws if no transaction is open.
  */
-export function endAccountAccess(userId: number, opts: { apiKeys: boolean; reportSchedules: boolean }): AccessEnded {
+export function endAccountAccess(userId: number, opts: { apiKeys: boolean }): AccessEnded {
 	if (!sqlite.inTransaction) {
 		throw new Error(
 			'endAccountAccess must be called inside the transaction that sets the password: wrap the change ' +
@@ -966,16 +969,15 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; repor
 					.all()
 			)
 		: [];
-	const reportScheduleIds = opts.reportSchedules
-		? ids(
-				db
-					.update(reportSchedules)
-					.set({ enabled: false, updatedAt: stamp() })
-					.where(and(eq(reportSchedules.userId, userId), eq(reportSchedules.enabled, true)))
-					.returning({ id: reportSchedules.id })
-					.all()
-			)
-		: [];
+	// Always (card 2894): every caller is a way of taking the account back.
+	const reportScheduleIds = ids(
+		db
+			.update(reportSchedules)
+			.set({ enabled: false, updatedAt: stamp() })
+			.where(and(eq(reportSchedules.userId, userId), eq(reportSchedules.enabled, true)))
+			.returning({ id: reportSchedules.id })
+			.all()
+	);
 	return {
 		sessions: sessionsEnded,
 		invites: invitesEnded,

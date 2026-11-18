@@ -167,11 +167,13 @@
 			resetPasswordValue = '';
 			resetPasswordCurrent = '';
 			resetCodeCurrent = '';
+			// What the change or the reset ended, in the answer's own counts.
+			const result = await answerBody(res);
 			if (own) {
-				showToast('Password changed');
+				// Card 2894 (D1): the holder's own change always pauses their report schedules.
+				const ownPaused = result?.reportSchedulesPaused;
+				showToast(typeof ownPaused === 'number' ? `Password changed: ${counted(ownPaused, 'report schedule')} paused` : 'Password changed');
 			} else {
-				// What the reset ended, in the answer's own counts.
-				const result = await answerBody(res);
 				const sessionsEnded = result?.sessionsEnded;
 				const apiKeysEnded = result?.apiKeysEnded;
 				const webhooksSwitchedOff = result?.webhooksSwitchedOff;
@@ -185,10 +187,10 @@
 								`${counted(webhooksSwitchedOff, 'webhook')} switched off and ${counted(reportSchedulesPaused, 'report schedule')} paused`
 						: 'Password reset'
 				);
-				// The counts are read again: the account now holds no key, and has no
-				// webhook or report schedule on.
-				await invalidateAll();
 			}
+			// The counts are read again: the account now has no report schedule on,
+			// and after a reset holds no key and has no webhook on.
+			await invalidateAll();
 		} else {
 			// The server's own words: a refusal says whose password this is not to set.
 			showToast(await failureMessage(res, 'Failed to reset password'), 'error', started);
@@ -205,7 +207,7 @@
 			<h2>🔑 {resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}</h2>
 			{#if resettingOwnPassword}
 				<!-- Their own account: the password they have is asked for, as on the Account page. -->
-				<p>This is your own account. Enter your current password, a code from your authenticator app, and a new one. Your other sessions will be signed out.</p>
+				<p>This is your own account. Enter your current password, a code from your authenticator app, and a new one. Your other sessions will be signed out. Your report schedules are paused.</p>
 				<!-- Sent with no endApiKeys, so the keys are kept. The Account page offers the choice. -->
 				<p>Your API keys and the webhooks you set up keep working. To end the keys and switch off those webhooks too, change your password on the <a href="/account">Account page</a>.</p>
 				<CurrentPasswordField label="Current password" bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} onEnter={toNewPassword} />

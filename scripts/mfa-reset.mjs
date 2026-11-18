@@ -14,14 +14,18 @@
  * for statement, in raw SQL in one `BEGIN IMMEDIATE` transaction: the
  * account's factors and recovery codes are deleted, its wrong-code counts set
  * to 0 and their pauses cleared, its sessions, unused invites, pending
- * sign-ins and enrolment links ended (`endAccountAccess` with API keys and
- * report schedules kept), and one enrolment link issued, `issued_by
- * 'host-reset'`, for seven days. A CRITICAL line goes to `system_logs` in the
- * same transaction, so there is no reset without its line. Its password, API
- * keys, webhooks, report schedules, security banner and last sign-in are kept.
- * tests/mfa-reset-script.test.ts compares every table and column after this
- * with what `resetTwoStep` leaves, so a change to one that is not made to the
- * other fails there.
+ * sign-ins and enrolment links ended, its report schedules that are on paused
+ * (`endAccountAccess` with API keys kept; it pauses schedules always, card
+ * 2894), and one enrolment link issued, `issued_by 'host-reset'`, for seven
+ * days. A CRITICAL line goes to `system_logs` in the same transaction, so
+ * there is no reset without its line; its meta has the fields the route's
+ * has (`twoStepResetMeta` in mfa-store.ts), the ids of the schedules paused
+ * included. Its password, API keys, webhooks, security banner and last
+ * sign-in are kept. tests/mfa-reset-script.test.ts compares every table and
+ * column after this with what `resetTwoStep` leaves, and the line's meta with
+ * the route's, so a change to one that is not made to the other fails there.
+ * A scheduled report run already claimed when the pause commits still sends
+ * once.
  *
  * Standalone: better-sqlite3 and node's own modules, no `$lib` and no
  * TypeScript, because the image holds the built server and not its source.
@@ -35,12 +39,16 @@
  * URL setting, which the superadmin alone can change since card 2847 (any
  * administrator before, so a row may still be theirs) and is said so; failing
  * all three, the path alone, to put the server's address in front of. It
- * says which it used. The link goes to stdout only, and never to the log.
+ * says which it used. The link goes to stdout only, and never to the log; so
+ * do the account's live API keys and the webhooks it set that are on, which
+ * the reset keeps, each by its name (a webhook by its board and host) and the
+ * day it was made (card 2894's code review, CS1): the host may read them, and
+ * passes on any the holder should check.
  *
  * Exit code 0 when the account was reset; 1 when it was refused (run as root,
- * no database file, a database with no two-step sign-in tables, no such
- * account, or the database stayed busy) with nothing changed; 2 for a usage
- * error.
+ * no database file, a database with no two-step sign-in tables or no report
+ * schedules, no such account, or the database stayed busy) with nothing
+ * changed; 2 for a usage error.
  */
 import Database from 'better-sqlite3';
 import { createHash, randomBytes } from 'node:crypto';
@@ -55,8 +63,12 @@ const ENROLMENT_LINK_PATH = '/enrol/';
 /** The `ORIGIN` the image is built with, which is nobody's real address: `PLACEHOLDER_ORIGIN` in email.ts. */
 const PLACEHOLDER_ORIGIN = 'http://localhost:3000';
 
-/** The tables migration 0065 makes, and the oldest table this writes to (the system log, 0039). */
-const NEEDED_TABLES = ['mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges', 'enrolment_links', 'system_logs'];
+/**
+ * The tables migration 0065 makes, the oldest table this writes to (the
+ * system log, 0039), and the report schedules it pauses (card 2894, S15): a
+ * database without them is refused, not reset in part.
+ */
+const NEEDED_TABLES = ['mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges', 'enrolment_links', 'system_logs', 'report_schedules'];
 
 const USAGE = 'Usage: node scripts/mfa-reset.mjs <username>\n\nResets the two-step sign-in of the account with that username, and prints the link that sets up a new one.';
 
@@ -78,6 +90,66 @@ function stamp(date = new Date()) {
 		`${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`
 	);
 }
+
+/**
+ * A moment as the server reads one, in the stored form, or null: `toStamp`
+ * in src/lib/timestamps.ts, at a range's lower end (a bare date is its
+ * first second). @param {unknown} input
+ */
+function toStamp(input) {
+	if (typeof input !== 'string') return null;
+	const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-](\d{2}):(\d{2}))?)?$/.exec(input);
+	if (!m) return null;
+	const [, y, mo, d, h, mi, s, zone, zh, zm] = m;
+	const year = Number(y);
+	const month = Number(mo);
+	const day = Number(d);
+	const hour = h === undefined ? 0 : Number(h);
+	const minute = h === undefined ? 0 : Number(mi);
+	const second = h === undefined ? 0 : Number(s ?? 0);
+	const daysIn = month === 2 ? (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28) : [4, 6, 9, 11].includes(month) ? 30 : 31;
+	if (month < 1 || month > 12 || day < 1 || day > daysIn) return null;
+	if (hour > 23 || minute > 59 || second > 59) return null;
+	let offsetMinutes = 0;
+	if (zone !== undefined && zone !== 'Z') {
+		if (Number(zh) > 23 || Number(zm) > 59) return null;
+		offsetMinutes = (zone.startsWith('-') ? -1 : 1) * (Number(zh) * 60 + Number(zm));
+	}
+	const moment = new Date(0);
+	moment.setUTCFullYear(year, month - 1, day);
+	moment.setUTCHours(hour, minute - offsetMinutes, second, 0);
+	const out = moment.getUTCFullYear();
+	if (out < 0 || out > 9999) return null;
+	return stamp(moment);
+}
+
+/**
+ * Whether an API key has ended at `now`, a moment in the stored form:
+ * `keyEnded` and `deadlinePassed` in src/lib/server/auth.ts, the gate's own
+ * rule, so the keys this lists are the keys that work.
+ * @param {{ expires_at: string | null, deadline_at: string | null }} key @param {string} now
+ */
+function keyEnded(key, now) {
+	if (key.expires_at !== null) {
+		const expires = toStamp(key.expires_at);
+		if (expires === null || expires <= now) return true;
+	}
+	if (key.deadline_at === null) return false;
+	const deadline = toStamp(key.deadline_at);
+	return deadline === null || deadline <= now;
+}
+
+/** A webhook's host alone, as `keysAndWebhooksOf` in second-step.ts gives it: a path or a query may hold the receiver's secret. @param {string} url */
+function hostOf(url) {
+	try {
+		return new URL(url).host;
+	} catch {
+		return 'an address that cannot be read';
+	}
+}
+
+/** The ids a log line names, or nothing for none: `namingIds` in auth.ts. @param {number[]} ids */
+const namingIds = (ids) => (ids.length === 0 ? '' : ` (${ids.length === 1 ? 'id' : 'ids'} ${ids.join(', ')})`);
 
 /** A token's hash as it is stored: `sha256Hex` in mfa-crypto.ts. @param {string} text */
 function sha256Hex(text) {
@@ -208,9 +280,11 @@ function openDatabase(path) {
 	const tables = new Set(
 		/** @type {{ name: string }[]} */ (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).map((t) => t.name)
 	);
-	if (NEEDED_TABLES.some((table) => !tables.has(table))) {
+	const missing = NEEDED_TABLES.filter((table) => !tables.has(table));
+	if (missing.length > 0) {
 		database.close();
-		throw new Refused(`Refused: this database has no two-step sign-in tables; start the server once to migrate it (${path}).`);
+		const what = missing.length === 1 && missing[0] === 'report_schedules' ? 'no report schedules table' : 'no two-step sign-in tables';
+		throw new Refused(`Refused: this database has ${what}; start the server once to migrate it (${path}).`);
 	}
 	// As the server's connection: wait for its write to end rather than fail at once, and keep the keys to users.
 	database.pragma('busy_timeout = 5000');
@@ -246,8 +320,10 @@ function reset(database, username) {
 				)
 				.run(id);
 
-			// endAccountAccess(id, { apiKeys: false, reportSchedules: false }): sessions, unused invites
-			// (endUnusedInvites), then endPendingSignIns' challenges and links. Keys, webhooks and schedules kept.
+			// endAccountAccess(id, { apiKeys: false }): sessions, unused invites
+			// (endUnusedInvites), then endPendingSignIns' challenges and links, then the report schedules that are
+			// on paused, stamped, their ids in order (card 2894). Keys and webhooks kept.
+			const now = new Date();
 			const sessions = database.prepare('DELETE FROM sessions WHERE user_id = ?').run(id).changes;
 			const invites = database.prepare('DELETE FROM invite_tokens WHERE user_id = ? AND used = 0').run(id).changes;
 			// Sign-ins left at their second step are ended unfinished: said at WARN below, and not mailed (card 2769, CS1).
@@ -256,11 +332,15 @@ function reset(database, username) {
 			).n;
 			const challenges = database.prepare('DELETE FROM sign_in_challenges WHERE user_id = ?').run(id).changes;
 			database.prepare('DELETE FROM enrolment_links WHERE user_id = ?').run(id);
+			const reportScheduleIds = /** @type {{ id: number }[]} */ (
+				database.prepare('UPDATE report_schedules SET enabled = 0, updated_at = ? WHERE user_id = ? AND enabled = 1 RETURNING id').all(stamp(now), id)
+			)
+				.map((row) => row.id)
+				.sort((a, b) => a - b);
 
 			// issueEnrolmentLink(id, 'host-reset'): the account's one link, its token kept only as its hash.
 			database.prepare('DELETE FROM enrolment_links WHERE user_id = ?').run(id);
 			const token = randomBytes(32).toString('base64url');
-			const now = new Date();
 			database
 				.prepare('INSERT INTO enrolment_links (token_hash, user_id, issued_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)')
 				.run(sha256Hex(token), id, 'host-reset', stamp(now), stamp(new Date(now.getTime() + ENROLMENT_LINK_LIFETIME_MS)));
@@ -270,7 +350,9 @@ function reset(database, username) {
 			const message =
 				`Two-step sign-in reset for user ${id} ("${name}") on the server's host, with scripts/mfa-reset.mjs: removed ` +
 				`${factors} factor(s) and ${recoveryCodes} recovery code(s), ended ${sessions} session(s), ${challenges} ` +
-				`pending sign-in(s) and ${invites} invite(s); an enrolment link was issued`;
+				`pending sign-in(s) and ${invites} invite(s), and paused ${reportScheduleIds.length} report schedule(s)` +
+				`${namingIds(reportScheduleIds)}; an enrolment link was issued`;
+			// The route's meta (`twoStepResetMeta` in mfa-store.ts), field for field, the host as who reset it (S15).
 			const meta = printable(
 				JSON.stringify({
 					targetUserId: id,
@@ -279,7 +361,9 @@ function reset(database, username) {
 					recoveryCodesRemoved: recoveryCodes,
 					sessionsEnded: sessions,
 					challengesEnded: challenges,
-					invitesEnded: invites
+					invitesEnded: invites,
+					reportSchedulesPaused: reportScheduleIds.length,
+					reportScheduleIds
 				})
 			);
 			database
@@ -299,7 +383,24 @@ function reset(database, username) {
 					);
 			}
 
-			return { id, name, factors, recoveryCodes, sessions, invites, challenges, token };
+			// What the reset kept (card 2894's code review, CS1): `keysAndWebhooksOf` in second-step.ts, read
+			// in the same transaction, for stdout alone, never the log. The host may read these names.
+			const nowStamp = stamp(now);
+			const keys = /** @type {{ name: string, created_at: string, expires_at: string | null, deadline_at: string | null }[]} */ (
+				database.prepare('SELECT name, created_at, expires_at, deadline_at FROM api_keys WHERE user_id = ? ORDER BY id').all(id)
+			)
+				.filter((key) => !keyEnded(key, nowStamp))
+				.map((key) => ({ name: key.name, createdAt: key.created_at }));
+			const hooks = /** @type {{ board: string, url: string, created_at: string }[]} */ (
+				database
+					.prepare(
+						'SELECT b.name AS board, w.url, w.created_at FROM webhooks w JOIN boards b ON b.id = w.board_id ' +
+							'WHERE w.set_by = ? AND w.active = 1 ORDER BY w.id'
+					)
+					.all(id)
+			).map((hook) => ({ board: hook.board, host: hostOf(hook.url), createdAt: hook.created_at }));
+
+			return { id, name, factors, recoveryCodes, sessions, invites, challenges, schedules: reportScheduleIds.length, keys, hooks, token };
 		})
 		.immediate();
 }
@@ -325,8 +426,27 @@ function main() {
 		console.log(
 			`Two-step sign-in was reset for "${done.name}" (user ${done.id}): removed ${done.factors} factor(s) and ` +
 				`${done.recoveryCodes} recovery code(s), ended ${done.sessions} session(s), ${done.challenges} pending ` +
-				`sign-in(s) and ${done.invites} invite(s).`
+				`sign-in(s) and ${done.invites} invite(s), and paused ${done.schedules} report schedule(s). The account's ` +
+				'owner turns back on the ones they recognise on the Reports page.'
 		);
+		// What the reset kept, each by its name and the day it was made (card 2894's code review, CS1).
+		const day = (/** @type {string} */ at) => String(at).slice(0, 10);
+		if (done.keys.length === 0 && done.hooks.length === 0) {
+			console.log('They have no API key and no webhook they set up.');
+		} else {
+			console.log(
+				done.keys.length === 0
+					? 'They keep no API key.'
+					: `They keep ${done.keys.length} API key(s): ${done.keys.map((key) => `${printable(key.name)} (made ${day(key.createdAt)})`).join('; ')}.`
+			);
+			console.log(
+				done.hooks.length === 0
+					? 'They keep no webhook they set up.'
+					: `They keep ${done.hooks.length} webhook(s) they set up: ` +
+							`${done.hooks.map((hook) => `${printable(hook.board)}, to ${printable(hook.host)} (made ${day(hook.createdAt)})`).join('; ')}.`
+			);
+			console.log('Revoke any they do not recognise: a password reset ends them.');
+		}
 		console.log('');
 		console.log(
 			`Give ${done.name} this link yourself, by a way only they read. It is shown once and works for seven days, ` +

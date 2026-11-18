@@ -45,6 +45,7 @@ import {
 	wasReplacedBy
 } from './pending-authenticators';
 import { newRecoveryCodes } from './recovery-codes';
+import { schedulesOnOf } from './reports';
 import { ENROL_WRONG_CODE, NO_MFA_KEY, bannerWords, keysAndWebhooksOf } from './second-step';
 import { matchingStep } from './totp';
 import { PASSWORD_CHANGED_MEANWHILE } from '$lib/step-up-words';
@@ -269,7 +270,11 @@ export function removable(userId: number, factorId: number): typeof mfaFactors.$
  * of the account ended and this one kept, and every pending sign-in and
  * enrolment link ended. After the commit: a pending add another session holds
  * forgotten, a WARN line, and the `factor-removed` notice listing the
- * account's live API keys and webhooks. Answers how many sessions ended.
+ * account's live API keys and webhooks, and its report schedules that are on
+ * (card 2894, D4). The schedules are listed and not paused: whoever removed
+ * the authenticator holds the password and a code, and could turn one
+ * straight back on, while the real owner removing a lost phone would only
+ * lose their reports. Answers how many sessions ended.
  */
 export function removeFactor(userId: number, factorId: number, session: Buffer, address: string | null, now: number = Date.now()): { sessionsEnded: number } {
 	const factor = removable(userId, factorId);
@@ -277,11 +282,12 @@ export function removeFactor(userId: number, factorId: number, session: Buffer, 
 	const sessionsEnded = endOtherSessions(userId, session);
 	endPendingSignIns(userId);
 	const live = keysAndWebhooksOf(userId, now);
+	const schedules = schedulesOnOf(userId);
 	const authenticator = { label: factor.label, createdAt: factor.createdAt };
 	afterCommit(() => {
 		forgetPendingAdd(userId, session);
 		log.warn(`Authenticator ${factorId} removed by its owner, user ${userId}: ${sessionsEnded} other session(s) ended`, { factorId }, { userId });
-		sendSecurityNotice(userId, 'factor-removed', { at: new Date(now), address, authenticator, ...live });
+		sendSecurityNotice(userId, 'factor-removed', { at: new Date(now), address, authenticator, ...live, schedules });
 	});
 	return { sessionsEnded };
 }

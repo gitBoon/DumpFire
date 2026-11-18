@@ -51,6 +51,7 @@ import {
 	inviteTokens,
 	mfaFactors,
 	mfaRecoveryCodes,
+	reportSchedules,
 	sessions,
 	settings,
 	signInChallenges,
@@ -62,11 +63,22 @@ import { sha256Hex } from '$lib/server/mfa-crypto';
 import { ENROLMENT_LINK_LIFETIME_MS, addTotpFactor, issueEnrolmentLink, storeRecoveryCodes } from '$lib/server/mfa-store';
 import { newRecoveryCodes } from '$lib/server/recovery-codes';
 import { newTotpSecret } from '$lib/server/totp';
-import { parseStamp, stamp } from '$lib/timestamps';
+import { isStamp, parseStamp, stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { action, pageLoad } from './helpers/actions';
 import { effects, type Effects } from './helpers/effects';
-import { FIXTURE_PASSWORD_HASH, inviteHashOf, makeApiKey, makeSession, makeSmtp, makeUser, resetDb, stepUp } from './helpers/fixtures';
+import {
+	FIXTURE_PASSWORD_HASH,
+	inviteHashOf,
+	makeApiKey,
+	makeBoard,
+	makeSession,
+	makeSmtp,
+	makeUser,
+	makeWebhook,
+	resetDb,
+	stepUp
+} from './helpers/fixtures';
 import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 const BASE = 'https://dumpfire.example.test';
@@ -101,6 +113,29 @@ function giveChallenge(userId: number): void {
 function giveInvite(userId: number, token = `invite-${userId}-${randomBytes(4).toString('hex')}`): string {
 	db.insert(inviteTokens).values({ tokenHash: inviteHashOf(token), userId, expiresAt: stamp(new Date(Date.now() + ENROLMENT_LINK_LIFETIME_MS)) }).run();
 	return token;
+}
+
+/** When a report schedule was last changed before the reset: a day before the case runs. */
+const EARLIER = stamp(new Date(Date.now() - 24 * 60 * 60 * 1000));
+
+/** A report schedule of the account, on unless told, last changed `EARLIER` (card 2894). */
+const giveSchedule = (userId: number, enabled = true) =>
+	db.insert(reportSchedules).values({ userId, name: 'Weekly', scope: 'all', enabled, updatedAt: EARLIER }).returning().get().id;
+
+/** A report schedule's switch and when it was last changed, as stored. */
+const scheduleOf = (id: number) =>
+	db.select({ enabled: reportSchedules.enabled, updatedAt: reportSchedules.updatedAt }).from(reportSchedules).where(eq(reportSchedules.id, id)).get()!;
+
+/**
+ * A live API key, Deploy, and a webhook the account set on its board Sales,
+ * whose address holds a secret in its query (card 2894, S14): with when each
+ * was made, as stored.
+ */
+function giveKeyAndWebhook(holder: Parameters<typeof makeApiKey>[0]): { keyMade: string; hookMade: string } {
+	makeApiKey(holder, 'Deploy');
+	const hook = makeWebhook(makeBoard({ owner: holder, name: 'Sales' }).board, { url: 'https://hooks.example.test/x?secret=s', setBy: holder });
+	const key = db.select({ createdAt: apiKeys.createdAt }).from(apiKeys).where(eq(apiKeys.userId, holder.id)).get()!;
+	return { keyMade: key.createdAt, hookMade: hook.createdAt };
 }
 
 let sent: Effects;
@@ -167,7 +202,9 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			recoveryCodesRemoved: 10,
 			sessionsEnded: 2,
 			challengesEnded: 1,
-			invitesEnded: 1
+			invitesEnded: 1,
+			// Card 2894 (E21): none was on.
+			reportSchedulesPaused: 0
 		});
 		expect(res.body).not.toHaveProperty('mailProblem');
 		const url: string = res.body.enrolmentUrl;
@@ -217,7 +254,7 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 		expect(lines[0]).toMatchObject({ context: 'AUTH', userId: admin.id });
 		expect(lines[0].message).toBe(
 			`Two-step sign-in reset for user ${holder.id} ("holder") by "ada": removed 1 factor(s) and 10 recovery code(s), ` +
-				'ended 2 session(s), 1 pending sign-in(s) and 1 invite(s); an enrolment link was issued'
+				'ended 2 session(s), 1 pending sign-in(s) and 1 invite(s), and paused 0 report schedule(s); an enrolment link was issued'
 		);
 		expect(JSON.parse(lines[0].meta)).toMatchObject({ targetUserId: holder.id, resetBy: admin.id, factorsRemoved: 1 });
 		expect(JSON.stringify(sqlite.prepare('SELECT message, meta FROM system_logs').all())).not.toContain(token);
@@ -444,6 +481,131 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			.all() as { meta: string }[];
 		expect(withheld).toHaveLength(1);
 		expect(JSON.parse(withheld[0].meta)).toMatchObject({ accountId: holder.id, check });
+	});
+
+	// Card 2894 (case 2, D2, S14, E24): both branches of the message, the link shown and withheld (a newer link
+	// issued while the notice is sent, as T12's third row).
+	it.each([
+		{ branch: 'the link shown', withheld: false },
+		{ branch: 'the link withheld', withheld: true }
+	])(
+		"T17 (card 2894, $branch): pauses the holder's report schedules that are on, says how many, and counts the keys and webhooks it keeps with the day each was made, naming none",
+		async ({ withheld }) => {
+			setAppUrl();
+			makeSmtp();
+			const admin = makeUser({ role: 'admin', username: 'ada' });
+			const holder = makeUser({ username: 'holder' });
+			const other = makeUser();
+			giveFactor(holder.id);
+			const on = [giveSchedule(holder.id), giveSchedule(holder.id)];
+			const off = giveSchedule(holder.id, false);
+			const theirs = giveSchedule(other.id);
+			const kept = giveKeyAndWebhook(holder);
+			sent = effects(
+				withheld
+					? {
+							mailRefusal: () => {
+								inTransaction(() => issueEnrolmentLink(holder.id, 'admin-reset'));
+								return undefined;
+							}
+						}
+					: {}
+			);
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+			const res = await reset(admin, holder.id);
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(res.body.reportSchedulesPaused).toBe(2);
+			expect(res.body.enrolmentUrl === null).toBe(withheld);
+			// What it kept, by count and day only, where the link is given; the paused sentence alone where it is
+			// withheld (the code review's CS2).
+			expect(res.body.message).toContain(
+				withheld
+					? ' Their 2 report schedules were paused. holder was sent a notice that holds no link.'
+					: ` Their 2 report schedules were paused. They keep 1 API key (made ${kept.keyMade.slice(0, 10)}) and 1 webhook they set ` +
+							`up (made ${kept.hookMade.slice(0, 10)}); the lists are in the notice mailed to them. A password reset ends them. ` +
+							'holder was sent a notice that holds no link.'
+			);
+			// Never a key's name, a board's name or a host: the caller may not open the board (CS2).
+			for (const text of ['Deploy', 'Sales', 'hooks.example.test', 'secret=s']) expect(res.body.message).not.toContain(text);
+
+			// The holder's two that were on paused and stamped; the one already off, and another account's, as they were.
+			for (const id of on) {
+				const row = scheduleOf(id);
+				expect(row.enabled).toBe(false);
+				expect(row.updatedAt).not.toBe(EARLIER);
+				expect(isStamp(row.updatedAt)).toBe(true);
+			}
+			expect(scheduleOf(off)).toEqual({ enabled: false, updatedAt: EARLIER });
+			expect(scheduleOf(theirs)).toEqual({ enabled: true, updatedAt: EARLIER });
+
+			const lines = sqlite.prepare("SELECT message, meta FROM system_logs WHERE level = 'CRITICAL'").all() as { message: string; meta: string }[];
+			expect(lines).toHaveLength(1);
+			expect(lines[0].message).toContain(`, and paused 2 report schedule(s) (ids ${on[0]}, ${on[1]}); an enrolment link was issued`);
+			expect(JSON.parse(lines[0].meta)).toMatchObject({ reportSchedulesPaused: 2, reportScheduleIds: on });
+		}
+	);
+
+	// Card 2894 (case 5, E24, S14): the mail says the count above nought, in the singular for one, and lists what was
+	// kept; the message says the same count, and what was kept by count and day alone, one row per wording (the code
+	// review's CR1 and CS2). `D` in a row's words is the day the keys and the webhook were made, all today.
+	it.each<{ row: string; paused: number; keys: number; hook: boolean; refused?: boolean; says: string | null; message: string }>([
+		{ row: 'none paused', paused: 0, keys: 1, hook: true, says: null, message: ' They keep 1 API key (made D) and 1 webhook they set up (made D); the lists are in the notice mailed to them. A password reset ends them.' },
+		{ row: 'one paused', paused: 1, keys: 1, hook: true, says: 'Your 1 report schedule was paused', message: ' Their 1 report schedule was paused. They keep 1 API key' },
+		{ row: 'two paused', paused: 2, keys: 1, hook: true, says: 'Your 2 report schedules were paused', message: ' Their 2 report schedules were paused. They keep 1 API key' },
+		{ row: 'neither a key nor a webhook', paused: 0, keys: 0, hook: false, says: null, message: ' They have no API key and no webhook they set up.' },
+		{ row: 'a key and no webhook', paused: 0, keys: 1, hook: false, says: null, message: ' They keep 1 API key (made D) and no webhook they set up; the lists are in the notice mailed to them.' },
+		{ row: 'a webhook and no key', paused: 0, keys: 0, hook: true, says: null, message: ' They keep no API key and 1 webhook they set up (made D); the lists are in the notice mailed to them.' },
+		{ row: 'two keys', paused: 0, keys: 2, hook: false, says: null, message: ' They keep 2 API keys (made D and D) and no webhook they set up;' },
+		{
+			row: 'the notice not sent',
+			paused: 0,
+			keys: 1,
+			hook: true,
+			refused: true,
+			says: null,
+			message: '; the notice with the lists was not sent: ask them to look over their keys and webhooks. A password reset ends them.'
+		}
+	])("T18 (card 2894, $row): the reset's mail and message say how many schedules were paused and what was kept", async ({ paused, keys, hook, refused, says, message }) => {
+		setAppUrl();
+		makeSmtp();
+		const admin = makeUser({ role: 'admin' });
+		const holder = makeUser();
+		sent = effects(refused ? { refuseMailTo: [holder.email] } : {});
+		giveFactor(holder.id);
+		for (let i = 0; i < paused; i++) giveSchedule(holder.id);
+		for (let i = 0; i < keys; i++) makeApiKey(holder, `Deploy ${i + 1}`);
+		const made = hook
+			? makeWebhook(makeBoard({ owner: holder, name: 'Sales' }).board, { url: 'https://hooks.example.test/x?secret=s', setBy: holder }).createdAt
+			: null;
+		const keysMade = db.select({ createdAt: apiKeys.createdAt }).from(apiKeys).where(eq(apiKeys.userId, holder.id)).all().map((key) => key.createdAt);
+		const day = (keysMade[0] ?? made ?? '').slice(0, 10);
+		for (const at of [...keysMade, ...(made === null ? [] : [made])]) expect(at.slice(0, 10)).toBe(day);
+
+		const res = await reset(admin, holder.id);
+
+		expect(res.status).toBe(200);
+		expect(res.body.reportSchedulesPaused).toBe(paused);
+		expect(res.body.message).toContain(message.replaceAll('D', day));
+		if (says === null) expect(res.body.message).not.toContain('report schedule');
+		for (const text of ['Deploy', 'Sales', 'hooks.example.test']) expect(res.body.message).not.toContain(text);
+		if (refused) {
+			expect(sent.emails).toEqual([]);
+			return;
+		}
+		expect(sent.emails).toHaveLength(1);
+		const [mail] = sent.emails;
+		if (says === null) {
+			expect(mail.html).not.toContain('report schedule');
+		} else {
+			expect(mail.html).toContain(says);
+			expect(mail.html).toContain('Turn on the ones you recognise on the Reports page');
+		}
+		// The mail names each, with when it was made (S14).
+		for (let i = 0; i < keys; i++) expect(mail.html).toContain(`Deploy ${i + 1}: made ${keysMade[i]} UTC, never used`);
+		if (made !== null) expect(mail.html).toContain(`Sales, to hooks.example.test: made ${made} UTC`);
+		expect(mail.html).not.toContain('secret=s');
 	});
 });
 

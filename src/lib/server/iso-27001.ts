@@ -281,10 +281,12 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Removing an authenticator ends the account\'s other sessions and pending sign-ins (card 2772). ' +
 			'A change that takes an account\'s board access away switches off, for good, the webhooks it set on that board; giving the access back does not switch them on (card 2752). ' +
 			'Revoking an API key switches off, in the same change, the webhooks it set up, and one whose key expires or passes its deadline is switched off at the next start, restore or event (card 2893). ' +
-			'Still open: an account cannot be disabled; ' +
-			'and changing your own password, or another recovery path, does not pause your report schedules.',
+			'Every way of setting a password, the holder\'s own change included, and a reset of an account\'s two-step sign-in, from the admin page or the host, pause the account\'s report schedules; the reset says how many API keys and webhooks the account still has, and its mail names them, and removing an authenticator lists its schedules that are on (card 2894). ' +
+			'Still open: an account cannot be disabled.',
 		evidence: [
 			{ path: 'src/lib/server/auth.ts', symbol: 'endAccountAccess' },
+			{ path: 'src/routes/api/account/password/+server.ts', symbol: 'endAccountAccess' },
+			{ path: 'scripts/mfa-reset.mjs', symbol: 'report_schedules' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'switchOffHeld' },
 			{ path: 'src/routes/api/account/api-keys/[id]/+server.ts', symbol: 'switchOffLostWebhooks' },
 			{ path: 'src/lib/server/mfa-store.ts', symbol: 'resetTwoStep' },
@@ -293,7 +295,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: AUTH_DOC, anchor: 'passwords-sessions-and-invites-change-together' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2671, 2894],
+		gapCards: [2671],
 		organisationalPart: 'Review regularly who holds which role.'
 	},
 	organisational('A.5.19', 'annex-a', 'Information security in supplier relationships'),
@@ -607,8 +609,9 @@ export const CHECKLIST: readonly IsoItem[] = [
 		status: 'partly-met',
 		how:
 			'Export is the superadmin\'s, behind a step-up. Report schedules and report mail ask for the password and a code before board data goes to an address, and owners were told of the schedules already running (card 2751). ' +
+			'Every password change and a reset of the two-step sign-in pause the account\'s report schedules, each turned on again only with the password and a code (card 2894). ' +
 			'There is a Content-Security-Policy and a Referrer-Policy. Backups hold no secret and no requester link. ' +
-			'Still open: a schedule covers boards added to its grouping later, and a password change or other recovery does not pause the account\'s schedules. ' +
+			'Still open: a schedule covers boards added to its grouping later. ' +
 			'Any administrator can still add a backup destination of their own and Run Now, which sends it a full copy of the database, and whoever sets the mail server reads every mail (card 2906, to be ruled).',
 		evidence: [
 			{ path: 'src/routes/api/admin/export/+server.ts', symbol: 'requireSuperadmin' },
@@ -620,7 +623,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: BACKUP_DOC, anchor: 'what-a-backup-holds' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2897, 2894, 2906]
+		gapCards: [2897, 2906]
 	},
 	{
 		ref: 'A.8.13',

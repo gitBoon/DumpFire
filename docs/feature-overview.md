@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.88
+version: 1.89
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2894
   - card-2752
   - card-2761
   - card-2751
@@ -551,6 +552,8 @@ Set up automatic weekly or monthly reports delivered to up to 10 email addresses
 
 **Report mail asks for your password and a code** (card 2751). A schedule keeps emailing a board's activity after you have closed the browser and after your password changes, so making a schedule, adding an address to one, switching one on, and widening what it reports (its **Include** filter, from anything but **All work**) ask for your password and a code from your authenticator app, and so does emailing a report by hand. Your own address and your company's addresses are asked for the same way. Switching a schedule off, deleting it, and **Use my time zone** ask nothing. Switching one on opens **Turn on this schedule?**, which names every address it will email. You get an email whenever a schedule of yours is made, given an address, switched on or widened, so a change you did not make does not go unseen, and the system log names every address such a schedule is sent to, and every address a report emailed by hand reached. Schedules made before this release keep running, and once, at the release, each owner is emailed a list of every schedule of theirs that is running, to delete any they do not recognise. API keys cannot reach any of this.
 
+**Changing your password pauses your schedules** (card 2894). Every password change, your own included, and an administrator's reset of your two-step sign-in pause every schedule of yours that is on, so one somebody else made with your account stops sending. **My Account** says so above **Change Password** while you have one on, and afterwards how many were paused; switch back on the ones you recognise on the **Reports** page, which asks for your password and a code. Removing one of your authenticators does not pause them, but its email lists the ones that are on.
+
 ### Charts
 
 - **Burndown & burn-up charts** — for any board, several boards, a board group, a milestone or everything, narrowed by category, label, assignee or priority; with work in play, an ideal line to the target date, a forecast (dated on a single board; across several boards the time to deliver is the one finish date) and a time-to-deliver estimate (likely and 85% dates, and the chance of hitting a target). Every figure explains itself on hover. Full page at `/burndown`, a compact chart in board Statistics, and a panel on every milestone plan. See [Burndown Charts](burndown-charts.md)
@@ -706,7 +709,7 @@ From 13 November 2026 (card 2769), **every account signs in in two steps**: the 
 - **Wrong codes** — five in a row pause code entry for 15 minutes, and longer each time after, up to a lock at thirty; a recovery code always works
 - **Told when something is wrong** — the owner is emailed when two-step sign-in is set up, when a recovery code is used, when codes are paused or locked, when someone gets the password right but the code wrong, and when an authenticator is added or removed or new recovery codes are made. After such a thing the next sign-in shows what happened, with the account's API keys and webhooks to check, and a warning stays at the top of **My Account** until its holder clears it with **That was me** (password and a code) or changes their password
 - **Several authenticators** (card 2772, since this server took that release) — **My Account → 🛡️ Two-step sign-in** lists your authenticators, each with when it was added and last used, and lets you add one (up to three: a main phone, a spare, a new phone), remove one (never the last: add the new one first; removing one signs your other browsers out), and make a new set of ten recovery codes, shown once. A code from any of your authenticators works. Each wrong code counts once for each authenticator that can be checked on the server, so codes are no easier to guess: with two, three wrong codes in a row pause code entry and two wrong answers at a confirmation sign the browser out, and the confirmation dialog says so before you send (it counts every authenticator you hold, so it never says less than is counted)
-- **A lost phone** — now self-service while you still have a recovery code: sign in with a recovery code, add your new phone on My Account, remove the lost one, then make new recovery codes and change your password. Without a recovery code, an administrator resets the account's two-step sign-in and hands the person a set-up link themselves; the superadmin's is reset on the server
+- **A lost phone** — now self-service while you still have a recovery code: sign in with a recovery code, add your new phone on My Account, remove the lost one, then make new recovery codes and change your password. Without a recovery code, an administrator resets the account's two-step sign-in and hands the person a set-up link themselves; the superadmin's is reset on the server. The reset pauses the account's report schedules (card 2894), and the administrator is told how many, and how many API keys and webhooks the account still has with the day each was made, to pass on; the person's email names each
 - **API keys made before two-step sign-in** (card 2772) — each key that existed on the day of that release gets a deadline 60 days later, shown beside it on My Account with **Keep this key**: keeping it, with your password and a code, leaves the key itself unchanged. A key not kept stops working on that date. Keys made since have no deadline
 
 ```mermaid

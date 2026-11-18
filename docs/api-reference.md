@@ -1,11 +1,12 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.140
+version: 1.141
 status: As-Built
 date: 2026-11-18
 tags:
   - api
+  - card-2894
   - card-2893
   - card-2752
   - webhook-switched-off
@@ -40,7 +41,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "REST API reference for DumpFire's external v1 API: authentication, a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -451,6 +452,21 @@ then that are still sent; the code review's CS4); `DELETE /api/account/api-keys/
 change. The Account page shows the first on each key's row and in the revoke's confirm, and the
 second after it.
 
+**Internal routes: a behaviour change and additive fields** (card 2894; the v1 API does not
+change, still `1.11.0`). `PUT /api/account/password`, the holder's own change, now always pauses
+the account's report schedules that are on, whatever `endApiKeys` says, and answers `{ success,
+apiKeysEnded, webhooksSwitchedOff, reportSchedulesPaused }`. `POST /api/users/{id}/mfa/reset`, an
+administrator's reset of another account's two-step sign-in, pauses them too and answers
+`reportSchedulesPaused` beside its other counts; both branches of its `message` add the count
+("Their 2 report schedules were paused.", nothing for none), and the branch that gives the link
+adds how many live API keys the account has and webhooks it set that are on, with the day each
+was made and no name ("They keep 2 API keys (made 2026-11-01 and 2026-11-10) and 1 webhook they
+set up (made 2026-11-12); the lists are in the notice mailed to them. A password reset ends
+them."). A paused schedule
+is turned on again by its owner with `PUT /api/report-schedules/{id}`, which asks for the
+password and a code (card 2751). See
+[What Setting a Password Ends](authentication-security.md#what-setting-a-password-ends).
+
 **Breaking: a board or card the key's user cannot open is answered 404, not 403** (card
 2719; OpenAPI document version `1.10.0`, with a dated note, marked breaking, at the top of its
 description). Board and card ids are counted up one at a time, and a `403` for one that
@@ -837,7 +853,8 @@ set up on its password alone.
   step-up list, now twenty-nine). It deletes the account's second factors and recovery codes,
   sets its wrong-code counts back, ends its sessions, unused invites, sign-ins waiting for a
   second factor and enrolment links, and issues one enrolment link, good for seven days; the
-  password, API keys, webhooks and report schedules are kept. The link is given once, in the
+  password, API keys, webhooks and report schedules are kept (since card 2894 they are paused,
+  and the answer adds `reportSchedulesPaused`). The link is given once, in the
   answer, and never mailed; the account's address, where mail is set up, is sent a notice that
   holds no link. Answered `200` with `Cache-Control: no-store`:
 
@@ -3033,7 +3050,8 @@ API:
   every report schedule of it that was on is paused, in the transaction that sets the
   password. `PUT /api/account/password`, the holder's own change, answers `{ success,
   apiKeysEnded, webhooksSwitchedOff }`: with `endApiKeys: true` the webhooks the account set
-  are switched off with its keys, and its report schedules are left on. Both counts are `0`
+  are switched off with its keys, and its report schedules are left on (since card 2894 they
+  are always paused, and the answer adds `reportSchedulesPaused`). Both counts are `0`
   where there was nothing to switch off. An invite used switches off and pauses as a reset
   does.
 - **`PUT /api/account/password`, `PUT /api/account/email` and `POST /api/account/api-keys`

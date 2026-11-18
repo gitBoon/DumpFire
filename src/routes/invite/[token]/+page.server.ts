@@ -140,7 +140,7 @@ export const actions: Actions = {
 			// session the account had, its other invites and its API keys, switches
 			// off the webhooks it set and pauses its report schedules (card 2168).
 			// This one is marked used first, so it is not among the invites deleted.
-			const ended = endAccountAccess(invite.userId, { apiKeys: true, reportSchedules: true });
+			const ended = endAccountAccess(invite.userId, { apiKeys: true });
 			afterCommit(() =>
 				log.info(
 					`Password set with an invite for user ${invite.userId} — ended ${ended.sessions} session(s), ` +

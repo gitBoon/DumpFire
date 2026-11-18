@@ -2840,7 +2840,7 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 		const theirs = await hookOf(s, s.editor, 'e');
 		if (how === 'hold') await takeOff(s);
 		if (how === 'put') expect((await put(s.owner, theirs.id, { active: false })).status).toBe(200);
-		if (how === 'reset') inTransaction(() => endAccountAccess(s.editor.id, { apiKeys: true, reportSchedules: false }));
+		if (how === 'reset') inTransaction(() => endAccountAccess(s.editor.id, { apiKeys: true }));
 
 		for (const user of [s.owner, s.admin]) {
 			for (const answer of await answersTo(s, user, theirs.id)) expect(answer).toMatchObject({ active: false, pausedBecause: says });
@@ -2933,7 +2933,7 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 	});
 
 	it.each([
-		{ row: 'a password reset (endAccountAccess)', end: (s: Scene) => inTransaction(() => endAccountAccess(s.editor.id, { apiKeys: true, reportSchedules: false })) },
+		{ row: 'a password reset (endAccountAccess)', end: (s: Scene) => inTransaction(() => endAccountAccess(s.editor.id, { apiKeys: true })) },
 		{ row: 'the account deleted (deleteUser)', end: (s: Scene) => deleteUser(s.editor.id, s.chief) }
 	])("CS4. $row records the hold 'setter access ended': switched on, a new secret; the create at its receiver refused to an editor; the Share window counts it", async ({ end }) => {
 		const s = scene();

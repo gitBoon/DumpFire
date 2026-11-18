@@ -400,8 +400,22 @@ export function sendInviteEmail(email: string, username: string, inviteToken: st
  * `hadFactor` is whether the reset removed an authenticator (card 2773's
  * review): an account that had none is not told that one stopped working,
  * only that its set-up was begun again with a new link.
+ *
+ * `kept` (card 2894, D2, S14): how many of the account's report schedules the
+ * reset paused, said when there was one, and the live API keys and the
+ * webhooks the account set that are on, which the reset keeps, each with when
+ * it was made: they are what someone who held the password may have left
+ * behind. The administrator's message says the same, and is the channel that
+ * reaches the holder for certain (S16): this mail may not go, and the mailbox
+ * may be what was taken.
  */
-export function sendMfaResetNotice(email: string, username: string, resetBy: string, hadFactor: boolean): Promise<MailOutcome> {
+export function sendMfaResetNotice(
+	email: string,
+	username: string,
+	resetBy: string,
+	hadFactor: boolean,
+	kept: { schedulesPaused: number; apiKeys: NoticeKey[]; webhooks: NoticeWebhook[] }
+): Promise<MailOutcome> {
 	if (!isSmtpConfigured()) {
 		return Promise.resolve({ sent: false, problem: 'not-configured', detail: MAIL_PROBLEM_WORDS['not-configured'] });
 	}
@@ -410,12 +424,30 @@ export function sendMfaResetNotice(email: string, username: string, resetBy: str
 	const lost = hadFactor
 		? 'Your authenticator and your recovery codes no longer work, and you have been signed out everywhere. An administrator will give you a link to set up a new authenticator themselves: it is never sent by email.'
 		: 'Your account had no authenticator set up: its two-step sign-in was reset and a new set-up link issued, and you have been signed out everywhere. An administrator will give you that link themselves: it is never sent by email.';
+	const paused =
+		kept.schedulesPaused > 0
+			? `<p style="color: #334155; line-height: 1.6;">
+			${schedulesPausedWords(kept.schedulesPaused)}: each emails a report of board activity whether or not you are signed in. Turn on the ones you recognise on the Reports page, once you have set up your new authenticator: it asks for your password and a code.
+		</p>`
+			: '';
+	const list = (heading: string, items: string[]) =>
+		`<p style="color: #334155; line-height: 1.6;">${heading}</p>` +
+		(items.length === 0 ? '<p style="color: #64748b;">None.</p>' : `<ul style="color: #334155;">${items.join('')}</ul>`);
 	const html = emailTemplate('Your two-step sign-in was reset', `
 		<p style="color: #334155; line-height: 1.6;">
 			Hi <strong style="color: #0f172a;">${escapeHtml(username)}</strong>, <strong style="color: #0f172a;">${escapeHtml(resetBy)}</strong> reset the two-step sign-in of your DumpFire account on ${escapeHtml(when)}.
 		</p>
 		<p style="color: #334155; line-height: 1.6;">
 			${lost}
+		</p>
+		${paused}
+		<p style="color: #334155; line-height: 1.6;">
+			The reset kept your API keys and the webhooks you set up.
+		</p>
+		${list('Your API keys:', kept.apiKeys.map(keyItem))}
+		${list('Your webhooks:', kept.webhooks.map(hookItem))}
+		<p style="color: #334155; line-height: 1.6;">
+			Revoke any you do not recognise.
 		</p>
 		<p style="color: #64748b; font-size: 12px;">
 			If you did not ask for this, tell an administrator straight away. Use only a link an administrator hands you directly.
@@ -445,6 +477,30 @@ export type SecurityNotice =
 /** A report schedule as a notice names it (card 2751): its name, what it covers, and every address it is sent to. */
 export type NoticeSchedule = { name: string; covers: string; addresses: string[] };
 
+/** A live API key as a notice lists it (S2): its name, when it was made and last used, in the stored form. */
+export type NoticeKey = { name: string; createdAt: string; lastUsedAt: string | null };
+
+/** A webhook the account set that is on, as a notice lists it (S2): its board, the host it sends to, and when it was made. */
+export type NoticeWebhook = { board: string; host: string; createdAt: string };
+
+/** A key as a list item of a notice, each text escaped. */
+function keyItem(key: NoticeKey): string {
+	return (
+		`<li>${escapeHtml(key.name)}: made ${escapeHtml(key.createdAt)} UTC, ` +
+		`${key.lastUsedAt === null ? 'never used' : `last used ${escapeHtml(key.lastUsedAt)} UTC`}</li>`
+	);
+}
+
+/** A webhook as a list item of a notice, each text escaped. */
+function hookItem(hook: NoticeWebhook): string {
+	return `<li>${escapeHtml(hook.board)}, to ${escapeHtml(hook.host)}: made ${escapeHtml(hook.createdAt)} UTC</li>`;
+}
+
+/** How many report schedules were paused, as the two-step reset's mail says it (card 2894, E24). */
+function schedulesPausedWords(count: number): string {
+	return count === 1 ? 'Your 1 report schedule was paused' : `Your ${count} report schedules were paused`;
+}
+
 /**
  * What a security notice names: when (said in UTC) and from which address, as
  * received, null where there is none; and, by notice, how many wrong
@@ -462,14 +518,14 @@ export type SecurityNoticeDetail = {
 	count?: number;
 	until?: Date;
 	codesLeft?: number;
-	apiKeys?: { name: string; createdAt: string; lastUsedAt: string | null }[];
-	webhooks?: { board: string; host: string; createdAt: string }[];
+	apiKeys?: NoticeKey[];
+	webhooks?: NoticeWebhook[];
 	/** The authenticator's name and when it was added, in the stored form (card 2772). */
 	authenticator?: { label: string; createdAt: string };
 	/**
 	 * The report schedules the notice is about (card 2751): the one made or
 	 * widened, for `report-schedule-set`; every one of the account's that is
-	 * on, for `report-schedules-running`.
+	 * on, for `report-schedules-running` and `factor-removed` (card 2894, D4).
 	 */
 	schedules?: NoticeSchedule[];
 	/**
@@ -498,7 +554,9 @@ export type SecurityNoticeDetail = {
  * worded for confirming a change (`confirming`). An authenticator added or
  * removed, and a new set of recovery codes, on the Account page (card 2772,
  * D8), each confirmed with the password and a code; a removal lists the
- * account's live API keys and webhooks, to revoke any not recognised (S4).
+ * account's live API keys and webhooks, to revoke any not recognised (S4),
+ * and its report schedules that are on, which it does not pause (card 2894,
+ * D4).
  * A report schedule made, given an address, turned on or widened (card 2751,
  * D13), with the schedule's name, what it covers and every address; and,
  * once at the release, every schedule of the account's that is on (D14).
@@ -530,14 +588,8 @@ export function securityNoticeSent(userId: number, notice: SecurityNotice, detai
 	const from = detail.address === null ? '' : ` from ${escapeHtml(detail.address)}`;
 	const notYou =
 		'If this was not you, your password is known to someone else: change it straight away, and tell an administrator.';
-	const keys = (detail.apiKeys ?? []).map(
-		(key) =>
-			`<li>${escapeHtml(key.name)}: made ${escapeHtml(key.createdAt)} UTC, ` +
-			`${key.lastUsedAt === null ? 'never used' : `last used ${escapeHtml(key.lastUsedAt)} UTC`}</li>`
-	);
-	const hooks = (detail.webhooks ?? []).map(
-		(hook) => `<li>${escapeHtml(hook.board)}, to ${escapeHtml(hook.host)}: made ${escapeHtml(hook.createdAt)} UTC</li>`
-	);
+	const keys = (detail.apiKeys ?? []).map(keyItem);
+	const hooks = (detail.webhooks ?? []).map(hookItem);
 	// The authenticator added or removed, by its name and when it was added (card 2772, S9).
 	const authenticator =
 		detail.authenticator === undefined
@@ -643,7 +695,9 @@ export function securityNoticeSent(userId: number, notice: SecurityNotice, detai
 				'code: if it was not you, both are known to someone else.' +
 				listed('Your API keys:', keys) +
 				listed('Your webhooks:', hooks) +
-				'Revoke any you do not recognise. If the device was lost, also change your password.',
+				// Card 2894 (D4): listed, not paused; whoever removed it holds the password and a code.
+				listed('Your report schedules that are on:', schedules) +
+				'Revoke or delete any you do not recognise. If the device was lost, also change your password.',
 			after: notYou
 		},
 		'codes-regenerated': {

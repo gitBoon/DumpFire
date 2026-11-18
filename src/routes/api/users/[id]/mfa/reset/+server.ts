@@ -1,12 +1,13 @@
 import { error, json } from '@sveltejs/kit';
 import { afterCommit } from '$lib/server/db/transaction';
-import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
+import { namingIds, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
 import { ENROLMENT_LINK_NOT_GIVEN, enrolmentLinkNotGiven } from '$lib/server/invite-link';
 import { sha256Hex } from '$lib/server/mfa-crypto';
-import { ENROLMENT_LINK_PATH, resetTwoStep } from '$lib/server/mfa-store';
-import { sendMfaResetNotice } from '$lib/server/notifications';
+import { ENROLMENT_LINK_PATH, resetTwoStep, twoStepResetMeta } from '$lib/server/mfa-store';
+import { sendMfaResetNotice, type NoticeKey, type NoticeWebhook } from '$lib/server/notifications';
 import { refuseOwnAccount, requireAdmin, requireManagedAccount, requireUser } from '$lib/server/route-guards';
+import { keysAndWebhooksOf } from '$lib/server/second-step';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { pathId, readBody } from '$lib/server/request-body';
@@ -15,14 +16,56 @@ import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
 
+/** How many report schedules the reset paused, as the message says it (card 2894, D2): nothing when none was on. */
+const pausedWords = (count: number): string =>
+	count === 0 ? '' : count === 1 ? ' Their 1 report schedule was paused.' : ` Their ${count} report schedules were paused.`;
+
+/** `2026-11-01`, `2026-11-01 and 2026-11-10`, `2026-11-01, 2026-11-05 and 2026-11-10`: the days things were made. */
+function daysInWords(stamps: string[]): string {
+	const days = stamps.map((at) => at.slice(0, 10));
+	return days.length <= 1 ? (days[0] ?? '') : `${days.slice(0, -1).join(', ')} and ${days[days.length - 1]}`;
+}
+
+/**
+ * The account's live API keys and the webhooks it set that are on, which the
+ * reset kept (card 2894, S14): how many of each and the day each was made,
+ * and never a key's name, a board's name or a host (the code review's CS2:
+ * the administrator may not be able to open the board, and the admin pages
+ * never show a key's name). The names are in the notice mailed to the holder,
+ * which says so where it went.
+ */
+function keptWords(kept: { apiKeys: NoticeKey[]; webhooks: NoticeWebhook[] }, mailSent: boolean): string {
+	const keys = kept.apiKeys;
+	const hooks = kept.webhooks;
+	if (keys.length === 0 && hooks.length === 0) return ' They have no API key and no webhook they set up.';
+	const keyWords =
+		keys.length === 0
+			? 'no API key'
+			: `${keys.length} API key${keys.length === 1 ? '' : 's'} (made ${daysInWords(keys.map((key) => key.createdAt))})`;
+	const hookWords =
+		hooks.length === 0
+			? 'no webhook they set up'
+			: `${hooks.length} webhook${hooks.length === 1 ? '' : 's'} they set up (made ${daysInWords(hooks.map((hook) => hook.createdAt))})`;
+	const where = mailSent
+		? 'the lists are in the notice mailed to them'
+		: 'the notice with the lists was not sent: ask them to look over their keys and webhooks';
+	return ` They keep ${keyWords} and ${hookWords}; ${where}. A password reset ends them.`;
+}
+
 /**
  * POST — Reset another account's two-step sign-in (card 2773): its
  * authenticators and recovery codes are removed, its wrong-code counts set
  * back, its sessions, unused invites, pending sign-ins and enrolment links
- * ended, and one new enrolment link issued (`resetTwoStep`, decision 11). Its
- * password, API keys, webhooks and report schedules are kept: the holder lost
- * a device, not the password. For an account with no factor it issues a
- * fresh link (decision 4).
+ * ended, its report schedules that are on paused (card 2894, D2), and one new
+ * enrolment link issued (`resetTwoStep`, decision 11). Its password, API keys
+ * and webhooks are kept: the holder lost a device, not the password. The
+ * message says how many schedules were paused, and, where it gives the link,
+ * how many live keys the account has and webhooks it set that are on, with
+ * the day each was made, never their names (S14; the code review's CS2: the
+ * mailed notice names them): they are what someone who held the password may
+ * have left behind,
+ * and the administrator is the one channel sure to reach the holder (S16).
+ * For an account with no factor it issues a fresh link (decision 4).
  *
  * Shaped as PUT /api/users/[id]/password is: the caller's own account is
  * refused, whose account they may reset is the one rule in route-guards.ts,
@@ -33,7 +76,8 @@ const log = createLogger('AUTH');
  * The link is given to the caller, once, in the answer, never mailed
  * (decision 6): whoever stole the phone may know the password and have
  * changed the account's address. The account's address is sent a notice
- * that holds no link (decision 7), once the reset is committed, and awaited;
+ * that holds no link (decision 7), with the same count and lists, once the
+ * reset is committed, and awaited;
  * then three things are read again before the link is put in the answer
  * (decision 15, `enrolmentLinkNotGiven` in invite-link.ts, shared with the
  * create's link since card 2851): the caller's session is still open
@@ -43,7 +87,7 @@ const log = createLogger('AUTH');
  *
  *     { success, enrolmentUrl | null, mailSent, mailProblem?, factorsRemoved,
  *       recoveryCodesRemoved, sessionsEnded, challengesEnded, invitesEnded,
- *       message }
+ *       reportSchedulesPaused, message }
  *
  * answered with no-store: it holds a credential.
  */
@@ -102,42 +146,42 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 		writeAs(locals, (caller) => {
 			const { actor, target, baseUrl } = refusals(caller);
 			const reset = resetTwoStep(target.id, 'admin-reset');
+			// What the reset kept, read in the write that reset it (S14).
+			const kept = keysAndWebhooksOf(target.id, Date.now());
 
 			// The counts and the two accounts, and never the token or the link.
+			// scripts/mfa-reset.mjs writes the same meta (S15, `twoStepResetMeta`).
 			afterCommit(() =>
 				log.critical(
 					`Two-step sign-in reset for user ${target.id} ("${target.username}") by "${actor.username}": removed ` +
 						`${reset.factors} factor(s) and ${reset.recoveryCodes} recovery code(s), ended ${reset.sessions} ` +
-						`session(s), ${reset.challenges} pending sign-in(s) and ${reset.invites} invite(s); an enrolment ` +
-						'link was issued',
-					{
-						targetUserId: target.id,
-						resetBy: actor.id,
-						factorsRemoved: reset.factors,
-						recoveryCodesRemoved: reset.recoveryCodes,
-						sessionsEnded: reset.sessions,
-						challengesEnded: reset.challenges,
-						invitesEnded: reset.invites
-					},
+						`session(s), ${reset.challenges} pending sign-in(s) and ${reset.invites} invite(s), and paused ` +
+						`${reset.reportSchedules} report schedule(s)${namingIds(reset.reportScheduleIds)}; an enrolment link was issued`,
+					twoStepResetMeta(target.id, actor.id, reset),
 					{ userId: actor.id }
 				)
 			);
-			return { actor, target, baseUrl, reset };
+			return { actor, target, baseUrl, reset, kept };
 		})
 	);
 
 	// After the commit, and awaited: an effect never starts inside a
 	// transaction. Not attempted where mail is not set up, or its password is
 	// missing, as a restore leaves it (card 2169): the reset stands either way.
-	const { actor, target, baseUrl, reset } = done;
+	const { actor, target, baseUrl, reset, kept } = done;
 	let mailSent = false;
 	let mailProblem: string | undefined;
 	if (isSmtpConfigured()) {
 		if (smtpPasswordMissing()) {
 			mailProblem = MAIL_PROBLEM_WORDS['no-password'];
 		} else {
-			// Whether it had an authenticator picks what the notice says was lost (card 2773's review).
-			const outcome = await sendMfaResetNotice(target.email, target.username, actor.username, reset.factors > 0);
+			// Whether it had an authenticator picks what the notice says was lost (card 2773's review); the
+			// schedules paused and the keys and webhooks kept are said as the message says them (card 2894, S14).
+			const outcome = await sendMfaResetNotice(target.email, target.username, actor.username, reset.factors > 0, {
+				schedulesPaused: reset.reportSchedules,
+				apiKeys: kept.apiKeys,
+				webhooks: kept.webhooks
+			});
 			if (outcome.sent) mailSent = true;
 			else mailProblem = MAIL_PROBLEM_WORDS[outcome.problem];
 		}
@@ -148,8 +192,14 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 		recoveryCodesRemoved: reset.recoveryCodes,
 		sessionsEnded: reset.sessions,
 		challengesEnded: reset.challenges,
-		invitesEnded: reset.invites
+		invitesEnded: reset.invites,
+		reportSchedulesPaused: reset.reportSchedules
 	};
+	// The schedules paused are said in both of the message's branches (card 2894, E24): the reset stands
+	// either way. What it kept only where the link is given: the caller who may no longer manage the
+	// account, or whose session has ended, is told nothing more of it (the code review's CS2).
+	const pausedSaid = pausedWords(reset.reportSchedules);
+	const keptSaid = `${pausedSaid}${keptWords(kept, mailSent)}`;
 	const told = mailSent ? ` ${target.username} was sent a notice that holds no link.` : '';
 	const notGiven = enrolmentLinkNotGiven(locals.credential, actor.id, target.id, sha256Hex(reset.token));
 
@@ -168,7 +218,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 				...counts,
 				message:
 					`${target.username}'s two-step sign-in was reset, but its link cannot be shown to you now. Run the ` +
-					`reset again to issue a new one.${told}`
+					`reset again to issue a new one.${pausedSaid}${told}`
 			},
 			{ headers: { 'Cache-Control': 'no-store' } }
 		);
@@ -183,7 +233,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 			...counts,
 			message:
 				`${target.username}'s two-step sign-in was reset. Give them the link yourself: it is shown once, and ` +
-				`works for seven days.${told}`
+				`works for seven days.${keptSaid}${told}`
 		},
 		// The answer holds a credential: kept by nothing on the way.
 		{ headers: { 'Cache-Control': 'no-store' } }

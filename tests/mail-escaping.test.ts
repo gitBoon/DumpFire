@@ -351,8 +351,18 @@ describe('every mail in notifications.ts', () => {
 			send: () => notifications.notifyUserAssigned(board.id, card.id, MARKER, recipient.email, MARKER, MARKER, BASE)
 		},
 		{ name: 'sendInviteEmail', link: true, send: () => notifications.sendInviteEmail('new@example.test', MARKER, TOKEN, BASE) },
-		// Card 2773 (decision 7): a notice only, with no link and no token.
-		{ name: 'sendMfaResetNotice', link: false, send: () => notifications.sendMfaResetNotice('holder@example.test', MARKER, MARKER, true) },
+		// Card 2773 (decision 7): a notice only, with no link and no token. Card 2894 (S14): with the schedules paused
+		// and the keys and webhooks kept, each named as a row holds it.
+		{
+			name: 'sendMfaResetNotice',
+			link: false,
+			send: () =>
+				notifications.sendMfaResetNotice('holder@example.test', MARKER, MARKER, true, {
+					schedulesPaused: 2,
+					apiKeys: [{ name: MARKER, createdAt: MARKER, lastUsedAt: MARKER }],
+					webhooks: [{ board: MARKER, host: MARKER, createdAt: MARKER }]
+				})
+		},
 		// Card 2769 (4.9): each security notice, with no link, naming the owner from the row and the address as received;
 		// the enrolled notice (slice 3) with the account's API keys and webhooks, each named as a row holds it. Card
 		// 2772 (D8): the three of the Account page's two-step section, the authenticator's name its holder's own text.
@@ -368,7 +378,8 @@ describe('every mail in notifications.ts', () => {
 			'factor-removed',
 			'codes-regenerated',
 			// Card 2751 (T20, T21): a report schedule made or widened, and the schedules running at the release, each
-			// schedule's name, what it covers and its addresses text typed.
+			// schedule's name, what it covers and its addresses text typed. Card 2894 (E24): factor-removed lists the
+			// schedules too, from the same detail.
 			'report-schedule-set',
 			'report-schedules-running'
 		] as const).map(
@@ -392,6 +403,17 @@ describe('every mail in notifications.ts', () => {
 				}
 			})
 		),
+		// Card 2894 (E24): factor-removed with only a schedule's texts in markup, so the escaped marker is the schedule's.
+		{
+			name: 'sendSecurityNotice (factor-removed, a schedule named in markup)',
+			link: false,
+			send: () =>
+				notifications.sendSecurityNotice(recipient.id, 'factor-removed', {
+					at: new Date(),
+					address: null,
+					schedules: [{ name: MARKER, covers: MARKER, addresses: [MARKER] }]
+				})
+		},
 		// Card 2751's code review (CS1): the same notice, waited on, as the announcement at the release sends it.
 		{
 			name: 'securityNoticeSent (report-schedules-running)',

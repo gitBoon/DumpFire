@@ -96,7 +96,7 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 		// webhook the account set is switched off, and every report schedule of
 		// it paused. A webhook nobody is recorded as having set, one made before
 		// that was recorded, is left on, and is looked over by hand after a reset.
-		const access = endAccountAccess(userId, { apiKeys: true, reportSchedules: true });
+		const access = endAccountAccess(userId, { apiKeys: true });
 		afterCommit(() =>
 			log.info(
 				`Password reset for user ${userId} ("${target.username}") by "${actor.username}" — ended ` +

@@ -1,7 +1,7 @@
 import type { PageServerLoad } from './$types';
 import { and, count, eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
-import { webhooks } from '$lib/server/db/schema';
+import { reportSchedules, webhooks } from '$lib/server/db/schema';
 import { twoStepView } from '$lib/server/account-two-step';
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -17,9 +17,18 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.from(webhooks)
 		.where(and(eq(webhooks.setBy, user.id), eq(webhooks.active, true)))
 		.get();
+	// How many of the account's report schedules are on (card 2894, D1): a
+	// password change pauses every one, and the form says so before the
+	// button. The count only.
+	const schedules = db
+		.select({ count: count() })
+		.from(reportSchedules)
+		.where(and(eq(reportSchedules.userId, user.id), eq(reportSchedules.enabled, true)))
+		.get();
 	return {
 		user,
 		webhooks: hooks?.count ?? 0,
+		reportSchedulesOn: schedules?.count ?? 0,
 		// The Two-step sign-in section and the warning at the top of the page
 		// (card 2772, D10): never a secret, a recovery code or a pending id.
 		twoStep: twoStepView(user.id)
