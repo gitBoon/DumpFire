@@ -2649,7 +2649,7 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 		expect(lines('WARN')).toEqual(
 			mailed
 				? [line]
-				: [line, 'The owners of the boards of the 1 webhook(s) switched off above were not mailed, as the schedulers are off (SCHEDULERS=off). The lines above name each.']
+				: [line, 'The owners of the boards of the 1 webhook(s) switched off above were not mailed, as the schedulers are off (SCHEDULERS=off). The line above names it.']
 		);
 		expect(offMails().map((mail) => mail.to)).toEqual(mailed ? [s.owner.email] : []);
 

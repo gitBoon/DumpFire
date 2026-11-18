@@ -18,7 +18,7 @@ import { schedulerSetting } from '../schedulers';
 import { putBackFromTrash, type UploadFile } from '../uploads';
 import { BOARDS_UNDER_DELETED_GROUPINGS, defaultsForNull, orDefault, runBackfills, type Backfill } from './migrate';
 import { normaliseTimestamps, registerStampFunctions, unreadableList, type TimestampNormalisation } from './timestamps';
-import { stamp, toStamp } from '$lib/timestamps';
+import { isStamp, stamp, toStamp } from '$lib/timestamps';
 import { KNOWN_BROWSER_SECRET_KEY } from '../known-browsers';
 import { REQUEST_FORM_SECRET_KEY, writeFormSecret } from '../request-tokens';
 import {
@@ -47,6 +47,18 @@ const log = createLogger('AUTH');
 
 /** The runner's record of which migration files this database has applied. */
 const MIGRATION_RECORD = '__drizzle_migrations';
+
+/** This server's own record of what was done to it, and by whom: a restore keeps it (card 2899). */
+const SYSTEM_LOG = 'system_logs';
+
+/**
+ * The lines a backup's system log held, which a restore does not bring in
+ * (card 2899): how many, and the first and last of their times, each only
+ * where both are a real moment in the stored form, and otherwise null, never
+ * the backup's own text (the code review's F2). `lines` is -1 where the log
+ * could not be counted. Null where the backup has no system log.
+ */
+export type SystemLogLeftOut = { lines: number; first: string | null; last: string | null };
 
 /**
  * What a restore does with the parts of a backup that reach outside the
@@ -158,6 +170,12 @@ export type RestoreResult = {
 	 */
 	unsealed: Unsealed | null;
 	/**
+	 * Whether this server had a key to check a seal with (card 2899's code
+	 * review, F8). Without one, `unsealed.seal` is `none` whatever the file
+	 * carries, and the import's line says the backup could not be checked.
+	 */
+	sealKeyHere: boolean;
+	/**
 	 * Webhooks switched off for good inside the restore's transaction (card
 	 * 2752, S1): each restored on whose setter cannot open its board in the
 	 * restored data, or that nobody is recorded as having set up. 0 for a
@@ -173,12 +191,19 @@ export type RestoreResult = {
 	 * is in use, every account left with no factor (`restoreMfaRows`).
 	 */
 	mfa: MfaRestore;
+	/**
+	 * The backup's system log, which was not brought in (card 2899): this
+	 * server's log is kept as it was (`restorableTables`). Null where the
+	 * backup has no system log; `lines` is -1 where it could not be counted,
+	 * which `errors` says.
+	 */
+	systemLogLeftOut: SystemLogLeftOut | null;
 };
 
 /** What a restore that committed had done, for a `RestoreError` thrown after the commit. */
 export type CommittedRestore = Pick<
 	RestoreResult,
-	'requestLinksReplaced' | 'apiKeyDeadlines' | 'decisionLinksCleared' | 'secrets' | 'sealVerified' | 'unsealed' | 'mfa'
+	'requestLinksReplaced' | 'apiKeyDeadlines' | 'decisionLinksCleared' | 'secrets' | 'sealVerified' | 'unsealed' | 'sealKeyHere' | 'mfa' | 'systemLogLeftOut'
 >;
 
 /**
@@ -465,7 +490,15 @@ function groupingsNotCopied(live: Database.Database, backup: Database.Database):
 /**
  * The tables a restore clears and refills: every table in the running database
  * except SQLite's own, tables drizzle-kit left behind mid-rebuild (`__new_*`),
- * and the migration record.
+ * the migration record and the system log.
+ *
+ * The system log is this server's record of what was done to it, and by whom
+ * (card 2899). A restore cleared it and copied the backup's in its place, so
+ * every import, of a backup nobody had changed too, deleted every line written
+ * since that backup was made, and an edited backup put its own words there. It
+ * is kept as Reset Everything keeps it, and none of the backup's lines is
+ * brought in: they stay in the backup file, which the import's line names by
+ * its SHA-256. The import's safety copy and Reset read this list too.
  *
  * The migration record is excluded by its exact name, and that matters. It
  * describes the structure of *this* database, which a restore does not change.
@@ -481,8 +514,38 @@ export function restorableTables(live: Database.Database): string[] {
 		.map((row) => row.name)
 		.filter(
 			(name) =>
-				!name.startsWith('sqlite_') && !name.startsWith('__new_') && name !== MIGRATION_RECORD
+				!name.startsWith('sqlite_') && !name.startsWith('__new_') && name !== MIGRATION_RECORD && name !== SYSTEM_LOG
 		);
+}
+
+/**
+ * What `backup`'s system log holds, which a restore leaves where it is (card
+ * 2899): its lines counted and their first and last times, read from the
+ * table's own storage, as every read of a backup is. Null where it has no
+ * `system_logs` at all.
+ *
+ * Counted whenever it is there, whatever its shape (the code review's F5): a
+ * table with no `timestamp` column is counted with no times. The times are
+ * given only when both are a real moment in the stored form (`isStamp`; F2):
+ * they are the backup's text, and an edited backup could make them anything,
+ * so anything else is given as no time at all and never quoted. Throws on a
+ * log that cannot be read, a view over nothing among them; the restore says
+ * so and goes on.
+ */
+function systemLogOf(backup: Database.Database): SystemLogLeftOut | null {
+	const there = backup.prepare("SELECT 1 FROM sqlite_master WHERE name = ? AND type IN ('table', 'view')").get(SYSTEM_LOG);
+	if (!there) return null;
+	const from = fromTableStorage(backup, SYSTEM_LOG);
+	const timed = columnNamesOf(backup, SYSTEM_LOG).includes('timestamp');
+	const row = backup
+		.prepare(
+			timed
+				? `SELECT COUNT(*) AS lines, MIN("timestamp") AS first, MAX("timestamp") AS last FROM (${from})`
+				: `SELECT COUNT(*) AS lines, NULL AS first, NULL AS last FROM (${from})`
+		)
+		.get() as { lines: number; first: unknown; last: unknown };
+	const readable = isStamp(row.first) && isStamp(row.last);
+	return { lines: Number(row.lines), first: readable ? (row.first as string) : null, last: readable ? (row.last as string) : null };
 }
 
 /**
@@ -973,6 +1036,14 @@ export function defaultOutside(
  * read before the clear, and the earlier of it and the backup's is kept (card
  * 2893's code review, CS1).
  *
+ * This server's system log is never cleared or written over (card 2899;
+ * `restorableTables`): the record of what was done here, and by whom, is not
+ * the backup's to replace, and an edited backup cannot put words in it. The
+ * backup's own log is not brought in. It is counted, with its first and last
+ * times (`systemLogLeftOut`), so that the import can say what the file still
+ * holds; a log that cannot be counted is said in `errors`, and the restore
+ * goes on.
+ *
  * Throws a `RestoreError` in every case but a clean return. Its `committed`
  * says whether the database was changed: it is false, and the database is as
  * it was, for everything except foreign keys that could not be switched back
@@ -1066,6 +1137,17 @@ function restoreInOneSnapshot(
 	const sealKey = sealKeyHere(live);
 	const unsealed = unsealedBecause(backup, sealKey);
 	const sealVerified = unsealed === null;
+
+	// The backup's system log, which is not brought in (card 2899): counted
+	// from this snapshot, so that the import can say what the file still
+	// holds. Never a reason to stop the restore.
+	let systemLogLeftOut: SystemLogLeftOut | null = null;
+	try {
+		systemLogLeftOut = systemLogOf(backup);
+	} catch (e) {
+		systemLogLeftOut = { lines: -1, first: null, last: null };
+		errors.push(`The backup's system log, which a restore does not bring in, could not be counted: ${messageOf(e)}`);
+	}
 
 	// Off, and read back as off. With them on, clearing a table would delete
 	// the rows of every table that refers to it, and a row copied in before the
@@ -1398,7 +1480,7 @@ function restoreInOneSnapshot(
 			throw new RestoreError(
 				'The backup was restored and committed, but foreign keys could not be switched back on. Restart the ' +
 					'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it.',
-				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, mfa } }
+				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, mfa, systemLogLeftOut } }
 			);
 		}
 		throw new RestoreError(
@@ -1462,7 +1544,9 @@ function restoreInOneSnapshot(
 
 	// A backup copies its timestamps as it holds them, and one made before card
 	// 2095 holds two forms: brought to one, as every start does. It never throws.
-	const timestamps = normaliseTimestamps(live);
+	// Only over the tables this restore replaced: the system log it kept is
+	// not rewritten (card 2899's code review, F4).
+	const timestamps = normaliseTimestamps(live, { tables });
 	if (timestamps.failed !== null) {
 		errors.push(
 			`Timestamps after the restore were not brought to the stored form, and none was changed: ${timestamps.failed}. ` +
@@ -1476,5 +1560,5 @@ function restoreInOneSnapshot(
 		);
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, webhooksSwitchedOff: swept.length, mfa };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut };
 }

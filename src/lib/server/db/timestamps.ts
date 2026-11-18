@@ -117,13 +117,19 @@ export function registerStampFunctions(database: Database.Database): void {
  * returned in `failed`; this never throws, because the server runs on mixed
  * forms today and stopping it would be worse than what this fixes. A second
  * run converts nothing.
+ *
+ * `tables`, where given, limits it to those tables: a restore passes the ones
+ * it replaced, so that the system log it keeps is not rewritten (card 2899's
+ * code review, F4). A start passes none, and every table is gone over.
  */
-export function normaliseTimestamps(database: Database.Database): TimestampNormalisation {
+export function normaliseTimestamps(database: Database.Database, options: { tables?: readonly string[] } = {}): TimestampNormalisation {
 	registerStampFunctions(database);
+	const only = options.tables ? new Set(options.tables) : null;
 	const run = database.transaction(() => {
 		const converted: Record<string, number> = {};
 		const unreadable: TimestampNormalisation['unreadable'] = {};
 		for (const { table, column } of timestampColumns(database)) {
+			if (only && !only.has(table)) continue;
 			const c = quoted(column);
 			const t = quoted(table);
 			const shapes = RECOGNISED.map((glob) => `${c} GLOB '${glob}'`).join(' OR ');

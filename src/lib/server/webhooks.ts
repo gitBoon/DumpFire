@@ -487,19 +487,36 @@ const HOLD_IN_MAIL: Record<Hold, (hook: SwitchedOff) => string> = {
 			: 'the API key that set it up ended'
 };
 
+/** How many webhooks one WARN of `tellSwitchedOff` names; the rest are counted (card 2899's code review, F1). */
+export const SWITCHED_OFF_NAMED = 20;
+
 /**
- * Say what was switched off, once its write has committed: one WARN a webhook,
- * naming it, its board, its setter's id and the cause, never the address
- * (4.3); then the boards' owners mailed (D4), and for a key that ended its
- * setter too, where they can still open the board (card 2893, S13); or,
- * where `telling` says not, one WARN that they were not, and why (S2).
+ * Say what was switched off, once its write has committed: one WARN, naming
+ * each webhook, its board, its setter's id and why, never the address (4.3),
+ * and the cause; the first 20 named and the rest counted, as `reportBoardLoops`
+ * names boards (card 2899's code review, F1: a restore of a backup with many
+ * webhooks wrote a line for each, and the log keeps a count of lines, not of
+ * days). Then the boards' owners mailed (D4), one mail to each, and for a key
+ * that ended its setter too, where they can still open the board (card 2893,
+ * S13); or, where `telling` says not, one WARN that they were not, and why (S2).
  */
 export function tellSwitchedOff(done: readonly SwitchedOff[], cause: string, telling: Telling): void {
 	if (done.length === 0) return;
-	for (const hook of done) {
+	if (done.length === 1) {
+		const [hook] = done;
 		log.warn(
 			`Webhook ${hook.id} on board ${hook.boardId} switched off: ${HOLD_IN_WORDS[hook.hold](hook)} (${cause}). ` +
 				'It stays off until an owner of the board or an administrator switches it on.'
+		);
+	} else {
+		const named = done
+			.slice(0, SWITCHED_OFF_NAMED)
+			.map((hook) => `webhook ${hook.id} on board ${hook.boardId}: ${HOLD_IN_WORDS[hook.hold](hook)}`)
+			.join('; ');
+		const more = done.length > SWITCHED_OFF_NAMED ? `; and ${done.length - SWITCHED_OFF_NAMED} more` : '';
+		log.warn(
+			`${done.length} webhooks switched off (${cause}): ${named}${more}. ` +
+				'Each stays off until an owner of its board or an administrator switches it on.'
 		);
 	}
 	if (telling.mail) {
@@ -516,7 +533,7 @@ export function tellSwitchedOff(done: readonly SwitchedOff[], cause: string, tel
 	} else {
 		log.warn(
 			`The owners of the boards of the ${done.length} webhook(s) switched off above were not mailed, as ${telling.because}. ` +
-				'The lines above name each.'
+				(done.length === 1 ? 'The line above names it.' : 'The line above names them.')
 		);
 	}
 }

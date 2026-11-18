@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.47
+version: 1.49
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2899
+  - system-log
   - card-2752
   - migration-0071
   - card-2761
@@ -26,7 +28,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "Scheduled backup system with multi-destination support, a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -97,6 +99,15 @@ server: keep the mail password and each destination's credentials outside DumpFi
 does still hold that is worth guarding: every user's password hash and email, and every
 webhook's address, which for a Slack or Teams incoming webhook is all anyone needs to post to
 that channel.
+
+The file also holds the system log as it was when the backup was made, masked. A restore does
+not bring it in (card 2899): this server's log is kept as it was, line for line, and the
+backup's lines stay in the file. The import says how many there were, and its `CRITICAL` line
+names who imported the file and its SHA-256, so that the file, and the log in it, can be found
+again. The file's log is described, never quoted: its first and last times are named only where
+both are real times, and a log in it that cannot be read is said to be one that could not be
+counted, with the restore going ahead (card 2899's code review). See
+[Restoring from Backup](admin-guide.md#restoring-from-backup).
 
 ### Image Retention
 

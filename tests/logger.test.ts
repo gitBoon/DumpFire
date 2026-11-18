@@ -19,7 +19,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
-import { createLogger, getRecentLogs, printable, subscribeToLogs, type LogEntry } from '$lib/server/logger';
+import { cleanOldSystemLogs, createLogger, getRecentLogs, printable, subscribeToLogs, type LogEntry } from '$lib/server/logger';
+import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { makeBoard, makeUser, resetDb, stepUp } from './helpers/fixtures';
 
@@ -225,5 +226,28 @@ describe('backup-secrets.ts', () => {
 
 		expect(source).toMatch(/import \{[^}]*\bprintable\b[^}]*\} from '\.\/logger';/);
 		expect(source).not.toMatch(/(const|function) printable\b/);
+	});
+});
+
+// Card 2899's code review, F1: anyone who can make the server log can raise
+// lesser lines, and the count cap took the oldest of every level with them.
+describe('the log retention cap (card 2899)', () => {
+	it('never deletes a CRITICAL line older than the newest 50,000, and still takes the lesser lines it holds', () => {
+		const now = stamp();
+		sqlite.exec('DELETE FROM system_logs');
+		sqlite.prepare("INSERT INTO system_logs (timestamp, level, context, message) VALUES (?, 'CRITICAL', 'IMPORT', 'The database was replaced')").run(now);
+		sqlite.prepare("INSERT INTO system_logs (timestamp, level, context, message) VALUES (?, 'WARN', 'AUTH', 'The oldest lesser line')").run(now);
+		sqlite
+			.prepare(
+				`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 50000)
+				 INSERT INTO system_logs (timestamp, level, context, message) SELECT ?, 'INFO', 'HTTP', 'GET / ' || i FROM n`
+			)
+			.run(now);
+
+		cleanOldSystemLogs();
+
+		expect(sqlite.prepare("SELECT message FROM system_logs WHERE level = 'CRITICAL'").pluck().all()).toEqual(['The database was replaced']);
+		expect(sqlite.prepare("SELECT COUNT(*) FROM system_logs WHERE message = 'The oldest lesser line'").pluck().get()).toBe(0);
+		expect(sqlite.prepare('SELECT COUNT(*) FROM system_logs').pluck().get()).toBe(50_001);
 	});
 });

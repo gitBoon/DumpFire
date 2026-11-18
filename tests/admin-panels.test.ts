@@ -1016,6 +1016,8 @@ describe('the Import Database dialog, mounted (card 2362)', () => {
 		// The password itself went nowhere but the confirm.
 		expect(JSON.stringify(initFor('/api/admin/import?'))).not.toContain(MINE);
 		expect(target.querySelector('.import-report')?.textContent).toContain('Database restored');
+		// An answer with no `systemLog` (a backup that held no log lines) shows no line of it (card 2899, case 7).
+		expect(target.querySelector('.import-report')?.textContent).not.toContain('system log');
 		expect(picker).toHaveBeenCalledTimes(1);
 
 		// Used once: a second backup chosen asks for the password again, and sends nothing until it is confirmed.
@@ -1023,6 +1025,31 @@ describe('the Import Database dialog, mounted (card 2362)', () => {
 		await settle();
 		expect(asked('POST /api/admin/import?outside=keep')).toHaveLength(1);
 		expect(document.querySelector('.confirm-modal input[type="password"]')).not.toBeNull();
+	});
+
+	// Card 2899 (case 7): the server's sentence that its system log was kept,
+	// and the backup's lines not brought in, is shown with the rest.
+	it('shows that the system log was kept, when the answer says so (card 2899)', async () => {
+		const kept = "The system log was kept as it was: the backup's 42 log line(s) were not brought in, and remain in the backup file.";
+		answer = (what) =>
+			what === 'POST /api/admin/import/confirm'
+				? Response.json({ confirmation: 'the-confirmation', expiresInSeconds: 60 })
+				: what === 'POST /api/admin/import?outside=keep'
+					? Response.json({ success: true, message: 'Database restored (4.0 KB).', restored: { boards: 2 }, sizeBytes: 4096, systemLog: kept })
+					: undefined;
+		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
+		target.querySelector<HTMLButtonElement>('.btn-backup.import')!.click();
+		flushSync();
+		pick(target, 'monday.db');
+		await settle();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		type(dialog.querySelector<HTMLInputElement>('input[type="password"]')!, MINE);
+		typeCode(document);
+		buttonNamed(dialog, 'Confirm').click();
+		await settle();
+
+		const lines = [...target.querySelectorAll('.import-report .import-report-detail')].map((p) => p.textContent);
+		expect(lines).toContain(kept);
 	});
 
 	it('opens no dialog and sends nothing for a file that is not a .db backup, or one that cannot be read', async () => {

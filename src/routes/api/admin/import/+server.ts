@@ -76,6 +76,22 @@
  * before the answer is made (the code review): the answer, the log line and
  * `settingsRemoved` say what went, and nothing that went is listed as kept or
  * to enter again.
+ *
+ * This server's system log is kept as it was, and none of the backup's lines
+ * is brought in (card 2899; `restorableTables`): an import used to replace the
+ * log with the backup's, so that every import deleted the lines written since
+ * the backup, and an edited one put its own words there. Once the restore is
+ * committed, one CRITICAL line says who imported (by name and id as they were
+ * before it, the line's user field left empty), the file's size and SHA-256,
+ * whether it is a backup this server made that nobody has changed, how it was
+ * restored, and how many log lines the file held that were not brought in;
+ * the answer says the last in `systemLog`, a restore committed with foreign
+ * keys left off included. That line is written first after the commit, and a
+ * failure after it is said as one of a restore that committed (card 2899's
+ * code review, F3). An import that changed nothing names who tried, with
+ * their user id and address, on the line it writes: a file that is not a
+ * SQLite database and a backup with no superadmin, each at WARN (F7), among
+ * them.
  */
 
 import { error, isHttpError, json } from '@sveltejs/kit';
@@ -95,10 +111,13 @@ import {
 	restorableTables,
 	restoreFromBackup,
 	superadminsOf,
+	type Outside,
 	type OutsideSwitchedOff,
-	type RestoreResult
+	type RestoreResult,
+	type SystemLogLeftOut
 } from '$lib/server/db/restore';
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { writeFileSync, unlinkSync } from 'node:fs';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
@@ -115,12 +134,14 @@ import {
 	takeImportConfirmation
 } from '$lib/server/step-up';
 import { stillCallerNow } from '$lib/server/write-as';
+import { addressOf } from '$lib/server/client-address';
 import {
 	failedCheckSentence,
 	quotedName,
 	secretsKeptSentence,
 	secretsToEnterSentence,
-	type SecretsAccount
+	type SecretsAccount,
+	type Unsealed
 } from '$lib/server/backup-secrets';
 import { mfaWithoutFactorSentence } from '$lib/server/mfa-backup';
 import { toStamp } from '$lib/timestamps';
@@ -251,12 +272,103 @@ function withoutRemoved(secrets: SecretsAccount, removed: SettingsRemoved): Secr
 	};
 }
 
+/**
+ * What the answer says of the system log (card 2899): this server's is kept
+ * as it was, and the backup's lines are not brought in. Said only when the
+ * backup held any, or held a log that could not be counted.
+ */
+function systemLogSentence(left: SystemLogLeftOut | null): string | null {
+	if (left === null || left.lines === 0) return null;
+	if (left.lines < 0) return "The system log was kept as it was: the backup's log was not brought in, and remains in the backup file.";
+	return `The system log was kept as it was: the backup's ${left.lines} log line(s) were not brought in, and remain in the backup file.`;
+}
+
+/**
+ * Whose backup it was, by its seal, in the words of the import's CRITICAL line
+ * (card 2899). A server with no key to check a seal with cannot say, whatever
+ * the file carries (the code review's F8).
+ */
+function sealWords(unsealed: Unsealed | null, sealKeyHere: boolean): string {
+	if (unsealed === null) return 'a backup this server made that nobody has changed';
+	if (!sealKeyHere) return 'a backup this server could not check, as it has no key to check a seal with';
+	if (unsealed.seal === 'none') return 'not a backup this server sealed';
+	return 'a backup whose seal does not check out: changed since, or sealed by another server';
+}
+
+/** The seal, as the import line's details give it: checked and verified, none to check, or one that failed. */
+function sealOf(unsealed: Unsealed | null, sealKeyHere: boolean): string {
+	if (unsealed === null) return 'verified';
+	return sealKeyHere ? unsealed.seal : 'not checked';
+}
+
+/** Who imported, as the line names them: by name and id as they were before the import, and from where. */
+type Importer = { id: number; username: string; ip: string | null };
+
+/**
+ * The import's CRITICAL line, written once the restore is committed (card
+ * 2899): who imported, which file (its size and SHA-256, so that a file held
+ * anywhere can be matched to it), whether it was this server's own backup
+ * that nobody changed, how it was restored, and what the backup's own log
+ * held, which was not brought in. Reset Everything writes the same level for
+ * the same weight of change.
+ *
+ * The name and id are the account's as it was before the import: once it is
+ * committed the users are the backup's, and that id may be somebody else's.
+ * So they are in the text and the details, and the line's user field is left
+ * empty, where the Live Console would label it with whoever has that id now.
+ * The details carry the address the import came from as well (F8), as a
+ * sign-in's line carries its own.
+ *
+ * The backup's log is described, never quoted (F2): its first and last times
+ * are given only where both are a real moment in the stored form
+ * (`systemLogOf` in restore.ts). The check a file failed goes in the details
+ * as `backupFailsCheck` words it (F8), the names it quotes made printable,
+ * as the WARN line the import writes of it has always carried it.
+ */
+function importedLine(
+	caller: Importer,
+	file: { sizeBytes: number; size: string; sha256: string },
+	outside: Outside,
+	done: { unsealed: Unsealed | null; sealKeyHere: boolean; systemLogLeftOut: SystemLogLeftOut | null }
+): { message: string; meta: Record<string, unknown> } {
+	const left = done.systemLogLeftOut;
+	const logPart =
+		left === null || left.lines === 0
+			? 'the backup held no log lines.'
+			: left.lines < 0
+				? "the backup's log, which could not be counted, was not brought in and remains in the file."
+				: left.first === null || left.last === null
+					? `the backup's ${left.lines} log line(s), at times in no form this build reads, were not brought in and remain in the file.`
+					: `the backup's ${left.lines} log line(s), ${left.first} to ${left.last}, were not brought in and remain in the file.`;
+	return {
+		message:
+			`The database was replaced from an uploaded backup by ${caller.username} (user ${caller.id} before the import): ` +
+			`${file.size}, SHA-256 ${file.sha256}, ${sealWords(done.unsealed, done.sealKeyHere)}, ` +
+			`restored ${outside === 'off' ? 'as a working copy' : 'as it is'}. The system log was kept as it was; ${logPart}`,
+		meta: {
+			by: { id: caller.id, username: caller.username },
+			ip: caller.ip,
+			sizeBytes: file.sizeBytes,
+			sha256: file.sha256,
+			seal: sealOf(done.unsealed, done.sealKeyHere),
+			check: done.unsealed?.check ?? null,
+			outside,
+			systemLogLeftOut: left
+		}
+	};
+}
+
+/** Who tried an import that changed nothing, for the end of the line it writes (card 2899). */
+function byCaller(caller: Importer): string {
+	return ` (import by ${caller.username}, user ${caller.id})`;
+}
+
 /** `text`, closed with a full stop if it has none, and then `sentence`. */
 function endingWith(text: string, sentence: string): string {
 	return `${text.replace(/\.?$/, '.')} ${sentence}`;
 }
 
-export const POST: RequestHandler = async ({ request, locals, url, cookies }) => {
+export const POST: RequestHandler = async ({ request, locals, url, cookies, getClientAddress }) => {
 	// The superadmin's alone, and asked before the upload is read: an import
 	// replaces every account with the backup's, so whoever may import may make
 	// themselves anybody. The gate lets this route be sent the largest body of
@@ -302,6 +414,13 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 	// nothing is read.
 	const confirmed = takeImportConfirmation(request.headers.get(CONFIRMATION_HEADER), sessionHashIn(locals.credential));
 
+	// Who imports, once the upload is in and they are asked again below, for
+	// every line from there on, the last catch's included (card 2899's code
+	// review, F7): by name and id as they are now, and the address it came
+	// from, as a sign-in's line carries it.
+	let caller: Importer | null = null;
+	const ip = addressOf({ getClientAddress })?.slice(0, 100) ?? null;
+
 	try {
 		const buffer = Buffer.from(await request.arrayBuffer());
 		// Asked again once the upload is in, before anything is written (card
@@ -311,18 +430,25 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 		// transaction, and after it the database to ask is the backup's, not the
 		// one the caller was let in by. Nothing is awaited from here to the
 		// restore.
-		const caller = requireSuperadmin(stillCallerNow(locals));
+		const asNow = requireSuperadmin(stillCallerNow(locals));
 		// The confirmation holds only for the account it was issued to, as that
 		// account is now, and only while its password is the one checked: one
 		// changed while the upload arrived is no proof (card 2701, D2 and D9).
-		if (caller.id !== confirmed.userId) error(403, { message: CONFIRMATION_REFUSED, stepUp: 'confirmation' });
+		if (asNow.id !== confirmed.userId) error(403, { message: CONFIRMATION_REFUSED, stepUp: 'confirmation' });
 		requirePasswordUnchanged(confirmed.userId, confirmed.hash, 'confirmation');
+		const importer: Importer = { id: asNow.id, username: asNow.username, ip };
+		caller = importer;
 
 		// Validate it's a SQLite file (magic header: "SQLite format 3\0")
 		const header = buffer.slice(0, 16).toString('ascii');
 		if (!header.startsWith('SQLite format 3')) {
+			// Said, naming who sent it (card 2899's code review, F7): nothing was changed.
+			log.warn(`Import refused: the file is not a SQLite database${byCaller(importer)}`, undefined, { userId: importer.id, ip });
 			return json({ message: 'Invalid file — not a SQLite database' }, { status: 400 });
 		}
+		// The file, as the import's line names it (card 2899): its size, and its
+		// SHA-256, by which a file held anywhere can be matched to this import.
+		const file = { sizeBytes: buffer.length, size: `${(buffer.length / 1024).toFixed(1)} KB`, sha256: createHash('sha256').update(buffer).digest('hex') };
 
 		// Write the uploaded backup to a temp file so we can open it as a DB
 		// Beside the database, readable by its owner alone (card 2776): see importFiles.
@@ -331,6 +457,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 		writeFileSync(tempPath, buffer, { mode: 0o600 });
 
 		let errors: string[] = [];
+		// Whether the restore has committed: from then on a failure is one of a
+		// database already replaced (card 2899's code review, F3).
+		let committed = false;
 
 		try {
 			const backupDb = new Database(tempPath, { readonly: true });
@@ -362,15 +491,24 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 					}
 					writeFileSync(importPaths.safety, JSON.stringify(safetyBackup), { mode: 0o600 });
 
-					result = restoreFromBackup(sqlite, backupDb, { outside, by: caller.username });
+					result = restoreFromBackup(sqlite, backupDb, { outside, by: importer.username });
 				}
 			} finally {
 				backupDb.close();
 			}
 			if (result === null) {
 				try { unlinkSync(tempPath); } catch {}
+				// Said, naming who sent it (card 2899's code review, F7): nothing was changed.
+				log.warn(`Import refused: ${NO_SUPERADMIN_IN_BACKUP}${byCaller(importer)}`, undefined, { userId: importer.id, ip });
 				return json({ message: NO_SUPERADMIN_IN_BACKUP }, { status: 400 });
 			}
+			committed = true;
+			// Who imported which file, at CRITICAL, into the log the restore kept
+			// (card 2899): see importedLine. First, before anything else after the
+			// commit, so that nothing that fails after it can keep it from being
+			// written (the code review's F3).
+			const imported = importedLine(importer, file, outside, result);
+			log.critical(imported.message, imported.meta);
 			// No session came in with the backup, and the one this request was
 			// made with went with the rest: its cookie names nothing now.
 			clearSessionCookie(cookies, url);
@@ -507,8 +645,11 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// in use (card 2768): each needs its reset before it can sign in.
 			// Absent when there are none, so a restore without reads as it did.
 			const mfaLine = mfaWithoutFactorSentence(result.mfa);
+			// This server's system log kept, and the backup's lines not brought
+			// in (card 2899): last, and only when the backup held any.
+			const systemLog = systemLogSentence(result.systemLogLeftOut);
 			const ending = (text: string) =>
-				[linksReplaced, keyDeadlines, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, workingCopy].reduce<string>(
+				[linksReplaced, keyDeadlines, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, workingCopy, systemLog].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					text
 				);
@@ -534,6 +675,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				secretsToEnter: secretsToEnter ?? undefined,
 				mfaWithoutFactor: mfaLine ?? undefined,
 				settingsRemoved: settingsRemoved ?? undefined,
+				systemLog: systemLog ?? undefined,
 				superadmins
 			};
 			log.info(
@@ -614,7 +756,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				// in it is refused above, and rolled back: nothing was changed,
 				// and the server is as it was. A 422 and a WARN, not a fault.
 				errors = err.errors;
-				log.warn(`Database restore refused: ${err.message}`, errors.length > 0 ? { errors } : undefined);
+				// Who tried, as the account is: nothing changed, so its id is still theirs (card 2899).
+				log.warn(`Database restore refused: ${err.message}${byCaller(importer)}`, errors.length > 0 ? { errors } : undefined, { userId: importer.id, ip });
 				return json({ message: err.message, errors, committed: false }, { status: 422 });
 			}
 			if (err instanceof RestoreError) {
@@ -624,6 +767,15 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				// anything was changed, and one of them is not a failed restore at
 				// all but a committed one on a connection that needs a restart.
 				// That one replaced the settings too, and the sessions.
+				const done = err.committed ? err.done : null;
+				// Committed, it replaced the database as one that succeeded does, and
+				// says who imported which file the same way, first (card 2899; the
+				// code review's F3).
+				if (done) {
+					committed = true;
+					const imported = importedLine(importer, file, outside, done);
+					log.critical(imported.message, imported.meta);
+				}
 				if (err.committed) {
 					resetFormSecretCache();
 					resetKnownBrowserSecretCache();
@@ -634,7 +786,6 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				// or listed the secrets as one that succeeded does, and says so
 				// the same way (O8): in the message, the log line and the
 				// figures, with what is to enter at WARN on its own line too.
-				const done = err.committed ? err.done : null;
 				const linksReplaced = done && done.requestLinksReplaced > 0 ? requestLinksSentence(done.requestLinksReplaced) : null;
 				// The API keys given this server's deadline, as a restore that succeeded says them (card 2772).
 				const keyDeadline = done && done.apiKeyDeadlines > 0 ? apiKeyDeadlineNow() : null;
@@ -645,11 +796,19 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				const secretsToEnter = done ? secretsToEnterSentence(done.secrets.toEnter, false, done.unsealed) : null;
 				// The accounts left with no second factor (card 2768), as above.
 				const mfaLine = done ? mfaWithoutFactorSentence(done.mfa) : null;
-				const message = [linksReplaced, keyDeadlines, decisionLinks, secretsKept, secretsToEnter, mfaLine].reduce<string>(
+				// This server's system log kept, as a restore that succeeded says it (the code review's F6).
+				const systemLog = done ? systemLogSentence(done.systemLogLeftOut) : null;
+				const message = [linksReplaced, keyDeadlines, decisionLinks, secretsKept, secretsToEnter, mfaLine, systemLog].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					err.message
 				);
-				log.critical(`Database restore: ${message}`, errors.length > 0 ? { errors } : undefined);
+				// One that changed nothing names who tried on its own line, with
+				// their id, which is still theirs (card 2899).
+				if (done) {
+					log.critical(`Database restore: ${message}`, errors.length > 0 ? { errors } : undefined);
+				} else {
+					log.critical(`Database restore: ${message}${byCaller(importer)}`, errors.length > 0 ? { errors } : undefined, { userId: importer.id, ip });
+				}
 				if (secretsToEnter) log.warn(secretsToEnter);
 				if (mfaLine) log.warn(mfaLine);
 				if (done?.unsealed?.check) log.warn(failedCheckSentence(done.unsealed.check));
@@ -664,12 +823,27 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 						decisionLinksCleared: done?.decisionLinksCleared,
 						secretsKept: secretsKept ?? undefined,
 						secretsToEnter: secretsToEnter ?? undefined,
-						mfaWithoutFactor: mfaLine ?? undefined
+						mfaWithoutFactor: mfaLine ?? undefined,
+						systemLog: systemLog ?? undefined
 					},
 					{ status: 500 }
 				);
 			}
-			log.critical(`Database restore failed: ${err.message}`);
+			// A failure after the commit is one of a database already replaced
+			// (card 2899's code review, F3): said so, and with no user on the line,
+			// since the caller's id may now be somebody else's. Its CRITICAL line
+			// of who imported which file was written at the commit.
+			if (committed) {
+				log.critical(
+					`Database restore committed, and then failed: ${err?.message ?? err}. The backup is in; nothing was rolled back` +
+						` (import by ${importer.username}, user ${importer.id} before the import)`
+				);
+				return json(
+					{ message: `The backup was restored and committed, and then something failed: ${err?.message ?? err}. Reload the page.`, errors, committed: true },
+					{ status: 500 }
+				);
+			}
+			log.critical(`Database restore failed: ${err.message}${byCaller(importer)}`, undefined, { userId: importer.id, ip });
 			return json({ message: `Restore failed: ${err.message}`, errors }, { status: 500 });
 		}
 	} catch (err) {
@@ -681,7 +855,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 		// Anything else thrown before the restore, which answers for itself:
 		// the upload could not be written down to be opened, above all.
 		const msg = err instanceof Error ? err.message : 'Unknown error';
-		log.critical(`Import failed: ${msg}`, err);
+		// Naming who sent it, once they are known (card 2899's code review, F7).
+		log.critical(`Import failed: ${msg}${caller ? byCaller(caller) : ''}`, err, caller ? { userId: caller.id, ip } : undefined);
 		return json({ message: `Import failed: ${msg}` }, { status: 500 });
 	}
 };

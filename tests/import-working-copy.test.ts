@@ -28,7 +28,7 @@ import { and, eq } from 'drizzle-orm';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getBackupConfig, withoutSecrets } from '$lib/server/backup';
+import { generateBackupData, getBackupConfig, withoutSecrets } from '$lib/server/backup';
 import { db, sqlite } from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
 import {
@@ -902,14 +902,16 @@ describe('through the route', () => {
 		expect(response.body.message).toMatch(new RegExp(`^Database restored \\(${size}\\)\\. .*\\bwebhooks: 3\\. Everybody`));
 		expect(response.body.message.endsWith(`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann. ${SENTENCE}`)).toBe(true);
 		expect(response.body.superadmins).toEqual(['ann']);
-		expect(logged).toHaveLength(1);
-		expect(logged[0]).toMatch(
+		// Who imported which file first, at CRITICAL (card 2899), then the account of it.
+		expect(logged).toHaveLength(2);
+		expect(logged[0]).toMatch(/^\[CRITICAL\] \[IMPORT\] The database was replaced from an uploaded backup by /);
+		expect(logged[1]).toMatch(
 			new RegExp(
 				`^\\[INFO\\] \\[IMPORT\\] Database restored from an uploaded backup \\(${size}\\)\\. Rows: .*\\. ` +
 					'Filled in: first_completed_at on 0 card\\(s\\)\\. Restored as'
 			)
 		);
-		expect(logged[0].endsWith(`. ${SENTENCE}`)).toBe(true);
+		expect(logged[1].endsWith(`. ${SENTENCE}`)).toBe(true);
 		// The same account in parts, which is what the admin page lays out: the
 		// size, the rows of each table, and the sentence on its own.
 		expect(response.body.sizeBytes).toBeGreaterThan(0);
@@ -938,9 +940,11 @@ describe('through the route', () => {
 		expect(response.body.restored.boards).toBe(2);
 		expect(response.body.message).toMatch(new RegExp(`^Database restored \\(${size}\\)\\. .*\\bwebhooks: 3\\. Everybody`));
 		expect(response.body.message.endsWith(`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann.`)).toBe(true);
-		expect(logged).toHaveLength(1);
-		expect(logged[0]).toMatch(/Filled in: first_completed_at on 0 card\(s\)\.$/);
-		expect(`${response.body.message} ${logged[0]}`).not.toMatch(/working copy|switched off|removed/i);
+		// The CRITICAL line of who imported (card 2899), then the account of it.
+		expect(logged).toHaveLength(2);
+		expect(logged[0]).toMatch(/^\[CRITICAL\] \[IMPORT\] The database was replaced from an uploaded backup by .*, restored as it is\. /);
+		expect(logged[1]).toMatch(/Filled in: first_completed_at on 0 card\(s\)\.$/);
+		expect(`${response.body.message} ${logged[1]}`).not.toMatch(/working copy|switched off|removed/i);
 		expect(reachingOutside(sqlite)).toEqual(AS_THE_BACKUP_HAS_IT);
 		// The settings as the backup has them, beside the form signing key the restore makes (card 2750), and the flag
 		// the check of the stored images writes once the import has committed, the backup holding no image and no flag
@@ -949,6 +953,29 @@ describe('through the route', () => {
 		for (const table of OUTSIDE_TABLES) expect(made(contentsOf(sqlite)[table])).toEqual(made(contentsOf(backup)[table]));
 		expect(contentsOf(backup).settings.filter((row) => row.includes('"key":"stored_images_rechecked"'))).toEqual([]);
 		expect(contentsOf(sqlite).settings.filter((row) => row.includes('"key":"stored_images_rechecked"'))).toHaveLength(1);
+	});
+
+	// Card 2899 (case 6): the seal's other answer, and the working copy's words.
+	it('says of this server’s own backup restored as a working copy that it is its own and unchanged, and keeps every earlier line', async () => {
+		const line = sqlite.prepare("INSERT INTO system_logs (timestamp, level, context, message) VALUES (?, 'WARN', 'AUTH', ?)");
+		line.run('2026-11-17 09:00:00', 'A line before the export');
+		// This server's own backup, sealed and unchanged: it has no users, so it is taken (set-up follows).
+		const bytes = generateBackupData();
+		line.run('2026-11-17 09:30:00', 'A line after the export');
+		const everyLine = () => sqlite.prepare('SELECT * FROM system_logs ORDER BY id').all();
+		const before = everyLine();
+
+		const { response, logged } = await send('?outside=off', 'application/octet-stream', bytes);
+
+		expect(response.status).toBe(200);
+		// The line written after the export is still there, as is the one before it.
+		expect(everyLine().slice(0, before.length)).toEqual(before);
+		const critical = logged.filter((said) => said.startsWith('[CRITICAL]'));
+		expect(critical).toHaveLength(1);
+		expect(critical[0]).toContain(
+			', a backup this server made that nobody has changed, restored as a working copy. The system log was kept as it was; ' +
+				"the backup's 1 log line(s), 2026-11-17 09:00:00 to 2026-11-17 09:00:00, were not brought in and remain in the file."
+		);
 	});
 
 	it('says what a working copy of a backup made since card 2169 had on, and the webhooks to enter', async () => {
@@ -1066,7 +1093,10 @@ describe('through the route', () => {
 			new RegExp(`^Database restored \\(${size}\\), with 1 problem\\(s\\); each is given in the list\\. .*\\bcards: 3\\b`)
 		);
 		expect(response.body.message.endsWith(`. ${SENTENCE}`)).toBe(true);
-		expect(logged).toEqual([`[ERROR] [IMPORT] Restore committed, with 1 problem(s): ${problem}`]);
+		// After the CRITICAL line of who imported (card 2899).
+		expect(logged).toHaveLength(2);
+		expect(logged[0]).toMatch(/^\[CRITICAL\] \[IMPORT\] The database was replaced from an uploaded backup by /);
+		expect(logged[1]).toBe(`[ERROR] [IMPORT] Restore committed, with 1 problem(s): ${problem}`);
 		expect(reachingOutside(sqlite)).toEqual(NOTHING);
 	});
 

@@ -358,4 +358,38 @@ describe('a restore and the deadline (card 2772, S11, E12)', () => {
 		expect(res.body).not.toHaveProperty('apiKeyDeadline');
 		expect(res.body.message).not.toContain('API key(s) from before two-step sign-in');
 	});
+
+	// Card 2899's code review, F3: the CRITICAL line of who imported is the
+	// first thing after the commit, and a failure after it is said as one of a
+	// restore that committed. Reading this server's deadline for the answer is
+	// the one step after the commit that is not caught, so it is made to fail.
+	it('2899 F3. a failure after the commit: the line of who imported is already written, and the failure is said as one after a commit, with no user', async () => {
+		const chief = makeUser({ role: 'superadmin' });
+		db.insert(settings).values({ key: 'api_key_deadline', value: '2030-06-15 12:00:00' }).run();
+		makeApiKey(chief, 'No expiry');
+		const backup = backupBefore0069();
+		const real = sqlite.prepare.bind(sqlite);
+		vi.spyOn(sqlite, 'prepare').mockImplementation(((source: string) => {
+			if (source === "SELECT value FROM settings WHERE key = 'api_key_deadline'") throw new Error('disk I/O error');
+			return real(source);
+		}) as typeof sqlite.prepare);
+
+		const res = await imported(backup, chief);
+		vi.mocked(sqlite.prepare).mockRestore();
+
+		expect(res.status).toBe(500);
+		expect(res.body.committed).toBe(true);
+		expect(res.body.message).toBe('The backup was restored and committed, and then something failed: disk I/O error. Reload the page.');
+		const lines = sqlite
+			.prepare("SELECT message, user_id AS userId FROM system_logs WHERE context = 'IMPORT' AND level = 'CRITICAL' ORDER BY id")
+			.all() as { message: string; userId: number | null }[];
+		expect(lines).toHaveLength(2);
+		expect(lines[0].message).toMatch(new RegExp(`^The database was replaced from an uploaded backup by ${chief.username} \\(user ${chief.id} before the import\\)`));
+		expect(lines[1]).toEqual({
+			message:
+				'Database restore committed, and then failed: disk I/O error. The backup is in; nothing was rolled back ' +
+				`(import by ${chief.username}, user ${chief.id} before the import)`,
+			userId: null
+		});
+	});
 });

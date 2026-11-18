@@ -386,12 +386,12 @@ describe('a restore of a backup holding the other form', () => {
 		const result = restoreFromBackup(live, backup);
 
 		expect(result.errors).toEqual([]);
+		// The backup's log line is not brought in (card 2899), so it has nothing to convert.
 		expect(result.timestamps.converted).toEqual({
 			'cards.archived_at': 1,
 			'cards.completed_at': 1,
 			'cards.first_completed_at': 1,
-			'cards.updated_at': 1,
-			'system_logs.timestamp': 1
+			'cards.updated_at': 1
 		});
 		expect(otherTimestampForms(live)).toEqual([]);
 		expect(live.prepare('SELECT completed_at FROM cards').pluck().get()).toBe('2026-10-14 08:00:00');

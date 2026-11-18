@@ -4988,14 +4988,17 @@ describe('restoring a backup taken before the latest migrations', () => {
 			// Written where the test pointed it, and nowhere in the repository.
 			expect(existsSync(join(workingDirectory, '.pre-restore-safety.json'))).toBe(true);
 			expect(existsSync(join(workingDirectory, '.restore-temp.db'))).toBe(false);
-			return { response, logged, size: `${(bytes.length / 1024).toFixed(1)} KB` };
+			return { response, logged, size: `${(bytes.length / 1024).toFixed(1)} KB`, admin };
 		};
+
+		/** The CRITICAL line a committed import begins with (card 2899): who imported which file. */
+		const IMPORTED = /^\[CRITICAL\] \[IMPORT\] The database was replaced from an uploaded backup by /;
 
 		it('answers a failed restore with what had gone wrong by then, and says nothing was changed', async () => {
 			const { backup } = backupWithAStrangeTable();
 			let before: ReturnType<typeof dataIn> | null = null;
 
-			const { response, logged } = await upload(backup, () => {
+			const { response, logged, admin } = await upload(backup, () => {
 				// Read here, with the administrator who uploads it already made.
 				before = dataIn(sqlite);
 				failAtCommit(sqlite, 'disk I/O error', { restoreOnly: true });
@@ -5006,10 +5009,15 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(response.body.committed).toBe(false);
 			// It answered `errors: []`: the list was lost with the call that threw.
 			expect(response.body.errors).toEqual(['settings: no matching columns']);
+			// Naming who tried, by name and id, which are still theirs: nothing changed (card 2899).
+			// And no line says the database was replaced.
 			expect(logged).toEqual([
-				'[CRITICAL] [IMPORT] Database restore: The restore failed and nothing was changed: disk I/O error | ' +
-					'{"errors":["settings: no matching columns"]}'
+				'[CRITICAL] [IMPORT] Database restore: The restore failed and nothing was changed: disk I/O error ' +
+					`(import by ${admin.username}, user ${admin.id}) | {"errors":["settings: no matching columns"]}`
 			]);
+			expect(
+				sqlite.prepare("SELECT user_id AS userId FROM system_logs WHERE context = 'IMPORT' AND level = 'CRITICAL'").all()
+			).toEqual([{ userId: admin.id }]);
 
 			vi.restoreAllMocks();
 			expect(before).not.toBeNull();
@@ -5037,8 +5045,10 @@ describe('restoring a backup taken before the latest migrations', () => {
 				)
 			);
 			expect(response.body.message).toContain('settings: 2');
-			// At ERROR, with the problems themselves in the line.
-			expect(logged).toEqual([`[ERROR] [IMPORT] Restore committed, with 1 problem(s): ${problem}`]);
+			// At ERROR, with the problems themselves in the line, after the CRITICAL line of who imported (card 2899).
+			expect(logged).toHaveLength(2);
+			expect(logged[0]).toMatch(IMPORTED);
+			expect(logged[1]).toBe(`[ERROR] [IMPORT] Restore committed, with 1 problem(s): ${problem}`);
 			// And it is what it says: the backup is in, without that one row.
 			expect(sqlite.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
 			// And the form signing key, made again once the restore committed (card 2750),
@@ -5079,9 +5089,11 @@ describe('restoring a backup taken before the latest migrations', () => {
 					`^Database restored \\(${size.replace('.', '\\.')}\\), with 1 problem\\(s\\); each is given in the list\\. .*\\bcards: 6\\b`
 				)
 			);
-			// Two lines. What was filled in used to be logged only for a restore
-			// with nothing to report, and this one filled in as much as any.
-			expect(logged).toHaveLength(2);
+			// Two lines after the CRITICAL one of who imported (card 2899). What was
+			// filled in used to be logged only for a restore with nothing to
+			// report, and this one filled in as much as any.
+			expect(logged).toHaveLength(3);
+			expect(logged.shift()).toMatch(IMPORTED);
 			expect(logged[0]).toMatch(
 				new RegExp(
 					`^\\[INFO\\] \\[IMPORT\\] Database restored from an uploaded backup \\(${size.replace('.', '\\.')}\\)\\. ` +
@@ -5125,7 +5137,9 @@ describe('restoring a backup taken before the latest migrations', () => {
 			// One line, at INFO: how many rows of what, and what was filled in for
 			// a backup too old to have it. The NULL WIP limits are among those, and
 			// so is the commitment of every card, the backup being older than 0060.
-			expect(logged).toHaveLength(1);
+			// After the CRITICAL line of who imported (card 2899).
+			expect(logged).toHaveLength(2);
+			expect(logged.shift()).toMatch(IMPORTED);
 			expect(logged[0]).toMatch(
 				new RegExp(
 					`^\\[INFO\\] \\[IMPORT\\] Database restored from an uploaded backup \\(${size.replace('.', '\\.')}\\)\\. ` +
@@ -5161,7 +5175,9 @@ describe('restoring a backup taken before the latest migrations', () => {
 			const { response, logged } = await upload(backup);
 
 			expect(response.status).toBe(200);
-			expect(logged).toHaveLength(1);
+			// After the CRITICAL line of who imported (card 2899).
+			expect(logged).toHaveLength(2);
+			expect(logged.shift()).toMatch(IMPORTED);
 			expect(logged[0]).toContain(
 				'Filled in: first_completed_at on 2 card(s), ' +
 					'1 card(s) taken out of a milestone of another board (card 3 left milestone 1), ' +
@@ -5207,7 +5223,9 @@ describe('restoring a backup taken before the latest migrations', () => {
 			const { response, logged } = await upload(backup);
 
 			expect(response.status).toBe(200);
-			expect(logged).toHaveLength(1);
+			// After the CRITICAL line of who imported (card 2899).
+			expect(logged).toHaveLength(2);
+			expect(logged.shift()).toMatch(IMPORTED);
 			expect(logged[0]).toMatch(
 				/Filled in: first_completed_at on 0 card\(s\), committed_at and committed_by on 1 card\(s\) not upstream\. Cleared: the commitment of 1 upstream card\(s\), the discard mark of 1 card\(s\) that are not archived\.$/
 			);
@@ -5236,7 +5254,9 @@ describe('restoring a backup taken before the latest migrations', () => {
 			const { response, logged } = await upload(backup);
 
 			expect(response.status).toBe(200);
-			expect(logged).toHaveLength(1);
+			// After the CRITICAL line of who imported (card 2899).
+			expect(logged).toHaveLength(2);
+			expect(logged.shift()).toMatch(IMPORTED);
 			expect(logged[0]).toMatch(
 				/Filled in: first_completed_at on 0 card\(s\), an Options column at the far left of 1 delivery board\(s\), the title Options on 1 Options column\(s\)\. Cleared: the Options role of 1 second Options column\(s\), each board keeping its leftmost\.$/
 			);
@@ -5274,11 +5294,14 @@ describe('restoring a backup taken before the latest migrations', () => {
 			// Mail settings with no password, from a backup with no seal: listed to enter again (card 2169).
 			backup.exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('smtp_host', 'mail.example.test'), ('smtp_user', 'dumpfire')");
 			backup.exec("DELETE FROM settings WHERE key = 'smtp_pass'");
+			// One line in the backup's log, which is not brought in, and is said to have been kept out (card 2899's code review, F6).
+			backup.exec("INSERT INTO system_logs (timestamp, level, context, message) VALUES ('2026-10-01 09:00:00', 'INFO', 'T', 'From the backup')");
 			let real: Database.Database['pragma'] | null = null;
 
-			const { response, logged } = await upload(backup, () => {
+			const { response, logged, admin } = await upload(backup, () => {
 				real = ignoringPragma(sqlite, 'ON');
 			});
+			const kept = "The system log was kept as it was: the backup's 1 log line(s) were not brought in, and remain in the backup file.";
 
 			const toEnter =
 				'To enter again, because a backup does not hold them: the mail password (Admin, 📧 Email / SMTP). None was ' +
@@ -5289,16 +5312,37 @@ describe('restoring a backup taken before the latest migrations', () => {
 				'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it. ' +
 				// It replaced every request's link, and listed the secrets, as a restore that succeeded does, and says so (O8).
 				'2 request link(s) replaced: a link mailed before this restore no longer works, and its requester can have ' +
-				`a new one sent from the page it opens. ${toEnter}`;
+				`a new one sent from the page it opens. ${toEnter} ${kept}`;
 			expect(response.status).toBe(500);
 			// The page reloads its data on this, and not on any other failure.
 			expect(response.body.committed).toBe(true);
 			expect(response.body.message).toBe(message);
+			expect(response.body.systemLog).toBe(kept);
 			expect(response.body.requestLinksReplaced).toBe(2);
 			expect(response.body.secretsToEnter).toBe(toEnter);
 			expect(response.body).not.toHaveProperty('secretsKept');
-			expect(logged).toEqual([`[CRITICAL] [IMPORT] Database restore: ${message}`]);
-			expect(`${response.body.message} ${logged[0]}`).not.toMatch(/failed|nothing was changed/i);
+			// The database was replaced, so it says who imported which file as a
+			// restore that succeeded does, before its own line (card 2899): by
+			// name and id as they were before it, the line's user field empty.
+			// This server has made no backup, so it has no key to check a seal
+			// with, and says so (the code review's F8).
+			expect(logged).toHaveLength(2);
+			expect(logged[0]).toMatch(
+				new RegExp(
+					`^\\[CRITICAL\\] \\[IMPORT\\] The database was replaced from an uploaded backup by ${admin.username} ` +
+						`\\(user ${admin.id} before the import\\): [0-9.]+ KB, SHA-256 [0-9a-f]{64}, ` +
+						'a backup this server could not check, as it has no key to check a seal with, ' +
+						'restored as it is\\. The system log was kept as it was; '
+				)
+			);
+			expect(logged[0]).toContain('"seal":"not checked"');
+			expect(logged[1]).toBe(`[CRITICAL] [IMPORT] Database restore: ${message}`);
+			expect(
+				sqlite
+					.prepare("SELECT user_id AS userId FROM system_logs WHERE context = 'IMPORT' AND message LIKE 'The database was replaced%'")
+					.all()
+			).toEqual([{ userId: null }]);
+			expect(`${response.body.message} ${logged[0]} ${logged[1]}`).not.toMatch(/failed|nothing was changed/i);
 			// Both halves of it are true.
 			expect(sqlite.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
 			expect((real as unknown as Database.Database['pragma'])('foreign_keys', { simple: true })).toBe(0);

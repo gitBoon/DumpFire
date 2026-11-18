@@ -184,7 +184,15 @@ export function flushPendingLogs(): void {
 const MAX_LOG_ROWS = 50_000;
 let maintenanceTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Delete entries past the retention window, and hard-cap total row count. */
+/**
+ * Delete entries past the retention window, and hard-cap total row count.
+ *
+ * The cap never deletes a CRITICAL line (card 2899's code review, F1): those
+ * record a reset, an import, a failed migration, and a flood of lesser lines,
+ * which anyone who can make the server log can raise, would otherwise push
+ * them out within the retention window. They still go at `LOG_RETENTION_DAYS`
+ * with the rest, and the newest 50,000 lines are counted over every level.
+ */
 export function cleanOldSystemLogs(): void {
 	if (!ensureTable()) return;
 	try {
@@ -192,7 +200,7 @@ export function cleanOldSystemLogs(): void {
 		const cutoff = stamp(new Date(Date.now() - retentionDays * 86400000));
 		sqlite.prepare('DELETE FROM system_logs WHERE timestamp < ?').run(cutoff);
 		sqlite.prepare(
-			'DELETE FROM system_logs WHERE id NOT IN (SELECT id FROM system_logs ORDER BY id DESC LIMIT ?)'
+			"DELETE FROM system_logs WHERE level IS NOT 'CRITICAL' AND id NOT IN (SELECT id FROM system_logs ORDER BY id DESC LIMIT ?)"
 		).run(MAX_LOG_ROWS);
 	} catch (err) {
 		console.error(`[LOGGER] Log retention cleanup failed: ${(err as Error)?.message}`);

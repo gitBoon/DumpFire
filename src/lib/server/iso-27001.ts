@@ -323,7 +323,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 		evidence: [{ path: 'src/lib/server/notifications.ts' }]
 	}),
 	organisational('A.5.28', 'annex-a', 'Collection of evidence', {
-		how: 'the system log records who did what, and when (an import can still replace it; card 2899).',
+		how: 'the system log records who did what, and when (an import keeps it; card 2899).',
 		evidence: [{ path: 'src/lib/server/logger.ts' }]
 	}),
 	organisational('A.5.29', 'annex-a', 'Information security during disruption'),
@@ -658,23 +658,25 @@ export const CHECKLIST: readonly IsoItem[] = [
 		title: 'Logging',
 		theme: 'technological',
 		applicability: 'supports',
-		status: 'partly-met',
+		status: 'met',
 		how:
 			'Every entry goes to stdout, the system log table and the live audit feed. Reset Everything keeps the log. ' +
 			'Report schedules and report mail log the addresses an asked action adds (card 2751). ' +
 			'The scheduled run\'s line names every address it reached and missed, and every change to a schedule, and its delete, is logged with its addresses (card 2895). ' +
-			'Still open: an import replaces the log with the backup\'s, an edited one included.',
+			'An import keeps the log as it was, brings in none of the backup\'s lines, and writes a CRITICAL line naming who imported which file; ' +
+			'the count cap never takes a CRITICAL line, which goes only at the retention days (card 2899).',
 		evidence: [
-			{ path: 'src/lib/server/logger.ts' },
+			{ path: 'src/lib/server/logger.ts', symbol: 'cleanOldSystemLogs' },
 			{ path: 'src/lib/server/audit-log.ts' },
 			{ path: 'tests/audit-log.test.ts' },
 			{ path: 'tests/logger.test.ts' },
 			{ path: 'src/routes/api/admin/reset/+server.ts', symbol: 'KEPT' },
-			{ path: 'src/lib/server/db/restore.ts', symbol: 'rowsToRestore' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'restorableTables' },
+			{ path: 'tests/backups.test.ts' },
 			{ path: 'src/lib/server/reports.ts', symbol: 'reportScheduleChanged' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2899],
+		gapCards: [],
 		organisationalPart: 'Send stdout to a store the application cannot write, and set its retention.'
 	},
 	{

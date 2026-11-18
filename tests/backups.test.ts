@@ -87,7 +87,15 @@ import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
 import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
-import { NO_SUPERADMIN_IN_BACKUP, RestoreError, SIGNED_OUT, backupLacksSuperadmin, restoreFromBackup, rowsToRestore } from '$lib/server/db/restore';
+import {
+	NO_SUPERADMIN_IN_BACKUP,
+	RestoreError,
+	SIGNED_OUT,
+	backupLacksSuperadmin,
+	restorableTables,
+	restoreFromBackup,
+	rowsToRestore
+} from '$lib/server/db/restore';
 import { inviteTokens, taskRequests } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
 import { issueInvite } from '$lib/server/invites';
@@ -624,6 +632,46 @@ describe('a restore', () => {
 		expect(column(live, 'SELECT name FROM boards')).toEqual(['From the backup']);
 		// And the backup was only read.
 		expect(column(backup, 'SELECT id FROM sessions')).toHaveLength(2);
+	});
+
+	// Card 2899 (case 1). The system log is this server's record of what was
+	// done to it, and by whom: a restore cleared it and copied the backup's in.
+	it('keeps the running system log line for line, brings none of the backup’s in, and counts what the backup held', () => {
+		const live = migratedDb();
+		live.exec(`
+			INSERT INTO users (id, username, email, password_hash, role) VALUES (9, 'here', 'here@example.test', 'x', 'superadmin');
+			INSERT INTO system_logs (id, timestamp, level, context, message, meta, user_id, ip) VALUES
+				(1, '2026-11-01 09:00:00', 'WARN', 'AUTH', 'Failed login attempt at "here" (user 9) from IP 203.0.113.7 (bad password)', NULL, 9, '203.0.113.7'),
+				(2, '2026-11-02 10:00:00', 'INFO', 'ADMIN', 'Settings saved', '{"by":"here"}', 9, '198.51.100.4'),
+				(3, '2026-11-03 11:00:00', 'CRITICAL', 'ADMIN', 'Something worth keeping', NULL, NULL, NULL),
+				-- In the other form: the timestamp pass after a restore leaves the log it kept alone (the code review's F4).
+				(4, '2026-11-04T12:00:00.000Z', 'INFO', 'HTTP', 'An older line', NULL, NULL, NULL);
+		`);
+		const lines = (database: Database.Database) =>
+			database.prepare('SELECT id, timestamp, level, context, message, meta, user_id, ip FROM system_logs ORDER BY id').all();
+		const before = lines(live);
+		const backup = backupWithSignIns();
+		// The backup's own log: one line with the id of a line here, in other words, and one more.
+		backup.exec(`
+			INSERT INTO system_logs (id, timestamp, level, context, message) VALUES
+				(1, '2026-10-01 08:00:00', 'INFO', 'AUTH', 'Nothing happened'),
+				(7, '2026-10-05 12:30:00', 'INFO', 'ADMIN', 'Nothing happened either');
+		`);
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		// Every line as it was, all eight columns, and none of the backup's.
+		expect(lines(live)).toEqual(before);
+		expect(column(live, "SELECT COUNT(*) FROM system_logs WHERE message LIKE 'Nothing happened%'")).toEqual([0]);
+		expect(result.restored.system_logs).toBeUndefined();
+		expect(result.systemLogLeftOut).toEqual({ lines: 2, first: '2026-10-01 08:00:00', last: '2026-10-05 12:30:00' });
+		// The rest is the backup's, as before.
+		expect(column(live, 'SELECT username FROM users ORDER BY id')).toEqual(['ann', 'bob']);
+		// One list, which the import's safety copy and Reset read as well.
+		expect(restorableTables(live)).not.toContain('system_logs');
+		expect(restorableTables(live)).not.toContain('__drizzle_migrations');
+		expect(restorableTables(live)).toContain('users');
 	});
 
 	// Card 2849. A backup made before it holds each used invite's token as it
@@ -1254,8 +1302,177 @@ describe('a restore', () => {
 		expect(res.status).toBe(422);
 		expect(res.message).toContain('The restore failed and nothing was changed: the restored data would have user accounts and none of them the superadmin');
 		expect(column<string>(sqlite, "SELECT level FROM system_logs WHERE context = 'IMPORT' ORDER BY id")).toEqual(['WARN']);
+		// Naming who tried, with their id, which is still theirs: nothing changed (card 2899, case 5).
+		const refused = sqlite.prepare("SELECT message, user_id AS userId FROM system_logs WHERE context = 'IMPORT'").get() as {
+			message: string;
+			userId: number | null;
+		};
+		expect(refused.message).toMatch(new RegExp(` \\(import by chief, user ${chief.id}\\)$`));
+		expect(refused.userId).toBe(chief.id);
 		expectUnchanged(before);
 		expect(signInsHere().sessions).toHaveLength(2);
+	});
+
+	// Card 2899 (case 2). An edited backup put its own words in the log, and
+	// any import, edited or not, deleted every line written since the backup.
+	it('changes no earlier line of the log when an edited backup is imported, and says at CRITICAL who imported which file', async () => {
+		sqlite.exec(`
+			INSERT INTO system_logs (timestamp, level, context, message, meta, user_id, ip) VALUES
+				('2026-11-17 09:00:00', 'WARN', 'AUTH', 'Failed login attempt at "chief" (user ${chief.id}) from IP 203.0.113.7 (bad password)', NULL, ${chief.id}, '203.0.113.7'),
+				('2026-11-17 09:05:00', 'INFO', 'ADMIN', 'Settings saved', '{"by":"chief"}', ${chief.id}, NULL),
+				('2026-11-17 09:10:00', 'CRITICAL', 'ADMIN', 'Exported a backup', NULL, ${chief.id}, NULL);
+		`);
+		const everyLine = () => sqlite.prepare('SELECT * FROM system_logs ORDER BY id').all() as { id: number }[];
+		const before = everyLine();
+		// This server's own backup, then edited: a line rewritten, one deleted
+		// and one added, which breaks its seal.
+		const backup = opening(generateBackupData());
+		backup.exec(`
+			UPDATE system_logs SET message = 'Nothing happened' WHERE message = 'Exported a backup';
+			DELETE FROM system_logs WHERE message = 'Settings saved';
+			INSERT INTO system_logs (timestamp, level, context, message) VALUES ('2026-11-17 09:20:00', 'INFO', 'ADMIN', 'Nothing happened either');
+		`);
+		const held = column<number>(backup, 'SELECT COUNT(*) FROM system_logs')[0];
+		const bytes = backup.serialize();
+
+		const { status, body } = await importing(async () => {
+			const res = await api('POST', '/api/admin/import?outside=keep', { user: chief, headers: confirmedImport(), body: bytes });
+			return { status: res.status, message: res.body.message as string, body: res.body };
+		});
+
+		expect(status).toBe(200);
+		// Every line written before the import, as it was, and none of the file's.
+		const after = everyLine();
+		expect(after.slice(0, before.length)).toEqual(before);
+		expect(column<number>(sqlite, "SELECT COUNT(*) FROM system_logs WHERE message LIKE 'Nothing happened%'")).toEqual([0]);
+		// And one line more: who imported which file, at CRITICAL, the user field empty.
+		const added = after.slice(before.length) as unknown as { level: string; context: string; message: string; meta: string; user_id: number | null }[];
+		expect(added).toHaveLength(1);
+		expect(added[0]).toMatchObject({ level: 'CRITICAL', context: 'IMPORT', user_id: null });
+		const sha256 = createHash('sha256').update(bytes).digest('hex');
+		expect(added[0].message).toMatch(
+			new RegExp(
+				`^The database was replaced from an uploaded backup by chief \\(user ${chief.id} before the import\\): [0-9.]+ KB, ` +
+					`SHA-256 ${sha256}, a backup whose seal does not check out: changed since, or sealed by another server, restored as it is\\. ` +
+					`The system log was kept as it was; the backup's ${held} log line\\(s\\), \\S+ \\S+ to \\S+ \\S+, were not brought in and remain in the file\\.$`
+			)
+		);
+		// With the address it came from, and the check the file failed, none here (the code review's F8).
+		expect(JSON.parse(added[0].meta)).toMatchObject({ by: { id: chief.id, username: 'chief' }, ip: '127.0.0.1', sha256, seal: 'failed', check: null, outside: 'keep' });
+		// The answer says the same of the log, last, and on its own for the page.
+		const said = `The system log was kept as it was: the backup's ${held} log line(s) were not brought in, and remain in the backup file.`;
+		expect(body.systemLog).toBe(said);
+		expect(body.message.endsWith(said)).toBe(true);
+	});
+
+	/** The import's lines under IMPORT written since `from`, with their user and details. */
+	const importLinesSince = (from: number) =>
+		sqlite
+			.prepare("SELECT level, message, meta, user_id AS userId, ip FROM system_logs WHERE context = 'IMPORT' AND id > ? ORDER BY id")
+			.all(from) as { level: string; message: string; meta: string | null; userId: number | null; ip: string | null }[];
+	const lastLineId = () => sqlite.prepare('SELECT COALESCE(MAX(id), 0) FROM system_logs').pluck().get() as number;
+
+	/** `bytes` sent to the import route by the superadmin, as it is, with WARN lines kept. */
+	const importBytesAtWarn = async (bytes: Buffer | Uint8Array) => {
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			return await importing(async () => {
+				const res = await api('POST', '/api/admin/import?outside=keep', { user: chief, headers: confirmedImport(), body: bytes });
+				return { status: res.status, message: res.body.message as string, body: res.body };
+			});
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+	};
+
+	// Card 2899's code review, F2: the backup's times are its own text, and an
+	// edited backup can make them anything; they are described, never quoted.
+	it('2899 F2. says of a backup log whose times are words that they are in no form this build reads, and quotes none of them', async () => {
+		sqlite.prepare("INSERT INTO system_logs (timestamp, level, context, message) VALUES ('2026-11-17 09:00:00', 'INFO', 'ADMIN', 'A line')").run();
+		const backup = opening(generateBackupData());
+		backup.exec("UPDATE system_logs SET timestamp = 'last Tuesday [CRITICAL] [AUTH] forged'");
+		const from = lastLineId();
+
+		const { status } = await importBytesAtWarn(backup.serialize());
+
+		expect(status).toBe(200);
+		const [line] = importLinesSince(from).filter((l) => l.level === 'CRITICAL');
+		expect(line.message).toContain("the backup's 1 log line(s), at times in no form this build reads, were not brought in and remain in the file.");
+		expect(`${line.message} ${line.meta}`).not.toMatch(/Tuesday|forged/);
+		expect(JSON.parse(line.meta as string).systemLogLeftOut).toEqual({ lines: 1, first: null, last: null });
+	});
+
+	// Card 2899's code review, F5: the backup's log is counted whatever its
+	// shape, and one that cannot be counted does not stop the restore.
+	it('2899 F5. restores a backup whose system log cannot be read, and says the log could not be counted', async () => {
+		const backup = opening(generateBackupData());
+		backup.exec('DROP TABLE system_logs; CREATE VIEW system_logs AS SELECT * FROM nowhere');
+		const from = lastLineId();
+
+		const { status, body } = await importBytesAtWarn(backup.serialize());
+
+		expect(status).toBe(200);
+		expect(body.success).toBe(true);
+		expect(body.errors).toEqual([expect.stringMatching(/^The backup's system log, which a restore does not bring in, could not be counted: /)]);
+		const [line] = importLinesSince(from).filter((l) => l.level === 'CRITICAL');
+		expect(line.message).toContain("the backup's log, which could not be counted, was not brought in and remains in the file.");
+		expect(body.systemLog).toBe("The system log was kept as it was: the backup's log was not brought in, and remains in the backup file.");
+	});
+
+	// Card 2899's code review, F7: every import that changed nothing names who sent it.
+	it('2899 F7. a file that is not a SQLite database is refused with a WARN naming who sent it', async () => {
+		const from = lastLineId();
+
+		const { status, message } = await importBytesAtWarn(Buffer.from('not a database at all'));
+
+		expect({ status, message }).toEqual({ status: 400, message: 'Invalid file — not a SQLite database' });
+		expect(importLinesSince(from)).toEqual([
+			{
+				level: 'WARN',
+				message: `Import refused: the file is not a SQLite database (import by chief, user ${chief.id})`,
+				meta: null,
+				userId: chief.id,
+				ip: '127.0.0.1'
+			}
+		]);
+	});
+
+	it('2899 F7. a backup with users and no superadmin is refused with a WARN naming who sent it', async () => {
+		const backup = migratedDb();
+		backup.exec(NOBODY_IN_CHARGE);
+		const from = lastLineId();
+
+		const { status } = await importBytesAtWarn(backup.serialize());
+
+		expect(status).toBe(400);
+		expect(importLinesSince(from)).toEqual([
+			{
+				level: 'WARN',
+				message: `Import refused: ${NO_SUPERADMIN_IN_BACKUP} (import by chief, user ${chief.id})`,
+				meta: null,
+				userId: chief.id,
+				ip: '127.0.0.1'
+			}
+		]);
+	});
+
+	it('2899 F7. a file that fails before the restore begins is a CRITICAL line naming who sent it, and nothing changes', async () => {
+		const before = snapshotDb();
+		const from = lastLineId();
+		const bytes = Buffer.concat([Buffer.from('SQLite format 3\0', 'latin1'), Buffer.alloc(4096, 7)]);
+
+		const { status, message } = await importBytesAtWarn(bytes);
+
+		expect(status).toBe(500);
+		expect(message).toMatch(/^Restore failed: /);
+		const lines = importLinesSince(from);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toMatchObject({ level: 'CRITICAL', userId: chief.id, ip: '127.0.0.1' });
+		expect(lines[0].message).toMatch(new RegExp(`^Database restore failed: .* \\(import by chief, user ${chief.id}\\)$`));
+		expectUnchanged(before);
 	});
 
 	it('names, in its answer, the superadmin the restored data has', async () => {
@@ -3207,6 +3424,41 @@ describe('a restore switches off a restored webhook whose setter cannot open its
 			expect(sent.webhooks.map((w) => w.url)).toEqual([owners.url]);
 		} finally {
 			sent.restore();
+		}
+	});
+
+	// Card 2899's code review, F1: a line for each webhook let a backup with many
+	// flood the log, which keeps a count of lines; one WARN names the first 20.
+	it('2899 F1. a restore that switches off more than 20 webhooks writes one WARN naming the first 20 and counting the rest', () => {
+		const owner = makeUser();
+		const editor = makeUser();
+		const boards = [makeBoard({ owner }).board, makeBoard({ owner }).board, makeBoard({ owner }).board];
+		const hooks = boards.flatMap((board, b) => {
+			addBoardMember(board, editor, 'editor');
+			return Array.from({ length: [8, 8, 6][b] }, (_, i) => makeWebhook(board, { url: `https://hooks.example.test/${b}-${i}`, setBy: editor }));
+		});
+		expect(hooks).toHaveLength(22);
+		// The backup: the editor off every board, their webhooks on, and no hold columns.
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		backup.prepare('DELETE FROM board_members WHERE user_id = ?').run(editor.id);
+		before0071(backup);
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			const result = restoreFromBackup(sqlite, backup, { by: 'chief' });
+
+			expect(result.webhooksSwitchedOff).toBe(22);
+			const warned = column<string>(sqlite, "SELECT message FROM system_logs WHERE context = 'Webhooks' AND level = 'WARN' ORDER BY id");
+			const switchedOff = warned.filter((line) => / switched off[ :(]/.test(line) && !line.startsWith('The owners'));
+			expect(switchedOff).toHaveLength(1);
+			expect(switchedOff[0]).toMatch(/^22 webhooks switched off \(found after a restore by chief\): webhook \d+ on board \d+: the account that set it up/);
+			expect(switchedOff[0].match(/webhook \d+ on board \d+: /g)).toHaveLength(20);
+			expect(switchedOff[0].endsWith('; and 2 more. Each stays off until an owner of its board or an administrator switches it on.')).toBe(true);
+		} finally {
+			quiet.mockRestore();
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
 		}
 	});
 });
