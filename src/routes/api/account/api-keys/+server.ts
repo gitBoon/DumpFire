@@ -3,6 +3,7 @@ import { db } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
 import { apiKeys } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
+import { webhooksStoppedByRevoke } from '$lib/server/webhooks';
 import { generateApiKey, whilePasswordHolds } from '$lib/server/auth';
 import { createLogger } from '$lib/server/logger';
 import { readBody, readText, readTimestamp } from '$lib/server/request-body';
@@ -17,6 +18,12 @@ const log = createLogger('AUTH');
  * GET — List the current user's API keys (without the secret). `deadlineAt`
  * is the deadline a key made before two-step sign-in has until it is kept
  * (migration 0069, card 2772), as stored; null when it has none.
+ * `webhooks` is how many webhooks revoking the key would switch off now (card
+ * 2893, D5, S13; the code review's CS4, `webhooksStoppedByRevoke`): those that
+ * are on and record it, and, for the account's last working key made before
+ * keys were recorded, the account's webhooks from before then that are still
+ * sent. The Account page says so before the revoke. A count, never which: the
+ * boards may be ones the holder can no longer open.
  */
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
@@ -33,8 +40,9 @@ export const GET: RequestHandler = async ({ locals }) => {
 		.from(apiKeys)
 		.where(eq(apiKeys.userId, locals.user.id))
 		.all();
+	const stopped = webhooksStoppedByRevoke(locals.user.id);
 
-	return json(keys);
+	return json(keys.map((key) => ({ ...key, webhooks: stopped.get(key.id) ?? 0 })));
 };
 
 /**

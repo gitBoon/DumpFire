@@ -4,7 +4,16 @@ import { db } from '$lib/server/db';
 import { webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireBoard, requireUser, type Need } from '$lib/server/route-guards';
-import { canSeeWebhookSecret, forgetDelivery, NEW_SECRET_REASONS, presentWebhook, storedEvents, WEBHOOK_EVENTS } from '$lib/server/webhooks';
+import {
+	canSeeWebhookSecret,
+	forgetDelivery,
+	keyOfWrite,
+	NEW_SECRET_REASONS,
+	presentWebhook,
+	storedEvents,
+	WEBHOOK_EVENTS,
+	withHoldRecorded
+} from '$lib/server/webhooks';
 import { pathId, readBody, readBoolean, readChoices, readText } from '$lib/server/request-body';
 import { readWebhookUrl } from '$lib/server/webhook-address';
 import type { SessionUser } from '$lib/server/auth';
@@ -75,6 +84,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * only callers who may switch it on; a `secret` sent with that switch-on is
  * refused 400 before anything is written. One held because nobody was
  * recorded as its setter keeps its secret.
+ *
+ * Whoever becomes its setter has the API key they came in with recorded too
+ * (`keyOfWrite`, card 2893), so that it is switched off when that key ends;
+ * a change of `events` alone keeps the key it had.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -89,7 +102,11 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	// a 500.
 	const { updated, reveal } = writeAs(locals, (caller) => {
 		const user = requireUser(caller);
-		const { hook, reveal } = requireWebhook(user, webhookId, 'edit');
+		const { hook: found, reveal } = requireWebhook(user, webhookId, 'edit');
+		// One on and held now is switched off for good first, and judged so
+		// (card 2893's code review, CS3): an editor's change does not keep it on,
+		// and the owner's switch-on gives it a new secret.
+		const hook = withHoldRecorded(found, `found when ${user.username} changed it`);
 
 		if (!reveal && (Object.hasOwn(body, 'url') || Object.hasOwn(body, 'secret'))) {
 			throw error(403, "Only the board's owner or an administrator can change a webhook's address or secret. Ask the board's owner.");
@@ -117,8 +134,11 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		// Only a change: the address or the secret sent back as stored sets nothing.
 		// Switching it on does (the review, S2): whoever starts its deliveries
 		// again answers for them, and their reset is what switches it off.
+		// With the setter, the key they came in with (card 2893, S11); a change
+		// of events alone, or a switch-off, keeps the key it had.
 		if ((url !== undefined && url !== hook.url) || (secret !== undefined && secret !== hook.secret) || switchedOn) {
 			updates.setBy = user.id;
+			Object.assign(updates, keyOfWrite(locals.credential));
 		}
 		// Switched on: whatever hold switched it off is over (card 2752, D1).
 		if (switchedOn) {
@@ -153,7 +173,11 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	const webhookId = pathId(params.webhookId, 'webhook');
 	writeAs(locals, (caller) => {
-		const { hook, reveal } = requireWebhook(caller, webhookId, 'edit');
+		const { hook: found, reveal } = requireWebhook(caller, webhookId, 'edit');
+		// One on and held now is judged as switched off for good (card 2893's code
+		// review, CS3): an editor's delete is refused, which rolls the hold back
+		// with it, and the owner's commit leaves nothing to tell of.
+		const hook = withHoldRecorded(found, null);
 		// One switched off for good is the owner's or an administrator's to
 		// delete, as it is theirs to switch on (the code review's CS1): an
 		// editor's delete would clear the hold off the board, and with it the

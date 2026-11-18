@@ -24,6 +24,7 @@ import { refusalSeen, refuseCrossSiteWrite } from '$lib/server/same-origin';
 import { pathToLog } from '$lib/server/secret-paths';
 import {
 	announceReportSchedules,
+	announceWebhooksBeforeKeys,
 	checkMfaKeyAtStart,
 	endPlainInvites,
 	endPlainRequestLinks,
@@ -148,6 +149,15 @@ endPlainRequestLinks();
 // never rejects. See $lib/server/startup-checks.ts.
 void announceReportSchedules();
 
+// Tell the owners of each board, once, at the first start after card 2893,
+// which of its webhooks were set up before API keys were recorded, and the
+// date each will stop: the latest end among its setter's working keys from
+// then. One WARN line a webhook, then one mail to each owner, then, once every
+// mail went, a settings row that says it was done. Only where the schedulers
+// run, as above. Straight after the report schedules, and not awaited; it
+// never rejects. See $lib/server/startup-checks.ts.
+void announceWebhooksBeforeKeys();
+
 // Check, once, every image stored before card 2761 as an upload is checked
 // now: its hidden data taken out in place, or, where it is refused by the
 // check (not the image its type names, animated, too large, or malformed),
@@ -160,7 +170,8 @@ void announceReportSchedules();
 void recheckStoredImages();
 
 // Switch off, for good, every webhook that is on and whose setter cannot open
-// its board, or that nobody is recorded as having set up (card 2752): at the
+// its board, that nobody is recorded as having set up (card 2752), or whose
+// API key has ended (card 2893): at the
 // first start after the card, every webhook card 2325 held at delivery; after
 // that, what changed outside the writes that switch off. One WARN line each,
 // and the boards' owners mailed only where the schedulers run, by the same

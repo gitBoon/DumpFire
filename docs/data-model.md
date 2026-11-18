@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.85
+version: 1.86
 status: As-Built
 date: 2026-11-18
 tags:
@@ -50,7 +50,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893), and how migrations and schema reconciliation bring every database to the model"
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -1566,13 +1566,27 @@ itself over it.
 |---|---|---|---|
 | `held_because` | text, NULL | `switchOffHeld` (card 2752), `endAccountAccess` and `deleteUser` (the code review's CS4); carried by a restore (`carryHolds`, `fillSecretGaps`); cleared by `PUT /api/v1/webhooks/{id}` switching it on | Why the webhook was switched off for good: `'setter cannot open'`, `'no setter'`, `'setter access ended'` (a password reset, an invite used or the account deleted), or card 2893's `'key ended'`. NULL for one that is on, and for one switched off by a `PUT` or a working copy |
 | `held_at` | text, NULL | with `held_because` | The moment, in the stored form (`YYYY-MM-DD HH:MM:SS`, UTC) |
-| `set_by_key` | integer, NULL, `REFERENCES api_keys(id) ON DELETE SET NULL`, `idx_webhooks_set_by_key` | card 2893 | The API key that last set the address or secret, or switched the webhook on |
-| `set_with_key` | integer, NULL (0/1) | card 2893 | Whether a key was used (1), none was recorded (0), or the webhook was set before keys were recorded (NULL) |
+| `set_by_key` | integer, NULL, `REFERENCES api_keys(id) ON DELETE SET NULL`, `idx_webhooks_set_by_key` | both v1 writers, with `set_by` (`keyOfWrite`, card 2893): the create, and a `PUT` that changes the address or secret or switches it on; a change of events alone keeps it | The API key that last set the address or secret, or switched the webhook on. Read by `holdOf`: gone, ended (`keyEnded`) or another account's holds it, `'key ended'`; counted for each key by `GET /api/account/api-keys` (`webhooks`) |
+| `set_with_key` | integer, NULL (0/1) | with `set_by_key` | 1: written with a credential, a key's id in `set_by_key` or none (a session), which holds it; 0: written with no credential at all, only a test's call; NULL: set before keys were recorded, held once the setter has no working key made before `webhook_keys_recorded_at`. `set_with_key = 1 AND set_by_key IS NULL` reads "its key was deleted, or it was not set with a key" |
 
-The setting `webhook_keys_recorded_at` is the moment 0071 ran (card 2893's S9). A restore keeps
-this server's value over the backup's (`restoreFromBackup`). The rehearsal notes the new
-settings row as one a migration put there; 0071 rewrites and takes no row, so nothing is
-declared in `tests/rehearsal/one-offs.ts`.
+The setting `webhook_keys_recorded_at` is the moment 0071 ran (card 2893's S9), read by
+`keysBeforeRecorded` in `webhooks.ts`: only a key made before it counts for a webhook from before
+the release, and with no such setting none does. A restore keeps the earlier of this server's
+value and the backup's (`restoreFromBackup`; card 2893's code review, CS1), the backup's where
+this server has none: a key made before the later moment may have been made after the release on
+the other server. The setting `webhooks_before_keys_announced` (card 2893, D6) is the moment the
+start told the boards' owners of the webhooks set up before keys were recorded, written by
+`announceWebhooksBeforeKeys` only once every mail went; with it there, the start says nothing
+more. The rehearsal notes the new settings row as one a migration put there; 0071 rewrites and
+takes no row, so nothing is declared in `tests/rehearsal/one-offs.ts`.
+
+```mermaid
+flowchart LR
+    W["webhooks<br/>set_by, set_by_key, set_with_key"] -->|"set_by_key (SET NULL)"| K["api_keys<br/>user_id, created_at, expires_at, deadline_at"]
+    W -->|"set_by (SET NULL)"| U["users"]
+    K -->|"user_id (CASCADE)"| U
+    S["settings<br/>webhook_keys_recorded_at"] -.->|"keys created before it count<br/>for a webhook with set_with_key NULL"| K
+```
 
 ```mermaid
 stateDiagram-v2
@@ -3577,7 +3591,9 @@ board was held at each delivery and sent again once the setter could open the bo
   settings` the row `webhook_keys_recorded_at`, `datetime('now')`. No `IF NOT EXISTS`, as 0063.
 - **Changes no webhook.** Every webhook already stored has the four columns NULL. One that is on
   and held is switched off at the first start after the file (`switchOffHeldWebhooksAtStart`), and
-  its board's owners are mailed where the schedulers run.
+  its board's owners are mailed where the schedulers run. With `set_with_key` NULL, each is held
+  once its setter has no working key made before the file ran (card 2893); the first start tells
+  the owners of those still sent the earliest date each will stop (`webhooks_before_keys_announced`).
 - Declares nothing to the rehearsal: it takes and rewrites no row, and the rehearsal notes the
   new settings row as `settings had N row(s) and has N+1: a migration put the others there`.
 - It runs once. Going back to an older image needs no step: its schema check reports the

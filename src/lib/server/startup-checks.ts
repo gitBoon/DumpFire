@@ -70,16 +70,21 @@
  * link (card 2870), and which stops the server, alone of the five, when it
  * can neither look nor end every link. And one thing said once, at the first start
  * after card 2751: `announceReportSchedules`, which tells each owner of a
- * report schedule that is on which of theirs are running. And
- * `switchOffHeldWebhooksAtStart` (card 2752), which switches off for good
- * every webhook that is on and whose setter cannot open its board, or that
- * nobody is recorded as having set up, and mails the boards' owners where the
- * schedulers run.
+ * report schedule that is on which of theirs are running, and
+ * `announceWebhooksBeforeKeys` (card 2893), which tells each owner of a board
+ * which of its webhooks were set up before keys were recorded, and when each
+ * will stop. And `switchOffHeldWebhooksAtStart` (card 2752), which switches
+ * off for good every webhook that is on and whose setter cannot open its
+ * board, that nobody is recorded as having set up, or whose key has ended
+ * (card 2893), and mails the boards' owners where the schedulers run.
  */
 import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 import { dev } from '$app/environment';
-import { createdAtStart, getDbPath, otherDatabaseAtStart, sqlite } from './db';
+import { and, asc, eq, isNull } from 'drizzle-orm';
+import { createdAtStart, db, getDbPath, otherDatabaseAtStart, sqlite } from './db';
+import { webhooks } from './db/schema';
+import { stamp, toStamp } from '$lib/timestamps';
 import { DatabaseLocationError, described, heldInContainerLayer, type OtherDatabase } from './db/location';
 import {
 	PLACEHOLDER_ORIGIN,
@@ -94,7 +99,7 @@ import {
 	storedAppUrl,
 	storedAppUrlText
 } from './email';
-import { securityNoticeSent, type NoticeSchedule } from './notifications';
+import { notifyWebhooksBeforeKeys, securityNoticeSent, type NoticeSchedule, type WebhookBeforeKeys } from './notifications';
 import { reportCovers } from './reports';
 import { schedulerSetting } from './schedulers';
 import { reportRecipients } from '$lib/report-recipients';
@@ -104,14 +109,23 @@ import { reportRecipients } from '$lib/report-recipients';
 import { createLogger, isLogged, printable } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { NOT_IN_HASH_FORM, REPLACE_PLAIN_USED_INVITES } from './invites';
-import { SESSION_NOT_IN_HASH_FORM, httpsOnlyCookie } from './auth';
+import { SESSION_NOT_IN_HASH_FORM, httpsOnlyCookie, keyEnded } from './auth';
 import { END_PLAIN_REQUEST_LINKS } from './request-tokens';
 import { signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
 import { secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './backup-secrets';
 import { parseAllowInside } from './webhook-address';
-import { activeWebhooksRefused, boardsOverWebhookCap, MAX_WEBHOOKS_PER_BOARD, switchOffLostWebhooks } from './webhooks';
+import {
+	activeWebhooksRefused,
+	boardsOverWebhookCap,
+	holdOf,
+	hostOf,
+	keysBeforeRecorded,
+	MAX_WEBHOOKS_PER_BOARD,
+	switchOffLostWebhooks,
+	webhooksLog
+} from './webhooks';
 import { inTransaction } from './db/transaction';
 import { removeSettingsOfFormerAdministrators, settingsHeldBy } from './setting-setters';
 import {
@@ -841,8 +855,10 @@ export function endPlainInvites(): number | null {
 
 /**
  * Switch off, for good, every webhook that is on and held (card 2752, D2):
- * its setter cannot open its board, or nobody is recorded as having set it
- * up. Returns how many, or null when it could not be done. Called once, from
+ * its setter cannot open its board, nobody is recorded as having set it up,
+ * or the key that set it up has ended since (card 2893: expired or passed its
+ * deadline while the server was down). Returns how many, or null when it
+ * could not be done. Called once, from
  * hooks.server.ts, after `removeSettingsOfNonAdministrators` and before the
  * schedulers start.
  *
@@ -870,6 +886,118 @@ export function switchOffHeldWebhooksAtStart(value: string | undefined = process
 			log.warn(
 				`The webhooks whose setter cannot open their board could not be switched off at start: ${(err as Error)?.message ?? err}. ` +
 					'Each is switched off at its next event.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+}
+
+/** The `settings` key that says the webhooks set up before keys were recorded were announced (card 2893, D6). */
+export const WEBHOOKS_BEFORE_KEYS_ANNOUNCED = 'webhooks_before_keys_announced';
+
+/**
+ * When a webhook set up before keys were recorded stops (card 2893, D6): the
+ * latest end among its setter's working keys made before then, a key's end
+ * being the earlier of its expiry and its deadline; null when one of them has
+ * neither, and so no end.
+ */
+function stopsAt(setBy: number, now: string): string | null {
+	let latest = '';
+	for (const key of keysBeforeRecorded(setBy)) {
+		if (keyEnded(key, now)) continue;
+		const ends = [key.expiresAt, key.deadlineAt].map((at) => (at === null ? null : toStamp(at))).filter((at): at is string => at !== null);
+		if (ends.length === 0) return null;
+		const end = ends.sort()[0];
+		if (end > latest) latest = end;
+	}
+	return latest;
+}
+
+/**
+ * Tell the owners of each board, once, which of its webhooks were set up
+ * before keys were recorded, and when each will stop (card 2893, D6, S9).
+ * Resolves to how many webhooks were named once the flag is written, 0 when
+ * it was already there, and null when it was not written, so that the next
+ * start does it again. Called once, from hooks.server.ts, straight after
+ * `announceReportSchedules`, and not awaited; the lines are written, and
+ * every mail begun, before it first waits.
+ *
+ * A webhook made before the release records no key (`set_with_key` NULL),
+ * and goes on sending while its setter has a working key made before
+ * `webhook_keys_recorded_at`. So, at the first start: one WARN line under
+ * Webhooks for each that is on and sent now, naming it, its board, its setter
+ * and the date it will stop, never the address; then one mail to each owner
+ * of its board (`notifyWebhooksBeforeKeys`), listing theirs with the dates
+ * and how to keep one, re-saving it with a key; then, once every mail went,
+ * `settings.webhooks_before_keys_announced`, the moment, with `INSERT OR
+ * IGNORE`. One held now (`holdOf`) is left out: the start's sweep, which
+ * follows, switches it off and says so.
+ *
+ * Only where the schedulers run, by the decision `startSchedulers` makes
+ * (card 2751, CS2): elsewhere the WARN lines are written, nobody is mailed,
+ * one WARN says so, and no flag is written, so that the first start that
+ * runs them mails. With no mail set up, one WARN says the owners were not
+ * told, and the flag is written all the same; a mail that did not go leaves
+ * it unwritten, and the next start says it all again. It never rejects.
+ */
+export async function announceWebhooksBeforeKeys(
+	value: string | undefined = process.env.SCHEDULERS,
+	isDev: boolean = dev
+): Promise<number | null> {
+	try {
+		if (sqlite.prepare('SELECT 1 FROM settings WHERE key = ?').get(WEBHOOKS_BEFORE_KEYS_ANNOUNCED)) return 0;
+		const now = stamp();
+		const cache = new Map<string, boolean>();
+		const before = db
+			.select()
+			.from(webhooks)
+			.where(and(eq(webhooks.active, true), isNull(webhooks.setWithKey)))
+			.orderBy(asc(webhooks.boardId), asc(webhooks.id))
+			.all()
+			.filter((hook) => holdOf(hook, cache) === null);
+		const items: WebhookBeforeKeys[] = [];
+		for (const hook of before) {
+			const stops = stopsAt(hook.setBy as number, now);
+			webhooksLog.warn(
+				`Webhook ${hook.id} on board ${hook.boardId} was set up before API keys were recorded (user ${hook.setBy}): it stops ` +
+					(stops === null
+						? 'on no set date, as a key of that account from then has neither an expiry nor a deadline'
+						: `at the earliest ${stops} UTC; later if that account keeps or replaces a key from before the release`) +
+					'. To keep it, an owner of the board or an administrator re-saves it with a key.'
+			);
+			items.push({ boardId: hook.boardId, id: hook.id, host: hostOf(hook.url), stops });
+		}
+		const setting = schedulerSetting(value, isDev);
+		if (!setting.run) {
+			if (items.length > 0) {
+				webhooksLog.warn(
+					`The owners of the boards of the ${items.length} webhook(s) set up before API keys were recorded were not mailed, as the ` +
+						`schedulers are off (${setting.reason}). The lines above name each; the first start that runs the schedulers mails them.`
+				);
+			}
+			return null;
+		}
+		if (items.length > 0 && (!isSmtpConfigured() || smtpPasswordMissing())) {
+			webhooksLog.warn(
+				`The owners of the boards of the ${items.length} webhook(s) set up before API keys were recorded were not mailed, as mail ` +
+					'is not set up. The lines above name each.'
+			);
+		} else if (items.length > 0 && !(await notifyWebhooksBeforeKeys(items))) {
+			webhooksLog.warn(
+				`The owners of the boards of the ${items.length} webhook(s) set up before API keys were recorded were not all mailed, as ` +
+					'a mail did not go. The lines above name each. The next start mails every owner again.'
+			);
+			return null;
+		}
+		sqlite.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(WEBHOOKS_BEFORE_KEYS_ANNOUNCED, new Date().toISOString());
+		return items.length;
+	} catch (err) {
+		try {
+			webhooksLog.warn(
+				`The owners of webhooks set up before API keys were recorded could not be told of them: ${(err as Error)?.message ?? err}. ` +
+					'The next start tries again.'
 			);
 		} catch {
 			// Nothing more to be done about it.

@@ -428,6 +428,21 @@ describe('every mail in notifications.ts', () => {
 			link: false,
 			send: () => notifications.notifyWebhookCreated(board.id, MARKER, { id: 1, host: MARKER })
 		},
+		// Card 2893 (S13, D6): the setter of a webhook whose key ended, told beside the owners, and the one-time mail of
+		// the webhooks set up before keys were recorded, with each one's date.
+		{
+			name: "notifyWebhooksSwitchedOff (its setter's own mail, for a key that ended)",
+			link: false,
+			send: () => {
+				addBoardMember(board, actor, 'editor');
+				notifications.notifyWebhooksSwitchedOff([{ boardId: board.id, id: 1, host: MARKER, why: MARKER, setter: actor.id }], MARKER);
+			}
+		},
+		{
+			name: 'notifyWebhooksBeforeKeys',
+			link: false,
+			send: () => void notifications.notifyWebhooksBeforeKeys([{ boardId: board.id, id: 1, host: MARKER, stops: MARKER }])
+		},
 		{
 			name: 'notifyTaskRequest',
 			link: true,

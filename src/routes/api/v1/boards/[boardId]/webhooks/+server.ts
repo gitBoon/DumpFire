@@ -6,7 +6,7 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { pathId, readBody, readChoices, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
-import { canSeeWebhookSecret, hostOf, presentWebhook, receiverOf, refuseWebhookOverCap, WEBHOOK_EVENTS } from '$lib/server/webhooks';
+import { canSeeWebhookSecret, hostOf, keyOfWrite, presentWebhook, receiverOf, refuseWebhookOverCap, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import { readWebhookUrl } from '$lib/server/webhook-address';
 import { notifyWebhookCreated } from '$lib/server/notifications';
 import type { RequestHandler } from './$types';
@@ -55,6 +55,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * board was switched off at for good (`held_because` set), asked last of all
  * (CS3); and when such a caller makes one, the board's owners are mailed who
  * made it, its id and its host (`notifyWebhookCreated`).
+ *
+ * The API key the caller came in with is recorded beside them (`set_by_key`,
+ * `set_with_key`, card 2893, `keyOfWrite`), so that the webhook is switched
+ * off when that key ends; never in an answer.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -94,7 +98,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			if (heldOff) throw error(409, HELD_OFF_RECEIVER);
 		}
 		const hook = db.insert(webhooks)
-			.values({ boardId, url, secret: secret ?? '', events: JSON.stringify(events ?? []), setBy: user.id })
+			.values({ boardId, url, secret: secret ?? '', events: JSON.stringify(events ?? []), setBy: user.id, ...keyOfWrite(locals.credential) })
 			.returning()
 			.get();
 		// The board's owners are told of a webhook someone else made (card 2752, S3), once it is committed.

@@ -277,14 +277,23 @@ const GIVE_API_KEY_DEADLINES =
 
 /**
  * The setting migration 0071 writes: the moment API keys began to be recorded
- * on webhooks (cards 2752 and 2893, S9). A restore keeps this server's value,
- * over any the backup holds.
+ * on webhooks (cards 2752 and 2893, S9). A restore keeps the earlier of this
+ * server's value and the backup's (card 2893's code review, CS1): a key made
+ * before the later of the two may have been made after the release on the
+ * other server, so only the earlier moment is safe to count keys before. The
+ * backup's stands where this server has none, and this server's where the
+ * backup's names no moment.
  */
 const WEBHOOK_KEYS_RECORDED_SETTING = 'webhook_keys_recorded_at';
 
-/** 0071's setting put back as this server had it (`@value`), the backup's replaced. */
+/**
+ * 0071's setting put back as this server had it (`@value`), unless the
+ * backup's names an earlier moment (`stamp_of`, which `registerStampFunctions`
+ * gives the connection): then the backup's, as stored.
+ */
 const KEEP_WEBHOOK_KEYS_RECORDED_SETTING =
-	`INSERT INTO settings (key, value) VALUES ('${WEBHOOK_KEYS_RECORDED_SETTING}', @value) ON CONFLICT (key) DO UPDATE SET value = excluded.value`;
+	`INSERT INTO settings (key, value) VALUES ('${WEBHOOK_KEYS_RECORDED_SETTING}', @value) ON CONFLICT (key) DO UPDATE SET value = ` +
+	'CASE WHEN stamp_of(settings.value) IS NOT NULL AND stamp_of(settings.value) < stamp_of(excluded.value) THEN settings.value ELSE excluded.value END';
 
 /** A webhook of this server's switched off for good, as `webhookHoldsHere` reads it. */
 type HoldHere = { id: number; boardId: number; url: string; setBy: number | null; heldBecause: string; heldAt: string | null };
@@ -961,7 +970,8 @@ export function defaultOutside(
  * connection, which the hold rule reads (`canViewBoard`): a restore into any
  * other is not swept, and the start that opens it as the server's database
  * sweeps it. This server's `webhook_keys_recorded_at` (migration 0071) is
- * read before the clear and kept, over the backup's.
+ * read before the clear, and the earlier of it and the backup's is kept (card
+ * 2893's code review, CS1).
  *
  * Throws a `RestoreError` in every case but a clean return. Its `committed`
  * says whether the database was changed: it is false, and the database is as
@@ -1248,10 +1258,11 @@ function restoreInOneSnapshot(
 				if (tables.includes('settings')) live.prepare(KEEP_API_KEY_DEADLINE_SETTING).run({ deadline });
 			}
 
-			// This server's 0071 setting, over the backup's (cards 2752 and
-			// 2893): see above. Not caught, so that a restore that could not keep
-			// it is rolled back.
+			// The earlier of this server's 0071 setting and the backup's (cards
+			// 2752 and 2893; card 2893's code review, CS1): see above. Not
+			// caught, so that a restore that could not keep it is rolled back.
 			if (keysRecordedHere !== null && tables.includes('settings')) {
+				registerStampFunctions(live);
 				live.prepare(KEEP_WEBHOOK_KEYS_RECORDED_SETTING).run({ value: keysRecordedHere });
 			}
 

@@ -803,11 +803,13 @@ describe('comments and assigned work do not outlive board access', () => {
  */
 describe('webhook secrets and addresses', () => {
 	const ADDRESS = 'https://deliver:p4ss@hooks.internal.example.test/hook';
-	// Set by the board's owner: a webhook nobody is recorded as having set is held (card 2325).
+	// Set by the board's owner: a webhook nobody is recorded as having set is held (card 2325). With no credential, as
+	// a test's call records it: one made before keys were recorded is held too, once its setter has no key from then
+	// (card 2893).
 	const makeHook = () =>
 		db
 			.insert(webhooks)
-			.values({ boardId: A.board.id, url: ADDRESS, secret: 's3cret', setBy: owner.id })
+			.values({ boardId: A.board.id, url: ADDRESS, secret: 's3cret', setBy: owner.id, setWithKey: false })
 			.returning()
 			.get();
 

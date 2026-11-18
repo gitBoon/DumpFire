@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.138
+version: 1.139
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2893
+  - webhook-key-ended
   - card-2752
   - migration-0071
   - webhook-switched-off
@@ -92,7 +94,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752)"
+description: "Deep-dive into DumpFire's authentication system, what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893)"
 ---
 
 # Authentication & Security
@@ -4499,6 +4501,11 @@ They do not reach:
 - **A webhook somebody else set since**: an owner or administrator who changed its address
   or secret, or switched it on, became its setter.
 
+Revoking one key on the Account page is not a reset either, and needs none: since card 2893 the
+webhooks that key set up are switched off for good in the same write, `'key ended'`, and the page
+says how many before and after. See
+[A Webhook Switched Off When Its API Key Ends](#a-webhook-switched-off-when-its-api-key-ends-card-2893).
+
 Losing the board is not a reset, and needs none: a webhook whose setter can no longer open its
 board is switched off for good at the write that takes the access away (card 2752; card 2325
 held it at delivery and sent again once access came back). It records why, says so in
@@ -6090,7 +6097,10 @@ new keys get none.
 
 **Going back to an older image** keeps the column and the setting, unread: that image ignores
 `deadline_at`, so keys past their deadline work again there. A rollback past card 2772 is a
-security event. Webhooks a key set keep their present rule when the key ends (card 2893).
+security event. Since card 2893 a webhook is switched off for good when the key that set it up
+ends, its deadline included, and stays off after a rollback; on an image before card 2893 a
+webhook whose key ended goes on sending. See
+[A Webhook Switched Off When Its API Key Ends](#a-webhook-switched-off-when-its-api-key-ends-card-2893).
 
 Covered by `tests/api-key-deadline.test.ts` (T12 to T16), `tests/migrations.test.ts` (T11) and
 `tests/timestamps.test.ts`.
@@ -6980,7 +6990,7 @@ flowchart LR
 | "Link existing board" | The top-level boards the caller owns (card 2139), which they can always open | The board page | 2130, decision 11 |
 | The dashboard's personal figures | Only cards on boards the caller can open: assigned, active, overdue, due soon, Upcoming Deadlines, the trends and on hold | The dashboard | 2130, decision 12 |
 | A webhook's address | Left out, with its secret, but to the board's owner, an administrator and the request that made the webhook | Both webhook reads, the answer to an update | 2133, decision 14 |
-| A board's events, by webhook | Sent only while the account that set the webhook up can open the board, asked at each event with its role as it is then; none for a webhook with no recorded setter, from the deploy on. A held webhook is not sent to, and says why in `pausedBecause`, given where its address is given. Since card 2752 it is switched off for good (`active` false, `held_because`, `held_at`) at the write that takes the access away, at every start, after every restore and at delivery, and stays off when the access comes back. Before, a former editor, or an administrator made an ordinary user, went on receiving every event of the board | The six access-removing writes, start-up and restore (`switchOffLostWebhooks`); every delivery (`deliver`); `pausedBecause` in both webhook reads, the answer to an update and the create | 2325, 2752 |
+| A board's events, by webhook | Sent only while the account that set the webhook up can open the board, asked at each event with its role as it is then; none for a webhook with no recorded setter, from the deploy on. A held webhook is not sent to, and says why in `pausedBecause`, given where its address is given. Since card 2752 it is switched off for good (`active` false, `held_because`, `held_at`) at the write that takes the access away, at every start, after every restore and at delivery, and stays off when the access comes back. Before, a former editor, or an administrator made an ordinary user, went on receiving every event of the board. Since card 2893 one is switched off the same way when the API key that set it up ends, and one set before keys were recorded once its setter has no working key from then | The six access-removing writes, a key's revoke, start-up and restore (`switchOffLostWebhooks`); every delivery (`deliver`); `pausedBecause` in both webhook reads, the answer to an update and the create | 2325, 2752, 2893 |
 | The activity report | Only the boards the caller can open are read, before the query. A board named in `boardIds` they cannot open is refused, `403` "No access to board N", and one that does not exist `404` "Board N not found", administrators included, as the burndown answers. `meta.boardsExcludedForAccess` is always `0`: it counted the boards with activity the caller could not open, and with a window down to the second it told them when such a board was worked on. A milestone's counts in the report are of its cards on boards the caller can open, as its burndown's are: a card moved onto a board they cannot open told them, by moving `from`, the second it was completed | `GET /api/v1/reports/activity` | 2326 |
 | Card search (the pickers) | Cards and subtasks on boards the caller can open, filtered in the query with "not archived", the card left out (`exclude`) and the card's column being there, before its limit of 60, then the first 25 (40 with subtasks) by id. It read the first 60 matches of every board and dropped the hidden ones afterwards, so matches on other people's boards pushed the caller's own out, and an answer shorter than the cap told them that hidden matches existed. A caller who opens no board is answered `[]` with no query; `#<id>` of a hidden card is `[]`, as a missing one is. The title is matched as typed, `%` and `_` being no wildcards (card 2718). `editable=1` narrows the boards to those the caller can edit, every board for an administrator (card 2718): the decision page's linked cards ask it, since a link is an edit of the card's board | `GET /api/cards/search` (the dependency picker, the plan page's **+ Add cards**, the decision page's linked cards) | 2327, 2718 |
 
@@ -8843,7 +8853,9 @@ the one it was judged on (`AND set_by IS ?`), so a webhook switched on again or 
 meanwhile is left alone, and two callers switch it off once. A password reset, an invite used
 and a deleted account (`endAccountAccess`, `deleteUser`), which already switched off the
 webhooks the account set, record `'setter access ended'` (the code review's CS4), so those are
-held the same way. Card 2893 adds `'key ended'`. It is switched off:
+held the same way. Card 2893's `'key ended'` is written by `switchOffHeld` too (see
+[A Webhook Switched Off When Its API Key Ends](#a-webhook-switched-off-when-its-api-key-ends-card-2893)).
+It is switched off:
 
 | When | How | Cause named in the WARN and the mail |
 |---|---|---|
@@ -8857,6 +8869,7 @@ held the same way. Card 2893 adds `'key ended'`. It is switched off:
 | After every restore as it is, in its transaction (`restoreFromBackup`) | `switchOffLostWebhooks('all')` | "found after a restore by Ann" |
 | At delivery, the backstop for a change none of these saw (`deliver`) | `switchOffHeld` on the one webhook | "found when an event was sent" |
 | A password reset, an invite used, the account deleted | `endAccountAccess`, `deleteUser` (`'setter access ended'`) | the reset's or the delete's own log line |
+| An API key revoked on the Account page (card 2893) | `switchOffLostWebhooks({ setters })` | "API key #12 was revoked by Sam" |
 
 Each write's sweep runs inside the write's transaction: a write that fails leaves the share and
 the webhooks as they were, and nothing is said. The WARN and the mail come after the commit.
@@ -8924,9 +8937,120 @@ webhooks off by taking a member out of the team, or by deleting the team; that i
 team's management already holds over the member's access, and the owners are told who did it.
 A webhook on and held now by a change none of the writes saw (a member row deleted from the
 host) is reported `Nothing is sent: …` until its next event switches it off. A webhook set
-through an API key still sends after the key ends: that is card 2893.
+through an API key that has since ended is switched off too, since card 2893, below.
 
 Covered by `tests/webhooks.test.ts` and `tests/access-control.test.ts`.
+
+### A Webhook Switched Off When Its API Key Ends (card 2893)
+
+Webhooks are made and changed only with an API key. Until card 2893 a webhook went on sending
+after the key that set it up had expired, passed the deadline card 2772 gave keys made before
+two-step sign-in, been deleted or been revoked: `set_by` names an account, not a key. Now each
+webhook remembers the key, and when that key ends the webhook is switched off for good, as card
+2752 switches one off when its setter loses the board: `'key ended'`, the same state, the same
+owners' mail and log, and the same new secret on switching on.
+
+**What is recorded** (migration 0071, carried by card 2752). `set_by_key`, the key's row id
+(`REFERENCES api_keys(id) ON DELETE SET NULL`), and `set_with_key`, whether one was used. Both v1
+writers record them with the setter (`keyOfWrite` in `webhooks.ts`): the create, and a `PUT` that
+changes the address or the secret or switches the webhook on. A change of `events` alone, or a
+switch-off, keeps the key it had. Neither is in any answer (`presentWebhook`).
+
+| `locals.credential` at the write | `set_with_key` | `set_by_key` |
+|---|---|---|
+| An API key | 1 | the key's id |
+| Anything else (a session) | 1 | NULL: held, so a webhook set without a key is never sent |
+| None at all (`undefined`: only a test's call; `stillAuthenticated` refuses it outside the tests) | 0 | NULL |
+| A webhook made before migration 0071 | NULL | NULL |
+
+**The rule** (`holdOf`, after "no setter" and "setter cannot open"):
+
+```mermaid
+flowchart TD
+    A["Webhook on, setter can open the board"] --> B{"set_with_key"}
+    B -->|"0 (a test's)"| S["Sent"]
+    B -->|"1"| C{"set_by_key"}
+    C -->|"NULL: its key was deleted, or not a key"| H["Held: 'key ended'"]
+    C -->|"an id"| D{"The key's row"}
+    D -->|"gone, keyEnded, or user_id is not set_by"| H
+    D -->|"live and the setter's"| S
+    B -->|"NULL (made before 0071)"| E{"A key of the setter made before<br/>webhook_keys_recorded_at, not ended?"}
+    E -->|"yes"| S
+    E -->|"no, or no such setting"| H
+```
+
+`keyEnded` is the gate's own rule (its expiry, and its deadline), so no key the gate refuses keeps
+a webhook sending. A key of another account recorded on the webhook holds it (the plan review's
+S12). For a webhook from before the release only keys made before `webhook_keys_recorded_at`,
+the moment 0071 ran (kept by a restore), count: a key made after the release cannot have set it
+(S9). The answers are cached per dispatch as `key:<id>:<setter>` and `keys-before:<setter>`.
+
+**When it is switched off.** Revoking a key on the Account page (`DELETE
+/api/account/api-keys/{id}`) deletes the key and, in the same transaction, sweeps the account's
+webhooks (`switchOffLostWebhooks({ setters: [user.id] })`): the foreign key has emptied
+`set_by_key` on the webhooks it set, which the rule reads as a key that ended, and a webhook from
+before the release whose setter has just lost their last key from then is caught too. The cause
+names the key by its id, never its name ("API key #12 was revoked by Sam"): the cause goes to the
+system log, which every administrator reads. A key that expires or passes its deadline is found
+at the next start (`switchOffHeldWebhooksAtStart`), after a restore, or at the webhook's next
+event (`deliver`); so is a key deleted any other way (the row deleted from the host). The answer
+to the revoke is `{ success: true, webhooksSwitchedOff: n }`.
+
+**The revoke says so first.** `GET /api/account/api-keys` gives each key `webhooks`, how many
+webhooks revoking it would switch off now (`webhooksStoppedByRevoke`; the code review's CS4):
+those that are on and record it, and, where it is the account's last working key made before
+`webhook_keys_recorded_at`, the account's webhooks from before then that are on and sent, which
+lose their last key with it. The Account page shows the count on the key's row ("Revoking it
+switches off 2 webhooks"), and its inline confirm reads "Revoke? It switches off 2 webhooks.";
+after it, "Key revoked. 2 webhooks were switched off.".
+
+**A change to a webhook held now** (the code review's CS3). A `PUT` or a `DELETE` of a webhook
+that is on and held now (its key ended where no sweep has yet seen it) first records the hold,
+in the same transaction (`withHoldRecorded`: `switchOffHeld`, told after the commit with the
+cause "found when Sam changed it"), and reads the row again, so the change is judged against the
+hold: an editor's switch-off leaves it switched off for good, an editor's delete is refused
+`403` (which rolls the recorded hold back with it, until the next event records it), and the
+owner's switch-on gives it a new secret.
+
+**Who is told.** The board's owners, as for card 2752, and the account that set it up, in a mail
+of its own ("A webhook you set was switched off": the key you used ended; ask the board's owner
+to switch it on with their own key) while it can still open the board, unless it is one of the
+owners. Its log line names the key's id and the user, never the key's prefix or hash: `Webhook 7
+on board 3 switched off: the API key that set it up (key 12, user 5) has ended (…)`, "no key
+recorded" where it was deleted, or, for one from before the release, `the account that set it up
+(user 5) has no working API key from before keys were recorded`.
+
+**Webhooks made before the release.** They record no key, so each is held once its setter has no
+working key made before the release. At the first start that runs the schedulers,
+`announceWebhooksBeforeKeys` (`startup-checks.ts`, straight after the report schedules'
+announcement) writes one WARN under Webhooks for each that is on and sent now, and mails each
+board's owners once, listing them with the earliest date each will stop: the latest end, the
+earlier of expiry and deadline, among the setter's working keys from then, said as "at the
+earliest …; later if that account keeps or replaces a key from before the release" (the code
+review's CS2), or "no date" where one of them has neither. A restore keeps the earlier of this
+server's `webhook_keys_recorded_at` and the backup's (CS1). Re-saving one with a key (switch it off and on) binds it to that key. The flag
+`webhooks_before_keys_announced` is written only when every mail went; where the schedulers are
+off only the WARN lines are written and no flag, and with no mail set up the flag is written
+after one WARN saying the owners were not told. One held now is left out: the start's sweep,
+which follows, switches it off and tells them.
+
+**Switching it on again** is card 2752's: the board's owner or an administrator, with their own
+key, which is recorded, and a new secret in that answer.
+
+**Rotating a key** (the code review's CR6). Preferred, so nothing stops and the secret is kept:
+make the new key, have the board's owner or an administrator re-save each webhook with their new
+key (`{"active": false}`, then `{"active": true}`), which binds it to that key, and only then
+revoke the old one. Otherwise, revoke the old key first, and the board's owner or an
+administrator switches each webhook on with their key, which gives it a new secret for its
+receiver.
+
+**What is left (accepted).** A webhook from before the release keeps sending while its setter
+holds any working key from before the release (F4): its owners were told the date, and re-saving
+binds it. The key list shows how many webhooks a key set, not which (F3). Going back to an image
+before card 2893 leaves the columns unread there, so a webhook whose key ended sends again on that
+image; one already switched off stays off.
+
+Covered by `tests/webhooks.test.ts` (card 2893's cases 1 to 13) and `tests/page-failures.test.ts`.
 
 ## Security Headers
 

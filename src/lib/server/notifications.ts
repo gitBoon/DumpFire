@@ -791,8 +791,12 @@ function webhookRecipients(boardId: number): { id: number; email: string; userna
 		.all();
 }
 
-/** A webhook as the owners' mails name it: its board, its id, its host, and why it was switched off. */
-export type WebhookInMail = { boardId: number; id: number; host: string; why: string };
+/**
+ * A webhook as the owners' mails name it: its board, its id, its host, and why
+ * it was switched off. `setter`, for one whose key ended (card 2893, S13): the
+ * account that set it up, told too where they can still open the board.
+ */
+export type WebhookInMail = { boardId: number; id: number; host: string; why: string; setter?: number };
 
 /**
  * Tell the owners of each board whose webhooks a write switched off for good
@@ -802,17 +806,37 @@ export type WebhookInMail = { boardId: number; id: number; host: string; why: st
  * off, and `cause`, the write that caused it and who made it. Not subject to
  * the recipients' mail switches: it is about where their board's data goes.
  * No link, so no App URL is needed. Sent once the write is committed.
+ *
+ * The setter of a webhook whose key ended (`setter`, card 2893, S13) is told
+ * of it too, while they can still open its board (`canViewBoard`): their key
+ * ended, perhaps unnoticed. One mail of their own for the write, in words
+ * that speak to them (`notifyWebhookSetter`), unless they are one of the
+ * board's owners told above. One who cannot open the board is told nothing
+ * of it.
  */
 export function notifyWebhooksSwitchedOff(items: readonly WebhookInMail[], cause: string): void {
 	if (!isSmtpConfigured() || items.length === 0) return;
 	const byRecipient = new Map<number, { email: string; items: WebhookInMail[] }>();
+	const toldOf = new Map<number, Set<number>>();
 	for (const boardId of [...new Set(items.map((item) => item.boardId))]) {
-		for (const recipient of webhookRecipients(boardId)) {
+		const recipients = webhookRecipients(boardId);
+		toldOf.set(boardId, new Set(recipients.map((recipient) => recipient.id)));
+		for (const recipient of recipients) {
 			const entry = byRecipient.get(recipient.id) ?? { email: recipient.email, items: [] };
 			entry.items.push(...items.filter((item) => item.boardId === boardId));
 			byRecipient.set(recipient.id, entry);
 		}
 	}
+	const bySetter = new Map<number, { email: string; items: WebhookInMail[] }>();
+	for (const item of items) {
+		if (item.setter === undefined || toldOf.get(item.boardId)?.has(item.setter)) continue;
+		const setter = db.select({ id: users.id, email: users.email, role: users.role }).from(users).where(eq(users.id, item.setter)).get();
+		if (!setter || !canViewBoard(setter, item.boardId)) continue;
+		const entry = bySetter.get(setter.id) ?? { email: setter.email, items: [] };
+		entry.items.push(item);
+		bySetter.set(setter.id, entry);
+	}
+	for (const { email, items: theirs } of bySetter.values()) notifyWebhookSetter(email, theirs, cause);
 	for (const { email, items: theirs } of byRecipient.values()) {
 		const rows = theirs
 			.map(
@@ -827,13 +851,42 @@ export function notifyWebhooksSwitchedOff(items: readonly WebhookInMail[], cause
 			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">What caused it: ${escapeHtml(cause)}.</p>
 			<ul style="margin: 0 0 12px; padding-left: 20px; font-size: 13px; color: #334155;">${rows}</ul>
 			<p style="margin: 0 0 8px; font-size: 13px; color: #334155;">${one ? 'It sends nothing, and stays off' : 'They send nothing, and stay off'}, even if the account that set ${one ? 'it' : 'them'} up is given the board back.</p>
-			<p style="margin: 0; font-size: 13px; color: #475569;">What to do: delete each you do not recognise. To keep one, switch it on with your own API key (PUT /api/v1/webhooks/{id} with active true), which makes you its setter; one switched off for a lost setter is given a new secret, given in that answer and readable by the board's owner or an administrator, to give its receiver.</p>
+			<p style="margin: 0; font-size: 13px; color: #475569;">What to do: delete each you do not recognise. To keep one, switch it on with your own API key (PUT /api/v1/webhooks/{id} with active true), which makes you its setter; one switched off for a lost setter or an ended key is given a new secret, given in that answer and readable by the board's owner or an administrator, to give its receiver.</p>
 		</div>
 	`);
 		sendEmail(email, one ? 'A webhook on your board was switched off' : `${theirs.length} webhooks on your boards were switched off`, html).catch((err) =>
 			log.error('A notice of webhooks switched off failed', err)
 		);
 	}
+}
+
+/**
+ * The setter's own mail of webhooks they set that were switched off because
+ * the key they set them up with ended (card 2893, S13; the ruling on S1's
+ * departure 10): the board, each webhook's id and host, never its path, query
+ * or secret, and the cause; that they cannot switch it on themselves, and to
+ * ask the board's owner, who switches it on with a key of their own. Not
+ * exported: `notifyWebhooksSwitchedOff` sends it, once the write is committed.
+ */
+function notifyWebhookSetter(email: string, theirs: readonly WebhookInMail[], cause: string): void {
+	const rows = theirs
+		.map(
+			(item) =>
+				`<li style="margin: 0 0 8px;">Board <strong>${escapeHtml(getBoardName(item.boardId))}</strong>: webhook ${item.id} to ` +
+				`<strong>${escapeHtml(item.host)}</strong>.</li>`
+		)
+		.join('');
+	const one = theirs.length === 1;
+	const html = emailTemplate(one ? 'A webhook you set was switched off' : 'Webhooks you set were switched off', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #dc2626;">
+			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">The API key you used to set ${one ? 'this webhook' : 'these webhooks'} up has ended, so ${one ? 'it was' : 'they were'} switched off for good. What caused it: ${escapeHtml(cause)}.</p>
+			<ul style="margin: 0 0 12px; padding-left: 20px; font-size: 13px; color: #334155;">${rows}</ul>
+			<p style="margin: 0; font-size: 13px; color: #475569;">${one ? 'It sends nothing, and stays off' : 'They send nothing, and stay off'}, even with a new key of yours. To have ${one ? 'it' : 'one'} sent again, ask the board's owner to switch it on with their own API key; it is given a new secret, which its receiver will need.</p>
+		</div>
+	`);
+	sendEmail(email, one ? 'A webhook you set was switched off' : `${theirs.length} webhooks you set were switched off`, html).catch((err) =>
+		log.error('A notice to the setter of webhooks switched off failed', err)
+	);
 }
 
 /**
@@ -855,6 +908,66 @@ export function notifyWebhookCreated(boardId: number, creator: string, hook: { i
 	for (const recipient of webhookRecipients(boardId)) {
 		sendEmail(recipient.email, `A webhook was made on ${boardName}`, html).catch((err) => log.error(`The notice of webhook ${hook.id} made failed`, err));
 	}
+}
+
+/**
+ * A webhook set up before keys were recorded, as the one-time mail names it
+ * (card 2893, D6): its board, its id, its host, and the earliest it stops, the
+ * stored form of the latest end among its setter's working keys from then, or
+ * null where one of those has neither an expiry nor a deadline. Said as "at the
+ * earliest" (the code review's CS2): a key kept, or its deadline moved, later
+ * puts it off.
+ */
+export type WebhookBeforeKeys = { boardId: number; id: number; host: string; stops: string | null };
+
+/**
+ * Tell each owner of a board (as `notifyWebhooksSwitchedOff` finds them),
+ * once, which of its webhooks were set up before keys were recorded, and when
+ * each will stop (card 2893, D6, S9): one mail to each recipient, naming each
+ * board, each webhook's id and host, never its path, query or secret, and
+ * the date, with what to do to keep it. Not subject to the mail switches; no
+ * link. Resolves to whether every mail went (true where there was nobody to
+ * tell), and never rejects: the start writes its flag only then. Called
+ * outside a transaction, at start, so each is sent at once.
+ */
+export async function notifyWebhooksBeforeKeys(items: readonly WebhookBeforeKeys[]): Promise<boolean> {
+	const byRecipient = new Map<number, { email: string; items: WebhookBeforeKeys[] }>();
+	for (const boardId of [...new Set(items.map((item) => item.boardId))]) {
+		for (const recipient of webhookRecipients(boardId)) {
+			const entry = byRecipient.get(recipient.id) ?? { email: recipient.email, items: [] };
+			entry.items.push(...items.filter((item) => item.boardId === boardId));
+			byRecipient.set(recipient.id, entry);
+		}
+	}
+	const sends = [...byRecipient.values()].map(({ email, items: theirs }) => {
+		const rows = theirs
+			.map(
+				(item) =>
+					`<li style="margin: 0 0 8px;">Board <strong>${escapeHtml(getBoardName(item.boardId))}</strong>: webhook ${item.id} to ` +
+					`<strong>${escapeHtml(item.host)}</strong>, ` +
+					(item.stops === null
+						? 'no date: a key of the account that set it up has neither an expiry nor a deadline.'
+						: `stops at the earliest ${escapeHtml(item.stops)} (UTC); later if that account keeps or replaces a key from before the release.`) +
+					'</li>'
+			)
+			.join('');
+		const one = theirs.length === 1;
+		const html = emailTemplate(one ? 'A webhook will stop when its key ends' : 'Webhooks will stop when their keys end', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #d97706;">
+			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">${one ? 'This webhook was' : 'These webhooks were'} set up before DumpFire recorded which API key set a webhook up. Each is switched off for good once the account that set it up has no working API key made before then.</p>
+			<ul style="margin: 0 0 12px; padding-left: 20px; font-size: 13px; color: #334155;">${rows}</ul>
+			<p style="margin: 0; font-size: 13px; color: #475569;">To keep one, re-save it with your key (switch it off and on: PUT /api/v1/webhooks/{id} with active false, then active true), which binds it to that key. Delete each you do not recognise.</p>
+		</div>
+	`);
+		return sendEmail(email, one ? 'A webhook on your board will stop when its key ends' : `${theirs.length} webhooks on your boards will stop when their keys end`, html).then(
+			(outcome) => outcome.sent,
+			(err) => {
+				log.error('A notice of webhooks set up before keys were recorded failed', err);
+				return false;
+			}
+		);
+	});
+	return (await Promise.all(sends)).every(Boolean);
 }
 
 /** Notify the target user(s) when a new task request is submitted. */

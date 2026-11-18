@@ -178,23 +178,28 @@ export const CHECKLIST: readonly IsoItem[] = [
 		title: 'Information transfer',
 		theme: 'organisational',
 		applicability: 'supports',
-		status: 'partly-met',
+		status: 'met',
 		how:
 			'Mail needs STARTTLS and checks the server\'s certificate, unless an administrator switches on mail without a checked, encrypted connection. Webhooks are signed with HMAC-SHA256. The SFTP host key is pinned. ' +
 			'Report schedules and report mail ask for the password and a code before board data goes to an address (card 2751). ' +
 			'A webhook whose setter loses the board is switched off for good, and only the board\'s owner or an administrator switches it on again, with an API key, which gives it a new secret; ' +
-			'the board\'s owners are told (card 2752). Still open: a webhook set through an API key keeps sending after the key ends.',
+			'the board\'s owners are told (card 2752). So is a webhook whose API key ends: each records the key that set it up, and is switched off when that key is revoked, expires, passes its deadline or is deleted; ' +
+			'one set up before keys were recorded stops once its setter has no working key from then, and its owners were told the date (card 2893).',
 		evidence: [
 			{ path: 'src/lib/server/email.ts', symbol: 'requireTLS' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'createHmac' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'switchOffLostWebhooks' },
+			{ path: 'src/lib/server/webhooks.ts', symbol: 'keyOfWrite' },
+			{ path: 'src/lib/server/webhooks.ts', symbol: 'keysBeforeRecorded' },
+			{ path: 'src/routes/api/account/api-keys/[id]/+server.ts', symbol: 'switchOffLostWebhooks' },
+			{ path: 'src/lib/server/startup-checks.ts', symbol: 'announceWebhooksBeforeKeys' },
 			{ path: 'src/lib/server/ssh-host-key.ts' },
 			{ path: 'src/routes/api/reports/email/+server.ts', symbol: 'confirmStepUp' },
 			{ path: 'src/routes/api/report-schedules/+server.ts', symbol: 'confirmStepUp' },
 			{ path: AUTH_DOC, anchor: 'report-schedules-and-report-mail-card-2751' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2893],
+		gapCards: [],
 		organisationalPart: 'Rules for transferring information, and agreements with those who receive it.'
 	},
 	{
@@ -275,18 +280,20 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'A role change, a delete and a password reset end what the account held: its sessions and keys end, the webhooks it set are switched off and its report schedules paused, and each is logged. ' +
 			'Removing an authenticator ends the account\'s other sessions and pending sign-ins (card 2772). ' +
 			'A change that takes an account\'s board access away switches off, for good, the webhooks it set on that board; giving the access back does not switch them on (card 2752). ' +
-			'Still open: an account cannot be disabled; a webhook set through a key outlives the key; ' +
+			'Revoking an API key switches off, in the same change, the webhooks it set up, and one whose key expires or passes its deadline is switched off at the next start, restore or event (card 2893). ' +
+			'Still open: an account cannot be disabled; ' +
 			'and changing your own password, or another recovery path, does not pause your report schedules.',
 		evidence: [
 			{ path: 'src/lib/server/auth.ts', symbol: 'endAccountAccess' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'switchOffHeld' },
+			{ path: 'src/routes/api/account/api-keys/[id]/+server.ts', symbol: 'switchOffLostWebhooks' },
 			{ path: 'src/lib/server/mfa-store.ts', symbol: 'resetTwoStep' },
 			{ path: 'src/lib/server/account-two-step.ts' },
 			{ path: 'src/lib/server/audit-log.ts' },
 			{ path: AUTH_DOC, anchor: 'passwords-sessions-and-invites-change-together' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2671, 2893, 2894],
+		gapCards: [2671, 2894],
 		organisationalPart: 'Review regularly who holds which role.'
 	},
 	organisational('A.5.19', 'annex-a', 'Information security in supplier relationships'),

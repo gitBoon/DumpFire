@@ -2929,9 +2929,11 @@ describe('what a route answers, against the schema the document gives for it', (
 		// First of the dated notes, and marked breaking.
 		expect(note.match(/\*\*Changed on [^*]+\*\*/)?.[0]).toBe(heading);
 		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-18 (version 1.10.0), breaking.**'));
-		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+		// Card 2893 ships with card 2752, and adds (9) and (10) to its note: "nothing else changed" is last, (11).
+		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 		for (const words of [
 			'(card 2752)',
+			'and so is one whose API key has ended (card 2893)',
 			'is switched off, active false: at the change that takes the access away',
 			'at every start of the server, after every restore of a backup, and at its next event where none of those saw it',
 			'(2) it stays off when the setter is given the board back',
@@ -2953,11 +2955,25 @@ describe('what a route answers, against the schema the document gives for it', (
 			'for a receiver (the same scheme, host and port, whatever the path, query, fragment, case or default port)',
 			'asked after every other check',
 			"(8) the board's owners, or the administrators where it has none, are mailed",
-			'(9) nothing else changed'
+			// Card 2893.
+			'(9) each webhook records the API key that created it, last set its url or secret, or switched it on, which no answer gives',
+			"revoked by its holder (in the same change, and the Account page says how many first), expired, past its deadline, deleted any other way, or not its setter's",
+			'one set with no API key, as through a session, is switched off at its next event',
+			'is switched off once its setter has no working API key made before this version',
+			'with the earliest date each will stop (later if that account keeps or replaces a key from before this version)',
+			're-saving it with a key (PUT with active false, then with active true) binds it to that key',
+			'(10) of such a webhook pausedBecause says "This was switched off because the API key that set it up ended"',
+			// Card 2893's code review: CS3 and CR6.
+			"a PUT or DELETE of one that is on and held now records the hold first, so an editor's switch-off leaves it switched off for good",
+			"to rotate a key, the board's owner or an administrator re-saves each webhook with the new key before the old one is revoked, which keeps its secret",
+			'the account that set it up is mailed too, while it can open the board',
+			'(11) nothing else changed',
+			'whose key has not ended is sent as before'
 		]) {
 			expect(changes, words).toContain(words);
 		}
 		expect(changes).not.toContain('shown once');
+		expect(changes).not.toContain('(12) ');
 
 		// The schema and the three operations say the same.
 		const webhook = spec.components.schemas.Webhook;
@@ -2967,6 +2983,12 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(webhook.properties.pausedBecause.description).toContain('"This was switched off because the account that set it up could no longer open this board.');
 		expect(webhook.properties.pausedBecause.description).toContain('"This was switched off because the account that set it up had its password reset, used an invite, or was deleted.');
 		expect(webhook.properties.pausedBecause.description).not.toContain('shown once');
+		// Card 2893: the key that ended, in the schema, its pausedBecause word for word, the not-sent reason and the PUT.
+		expect(webhook.description).toContain('It is switched off for good too when the API key that created it, last set its url or secret, or switched it on ends (since 1.11.0, card 2893)');
+		expect(webhook.properties.pausedBecause.description).toContain(
+			"\"This was switched off because the API key that set it up ended: it expired, passed its deadline, was deleted or is not the setter's;"
+		);
+		expect(webhook.properties.lastDelivery.properties.reason.description).toContain('"Not sent: the API key that set it up has ended"');
 		const update = spec.paths['/api/v1/webhooks/{webhookId}'].put;
 		expect(update.description).toContain('gives it a new secret, 64 hexadecimal characters, in this answer\'s secret');
 		expect(update.responses['400'].content['application/json'].examples.newSecret.value.message).toContain('is given a new secret when it is switched on');

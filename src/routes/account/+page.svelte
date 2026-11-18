@@ -124,9 +124,10 @@
 	/**
 	 * What ticking the box ends, in the words beside it: the keys, the
 	 * webhooks the account set up, or both. The box is there for a webhook
-	 * with no key left too: deleting the key that made a webhook leaves the
-	 * webhook sending, and the server switches it off with `endApiKeys` all
-	 * the same.
+	 * with no key left too: revoking the key that set a webhook up switches it
+	 * off (card 2893), but one set up before keys were recorded goes on while
+	 * the account holds a working key from then, and the server switches every
+	 * one off with `endApiKeys` all the same.
 	 */
 	function whatTheBoxEnds(keys: number, hooks: number): string {
 		const ends =
@@ -307,6 +308,13 @@
 		 * (migration 0069, card 2772); null when it has none.
 		 */
 		deadlineAt: string | null;
+		/**
+		 * How many webhooks revoking the key would switch off now (card 2893,
+		 * D5; the code review's CS4): those it set up, and, for the account's
+		 * last key from before keys were recorded, those set up before then. The
+		 * revoke's confirm says it first.
+		 */
+		webhooks: number;
 	};
 
 	let apiKeys = $state<ApiKeyInfo[]>([]);
@@ -321,6 +329,8 @@
 	let keyRefusal = $state<string | null>(null);
 	/** Why the last Generate Key was refused, in the server's words. */
 	let apiKeyError = $state('');
+	/** What the last revoke did, in the key panel's line: the key gone, and how many webhooks it switched off (card 2893, D5). */
+	let apiKeyMessage = $state('');
 	let generatingKey = $state(false);
 	let newlyCreatedKey = $state('');
 	let keyCopied = $state(false);
@@ -359,6 +369,8 @@
 		newlyCreatedKey = '';
 		keyCopied = false;
 		apiKeyError = '';
+		// The last revoke's line, which is not this action's (the code review's CR7).
+		apiKeyMessage = '';
 		keyRefusal = null;
 
 		// Making a key asks for the current password and a code: a key outlives
@@ -405,14 +417,37 @@
 		setTimeout(() => keyCopied = false, 2000);
 	}
 
-	/** A refusal is said in the key panel's line, and the key stays in the list (card 2148). */
+	/**
+	 * What the confirm of a key's revoke says first (card 2893, S13): how many
+	 * webhooks it switches off, which may include ones set up before keys were
+	 * recorded (the code review's CS4), so not "it set".
+	 */
+	const revokeQuestion = (hooks: number) =>
+		hooks > 0 ? `Revoke? It switches off ${webhooksInWords(hooks)}.` : 'Revoke?';
+
+	/**
+	 * A refusal is said in the key panel's line, and the key stays in the list
+	 * (card 2148). A revoke switches off the webhooks the key set up, and those
+	 * from before keys were recorded that lose their last key with it (card
+	 * 2893, D5; the code review's CS4): the line says how many, from the answer,
+	 * and the page is read again for the count of webhooks the password form
+	 * offers to switch off.
+	 */
 	async function revokeKey(id: number) {
 		deletingKeyId = id;
 		apiKeyError = '';
+		apiKeyMessage = '';
 		try {
 			const res = await fetch(`/api/account/api-keys/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
 			if (res.ok) {
+				const answer = await res.json().catch(() => null);
+				const hooksOff = typeof answer?.webhooksSwitchedOff === 'number' ? answer.webhooksSwitchedOff : 0;
 				apiKeys = apiKeys.filter(k => k.id !== id);
+				apiKeyMessage =
+					hooksOff > 0
+						? `Key revoked. ${webhooksInWords(hooksOff)} ${hooksOff === 1 ? 'was' : 'were'} switched off.`
+						: 'Key revoked.';
+				if (hooksOff > 0) await invalidateAll();
 			} else {
 				apiKeyError = await failureMessage(res, 'The key was not revoked.');
 			}
@@ -437,6 +472,8 @@
 	 */
 	async function keepKey(id: number, proof: StepUpProof): Promise<string | void> {
 		apiKeyError = '';
+		// The last revoke's line, which is not this action's (the code review's CR7).
+		apiKeyMessage = '';
 		try {
 			const res = await fetch(`/api/account/api-keys/${id}/keep`, {
 				method: 'POST',
@@ -851,6 +888,9 @@
 				{#if apiKeyError}
 					<div class="password-msg error" role="alert">{apiKeyError}</div>
 				{/if}
+				{#if apiKeyMessage}
+					<div class="password-msg success" role="status">{apiKeyMessage}</div>
+				{/if}
 				<div class="apikey-create-row">
 					<input
 						id="apikey-name"
@@ -918,6 +958,7 @@
 									Created {formatDate(key.createdAt)}
 									 · Last used: {formatDate(key.lastUsedAt)}
 									 · {key.expiresAt ? `Expires ${formatMoment(key.expiresAt)}` : 'No expiry'}
+									 · Revoking it switches off {webhooksInWords(key.webhooks ?? 0)}
 								</span>
 								<!-- A key made before two-step sign-in (card 2772): its deadline, and Keep while it has not passed. -->
 								{#if key.deadlineAt !== null && pastDeadline(key.deadlineAt)}
@@ -929,7 +970,7 @@
 							</div>
 							{#if confirmDeleteId === key.id}
 								<div class="apikey-confirm-delete">
-									<span class="apikey-confirm-text">Revoke?</span>
+									<span class="apikey-confirm-text">{revokeQuestion(key.webhooks ?? 0)}</span>
 									<button
 										class="btn-danger-sm"
 										onclick={() => revokeKey(key.id)}

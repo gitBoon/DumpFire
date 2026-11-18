@@ -220,6 +220,22 @@ export function makeApiKey(user: SessionUser, name?: string): string {
 }
 
 /**
+ * An API key for a user, as `makeApiKey` makes one, with its row id, for a call
+ * through `api()` sent as `credential: { kind: 'api key', id }` (card 2893,
+ * E15). `expiresAt`, in the stored form, may be in the past: a key that has
+ * ended.
+ */
+export function makeApiKeyRow(user: SessionUser, opts: { expiresAt?: string } = {}): { key: string; id: number } {
+	const key = generateApiKey();
+	const row = db
+		.insert(apiKeys)
+		.values({ userId: user.id, name: `Key ${next()}`, keyHash: key.keyHash, keyPrefix: key.keyPrefix, expiresAt: opts.expiresAt ?? null })
+		.returning({ id: apiKeys.id })
+		.get();
+	return { key: key.plaintextKey, id: row.id };
+}
+
+/**
  * A session for a user, made as a login makes one, with the limits of the
  * user's role and only its hash stored (card 2775). Returns the code the
  * session cookie carries: send it as `Cookie: dumpfire_session=<token>`, the
@@ -626,10 +642,24 @@ export function assignCard(card: Card, user: SessionUser): void {
  * one on a board made with no owner, unless a `setBy` is given. `heldBecause`
  * makes it one switched off by a hold (card 2752): off, with the hold and a
  * moment recorded.
+ *
+ * The key it records (card 2893, E15): `setWithKey` false by default, as a
+ * webhook made with no credential at all (a test's) records, which the key
+ * rule never holds; `true` with `setByKey` a key's row id, or with none; and
+ * `null`, as a webhook made before keys were recorded.
  */
 export function makeWebhook(
 	board: Board,
-	opts: { url?: string; events?: string[]; secret?: string; active?: boolean; setBy?: SessionUser | null; heldBecause?: string } = {}
+	opts: {
+		url?: string;
+		events?: string[];
+		secret?: string;
+		active?: boolean;
+		setBy?: SessionUser | null;
+		heldBecause?: string;
+		setWithKey?: boolean | null;
+		setByKey?: number | null;
+	} = {}
 ): typeof webhooks.$inferSelect {
 	return db
 		.insert(webhooks)
@@ -640,6 +670,8 @@ export function makeWebhook(
 			secret: opts.secret ?? '',
 			active: opts.heldBecause === undefined ? (opts.active ?? true) : false,
 			setBy: opts.setBy === undefined ? board.createdBy : opts.setBy === null ? null : opts.setBy.id,
+			setWithKey: opts.setWithKey === undefined ? false : opts.setWithKey,
+			setByKey: opts.setByKey ?? null,
 			...(opts.heldBecause === undefined ? {} : { heldBecause: opts.heldBecause, heldAt: '2026-11-18 09:00:00' })
 		})
 		.returning()

@@ -110,6 +110,7 @@ import {
 	addBoardMember,
 	importConfirmation,
 	inviteHashOf,
+	makeApiKeyRow,
 	makeBoard,
 	makeCard,
 	makeDecision,
@@ -662,7 +663,12 @@ describe('a restore', () => {
 
 	// Card 2194: a backup made before the key was left out of backups still
 	// holds it, and is restored without it, so that every browser is forgotten.
-	it('brings in no key that remembered browsers are signed with, and clears the one that was here', () => {
+	// Card 2893's code review (CS1): of migration 0071's two moments, this server's and the backup's, the earlier is
+	// kept, so that no key made after the release on either server counts as one from before it.
+	it.each([
+		{ row: "the backup's 0071 moment earlier: the backup's kept", inBackup: '2026-01-01 00:00:00', kept: '2026-01-01 00:00:00' },
+		{ row: "the backup's 0071 moment later: this server's kept", inBackup: '2026-12-01 00:00:00', kept: '2026-11-18 09:00:00' }
+	])('brings in no key that remembered browsers are signed with, and clears the one that was here ($row)', ({ inBackup, kept }) => {
 		const live = migratedDb();
 		live.exec(`INSERT INTO settings (key, value) VALUES ('${KNOWN_BROWSER_SECRET_KEY}', 'the-key-that-was-here')`);
 		const backup = backupWithSignIns();
@@ -673,7 +679,7 @@ describe('a restore', () => {
 		// Migration 0071's moment, this server's and the backup's told apart (card 2752).
 		const keysRecordedHere = '2026-11-18 09:00:00';
 		live.prepare("UPDATE settings SET value = ? WHERE key = 'webhook_keys_recorded_at'").run(keysRecordedHere);
-		backup.exec("UPDATE settings SET value = '2026-01-01 00:00:00' WHERE key = 'webhook_keys_recorded_at'");
+		backup.prepare("UPDATE settings SET value = ? WHERE key = 'webhook_keys_recorded_at'").run(inBackup);
 
 		const result = restoreFromBackup(live, backup);
 
@@ -691,9 +697,9 @@ describe('a restore', () => {
 			'two_step_released_at',
 			'webhook_keys_recorded_at'
 		]);
-		// The backup's own webhook_keys_recorded_at among them, replaced by this server's.
+		// The backup's own webhook_keys_recorded_at among them, and the earlier of the two kept.
 		expect(result.restored.settings).toBe(4);
-		expect(column(live, "SELECT value FROM settings WHERE key = 'webhook_keys_recorded_at'")).toEqual([keysRecordedHere]);
+		expect(column(live, "SELECT value FROM settings WHERE key = 'webhook_keys_recorded_at'")).toEqual([kept]);
 	});
 
 	// Card 2158. A backup made before it holds every request's link as it was
@@ -1573,6 +1579,9 @@ describe('the running database’s system log, at start', () => {
 		expect(hooks.indexOf('\nvoid announceReportSchedules();')).toBeGreaterThan(hooks.indexOf('\nendPlainRequestLinks();'));
 		// And the images stored before card 2761 checked once after that, before the schedulers start (D10).
 		expect(hooks.indexOf('\nvoid recheckStoredImages();')).toBeGreaterThan(hooks.indexOf('\nvoid announceReportSchedules();'));
+		// And the webhooks set up before keys were recorded announced straight after the report schedules (card 2893, E9).
+		expect(hooks.indexOf('\nvoid announceWebhooksBeforeKeys();')).toBeGreaterThan(hooks.indexOf('\nvoid announceReportSchedules();'));
+		expect(hooks.indexOf('\nvoid recheckStoredImages();')).toBeGreaterThan(hooks.indexOf('\nvoid announceWebhooksBeforeKeys();'));
 		// And the webhooks held at start switched off for good after the settings of non-administrators are removed,
 		// before the schedulers start (card 2752, E9).
 		expect(hooks.indexOf('\nswitchOffHeldWebhooksAtStart();')).toBeGreaterThan(hooks.indexOf('\nremoveSettingsOfNonAdministrators();'));
@@ -3158,6 +3167,10 @@ describe('a restore switches off a restored webhook whose setter cannot open its
 		addBoardMember(board, editor, 'editor');
 		const theirs = makeWebhook(board, { url: 'https://hooks.example.test/theirs', setBy: editor });
 		const owners = makeWebhook(board, { url: 'https://hooks.example.test/owners' });
+		// The owner holds a key from before keys were recorded here, which keeps their webhook from before 0071, which
+		// records no key, sent (card 2893, S9); a restore keeps this server's moment.
+		sqlite.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('webhook_keys_recorded_at', '2026-06-01 00:00:00')").run();
+		sqlite.prepare("UPDATE api_keys SET created_at = '2026-01-01 00:00:00' WHERE id = ?").run(makeApiKeyRow(owner).id);
 		// The backup: the editor off the board, their webhook on, and no hold columns.
 		const backup = opening(Buffer.from(sqlite.serialize()));
 		backup.prepare('DELETE FROM board_members WHERE board_id = ? AND user_id = ?').run(board.id, editor.id);

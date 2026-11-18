@@ -1,10 +1,11 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.80
+version: 1.81
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2893
   - card-2752
   - webhook-switched-off
   - card-2719
@@ -28,7 +29,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
+description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -2659,6 +2660,7 @@ slow receiver queues, and each delivery still has its whole 10 seconds once it i
 | `not-sent` | `null` | `Not sent: the address is not an http or https address` | Another scheme, or a stored row that is not a URL | Register an `http://` or `https://` address |
 | `not-sent` | `null` | `Not sent: its events are not a list` | Its stored `events` is not a JSON list (card 2145) | `PUT` the webhook's `events` as a list (`[]` for every event) |
 | `not-sent` | `null` | `Not sent: the account that set it up can no longer open this board` | Held: its setter cannot open the board (card 2325), and switched off for good at that event (card 2752) | Delete it unless you recognise the address; to keep it, switch it on with your key, which gives it a new secret ([Who May Change a Webhook](#who-may-change-a-webhook)) |
+| `not-sent` | `null` | `Not sent: the API key that set it up has ended` | Held: its key was revoked, expired, passed its deadline, was deleted or is another account's, or (one set up before keys were recorded) its setter has no working key from then; switched off for good at that event (card 2893) | Switch it on with your own key, which records your key and gives it a new secret, and give the receiver the new secret; or delete it |
 | `not-sent` | `null` | `Not sent: nobody is recorded as having set it up` | Held: it has no setter (card 2325), and switched off for good at that event (card 2752) | Delete it unless you recognise the address; to keep it, switch it on and set a new secret |
 
 **A reason is fixed words.** One of the sentences above and nothing else: never the address,
@@ -2931,6 +2933,58 @@ sequenceDiagram
     W-->>O: Make Private: "Making this board private stops N webhooks …"
     O->>W: Make Private
     W->>R: PATCH isPublic false, then read the list again
+```
+
+### When the API Key That Set It Up Ends (card 2893)
+
+A webhook is switched off for good, `'key ended'`, when the API key that created it, last set
+its address or secret, or switched it on has ended: revoked on the Account page, expired, past
+its deadline, deleted, or not its setter's; and one set before keys were recorded, once its
+setter has no working key from then. It is card 2752's switched-off state, its `WARN` and its
+owners' mail; the rule is in
+[A Webhook Switched Off When Its API Key Ends](authentication-security.md#a-webhook-switched-off-when-its-api-key-ends-card-2893).
+What it adds to the mail:
+
+- **The owners' mail** names why as "the API key that set it up ended", or, for one from before
+  the release, "it was set up before keys were recorded, and the account that set it up has no
+  working API key from then"; a revoke's cause names the key by its id, never its name ("API key
+  #12 was revoked by Sam"). Its "What to do" says a webhook switched off for a lost setter or an
+  ended key is given a new secret when switched on.
+- **The setter's own mail** (`notifyWebhookSetter`, sent by `notifyWebhooksSwitchedOff` for an
+  item that carries `setter`). The account that set it up, while it can still open the board
+  (`canViewBoard`) and is not one of the board's owners told above, gets one mail per write,
+  "A webhook you set was switched off" (or "*N* webhooks you set were switched off"): the API
+  key it used ended, so the webhook was switched off for good; the cause; each board, webhook id
+  and host, never the path, query or secret; that it stays off even with a new key of theirs,
+  and to ask the board's owner to switch it on with their own key, which gives it a new secret
+  for its receiver. Not subject to the mail switches; no link; sent after the commit. One who can
+  no longer open the board is told nothing of it.
+- **The one-time announcement** (`notifyWebhooksBeforeKeys`, called by
+  `announceWebhooksBeforeKeys` at start). Each owner of a board holding webhooks set up before
+  keys were recorded that are still sent gets one mail, "A webhook on your board will stop when
+  its key ends" (or "*N* webhooks on your boards will stop when their keys end"), listing each
+  board, webhook id and host with the earliest date it stops (`stops at the earliest <date>
+  (UTC); later if that account keeps or replaces a key from before the release.`, the code
+  review's CS2) or "no date" where one of those keys has neither
+  an expiry nor a deadline, and how to keep one: re-save it with your key (switch it off and
+  on). It resolves to whether every mail went; the start writes `webhooks_before_keys_announced`
+  only then, so a mail that did not go is sent again, to every owner, at the next start. Only
+  where the schedulers run; with no mail set up, one `WARN` says so and the setting is written.
+
+```mermaid
+sequenceDiagram
+    participant H as Key holder (Account page)
+    participant R as DELETE /api/account/api-keys/{id}
+    participant W as webhooks.ts
+    participant DB as SQLite
+    participant M as Mail and log
+    H->>R: Revoke (the confirm showed the count)
+    R->>DB: BEGIN, delete the key (set_by_key emptied)
+    R->>W: switchOffLostWebhooks({ setters }, the cause naming the key by its id)
+    W->>DB: holdOf: 'key ended', switchOffHeld
+    R->>DB: COMMIT
+    W->>M: one WARN each, the owners' mail, the setter's own mail
+    R-->>H: { success: true, webhooksSwitchedOff: n }
 ```
 
 ### Events and Payload

@@ -219,7 +219,10 @@ const APP_URL = 'https://dumpfire.example.test';
  * and two users, two boards, two columns and two cards for those to belong to.
  * Each webhook's setter is its board's creator, who can open it, so that a
  * restore as it is keeps the ones that are on (card 2752: one whose setter
- * cannot open its board, or that has none, is switched off by the restore).
+ * cannot open its board, or that has none, is switched off by the restore),
+ * each recorded as made with no credential (`set_with_key` 0), as a test's
+ * call records it, so that no key rule holds them (card 2893: one set up
+ * before keys were recorded stops once its setter has no key from then).
  * One of the users is the superadmin: the import refuses a backup that has
  * users and none. The cards are committed, as a card created in To Do is
  * (milestone 22), and each board has its Options column, as every delivery
@@ -242,10 +245,10 @@ function seed(database: Database.Database): void {
 			(2, 1, 'Monthly to finance', 1, 'finance@example.test'),
 			(3, 2, 'Paused', 0, 'nobody@example.test'),
 			(4, 2, 'Weekly to the team', 1, 'team@example.test');
-		INSERT INTO webhooks (id, board_id, url, secret, events, active, set_by) VALUES
-			(1, 1, 'https://hooks.example.test/a', 'secret-a', '[]', 1, 1),
-			(2, 1, 'https://hooks.example.test/b', 'secret-b', '["card.moved"]', 0, 1),
-			(3, 2, 'https://hooks.example.test/c', 'secret-c', '[]', 1, 2);
+		INSERT INTO webhooks (id, board_id, url, secret, events, active, set_by, set_with_key) VALUES
+			(1, 1, 'https://hooks.example.test/a', 'secret-a', '[]', 1, 1, 0),
+			(2, 1, 'https://hooks.example.test/b', 'secret-b', '["card.moved"]', 0, 1, 0),
+			(3, 2, 'https://hooks.example.test/c', 'secret-c', '[]', 1, 2, 0);
 	`);
 	const set = database.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
 	set.run('app_url', APP_URL);

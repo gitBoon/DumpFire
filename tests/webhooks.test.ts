@@ -48,6 +48,14 @@
  * held for a lost setter a new secret; a create at an address held off is
  * refused to anyone else; the boards' owners are mailed. Card 2325's cases
  * are extended in place; a restore's sweep is in backups.test.ts.
+ *
+ * Card 2893: each webhook records the API key that last set its address or
+ * secret or switched it on, and is switched off for good, `'key ended'`, when
+ * that key is revoked (in the same write), expires, is deleted or is another
+ * account's, and, for one set up before keys were recorded, once its setter
+ * has no working key from then; switching it on with another key binds it to
+ * that one; the owners of such webhooks are told once, at start, the date
+ * each will stop. The Account page's count is in page-failures.test.ts.
  */
 import dns from 'node:dns';
 import http from 'node:http';
@@ -60,7 +68,7 @@ import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { activityLog, boards, columns, users, webhooks } from '$lib/server/db/schema';
-import { endAccountAccess, type SessionUser } from '$lib/server/auth';
+import { endAccountAccess, sessionTokenHash, type SessionUser } from '$lib/server/auth';
 import { deleteUser } from '$lib/server/deletes';
 import { escapeHtml } from '$lib/escape-html';
 import { ACTIONS, logActivity } from '$lib/server/logActivity';
@@ -76,15 +84,24 @@ import {
 	webhookShareNotes
 } from '$lib/server/webhooks';
 import { addressRefusal, insideReason, parseAllowInside, readWebhookUrl } from '$lib/server/webhook-address';
-import { reportWebhookAllowInside, reportWebhooksOverCap, reportWebhooksRefused, switchOffHeldWebhooksAtStart } from '$lib/server/startup-checks';
+import {
+	announceWebhooksBeforeKeys,
+	reportWebhookAllowInside,
+	reportWebhooksOverCap,
+	reportWebhooksRefused,
+	switchOffHeldWebhooksAtStart,
+	WEBHOOKS_BEFORE_KEYS_ANNOUNCED
+} from '$lib/server/startup-checks';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type Effects } from './helpers/effects';
 import {
 	addBoardMember,
+	makeApiKeyRow,
 	makeBoard,
 	makeCard,
 	makeMilestone,
+	makeSession,
 	makeSmtp,
 	makeTeam,
 	makeUser,
@@ -3142,6 +3159,560 @@ describe('a switch-off and the write that caused it are one (card 2752, E8)', ()
 					heldBecause: 'setter cannot open'
 				});
 				expect(done.filter((effect) => effect.kind === 'email').map((effect) => (effect as { subject: string }).subject)).toEqual([
+					'A webhook on your board was switched off'
+				]);
+			}
+		});
+
+		expect(run.writes.length).toBeGreaterThanOrEqual(2);
+		expect(warned).toEqual([1, ...run.writes.map(() => 0)]);
+	});
+});
+
+// ─── Card 2893 ───────────────────────────────────────────────────────────
+
+describe('a webhook whose API key ended is switched off for good (card 2893)', () => {
+	/** `pausedBecause` for a webhook switched off because its key ended, word for word (4.3). */
+	const KEY_ENDED =
+		"This was switched off because the API key that set it up ended: it expired, passed its deadline, was deleted or is not the setter's; " +
+		'or, for a webhook set up before keys were recorded, the account that set it up has no working key from then. To keep it, ' +
+		'switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by ' +
+		"the board's owner or an administrator, and update the receiver.";
+	const KEY_ENDED_REASON = 'Not sent: the API key that set it up has ended';
+
+	let sent: Effects;
+	beforeEach(() => {
+		makeSmtp();
+		sent = effects();
+	});
+	afterEach(() => sent.restore());
+
+	/** Owner O's board, with editor E a member. */
+	function scene() {
+		const owner = makeUser({ username: 'owner' });
+		const editor = makeUser({ username: 'editor' });
+		const fixture = makeBoard({ owner });
+		addBoardMember(fixture.board, editor, 'editor');
+		return { owner, editor, ...fixture };
+	}
+	type Scene = ReturnType<typeof scene>;
+
+	/** The credential the gate records for a request made with this key's row (E15). */
+	const byKey = (id: number) => ({ kind: 'api key' as const, id });
+
+	/** A webhook made by `user`'s own POST with the key `keyId`. */
+	async function hookWith(s: Scene, user: SessionUser, keyId: number, name: string) {
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, {
+			user,
+			credential: byKey(keyId),
+			body: { url: `https://hooks.example.test/${name}` }
+		});
+		expect(made.status).toBe(201);
+		return made.body as { id: number; url: string; secret: string };
+	}
+
+	let raised = 0;
+	/** O raises a card through the API, with no key: the addresses it was delivered to, in order. */
+	async function event(s: Scene): Promise<string[]> {
+		sent.clear();
+		const res = await api('POST', `/api/v1/boards/${s.board.id}/cards`, {
+			user: s.owner,
+			body: { title: `2893 card ${++raised}`, columnId: s.cols['To Do'].id }
+		});
+		expect(res.status).toBe(201);
+		await sent.settle();
+		return sent.webhooks.map((w) => w.url);
+	}
+
+	/** The webhook's row as stored: on or off, why, its setter and the key it records. */
+	const rowOf = (id: number) =>
+		sqlite
+			.prepare(
+				'SELECT active, held_because AS heldBecause, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey, secret FROM webhooks WHERE id = ?'
+			)
+			.get(id) as { active: number; heldBecause: string | null; setBy: number | null; setByKey: number | null; setWithKey: number | null; secret: string };
+
+	const expectKeyEnded = (id: number) => expect(rowOf(id)).toMatchObject({ active: 0, heldBecause: 'key ended' });
+	const expectOn = (id: number) => expect(rowOf(id)).toMatchObject({ active: 1, heldBecause: null });
+
+	/** The WARN a switch-off for an ended key writes, word for word (4.3): the key's id, never its prefix or the address. */
+	const keyLine = (hookId: number, boardId: number, keyId: number | null, setter: SessionUser, cause: string) =>
+		`Webhook ${hookId} on board ${boardId} switched off: the API key that set it up (${keyId === null ? 'no key recorded' : `key ${keyId}`}, ` +
+		`user ${setter.id}) has ended (${cause}). It stays off until an owner of the board or an administrator switches it on.`;
+
+	/** The mails that say webhooks were switched off. */
+	const offMails = () => sent.emails.filter((mail) => / switched off$/.test(mail.subject));
+
+	const nameOf = (keyId: number) => sqlite.prepare('SELECT name FROM api_keys WHERE id = ?').pluck().get(keyId) as string;
+	/** The mail to the setter of a webhook whose key ended, in words of their own (S13; the ruling on S1's departure 10). */
+	const setterMails = () => sent.emails.filter((mail) => mail.subject === 'A webhook you set was switched off');
+	const revoke = (user: SessionUser, keyId: number) => api('DELETE', `/api/account/api-keys/${keyId}`, { user });
+	const expire = (keyId: number) => sqlite.prepare("UPDATE api_keys SET expires_at = '2026-01-01 00:00:00' WHERE id = ?").run(keyId);
+
+	it('1. a create records the key it was made with, and no answer shows it', async () => {
+		const s = scene();
+		const k = makeApiKeyRow(s.editor);
+
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, {
+			user: s.editor,
+			credential: byKey(k.id),
+			body: { url: 'https://hooks.example.test/one' }
+		});
+
+		expect(made.status).toBe(201);
+		expect(rowOf(made.body.id)).toMatchObject({ setBy: s.editor.id, setByKey: k.id, setWithKey: 1 });
+		const listed = await api('GET', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.owner });
+		const one = await api('GET', `/api/v1/webhooks/${made.body.id}`, { user: s.owner });
+		for (const answer of [made.body, listed.body[0], one.body]) {
+			expect(answer).not.toHaveProperty('setByKey');
+			expect(answer).not.toHaveProperty('setWithKey');
+			expect(JSON.stringify(answer)).not.toContain(k.key);
+		}
+	});
+
+	it.each([
+		{ row: 'a new address: the caller and their key recorded', body: { url: 'https://hooks.example.test/moved' }, recorded: 'L' as const },
+		{ row: 'events alone: the key it had kept', body: { events: ['card.created'] }, recorded: 'K' as const }
+	])('2. a change by the owner with key L, $row', async ({ body, recorded }) => {
+		const s = scene();
+		const k = makeApiKeyRow(s.editor);
+		const l = makeApiKeyRow(s.owner);
+		const hook = await hookWith(s, s.editor, k.id, 'two');
+
+		const changed = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: s.owner, credential: byKey(l.id), body });
+
+		expect(changed.status).toBe(200);
+		expect(rowOf(hook.id)).toMatchObject(
+			recorded === 'L' ? { setBy: s.owner.id, setByKey: l.id, setWithKey: 1 } : { setBy: s.editor.id, setByKey: k.id, setWithKey: 1 }
+		);
+	});
+
+	it.each([
+		{ row: 'an API key: 1 and its id; sent', how: 'key' as const },
+		{ row: 'a session: 1 and no key; switched off at the next event', how: 'session' as const },
+		{ row: 'none at all (a test): 0 and no key; sent', how: 'none' as const }
+	])('3. what each credential records (S11): $row', async ({ how }) => {
+		const s = scene();
+		const k = makeApiKeyRow(s.editor);
+		const credential =
+			how === 'key'
+				? { credential: byKey(k.id) }
+				: how === 'session'
+					? { credential: { kind: 'session' as const, hash: sessionTokenHash(makeSession(s.editor)) } }
+					: {};
+
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, {
+			user: s.editor,
+			...credential,
+			body: { url: 'https://hooks.example.test/three' }
+		});
+		expect(made.status).toBe(201);
+
+		expect(rowOf(made.body.id)).toMatchObject(
+			how === 'key' ? { setByKey: k.id, setWithKey: 1 } : how === 'session' ? { setByKey: null, setWithKey: 1 } : { setByKey: null, setWithKey: 0 }
+		);
+		const delivered = await event(s);
+		if (how === 'session') {
+			expect(delivered).toEqual([]);
+			expectKeyEnded(made.body.id);
+			expect(lines('WARN')).toEqual([keyLine(made.body.id, s.board.id, null, s.editor, 'found when an event was sent')]);
+		} else {
+			expect(delivered).toEqual([made.body.url]);
+			expectOn(made.body.id);
+		}
+	});
+
+	it("4. revoking K switches off what it set in the same write: the answer counts it, one WARN, one mail each to the owner and the setter; another live key's stays on", async () => {
+		const s = scene();
+		const k = makeApiKeyRow(s.editor);
+		const k2 = makeApiKeyRow(s.editor);
+		const theirs = await hookWith(s, s.editor, k.id, 'k-secret-path');
+		const kept = await hookWith(s, s.editor, k2.id, 'k2');
+		const cause = `API key #${k.id} was revoked by editor`;
+		const name = nameOf(k.id);
+		sent.clear();
+
+		const res = await revoke(s.editor, k.id);
+		await sent.settle();
+
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({ success: true, webhooksSwitchedOff: 1 });
+		expect(rowOf(theirs.id)).toMatchObject({ active: 0, heldBecause: 'key ended', setByKey: null, setWithKey: 1 });
+		expectOn(kept.id);
+		expect(lines('WARN')).toEqual([keyLine(theirs.id, s.board.id, null, s.editor, cause)]);
+		// The owner's mail, and the setter's in words of their own.
+		expect(offMails().map((mail) => [mail.to, mail.subject]).sort()).toEqual(
+			[
+				[s.owner.email, 'A webhook on your board was switched off'],
+				[s.editor.email, 'A webhook you set was switched off']
+			].sort()
+		);
+		expect(setterMails()[0].html).toContain("ask the board's owner");
+		for (const mail of offMails()) {
+			expect(mail.html).toContain(cause);
+			expect(mail.html).toContain(`webhook ${theirs.id} to <strong>hooks.example.test</strong>`);
+			expect(mail.html).not.toContain('k-secret-path');
+		}
+		// The key by its id, never its name (the ruling on S1's departure 9).
+		for (const text of [...lines('WARN'), ...offMails().map((mail) => mail.html)]) expect(text).not.toContain(name);
+		expect(await event(s)).toEqual([kept.url]);
+	});
+
+	it("5. the revoke's count is known first (S13): the key list gives each key's webhooks that are on, and the page's confirm says it (page-failures.test.ts)", async () => {
+		const s = scene();
+		const k = makeApiKeyRow(s.editor);
+		const k2 = makeApiKeyRow(s.editor);
+		await hookWith(s, s.editor, k.id, 'a');
+		await hookWith(s, s.editor, k.id, 'b');
+		const off = await hookWith(s, s.editor, k.id, 'off');
+		expect((await api('PUT', `/api/v1/webhooks/${off.id}`, { user: s.editor, credential: byKey(k.id), body: { active: false } })).status).toBe(200);
+		await hookWith(s, s.editor, k2.id, 'other');
+		// Another account's key: its count is not in this list.
+		await hookWith(s, s.owner, makeApiKeyRow(s.owner).id, 'owners');
+
+		const listed = await api('GET', '/api/account/api-keys', { user: s.editor });
+
+		expect(listed.status).toBe(200);
+		expect(listed.body.map((key: { id: number; webhooks: number }) => [key.id, key.webhooks])).toEqual([
+			[k.id, 2],
+			[k2.id, 1]
+		]);
+	});
+
+	it.each([
+		{ row: "the account's last working key from before the release: its count adds the webhooks from then, and the revoke switches them off", second: false },
+		{ row: 'another working key from before the release left: neither counted nor switched off', second: true }
+	])("CS4. a key from before keys were recorded, $row (the code review's CS4)", async ({ second }) => {
+		const s = scene();
+		sqlite.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('webhook_keys_recorded_at', '2026-06-01 00:00:00')").run();
+		const oldKey = (user: SessionUser) => {
+			const k = makeApiKeyRow(user);
+			sqlite.prepare("UPDATE api_keys SET created_at = '2026-01-01 00:00:00' WHERE id = ?").run(k.id);
+			return k;
+		};
+		const k0 = oldKey(s.editor);
+		const k1 = second ? oldKey(s.editor) : undefined;
+		const kNew = makeApiKeyRow(s.editor);
+		const recorded = await hookWith(s, s.editor, k0.id, 'recorded');
+		const before = makeWebhook(s.board, { setBy: s.editor, setWithKey: null });
+		// One from before the release already switched off is not counted.
+		makeWebhook(s.board, { setBy: s.editor, setWithKey: null, active: false });
+
+		const listed = await api('GET', '/api/account/api-keys', { user: s.editor });
+		const counts = Object.fromEntries(listed.body.map((key: { id: number; webhooks: number }) => [key.id, key.webhooks]));
+		expect(counts).toEqual({ [k0.id]: second ? 1 : 2, ...(k1 ? { [k1.id]: 0 } : {}), [kNew.id]: 0 });
+
+		const revoked = await revoke(s.editor, k0.id);
+		expect(revoked.body).toEqual({ success: true, webhooksSwitchedOff: second ? 1 : 2 });
+		expectKeyEnded(recorded.id);
+		if (second) expectOn(before.id);
+		else expectKeyEnded(before.id);
+	});
+
+	it('6. K expired after the create: an event fired by another caller switches it off, unsent', async () => {
+		const s = scene();
+		const k = makeApiKeyRow(s.editor);
+		const hook = await hookWith(s, s.editor, k.id, 'six');
+		expect(await event(s)).toEqual([hook.url]);
+
+		expire(k.id);
+
+		expect(await event(s)).toEqual([]);
+		expectKeyEnded(hook.id);
+		expect(lines('WARN')).toEqual([keyLine(hook.id, s.board.id, k.id, s.editor, 'found when an event was sent')]);
+		const one = await api('GET', `/api/v1/webhooks/${hook.id}`, { user: s.owner });
+		expect(one.body).toMatchObject({ active: false, pausedBecause: KEY_ENDED, lastDelivery: { outcome: 'not-sent', reason: KEY_ENDED_REASON } });
+	});
+
+	it('7. K deleted by a path that does not sweep (the row deleted directly): switched off at the next event', async () => {
+		const s = scene();
+		const k = makeApiKeyRow(s.editor);
+		const hook = await hookWith(s, s.editor, k.id, 'seven');
+
+		sqlite.prepare('DELETE FROM api_keys WHERE id = ?').run(k.id);
+
+		expect(rowOf(hook.id)).toMatchObject({ active: 1, setByKey: null, setWithKey: 1 });
+		expect(await event(s)).toEqual([]);
+		expectKeyEnded(hook.id);
+		expect(lines('WARN')).toEqual([keyLine(hook.id, s.board.id, null, s.editor, 'found when an event was sent')]);
+	});
+
+	it("8. a recorded key of another account (S12): the editor's webhook recording the owner's live key is switched off at the next event", async () => {
+		const s = scene();
+		const owners = makeApiKeyRow(s.owner);
+		const hook = makeWebhook(s.board, { setBy: s.editor, setWithKey: true, setByKey: owners.id });
+
+		expect(await event(s)).toEqual([]);
+		expectKeyEnded(hook.id);
+		expect(lines('WARN')).toEqual([keyLine(hook.id, s.board.id, owners.id, s.editor, 'found when an event was sent')]);
+	});
+
+	it.each([
+		{ row: 'its only key from before has expired: off', key: { created: '2026-01-01 00:00:00', expires: '2026-02-01 00:00:00' }, sent: false },
+		{ row: 'a live key from before: sent', key: { created: '2026-01-01 00:00:00', expires: undefined }, sent: true },
+		{ row: 'only a live key made after it: off', key: { created: '2026-07-01 00:00:00', expires: undefined }, sent: false }
+	])('9. a webhook set up before keys were recorded (S9, E17), $row', async ({ key, sent: isSent }) => {
+		const s = scene();
+		sqlite.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('webhook_keys_recorded_at', '2026-06-01 00:00:00')").run();
+		const k = makeApiKeyRow(s.editor, key.expires === undefined ? {} : { expiresAt: key.expires });
+		sqlite.prepare('UPDATE api_keys SET created_at = ? WHERE id = ?').run(key.created, k.id);
+		const hook = makeWebhook(s.board, { setBy: s.editor, setWithKey: null });
+
+		const delivered = await event(s);
+
+		if (isSent) {
+			expect(delivered).toEqual([hook.url]);
+			expectOn(hook.id);
+		} else {
+			expect(delivered).toEqual([]);
+			expectKeyEnded(hook.id);
+			expect(lines('WARN')).toEqual([
+				`Webhook ${hook.id} on board ${s.board.id} switched off: the account that set it up (user ${s.editor.id}) has no working API key ` +
+					'from before keys were recorded (found when an event was sent). It stays off until an owner of the board or an administrator switches it on.'
+			]);
+		}
+	});
+
+	it('10. switched on again by the owner with key M: on, M recorded, a new secret answered; M then revoked, off again', async () => {
+		const s = scene();
+		const k = makeApiKeyRow(s.editor);
+		const m = makeApiKeyRow(s.owner);
+		const hook = await hookWith(s, s.editor, k.id, 'ten');
+		expect((await revoke(s.editor, k.id)).status).toBe(200);
+		expectKeyEnded(hook.id);
+
+		const on = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: s.owner, credential: byKey(m.id), body: { active: true } });
+
+		expect(on.status).toBe(200);
+		expect(on.body).toMatchObject({ active: true, pausedBecause: null });
+		expect(on.body.secret).toMatch(/^[0-9a-f]{64}$/);
+		expect(rowOf(hook.id)).toEqual({ active: 1, heldBecause: null, setBy: s.owner.id, setByKey: m.id, setWithKey: 1, secret: on.body.secret });
+		expect(await event(s)).toEqual([hook.url]);
+
+		const revoked = await revoke(s.owner, m.id);
+		expect(revoked.body).toEqual({ success: true, webhooksSwitchedOff: 1 });
+		expectKeyEnded(hook.id);
+		expect(await event(s)).toEqual([]);
+	});
+
+	it('11. at start: a webhook whose K expired is switched off by the start-up sweep; a second start changes nothing', async () => {
+		const s = scene();
+		const k = makeApiKeyRow(s.editor);
+		const hook = await hookWith(s, s.editor, k.id, 'eleven');
+		const owners = makeWebhook(s.board);
+		expire(k.id);
+		sent.clear();
+
+		expect(switchOffHeldWebhooksAtStart('on', false)).toBe(1);
+		await sent.settle();
+
+		expectKeyEnded(hook.id);
+		expectOn(owners.id);
+		expect(lines('WARN')).toEqual([keyLine(hook.id, s.board.id, k.id, s.editor, 'found when the server started')]);
+		expect(offMails().map((mail) => mail.to).sort()).toEqual([s.owner.email, s.editor.email].sort());
+
+		sent.clear();
+		expect(switchOffHeldWebhooksAtStart('on', false)).toBe(0);
+		await sent.settle();
+		expect(lines('WARN')).toHaveLength(1);
+		expect(sent.emails).toEqual([]);
+	});
+
+	it.each([
+		{ row: 'where the schedulers run: one WARN a webhook, one mail to the owner with each date, the flag; a second start sends nothing', how: 'mailed' as const },
+		{ row: 'where they do not: WARN lines only, no mail, no flag', how: 'schedulers off' as const },
+		{ row: 'with no mail set up: WARN lines and one more, no mail, the flag written', how: 'no mail' as const },
+		{ row: 'with the mail refused: WARN lines and one more, no flag, so the next start says it again', how: 'refused' as const }
+	])('12. the one-time announcement of webhooks set up before keys were recorded (D6), $row', async ({ how }) => {
+		const s = scene();
+		sqlite.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('webhook_keys_recorded_at', '2026-06-01 00:00:00')").run();
+		const old = (user: SessionUser, opts: { expiresAt?: string; deadlineAt?: string }) => {
+			const k = makeApiKeyRow(user, opts.expiresAt === undefined ? {} : { expiresAt: opts.expiresAt });
+			sqlite.prepare("UPDATE api_keys SET created_at = '2026-01-01 00:00:00', deadline_at = ? WHERE id = ?").run(opts.deadlineAt ?? null, k.id);
+		};
+		// Ends far ahead of any day the suite runs (the code review's CR2). The editor's latest end among three keys,
+		// each key's end the earlier of its expiry and its deadline (CR5): 2099-05-01, from the key with both, not its
+		// later expiry; the owner's: a key with neither.
+		old(s.editor, { expiresAt: '2099-03-01 00:00:00' });
+		old(s.editor, { deadlineAt: '2099-01-10 00:00:00' });
+		old(s.editor, { expiresAt: '2099-12-01 00:00:00', deadlineAt: '2099-05-01 00:00:00' });
+		old(s.owner, {});
+		// One from before the release held now, its setter's only key from then ended: left out, as the start's sweep
+		// that follows switches it off and tells the owners (CR5).
+		const lapsed = makeUser({ username: 'lapsed' });
+		addBoardMember(s.board, lapsed, 'editor');
+		old(lapsed, { expiresAt: '2026-02-01 00:00:00' });
+		const editors = makeWebhook(s.board, { url: 'https://hooks.example.test/e-secret-path', setBy: s.editor, setWithKey: null });
+		const owners = makeWebhook(s.board, { setBy: s.owner, setWithKey: null });
+		const heldNow = makeWebhook(s.board, { setBy: lapsed, setWithKey: null });
+		makeWebhook(s.board);
+		if (how === 'no mail') sqlite.prepare("DELETE FROM settings WHERE key LIKE 'smtp_%'").run();
+		if (how === 'refused') {
+			sent.restore();
+			sent = effects({ refuseMailTo: [s.owner.email] });
+		}
+		const flag = () => sqlite.prepare('SELECT value FROM settings WHERE key = ?').pluck().get(WEBHOOKS_BEFORE_KEYS_ANNOUNCED);
+		const announced = [
+			`Webhook ${editors.id} on board ${s.board.id} was set up before API keys were recorded (user ${s.editor.id}): it stops at the earliest ` +
+				'2099-05-01 00:00:00 UTC; later if that account keeps or replaces a key from before the release. To keep it, an owner of the board or an administrator re-saves it with a key.',
+			`Webhook ${owners.id} on board ${s.board.id} was set up before API keys were recorded (user ${s.owner.id}): it stops on no set ` +
+				'date, as a key of that account from then has neither an expiry nor a deadline. To keep it, an owner of the board or an administrator re-saves it with a key.'
+		];
+		sent.clear();
+
+		const answer = await announceWebhooksBeforeKeys(how === 'schedulers off' ? 'off' : 'on', false);
+		await sent.settle();
+
+		for (const line of lines('WARN')) expect(line).not.toContain(`Webhook ${heldNow.id} `);
+		if (how === 'mailed') {
+			expect(answer).toBe(2);
+			expect(lines('WARN')).toEqual(announced);
+			expect(sent.emails.map((mail) => mail.to)).toEqual([s.owner.email]);
+			const html = sent.emails[0].html;
+			expect(html).toContain(
+				`webhook ${editors.id} to <strong>hooks.example.test</strong>, stops at the earliest 2099-05-01 00:00:00 (UTC); later if that account keeps or replaces a key from before the release.`
+			);
+			expect(html).toContain(`webhook ${owners.id} to <strong>hooks.example.test</strong>, no date`);
+			expect(html).not.toContain(`webhook ${heldNow.id} `);
+			expect(html).toContain('re-save it with your key');
+			expect(html).not.toContain('e-secret-path');
+			expect(flag()).toEqual(expect.any(String));
+
+			sent.clear();
+			expect(await announceWebhooksBeforeKeys('on', false)).toBe(0);
+			await sent.settle();
+			expect(sent.emails).toEqual([]);
+			expect(lines('WARN')).toEqual(announced);
+		} else if (how === 'schedulers off') {
+			expect(answer).toBeNull();
+			expect(lines('WARN')).toEqual([
+				...announced,
+				'The owners of the boards of the 2 webhook(s) set up before API keys were recorded were not mailed, as the schedulers are off ' +
+					'(SCHEDULERS=off). The lines above name each; the first start that runs the schedulers mails them.'
+			]);
+			expect(sent.emails).toEqual([]);
+			expect(flag()).toBeUndefined();
+		} else if (how === 'no mail') {
+			expect(answer).toBe(2);
+			expect(lines('WARN')).toEqual([
+				...announced,
+				'The owners of the boards of the 2 webhook(s) set up before API keys were recorded were not mailed, as mail is not set up. The lines above name each.'
+			]);
+			expect(sent.emails).toEqual([]);
+			expect(flag()).toEqual(expect.any(String));
+		} else {
+			expect(answer).toBeNull();
+			expect(sent.refusedMail.map((mail) => mail.to)).toEqual([s.owner.email]);
+			expect(lines('WARN')).toEqual([
+				...announced,
+				'The owners of the boards of the 2 webhook(s) set up before API keys were recorded were not all mailed, as a mail did not go. ' +
+					'The lines above name each. The next start mails every owner again.'
+			]);
+			expect(flag()).toBeUndefined();
+		}
+	});
+});
+
+describe("a change to a webhook held now is judged as switched off for good (card 2893's code review, CS3)", () => {
+	let sent: Effects;
+	beforeEach(() => {
+		makeSmtp();
+		sent = effects();
+	});
+	afterEach(() => sent.restore());
+
+	/** Owner O's board, editor E, and E's webhook set with key K, which has then expired where nothing swept. */
+	async function heldNow() {
+		const owner = makeUser({ username: 'owner' });
+		const editor = makeUser({ username: 'editor' });
+		const { board } = makeBoard({ owner });
+		addBoardMember(board, editor, 'editor');
+		const k = makeApiKeyRow(editor);
+		const made = await api('POST', `/api/v1/boards/${board.id}/webhooks`, {
+			user: editor,
+			credential: { kind: 'api key', id: k.id },
+			body: { url: 'https://hooks.example.test/held-now', secret: 'old-secret' }
+		});
+		expect(made.status).toBe(201);
+		sqlite.prepare("UPDATE api_keys SET expires_at = '2026-01-01 00:00:00' WHERE id = ?").run(k.id);
+		expect(sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(made.body.id)).toEqual({ active: 1, heldBecause: null });
+		return { owner, editor, board, id: made.body.id as number };
+	}
+	const rowOf = (id: number) =>
+		sqlite.prepare('SELECT active, held_because AS heldBecause, secret FROM webhooks WHERE id = ?').get(id) as { active: number; heldBecause: string | null; secret: string };
+
+	it("(a) an editor's active false records the hold first: it ends 'key ended', said and mailed once, and the editor's delete is then 403", async () => {
+		const s = await heldNow();
+		sent.clear();
+
+		const off = await api('PUT', `/api/v1/webhooks/${s.id}`, { user: s.editor, body: { active: false } });
+		await sent.settle();
+
+		expect(off.status).toBe(200);
+		expect(rowOf(s.id)).toMatchObject({ active: 0, heldBecause: 'key ended' });
+		expect(lines('WARN')).toHaveLength(1);
+		expect(lines('WARN')[0]).toContain(`Webhook ${s.id} on board ${s.board.id} switched off: the API key that set it up`);
+		expect(lines('WARN')[0]).toContain('(found when editor changed it)');
+		expect(sent.emails.filter((mail) => / switched off$/.test(mail.subject)).map((mail) => mail.to).sort()).toEqual([s.owner.email, s.editor.email].sort());
+
+		const removed = await api('DELETE', `/api/v1/webhooks/${s.id}`, { user: s.editor });
+		expect(removed.status).toBe(403);
+		expect(rowOf(s.id)).toMatchObject({ active: 0, heldBecause: 'key ended' });
+	});
+
+	it("(b) the owner's switch-on of it records the hold first, and so gives it a new secret", async () => {
+		const s = await heldNow();
+		const m = makeApiKeyRow(s.owner);
+
+		const on = await api('PUT', `/api/v1/webhooks/${s.id}`, { user: s.owner, credential: { kind: 'api key', id: m.id }, body: { active: true } });
+
+		expect(on.status).toBe(200);
+		expect(on.body.secret).toMatch(/^[0-9a-f]{64}$/);
+		expect(rowOf(s.id)).toEqual({ active: 1, heldBecause: null, secret: on.body.secret });
+	});
+
+	it("(c) an editor's delete of it is refused 403, as of one switched off this way, and nothing is written", async () => {
+		const s = await heldNow();
+		const before = snapshotDb();
+
+		const removed = await api('DELETE', `/api/v1/webhooks/${s.id}`, { user: s.editor });
+
+		expect(removed.status).toBe(403);
+		expectUnchanged(before, "after an editor's delete refused");
+	});
+});
+
+describe('a key revoked and its webhooks switched off are one (card 2893, E8)', () => {
+	it('13. each write of a revoke failed in turn leaves the key and the webhook as they were, with no mail and no WARN; on success both come after the commit', async () => {
+		/** The WARN lines after each run of the request: the untouched run first. */
+		const warned: number[] = [];
+		const run = await eachWriteInTurn({
+			build: () => {
+				makeSmtp();
+				const owner = makeUser({ username: 'owner' });
+				const editor = makeUser({ username: 'editor' });
+				const { board } = makeBoard({ owner });
+				addBoardMember(board, editor, 'editor');
+				const k = makeApiKeyRow(editor);
+				const hook = makeWebhook(board, { setBy: editor, setWithKey: true, setByKey: k.id });
+				return { editor, k, hook };
+			},
+			request: async ({ editor, k }) => {
+				try {
+					return await api('DELETE', `/api/account/api-keys/${k.id}`, { user: editor });
+				} finally {
+					warned.push(lines('WARN').length);
+				}
+			},
+			afterSuccess: ({ k, hook }, result, done) => {
+				expect(result.status).toBe(200);
+				expect(sqlite.prepare('SELECT id FROM api_keys WHERE id = ?').get(k.id)).toBeUndefined();
+				expect(sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(hook.id)).toEqual({
+					active: 0,
+					heldBecause: 'key ended'
+				});
+				expect(done.filter((effect) => effect.kind === 'email').map((effect) => (effect as { subject: string }).subject)).toEqual([
+					'A webhook you set was switched off',
 					'A webhook on your board was switched off'
 				]);
 			}

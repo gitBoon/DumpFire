@@ -1,11 +1,12 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.139
+version: 1.140
 status: As-Built
 date: 2026-11-18
 tags:
   - api
+  - card-2893
   - card-2752
   - webhook-switched-off
   - rest
@@ -39,7 +40,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "REST API reference for DumpFire's external v1 API: authentication, a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -379,10 +380,12 @@ either.
 
 ### Changes on 2026-11-18
 
-**Breaking: a webhook whose setter can no longer open its board is switched off for good**
-(card 2752; OpenAPI document version `1.11.0`, with a dated note, marked breaking, at the top
-of its description). Until this release such a webhook was held, and sent again by itself once
-its setter could open the board again, with no password asked. From this release:
+**Breaking: a webhook whose setter can no longer open its board is switched off for good, and
+so is one whose API key has ended** (cards 2752 and 2893; OpenAPI document version `1.11.0`,
+with a dated note, marked breaking, at the top of its description). Until this release such a
+webhook was held, and sent again by itself once its setter could open the board again, with no
+password asked; and a webhook went on sending after the key that set it up had ended. From this
+release:
 
 1. A webhook whose setter (the account that created it, or last set its `url` or `secret`, or
    switched it on) can no longer open its board, and one nobody is recorded as having set up,
@@ -411,12 +414,42 @@ its setter could open the board again, with no password asked. From this release
 8. The board's owners, or the administrators where it has none, are mailed when its webhooks
    are switched off for lost access, naming the change and who made it, and when someone else
    makes a webhook on the board.
-9. Nothing else changed: no operation, field, status or schema is new, and a webhook whose
-   setter can open its board is sent as before.
+9. Each webhook records the API key that created it, last set its `url` or `secret`, or
+   switched it on, which no answer gives (card 2893). It is switched off for good the same way,
+   its key ended, when that key ends: revoked by its holder (in the same change, and the
+   Account page says how many first), expired, past its deadline, deleted any other way, or not
+   its setter's; at the revoke, at every start, after every restore and at its next event. One
+   set with no API key, as through a session, is switched off at its next event. One made before
+   this version records no key, and is switched off once its setter has no working API key made
+   before this version: its board's owners are mailed once, at the first start, with the
+   earliest date each will stop (later if that account keeps or replaces a key from before this
+   version), and re-saving it with a key (`PUT` with `{"active": false}`, then
+   `{"active": true}`) binds it to that key.
+10. Of such a webhook `pausedBecause` says "This was switched off because the API key that set
+    it up ended: …", and what to do; switching it on again, as in 5, records the caller's key and
+    answers a new `secret`. A `PUT` or `DELETE` of one that is on and held now records the hold
+    first, so an editor's switch-off leaves it switched off for good, an editor's delete is `403`
+    as in 6, and a switch-on gives it a new secret. To rotate a key, the board's owner or an
+    administrator re-saves each webhook with the new key before the old one is revoked, which
+    keeps its secret; revoked first, each is switched on again with a new `secret` for its
+    receiver. The account that set it up is mailed too, while it can open the board.
+11. Nothing else changed: no operation, field, status or schema is new, and a webhook whose
+    setter can open its board and whose key has not ended is sent as before.
 
 **What to do.** An integration that stopped: read why with `GET /webhooks/:webhookId`, then
 switch it on with the board owner's key, `{"active": true}`, and give the receiver the new
-`secret` from the answer. See [Webhooks](#webhooks).
+`secret` from the answer. Before revoking a key an integration's webhooks were set with, make the
+new one, and have the board's owner or an administrator re-save each webhook with it
+(`{"active": false}`, then `{"active": true}`), which keeps its secret; then revoke the old one.
+See [Webhooks](#webhooks).
+
+**Internal routes, additive** (card 2893): `GET /api/account/api-keys` answers each key's
+`webhooks`, how many webhooks revoking it would switch off now (those that are on and record it,
+and, for the account's last working key from before the release, the account's webhooks from
+then that are still sent; the code review's CS4); `DELETE /api/account/api-keys/{id}` answers
+`{ "success": true, "webhooksSwitchedOff": n }`, the webhooks it switched off in the same
+change. The Account page shows the first on each key's row and in the revoke's confirm, and the
+second after it.
 
 **Breaking: a board or card the key's user cannot open is answered 404, not 403** (card
 2719; OpenAPI document version `1.10.0`, with a dated note, marked breaking, at the top of its
@@ -5497,6 +5530,27 @@ flowchart TD
   one on their board. See
   [A Webhook Switched Off When Its Setter Loses the Board](authentication-security.md#a-webhook-switched-off-when-its-setter-loses-the-board-card-2752)
   and [When Nobody Who Can Open the Board Set It Up](notifications-email.md#when-nobody-who-can-open-the-board-set-it-up).
+- **A webhook is switched off for good when the API key that set it up ends** (card 2893,
+  since `1.11.0`): the key that created it, last set its `url` or `secret`, or switched it on,
+  recorded with the setter and given in no answer. Revoked by its holder (in the same change),
+  expired, past its deadline, deleted any other way, or another account's key: the webhook is
+  switched off at the revoke, or at the next start, restore or event, as above, and its
+  `lastDelivery.reason` is `Not sent: the API key that set it up has ended`. `pausedBecause`
+  reads "This was switched off because the API key that set it up ended: it expired, passed its
+  deadline, was deleted or is not the setter's; or, for a webhook set up before keys were
+  recorded, the account that set it up has no working key from then. To keep it, switch it on
+  with your own key, which makes you its setter and gives it a new secret, given in that answer
+  and readable by the board's owner or an administrator, and update the receiver." A change of
+  `events` alone keeps the key. One made before `1.11.0` records none, and keeps sending while
+  its setter holds a working key made before then; the board's owner or an administrator
+  re-saves it with their key (`{"active": false}`, then `{"active": true}`) to bind it. A `PUT`
+  or `DELETE` of one that is on and held now records the hold first, and is judged so. **Rotating
+  a key**: preferred, make the new key, have the board's owner or an administrator re-save each
+  webhook with their new key (`{"active": false}`, then `{"active": true}`), which binds it and
+  keeps its secret, and only then revoke the old one; otherwise revoke the old key first, and the
+  board's owner or an administrator switches each webhook on with their key and gives its
+  receiver the new `secret`. See
+  [A Webhook Switched Off When Its API Key Ends](authentication-security.md#a-webhook-switched-off-when-its-api-key-ends-card-2893).
 - **Only the board's owner or an administrator changes the address or the secret, or
   switches a webhook on.** An editor who sends `url` or `secret` at all, whatever the value,
   is `403` `Only the board's owner or an administrator can change a webhook's address or

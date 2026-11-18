@@ -3152,7 +3152,17 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'changeEmail', reads: 'failureMessage', via: 'stepUpRefusal', done: ["emailMessage = 'Email updated successfully!'", 'displayedEmail = result.email'] },
 		{ name: 'changePassword', reads: 'failureMessage', via: 'stepUpRefusal', done: ['await loadApiKeys()'] },
 		{ name: 'generateApiKey', reads: 'failureMessage', via: 'stepUpRefusal', done: ['newlyCreatedKey = result.key', 'await loadApiKeys()'] },
-		{ name: 'revokeKey', reads: 'failureMessage', done: ['apiKeys = apiKeys.filter(k => k.id !== id)'] },
+		// Card 2893 (D5, E18): the key gone, the line saying how many webhooks it switched off, from the answer, and the
+		// page read again for the password form's count; each only once the server has said yes.
+		{
+			name: 'revokeKey',
+			reads: 'failureMessage',
+			done: [
+				'apiKeys = apiKeys.filter(k => k.id !== id)',
+				"apiKeyMessage = hooksOff > 0 ? `Key revoked. ${webhooksInWords(hooksOff)} ${hooksOff === 1 ? 'was' : 'were'} switched off.` : 'Key revoked.'",
+				'await invalidateAll()'
+			]
+		},
 		// Card 2772: Keep this key, through ConfirmModal; a refusal of the password or the code goes back to the dialog.
 		// The list is read again from the server after a success and after any other refusal (its code review's CR4),
 		// so nothing on the page is changed by a guess either way.
@@ -6142,6 +6152,19 @@ describe('the share and subtask windows, the dashboard and the account page say 
 		expect(said('changeEmoji')).toEqual(['emojiError']);
 		expect(said('toggleNotif')).toEqual(['notifError']);
 		expect(said('revokeKey')).toEqual(['apiKeyError']);
+		// Card 2893 (case 5, S13, E18): the revoke's confirm says first how many webhooks the key switches off, from the
+		// list's count; what it did is said after, on its own line in the key panel, beside the refusal's.
+		expect(account.markup).toContain('<span class="apikey-confirm-text">{revokeQuestion(key.webhooks ?? 0)}</span>');
+		// Its code review's CS4: the count may include webhooks set up before keys were recorded, so not "it set".
+		expect(account.source).toContain("hooks > 0 ? `Revoke? It switches off ${webhooksInWords(hooks)}.` : 'Revoke?'");
+		expect(account.around('{apiKeyMessage}')).toEqual([{ condition: 'apiKeyMessage', inElse: false }]);
+		expect(account.markup.indexOf('{apiKeyMessage}')).toBeGreaterThan(account.markup.indexOf('{apiKeyError}'));
+		// Its code review's CR7: every action of the key panel clears the last revoke's line as it clears the refusal's.
+		for (const name of ['generateApiKey', 'revokeKey', 'keepKey']) {
+			const fn = functionNamed(account.tree, name);
+			expect(statementsOf(fn, "apiKeyError = ''"), name).toHaveLength(1);
+			expect(statementsOf(fn, "apiKeyMessage = ''"), name).toHaveLength(1);
+		}
 		expect(said('changeEmail')).toEqual(['emailMessage']);
 		// A failure's body is no longer read as JSON with a catch of its own.
 		expect(callsOf(functionNamed(account.tree, 'changeEmail'), 'res.json').map(sideOf)).toEqual(['ok']);

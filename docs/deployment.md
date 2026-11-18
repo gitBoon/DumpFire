@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.125
+version: 1.126
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2893
   - card-2752
   - migration-0071
   - card-2719
@@ -61,7 +62,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Docker deployment, the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Docker deployment, the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -6845,8 +6846,8 @@ receiver must be given. The changelog entry is in
 **Migration 0071** adds `webhooks.held_because`, `held_at`, `set_by_key` and `set_with_key`, the
 index `idx_webhooks_set_by_key`, and the setting `webhook_keys_recorded_at`, the moment it ran
 (see [Data Model](data-model.md#a-webhook-switched-off-for-good-migration-0071)). It changes no
-webhook. The last two columns and the setting are card 2893's, which builds next on the same
-migration.
+webhook. The last two columns and the setting are card 2893's, which ships in the same release:
+see [The Release That Switches Off a Webhook Whose API Key Ends](#the-release-that-switches-off-a-webhook-whose-api-key-ends-card-2893).
 
 **At the first start after the deploy** every webhook that is on and whose setter cannot open its
 board, and every one nobody is recorded as having set up (made before 2026-10-18/19, or whose
@@ -6888,11 +6889,10 @@ ORDER BY w.board_id, w.id;
 Tell each board's owner what will stop and why, so the mail at the first start is expected:
 each such webhook was already sending nothing since card 2325.
 
-**Card 2893's keys, to come.** Card 2893 builds on this migration and will switch off a webhook
-whose API key ended. A webhook set before this release records no key (`set_with_key` NULL), so
-card 2893 will judge it by whether its setter still has a live key made before
-`webhook_keys_recorded_at`; that release's notes give the query for them and the date by which
-each must be set again with a key. Nothing about it changes with this release.
+**Card 2893's keys, in the same release.** A webhook whose API key ended is switched off for
+good too, and a webhook set before this release, which records no key, is judged by whether its
+setter still has a working key made before `webhook_keys_recorded_at`. The query for them, the
+one-time mail with the earliest date each will stop, and how to keep one are in the next section.
 
 **A restore sweeps too.** An import first reads this server's webhooks switched off for good,
 whatever their secret, and carries each hold onto the restored row of the same webhook (same id,
@@ -6902,8 +6902,9 @@ its transaction, every restored webhook that is on and whose setter cannot open 
 restored data; a backup made before 0071 holds no hold columns, so its webhooks come in on and
 are swept. A webhook held off here is not switched back on by the backup's secret being filled
 in. Each is a `WARN` line naming who restored, and the owners are mailed where the schedulers
-run. A working copy (`outside=off`) switches every webhook off as before, and mails nobody. This
-server's `webhook_keys_recorded_at` is kept over the backup's.
+run. A working copy (`outside=off`) switches every webhook off as before, and mails nobody. Of
+`webhook_keys_recorded_at` the earlier of this server's and the backup's is kept (card 2893's
+code review, CS1).
 
 **What people notice.** Board owners are mailed when a webhook on their board is switched off,
 naming what caused it ("Sam was taken off the board by Ann"), and whenever someone who is not an
@@ -6936,7 +6937,132 @@ O2, and a receiver allowed by `WEBHOOK_ALLOW_INSIDE` or a public one):
 | D7 | Back up (E still on the board), take E off (switched off), restore the older backup with `keep`, move a card | Off after the restore with its hold kept, though E can open the board in the backup; nothing delivered | On again, or delivered |
 | D10 | Reset E's password as an administrator; then the owner `PUT {"active": true}` on one of E's webhooks | Off with "This was switched off because the account that set it up had its password reset …"; the switch-on answers a new `secret` | The old secret |
 | D8 | `GET /api/v1/openapi.json` | `info.version` `1.11.0`; its note first, "breaking" | 1.10.x |
-| D9 | Admin → ISO 27001 checklist, A.5.14 and A.5.18 | 2752 no longer listed; A.5.14 gap card 2893 | 2752 still listed |
+| D9 | Admin → ISO 27001 checklist, A.5.14 and A.5.18 | 2752 and 2893 no longer listed (they ship together); A.5.14 met; A.5.18 gap cards 2671 and 2894 | 2752 or 2893 still listed |
+
+### The Release That Switches Off a Webhook Whose API Key Ends (Card 2893)
+
+**Card 2893, built 2026-11-18, shipped with card 2752.** Webhooks are made and changed only with
+an API key, and until this release a webhook went on sending after that key had expired, passed
+its deadline (card 2772's, for keys made before two-step sign-in), been deleted or been revoked.
+From this release each webhook records the key that created it, last set its address or secret,
+or switched it on (`set_by_key`, `set_with_key`, migration 0071), and **is switched off for
+good, `'key ended'`, when that key ends**: at the revoke on the Account page (in the same
+change), or at the next start, restore or event after it expires or passes its deadline. It is
+card 2752's switched-off state: the board's owners are mailed, the log says so, and only the
+board's owner or an administrator switches it on again, with a key of their own, which gives it a
+new secret. The account that set it up is mailed too, while it can still open the board. How it
+works is in
+[A Webhook Switched Off When Its API Key Ends](authentication-security.md#a-webhook-switched-off-when-its-api-key-ends-card-2893);
+the plan is `docs/planning/card-2893-webhook-key-ended.md`. No migration of its own; it adds
+items (9) and (10) to the OpenAPI `1.11.0` note.
+
+```mermaid
+sequenceDiagram
+    participant Start as First start after the deploy
+    participant Ann as announceWebhooksBeforeKeys
+    participant Sweep as switchOffHeldWebhooksAtStart
+    participant Owners as Boards' owners
+    Start->>Ann: after announceReportSchedules (schedulers on)
+    Ann->>Ann: one WARN per webhook from before the release still sent
+    Ann->>Owners: one mail each, every webhook with the earliest date it stops
+    Ann->>Ann: webhooks_before_keys_announced, once every mail went
+    Start->>Sweep: before the schedulers
+    Sweep->>Owners: those already held (no working key from before): switched off, mailed
+```
+
+**Webhooks made before this release.** They record no key (`set_with_key` NULL). Each keeps
+sending while the account that set it up holds a working API key made before the release
+(before `webhook_keys_recorded_at`, the moment 0071 ran), and is switched off once it has none:
+for most, at card 2772's 60-day deadline for keys made before two-step sign-in, unless the key was
+kept. A key made after the release does not count: it cannot have set the webhook. One whose
+setter has no such key at the deploy is switched off at the first start, with card 2752's mail.
+
+**The one-time announcement at the first start.** Where the schedulers run, the first start
+writes one `[WARN] [Webhooks]` line for each such webhook still sent, `Webhook <id> on board
+<board> was set up before API keys were recorded (user <id>): it stops at the earliest <date>
+UTC; later if that account keeps or replaces a key from before the release. …` (or "on no set
+date", where one of that account's keys has neither an expiry nor a deadline), never the
+address, and mails each board's owners once ("A webhook on your board will stop when its key
+ends"), listing board, id, host and the earliest date, with how to keep it. The date is the
+latest end among that account's working keys from before the release, each key's end the earlier
+of its expiry and its deadline; it is "at the earliest" because keeping a key (Keep this key)
+moves it later (the code review's CS2). Then it writes the setting `webhooks_before_keys_announced`, but only
+once every mail went: a mail that did not go leaves it unwritten, and the next start says it all
+again. With no mail set up the lines are written, one more `WARN` says the owners were not told,
+and the setting is written. Where the schedulers are off (`SCHEDULERS=off`, or the dev server)
+the lines are written, one `WARN` says nobody was mailed, and no setting: the first start that
+runs the schedulers mails them. A restore brings in the backup's settings: a backup that does
+not hold `webhooks_before_keys_announced` (one made before the release, or before that start's
+mail went) is announced again at the next start. Of `webhook_keys_recorded_at` a restore keeps
+the earlier of this server's and the backup's (the code review's CS1), the backup's where this
+server has none, so no key made after the release on either server counts as one from before
+it.
+
+**To keep one, re-save it with a key.** The board's owner or an administrator sends `PUT
+/api/v1/webhooks/{id}` with `{"active": false}`, then with `{"active": true}`, using their own
+key: that makes them its setter and binds it to that key, and the secret is kept. From then it
+stops when that key ends.
+
+**Before the upgrade, see which webhooks and keys this concerns (owner).** Read-only queries of
+Production's database:
+
+```sql
+SELECT w.id, w.board_id, b.name AS board, w.set_by, u.username
+FROM webhooks w JOIN boards b ON b.id = w.board_id LEFT JOIN users u ON u.id = w.set_by
+WHERE w.active = 1 ORDER BY w.board_id, w.id;
+SELECT k.user_id, k.name, k.created_at, k.expires_at, k.deadline_at
+FROM api_keys k WHERE k.user_id IN (SELECT set_by FROM webhooks WHERE active = 1);
+```
+
+A setter with no key in the second list, or only keys whose expiry or deadline has passed, loses
+those webhooks at the first start; otherwise the latest end of their keys is the date the mail
+will give.
+
+**Rotating a key now switches its webhooks off** (decision 12). Revoking a key on the Account page
+switches off, in the same change, every webhook it set up, and, where it is the account's last
+working key from before the release, the account's webhooks from then too: the key's row shows
+how many first ("Revoking it switches off 2 webhooks"), the confirm says "Revoke? It switches off
+2 webhooks.", and afterwards "Key revoked. 2 webhooks were switched off." (the code review's
+CS4). The answer of `DELETE /api/account/api-keys/{id}` carries `webhooksSwitchedOff`; the log
+line names the key by its id, never its name ("API key #12 was revoked by Sam"). So to rotate the
+key an integration's webhooks were set with (the code review's CR6):
+
+1. **Preferred, nothing stops and the secret is kept.** Make the new key. Then the board's owner
+   or an administrator re-saves each webhook with their new key, `PUT {"active": false}` then
+   `PUT {"active": true}`, which binds it to that key; only then revoke the old key, whose row
+   now counts 0.
+2. **Otherwise.** Revoke the old key first: its webhooks are switched off. The board's owner or an
+   administrator then switches each on with their key (`PUT {"active": true}`), which gives it a
+   **new secret** in that answer, to give the receiver.
+
+A key that simply expires, or passes its deadline, switches its webhooks off the same way at the
+next start, restore or event. A webhook written with a session, never with a key, is switched
+off at its next event.
+
+**This is a breaking change for API keys** (OpenAPI `1.11.0`, items (9) and (10) of its dated
+note; [the API reference](api-reference.md#changes-on-2026-11-18)).
+
+**Going back** to an image before cards 2752 and 2893 needs no step: it does not read
+`set_by_key`, `set_with_key` or the setting `webhooks_before_keys_announced`, and leaves them. On
+that image a webhook whose key ended goes on sending; one already switched off here stays off
+(`active` 0) until an owner switches it on. Coming forward again, a webhook switched on there
+records no key from that switch-on, and is judged by the key it last recorded; a webhook created
+on the older image records `set_with_key` NULL, so it is judged by the before-the-release rule (it
+stops once its setter has no working key made before `webhook_keys_recorded_at`), and re-saving
+it with a key (`{"active": false}`, then `{"active": true}`) binds it to that key (the code
+review's CR8).
+
+**Hands-on checks** (the plan's section 6; on the dev server with `SCHEDULERS=on` and mail
+configured, an owner and an editor E, each with a key):
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| K1 | Make key K as E; `create-webhook` with it; move a card | Delivered | Not delivered |
+| K2 | On the Account page, ✕ beside K | K's row says "Revoking it switches off 1 webhook"; the confirm: "Revoke? It switches off 1 webhook." | No count |
+| K3 | Confirm | "Key revoked. 1 webhook was switched off."; the owner's mail and E's own ("A webhook you set was switched off"), the cause "API key #<id> was revoked by E", never the key's name; `GET` with the owner's key: off, the key sentence | Still on, or the name in the log |
+| K4 | Make key L expiring in a few minutes; `create-webhook`; wait; move a card | Nothing delivered; off | Delivered |
+| K5 | The owner, key M: `PUT {"active": true}` | On; a new secret in the answer | Refused, or the old secret |
+| K6 | Upgrade a dev copy holding webhooks from before the release, schedulers on | One mail per owner listing them with dates; a second start sends nothing | No mail, or a second one |
 
 ## Changing the Schema
 
