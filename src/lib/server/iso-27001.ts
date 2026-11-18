@@ -87,7 +87,7 @@ export type IsoItem = {
 };
 
 /** The day every status below was last checked against the code. */
-export const CHECKED_ON = '2026-11-17';
+export const CHECKED_ON = '2026-11-18';
 
 /** Every status, in the order the page counts them. */
 export const STATUSES: readonly IsoStatus[] = ['met', 'partly-met', 'not-met', 'not-applicable', 'organisational'];
@@ -420,17 +420,23 @@ export const CHECKLIST: readonly IsoItem[] = [
 		status: 'partly-met',
 		how:
 			'Every read is filtered by board access, pinned by tests of each page load and each route. ' +
-			'Still open: routes answer forbidden rather than not found, so ids can be probed, and attachment and comment routes do the same; ' +
-			'reads under an API key rely on a test scan rather than a refusal at run time.',
+			'A board, a card, a grouping, or anything on a board that the caller cannot open, asked for by its id, is answered as one that does not exist, ' +
+			'404 in the same words, in single answers and in batches (card 2719). ' +
+			'Still open: attachment and comment routes ask about the attachment or comment before the card (2762); ' +
+			'the dependency lists still give the ids of work on a board the caller cannot open that is linked to their own, withheld but numbered (card 2129\'s design; a loop withholds its nodes\' ids, card 2719), to be closed by a card of its own; ' +
+			'reads under an API key rely on a test scan rather than a refusal at run time (2730).',
 		evidence: [
 			{ path: 'src/lib/server/board-access.ts', symbol: 'canViewBoard' },
+			{ path: 'src/lib/server/route-guards.ts', symbol: 'requireBoard' },
 			{ path: 'src/lib/server/list-access.ts' },
 			{ path: 'src/lib/server/work-access.ts' },
 			{ path: 'tests/load-access-reads.test.ts' },
-			{ path: 'tests/access-every-route.test.ts' }
+			{ path: 'tests/access-every-route.test.ts' },
+			{ path: 'tests/not-found-not-forbidden.test.ts' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2719, 2730, 2762]
+		gapCards: [2730, 2762],
+		accepted: [{ risk: 'R5: a missing id is answered a little faster than one on a board the caller cannot open', ...ACCEPTED_RISKS }]
 	},
 	organisational('A.8.4', 'annex-a', 'Access to source code'),
 	{

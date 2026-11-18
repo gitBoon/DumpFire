@@ -24,10 +24,9 @@
 
 import { error } from '@sveltejs/kit';
 import type { SessionUser } from './auth';
-import { canViewBoard } from './board-access';
 import { emit } from './events';
 import { readObjects, type RequestBody } from './request-body';
-import { requireUser } from './route-guards';
+import { requireCard, requireUser } from './route-guards';
 import {
 	deleteTokenEntry,
 	getCardTokenEntries,
@@ -40,7 +39,6 @@ import {
 	type TokenTarget,
 	type TokenTotal
 } from './tokens';
-import { getCardBoardId } from './work-access';
 import { inWrite, type ServiceOptions } from './write-as';
 
 /** The functions here that only read. Every other export is a write, and starts with `inWrite()`. */
@@ -55,13 +53,13 @@ function refused(e: unknown): never {
 /**
  * What a card has cost so far, and its entries: `GET /api/cards/:id/tokens`
  * and `GET /api/v1/cards/:cardId/tokens`. The card is looked for and the
- * caller asked for view access (404, then 403). `entries: 0` means nothing
- * has been recorded, which is not a recorded zero (tokens.ts).
+ * caller asked for view access: 404 `Card not found` for a card that is not
+ * there, and for one on a board the caller cannot open alike (card 2719).
+ * `entries: 0` means nothing has been recorded, which is not a recorded zero
+ * (tokens.ts).
  */
 export function readCardTokens(user: SessionUser, at: { cardId: number }, opts: { says?: string }) {
-	const boardId = getCardBoardId(at.cardId);
-	if (boardId === null) throw error(404, 'Card not found');
-	if (!canViewBoard(user, boardId)) throw error(403, opts.says ?? 'No access to this board');
+	requireCard(user, at.cardId, 'view', opts.says);
 
 	const total = getCardTokenTotal(at.cardId);
 	return {

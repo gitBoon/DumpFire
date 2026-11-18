@@ -29,12 +29,10 @@
  */
 
 import { error } from '@sveltejs/kit';
-import { canViewBoard, canEditBoard } from './board-access';
 import { getWorkDependencies, type WorkKind, type WorkRef } from './planning';
 import { addDependencyLink, removeDependencyLink, type CycleRefusal } from './dependency-refusals';
 import { readId, type RequestBody } from './request-body';
-import { requireUser, type Need } from './route-guards';
-import { getCardBoardId, getSubtaskCardId, getWorkBoardId } from './work-access';
+import { requireCard, requireSubtask, requireUser, type Need } from './route-guards';
 import type { SessionUser } from './auth';
 import { inWrite, type ServiceOptions } from './write-as';
 
@@ -92,26 +90,18 @@ function linksOf(at: WorkRef, user: SessionUser, withDetails: boolean): Links {
 /**
  * The card or subtask in the address, for a caller who may view (`need`
  * 'view') or edit the board it is on: `404 Card not found` or `404 Subtask
- * not found`, then 403 in the tree's words (`says`), or these routes' own.
- * Answers the card it is, or the card the subtask belongs to.
+ * not found`, for one that is not there and for one on a board the caller
+ * cannot open alike (card 2719), then 403 to a caller who can open it and may
+ * not edit it, in the tree's words (`says`) or these routes' own. Answers the
+ * card it is, or the card the subtask belongs to.
  */
 function requireWork(user: SessionUser, at: WorkRef, need: Need, says: string | undefined): { cardId: number } {
 	if (at.kind === 'card') {
-		const boardId = getCardBoardId(at.id);
-		if (!boardId) throw error(404, 'Card not found');
-		if (need === 'edit' ? !canEditBoard(user, boardId) : !canViewBoard(user, boardId)) {
-			throw error(403, says ?? (need === 'edit' ? 'No edit access' : 'No access'));
-		}
+		requireCard(user, at.id, need, says ?? 'No edit access');
 		return { cardId: at.id };
 	}
-	const cardId = getSubtaskCardId(at.id);
-	if (cardId === null) throw error(404, 'Subtask not found');
-	const boardId = getWorkBoardId({ kind: 'subtask', id: at.id });
-	if (boardId === null) throw error(404, 'Subtask not found');
-	if (need === 'edit' ? !canEditBoard(user, boardId) : !canViewBoard(user, boardId)) {
-		throw error(403, says ?? (need === 'edit' ? "No edit access to this subtask's board" : 'No access'));
-	}
-	return { cardId };
+	const { card } = requireSubtask(user, at.id, need, says ?? "No edit access to this subtask's board");
+	return { cardId: card.id };
 }
 
 /**

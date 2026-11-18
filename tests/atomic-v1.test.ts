@@ -397,9 +397,8 @@ describe('PUT /api/v1/cards/:cardId', () => {
 		await expectRefused(put(null, s.first.id, body), 401);
 		expect((await expectRefused(put(s.owner, 'abc', body), 400)).body.message).toBe('Invalid card ID');
 		expect((await expectRefused(put(s.owner, 99999, body), 404)).body.message).toBe('Card not found');
-		expect((await expectRefused(put(s.outsider, s.first.id, body), 403)).body.message).toBe(
-			"No edit access to this card's board"
-		);
+		// A card on a board the caller cannot open is answered as one that is not there (card 2719).
+		expect((await expectRefused(put(s.outsider, s.first.id, body), 404)).body.message).toBe('Card not found');
 		expect((await expectRefused(put(s.viewer, s.first.id, body), 403)).body.message).toBe(
 			"No edit access to this card's board"
 		);
@@ -505,8 +504,8 @@ describe('POST /api/v1/boards', () => {
 			'Parent card not found'
 		);
 		expect(
-			(await expectRefused(post(s.outsider, { name: 'Roadmap', parentCardId: s.first.id }), 403)).body.message
-		).toBe("No edit access to the parent card's board");
+			(await expectRefused(post(s.outsider, { name: 'Roadmap', parentCardId: s.first.id }), 404)).body.message
+		).toBe('Parent card not found');
 		await expectRefused(post(s.viewer, { name: 'Roadmap', parentCardId: s.first.id }), 403);
 	});
 });
@@ -553,7 +552,7 @@ describe('PUT /api/v1/boards/:boardId', () => {
 		expect((await expectRefused(put(s.viewer, s.A.board.id, { name: 'Renamed' }), 403)).body.message).toBe(
 			'No edit access to this board'
 		);
-		await expectRefused(put(s.outsider, s.A.board.id, { name: 'Renamed' }), 403);
+		expect((await expectRefused(put(s.outsider, s.A.board.id, { name: 'Renamed' }), 404)).body.message).toBe('Board not found');
 		// A board that is not there is 404 to everyone (card 2117, decision 10).
 		// Only an administrator was told so: anyone else was answered 403.
 		expect((await expectRefused(put(s.owner, 99999, { name: 'Renamed' }), 404)).body.message).toBe(
@@ -618,7 +617,9 @@ describe('POST /api/v1/boards/:boardId/cards', () => {
 		expect(
 			(await expectRefused(post(s.viewer, s.A.board.id, { columnId: column, title: 'Raised' }), 403)).body.message
 		).toBe('No edit access to this board');
-		await expectRefused(post(s.outsider, s.A.board.id, { columnId: column, title: 'Raised' }), 403);
+		expect((await expectRefused(post(s.outsider, s.A.board.id, { columnId: column, title: 'Raised' }), 404)).body.message).toBe(
+			'Board not found'
+		);
 		expect((await expectRefused(post(s.owner, s.A.board.id, { title: 'Raised' }), 400)).body.message).toBe(
 			'columnId is required'
 		);
@@ -689,7 +690,7 @@ describe('POST /api/v1/cards/:cardId/subtasks', () => {
 		expect((await expectRefused(post(s.viewer, s.first.id, { title: 'A step' }), 403)).body.message).toBe(
 			"No edit access to this card's board"
 		);
-		await expectRefused(post(s.outsider, s.first.id, { title: 'A step' }), 403);
+		expect((await expectRefused(post(s.outsider, s.first.id, { title: 'A step' }), 404)).body.message).toBe('Card not found');
 		expect((await expectRefused(post(s.owner, s.first.id, { title: '  ' }), 400)).body.message).toBe(
 			'title is required'
 		);
@@ -774,7 +775,7 @@ describe('/api/v1/cards/:cardId/assignees', () => {
 			expect((await expectRefused(post(s.viewer, s.first.id, { userId: s.viewer.id }), 403)).body.message).toBe(
 				"No edit access to this card's board"
 			);
-			await expectRefused(post(s.outsider, s.first.id, { userId: s.outsider.id }), 403);
+			expect((await expectRefused(post(s.outsider, s.first.id, { userId: s.outsider.id }), 404)).body.message).toBe('Card not found');
 			expect((await expectRefused(post(s.owner, s.first.id, {}), 400)).body.message).toBe('userId is required');
 			expect((await expectRefused(post(s.owner, s.first.id, { userId: 99999 }), 404)).body.message).toBe(
 				'User not found'
@@ -835,7 +836,7 @@ describe('/api/v1/cards/:cardId/assignees', () => {
 			expect((await expectRefused(del(s.viewer, s.first.id, { userId: s.viewer.id }), 403)).body.message).toBe(
 				'No edit access'
 			);
-			await expectRefused(del(s.outsider, s.first.id, { userId: s.viewer.id }), 403);
+			expect((await expectRefused(del(s.outsider, s.first.id, { userId: s.viewer.id }), 404)).body.message).toBe('Card not found');
 			expect((await expectRefused(del(s.owner, s.first.id, {}), 400)).body.message).toBe('userId is required');
 			expect(assigned()).toEqual([{ cardId: s.first.id, userId: s.viewer.id }]);
 		});
@@ -965,7 +966,8 @@ describe('/api/v1/cards/:cardId/dependencies', () => {
 			expect(
 				(await expectRefused(post(s.viewer, s.first.id, { dependsOnCardId: s.second.id }), 403)).body.message
 			).toBe("No edit access to this card's board");
-			await expectRefused(post(s.outsider, s.first.id, { dependsOnCardId: s.far.id }), 403);
+			// A card on a board the caller cannot open is answered as one that is not there (card 2719).
+			expect((await expectRefused(post(s.outsider, s.first.id, { dependsOnCardId: s.far.id }), 404)).body.message).toBe('Card not found');
 			expect((await expectRefused(post(s.owner, s.first.id, {}), 400)).body.message).toBe(
 				'Provide one of dependsOnCardId, dependsOnSubtaskId (this card waits on it), blocksCardId or blocksSubtaskId (it waits on this card)'
 			);
@@ -980,9 +982,10 @@ describe('/api/v1/cards/:cardId/dependencies', () => {
 			expect((await expectRefused(post(s.owner, s.first.id, { dependsOnCardId: 99999 }), 404)).body.message).toBe(
 				'#99999 not found'
 			);
+			// The other end on a board the owner cannot open: as one that is not there (card 2719).
 			expect(
-				(await expectRefused(post(s.owner, s.first.id, { dependsOnCardId: s.far.id }), 403)).body.message
-			).toBe(`No edit access to the board holding #${s.far.id}`);
+				(await expectRefused(post(s.owner, s.first.id, { dependsOnCardId: s.far.id }), 404)).body.message
+			).toBe(`#${s.far.id} not found`);
 			expect(
 				(await expectRefused(post(s.owner, s.first.id, { dependsOnCardId: s.second.id }), 409)).body.message
 			).toBe('That dependency already exists');
@@ -1045,7 +1048,7 @@ describe('/api/v1/cards/:cardId/dependencies', () => {
 			expect(
 				(await expectRefused(del(s.viewer, s.first.id, { dependsOnCardId: s.second.id }), 403)).body.message
 			).toBe(`No edit access to the board holding #${s.first.id}, the end that waits`);
-			await expectRefused(del(s.outsider, s.first.id, { dependsOnCardId: s.second.id }), 403);
+			expect((await expectRefused(del(s.outsider, s.first.id, { dependsOnCardId: s.second.id }), 404)).body.message).toBe('Card not found');
 			expect((await expectRefused(del(s.owner, s.first.id, {}), 400)).body.message).toBe(
 				'Provide one of dependsOnCardId, dependsOnSubtaskId (this card waits on it), blocksCardId or blocksSubtaskId (it waits on this card)'
 			);
@@ -1158,7 +1161,7 @@ describe('POST /api/v1/cards/:cardId/comments', () => {
 		expect((await expectRefused(post(s.owner, s.first.id, '   '), 400)).body.message).toBe('Comment cannot be empty');
 		expect((await expectRefused(post(s.owner, 99999, 'Hello'), 404)).body.message).toBe('Card not found');
 		expect((await expectRefused(post(s.viewer, s.first.id, 'Hello'), 403)).body.message).toBe('No edit access');
-		expect((await expectRefused(post(s.outsider, s.first.id, 'Hello'), 403)).body.message).toBe('No edit access');
+		expect((await expectRefused(post(s.outsider, s.first.id, 'Hello'), 404)).body.message).toBe('Card not found');
 		await expectRefused(post(null, s.first.id, 'Hello'), 401);
 	});
 });
@@ -1242,7 +1245,7 @@ describe('PUT /api/v1/comments/:commentId', () => {
 		expect((await expectRefused(put(editor, s.comment.id, 'Edited'), 403)).body.message).toBe(
 			'You can only edit your own comments'
 		);
-		await expectRefused(put(s.outsider, s.comment.id, 'Edited'), 403);
+		expect((await expectRefused(put(s.outsider, s.comment.id, 'Edited'), 404)).body.message).toBe('Comment not found');
 		expect(stored()).toEqual([{ id: s.comment.id, content: 'Original' }]);
 	});
 });
@@ -1297,7 +1300,7 @@ describe('DELETE /api/v1/comments/:commentId', () => {
 		const editor = makeUser({ username: 'editor' });
 		addBoardMember(s.A.board, editor, 'editor');
 		expect((await expectRefused(remove(editor, s.comment.id), 403)).body.message).toBe('You can only delete your own comments');
-		await expectRefused(remove(s.outsider, s.comment.id), 403);
+		expect((await expectRefused(remove(s.outsider, s.comment.id), 404)).body.message).toBe('Comment not found');
 		expect(stored()).toEqual([{ id: s.comment.id }]);
 		expect(entries()).toEqual([]);
 	});
@@ -1376,7 +1379,8 @@ describe('POST /api/v1/milestones', () => {
 		expect((await expectRefused(post(s.viewer, { name: 'Ship it', boardId: s.A.board.id }), 403)).body.message).toBe(
 			'No edit access to that board'
 		);
-		await expectRefused(post(s.outsider, { name: 'Ship it', boardId: s.A.board.id }), 403);
+		// A board the caller cannot open is answered as one that is not there (card 2719).
+		expect((await expectRefused(post(s.outsider, { name: 'Ship it', boardId: s.A.board.id }), 404)).body.message).toBe('Board not found');
 	});
 });
 

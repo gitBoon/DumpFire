@@ -1,25 +1,13 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { cardComments, cards, columns, users } from '$lib/server/db/schema';
+import { cardComments, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { getBoardRole } from '$lib/server/board-access';
 import { deleteComment, editComment } from '$lib/server/card-comments';
 import { pathId, readBody } from '$lib/server/request-body';
-import { requireUser } from '$lib/server/route-guards';
+import { requireCard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
-
-/** Resolve a comment together with the card and board it belongs to. */
-function loadComment(commentId: number) {
-	const comment = db.select().from(cardComments).where(eq(cardComments.id, commentId)).get();
-	if (!comment) return null;
-	const card = db.select({ columnId: cards.columnId, title: cards.title }).from(cards).where(eq(cards.id, comment.cardId)).get();
-	if (!card) return null;
-	const col = db.select({ boardId: columns.boardId }).from(columns).where(eq(columns.id, card.columnId)).get();
-	if (!col) return null;
-	return { comment, cardTitle: card.title, boardId: col.boardId };
-}
 
 /** Shape a comment the same way the list endpoint does (author name + emoji). */
 function withAuthor(comment: typeof cardComments.$inferSelect) {
@@ -27,18 +15,21 @@ function withAuthor(comment: typeof cardComments.$inferSelect) {
 	return { ...comment, username: author?.username ?? 'Unknown', userEmoji: author?.emoji || '👤' };
 }
 
-/** GET /api/v1/comments/:commentId — Fetch a single comment. */
+/**
+ * GET /api/v1/comments/:commentId — Fetch a single comment. 404 `Comment not
+ * found` for one that is not there, and for one on a board the key's user
+ * cannot open alike (card 2719).
+ */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const commentId = pathId(params.commentId, 'comment');
 
-	const ctx = loadComment(commentId);
-	if (!ctx) throw error(404, 'Comment not found');
+	const comment = db.select().from(cardComments).where(eq(cardComments.id, commentId)).get();
+	if (!comment) throw error(404, 'Comment not found');
+	requireCard(locals.user, comment.cardId, 'view', undefined, 'Comment not found');
 
-	if (!getBoardRole(locals.user, ctx.boardId)) throw error(403, 'No access to this board');
-
-	return json(withAuthor(ctx.comment));
+	return json(withAuthor(comment));
 };
 
 /**

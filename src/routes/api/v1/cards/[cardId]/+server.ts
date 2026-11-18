@@ -1,14 +1,13 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { cards, columns, subtasks, cardLabels, cardAssignees, users } from '$lib/server/db/schema';
+import { columns, subtasks, cardLabels, cardAssignees, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { canViewBoard } from '$lib/server/board-access';
 import { getCardDependencies } from '$lib/server/planning';
 import { removeCard, updateCard } from '$lib/server/cards';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
 import { pathId, readBody } from '$lib/server/request-body';
-import { requireUser } from '$lib/server/route-guards';
+import { requireCard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -18,29 +17,17 @@ import type { RequestHandler } from './$types';
  */
 const NO_EDIT = "No edit access to this card's board";
 
-/** Resolve the board that a card belongs to. */
-function getCardBoardId(cardId: number): number | null {
-	const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, cardId)).get();
-	if (!card) return null;
-	const col = db.select({ boardId: columns.boardId }).from(columns).where(eq(columns.id, card.columnId)).get();
-	return col?.boardId ?? null;
-}
-
-/** GET /api/v1/cards/:cardId — Get a single card with subtasks and assignees. */
+/**
+ * GET /api/v1/cards/:cardId — Get a single card with subtasks and assignees.
+ * 404 `Card not found` for a card that is not there, and for one on a board
+ * the key's user cannot open alike (card 2719).
+ */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const cardId = pathId(params.cardId, 'card');
 
-	const boardId = getCardBoardId(cardId);
-	if (!boardId) throw error(404, 'Card not found');
-
-	if (!canViewBoard(locals.user, boardId)) {
-		throw error(403, 'No access to this card\'s board');
-	}
-
-	const card = db.select().from(cards).where(eq(cards.id, cardId)).get();
-	if (!card) throw error(404, 'Card not found');
+	const { card, boardId } = requireCard(locals.user, cardId, 'view');
 
 	// Fetch subtasks, by position and then id (card 2223)
 	const cardSubtasks = db.select().from(subtasks)

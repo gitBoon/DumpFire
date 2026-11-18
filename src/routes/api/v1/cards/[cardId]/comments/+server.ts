@@ -16,7 +16,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const cardId = pathId(params.cardId, 'card');
-	return json(listComments(locals.user, { cardId }, { says: 'No access to this board' }));
+	return json(listComments(locals.user, { cardId }, {}));
 };
 
 /**

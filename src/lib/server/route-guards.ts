@@ -12,7 +12,9 @@
  *
  *     const { card, boardId } = requireCard(locals.user, id, 'edit');
  *
- * 401 not signed in, 404 no such row, 403 the row exists but is not yours.
+ * 401 not signed in; 404 no such row, or one on a board the caller cannot
+ * open, in the same words (card 2719); 403 a board the caller can open where
+ * their role does not allow the act.
  *
  * Two rules keep the row a guard checked the row that is written:
  *
@@ -55,7 +57,7 @@ import {
 	type Team,
 	type User
 } from './db/schema';
-import { canEditBoard, canViewBoard, getBoardRole, isAdmin } from './board-access';
+import { canEditBoard, canViewBoard, getBoardRole, isAdmin, roleOnBoard } from './board-access';
 import { decisionAccess, mayDo, type DecisionAccess } from './decision-access';
 import { DECISION_ACTION_WORDS, type DecisionAction } from './decision-status';
 import { boardCategoryRule, categoryRule } from './list-access';
@@ -100,31 +102,53 @@ export function refuseOwnAccount(user: SessionUser | null | undefined, userId: n
 }
 
 /**
+ * The one refusal for a thing on a board (card 2719): 404 `missing` for a
+ * board the caller cannot open, the very words a thing that is not there gets,
+ * so the answer does not say that it exists; 403 `says` for a board they can
+ * open where their role does not allow `need`.
+ *
+ * The 403 is under a literal `need !== 'view'`, so the OpenAPI document's
+ * reading of a handler drops it for every call made for `'view'`. The caller's
+ * `role` on the board is read once, by the guard, from the board row where it
+ * has it in hand (`roleOnBoard`): `canViewBoard` and `canEditBoard` each read
+ * the board again, and a guard asked as often as this one would double its
+ * reads.
+ */
+function refuseOnBoard(role: ReturnType<typeof roleOnBoard>, need: Need, missing: string, says?: string): void {
+	if (role === null) error(404, missing);
+	if (need !== 'view' && role !== 'admin' && role !== 'owner' && role !== 'editor') {
+		error(403, says ?? 'No edit access to this board');
+	}
+}
+
+/**
  * The board, if it exists and the caller may view or edit it.
  *
  * Existence is checked first and separately: an administrator passes every
  * access check without the board being looked up, so without this an admin
  * asking about a board that does not exist would be told "yes".
  *
- * `says` is the 403's text where a route has words of its own for it, which
- * it keeps (card 2012, R2): the v1 card routes say "this card's board".
+ * A board the caller cannot open is answered as one that is not there,
+ * `missing` (card 2719). `says` is the 403's text, for a board they can open
+ * and may not edit, where a route has words of its own for it, which it keeps
+ * (card 2012, R2): the v1 card routes say "this card's board". `missing` is
+ * the words of the thing the route looked up first, where that is not the
+ * board: a card, a column, a webhook.
  */
 export function requireBoard(
 	user: SessionUser | null | undefined,
 	boardId: number,
 	need: Need,
-	says?: string
+	says?: string,
+	missing = 'Board not found'
 ): Board {
 	const caller = requireUser(user);
 	if (!Number.isInteger(boardId)) error(400, 'Invalid board ID');
 
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
-	if (!board) error(404, 'Board not found');
+	if (!board) error(404, missing);
 
-	const allowed = need === 'edit' ? canEditBoard(caller, boardId) : canViewBoard(caller, boardId);
-	if (!allowed) {
-		error(403, says ?? (need === 'edit' ? 'No edit access to this board' : 'No access to this board'));
-	}
+	refuseOnBoard(roleOnBoard(caller, board), need, missing, says);
 	return board;
 }
 
@@ -137,8 +161,10 @@ export function requireBoard(
  * there is, so `isPublic` asks for it too, on whichever route it is sent to.
  * An editor may change what is on a board and not who can open it.
  *
- * `says` is the refusal's text. The three share routes each had words of
- * their own for it and keep them; making a board public is the default.
+ * `says` is the refusal's text, for a caller who can open the board. The
+ * three share routes each had words of their own for it and keep them;
+ * making a board public is the default. A caller who cannot open the board is
+ * answered as for one that is not there (card 2719).
  */
 export function requireBoardOwner(
 	user: SessionUser | null | undefined,
@@ -151,7 +177,8 @@ export function requireBoardOwner(
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) error(404, 'Board not found');
 
-	const role = getBoardRole(caller, boardId);
+	const role = roleOnBoard(caller, board);
+	if (role === null) error(404, 'Board not found');
 	if (role !== 'owner' && role !== 'admin') error(403, says);
 	return board;
 }
@@ -188,8 +215,9 @@ export function requireTeamManager(user: SessionUser | null | undefined, teamId:
  * (card 2675, plan 4.3, decisions 4 to 6).
  *
  * A decision the caller may not view is answered as one that is not there,
- * 404 `Decision not found`, unlike `requireCard`'s 403: the answer must not
- * say that a decision exists. One they may view and may not do `action` to is
+ * 404 `Decision not found`, as every guard here answers a thing on a board
+ * the caller cannot open (card 2719): the answer must not say that a
+ * decision exists. One they may view and may not do `action` to is
  * a 403 naming the action. Who may do what is `mayDo`'s, in
  * decision-access.ts, which also asks that a write resting on authorship or
  * board ownership come from someone who can edit the board now.
@@ -215,44 +243,55 @@ export function requireDecision(
 	return { decision, access };
 }
 
-/** The column and the board it is on. */
+/**
+ * The column and the board it is on. `says` and `missing` as for
+ * `requireBoard`, in the same places: the reorder names a card's present
+ * column by the card (card 2719, S3).
+ */
 export function requireColumn(
 	user: SessionUser | null | undefined,
 	columnId: number,
-	need: Need
+	need: Need,
+	says?: string,
+	missing = 'Column not found'
 ): { column: Column; boardId: number } {
 	requireUser(user);
 	if (!Number.isInteger(columnId)) error(400, 'Invalid column ID');
 
 	const column = db.select().from(columns).where(eq(columns.id, columnId)).get();
-	if (!column) error(404, 'Column not found');
+	if (!column) error(404, missing);
 
-	requireBoard(user, column.boardId, need);
+	requireBoard(user, column.boardId, need, says, missing);
 	return { column, boardId: column.boardId };
 }
 
-/** The card and the board it is on, resolved through its column; `says` as for `requireBoard`. */
+/**
+ * The card and the board it is on, resolved through its column, whose title
+ * it answers too, read with the board's id; `says` and `missing` as for
+ * `requireBoard`.
+ */
 export function requireCard(
 	user: SessionUser | null | undefined,
 	cardId: number,
 	need: Need,
-	says?: string
-): { card: Card; boardId: number } {
+	says?: string,
+	missing = 'Card not found'
+): { card: Card; boardId: number; columnTitle: string } {
 	requireUser(user);
 	if (!Number.isInteger(cardId)) error(400, 'Invalid card ID');
 
 	const card = db.select().from(cards).where(eq(cards.id, cardId)).get();
-	if (!card) error(404, 'Card not found');
+	if (!card) error(404, missing);
 
 	const column = db
-		.select({ boardId: columns.boardId })
+		.select({ boardId: columns.boardId, title: columns.title })
 		.from(columns)
 		.where(eq(columns.id, card.columnId))
 		.get();
-	if (!column) error(404, 'Card not found');
+	if (!column) error(404, missing);
 
-	requireBoard(user, column.boardId, need, says);
-	return { card, boardId: column.boardId };
+	requireBoard(user, column.boardId, need, says, missing);
+	return { card, boardId: column.boardId, columnTitle: column.title };
 }
 
 /**
@@ -279,11 +318,10 @@ export function requireParentCard(user: SessionUser | null | undefined, parentCa
 		.from(columns)
 		.where(eq(columns.id, card.columnId))
 		.get();
-	if (!column) error(404, 'Parent card column not found');
+	if (!column) error(404, 'Parent card not found');
 
-	if (!canEditBoard(caller, column.boardId)) {
-		error(403, "No edit access to the parent card's board");
-	}
+	// A card on a board the caller cannot open is answered as one that is not there (card 2719).
+	refuseOnBoard(getBoardRole(caller, column.boardId), 'edit', 'Parent card not found', "No edit access to the parent card's board");
 	return card;
 }
 
@@ -344,7 +382,7 @@ export function requireSubtask(
 	const subtask = db.select().from(subtasks).where(eq(subtasks.id, subtaskId)).get();
 	if (!subtask) error(404, 'Subtask not found');
 
-	const { card, boardId } = requireCard(user, subtask.cardId, need, says);
+	const { card, boardId } = requireCard(user, subtask.cardId, need, says, 'Subtask not found');
 	return { subtask, card, boardId };
 }
 
@@ -360,14 +398,16 @@ export function requireLabel(
 	const label = db.select().from(labels).where(eq(labels.id, labelId)).get();
 	if (!label) error(404, 'Label not found');
 
-	requireBoard(user, label.boardId, need);
+	requireBoard(user, label.boardId, need, undefined, 'Label not found');
 	return { label, boardId: label.boardId };
 }
 
 /**
  * A card category the caller may read: one that belongs to no board, or one of
  * a board they can open (card 2128, decision 5, by `categoryRule`). Any key
- * could read any category by its id, with the id of the board it is on.
+ * could read any category by its id, with the id of the board it is on. One
+ * of a board the caller cannot open is answered as one that is not there
+ * (card 2719).
  */
 export function requireCategory(user: SessionUser | null | undefined, categoryId: number): Category {
 	const caller = requireUser(user);
@@ -376,7 +416,7 @@ export function requireCategory(user: SessionUser | null | undefined, categoryId
 	const category = db.select().from(categories).where(eq(categories.id, categoryId)).get();
 	if (!category) error(404, 'Category not found');
 
-	if (!categoryRule(caller)(category)) error(403, 'No access to this category');
+	if (!categoryRule(caller)(category)) error(404, 'Category not found');
 	return category;
 }
 
@@ -387,7 +427,8 @@ export function requireCategory(user: SessionUser | null | undefined, categoryId
  * created on, and changing or deleting one changes every card that uses it.
  * So the caller needs edit access to the owning board. A category with no
  * board — created that way, or left behind when its board was deleted — has
- * no owner to ask, so only an administrator may change it.
+ * no owner to ask, so only an administrator may change it. One of a board the
+ * caller cannot open is answered as one that is not there (card 2719).
  */
 export function requireCategoryEdit(
 	user: SessionUser | null | undefined,
@@ -400,7 +441,7 @@ export function requireCategoryEdit(
 	if (!category) error(404, 'Category not found');
 
 	if (category.boardId !== null) {
-		requireBoard(caller, category.boardId, 'edit');
+		requireBoard(caller, category.boardId, 'edit', undefined, 'Category not found');
 	} else if (!isAdmin(caller)) {
 		error(403, 'Only an administrator can change a category that belongs to no board');
 	}
@@ -436,7 +477,9 @@ export function requireCategoryCreate(
  * 2128, decision 4): one that holds a board they can open, or no board. Asked
  * to read one, and to file a board under one that it is not filed under: a
  * board filed under another team's grouping put that grouping in the filer's
- * lists, and kept the team from renaming or deleting it.
+ * lists, and kept the team from renaming or deleting it. One that is not
+ * listed to the caller, holding only boards they cannot open, is answered as
+ * one that is not there (card 2719, S5).
  */
 export function requireBoardCategory(user: SessionUser | null | undefined, categoryId: number): BoardCategory {
 	const caller = requireUser(user);
@@ -445,7 +488,7 @@ export function requireBoardCategory(user: SessionUser | null | undefined, categ
 	const grouping = db.select().from(boardCategories).where(eq(boardCategories.id, categoryId)).get();
 	if (!grouping) error(404, 'Board category not found');
 
-	if (!boardCategoryRule(caller)(categoryId)) error(403, 'No access to this board category');
+	if (!boardCategoryRule(caller)(categoryId)) error(404, 'Board category not found');
 	return grouping;
 }
 
@@ -455,7 +498,10 @@ export function requireBoardCategory(user: SessionUser | null | undefined, categ
  * A grouping is not on a board; boards are filed under it. Renaming or
  * deleting one changes how every board filed under it is shown to everybody,
  * so the caller must be able to edit each of those boards. An empty grouping
- * affects no one and any signed-in user may tidy it up.
+ * affects no one and any signed-in user may tidy it up. One holding only
+ * boards the caller cannot open is answered as one that is not there (card
+ * 2719, S5); one holding a board they can open and one they cannot edit is
+ * the 403.
  */
 export function requireBoardCategoryEdit(
 	user: SessionUser | null | undefined,
@@ -478,6 +524,7 @@ export function requireBoardCategoryEdit(
 			.where(eq(boards.categoryId, categoryId))
 			.all();
 		if (filed.some((b) => !canEditBoard(caller, b.id))) {
+			if (!filed.some((b) => canViewBoard(caller, b.id))) error(404, 'Board category not found');
 			error(403, 'This category groups boards you cannot edit');
 		}
 	}

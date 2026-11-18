@@ -1,10 +1,8 @@
-import { error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { boards, columns, cards, categories, labels, cardLabels, cardAssignees, users, subtasks } from '$lib/server/db/schema';
+import { columns, cards, categories, labels, cardLabels, cardAssignees, users, subtasks } from '$lib/server/db/schema';
 import { eq, and, isNull, inArray, getTableColumns } from 'drizzle-orm';
-import { getBoardRole } from '$lib/server/board-access';
 import { pathId } from '$lib/server/request-body';
-import { requireUser } from '$lib/server/route-guards';
+import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
 import { CARD_ORDER, COLUMN_ORDER } from '$lib/server/card-order';
 import { stageOf } from '$lib/server/upstream';
@@ -36,11 +34,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const user = requireUser(locals.user);
 	const boardId = pathId(params.id, 'board');
 
-	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
-	if (!board) throw error(404, 'Board not found');
-
-	const role = getBoardRole(user, boardId);
-	if (!role) throw error(403, 'No access to this board');
+	// 404 for a board that is not there, and for one the caller cannot open alike (card 2719).
+	const board = requireBoard(user, boardId, 'view');
 
 	// The file's name, the same for a board with no columns (card 2371): that
 	// one put the raw name in the header, so a name with an emoji or another

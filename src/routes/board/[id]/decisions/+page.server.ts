@@ -6,8 +6,9 @@ import type { PageServerLoad } from './$types';
  * `readBoardDecisions`, which guards itself with `requireBoard(…, 'view')`:
  * every decision that is not a draft to anyone who can view the board, and a
  * draft only to its author, its decider, the board's owners and
- * administrators. 404 for a board that is not there, then 403 for one the
- * caller cannot open, which the page's error page shows.
+ * administrators. 404 `Board not found` for a board that is not there and
+ * for one the caller cannot open alike (card 2719), which the page's error
+ * page shows.
  */
 export const load: PageServerLoad = async ({ params, locals }) => {
 	return readBoardDecisions(locals.user!, Number(params.id));

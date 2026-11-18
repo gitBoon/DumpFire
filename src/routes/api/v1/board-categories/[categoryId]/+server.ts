@@ -9,8 +9,8 @@ import type { RequestHandler } from './$types';
 /**
  * GET /api/v1/board-categories/:categoryId — one board category, if the key's
  * user is listed it: it holds a board they can open, or none (card 2128).
- * 404 for none, 403 "No access to this board category" otherwise: any key was
- * given any grouping by its id.
+ * 404 `Board category not found` for none, and for one holding only boards
+ * they cannot open alike (card 2719): any key was given any grouping by its id.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');

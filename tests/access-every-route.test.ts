@@ -617,6 +617,33 @@ type Case = {
 	 */
 	refusedAs?: number;
 	/**
+	 * The signed-in callers who cannot open what the request names, and so are
+	 * answered 404 as for what is not there (card 2719), where the kind's own
+	 * list (`RULES[kind].unopenable`) is not the case's: an `own` row says it
+	 * always, `[]` where what it names is on no board (M3, fail closed).
+	 */
+	unopenable?: Who[];
+	/**
+	 * Where the allowed caller is answered 404 too: the not-found words a
+	 * caller who cannot open board A is answered (card 2719, E2), so that
+	 * their 404 is told apart from the allowed caller's by the words (M1).
+	 */
+	unopenableSays?: string;
+	/**
+	 * Callers who cannot open what the request names and are still answered
+	 * 403, by a rule another card is to change (card 2719, E3): each keeps
+	 * today's refusal, exactly 403, as an ordinary test, and has a second test,
+	 * run with `it.fails`, that asks the 404. When the card lands that test
+	 * fails, and this comes out. Shaped as `fault` is.
+	 */
+	stillForbids?: { card?: number; lets: Who[]; what: string };
+	/**
+	 * A route that answers a board the caller cannot open exactly as one that
+	 * is not there, at 403, in these words: its unopenable callers keep 403
+	 * (card 2719, 5.2 (7)).
+	 */
+	sameForMissing?: string;
+	/**
 	 * `view`, for a list that takes a board as a filter: a caller who cannot
 	 * open the board is not refused. They are answered with nothing of it.
 	 */
@@ -681,6 +708,23 @@ const own = (mine: Who, notMine: Who[], req: (w: World) => Req, more: More = {})
 	notMine,
 	req,
 	...more
+});
+
+/**
+ * The `unopenable` of a case whose callers can all open what it names, or
+ * whose refusal is not about a board (card 2719, M3): a public board, which
+ * every signed-in caller opens; a grouping holding boards A and B, which every
+ * refused caller is listed; and a team, a request, a report schedule, a key or
+ * a decision, which is on no board, or is refused by a rule of its own.
+ */
+const OPENED_BY_ALL: Who[] = [];
+
+/**
+ * A milestone's own visibility (card 2911, F1): one the caller cannot see is
+ * `403 No access to this milestone`, where one that is not there is 404.
+ */
+const milestoneForbids = (lets: Who[]): Pick<Case, 'stillForbids'> => ({
+	stillForbids: { card: 2911, lets, what: 'a milestone the caller cannot see is 403 No access to this milestone, against 404 for one that is not there' }
 });
 
 const json = (path: string, body: unknown): Req => ({ path, body });
@@ -1245,8 +1289,9 @@ const TABLE: Record<string, Case | Case[]> = {
 	// Both boards are filed under it, so changing it needs edit access to both:
 	// the path names the grouping and nothing of either board, and the callers
 	// who can edit one of the two are the ones `across` refuses.
-	'PUT /api/board-categories/[id]': across((w) => json(`/api/board-categories/${w.grouping.id}`, { name: 'Renamed' })),
-	'DELETE /api/board-categories/[id]': across((w) => `/api/board-categories/${w.grouping.id}`),
+	// The grouping holds boards A and B, so every refused caller is listed it (card 2719, S5: the rows of the new file prove the rest).
+	'PUT /api/board-categories/[id]': across((w) => json(`/api/board-categories/${w.grouping.id}`, { name: 'Renamed' }), { unopenable: OPENED_BY_ALL }),
+	'DELETE /api/board-categories/[id]': across((w) => `/api/board-categories/${w.grouping.id}`, { unopenable: OPENED_BY_ALL }),
 
 	// ── Boards ────────────────────────────────────────────────────────────
 	'GET /api/boards': signedIn(() => '/api/boards'),
@@ -1269,7 +1314,8 @@ const TABLE: Record<string, Case | Case[]> = {
 		}),
 		// Public means anyone may read it. Nobody but its owner may change it.
 		own('owner', ['outsider', 'editor', 'viewer'], (w) => json(`/api/boards/${w.publicBoard.board.id}`, { name: 'Renamed' }), {
-			of: 'a public board'
+			of: 'a public board',
+			unopenable: OPENED_BY_ALL
 		}),
 		// Milestone 22, card 2463: the kind decides whether its cards are committed, so its owner is asked.
 		owns((w) => json(`/api/boards/${w.A.board.id}`, { kind: 'ideas' }), {
@@ -1322,7 +1368,7 @@ const TABLE: Record<string, Case | Case[]> = {
 	'GET /api/burndown': [
 		signedIn(() => '/api/burndown', { of: 'every board the caller can open' }),
 		view((w) => `/api/burndown?boardIds=${w.A.board.id}`, { of: 'one board' }),
-		view((w) => `/api/burndown?milestoneId=${w.A.milestone.id}`, { of: 'one milestone' }),
+		view((w) => `/api/burndown?milestoneId=${w.A.milestone.id}`, { of: 'one milestone', ...milestoneForbids(['outsider']) }),
 		// Both boards are under the grouping, and each caller is charted the one they can open.
 		view((w) => `/api/burndown?boardCategoryId=${w.grouping.id}`, { of: 'a grouping of boards', filtered: true }),
 		// Refused, as a report of it is (card 2128): it was charted empty, with its name.
@@ -1349,7 +1395,8 @@ const TABLE: Record<string, Case | Case[]> = {
 			of: "a move to another board's column"
 		}),
 		own('owner', ['outsider', 'editor'], (w) => json(`/api/cards/${w.publicBoard.card.id}`, { title: 'Renamed' }), {
-			of: 'a card on a public board'
+			of: 'a card on a public board',
+			unopenable: OPENED_BY_ALL
 		})
 	],
 	'DELETE /api/cards/[id]': [
@@ -1500,46 +1547,57 @@ const TABLE: Record<string, Case | Case[]> = {
 		edit((w) => json('/api/milestones', { name: 'A goal', boardId: w.A.board.id }))
 	],
 	'GET /api/milestones/[id]': [
-		view((w) => `/api/milestones/${w.A.milestone.id}`),
+		view((w) => `/api/milestones/${w.A.milestone.id}`, milestoneForbids(['outsider'])),
 		// One that belongs to no board is its maker's until it has cards, and then
 		// it is for whoever can open every board those cards are on.
 		own('owner', ['outsider', 'editor'], (w) => `/api/milestones/${w.goal.id}`, {
-			of: 'one with no board and no card'
+			of: 'one with no board and no card',
+			unopenable: ['outsider', 'editor'],
+			...milestoneForbids(['outsider', 'editor'])
 		}),
 		view((w) => `/api/milestones/${w.goal.id}`, {
 			of: 'one with no board, whose cards are on board A',
-			setup: intoGoal((w) => [w.A.loose])
+			setup: intoGoal((w) => [w.A.loose]),
+			...milestoneForbids(['outsider'])
 		}),
 		own('both', ['outsider', 'editor', 'viewer'], (w) => `/api/milestones/${w.goal.id}`, {
 			of: 'one with no board, whose cards are on both boards',
-			setup: intoGoal((w) => [w.A.loose, w.B.loose])
+			setup: intoGoal((w) => [w.A.loose, w.B.loose]),
+			unopenable: ['outsider', 'editor', 'viewer'],
+			...milestoneForbids(['outsider', 'editor', 'viewer'])
 		})
 	],
 	'PATCH /api/milestones/[id]': [
-		edit((w) => json(`/api/milestones/${w.A.milestone.id}`, { name: 'Renamed' })),
+		edit((w) => json(`/api/milestones/${w.A.milestone.id}`, { name: 'Renamed' }), milestoneForbids(['outsider'])),
 		edit((w) => json(`/api/milestones/${w.A.milestone.id}`, { cardId: w.A.loose.id, attach: true }), {
-			of: 'attaching a card'
+			of: 'attaching a card',
+			...milestoneForbids(['outsider'])
 		}),
 		across((w) => json(`/api/milestones/${w.B.milestone.id}`, { cardId: w.A.loose.id, attach: true }), {
 			of: "attaching another board's card",
 			answers: 400,
-			because: 'a milestone of one board takes no card of another, whoever asks'
+			because: 'a milestone of one board takes no card of another, whoever asks',
+			...milestoneForbids(['editor'])
 		}),
 		// Board B's milestone holds board B's card, so it is not given to board A
 		// (card 2179); once it is empty, it is.
 		across((w) => json(`/api/milestones/${w.B.milestone.id}`, { boardId: w.A.board.id }), {
 			of: 'moving it to another board',
 			answers: 400,
-			because: 'a milestone that holds cards of another board is not given to it, whoever asks'
+			because: 'a milestone that holds cards of another board is not given to it, whoever asks',
+			...milestoneForbids(['editor'])
 		}),
 		across((w) => json(`/api/milestones/${w.B.milestone.id}`, { boardId: w.A.board.id }), {
 			of: 'moving an empty one to another board',
-			setup: emptyMilestoneOfB
+			setup: emptyMilestoneOfB,
+			...milestoneForbids(['editor'])
 		}),
 		// `editor` can see it, its card being on board A, and did not make it.
 		own('owner', ['outsider', 'editor', 'viewer'], (w) => json(`/api/milestones/${w.goal.id}`, { name: 'Renamed' }), {
 			of: 'one with no board',
-			setup: intoGoal((w) => [w.A.loose])
+			setup: intoGoal((w) => [w.A.loose]),
+			unopenable: ['outsider'],
+			...milestoneForbids(['outsider'])
 		}),
 		// Taking a card out looks at the milestone in the path: whether the caller
 		// may change it, whether it is there, and whether the card is in it (card
@@ -1547,7 +1605,9 @@ const TABLE: Record<string, Case | Case[]> = {
 		across((w) => json(`/api/milestones/${w.B.milestone.id}`, { cardId: w.A.card.id, attach: false }), {
 			of: "taking a card out through another board's milestone",
 			answers: 404,
-			because: 'the card is not in the milestone the path names, whoever asks'
+			because: 'the card is not in the milestone the path names, whoever asks',
+			unopenableSays: 'Card not found',
+			...milestoneForbids(['editor'])
 		}),
 		// A milestone that is not there is 404 to everyone signed in, before
 		// anything else is looked at.
@@ -1558,14 +1618,16 @@ const TABLE: Record<string, Case | Case[]> = {
 		})
 	],
 	'DELETE /api/milestones/[id]': [
-		edit((w) => `/api/milestones/${w.A.milestone.id}`),
+		edit((w) => `/api/milestones/${w.A.milestone.id}`, milestoneForbids(['outsider'])),
 		own('owner', ['outsider', 'editor', 'viewer'], (w) => `/api/milestones/${w.goal.id}`, {
 			of: 'one with no board',
-			setup: intoGoal((w) => [w.A.loose])
+			setup: intoGoal((w) => [w.A.loose]),
+			unopenable: ['outsider'],
+			...milestoneForbids(['outsider'])
 		})
 	],
-	'GET /api/milestones/[id]/pdf': view((w) => `/api/milestones/${w.A.milestone.id}/pdf`),
-	'GET /api/milestones/[id]/summary': view((w) => `/api/milestones/${w.A.milestone.id}/summary`),
+	'GET /api/milestones/[id]/pdf': view((w) => `/api/milestones/${w.A.milestone.id}/pdf`, milestoneForbids(['outsider'])),
+	'GET /api/milestones/[id]/summary': view((w) => `/api/milestones/${w.A.milestone.id}/summary`, milestoneForbids(['outsider'])),
 
 	// ── Reports ───────────────────────────────────────────────────────────
 	'GET /api/report-schedules': signedIn(() => '/api/report-schedules'),
@@ -1597,11 +1659,17 @@ const TABLE: Record<string, Case | Case[]> = {
 		['outsider', 'editor', 'admin'],
 		(w) => `/api/report-schedules/${w.scheduleId}`
 	),
+	// A board or grouping the caller cannot open is answered as one that is not there, at 403, in one sentence
+	// for both (card 2719, 5.2 (7)).
 	'POST /api/reports': [
-		view((w) => json('/api/reports', { scope: 'board', scopeId: w.A.board.id, ...WEEK }), { writesNothing: REPORT_READS }),
+		view((w) => json('/api/reports', { scope: 'board', scopeId: w.A.board.id, ...WEEK }), {
+			writesNothing: REPORT_READS,
+			sameForMissing: 'Board not found or no access'
+		}),
 		view((w) => json('/api/reports', { scope: 'category', scopeId: w.groupingOfA.id, ...WEEK }), {
 			of: 'a grouping of boards',
-			writesNothing: REPORT_READS
+			writesNothing: REPORT_READS,
+			sameForMissing: 'Category not found or no accessible boards'
 		}),
 		// The answer is a PDF. What is in it for each caller is tested below the
 		// table, where the report is read before it is drawn.
@@ -1621,7 +1689,9 @@ const TABLE: Record<string, Case | Case[]> = {
 					makeSmtp();
 					stepUpFactor(w.viewer);
 				},
-				writesNothing: REPORT_MAILED
+				writesNothing: REPORT_MAILED,
+				// Card 2751 (D6): one sentence for a board that is not there and one the caller cannot open.
+				sameForMissing: 'Failed to generate report or no access'
 			}
 		),
 		view(
@@ -1633,7 +1703,8 @@ const TABLE: Record<string, Case | Case[]> = {
 					makeSmtp();
 					stepUpFactor(w.viewer);
 				},
-				writesNothing: REPORT_MAILED
+				writesNothing: REPORT_MAILED,
+				sameForMissing: 'Failed to generate report or no access'
 			}
 		),
 		signedIn(
@@ -1666,21 +1737,23 @@ const TABLE: Record<string, Case | Case[]> = {
 			withLink: (w) => `/api/requests/${w.request.id}?token=${LINK}`,
 			addressee: true
 		}),
-		// `editor` is a member of the team and `viewer` is not.
+		// `editor` is a member of the team and `viewer` is not. A request is on no board until it is accepted, and
+		// one a signed-in caller is not let into is a 403 (card 2719, F6: out of its scope).
 		own('editor', ['outsider', 'viewer'], (w) => `/api/requests/${w.teamRequest.id}`, {
 			of: 'one addressed to a team',
-			opensByLink: true
+			opensByLink: true,
+			unopenable: OPENED_BY_ALL
 		})
 	],
 	'PATCH /api/requests/[id]': [
 		own('owner', ['outsider', 'editor'], (w) =>
-			json(`/api/requests/${w.request.id}`, { action: 'reject', reason: 'Not this quarter' })
+			json(`/api/requests/${w.request.id}`, { action: 'reject', reason: 'Not this quarter' }), { unopenable: OPENED_BY_ALL }
 		),
 		own(
 			'editor',
 			['outsider', 'viewer'],
 			(w) => json(`/api/requests/${w.teamRequest.id}`, { action: 'reject', reason: 'Not this quarter' }),
-			{ of: 'one addressed to a team' }
+			{ of: 'one addressed to a team', unopenable: OPENED_BY_ALL }
 		),
 		// Accepting makes a card, on the board and in the column the body names.
 		// `guest` is a member of the team too, and can only view board A.
@@ -1693,14 +1766,15 @@ const TABLE: Record<string, Case | Case[]> = {
 					boardId: w.A.board.id,
 					columnId: w.A.cols['To Do'].id
 				}),
-			{ of: 'accepting one onto a board' }
+			// The request is asked about before the board it is to be accepted onto.
+			{ of: 'accepting one onto a board', unopenable: OPENED_BY_ALL }
 		),
 		// An administrator handles any request by role, as its addressee does (canHandleRequest).
 		own(
 			'admin',
 			['outsider', 'editor'],
 			(w) => json(`/api/requests/${w.request.id}`, { action: 'reject', reason: 'Not this quarter' }),
-			{ of: "the owner's, by an administrator" }
+			{ of: "the owner's, by an administrator", unopenable: OPENED_BY_ALL }
 		)
 	],
 	'DELETE /api/requests/[id]': admin((w) => `/api/requests/${w.request.id}`),
@@ -1721,21 +1795,24 @@ const TABLE: Record<string, Case | Case[]> = {
 		}),
 		own('editor', ['outsider', 'viewer'], (w) => `/api/requests/${w.teamRequest.id}/messages`, {
 			of: 'of one addressed to a team',
-			opensByLink: true
+			opensByLink: true,
+			unopenable: OPENED_BY_ALL
 		})
 	],
 	'POST /api/requests/[id]/messages': [
 		own('owner', ['outsider', 'editor'], (w) => json(`/api/requests/${w.request.id}/messages`, { message: 'On it' }), {
-			of: 'an answer from the one it is addressed to'
+			of: 'an answer from the one it is addressed to',
+			unopenable: OPENED_BY_ALL
 		}),
 		own(
 			'editor',
 			['outsider', 'viewer'],
 			(w) => json(`/api/requests/${w.teamRequest.id}/messages`, { message: 'On it' }),
-			{ of: 'an answer from a member of the team it is addressed to' }
+			{ of: 'an answer from a member of the team it is addressed to', unopenable: OPENED_BY_ALL }
 		),
 		own('admin', ['outsider', 'editor'], (w) => json(`/api/requests/${w.request.id}/messages`, { message: 'On it' }), {
-			of: 'an answer from an administrator'
+			of: 'an answer from an administrator',
+			unopenable: OPENED_BY_ALL
 		}),
 		link((w) => json(`/api/requests/${w.request.id}/messages`, { message: 'Thanks', senderType: 'requester' }), {
 			of: 'a reply from the requester',
@@ -1777,28 +1854,32 @@ const TABLE: Record<string, Case | Case[]> = {
 	'POST /api/teams': signedIn(() => json('/api/teams', { name: 'A team' })),
 	// `editor` is a member of the team and does not own it.
 	// An administrator manages any team by role, as its owner does (requireTeamManager).
+	// A team is on no board (card 2719, M3).
 	'PUT /api/teams/[id]': [
-		own('owner', ['outsider', 'editor'], (w) => json(`/api/teams/${w.team.id}`, { name: 'Renamed' })),
+		own('owner', ['outsider', 'editor'], (w) => json(`/api/teams/${w.team.id}`, { name: 'Renamed' }), { unopenable: OPENED_BY_ALL }),
 		own('admin', ['outsider', 'editor'], (w) => json(`/api/teams/${w.team.id}`, { name: 'Renamed' }), {
-			of: "the owner's team, by an administrator"
+			of: "the owner's team, by an administrator",
+			unopenable: OPENED_BY_ALL
 		})
 	],
 	'DELETE /api/teams/[id]': [
-		own('owner', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}`),
-		own('admin', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}`, { of: "the owner's team, by an administrator" })
+		own('owner', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}`, { unopenable: OPENED_BY_ALL }),
+		own('admin', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}`, { of: "the owner's team, by an administrator", unopenable: OPENED_BY_ALL })
 	],
 	'POST /api/teams/[id]/members/[userId]': [
 		own('owner', ['outsider', 'editor'], (w) =>
-			json(`/api/teams/${w.team.id}/members/${w.viewer.id}`, { userId: w.viewer.id })
+			json(`/api/teams/${w.team.id}/members/${w.viewer.id}`, { userId: w.viewer.id }), { unopenable: OPENED_BY_ALL }
 		),
 		own('admin', ['outsider', 'editor'], (w) => json(`/api/teams/${w.team.id}/members/${w.viewer.id}`, { userId: w.viewer.id }), {
-			of: "to the owner's team, by an administrator"
+			of: "to the owner's team, by an administrator",
+			unopenable: OPENED_BY_ALL
 		})
 	],
 	'DELETE /api/teams/[id]/members/[userId]': [
-		own('owner', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}/members/${w.editor.id}`),
+		own('owner', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}/members/${w.editor.id}`, { unopenable: OPENED_BY_ALL }),
 		own('admin', ['outsider', 'editor'], (w) => `/api/teams/${w.team.id}/members/${w.editor.id}`, {
-			of: "from the owner's team, by an administrator"
+			of: "from the owner's team, by an administrator",
+			unopenable: OPENED_BY_ALL
 		})
 	],
 
@@ -2170,7 +2251,7 @@ const TABLE: Record<string, Case | Case[]> = {
 	'GET /api/v1/burndown': [
 		signedIn(() => '/api/v1/burndown', { of: 'every board the caller can open' }),
 		view((w) => `/api/v1/burndown?boardIds=${w.A.board.id}`, { of: 'one board' }),
-		view((w) => `/api/v1/burndown?milestoneId=${w.A.milestone.id}`, { of: 'one milestone' }),
+		view((w) => `/api/v1/burndown?milestoneId=${w.A.milestone.id}`, { of: 'one milestone', ...milestoneForbids(['outsider']) }),
 		view((w) => `/api/v1/burndown?boardCategoryId=${w.grouping.id}`, { of: 'a grouping of boards', filtered: true }),
 		view((w) => `/api/v1/burndown?boardCategoryId=${w.groupingOfA.id}`, { of: 'a grouping with no board the caller can open' })
 	],
@@ -2189,10 +2270,11 @@ const TABLE: Record<string, Case | Case[]> = {
 		view((w) => `/api/v1/board-categories/${w.groupingOfA.id}`, { of: 'one with no board the caller can open' })
 	],
 	// Both boards are filed under it: see PUT /api/board-categories/[id].
+	// The grouping holds boards A and B, so every refused caller is listed it (card 2719, S5).
 	'PUT /api/v1/board-categories/[categoryId]': across((w) =>
-		json(`/api/v1/board-categories/${w.grouping.id}`, { name: 'Renamed' })
+		json(`/api/v1/board-categories/${w.grouping.id}`, { name: 'Renamed' }), { unopenable: OPENED_BY_ALL }
 	),
-	'DELETE /api/v1/board-categories/[categoryId]': across((w) => `/api/v1/board-categories/${w.grouping.id}`),
+	'DELETE /api/v1/board-categories/[categoryId]': across((w) => `/api/v1/board-categories/${w.grouping.id}`, { unopenable: OPENED_BY_ALL }),
 
 	'GET /api/v1/boards': signedIn(() => '/api/v1/boards'),
 	'POST /api/v1/boards': [
@@ -2250,10 +2332,12 @@ const TABLE: Record<string, Case | Case[]> = {
 		across((w) => json(`/api/v1/cards/${w.B.card.id}`, { milestoneId: w.A.milestone.id }), {
 			of: "joining another board's milestone",
 			answers: 400,
-			because: 'a milestone of one board takes no card of another, whoever asks'
+			because: 'a milestone of one board takes no card of another, whoever asks',
+			...milestoneForbids(['outsider'])
 		}),
 		own('owner', ['outsider', 'editor'], (w) => json(`/api/v1/cards/${w.publicBoard.card.id}`, { title: 'Renamed' }), {
-			of: 'a card on a public board'
+			of: 'a card on a public board',
+			unopenable: OPENED_BY_ALL
 		})
 	],
 	'DELETE /api/v1/cards/[cardId]': [
@@ -2390,66 +2474,80 @@ const TABLE: Record<string, Case | Case[]> = {
 		edit((w) => json('/api/v1/milestones', { name: 'A goal', boardId: w.A.board.id }))
 	],
 	'GET /api/v1/milestones/[milestoneId]': [
-		view((w) => `/api/v1/milestones/${w.A.milestone.id}`),
+		view((w) => `/api/v1/milestones/${w.A.milestone.id}`, milestoneForbids(['outsider'])),
 		// As for GET /api/milestones/[id]: its maker's until it has cards, and
 		// then for whoever can open every board those cards are on.
 		own('owner', ['outsider', 'editor'], (w) => `/api/v1/milestones/${w.goal.id}`, {
-			of: 'one with no board and no card'
+			of: 'one with no board and no card',
+			unopenable: ['outsider', 'editor'],
+			...milestoneForbids(['outsider', 'editor'])
 		}),
 		view((w) => `/api/v1/milestones/${w.goal.id}`, {
 			of: 'one with no board, whose cards are on board A',
-			setup: intoGoal((w) => [w.A.loose])
+			setup: intoGoal((w) => [w.A.loose]),
+			...milestoneForbids(['outsider'])
 		}),
 		own('both', ['outsider', 'editor', 'viewer'], (w) => `/api/v1/milestones/${w.goal.id}`, {
 			of: 'one with no board, whose cards are on both boards',
-			setup: intoGoal((w) => [w.A.loose, w.B.loose])
+			setup: intoGoal((w) => [w.A.loose, w.B.loose]),
+			unopenable: ['outsider', 'editor', 'viewer'],
+			...milestoneForbids(['outsider', 'editor', 'viewer'])
 		})
 	],
 	'PATCH /api/v1/milestones/[milestoneId]': [
-		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}`, { name: 'Renamed' })),
+		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}`, { name: 'Renamed' }), milestoneForbids(['outsider'])),
 		// Board B's milestone holds board B's card, so it is not given to board A
 		// (card 2179); once it is empty, it is.
 		across((w) => json(`/api/v1/milestones/${w.B.milestone.id}`, { boardId: w.A.board.id }), {
 			of: 'moving it to another board',
 			answers: 400,
-			because: 'a milestone that holds cards of another board is not given to it, whoever asks'
+			because: 'a milestone that holds cards of another board is not given to it, whoever asks',
+			...milestoneForbids(['editor'])
 		}),
 		across((w) => json(`/api/v1/milestones/${w.B.milestone.id}`, { boardId: w.A.board.id }), {
 			of: 'moving an empty one to another board',
-			setup: emptyMilestoneOfB
+			setup: emptyMilestoneOfB,
+			...milestoneForbids(['editor'])
 		}),
 		own('owner', ['outsider', 'editor', 'viewer'], (w) => json(`/api/v1/milestones/${w.goal.id}`, { name: 'Renamed' }), {
 			of: 'one with no board',
-			setup: intoGoal((w) => [w.A.loose])
+			setup: intoGoal((w) => [w.A.loose]),
+			unopenable: ['outsider'],
+			...milestoneForbids(['outsider'])
 		})
 	],
 	'DELETE /api/v1/milestones/[milestoneId]': [
-		edit((w) => `/api/v1/milestones/${w.A.milestone.id}`),
+		edit((w) => `/api/v1/milestones/${w.A.milestone.id}`, milestoneForbids(['outsider'])),
 		own('owner', ['outsider', 'editor', 'viewer'], (w) => `/api/v1/milestones/${w.goal.id}`, {
 			of: 'one with no board',
-			setup: intoGoal((w) => [w.A.loose])
+			setup: intoGoal((w) => [w.A.loose]),
+			unopenable: ['outsider'],
+			...milestoneForbids(['outsider'])
 		})
 	],
 	'POST /api/v1/milestones/[milestoneId]/cards': [
-		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}/cards`, { cardId: w.A.loose.id })),
+		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}/cards`, { cardId: w.A.loose.id }), milestoneForbids(['outsider'])),
 		across((w) => json(`/api/v1/milestones/${w.B.milestone.id}/cards`, { cardId: w.A.loose.id }), {
 			of: "another board's card",
 			answers: 400,
-			because: 'a milestone of one board takes no card of another, whoever asks'
+			because: 'a milestone of one board takes no card of another, whoever asks',
+			...milestoneForbids(['editor'])
 		})
 	],
 	'DELETE /api/v1/milestones/[milestoneId]/cards': [
-		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}/cards`, { cardId: w.A.card.id })),
+		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}/cards`, { cardId: w.A.card.id }), milestoneForbids(['outsider'])),
 		// The card is in board A's milestone, and not in the one named. It was
 		// taken out of its own (card 2117, R5).
 		across((w) => json(`/api/v1/milestones/${w.B.milestone.id}/cards`, { cardId: w.A.card.id }), {
 			of: "another board's card",
 			answers: 404,
-			because: 'the card is not in the milestone the path names, whoever asks'
+			because: 'the card is not in the milestone the path names, whoever asks',
+			unopenableSays: 'Card not found',
+			...milestoneForbids(['editor'])
 		})
 	],
 	'POST /api/v1/milestones/[milestoneId]/cards/bulk': [
-		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}/cards/bulk`, { cardIds: [w.A.loose.id] })),
+		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}/cards/bulk`, { cardIds: [w.A.loose.id] }), milestoneForbids(['outsider'])),
 		// A milestone of one board takes no card of another, so the card of a
 		// second board goes into the one that belongs to none. `owner` made that
 		// milestone and may change it, and cannot edit board B: the 409 says so.
@@ -2458,19 +2556,23 @@ const TABLE: Record<string, Case | Case[]> = {
 		// same status as the allowed answer shows nothing.
 		own('admin', ['outsider', 'owner'], (w) => json(`/api/v1/milestones/${w.goal.id}/cards/bulk`, { cardIds: [w.B.loose.id] }), {
 			of: "a card of a board the caller cannot edit",
-			refusedAs: 409
+			refusedAs: 409,
+			// `owner` made the goal and cannot open board B: its card is reported as a missing one (D9).
+			unopenable: ['outsider', 'owner'],
+			...milestoneForbids(['outsider'])
 		})
 	],
 	'DELETE /api/v1/milestones/[milestoneId]/cards/bulk': [
-		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}/cards/bulk`, { cardIds: [w.A.card.id] })),
+		edit((w) => json(`/api/v1/milestones/${w.A.milestone.id}/cards/bulk`, { cardIds: [w.A.card.id] }), milestoneForbids(['outsider'])),
 		across((w) => json(`/api/v1/milestones/${w.B.milestone.id}/cards/bulk`, { cardIds: [w.A.card.id] }), {
 			of: "another board's card",
 			refusedAs: 409,
-			writesNothing: 'the card is in board A\'s milestone, not the one named: it is answered as skipped, and nothing is taken out'
+			writesNothing: 'the card is in board A\'s milestone, not the one named: it is answered as skipped, and nothing is taken out',
+			...milestoneForbids(['editor'])
 		})
 	],
-	'GET /api/v1/milestones/[milestoneId]/pdf': view((w) => `/api/v1/milestones/${w.A.milestone.id}/pdf`),
-	'GET /api/v1/milestones/[milestoneId]/summary': view((w) => `/api/v1/milestones/${w.A.milestone.id}/summary`),
+	'GET /api/v1/milestones/[milestoneId]/pdf': view((w) => `/api/v1/milestones/${w.A.milestone.id}/pdf`, milestoneForbids(['outsider'])),
+	'GET /api/v1/milestones/[milestoneId]/summary': view((w) => `/api/v1/milestones/${w.A.milestone.id}/summary`, milestoneForbids(['outsider'])),
 
 	'PUT /api/v1/subtasks/[subtaskId]': edit((w) => json(`/api/v1/subtasks/${w.A.sub.id}`, { title: 'Renamed' })),
 	'DELETE /api/v1/subtasks/[subtaskId]': edit((w) => `/api/v1/subtasks/${w.A.sub.id}`),
@@ -2508,21 +2610,46 @@ const TABLE: Record<string, Case | Case[]> = {
 
 // ─── Who each kind refuses and lets in ─────────────────────────────────────
 
-/** For each kind: the signed-in callers it refuses, and the one it lets in. */
-const RULES: Record<Exclude<Kind, 'public' | 'own' | 'link' | 'form'>, { refuses: Who[]; allows: Who }> = {
-	'signed-in': { refuses: [], allows: 'outsider' },
-	view: { refuses: ['outsider'], allows: 'viewer' },
+/**
+ * For each kind: the signed-in callers it refuses, the one it lets in, and,
+ * of those it refuses, the ones who cannot open what the request names: they
+ * are answered 404, as for what is not there (card 2719). The rest of the
+ * refused can open it, and are answered 403 for their role.
+ */
+const RULES: Record<Exclude<Kind, 'public' | 'own' | 'link' | 'form'>, { refuses: Who[]; allows: Who; unopenable: Who[] }> = {
+	'signed-in': { refuses: [], allows: 'outsider', unopenable: [] },
+	view: { refuses: ['outsider'], allows: 'viewer', unopenable: ['outsider'] },
 	// `guest` can view the board, as `viewer` can, and by another way: a team.
-	edit: { refuses: ['outsider', 'viewer', 'guest'], allows: 'editor' },
-	owner: { refuses: ['outsider', 'viewer', 'guest', 'editor'], allows: 'owner' },
+	edit: { refuses: ['outsider', 'viewer', 'guest'], allows: 'editor', unopenable: ['outsider'] },
+	owner: { refuses: ['outsider', 'viewer', 'guest', 'editor'], allows: 'owner', unopenable: ['outsider'] },
 	// `outsider` can edit what the path names and `editor` what the body names.
 	// `editsB` and `editsA` can each edit one of the two and view the other.
-	across: { refuses: ['outsider', 'editor', 'editsB', 'editsA'], allows: 'both' },
+	// `outsider` cannot open board A, nor `editor` board B.
+	across: { refuses: ['outsider', 'editor', 'editsB', 'editsA'], allows: 'both', unopenable: ['outsider', 'editor'] },
 	// `owner` owns a board and is no administrator.
-	admin: { refuses: ['outsider', 'owner'], allows: 'admin' },
+	admin: { refuses: ['outsider', 'owner'], allows: 'admin', unopenable: [] },
 	// An administrator is refused with everybody else: only the one account is let in.
-	superadmin: { refuses: ['outsider', 'owner', 'admin'], allows: 'chief' }
+	superadmin: { refuses: ['outsider', 'owner', 'admin'], allows: 'chief', unopenable: [] }
 };
+
+/**
+ * The callers `c` refuses who cannot open what it names (card 2719): the
+ * case's own list where it has one, and otherwise its kind's. An `own` row
+ * with none is taken, failing closed, to name a thing on board A: each caller
+ * it refuses who cannot open board A is unopenable (M3).
+ */
+function unopenableOf(c: Case): Who[] {
+	if (c.unopenable) return c.unopenable;
+	// Fail closed (E9): an `own` row that says nothing is taken to be about a thing on board A, and every caller
+	// it refuses who cannot open board A is to be answered 404. A row about a thing on no board says so.
+	if (c.kind === 'own') return (c.notMine ?? []).filter((who) => !OPENS_A.includes(who));
+	if (c.kind === 'public' || c.kind === 'link' || c.kind === 'form') return [];
+	return RULES[c.kind].unopenable;
+}
+
+/** Whether `who` is answered as for what is not there by `c`: unopenable, and not held at 403 by another rule. */
+const answeredNotThere = (c: Case, who: Who): boolean =>
+	who !== 'nobody' && unopenableOf(c).includes(who) && !c.stillForbids?.lets.includes(who) && c.sameForMissing === undefined;
 
 function refusedBy(c: Case): Who[] {
 	if (c.kind === 'public') return [];
@@ -2674,9 +2801,23 @@ async function expectRefused(
 		await sent.settle();
 
 		expect(statuses, `answered ${res.status} ${JSON.stringify(res.body)}`).toContain(res.status);
+		// A caller who cannot open what the request names is told nothing of access: it is not there (card 2719).
+		if (answeredNotThere(c, who)) expect(wordsIn(res.body), 'an answer as for what is not there').not.toMatch(/access|permission|forbidden/i);
+		// Where the allowed caller is answered 404 as well, a refused caller's 404 is in the not-found words of
+		// what they cannot open (card 2719, E2).
+		if (res.status === 404 && c.answers === 404) expect(res.body, 'a 404 that refuses').toEqual({ message: c.unopenableSays });
+		// A route that answers an unopenable board as one that is not there, at 403, in its own words (5.2 (7)).
+		if (who !== 'nobody' && c.sameForMissing !== undefined && unopenableOf(c).includes(who)) {
+			expect(res.body, 'the words a missing one gets').toEqual({ message: c.sameForMissing });
+		}
 		// A bulk endpoint answers 409 for a batch it will not write, whatever is
-		// wrong with it. It is a refusal only when it says the caller has no access.
-		if (res.status === 409) expect(asText(res), 'a 409 that refuses says so').toMatch(/No (edit )?access/);
+		// wrong with it. It is a refusal only when it says the caller has no access,
+		// or, to a caller who cannot open what it names (card 2719), that it is not
+		// there; a caller who can open it is still told of access.
+		if (res.status === 409) {
+			const refusal = answeredNotThere(c, who) ? /not found|does not exist/ : /No (edit )?access/;
+			expect(asText(res), 'a 409 that refuses says so').toMatch(refusal);
+		}
 		expectUnchanged(before);
 		expect(uploadedFiles(), 'the files in the uploads folder').toEqual(filesBefore);
 		if (read) expect(read, 'the upload was read').not.toHaveBeenCalled();
@@ -2690,15 +2831,43 @@ async function expectRefused(
  * What a refused caller is answered: 403 or 404 if signed in, 401 or 403 if
  * not. Never the status the allowed caller is answered: a case that carries
  * `answers` would then pass with no access check in the handler at all.
+ *
+ * A signed-in caller who cannot open what the request names is answered 404,
+ * as for what is not there, and nothing else (card 2719); one a rule of
+ * another card still holds at 403 (`stillForbids`), or a route that answers a
+ * missing board 403 too (`sameForMissing`), exactly 403.
  */
 function refusals(c: Case, who: Who): number[] {
-	const statuses =
-		who !== 'nobody'
-			? [403, 404, ...(c.refusedAs ? [c.refusedAs] : [])]
+	const batch = c.refusedAs ? [c.refusedAs] : [];
+	const unopenable = who !== 'nobody' && unopenableOf(c).includes(who);
+	const statuses = unopenable
+		? answeredNotThere(c, who)
+			? [404, ...batch]
+			: [403, ...batch]
+		: who !== 'nobody'
+			? [403, 404, ...batch]
 			: c.kind === 'link' || c.kind === 'form' || c.opensByLink
 				? [401, 403, 404]
 				: [401, 403];
-	return statuses.filter((status) => status !== c.answers);
+	// A 404 told apart by its words (card 2719, E2) is kept where the allowed caller is answered 404 too.
+	return statuses.filter((status) => status !== c.answers || (status === 404 && answeredNotThere(c, who) && c.unopenableSays !== undefined));
+}
+
+/**
+ * What walk 2 expects of an administrator lowered while the request is under
+ * way (card 2719, E4). Lowered to a user, they are on no board, and so cannot
+ * open what a case's unopenable callers cannot: answered as those are, 404,
+ * or 403 where another rule holds it there (`stillForbids`, `sameForMissing`).
+ * Where the case has none, or the role left is still an administrator's, as
+ * `outsider` is answered.
+ */
+function loweredRefusals(c: Case, to: string): number[] {
+	if (to !== 'user' || unopenableOf(c).length === 0) return refusals(c, 'outsider');
+	const batch = c.refusedAs ? [c.refusedAs] : [];
+	// Held at 403 by a route's own words (`sameForMissing`), or by a milestone's visibility (`stillForbids`), which
+	// is asked after the path's card: a caller who can open nothing may be stopped at either.
+	const held = c.sameForMissing !== undefined ? [403] : c.stillForbids !== undefined ? [403, 404] : [404];
+	return [...held, ...batch].filter((status) => status !== c.answers || (status === 404 && c.unopenableSays !== undefined));
 }
 
 /**
@@ -2744,6 +2913,14 @@ const known = (fault: { card?: number }) => `KNOWN FAULT${fault.card ? ` (card $
 
 /** An answer as the text a caller reads. */
 const asText = (res: ApiResult) => (typeof res.body === 'string' ? res.body : JSON.stringify(res.body));
+
+/** Every text an answer says, at any depth, and none of its keys: a batch's empty `forbidden` list says nothing. */
+function wordsIn(body: unknown): string {
+	if (typeof body === 'string') return body;
+	if (Array.isArray(body)) return body.map(wordsIn).join('\n');
+	if (body !== null && typeof body === 'object') return Object.values(body).map(wordsIn).join('\n');
+	return '';
+}
 
 // ─── The tests ─────────────────────────────────────────────────────────────
 
@@ -2796,6 +2973,59 @@ describe('the table', () => {
 				if (c.answersOtherwise) expect(c.answers, key).toBeDefined();
 			}
 		}
+	});
+
+	// Card 2719, M1 (E2): where the allowed caller is answered 404, a caller answered as for what is not there is
+	// told apart from them by the words alone, so the row says what those words are.
+	it('M1: says, for every row whose allowed caller is answered 404, the words its unopenable callers are answered', () => {
+		const unsaid: string[] = [];
+		for (const [key, entry] of Object.entries(TABLE)) {
+			for (const c of [entry].flat()) {
+				const notThere = refusedBy(c).filter((who) => answeredNotThere(c, who));
+				if (c.answers === 404 && notThere.length > 0 && c.unopenableSays === undefined) unsaid.push(titled(c, key));
+			}
+		}
+		expect(unsaid).toEqual([]);
+	});
+
+	// Card 2719, M2 (E3): a caller held at 403 by another card's rule is one the row refuses and who cannot open
+	// what it names; otherwise the mark keeps a 403 nothing asked for.
+	it('M2: holds at 403 only callers the row refuses who cannot open what it names', () => {
+		const stray: string[] = [];
+		let marks = 0;
+		for (const [key, entry] of Object.entries(TABLE)) {
+			for (const c of [entry].flat()) {
+				if (c.stillForbids) {
+					marks++;
+					expect(c.stillForbids.what, key).not.toBe('');
+				}
+				for (const who of c.stillForbids?.lets ?? []) {
+					if (!refusedBy(c).includes(who) || !unopenableOf(c).includes(who)) stray.push(`${titled(c, key)}: ${who}`);
+				}
+			}
+		}
+		expect(stray).toEqual([]);
+		// The milestone rows of card 2911, when this was written.
+		expect(marks).toBeGreaterThanOrEqual(20);
+	});
+
+	// Card 2719, M3 (E9), failing closed: an `own` row that refuses a caller who cannot open board A answers them as
+	// for what is not there, unless it says, by its own `unopenable`, that what it names is on no board, or that the
+	// caller can open it after all; and a row names as unopenable only callers it refuses.
+	it('M3: answers, in every own row, a refused caller who cannot open board A as for what is not there, or says why not', () => {
+		// The default fails closed: a row that says nothing expects its callers outside board A answered 404.
+		expect(unopenableOf(own('owner', ['outsider', 'editor'], () => '/api/a-thing'))).toEqual(['outsider']);
+		const open: string[] = [];
+		for (const [key, entry] of Object.entries(TABLE)) {
+			for (const c of [entry].flat()) {
+				for (const who of unopenableOf(c)) if (!refusedBy(c).includes(who)) open.push(`${titled(c, key)}: ${who} is not refused`);
+				if (c.kind !== 'own' || c.unopenable !== undefined) continue;
+				for (const who of c.notMine ?? []) {
+					if (!OPENS_A.includes(who) && !answeredNotThere(c, who)) open.push(`${titled(c, key)}: ${who}`);
+				}
+			}
+		}
+		expect(open).toEqual([]);
 	});
 
 	it('gives each case of an entry a name of its own, and no case a refusal that is its allowed answer', () => {
@@ -2859,6 +3089,14 @@ for (const [key, entry] of Object.entries(TABLE)) {
 				(letIn ? it.fails : it)(titled(c, name), async () => {
 					await expectRefused(method, pattern, c, who, refusals(c, who));
 				});
+
+				// A caller another card's rule still holds at 403 (card 2719, E3): the 404 they are to be answered,
+				// asked of the handler as it is, fails until that card lands.
+				if (c.stillForbids?.lets.includes(who)) {
+					it.fails(titled(c, `${known(c.stillForbids)}: answers ${CALLED[who]} 403, not as for what is not there: ${c.stillForbids.what}`), async () => {
+						await expectRefused(method, pattern, c, who, [404, ...(c.refusedAs ? [c.refusedAs] : [])]);
+					});
+				}
 			}
 
 			// The fault this suite began with: a handler that judged the caller
@@ -3216,7 +3454,8 @@ const importLeftovers = () =>
 
 /** The items a batch was sent, and the ones its 409 lists. */
 const itemsSent = (body: any): unknown[] => body?.links ?? body?.entries ?? body?.cardIds ?? [];
-const itemsListed = (body: any): unknown[] => body?.forbidden ?? body?.problems ?? [];
+// The dependency batch lists an end the caller cannot open among `rejected`, as one that is not there (card 2719, D12).
+const itemsListed = (body: any): unknown[] => [...(body?.forbidden ?? []), ...(body?.rejected ?? []), ...(body?.problems ?? [])];
 
 /**
  * The control's expectation: answered as the table's allowed case is, and,
@@ -3307,10 +3546,16 @@ describe('asked again at the write (card 2253)', () => {
 					await sent.settle();
 
 					expect(res.ran, 'the role was lowered while the request was under way').toBe(true);
-					expect(refusals(c, 'outsider'), `answered ${res.status} ${JSON.stringify(res.body)}`).toContain(res.status);
+					expect(loweredRefusals(c, lower.to), `answered ${res.status} ${JSON.stringify(res.body)}`).toContain(res.status);
+					// Answered as for what is not there, it is told nothing of access (card 2719).
+					if (lower.to === 'user' && unopenableOf(c).length > 0 && res.status === 404) {
+						expect(wordsIn(res.body), 'an answer as for what is not there').not.toMatch(/access|permission|forbidden/i);
+					}
 					if (res.status === 409) {
-						// A batch is refused whole, and says so of every item it was sent.
-						expect(JSON.stringify(res.body), 'a 409 that refuses says so').toMatch(/No (edit )?access/);
+						// A batch is refused whole, and says so of every item it was sent: as not there where the
+						// lowered caller cannot open what it names (card 2719), and of access otherwise.
+						const refusal = lower.to === 'user' && unopenableOf(c).length > 0 ? /not found|does not exist/ : /No (edit )?access/;
+						expect(JSON.stringify(res.body), 'a 409 that refuses says so').toMatch(refusal);
 						expect(itemsListed(res.body)).toHaveLength(itemsSent(req.body).length);
 					}
 					expectUnchanged(before!);
@@ -3893,15 +4138,17 @@ describe('a sub-board, on both routes that create a board', () => {
 	}
 
 	it('refuses a caller who may not edit the parent card\'s board in the same words on both', async () => {
-		for (const who of ['viewer', 'outsider'] as const) {
+		// A viewer can open the board and is refused the edit; an outsider cannot open it, and is
+		// answered as for a card that is not there (card 2719).
+		for (const [who, status, message] of [
+			['viewer', 403, "No edit access to the parent card's board"],
+			['outsider', 404, 'Parent card not found']
+		] as const) {
 			const answers: ApiResult[] = [];
 			for (const route of ROUTES) answers.push(await post(route, who, w.A.card.id));
 
-			expect(answers.map((res) => res.status)).toEqual([403, 403]);
-			expect(answers.map((res) => res.body.message)).toEqual([
-				"No edit access to the parent card's board",
-				"No edit access to the parent card's board"
-			]);
+			expect(answers.map((res) => res.status)).toEqual([status, status]);
+			expect(answers.map((res) => res.body.message)).toEqual([message, message]);
 		}
 	});
 });
@@ -4019,8 +4266,9 @@ describe('linking a board under a card, PUT /api/boards/[id] with parentCardId',
 
 		const res = await put(w.owner, w.A.board.id, { name: 'Renamed', parentCardId: elsewhere.id });
 
-		expect(res.status, JSON.stringify(res.body)).toBe(403);
-		expect(res.body).toEqual({ message: "No edit access to the parent card's board" });
+		// The owner of A cannot open B: the card is answered as one that is not there (card 2719), as below.
+		expect(res.status, JSON.stringify(res.body)).toBe(404);
+		expect(res.body).toEqual({ message: 'Parent card not found' });
 		expectUnchanged(before);
 	});
 
@@ -4224,7 +4472,7 @@ describe('GET /api/graph, what it lists', () => {
 
 		// And a sub-board the caller is not shown is not expanded for them either.
 		const refused = await api('GET', `/api/graph?boardId=${unshared.board.id}`, { user: w.viewer });
-		expect(refused.status).toBe(403);
+		expect([refused.status, refused.body]).toEqual([404, { message: 'Board not found' }]);
 		expect((await graph('viewer', `?boardId=${shared.board.id}`)).nodes.length).toBeGreaterThan(0);
 	});
 
@@ -4313,14 +4561,16 @@ describe('removing a dependency, refused', () => {
 		it(`${route} answers an editor of the blocking end's board the same whether the link is there or not`, async () => {
 			const [method, pattern] = route.split(' ') as [Method, string];
 
-			// `editor` edits board A, where the end that is waited on is, and cannot open board B.
+			// `editor` edits board A, where the end that is waited on is, and cannot open board B: the
+			// waiting end is answered as one that is not there (card 2719).
 			const without = await call(method, pattern, request(w), 'editor');
 			link(w);
 			const before = snapshotDb();
 			const withIt = await call(method, pattern, request(w), 'editor');
 
-			expect(without.status).toBe(403);
-			expect(withIt.status).toBe(403);
+			expect(without.status).toBe(404);
+			expect(withIt.status).toBe(404);
+			expect(without.body).toEqual({ message: `#${w.B.loose.id} not found` });
 			expect(withIt.body).toEqual(without.body);
 			expectUnchanged(before);
 
@@ -4714,7 +4964,8 @@ describe('what the activity report counts (card 2326)', () => {
 
 	it('refuses `outsider` a report of board A, with the burndown\'s words', async () => {
 		const res = await report(w.outsider, `?boardIds=${w.A.board.id}`);
-		expect([res.status, res.body]).toEqual([403, { message: `No access to board ${w.A.board.id}` }]);
+		// As a board that is not there (card 2719).
+		expect([res.status, res.body]).toEqual([404, { message: `Board ${w.A.board.id} not found` }]);
 	});
 
 	it('answers `outsider` 404 for a board that does not exist', async () => {
@@ -4724,13 +4975,14 @@ describe('what the activity report counts (card 2326)', () => {
 
 	it('refuses a list of boards at the first one at fault, in the order given', async () => {
 		const mine = await report(w.outsider, `?boardIds=${w.B.board.id},${w.A.board.id}`);
-		expect([mine.status, mine.body]).toEqual([403, { message: `No access to board ${w.A.board.id}` }]);
+		// A board the caller cannot open is answered as one that is not there (card 2719).
+		expect([mine.status, mine.body]).toEqual([404, { message: `Board ${w.A.board.id} not found` }]);
 
 		const missingFirst = await report(w.outsider, `?boardIds=999999,${w.A.board.id}`);
 		expect([missingFirst.status, missingFirst.body]).toEqual([404, { message: 'Board 999999 not found' }]);
 
 		const refusedFirst = await report(w.outsider, `?boardIds=${w.A.board.id},999999`);
-		expect([refusedFirst.status, refusedFirst.body]).toEqual([403, { message: `No access to board ${w.A.board.id}` }]);
+		expect([refusedFirst.status, refusedFirst.body]).toEqual([404, { message: `Board ${w.A.board.id} not found` }]);
 	});
 
 	it('gives `editor`, naming board A, exactly its cards', async () => {
@@ -4925,10 +5177,10 @@ describe('what the lists give (card 2128)', () => {
 			expect((await api('GET', `/api/v1/board-categories/${empty.id}`, { user: w.outsider })).status).toBe(200);
 
 			const refused = await api('GET', `/api/v1/board-categories/${w.groupingOfA.id}`, { user: w.outsider });
-			expect([refused.status, refused.body]).toEqual([403, { message: 'No access to this board category' }]);
+			expect([refused.status, refused.body]).toEqual([404, { message: 'Board category not found' }]);
 			for (const path of ['/api/burndown', '/api/v1/burndown']) {
 				const chart = await api('GET', `${path}?boardCategoryId=${w.groupingOfA.id}`, { user: w.outsider });
-				expect([chart.status, chart.body], path).toEqual([403, { message: `No access to board category ${w.groupingOfA.id}` }]);
+				expect([chart.status, chart.body], path).toEqual([404, { message: `Board category ${w.groupingOfA.id} not found` }]);
 			}
 		});
 
@@ -4941,7 +5193,8 @@ describe('what the lists give (card 2128)', () => {
 				// v1 files a new board under its grouping since card 2287, so it is held to the same rule.
 				await api('POST', '/api/v1/boards', { user: w.outsider, body: { name: 'A new board', categoryId: w.groupingOfA.id } })
 			];
-			for (const res of refusals) expect([res.status, res.body]).toEqual([403, { message: 'No access to this board category' }]);
+			// The grouping holds only board A, which the outsider cannot open: as one that is not there (card 2719, S5).
+			for (const res of refusals) expect([res.status, res.body]).toEqual([404, { message: 'Board category not found' }]);
 			expectUnchanged(before);
 		});
 
@@ -4988,7 +5241,7 @@ describe('what the lists give (card 2128)', () => {
 			expect(names(await answered('/api/categories', 'admin'))).toEqual([`${MARK} category`, `${MARK_B} category`, 'Shared category'].sort());
 
 			const refused = await api('GET', `/api/v1/categories/${w.A.category.id}`, { user: w.outsider });
-			expect([refused.status, refused.body]).toEqual([403, { message: 'No access to this category' }]);
+			expect([refused.status, refused.body]).toEqual([404, { message: 'Category not found' }]);
 		});
 
 		it('names a category a card carries from a board the caller cannot open, on purpose, marked carried, where the card is shown', async () => {

@@ -1,12 +1,11 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { boards, columns, cards } from '$lib/server/db/schema';
+import { columns, cards } from '$lib/server/db/schema';
 import { eq, and, isNotNull, isNull, inArray, gte } from 'drizzle-orm';
-import { getBoardRole } from '$lib/server/board-access';
 import { completeColumnIds } from '$lib/column-role';
 import { committedAll, cycleStarts, flowTimes, timeInOptions, upstreamFigures } from '$lib/server/upstream';
 import { pathId } from '$lib/server/request-body';
-import { requireUser } from '$lib/server/route-guards';
+import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { parseStamp, stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
@@ -80,11 +79,8 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 	const user = requireUser(locals.user);
 	const boardId = pathId(params.id, 'board');
 
-	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
-	if (!board) throw error(404, 'Board not found');
-
-	const role = getBoardRole(user, boardId);
-	if (!role) throw error(403, 'No access to this board');
+	// 404 for a board that is not there, and for one the caller cannot open alike (card 2719).
+	requireBoard(user, boardId, 'view');
 
 	const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 365);
 	// In the stored form, as `completed_at` is (card 2095), so the two compare

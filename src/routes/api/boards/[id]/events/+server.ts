@@ -43,7 +43,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	// The board must be there and the caller able to open it, as the heartbeat
 	// asks below: 404 for a board that is not there, administrators included,
-	// who were once let in on any id; 403 for one the caller cannot open.
+	// who were once let in on any id, and for one the caller cannot open, in
+	// the same words (card 2719).
 	requireBoard(locals.user, boardId, 'view');
 
 	let cleanup: (() => void) | null = null;

@@ -9,14 +9,14 @@ import type { RequestHandler } from './$types';
 /**
  * GET — List all comments for a card (newest first). The work is
  * `listComments` in `$lib/server/card-comments`, which the v1 list shares
- * (card 2012); this route keeps its words for a caller who cannot open the
- * card's board.
+ * (card 2012). A card on a board the caller cannot open is answered `404 Card
+ * not found`, as one that is not there (card 2719).
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const cardId = pathId(params.id, 'card');
-	return json(listComments(locals.user, { cardId }, { says: 'No access' }));
+	return json(listComments(locals.user, { cardId }, {}));
 };
 
 /**

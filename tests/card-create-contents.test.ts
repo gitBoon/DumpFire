@@ -196,7 +196,8 @@ describe('POST /api/cards refuses the whole card when any part is refused, in th
 		{ name: 'a subtask priority not one of the four', body: () => ({ subtasks: [{ title: 'One', priority: 'urgent' }] }), status: 400, message: 'subtasks[0]: priority must be one of: low, medium, high, critical' },
 		{ name: 'a subtask that is no object', body: () => ({ subtasks: ['One'] }), status: 400, message: 'subtasks[0] must be an object' },
 		{ name: 'a label not found', body: (s) => ({ labelIds: [s.bug.id, 999999] }), status: 404, message: 'labelIds[1]: Label not found' },
-		{ name: 'a label of a board the caller cannot open', body: (s) => ({ labelIds: [s.theirs.id] }), status: 403, message: (s) => `labelIds[0]: ${theirsRefusal(s)}` },
+		// As a label that is not there (card 2719).
+		{ name: 'a label of a board the caller cannot open', body: (s) => ({ labelIds: [s.theirs.id] }), status: 404, message: (s) => `labelIds[0]: ${theirsRefusal(s)}` },
 		{ name: 'a label id that is no id', body: () => ({ labelIds: ['bug'] }), status: 400, message: 'labelIds[0] must be an id' },
 		{ name: 'someone who cannot open the board', body: (s) => ({ assigneeIds: [s.helper.id, s.outsider.id] }), status: 400, message: 'assigneeIds[1]: User does not have access to this board' },
 		{ name: 'someone who is not there', body: () => ({ assigneeIds: [999999] }), status: 404, message: 'assigneeIds[0]: User not found' },
@@ -220,7 +221,7 @@ describe('POST /api/cards refuses the whole card when any part is refused, in th
 			const card = makeCard(s.A.cols['To Do']);
 			const alone = await api('PUT', '/api/labels', { user: s.owner, body: { cardId: card.id, labelId: s.theirs.id } });
 			theirsWords = (alone.body as { message: string }).message;
-			expect(alone.status).toBe(403);
+			expect([alone.status, theirsWords]).toEqual([404, 'Label not found']);
 			db.delete(cards).where(eq(cards.id, card.id)).run();
 		}
 		// A subtask, a label, a person and a sub-board that would each be written, before the part refused.

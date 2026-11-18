@@ -100,8 +100,9 @@ export function breadcrumbsFor(user: Actor, board: Board): BreadcrumbItem[] {
 }
 
 /**
- * What the board page draws for `user`, or the load's refusal: 404 for a
- * board that is not there, then 403 for one the caller cannot open.
+ * What the board page draws for `user`, or the load's refusal: 404 `Board not
+ * found` for a board that is not there, and in the same words for one the
+ * caller cannot open (card 2719).
  */
 export function readBoardContents(user: SessionUser, boardId: number) {
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
@@ -110,9 +111,7 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 	// Access check — admins and board members/teams can view. Asked of the row
 	// just read, as `getBoardRole` would ask it after reading it again.
 	const userBoardRole = roleOnBoard(user, board);
-	if (!userBoardRole) {
-		error(403, 'You do not have access to this board');
-	}
+	if (!userBoardRole) error(404, 'Board not found');
 
 	const canEdit = userBoardRole === 'admin' || userBoardRole === 'owner' || userBoardRole === 'editor';
 	const canManage = userBoardRole === 'admin' || userBoardRole === 'owner';

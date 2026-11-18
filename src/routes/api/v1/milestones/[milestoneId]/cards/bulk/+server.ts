@@ -3,7 +3,7 @@ import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { cards, columns, milestones } from '$lib/server/db/schema';
 import { eq, inArray, isNull, and } from 'drizzle-orm';
-import { canEditBoard, getAccessibleBoardIds, type Actor } from '$lib/server/board-access';
+import { canEditBoard, canViewBoard, getAccessibleBoardIds, type Actor } from '$lib/server/board-access';
 import { canViewMilestone, logCardInOrOut, requireMilestone, MilestoneError, type MilestoneRow } from '$lib/server/milestones';
 import { emit } from '$lib/server/events';
 import { getMilestoneSummary, WITHHELD_CARD_TITLE } from '$lib/server/planning';
@@ -187,7 +187,8 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 
 		for (const id of cardIds) {
 			const card = loaded.get(id);
-			if (!card) {
+			// A card on a board the caller cannot open is reported as a missing one is (card 2719, D9).
+			if (!card || (!mayEdit(card.boardId) && !canViewBoard(user, card.boardId))) {
 				problems.push({ cardId: id, reason: 'Card does not exist or is archived' });
 				continue;
 			}
@@ -342,8 +343,9 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 
 		for (const id of cardIds) {
 			const card = loaded.get(id);
-			if (!card) {
-				// The single detach's word: an archived card is no longer missing here.
+			// The single detach's word: an archived card is no longer missing here. A
+			// card on a board the caller cannot open is reported as a missing one is (card 2719, D9).
+			if (!card || (!mayEdit(card.boardId) && !canViewBoard(user, card.boardId))) {
 				problems.push({ cardId: id, reason: 'Card not found' });
 				continue;
 			}

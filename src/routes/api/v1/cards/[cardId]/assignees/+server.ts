@@ -1,13 +1,12 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { cards, columns, cardAssignees, users } from '$lib/server/db/schema';
+import { cardAssignees, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { canViewBoard } from '$lib/server/board-access';
 import { assignToCard, unassignFromCard } from '$lib/server/card-assignees';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody } from '$lib/server/request-body';
-import { requireUser } from '$lib/server/route-guards';
+import { requireCard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -17,29 +16,17 @@ const NO_EDIT_TO_ASSIGN = "No edit access to this card's board";
 /** And when taking someone off the card. */
 const NO_EDIT_TO_UNASSIGN = 'No edit access';
 
-/** Resolve the board and card title that a card belongs to. */
-function getCardContext(cardId: number): { boardId: number; cardTitle: string } | null {
-	const card = db.select({ columnId: cards.columnId, title: cards.title }).from(cards).where(eq(cards.id, cardId)).get();
-	if (!card) return null;
-	const col = db.select({ boardId: columns.boardId }).from(columns).where(eq(columns.id, card.columnId)).get();
-	if (!col) return null;
-	return { boardId: col.boardId, cardTitle: card.title };
-}
-
 /** GET /api/v1/cards/:cardId/assignees — List assignees for a card. */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const cardId = pathId(params.cardId, 'card');
 
-	const ctx = getCardContext(cardId);
-	if (!ctx) throw error(404, 'Card not found');
-
 	// Who a card is assigned to is part of the card: it is read by whoever may
-	// read the card, and answered as GET /api/v1/cards/:cardId answers.
-	if (!canViewBoard(locals.user, ctx.boardId)) {
-		throw error(403, 'No access to this card\'s board');
-	}
+	// read the card, and answered as GET /api/v1/cards/:cardId answers: 404
+	// for a card that is not there, and for one on a board the key's user
+	// cannot open alike (card 2719).
+	requireCard(locals.user, cardId, 'view');
 
 	const assignees = db.select({
 		id: users.id,

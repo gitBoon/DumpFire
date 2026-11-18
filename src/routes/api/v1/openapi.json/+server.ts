@@ -34,7 +34,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.9.1',
+		version: '1.10.0',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -42,6 +42,21 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-18 (version 1.10.0), breaking.** What the key\'s user cannot open is answered as what is not there (card 2719): ' +
+			'(1) a board, a card, a dashboard grouping holding only boards the key\'s user cannot open, or anything on a board they cannot open (a column, a label, a subtask, ' +
+			'a comment, a card category, a webhook, a token entry, a link\'s other end) is answered 404 by every operation, in the very words one that is not there gets, ' +
+			'where it was answered 403; a batch reports such an item in a missing one\'s words: POST /tokens/bulk as `Card #N does not exist`, and the milestone card batches as a card that does not exist; ' +
+			'(2) POST /cards/{cardId}/labels answers 404 {"message": "Label not found"} for a label that is not of the card\'s board, wherever it is, where it answered 400; ' +
+			'(3) POST /dependencies/bulk looks at the boards of every link\'s ends first: a link with an end the user cannot open is rejected as that end not existing, ' +
+			'`missing-blocked` or `missing-blocker` with "#N does not exist or is archived", and duplicates and loops are judged only among links whose ends the user can edit, ' +
+			'so wouldSkipAsDuplicate and wouldCreate count only those; ' +
+			'(4) the `cycle` of a 409 for a link that would close a loop, from the single add and from the batch, gives a node on a board the user cannot open as withheld, ' +
+			'{"kind": "card", "id": null, "withheld": true}, and the message names it "A card on a board you cannot open" (or "A subtask on a board you cannot open"); ' +
+			'the schema is the new CycleNode; ' +
+			'(5) GET /cards/{cardId}/board-history gives a span on a board the user cannot open by its dates alone, `boardId` null and `withheld` true, where it gave the board\'s id; ' +
+			'(6) 403 now means the user can open the board and their role does not allow the operation; a milestone\'s own visibility is unchanged: ' +
+			'one the user cannot see is still 403 {"message": "No access to this milestone"}; ' +
+			'(7) nothing else changed: a script that took 403 for no access takes 404 the same way.\n\n' +
 			'**Changed on 2026-11-17 (version 1.9.1).** An account\'s image uploads through the card window count against the same allowances, and a JPEG keeps its orientation (card 2761): ' +
 			'(1) the 30 images an hour and 100 MB a day of a key\'s user also count the images that user uploads through DumpFire\'s own card window, and those count these, so a key can be answered 429 sooner; ' +
 			'(2) a JPEG uploaded through POST /api/v1/cards/{cardId}/attachments keeps its EXIF orientation, a value of 2 to 8, as one EXIF segment that holds nothing else, so a photo taken upright shows upright; ' +
@@ -476,7 +491,8 @@ const spec = {
 			'that runs past the length it declared is answered 413, {"message": "Payload Too Large"}. Every operation that reads a body reads it before it looks ' +
 			'for the resource, so a body that is not a JSON object sent to a card that does not exist is answered 400 where an object is answered 404 or 403. ' +
 			'The image upload is the one that does not: it looks for the card and checks the caller before it reads a byte, and asks both again when it writes. ' +
-			'The fields of an object are read after that: what the path names is looked for (404, to everyone), the caller is checked (403), and then ' +
+			'The fields of an object are read after that: what the path names is looked for (404, to everyone), the caller is checked (404 in the same ' +
+			'words where it is on a board they cannot open, 403 where they can open it and their role does not allow the operation; since 1.10.0), and then ' +
 			'each field is read (400, naming the field), so a caller who would be refused is answered 404 or 403 whatever the fields hold. An ' +
 			'operation with nothing in its path to look for, the token operations and the dependency and token batches read their fields first. ' +
 			'The two milestone batches look for the milestone, and check the caller, before they read cardIds.\n\n' +
@@ -1046,6 +1062,19 @@ const spec = {
 				},
 				required: ['kind', 'id']
 			},
+			CycleNode: {
+				type: 'object',
+				description:
+					'One node of the loop a dependency link would close: a card or a subtask, by its id; or, for one on a board the key\'s user cannot open, ' +
+					'its kind alone, with `id` null and `withheld` true, and the loop\'s message giving it as "A card on a board you cannot open" or ' +
+					'"A subtask on a board you cannot open" (card 2719).',
+				properties: {
+					kind: { type: 'string', enum: ['card', 'subtask'] },
+					id: { type: ['integer', 'null'], description: 'null for a node on a board the key\'s user cannot open' },
+					withheld: { type: 'boolean', description: 'true, and given only, for a node on a board the key\'s user cannot open' }
+				},
+				required: ['kind', 'id']
+			},
 			CardDependencies: {
 				type: 'object',
 				description: 'What a card waits on and what waits on it.',
@@ -1077,8 +1106,8 @@ const spec = {
 					},
 					cycle: {
 						type: 'array',
-						items: { $ref: '#/components/schemas/DependencyEnd' },
-						description: 'Only for a link that would close a loop: the chain it would close, in order'
+						items: { $ref: '#/components/schemas/CycleNode' },
+						description: 'Only for a link that would close a loop: the chain it would close, in order, a node the key\'s user cannot open withheld'
 					}
 				},
 				required: ['message']
@@ -2311,14 +2340,14 @@ const spec = {
 									type: 'string',
 									enum: ['self', 'missing-blocked', 'missing-blocker', 'cycle', 'duplicate-in-batch'],
 									description:
-										'self: an end waits on itself. missing-blocked and missing-blocker: that end does not exist or is archived. ' +
+										'self: an end waits on itself. missing-blocked and missing-blocker: that end does not exist or is archived, or is on a board the key\'s user cannot open (since 1.10.0). ' +
 										'cycle: the link would close a loop, with the stored links or with earlier links of this batch. ' +
 										'duplicate-in-batch: the batch has the same link twice.'
 								},
 								cycle: {
 									type: 'array',
-									items: { $ref: '#/components/schemas/DependencyEnd' },
-									description: 'Only when `reason` is cycle: the chain the link would close, in order'
+									items: { $ref: '#/components/schemas/CycleNode' },
+									description: 'Only when `reason` is cycle: the chain the link would close, in order, a node the key\'s user cannot open withheld'
 								},
 								message: { type: 'string', description: 'The reason in words' }
 							},
@@ -2915,7 +2944,7 @@ const spec = {
 									type: 'string',
 									description:
 										'In words: what a single entry sent to the card or the subtask would have been refused for. A card or subtask that does not exist, ' +
-										'and one on a board the key\'s user cannot edit, are reasons here and not a 404 or a 403.'
+										'and one on a board the key\'s user cannot edit, are reasons here and not a 404 or a 403; one on a board they cannot open is given as one that does not exist (since 1.10.0).'
 								}
 							},
 							required: ['index', 'reason']
@@ -2935,11 +2964,12 @@ const spec = {
 						items: {
 							type: 'object',
 							properties: {
-								boardId: { type: 'integer' },
+								boardId: { type: ['integer', 'null'], description: 'The board, or null for one the key\'s user cannot open (since 1.10.0; its id was given)' },
 								boardName: { type: 'string', description: 'Name of the board, or "Board not visible to you" for one the key\'s user cannot see' },
 								from: { type: 'string', format: 'date-time', description: 'When the card arrived on the board' },
 								to: { type: ['string', 'null'], format: 'date-time', description: 'When it left. null on the span it is in now.' },
-								current: { type: 'boolean', description: 'true on the span it is in now' }
+								current: { type: 'boolean', description: 'true on the span it is in now' },
+								withheld: { type: 'boolean', description: 'true, and given only, for a span on a board the key\'s user cannot open (since 1.10.0)' }
 							},
 							required: ['boardId', 'boardName', 'from', 'to', 'current']
 						}
@@ -3136,7 +3166,7 @@ const spec = {
 								deprecated: true,
 								description:
 									'Always 0. Until 2026-10-20 it counted the boards with activity in the window that the key\'s user could not open, which told them when those boards were worked on. ' +
-									'The report now reads only boards they can open, and refuses a named board they cannot open (403). Still in every answer (item 80).'
+									'The report now reads only boards they can open, and refuses a named board they cannot open (404, as one that is not there, since 1.10.0; 403 before it). Still in every answer (item 80).'
 							}
 						},
 						required: [
@@ -3284,7 +3314,9 @@ const spec = {
 			},
 			Forbidden: {
 				description:
-					'The key\'s user may not do this: no access to the board the resource is on, or view access where edit access is needed. Nothing was written.',
+					'The key\'s user can open the board the resource is on, and their role does not allow this: view access where edit access is needed, ' +
+					'or a rule of the resource\'s own (its owner, its author, an administrator). A board the key\'s user cannot open is answered 404, ' +
+					'as one that is not there (since 1.10.0). Nothing was written.',
 				content: {
 					'application/json': {
 						schema: { $ref: '#/components/schemas/Error' },
@@ -3293,7 +3325,9 @@ const spec = {
 				}
 			},
 			NotFound: {
-				description: 'The resource the path names does not exist. The message says what was not found.',
+				description:
+					'The resource the path names does not exist, or is on a board the key\'s user cannot open; the two are answered alike, in the same words ' +
+					'(since 1.10.0). The message says what was not found.',
 				content: {
 					'application/json': {
 						schema: { $ref: '#/components/schemas/Error' },
@@ -3475,7 +3509,7 @@ const spec = {
 										type: ['integer', 'null'],
 										minimum: 1,
 										description:
-											'The board category to file the new board under on the dashboard. null, or left out, for none. One that does not exist is 404, and one that holds boards, none of which the key\'s user can open, is 403. ' +
+											'The board category to file the new board under on the dashboard. null, or left out, for none. One that does not exist is 404, and so is one that holds boards, none of which the key\'s user can open, in the same words (since 1.10.0; it was 403). ' +
 											'Until 2026-10-14 it was ignored and the board made unfiled.'
 									},
 									kind: {
@@ -3516,8 +3550,7 @@ const spec = {
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
 						description:
-							'For a sub-board, no edit access to the board the parent card is on, which is the example. ' +
-							'Or categoryId names a board category that holds boards, none of which the key\'s user can open: `No access to this board category`. Nothing was created.',
+							'For a sub-board, no edit access to the board the parent card is on, which the key\'s user can open, which is the example. Nothing was created.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the parent card\'s board' } } }
 					},
 					'404': {
@@ -3565,12 +3598,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to this board',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
-						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403.',
+						description: 'There is no such board, whoever asks, or it is one the key\'s user cannot open: the two are answered alike (since 1.10.0). Until 2026-10-14 everyone but an administrator was answered 403.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -3600,7 +3629,7 @@ const spec = {
 								properties: {
 									name: { type: 'string', minLength: 1, maxLength: 200, description: 'Trimmed' },
 									emoji: { type: 'string', minLength: 1, maxLength: 32 },
-									categoryId: { type: ['integer', 'null'], minimum: 1, description: 'The board category to file the board under on the dashboard. null files it under none. One that does not exist is 404, and one that holds boards, none of which the key\'s user can open, is 403: until 2026-10-14 the board was filed under it.' },
+									categoryId: { type: ['integer', 'null'], minimum: 1, description: 'The board category to file the board under on the dashboard. null files it under none. One that does not exist is 404, and so is one that holds boards, none of which the key\'s user can open, in the same words (since 1.10.0; it was 403, and until 2026-10-14 the board was filed under it).' },
 									isPublic: { type: 'boolean', description: 'Whether everyone who is signed in can view the board. Only its owner or an administrator may send it.' },
 									parentCardId: {
 										type: ['integer', 'null'],
@@ -3649,12 +3678,11 @@ const spec = {
 							'No edit access to this board. ' +
 							'Or `isPublic` was sent by a caller who can edit the board and is neither its owner nor an administrator, which is the example. ' +
 							'Or `kind` was sent changed by such a caller: `Only the board\'s owner or an administrator can change whether it is an ideas board`. ' +
-							'Or `productOwnerUserId` was sent changed by such a caller: `Only the board\'s owner or an administrator can change its Product Owner`. ' +
-							'Or categoryId names a board category that holds boards, none of which the key\'s user can open: `No access to this board category`. Nothing was written.',
+							'Or `productOwnerUserId` was sent changed by such a caller: `Only the board\'s owner or an administrator can change its Product Owner`. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Only board owners and admins can change visibility' } } }
 					},
 					'404': {
-						description: 'There is no such board, whoever asks: it is looked for before access is checked, and until 2026-10-14 everyone but an administrator was answered 403. Or the board category sent as categoryId does not exist: `Board category not found`, where it was stored. Nothing was written.',
+						description: 'There is no such board, or it is one the key\'s user cannot open: the two are answered alike (since 1.10.0), and until 2026-10-14 everyone but an administrator was answered 403. Or the board category sent as categoryId does not exist, or holds only boards the key\'s user cannot open: `Board category not found`, where it was stored. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
 					},
 					'409': {
@@ -3710,7 +3738,7 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Only board owners and admins can delete boards' } } }
 					},
 					'404': {
-						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403.',
+						description: 'There is no such board, whoever asks, or it is one the key\'s user cannot open: the two are answered alike (since 1.10.0). Until 2026-10-14 everyone but an administrator was answered 403.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -3754,7 +3782,7 @@ const spec = {
 					'400': { $ref: '#/components/responses/BadRequest' },
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'The caller cannot open the board, or can and is neither its owner nor an administrator',
+						description: 'The caller can open the board and is neither its owner nor an administrator. One who cannot open it is answered 404, as for a board that is not there (since 1.10.0)',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
@@ -3876,12 +3904,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'days must be a whole number from 1 to 365' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to this board',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
-						description: 'There is no such board, whoever asks: it is looked for before access is checked',
+						description: 'There is no such board, whoever asks, or it is one the key\'s user cannot open: the two are answered alike (since 1.10.0)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -3912,12 +3936,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to this board',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
-						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
+						description: 'There is no such board, whoever asks, or it is one the key\'s user cannot open: the two are answered alike (since 1.10.0). Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -4018,10 +4038,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid column ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the column is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
 						description: 'There is no such column',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
@@ -4230,12 +4246,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to this board',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
-						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
+						description: 'There is no such board, whoever asks, or it is one the key\'s user cannot open: the two are answered alike (since 1.10.0). Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -4362,10 +4374,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the card is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this card\'s board' } } }
-					},
 					'404': { $ref: '#/components/responses/NotFound' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
@@ -4733,10 +4741,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the card is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this card\'s board' } } }
-					},
 					'404': { $ref: '#/components/responses/NotFound' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
@@ -4870,10 +4874,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the card is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this card\'s board' } } }
-					},
 					'404': { $ref: '#/components/responses/NotFound' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
@@ -5063,10 +5063,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the card is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
 						description: 'There is no such card',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Card not found' } } }
@@ -5113,7 +5109,7 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'No access to the card\'s board, or view access only. Nothing was written.',
+						description: 'View access only to the card\'s board. One who cannot open it is answered 404 `Card not found` (since 1.10.0). Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access' } } }
 					},
 					'404': {
@@ -5149,10 +5145,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the card is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
 						description: 'There is no such card',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Card not found' } } }
@@ -5220,7 +5212,7 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'No access to the card\'s board, or view access only; asked again as the image is written. Nothing was written.',
+						description: 'View access only to the card\'s board; asked again as the image is written. One who cannot open it is answered 404 `Card not found` (since 1.10.0). Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this board' } } }
 					},
 					'404': {
@@ -5310,10 +5302,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid attachment ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the card is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
 						description: 'There is no such file on this card (`Attachment not found`), or its file is not on the server (`File not found on disk`)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Attachment not found' } } }
@@ -5344,10 +5332,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid comment ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the comment\'s card is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
 						description: 'There is no such comment',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Comment not found' } } }
@@ -5473,12 +5457,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to this board',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
-						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
+						description: 'There is no such board, whoever asks, or it is one the key\'s user cannot open: the two are answered alike (since 1.10.0). Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -5548,10 +5528,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid label ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the label belongs to',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
 						description: 'There is no such label',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Label not found' } } }
@@ -5658,10 +5634,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the card is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': { $ref: '#/components/responses/NotFound' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
@@ -5712,13 +5684,13 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'No labelId, a labelId that is not a whole number of 1 or more, a label that belongs to another board, cardId not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Label does not belong to this card\'s board' } } }
+						description: 'No labelId, a labelId that is not a whole number of 1 or more, cardId not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'labelId is required' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': { $ref: '#/components/responses/Forbidden' },
 					'404': {
-						description: 'There is no such card, or no label with the id given as labelId',
+						description: 'There is no such card, or no label with the id given as labelId on the card\'s board: a label of another board is answered as one that is not there (card 2719)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Label not found' } } }
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
@@ -5822,10 +5794,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'direction must be one of: blocked-by, blocks, both' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the card is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this card\'s board' } } }
-					},
 					'404': { $ref: '#/components/responses/NotFound' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
@@ -5921,7 +5889,8 @@ const spec = {
 					'A link is removed by whoever may edit the board of the end that waits, whichever end the request is addressed to; an administrator always. ' +
 					'Edit access to the board of the end that is waited on is not asked for and is not enough: adding a link needs both boards, and removing one needs the waiting end\'s. ' +
 					'The card in the path must be one the caller can view. ' +
-					'A caller who may not remove the link is answered 403 before the link is looked for, so the answer does not say whether it exists.',
+					'A caller who may not remove the link is answered 403 before the link is looked for, so the answer does not say whether it exists; ' +
+					'one who cannot open the board of the end that waits is answered as for an end that is not there, 404 "#N not found" (since 1.10.0).',
 				operationId: 'removeDependency',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -5966,7 +5935,8 @@ const spec = {
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
 						description:
-							'No edit access to the board of the end that waits, which is the example, or no access at all to the board the card in the path is on (`No access to this card\'s board`). ' +
+							'No edit access to the board of the end that waits, a board the key\'s user can open, which is the example. One who cannot open the board the card in the path is on, ' +
+							'or the board of the end that waits, is answered 404, as for one that is not there (since 1.10.0). ' +
 							'Answered before the link is looked for. Nothing was removed.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the board holding #10, the end that waits' } } }
 					},
@@ -6026,10 +5996,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid subtask ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the subtask\'s card is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access' } } }
-					},
 					'404': {
 						description: 'There is no such subtask',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Subtask not found' } } }
@@ -6140,7 +6106,8 @@ const spec = {
 					'The answer is the subtask\'s dependencies as they then are.\n\n' +
 					'The rule is a card\'s: a link is removed by whoever may edit the board of the end that waits, whichever end the request is addressed to; an administrator always. ' +
 					'Edit access to the board of the end that is waited on is not asked for and is not enough. The subtask in the path must be one the caller can view. ' +
-					'A caller who may not remove the link is answered 403 before the link is looked for, so the answer does not say whether it exists.\n\n' +
+					'A caller who may not remove the link is answered 403 before the link is looked for, so the answer does not say whether it exists; ' +
+					'one who cannot open the board of the end that waits is answered as for an end that is not there, 404 "#N not found" (since 1.10.0).\n\n' +
 					'The removal is recorded with an `api:dependency_removed` activity entry on the board of the end that waits, as a card\'s is: until 2026-10-14 this wrote none.',
 				operationId: 'removeSubtaskDependency',
 				parameters: [{ $ref: '#/components/parameters/subtaskId' }],
@@ -6179,7 +6146,8 @@ const spec = {
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
 						description:
-							'No edit access to the board of the end that waits, which is the example, or no access at all to the board this subtask\'s card is on (`No access`). ' +
+							'No edit access to the board of the end that waits, a board the key\'s user can open, which is the example. One who cannot open the board this subtask\'s card is on, ' +
+							'or the board of the end that waits, is answered 404, as for one that is not there (since 1.10.0). ' +
 							'Answered before the link is looked for. Nothing was removed.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to the board holding subtask #3471, the end that waits' } } }
 					},
@@ -6209,7 +6177,9 @@ const spec = {
 					'The ends may be on any boards, and edit access is needed to the board of every end.\n\n' +
 					'**All or nothing.** The whole batch is checked before anything is written, loops between the links of the batch included. ' +
 					'If one link is refused nothing is written, the links that were acceptable included, and the answer is a 409 that lists every link at fault, so that a long list is put right in one go. ' +
-					'A link to an end that does not exist, and a link the key\'s user may not make, are reasons in that 409: this operation answers no 404 and no 403.\n\n' +
+					'A link to an end that does not exist, and a link the key\'s user may not make, are reasons in that 409: this operation answers no 404 and no 403. ' +
+					'The boards of every link\'s ends are looked at first (since 1.10.0): an end on a board the key\'s user cannot open is rejected as one that does not exist, ' +
+					'and duplicates and loops are judged only among the links whose ends they can edit; a loop\'s node they cannot open is withheld (CycleNode).\n\n' +
 					'A link that is already recorded is not a fault. It is skipped and counted, so the same batch can be sent twice.\n\n' +
 					'Each link written logs one api:dependency_added activity entry, as POST /cards/{cardId}/dependencies does: on the board of the card that waits (a subtask\'s card), with that card\'s id, ' +
 					'in the words "#12 now waits on subtask #45". A link skipped as already recorded logs none. Until 2026-10-14 a batch logged one api:dependencies_bulk_added entry with no card, on one board, which is no longer written (item 88).',
@@ -6358,12 +6328,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to this board',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
-						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
+						description: 'There is no such board, whoever asks, or it is one the key\'s user cannot open: the two are answered alike (since 1.10.0). Until 2026-10-14 everyone but an administrator was answered 403, and an administrator an empty list.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -6436,10 +6402,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid category ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'The category belongs to a board the key\'s user cannot open',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this category' } } }
-					},
 					'404': {
 						description: 'There is no such category',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Category not found' } } }
@@ -6613,10 +6575,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid category ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'The board category holds boards, and the key\'s user can open none of them',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board category' } } }
-					},
 					'404': {
 						description: 'There is no such board category',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board category not found' } } }
@@ -6733,10 +6691,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to this board',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
 						description: 'There is no such board',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
@@ -6822,10 +6776,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid webhook ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the webhook belongs to',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': {
 						description: 'There is no such webhook',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Webhook not found' } } }
@@ -6875,8 +6825,8 @@ const spec = {
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
 						description:
-							'No access to the board, or view access where edit access is needed; or a caller who is not the board\'s owner or an administrator sent url or secret, whatever the value, ' +
-							'or active true for a webhook that is off. Nothing was written.',
+							'View access where edit access is needed; or a caller who is not the board\'s owner or an administrator sent url or secret, whatever the value, ' +
+							'or active true for a webhook that is off. One who cannot open the board is answered 404 `Webhook not found` (since 1.10.0). Nothing was written.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
@@ -6973,11 +6923,13 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'No access to a requested board or milestone, or a board category that holds boards, none of which you can see (`No access to board category 3`)',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to board 7' } } }
+						description: 'No access to the requested milestone',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this milestone' } } }
 					},
 					'404': {
-						description: 'A requested board, board category or milestone does not exist',
+						description:
+							'A requested board, board category or milestone does not exist; a board the key\'s user cannot open, or a board category ' +
+							'holding only boards they cannot open, is answered alike (`Board category 3 not found`)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board 7 not found' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -7557,7 +7509,8 @@ const spec = {
 					'Puts up to 500 cards into the milestone in one request. Needs the right to change the milestone, and edit access to the board of every card. ' +
 					'A milestone that belongs to a board takes cards of that board only.\n\n' +
 					'**All or nothing.** Every card is checked before any is attached. If one is refused none is attached, the cards that were acceptable included, ' +
-					'and the answer is a 409 that lists every card at fault. A card that does not exist, and a card on a board the key\'s user cannot edit, are reasons in that 409 and not a 404 or a 403. ' +
+					'and the answer is a 409 that lists every card at fault. A card that does not exist, and a card on a board the key\'s user cannot edit, are reasons in that 409 and not a 404 or a 403; ' +
+					'a card on a board they cannot open is given as one that does not exist (since 1.10.0). ' +
 					'An archived card is refused, here as by the single-card operation.\n\n' +
 					'A card that is already in the milestone is not a fault: it is skipped and counted, so the same batch can be sent twice. ' +
 					'A card that is in another milestone is moved, and the answer names each one that was. Moving it takes it out of that milestone, so it needs the right to change that one too: ' +
@@ -7870,10 +7823,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the card is on',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
-					},
 					'404': { $ref: '#/components/responses/NotFound' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
@@ -8128,7 +8077,8 @@ const spec = {
 					'A card\'s whole cost, step by step, is then one request and not one for each subtask.\n\n' +
 					'**All or nothing.** Every entry is checked before any is written. If one is refused none is written, the entries that were acceptable included, ' +
 					'and the answer is a 409 that lists every entry at fault by its place in the list. A card or subtask that does not exist, and one on a board the key\'s user cannot edit, ' +
-					'are reasons in that 409: this operation answers no 404 and no 403. A correction is held to what is recorded and to the entries before it in the batch, ' +
+					'are reasons in that 409: this operation answers no 404 and no 403; one on a board they cannot open is given as one that does not exist (since 1.10.0). ' +
+					'A correction is held to what is recorded and to the entries before it in the batch, ' +
 					'so +10000 then -10000 on a new card is written, and an over-correction is a reason in the 409.\n\n' +
 					'**Not safe to send twice.** Entries add up, so the same batch sent again adds the tokens again. Report each step once.',
 				operationId: 'addTokenEntries',
@@ -9520,7 +9470,7 @@ const spec = {
 						schema: { type: 'string' },
 						description:
 							'Comma-separated board ids, to report on those boards only. Left out, every board the key\'s user can see. Each is an id: one that is not is 400, where it was left out. ' +
-							'Each is then checked in the order given, administrators included: one that does not exist is 404 `Board 7 not found`, and one the key\'s user cannot open is 403 `No access to board 7`, as GET /api/v1/burndown answers. ' +
+							'Each is then checked in the order given, administrators included: one that does not exist is 404 `Board 7 not found`, and so is one the key\'s user cannot open, in the same words (since 1.10.0; it was 403), as GET /api/v1/burndown answers. ' +
 							'Until 2026-10-20 both were answered 200 with nothing of the board, so a saved list that holds a deleted board now fails (item 80).'
 					},
 					{
@@ -9552,8 +9502,8 @@ const spec = {
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
 						description:
-							'userId is another user, and the key\'s user is not an administrator; or a board named in boardIds the key\'s user cannot open (`No access to board 7`). ' +
-							'Until 2026-10-20 such a board was answered 200 (item 80).',
+							'userId is another user, and the key\'s user is not an administrator. ' +
+							'A board named in boardIds the key\'s user cannot open is 404 (since 1.10.0); until 2026-10-20 it was answered 200 (item 80), and then 403.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Only an admin can report on another user' } } }
 					},
 					'404': {
@@ -9573,7 +9523,7 @@ const spec = {
 				description:
 					'Returns which board the card was on and when, oldest first, read back from the moves the activity log records. ' +
 					'A card that changes board appears in the audit log under both boards, and this is what says which it was on at the time of an entry.\n\n' +
-					'Needs view access to the board the card is on now. An earlier board the key\'s user cannot see is still listed, with its id and dates, and with "Board not visible to you" for its name.',
+					'Needs view access to the board the card is on now. An earlier board the key\'s user cannot see is still listed, by its dates, with `boardId` null, `withheld` true and "Board not visible to you" for its name; until 1.10.0 its id was given.',
 				operationId: 'getCardBoardHistory',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				responses: {
@@ -9597,10 +9547,6 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'No access to the board the card is on now',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this card\'s board' } } }
-					},
 					'404': { $ref: '#/components/responses/NotFound' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }

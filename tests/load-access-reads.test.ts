@@ -386,7 +386,7 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		member: { reads: 40, access: 1, hash: 'ef06d59458d35860' }, // 64 → 48, 5 → 1; 48 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060); re-pinned (0061)
 		mate: { reads: 40, access: 1, hash: '72513f0fff14b6ec' }, // 73 → 53, 5 → 1; 53 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060); re-pinned (0061)
 		admin: { reads: 30, access: 0, hash: '52da1dc2aff07acf' }, // 30 → 30, 0 → 0; re-pinned (0060); re-pinned (0061)
-		outsider: { reads: 3, access: 0, hash: '586b0bf8447edc8a' } // 3 → 3, 0 → 0 (refused)
+		outsider: { reads: 3, access: 0, hash: '18b1e47382a6470a' } // 3 → 3, 0 → 0 (refused); re-pinned (2719: 404 Board not found, was 403)
 	},
 	'the board page, P': {
 		owner: { reads: 35, access: 1, hash: '056119e9b9128bb7' }, // 54 → 38, 5 → 1; 38 → 36 (card 2399); 36 → 35 (card 2402); re-pinned (0060); re-pinned (0061)
@@ -400,7 +400,7 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		member: { reads: 40, access: 1, hash: 'cd81daa5f8dcc99b' }, // 64 → 48, 5 → 1; 48 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060); re-pinned (0061)
 		mate: { reads: 40, access: 1, hash: '7ce45835650d3eff' }, // 73 → 53, 5 → 1; 53 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060); re-pinned (0061)
 		admin: { reads: 30, access: 0, hash: '30ea79a8a4857efd' }, // 30 → 30, 0 → 0; re-pinned (0060); re-pinned (0061)
-		outsider: { reads: 3, access: 0, hash: '98f0381065d0fdf3' } // 3 → 3, 0 → 0 (refused)
+		outsider: { reads: 3, access: 0, hash: 'd8be0bbec843876f' } // 3 → 3, 0 → 0 (refused); re-pinned (2719: 404 Board not found, was 403)
 	},
 	'the burndown page, every board': {
 		owner: { reads: 16, access: 1, hash: '86821bd5625857d5' }, // 29 → 21, 3 → 1; re-pinned; 21 → 17 (card 2399); 17 → 16 (card 2402)
@@ -414,7 +414,7 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		member: { reads: 20, access: 1, hash: '063393c21438c551' }, // 43 → 31, 4 → 1; re-pinned; 31 → 21 (card 2399); 21 → 20 (card 2402)
 		mate: { reads: 21, access: 1, hash: '4ca7a2a62594b200' }, // 53 → 38, 4 → 1; re-pinned; 38 → 22 (card 2399); 22 → 21 (card 2402)
 		admin: { reads: 15, access: 0, hash: '0b60451ce1609ee8' }, // 15 → 15, 0 → 0; re-pinned
-		outsider: { reads: 9, access: 1, hash: 'a67e228271d95c0a' } // 23 → 19, 2 → 1 (refused in the page); 19 → 10 (card 2399); 10 → 9 (card 2402)
+		outsider: { reads: 9, access: 1, hash: 'cc4c3bfad9943ab9' } // 23 → 19, 2 → 1 (refused in the page); 19 → 10 (card 2399); 10 → 9 (card 2402); re-pinned (2719: 404, was 403)
 	},
 	'the burndown page, a goal across boards': {
 		owner: { reads: 21, access: 1, hash: '88738a2ff1c93e27' }, // 34 → 26, 3 → 1; re-pinned; 26 → 22 (card 2399); 22 → 21 (card 2402)
@@ -428,14 +428,14 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		member: { reads: 21, access: 1, hash: '6cf605b316f87b87' }, // 44 → 32, 4 → 1; re-pinned; 32 → 22 (card 2399); 22 → 21 (card 2402)
 		mate: { reads: 24, access: 1, hash: '6cb09d6acd3673a1' }, // 56 → 41, 4 → 1; re-pinned; 41 → 25 (card 2399); 25 → 24 (card 2402)
 		admin: { reads: 14, access: 0, hash: '774710e566173182' }, // 14 → 14, 0 → 0; re-pinned
-		outsider: { reads: 9, access: 1, hash: 'a67e228271d95c0a' } // 23 → 19, 2 → 1 (refused in the page); 19 → 10 (card 2399); 10 → 9 (card 2402)
+		outsider: { reads: 9, access: 1, hash: 'cc4c3bfad9943ab9' } // 23 → 19, 2 → 1 (refused in the page); 19 → 10 (card 2399); 10 → 9 (card 2402); re-pinned (2719: 404, was 403)
 	},
 	'the burndown page, board A': {
 		owner: { reads: 19, access: 1, hash: '6cd8a1b3d771d616' }, // 28 → 24, 2 → 1; re-pinned; 24 → 20 (card 2399); 20 → 19 (card 2402)
 		member: { reads: 20, access: 1, hash: '1e435f82025c184d' }, // 35 → 31, 2 → 1; re-pinned; 31 → 21 (card 2399); 21 → 20 (card 2402)
 		mate: { reads: 23, access: 1, hash: '29d40b7088105674' }, // 45 → 40, 2 → 1; re-pinned; 40 → 24 (card 2399); 24 → 23 (card 2402)
 		admin: { reads: 14, access: 0, hash: '3c5bae1a9671b3ff' }, // 14 → 14, 0 → 0; re-pinned
-		outsider: { reads: 11, access: 1, hash: 'e3abe29e283cbb9f' } // 21 → 21, 1 → 1 (refused in the page); 21 → 12 (card 2399); 12 → 11 (card 2402)
+		outsider: { reads: 11, access: 1, hash: 'dbc7a2e1c6ca64be' } // 21 → 21, 1 → 1 (refused in the page); 21 → 12 (card 2399); 12 → 11 (card 2402); re-pinned (2719: 404, was 403)
 	},
 	'GET /api/v1/burndown, every board': {
 		owner: { reads: 6, access: 1, hash: '39527b9bb6d60a51' }, // 6 → 6, 1 → 1; re-pinned
@@ -449,7 +449,7 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		member: { reads: 10, access: 1, hash: 'ad057de8690d188d' }, // 14 → 10, 2 → 1; re-pinned
 		mate: { reads: 11, access: 1, hash: 'ad057de8690d188d' }, // 16 → 11, 2 → 1; re-pinned
 		admin: { reads: 5, access: 0, hash: '1c0ee8ec8d9772b3' }, // 5 → 5, 0 → 0; re-pinned
-		outsider: { reads: 6, access: 1, hash: '5db1572772a64190' } // 6 → 6, 1 → 1 (refused)
+		outsider: { reads: 6, access: 1, hash: '5fd12c388fb520fe' } // 6 → 6, 1 → 1 (refused); re-pinned (2719: 404, was 403)
 	},
 	'GET /api/v1/burndown, a goal across boards': {
 		owner: { reads: 11, access: 1, hash: '8f66c22e835bc6ca' }, // 11 → 11, 1 → 1
@@ -463,7 +463,7 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		member: { reads: 6, access: 0, hash: '1035ef7d1a78f56f' }, // 6 → 6, 0 → 0
 		mate: { reads: 8, access: 0, hash: '1035ef7d1a78f56f' }, // 8 → 8, 0 → 0
 		admin: { reads: 4, access: 0, hash: '1035ef7d1a78f56f' }, // 4 → 4, 0 → 0
-		outsider: { reads: 4, access: 0, hash: '52302279c87a3572' } // 4 → 4, 0 → 0 (refused)
+		outsider: { reads: 4, access: 0, hash: '514afd3817388774' } // 4 → 4, 0 → 0 (refused); re-pinned (2719: 404, was 403)
 	},
 	// Card 2399's cases: every hash taken on the old code (bcd4b3b), before the
 	// change, and unchanged by it.
@@ -524,10 +524,10 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 	// outsider, refused at the first board, who is in no team.
 	'GET /api/v1/reports/activity, boards A and B': {
 		owner: { reads: 11, access: 1, hash: '3194d17b09af2e80' }, // 11 → 9, 1 → 1; 9 → 11, re-pinned (2462)
-		member: { reads: 5, access: 1, hash: 'ff52aca65a01e538' }, // 6 → 5, 0 → 1 (refused at B)
-		mate: { reads: 6, access: 1, hash: 'ff52aca65a01e538' }, // 9 → 6, 0 → 1 (refused at B)
+		member: { reads: 5, access: 1, hash: 'ae7caadaf41ffd5b' }, // 6 → 5, 0 → 1 (refused at B); re-pinned (2719: 404, was 403)
+		mate: { reads: 6, access: 1, hash: 'ae7caadaf41ffd5b' }, // 9 → 6, 0 → 1 (refused at B); re-pinned (2719: 404, was 403)
 		admin: { reads: 6, access: 0, hash: '3194d17b09af2e80' }, // 4 → 4, 0 → 0; 4 → 6, re-pinned (2462)
-		outsider: { reads: 5, access: 1, hash: '52302279c87a3572' } // 4 → 5, 0 → 1 (refused at A)
+		outsider: { reads: 5, access: 1, hash: '514afd3817388774' } // 4 → 5, 0 → 1 (refused at A); re-pinned (2719: 404, was 403)
 	},
 	'GET /api/v1/reports/activity, board P': {
 		owner: { reads: 9, access: 1, hash: 'd1b548e578289141' }, // 10 → 7, 1 → 1; 7 → 9, re-pinned (2462)

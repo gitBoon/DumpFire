@@ -1,32 +1,25 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
-import { cards, columns, labels, cardLabels } from '$lib/server/db/schema';
+import { labels, cardLabels } from '$lib/server/db/schema';
 import { eq, inArray } from 'drizzle-orm';
-import { canViewBoard } from '$lib/server/board-access';
 import { addCardLabel, removeCardLabel } from '$lib/server/card-labels';
 import { pathId, readBody } from '$lib/server/request-body';
-import { requireUser } from '$lib/server/route-guards';
+import { requireCard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
-/** Resolve a card ID to its board ID. */
-function getCardBoardId(cardId: number): number {
-	const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, cardId)).get();
-	if (!card) throw error(404, 'Card not found');
-	const col = db.select({ boardId: columns.boardId }).from(columns).where(eq(columns.id, card.columnId)).get();
-	if (!col) throw error(404, 'Column not found');
-	return col.boardId;
-}
-
-/** GET /api/v1/cards/:cardId/labels — List all labels assigned to a card. */
+/**
+ * GET /api/v1/cards/:cardId/labels — List all labels assigned to a card. 404
+ * for a card that is not there, and for one on a board the key's user cannot
+ * open alike (card 2719).
+ */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const cardId = pathId(params.cardId, 'card');
 
-	const boardId = getCardBoardId(cardId);
-	if (!canViewBoard(locals.user, boardId)) throw error(403, 'No access to this board');
+	requireCard(locals.user, cardId, 'view');
 
 	const assignments = db.select({ labelId: cardLabels.labelId })
 		.from(cardLabels)

@@ -338,7 +338,9 @@ describe('deleting an attachment', () => {
 
 		// And records and tells nothing (card 2337).
 		const said = await told(async () => {
-			expect((await api('DELETE', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider })).status).toBe(403);
+			// The outsider cannot open the card's board: as a card that is not there (card 2719).
+			const refused = await api('DELETE', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider });
+			expect([refused.status, refused.body]).toEqual([404, { message: 'Card not found' }]);
 			expect((await api('DELETE', `/api/cards/${card.id}/attachments/99999`, { user: owner })).status).toBe(404);
 		});
 
@@ -365,9 +367,11 @@ describe('deleting an attachment', () => {
 			const res = await api('DELETE', `/api/cards/${other.id}/attachments/${file.id}`, { user: owner });
 			expect([res.status, res.body]).toEqual([404, { message: 'Attachment not found' }]);
 			// A file on a board the owner cannot open, under a card they can: 404, not 403.
-			expect((await api('DELETE', `/api/cards/${card.id}/attachments/${theirs.id}`, { user: owner })).status).toBe(404);
-			// Under its own card, the refusal is the access one, as before.
-			expect((await api('DELETE', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider })).status).toBe(403);
+			const elsewhere = await api('DELETE', `/api/cards/${card.id}/attachments/${theirs.id}`, { user: owner });
+			expect([elsewhere.status, elsewhere.body]).toEqual([404, { message: 'Attachment not found' }]);
+			// Under its own card, to a caller who cannot open its board: as a card that is not there (card 2719).
+			const unopenable = await api('DELETE', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider });
+			expect([unopenable.status, unopenable.body]).toEqual([404, { message: 'Card not found' }]);
 			// A card id that is no id is refused as one.
 			const bad = await api('DELETE', `/api/cards/abc/attachments/${file.id}`, { user: owner });
 			expect([bad.status, bad.body]).toEqual([400, { message: 'Invalid card ID' }]);
@@ -842,7 +846,9 @@ describe('uploading an attachment', () => {
 	it('is refused before anything is written to a caller who cannot edit the card', async () => {
 		const outsider = makeUser({ username: 'outsider' });
 
-		expect((await upload(card, page(), outsider)).status).toBe(403);
+		// The outsider cannot open the card's board: as a card that is not there (card 2719).
+		const refused = await upload(card, page(), outsider);
+		expect([refused.status, refused.body]).toEqual([404, { message: 'Card not found' }]);
 		expect(rows()).toEqual([]);
 		expect(fileIn(card.id)).toBe(false);
 	});
@@ -1162,7 +1168,9 @@ describe('serving an attachment', () => {
 		const missing = makeAttachment(card, { file: false });
 		const outsider = makeUser({ username: 'outsider' });
 
-		expect((await api('GET', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider })).status).toBe(403);
+		// The outsider cannot open the card's board: as a card that is not there (card 2719).
+		const refused = await api('GET', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider });
+		expect([refused.status, refused.body]).toEqual([404, { message: 'Card not found' }]);
 		const gone = await api('GET', `/api/cards/${card.id}/attachments/${missing.id}`, { user: owner });
 		expect(gone.status).toBe(404);
 		expect(gone.body.message).toBe('File not found on disk');
@@ -1179,9 +1187,11 @@ describe('serving an attachment', () => {
 		const res = await api('GET', `/api/cards/${other.id}/attachments/${file.id}`, { user: owner });
 		expect([res.status, res.body]).toEqual([404, { message: 'Attachment not found' }]);
 		// A file on a board the caller cannot open, under a card they can: 404, not 403.
-		expect((await api('GET', `/api/cards/${card.id}/attachments/${theirs.id}`, { user: owner })).status).toBe(404);
-		// Under its own card: 403 to an outsider, and the file to the owner, as before.
-		expect((await api('GET', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider })).status).toBe(403);
+		const elsewhere = await api('GET', `/api/cards/${card.id}/attachments/${theirs.id}`, { user: owner });
+		expect([elsewhere.status, elsewhere.body]).toEqual([404, { message: 'Attachment not found' }]);
+		// Under its own card: 404 to an outsider, who cannot open its board (card 2719), and the file to the owner.
+		const unopenable = await api('GET', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider });
+		expect([unopenable.status, unopenable.body]).toEqual([404, { message: 'Card not found' }]);
 		const own = await api('GET', `/api/cards/${card.id}/attachments/${file.id}`, { user: owner });
 		expect([own.status, own.body]).toEqual([200, 'The contents of notes.txt']);
 		const bad = await api('GET', `/api/cards/abc/attachments/${file.id}`, { user: owner });

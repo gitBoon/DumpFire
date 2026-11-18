@@ -17,8 +17,9 @@ const DAYS_REFUSAL = 'days must be a whole number from 1 to 365';
  * commitment point on one board over a window, and the options it holds now
  * (milestone 22, card 2464, item 5).
  *
- * View access to the board: 404 for a board that is not there, to everyone,
- * then 403 for one the caller cannot open, as every read of a board answers.
+ * View access to the board: 404 `Board not found` for a board that is not
+ * there, to everyone, and for one the caller cannot open alike, as every read
+ * of a board answers (card 2719).
  * `days` is the window, ending now, both ends included as `upstreamFigures`
  * takes them (the S3 review's E4): a whole number from 1 to 365, 30 when it is
  * not sent or empty, and anything else 400. The figures are

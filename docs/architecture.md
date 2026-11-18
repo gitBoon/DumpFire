@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.131
+version: 1.132
 status: As-Built
-date: 2026-11-17
+date: 2026-11-18
 tags:
+  - card-2719
+  - not-found-not-forbidden
   - card-2670
   - iso-27001
   - people-directory
@@ -520,7 +522,7 @@ sequenceDiagram
     H->>T: the write, and everything it depends on
     Note over T: 401 for a key or session that ended,<br/>then a service asks inWrite() and requireUser(caller)
     T->>G: requireBoard / requireCard / ...
-    Note over G: 404 to everyone, then 403
+    Note over G: 404 for missing or unopenable (card 2719), then 403 for the role
     G-->>T: the row
     T->>R: every field, with keep: the row's value
     Note over R: 400 naming the field
@@ -811,6 +813,46 @@ The whole design, every answer and the accepted risks are in
 | `editor` | ✅ | ✅ | ❌ |
 | `viewer` | ✅ | ❌ | ❌ |
 
+### Not Found, Not Forbidden (Card 2719)
+
+A caller with no level on a board is answered as if what they named were not there: `404`, in
+the words a missing one gets, by every route and page in both trees, a batch's entries and a
+dependency loop's nodes included. `403` is for a caller with a level whose role does not allow
+the act. The guards share one refusal, `refuseOnBoard` in `route-guards.ts`, which reads the
+role once. The detail, what stays `403` and the accepted timing residual (R5) are in
+[Authentication and Security](authentication-security.md#not-found-not-forbidden-card-2719).
+
+```mermaid
+flowchart TD
+    R["Request names a thing by id"] --> I{"id a whole number?"}
+    I -->|no| B400["400 Invalid … ID"]
+    I -->|yes| L{"thing exists?"}
+    L -->|no| N404["404 'X not found'"]
+    L -->|yes| V{"canViewBoard(caller, its board)?"}
+    V -->|no| N404
+    V -->|yes| E{"need met? (edit / owner / author)"}
+    E -->|no| F403["403 the route's words"]
+    E -->|yes| OK["handler goes on: body 400s, 409s, the write"]
+```
+
+The v1 dependency batch asks access before it validates, so a hidden end is never judged a
+duplicate or part of a loop:
+
+```mermaid
+flowchart TD
+    Q["POST /api/v1/dependencies/bulk"] --> RB["resolve every end's board"]
+    RB --> M{"each link: an end missing or unopenable?"}
+    M -->|yes| MW["rejected: '#N does not exist or is archived'"]
+    M -->|no| ED{"both ends editable?"}
+    ED -->|no| FB["forbidden: No edit access to the board holding …"]
+    ED -->|yes| VB["validateDependencyBatch(links, opens): self, duplicate, cycle (withheld nodes)"]
+    MW --> ANS{"anything rejected or forbidden?"}
+    FB --> ANS
+    VB --> ANS
+    ANS -->|yes| R409["409, nothing written"]
+    ANS -->|no| W["write, entries, events"]
+```
+
 ## Real-Time Updates via SSE
 
 ```mermaid
@@ -878,7 +920,7 @@ sequenceDiagram
 - **Only the session that opened it counts.** Another session of the same account ending does not end the stream.
 - **A check that cannot be made ends the stream too.** The check runs inside the heartbeat's `try`. If it throws, the stream ends as for a session that has gone, and one `WARN` line is written under `AUTH`, "Live stream ended: its session could not be checked", with the route and the error. Nothing escapes the timer, where it would end the process.
 - **What the page does.** Nothing new: `keepStreamOpen()` sees the stream drop, asks again three seconds later, is answered `401` and stays closed, and a page that holds a stream (a board, the dashboard, All Tasks, Burndown) goes to the login page by itself, about 35 seconds after the session ended at most. A page that holds none (Account, Admin, Reports) goes there at its next request. A stream that ended because its holder changed their own password opens again at once on the browser's new cookie, one that `/api/events` ended for a change of role opens again with the role as it is now, and the page re-reads its data. The audit console's own `EventSource` is refused when it tries again (`401`, or `403` for an account that is no longer an administrator), gives up, and the console shows it is disconnected.
-- **What access each stream checks again** (card 2170). Each decides everything again at one moment, its heartbeat. The board stream asks, after the session, whether the board row is still there and the account as it is now can open it (`canViewBoard`); if not, it enqueues one last `update` with `{"type":"access"}` on its own stream, not emitted to anyone else, and ends, and the board page re-reads and shows its load's refusal, "You do not have access to this board" or "Board not found" (since card 2280 the access event is a read of the board's contents sent at once, never held, whose `403` or `404` empties the page and asks for the load once: see [The Board Page and the Card Window](#the-board-page-and-the-card-window)). It opens only on a board that is there and that the caller can open (`requireBoard(user, id, 'view')`: `404`, administrators included, `403`, or `400` for an id that is not one). `/api/events` keeps each board's answer until its next heartbeat, which forgets them all once the session and the role are checked; the 30-second clock it kept them by is gone. An administrator made an ordinary user stops receiving the log and every board's events at the next heartbeat, and a board's events too unless they are on it.
+- **What access each stream checks again** (card 2170). Each decides everything again at one moment, its heartbeat. The board stream asks, after the session, whether the board row is still there and the account as it is now can open it (`canViewBoard`); if not, it enqueues one last `update` with `{"type":"access"}` on its own stream, not emitted to anyone else, and ends, and the board page re-reads and shows its load's refusal, "Board not found", which since card 2719 is what a board the account can no longer open is answered, as one that is not there (since card 2280 the access event is a read of the board's contents sent at once, never held, whose `403` or `404` empties the page and asks for the load once: see [The Board Page and the Card Window](#the-board-page-and-the-card-window)). It opens only on a board that is there and that the caller can open (`requireBoard(user, id, 'view')`: `404`, administrators included, and for a board the caller cannot open alike since card 2719, or `400` for an id that is not one). `/api/events` keeps each board's answer until its next heartbeat, which forgets them all once the session and the role are checked; the 30-second clock it kept them by is gone. An administrator made an ordinary user stops receiving the log and every board's events at the next heartbeat, and a board's events too unless they are on it.
 - **A deleted board is told first.** A delete's own event is delivered in the same synchronous run as its commit (`emit` queues it with `afterCommit`, and the outermost transaction starts the queued effects as it returns), and a heartbeat is a timer, which cannot run in between. A stream closed after an `enqueue` still hands the reader what was enqueued, so the deleted board's page always has `{ type: 'board', action: 'deleted' }` before the access event and the end. Board ids are never used again, so ending a stream on a deleted board loses nothing.
 
 ```mermaid
@@ -897,7 +939,7 @@ sequenceDiagram
         DB-->>S: no
         S-->>P: event update, data type access
         S-->>P: the stream ends
-        P->>P: re-reads - You do not have access to this board
+        P->>P: re-reads - Board not found (card 2719)
     else board deleted (card 2108)
         R->>DB: COMMIT the delete
         R-->>S: afterCommit, same run - update, type board, action deleted
@@ -1025,7 +1067,7 @@ flowchart TB
 - **Holds and generations.** Every write of the page's own, and a drag from its first move to the move's answer, holds the reads. A read already out when a hold is taken, or when a write settles, was sent before that change and may answer the board as it was: its answer is dropped, by its generation number, and the board is read again once the last hold is let go.
 - **Writes through the board state.** `boardState.write(change, send, words, take?)` shows the change, holds, sends, and on success puts the answer's value of each field sent on the board (`writeCard`, `writeColumn`); on a refusal or no answer it takes that change alone back, reads the board once, and gives the page the words to say. The board is not read after a write that was taken: its own live event is.
 - **The card-window controller.** `new CardWindow(boardState, boardId)` opens the window on a card by its id and hands the window the board state's copy of it as each read arrives. A save sends only the fields the user changed, through `writeCard`.
-- **A refused read shows the refusal page.** A `401`, `403` or `404` from the contents route empties the board state and calls `invalidateAll()` once, so the load runs, refuses in its own words ("You do not have access to this board", "Board not found") and the error page replaces the board. If that load finds the board open after all (access given back meanwhile), the page's one `$effect` that reads `data` hands it to `boardState.take()`, and the state follows the board again with a new schedule.
+- **A refused read shows the refusal page.** A `401`, `403` or `404` from the contents route empties the board state and calls `invalidateAll()` once, so the load runs, refuses in its own words ("Board not found", for a board that is not there and, since card 2719, for one the caller can no longer open) and the error page replaces the board. If that load finds the board open after all (access given back meanwhile), the page's one `$effect` that reads `data` hands it to `boardState.take()`, and the state follows the board again with a new schedule.
 
 One write and one refresh, as they happen:
 
@@ -3052,7 +3094,7 @@ flowchart TD
 
 The public API's 1.3.0 (slice S6, card 2464) adds reads only, each in its v1 route and none in a service of its own: the upstream route asks the very functions the page's metrics route asks, and the two filters and the field are v1's alone, no page asking for them:
 
-- **`GET /api/v1/boards/{boardId}/upstream`** (`src/routes/api/v1/boards/[boardId]/upstream/+server.ts`, new): `pathId`, then `requireBoard(…, 'view')` (404, then 403), then `days` by `readQueryCount` (1 to 365, 30 by default, else 400), then `upstreamFigures([board], from, to, now)` and `committedAll([board], from, to)` over a window from `days` ago to now, both ends included, answered `{ boardId, kind, days, period: {from, to}, …figures, committedAll }`. The same two functions `GET /api/boards/:id/metrics` asks for the Stats panel, so the API and the panel cannot differ.
+- **`GET /api/v1/boards/{boardId}/upstream`** (`src/routes/api/v1/boards/[boardId]/upstream/+server.ts`, new): `pathId`, then `requireBoard(…, 'view')` (404, for a board the caller cannot open too since card 2719), then `days` by `readQueryCount` (1 to 365, 30 by default, else 400), then `upstreamFigures([board], from, to, now)` and `committedAll([board], from, to)` over a window from `days` ago to now, both ends included, answered `{ boardId, kind, days, period: {from, to}, …figures, committedAll }`. The same two functions `GET /api/boards/:id/metrics` asks for the Stats panel, so the API and the panel cannot differ.
 - **`GET /api/v1/boards?kind=`** filters `listBoardsFor`'s answer, after access, by `boards.kind`; the page's list takes no filter.
 - **`GET /api/v1/boards/{boardId}/cards?stage=`** adds one condition to the list's one read: on an ideas board every card is an option (`1`), on a delivery board `columns.role IS 'options'`, and `NOT (…)` for `committed`, the kind coming from the board `requireBoard` read. The subtask counts take the same condition.
 - **`avgLeadTimeDays`** on `GET /api/v1/me/stats` is the average `avgCycleTimeDays` now gives, commitment to done (creation to done before milestone 22, the same figure for older cards), answered under its right name beside the old one.
@@ -3060,7 +3102,7 @@ The public API's 1.3.0 (slice S6, card 2464) adds reads only, each in its v1 rou
 ```mermaid
 flowchart LR
     R["GET /api/v1/boards/:boardId/upstream?days=N"] --> P["pathId: 400"]
-    P --> B["requireBoard view:<br/>404, then 403"]
+    P --> B["requireBoard view:<br/>404, missing or unopenable"]
     B --> D["readQueryCount days:<br/>1 to 365, else 400"]
     D --> UF["upstreamFigures"]
     D --> CA["committedAll"]
@@ -3191,7 +3233,7 @@ flowchart LR
         V11["requireUser(locals.user)<br/>pathId, readBody,<br/>linkBaseUrl"] --> V12["writeAs(locals, (caller) =><br/>service(caller, at, body,<br/>{ source: 'api', says?, ...its options }))"] --> V13["v1-json json<br/>(ISO 8601)"]
     end
     subgraph Service["src/lib/server/&lt;area&gt;.ts"]
-        S0["inWrite(): refused unless<br/>a writeAs callback is running"] --> S1["requireUser(caller): 401<br/>require* guard with caller:<br/>404, then 403 in opts.says"]
+        S0["inWrite(): refused unless<br/>a writeAs callback is running"] --> S1["requireUser(caller): 401<br/>require* guard with caller:<br/>404 missing or unopenable,<br/>then 403 in opts.says"]
         S1 --> S2["request-body readers on body:<br/>400, keep"]
         S2 --> S3["insert, update, or a shared helper<br/>(applyCardMove, deleteCard,<br/>addDependencyLink, recordTokenUsage, ...)"]
         S3 --> S4["logActivity (its webhook queued),<br/>emit (queued), notify... (queued)"]
@@ -3228,7 +3270,7 @@ sequenceDiagram
     W->>S: service(caller, at, body, opts), with writing counted up
     S->>S: inWrite(), then requireUser(caller)
     S->>G: requireCard(user, id, 'edit', opts.says)
-    Note over G: 404, then 403 in the tree's words
+    Note over G: 404 missing or unopenable, then 403 in the tree's words
     S->>G: readText(body, ...), readId(body, ...)
     Note over G: 400 naming the field
     S->>DB: the writes
@@ -3263,7 +3305,8 @@ whole or spread, where a page route and a new card's nested write share it (card
 1. **starts with `inWrite()`**, and is handed its writeAs callback's own `caller`, as it is or
    through `requireUser(caller)`, never `locals` or a name taken from it;
 2. asks **`requireUser(caller)`** (401), then **its guard with the account** (404 to everyone,
-   then 403, in `opts.says` where the tree has its own words);
+   and to a caller who cannot open the board in the same words since card 2719, then 403 for
+   the role, in `opts.says` where the tree has its own words);
 3. reads **every field from `body`** through the readers of `request-body.ts` (400), the ids
    the body names among them, so a session that ended while the body arrived is refused
    before any of them is looked for. Where a route names the guarded row in its body and not

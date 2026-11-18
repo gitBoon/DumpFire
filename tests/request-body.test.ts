@@ -1881,20 +1881,25 @@ describe('the handlers of /api/v1/ that card 2117’s second slice moved onto th
 	it('looks for what the path names, and checks the caller, before it reads a field (R1)', async () => {
 		const w = world();
 		const before = snapshotDb();
-		const answered = async (method: Method, path: string, body: unknown) => (await api(method, path, { user: w.outsider, body })).status;
+		// The status and the words (card 2719's code review, CR8).
+		const answered = async (method: Method, path: string, body: unknown) => {
+			const res = await api(method, path, { user: w.outsider, body });
+			return [res.status, res.body?.message];
+		};
 
-		// Each body is wrong, and the caller may not touch the row: the 403 comes first, as it did for a card.
-		expect(await answered('PUT', `/api/v1/cards/${w.cardId}`, { title: 5 })).toBe(403);
-		expect(await answered('PUT', `/api/v1/cards/${w.cardId}`, { priority: 'urgent' })).toBe(403);
-		expect(await answered('PUT', `/api/v1/boards/${w.boardId}`, { name: 5 })).toBe(403);
-		expect(await answered('POST', `/api/v1/boards/${w.boardId}/cards`, { title: 5 })).toBe(403);
-		expect(await answered('PUT', `/api/v1/subtasks/${w.subtaskId}`, { completed: 'false' })).toBe(403);
+		// Each body is wrong, and the caller may not touch the row: the refusal comes first, as it did for a card.
+		// A row on a board the caller cannot open is 404, as one that is not there (card 2719).
+		expect(await answered('PUT', `/api/v1/cards/${w.cardId}`, { title: 5 })).toEqual([404, 'Card not found']);
+		expect(await answered('PUT', `/api/v1/cards/${w.cardId}`, { priority: 'urgent' })).toEqual([404, 'Card not found']);
+		expect(await answered('PUT', `/api/v1/boards/${w.boardId}`, { name: 5 })).toEqual([404, 'Board not found']);
+		expect(await answered('POST', `/api/v1/boards/${w.boardId}/cards`, { title: 5 })).toEqual([404, 'Board not found']);
+		expect(await answered('PUT', `/api/v1/subtasks/${w.subtaskId}`, { completed: 'false' })).toEqual([404, 'Subtask not found']);
 		// These looked at the body first, and answered 400.
-		expect(await answered('PUT', `/api/v1/comments/${w.commentId}`, { content: '' })).toBe(403);
-		expect(await answered('POST', `/api/v1/milestones/${w.milestoneId}/cards`, {})).toBe(403);
-		expect(await answered('DELETE', `/api/v1/milestones/${w.milestoneId}/cards`, {})).toBe(403);
+		expect(await answered('PUT', `/api/v1/comments/${w.commentId}`, { content: '' })).toEqual([404, 'Comment not found']);
+		expect(await answered('POST', `/api/v1/milestones/${w.milestoneId}/cards`, {})).toEqual([403, 'No access to this milestone']);
+		expect(await answered('DELETE', `/api/v1/milestones/${w.milestoneId}/cards`, {})).toEqual([403, 'No access to this milestone']);
 		// And a row that is not there is 404, whatever was sent.
-		expect(await answered('PUT', '/api/v1/comments/99999', { content: '' })).toBe(404);
+		expect(await answered('PUT', '/api/v1/comments/99999', { content: '' })).toEqual([404, 'Comment not found']);
 		expectUnchanged(before);
 	});
 
@@ -1916,8 +1921,9 @@ describe('the handlers of /api/v1/ that card 2117’s second slice moved onto th
 		expect((await api('PUT', '/api/v1/boards/99999', { user: w.outsider, body: { name: 'x' } })).status).toBe(404);
 		expect((await api('DELETE', '/api/v1/boards/99999', { user: w.outsider })).status).toBe(404);
 		expect((await api('POST', '/api/v1/boards/99999/cards', { user: w.outsider, body: { title: 'x' } })).status).toBe(404);
-		// A board that is there, which the caller cannot open, is still 403.
-		expect((await api('GET', `/api/v1/boards/${w.boardId}`, { user: w.outsider })).status).toBe(403);
+		// A board that is there, which the caller cannot open, is answered alike since card 2719.
+		const unopenable = await api('GET', `/api/v1/boards/${w.boardId}`, { user: w.outsider });
+		expect([unopenable.status, unopenable.body]).toEqual([404, { message: 'Board not found' }]);
 		expectUnchanged(before);
 	});
 
@@ -2375,25 +2381,34 @@ describe('the web application’s work routes that card 2117’s third slice mov
 		const w = world();
 		const before = snapshotDb();
 		const answered = async (method: Method, path: string, body: unknown, user = w.outsider) => (await api(method, path, { user, body })).status;
+		// The status and the words (card 2719's code review, CR8).
+		const said = async (method: Method, path: string, body: unknown, user = w.outsider) => {
+			const res = await api(method, path, { user, body });
+			return [res.status, res.body?.message];
+		};
 
-		// Each body is wrong, and the caller may not touch the row: the 403 comes first.
-		expect(await answered('PUT', `/api/cards/${w.cardId}`, { title: 5 })).toBe(403);
-		expect(await answered('PUT', `/api/subtasks/${w.subtaskId}`, { completed: 'false' })).toBe(403);
-		expect(await answered('PUT', `/api/columns/${w.columnId}`, { title: 5 })).toBe(403);
-		expect(await answered('POST', '/api/cards', { columnId: w.columnId, title: 5 })).toBe(403);
-		expect(await answered('POST', '/api/subtasks', { cardId: w.cardId, title: 5 })).toBe(403);
-		expect(await answered('POST', '/api/columns', { boardId: w.boardId, title: 5 })).toBe(403);
-		expect(await answered('POST', '/api/labels', { boardId: w.boardId, name: 5 })).toBe(403);
-		expect(await answered('PUT', '/api/labels', { cardId: w.cardId, labelId: 'x' })).toBe(403);
-		expect(await answered('POST', '/api/categories', { boardId: w.boardId, name: 5 })).toBe(403);
-		expect(await answered('POST', '/api/templates', { boardId: w.boardId, name: 5 })).toBe(403);
-		expect(await answered('POST', '/api/milestones', { boardId: w.boardId, name: 5 })).toBe(403);
-		expect(await answered('PATCH', `/api/milestones/${w.milestoneId}`, { name: 5 })).toBe(403);
-		expect(await answered('POST', `/api/cards/${w.cardId}/assignees`, { userId: 'x' })).toBe(403);
-		expect(await answered('PUT', '/api/cards/reorder', { updates: [{ id: w.cardId, columnId: w.columnId, position: 'top' }] })).toBe(403);
+		// Each body is wrong, and the caller may not touch the row: the refusal comes first. A row on a
+		// board the caller cannot open is 404, as one that is not there (card 2719).
+		expect(await said('PUT', `/api/cards/${w.cardId}`, { title: 5 })).toEqual([404, 'Card not found']);
+		expect(await said('PUT', `/api/subtasks/${w.subtaskId}`, { completed: 'false' })).toEqual([404, 'Subtask not found']);
+		expect(await said('PUT', `/api/columns/${w.columnId}`, { title: 5 })).toEqual([404, 'Column not found']);
+		expect(await said('POST', '/api/cards', { columnId: w.columnId, title: 5 })).toEqual([404, 'Column not found']);
+		expect(await said('POST', '/api/subtasks', { cardId: w.cardId, title: 5 })).toEqual([404, 'Card not found']);
+		expect(await said('POST', '/api/columns', { boardId: w.boardId, title: 5 })).toEqual([404, 'Board not found']);
+		expect(await said('POST', '/api/labels', { boardId: w.boardId, name: 5 })).toEqual([404, 'Board not found']);
+		expect(await said('PUT', '/api/labels', { cardId: w.cardId, labelId: 'x' })).toEqual([404, 'Card not found']);
+		expect(await said('POST', '/api/categories', { boardId: w.boardId, name: 5 })).toEqual([404, 'Board not found']);
+		expect(await said('POST', '/api/templates', { boardId: w.boardId, name: 5 })).toEqual([404, 'Board not found']);
+		expect(await said('POST', '/api/milestones', { boardId: w.boardId, name: 5 })).toEqual([404, 'Board not found']);
+		expect(await said('PATCH', `/api/milestones/${w.milestoneId}`, { name: 5 })).toEqual([403, 'No access to this milestone']);
+		expect(await said('POST', `/api/cards/${w.cardId}/assignees`, { userId: 'x' })).toEqual([404, 'Card not found']);
+		expect(await said('PUT', '/api/cards/reorder', { updates: [{ id: w.cardId, columnId: w.columnId, position: 'top' }] })).toEqual([
+			404,
+			`Card ${w.cardId} not found`
+		]);
 		// A new comment, in both trees, read its content first and answered 400.
-		expect(await answered('POST', `/api/cards/${w.cardId}/comments`, { content: '' })).toBe(403);
-		expect(await answered('POST', `/api/v1/cards/${w.cardId}/comments`, { content: '' })).toBe(403);
+		expect(await said('POST', `/api/cards/${w.cardId}/comments`, { content: '' })).toEqual([404, 'Card not found']);
+		expect(await said('POST', `/api/v1/cards/${w.cardId}/comments`, { content: '' })).toEqual([404, 'Card not found']);
 		expect(await answered('POST', `/api/cards/${w.cardId}/comments`, { content: 5 }, w.viewer)).toBe(403);
 		// And a row that is not there is 404, whatever was sent.
 		expect(await answered('POST', '/api/cards/99999/comments', { content: '' }, w.owner)).toBe(404);
@@ -3084,8 +3099,13 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		expect(await answered('POST', '/api/requests/99999/messages', w.owner, { message: '' })).toBe(404);
 		expect(await answered('POST', replies(w), w.owner, { message: '', senderType: 'requester', token: 'not it' })).toBe(403);
 		// A schedule's board is looked for, and the caller checked, before its other fields: its name was read first.
-		expect(await answered('POST', '/api/report-schedules', w.outsider, schedule(w, { name: '' }))).toBe(403);
-		expect(await answered('POST', '/api/report-schedules', w.admin, schedule(w, { scopeId: 99999, name: '' }))).toBe(404);
+		// One the caller cannot open is answered as one that is not there, in the same words (card 2719; code review, CR8).
+		const scheduled = async (user: SessionUser, body: unknown) => {
+			const res = await api('POST', '/api/report-schedules', { user, body, headers: sessions.get(user.id) });
+			return [res.status, res.body?.message];
+		};
+		expect(await scheduled(w.outsider, schedule(w, { name: '' }))).toEqual([404, 'Board not found']);
+		expect(await scheduled(w.admin, schedule(w, { scopeId: 99999, name: '' }))).toEqual([404, 'Board not found']);
 		expectUnchanged(before);
 	});
 
@@ -3283,8 +3303,10 @@ describe('the accounts, administration, teams, reports and requests that card 21
 				});
 			}
 		}
+		// One that is there and that the caller cannot open is answered alike (card 2719).
 		for (const path of [`/api/boards/${w.boardId}/cards`, `/api/activity?boardId=${w.boardId}`]) {
-			expect((await api('GET', path, { user: w.outsider })).body).toEqual({ message: 'No access to this board' });
+			const res = await api('GET', path, { user: w.outsider });
+			expect([res.status, res.body]).toEqual([404, { message: 'Board not found' }]);
 		}
 	});
 

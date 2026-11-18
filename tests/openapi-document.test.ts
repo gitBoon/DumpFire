@@ -940,6 +940,10 @@ const SOMETIMES_ABSENT: Record<string, Record<string, string>> = {
 	},
 	DependencyConflict: { cycle: 'cycleAnswer sends it for a link that would close a loop; a link already recorded is the message alone' },
 	'DependencyBatchRejected.rejected[]': { cycle: 'validateDependencyBatch sets it only when the reason is cycle' },
+	// Card 2719 (D12): cycleNodes marks only a node on a board the caller cannot open.
+	CycleNode: { withheld: 'cycleNodes sets it, true, only on a node on a board the caller cannot open; a node shown is the work alone' },
+	// Card 2719's code review, CS2: the board-history route marks only a span on a board the caller cannot open.
+	'CardBoardHistory.history[]': { withheld: 'the board-history route sets it, true, only on a span on a board the caller cannot open' },
 	PlanNode: {
 		parentCardId: 'loadPlanNodes sets it on a subtask and not on a card, and withhold leaves it off a subtask on a board the caller cannot open'
 	},
@@ -1528,8 +1532,9 @@ describe('the OpenAPI document, against the handlers', () => {
 		expect(statusesOf('PUT /api/v1/cards/{cardId}/move')).toEqual([200, 400, 401, 403, 404, 409]);
 		// dependency-refusals.ts: the duplicate and the cycle (409), an end that waits on itself (400).
 		expect(statusesOf('POST /api/v1/cards/{cardId}/dependencies')).toEqual([201, 400, 401, 403, 404, 409]);
-		// A handler with no status of its own beyond the 400: all of it comes from requireBoard.
-		expect(statusesOf('GET /api/v1/boards/{boardId}/webhooks')).toEqual([200, 400, 401, 403, 404]);
+		// A handler with no status of its own beyond the 400: all of it comes from requireBoard, which
+		// answers a board the caller cannot open 404 and asks no role of a read (card 2719): no 403.
+		expect(statusesOf('GET /api/v1/boards/{boardId}/webhooks')).toEqual([200, 400, 401, 404]);
 		// A typed error whose statuses are three (MilestoneError), and a same-file helper.
 		expect(statusesOf('PUT /api/v1/cards/{cardId}')).toEqual([200, 400, 401, 403, 404]);
 
@@ -2115,7 +2120,8 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(loop.status).toBe(409);
 		expect(keysOf(loop.body)).toEqual(propertiesOf(conflict));
 		expect(loop.body.cycle.length).toBeGreaterThan(0);
-		expect(keysOf(loop.body.cycle[0])).toEqual(propertiesOf(deref(conflict.properties.cycle).items));
+		// A node shown is the work alone: `withheld` is given only on one the caller cannot open (card 2719).
+		expect(keysOf(loop.body.cycle[0])).toEqual(propertiesOf(deref(conflict.properties.cycle).items).filter((key) => key !== 'withheld'));
 	});
 
 	it('DELETE /cards/{cardId}/dependencies', async () => {
@@ -2670,7 +2676,14 @@ describe('what a route answers, against the schema the document gives for it', (
 		const missing = await send(admin, [{ cardId: 999999, tokens: 100 }]);
 		expect(missing.status).toBe(409);
 		expect(missing.body.problems).toEqual([{ index: 0, reason: 'Card #999999 does not exist' }]);
-		const forbidden = await send(makeUser(), [{ cardId: first.id, tokens: 100 }]);
+		// A card on a board the caller cannot open is one that is not there (card 2719, E6) ...
+		const unseen = await send(makeUser(), [{ cardId: first.id, tokens: 100 }]);
+		expect(unseen.status).toBe(409);
+		expect(unseen.body.problems).toEqual([{ index: 0, reason: `Card #${first.id} does not exist` }]);
+		// ... and one they can open and may not edit is the refusal.
+		const viewer = makeUser();
+		addBoardMember(board, viewer, 'viewer');
+		const forbidden = await send(viewer, [{ cardId: first.id, tokens: 100 }]);
 		expect(forbidden.status).toBe(409);
 		expect(forbidden.body.problems).toEqual([{ index: 0, reason: `No edit access to the board holding card #${first.id}` }]);
 	});
@@ -2704,7 +2717,7 @@ describe('what a route answers, against the schema the document gives for it', (
 		const loop = await api('POST', path, { user: admin, body: { blocksCardId: second.id } });
 		expect(loop.status).toBe(409);
 		expect(keysOf(loop.body)).toEqual(propertiesOf(conflict));
-		expect(keysOf(loop.body.cycle[0])).toEqual(propertiesOf(conflict.properties.cycle.items));
+		expect(keysOf(loop.body.cycle[0])).toEqual(propertiesOf(conflict.properties.cycle.items).filter((key) => key !== 'withheld'));
 
 		const removed = await api('DELETE', path, { user: admin, body: { dependsOnCardId: second.id } });
 		expect(removed.status).toBe(200);
@@ -2716,7 +2729,7 @@ describe('what a route answers, against the schema the document gives for it', (
 	});
 
 	it('POST /dependencies/bulk: a batch that is recorded, and three that are rejected', async () => {
-		const { admin, cols, first, second } = fixture();
+		const { admin, board, cols, first, second } = fixture();
 		const third = makeCard(cols['To Do']);
 		const step = makeSubtask(third);
 		const name = 'POST /api/v1/dependencies/bulk';
@@ -2753,7 +2766,8 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(keysOf(loop.body.rejected[0])).toEqual(propertiesOf(item));
 		expect(loop.body.rejected[0].reason).toBe('cycle');
 		expect(keysOf(loop.body.rejected[0].link)).toEqual(propertiesOf(item.properties.link));
-		expect(keysOf(loop.body.rejected[0].cycle[0])).toEqual(propertiesOf(item.properties.cycle.items));
+		// A node shown is the work alone: `withheld` is given only on one the caller cannot open (card 2719).
+		expect(keysOf(loop.body.rejected[0].cycle[0])).toEqual(propertiesOf(item.properties.cycle.items).filter((key) => key !== 'withheld'));
 
 		// An end that is not there is a reason in the 409, with no `cycle`, and not a 404.
 		const missing = await send(admin, { links: [{ blocked: first.id, blocker: 999999 }] });
@@ -2761,12 +2775,16 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(keysOf(missing.body.rejected[0])).toEqual(propertiesOf(item).filter((key) => key !== 'cycle'));
 		expect(item.properties.reason.enum).toContain(missing.body.rejected[0].reason);
 
-		// And a board the caller cannot edit is `forbidden` in the 409, and not a 403.
-		const forbidden = await send(makeUser(), { links: [{ blocked: third.id, blocker: first.id }] });
+		// And a board the caller can open and cannot edit is `forbidden` in the 409, and not a 403.
+		const viewer = makeUser();
+		addBoardMember(board, viewer, 'viewer');
+		const forbidden = await send(viewer, { links: [{ blocked: third.id, blocker: first.id }] });
 		expect(forbidden.status).toBe(409);
 		expect(forbidden.body.rejected).toEqual([]);
 		expect(forbidden.body.forbidden).toHaveLength(1);
 		expect(keysOf(forbidden.body.forbidden[0])).toEqual(propertiesOf(rejected.properties.forbidden.items));
+		// The refusal named, to a caller who can open the board (code review, CR1).
+		expect(forbidden.body.forbidden[0].message).toBe(`No edit access to the board holding the blocked card:${third.id}`);
 	});
 
 	// ─── Reports ─────────────────────────────────────────────────────────────
@@ -2817,26 +2835,28 @@ describe('what a route answers, against the schema the document gives for it', (
 		const schema = answerSchema('GET /api/v1/cards/{cardId}/board-history', 200);
 		expect(keysOf(res.body)).toEqual(propertiesOf(schema));
 		expect(res.body.history).toHaveLength(1);
-		expect(keysOf(res.body.history[0])).toEqual(propertiesOf(schema.properties.history.items));
+		// `withheld` is given only on a span the caller cannot open (card 2719's code review, CS2).
+		expect(keysOf(res.body.history[0])).toEqual(propertiesOf(schema.properties.history.items).filter((key) => key !== 'withheld'));
 		expect(res.body.history[0]).toMatchObject({ boardId: board.id, to: null, current: true });
 	});
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.9.1, with its dated notes newest first, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.10.0, with its dated notes newest first, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.9.1');
+		expect(res.body.info.version).toBe('1.10.0');
 
 		// Card 2761 (E8): every dated note's heading, in the order the description gives them, newest first, in
 		// one list, in place of each note's test counting the notes before it. A new version's note is added at
 		// its head, and nothing else here moves.
 		const note = res.body.info.description as string;
 		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])).toEqual([
+			'**Changed on 2026-11-18 (version 1.10.0), breaking.**',
 			'**Changed on 2026-11-17 (version 1.9.1).**',
 			'**Changed on 2026-11-17 (version 1.9.0).**',
 			'**Changed on 2026-11-17 (version 1.8.0), breaking.**',
@@ -2891,6 +2911,48 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(OPS.filter(isPublic).map((op) => op.name)).toEqual([name]);
 		// And under a tag, so that the /docs page lists it too.
 		expect(res.body.tags.map((t: Json) => t.name)).toContain(itself.tags[0]);
+	});
+
+	// Card 2719, case 32 (D8, E7): what the key's user cannot open is answered as what is not there.
+	it('announces in the 1.10.0 note, first and breaking, that what the key\'s user cannot open is answered 404, and holds the document to it (card 2719)', () => {
+		const note = spec.info.description as string;
+		const heading = '**Changed on 2026-11-18 (version 1.10.0), breaking.**';
+		// First of the dated notes, and marked breaking.
+		expect(note.match(/\*\*Changed on [^*]+\*\*/)?.[0]).toBe(heading);
+		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-17 (version 1.9.1).**'));
+		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7]);
+		for (const words of [
+			'(card 2719)',
+			'or anything on a board they cannot open',
+			'is answered 404 by every operation, in the very words one that is not there gets, where it was answered 403',
+			'POST /cards/{cardId}/labels answers 404 {"message": "Label not found"} for a label that is not of the card\'s board',
+			'a link with an end the user cannot open is rejected as that end not existing',
+			'duplicates and loops are judged only among links whose ends the user can edit',
+			'{"kind": "card", "id": null, "withheld": true}',
+			'"A card on a board you cannot open"',
+			'403 now means the user can open the board and their role does not allow the operation',
+			// The code review's CS2.
+			'GET /cards/{cardId}/board-history gives a span on a board the user cannot open by its dates alone, `boardId` null and `withheld` true',
+			'nothing else changed'
+		]) {
+			expect(changes, words).toContain(words);
+		}
+
+		// The two shared answers say so: a 403 is the role, and a 404 is either.
+		const forbidden = spec.components.responses.Forbidden.description as string;
+		expect(forbidden).not.toMatch(/no access to the board/i);
+		expect(forbidden).toContain('can open the board the resource is on, and their role does not allow this');
+		expect(spec.components.responses.NotFound.description).toContain('or is on a board the key\'s user cannot open; the two are answered alike');
+
+		// A read guarded for view alone documents no 403 (E7): the card, read whole.
+		expect(Object.keys(spec.paths['/api/v1/cards/{cardId}'].get.responses)).not.toContain('403');
+		// And no operation's prose still says a board is looked for before access is checked.
+		expect(JSON.stringify(spec.paths)).not.toContain('looked for before access is checked');
+		expect(JSON.stringify(spec.paths)).not.toContain('No access to this board category');
+		// Nor that a 403 is for a board the key's user cannot open (code review, CR3).
+		for (const words of ["No access to this card's board", "No access to the card's board", 'No access to the board,']) {
+			expect(JSON.stringify(spec.paths), words).not.toContain(words);
+		}
 	});
 
 	it("announces that milestone's later changes in the 2026-10-14 note, under version 1.2.0 (cards 2293, 2345, 2346)", () => {

@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.122
+version: 1.123
 status: As-Built
-date: 2026-11-17
+date: 2026-11-18
 tags:
+  - card-2719
+  - breaking-change
   - card-2761
   - card-2751
   - card-2870
@@ -57,7 +59,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Docker deployment, the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Docker deployment, the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -6754,6 +6756,69 @@ files; the plan's section 6 has the full list, H1 to H9):
 No step is needed. The previous image reads the rows and files as this one left them: a cleaned
 image is still an image, and a row retyped `application/octet-stream` is a download there too.
 The flag stays; coming forward again does not re-check.
+
+### The Release That Answers What a Caller Cannot Open as Not There (Card 2719)
+
+**Card 2719, built 2026-11-18.** Until this release a board or card that existed on a board the
+caller could not open was answered `403`, and one that did not exist `404`, so anyone with an
+account or an API key could learn which boards and cards exist on boards they will never see.
+From this release **a board, a card, a dashboard grouping holding only boards the caller cannot
+open, or anything on a board they cannot open is answered `404`, in the very words one that is
+not there gets**, by every route and page; `403` is kept for a caller who can open the board and
+whose role does not allow the act. How it works is in
+[Not Found, Not Forbidden](authentication-security.md#not-found-not-forbidden-card-2719); the
+plan is `docs/planning/card-2719-not-found-not-forbidden.md`.
+
+**This is a breaking change for API keys** (OpenAPI document `1.10.0`, a dated note marked
+breaking at the top of its description): a script that read `403` as "no access" is answered
+`404` instead. The changelog entry is in [the API reference](api-reference.md#changes-on-2026-11-18).
+
+**Nothing to migrate.** No schema, setting or file changes. Going back to the previous image
+needs no step; it answers `403` again.
+
+**Before the release, tell the key holders (owner).** No Production access is used here: the
+owner finds the holders of API keys with a read-only query of Production's database, as card
+2772's release does (see [The Release That Gives Older API Keys a Deadline](#the-release-that-gives-older-api-keys-a-deadline-card-2772),
+or check W3's), every key that still works, with its holder's address:
+
+```sql
+SELECT u.username, u.email, k.name, k.key_prefix, k.last_used_at, k.expires_at
+FROM api_keys k JOIN users u ON u.id = k.user_id
+WHERE k.expires_at IS NULL OR k.expires_at > datetime('now')
+ORDER BY u.username, k.created_at;
+```
+
+and sends each holder this notice, as written:
+
+> From the next DumpFire release, a request for a board, card, or anything on a board your
+> account cannot open is answered `404` with the same message as one that does not exist, where
+> it was `403`. `403` now means you can open the board but your role does not allow the action.
+> In a dependency batch, an end you cannot open is reported as not existing, and a loop through
+> work you cannot open names it as withheld. If a script treats `403` as 'no access', treat
+> `404` the same way.
+
+**What people notice.** Someone who loses access to a board and follows an old link sees
+"Board not found" where they saw "You do not have access to this board". The board page's
+refresh and its live stream treat the two alike, as before.
+
+**Accepted risk.** A missing id is answered a little faster than one on a board the caller
+cannot open (R5 in [Accepted Risks](authentication-security.md#accepted-risks)), bounded by
+the gate's 60 requests a minute.
+
+**Hands-on checks** (the plan's section 6, H1 to H9; on the dev server, two accounts: A owns
+board X, B has no access to X, and a key for B):
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | As B, open `/board/<X>` | "Board not found" error page | "You do not have access" |
+| H2 | As B, open `/board/<X + 99999>` | The same page, the same words | Any difference |
+| H3 | With B's key: `GET /api/v1/cards/<a card of X>` and `/999999` | Both `404 {"message":"Card not found"}` | A 403, or different words |
+| H4 | With B's key: `GET /api/v1/webhooks/<a webhook of X>` and `/999999` | Both `404 Webhook not found` | `Board not found` for the first |
+| H5 | Share X with B as viewer; `PUT /api/v1/cards/<card of X>` `{ "title": "x" }` | `403 No edit access to this card's board` | 404 |
+| H6 | Unshare; with B's key `POST /api/v1/dependencies/bulk` with a link from B's card to a card of X, and the same with `999999` | Both 409 with `does not exist or is archived` for that end | "No edit access", or a duplicate or cycle |
+| H7 | As B, the burndown page with `?boardIds=<X>` | "Not found" | "No access" |
+| H8 | `GET /api/v1/openapi.json` | `info.version` `1.10.0`; the note first, "breaking" | 1.9.x |
+| H9 | Admin → ISO 27001 checklist, A.8.3 | Gap cards 2730 and 2762; accepted risk R5 | 2719 still listed |
 
 ## Changing the Schema
 

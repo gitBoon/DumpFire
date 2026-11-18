@@ -219,7 +219,8 @@ describe('GET /api/v1/boards/{boardId}/cards?stage= (card 2464, item 3)', () => 
 		const s = scene();
 
 		expect((await api('GET', '/api/v1/boards/999/cards?stage=nonsense', { user: s.viewer })).status).toBe(404);
-		expect((await api('GET', `/api/v1/boards/${s.X.board.id}/cards?stage=nonsense`, { user: s.viewer })).status).toBe(403);
+		// A board the caller cannot open is answered as one that is not there (card 2719).
+		expect(await api('GET', `/api/v1/boards/${s.X.board.id}/cards?stage=nonsense`, { user: s.viewer })).toMatchObject({ status: 404, body: { message: 'Board not found' } });
 	});
 });
 
@@ -319,12 +320,13 @@ describe('GET /api/v1/boards/{boardId}/upstream (card 2464, item 5)', () => {
 		}
 	});
 
-	it('answers 404 for a board that is not there to everyone, 403 for one the caller cannot open, and 400 for a board id that is not one, before days is read', async () => {
+	it('answers 404 for a board that is not there to everyone, and for one the caller cannot open alike, and 400 for a board id that is not one, before days is read', async () => {
 		const s = scene();
 		const admin = makeUser({ role: 'admin', username: 'admin' });
 
 		expect(await api('GET', '/api/v1/boards/999/upstream?days=0', { user: admin })).toMatchObject({ status: 404, body: { message: 'Board not found' } });
-		expect(await api('GET', `/api/v1/boards/${s.X.board.id}/upstream?days=0`, { user: s.viewer })).toMatchObject({ status: 403, body: { message: 'No access to this board' } });
+		// Card 2719: as a board that is not there.
+		expect(await api('GET', `/api/v1/boards/${s.X.board.id}/upstream?days=0`, { user: s.viewer })).toMatchObject({ status: 404, body: { message: 'Board not found' } });
 		expect(await api('GET', '/api/v1/boards/1.5/upstream', { user: s.viewer })).toMatchObject({ status: 400, body: { message: 'Invalid board ID' } });
 		expect((await api('GET', `/api/v1/boards/${s.X.board.id}/upstream`, { user: admin })).status).toBe(200);
 	});

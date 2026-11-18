@@ -9,8 +9,6 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import {
-	cards,
-	columns,
 	boards,
 	subtasks,
 	labels,
@@ -22,7 +20,7 @@ import {
 	teamMembers
 } from '$lib/server/db/schema';
 import { eq, inArray } from 'drizzle-orm';
-import { canViewBoard } from '$lib/server/board-access';
+import { requireCard } from '$lib/server/route-guards';
 import { milestonesForBoard } from '$lib/server/milestones';
 import { cardCategoriesFor, subBoardsFor } from '$lib/server/list-access';
 import { subBoardProgress } from '$lib/server/card-completion';
@@ -35,14 +33,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	const cardId = pathId(params.id, 'card');
 
-	const card = db.select().from(cards).where(eq(cards.id, cardId)).get();
-	if (!card) throw error(404, 'Card not found');
-
-	const col = db.select().from(columns).where(eq(columns.id, card.columnId)).get();
-	if (!col) throw error(404, 'Card column not found');
-
-	const boardId = col.boardId;
-	if (!canViewBoard(locals.user, boardId)) throw error(403, 'No access to this card\'s board');
+	// 404 `Card not found` for a card that is not there, and for one on a board
+	// the caller cannot open alike (card 2719). The guard read its column, and
+	// answers its title.
+	const { card, boardId, columnTitle } = requireCard(locals.user, cardId, 'view');
 
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 
@@ -128,7 +122,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		},
 		boardId,
 		boardName: board?.name ?? 'Unknown board',
-		columnTitle: col.title,
+		columnTitle,
 		categories: boardCategories,
 		labels: boardLabels,
 		boardUsers,

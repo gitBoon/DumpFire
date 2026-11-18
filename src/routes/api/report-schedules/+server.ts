@@ -156,10 +156,13 @@ function readNewSchedule(user: SessionUser, body: RequestBody) {
 		if (scopeId === null) throw error(400, 'scopeId required for category scope');
 		const cat = db.select().from(boardCategories).where(eq(boardCategories.id, scopeId)).get();
 		if (!cat) throw error(404, 'Category not found');
-		// Check at least one board in this category is accessible
+		// Check at least one board in this category is accessible. One holding
+		// only boards the caller cannot open is answered as one that is not
+		// there (card 2719, S5); an empty one is refused as before.
 		const accessibleIds = getAccessibleBoardIds(user);
 		const catBoards = db.select().from(boards).where(eq(boards.categoryId, scopeId)).all();
 		const hasAccess = accessibleIds === null || catBoards.some(b => accessibleIds.includes(b.id));
+		if (!hasAccess && catBoards.length > 0) throw error(404, 'Category not found');
 		if (!hasAccess) throw error(403, 'No accessible boards in this category');
 	}
 

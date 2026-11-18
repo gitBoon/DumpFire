@@ -304,8 +304,8 @@ function inlineIds(ids: number[]): string {
 
 /**
  * Each board named in `boardIds`, in the order given: `404 Board N not found`
- * where there is no such board, `403 No access to board N` where the reader
- * cannot open it. The burndown's words and order (`resolveScope`), for every
+ * where there is no such board, and in the same words where the reader cannot
+ * open it (card 2719). The burndown's words and order (`resolveScope`), for every
  * caller, administrators included (card 2326). A named board the reader could
  * not open was answered with an empty report and a count that said whether it
  * had activity; dropping it without a word would be the hole in the report
@@ -332,7 +332,8 @@ function requireReportBoards(actor: SessionUser, ids: number[]): number[] | null
 			opens = getAccessibleBoardIds(actor);
 			open = opens === null ? null : new Set(opens);
 		}
-		if (open !== null && !open.has(id)) throw error(403, `No access to board ${id}`);
+		// One the caller cannot open is answered as one that is not there (card 2719).
+		if (open !== null && !open.has(id)) throw error(404, `Board ${id} not found`);
 	}
 	// The loop has read them unless `ids` was empty, which no caller sends; read
 	// here then, and never taken as every board.

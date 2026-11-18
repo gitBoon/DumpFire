@@ -1822,7 +1822,8 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'internal label, no label': '404 Label not found',
 			'v1 label on, no label': '404 Label not found',
 			"internal label, another board's": '400 That label belongs to a different board',
-			"v1 label on, another board's": "400 Label does not belong to this card's board",
+			// As a label that is not there (card 2719, S2).
+			"v1 label on, another board's": '404 Label not found',
 			'v1 label off, not on the card': '404 Label not found on this card',
 			'internal subtask, no cardId': '400 Invalid card ID',
 			'internal subtask, no card': '404 Card not found',
@@ -1906,12 +1907,13 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'internal subtasks, no card': await said(api('GET', '/api/subtasks?cardId=999', { user: s.owner })),
 			'v1 subtasks, no card': await said(api('GET', '/api/v1/cards/999/subtasks', { user: s.owner }))
 		}).toEqual({
-			'internal comments, an outsider': '403 No access',
-			'v1 comments, an outsider': '403 No access to this board',
+			// A card on a board the caller cannot open is answered as one that is not there (card 2719).
+			'internal comments, an outsider': '404 Card not found',
+			'v1 comments, an outsider': '404 Card not found',
 			'internal comments, no card': '404 Card not found',
 			'v1 comments, no card': '404 Card not found',
-			'internal subtasks, an outsider': '403 No access to this board',
-			'v1 subtasks, an outsider': "403 No access to this card's board",
+			'internal subtasks, an outsider': '404 Card not found',
+			'v1 subtasks, an outsider': '404 Card not found',
 			'internal subtasks, no card': '404 Card not found',
 			'v1 subtasks, no card': '404 Card not found'
 		});
@@ -2062,8 +2064,9 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'v1 link, an id that is none': '400 dependsOnCardId must be an id',
 			'internal unlink, no card': '404 Card not found',
 			'v1 unlink, no card': '404 Card not found',
-			'internal unlink, an outsider': '403 No access',
-			'v1 unlink, an outsider': "403 No access to this card's board",
+			// What is on a board the caller cannot open is answered as not there (card 2719).
+			'internal unlink, an outsider': '404 Card not found',
+			'v1 unlink, an outsider': '404 Card not found',
 			'internal unlink, no link': '404 Dependency not found',
 			'v1 unlink, no link': '404 Dependency not found',
 			'internal unlink, no end': '400 Nothing to link',
@@ -2077,8 +2080,8 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 				'400 Provide one of dependsOnCardId, dependsOnSubtaskId (this subtask waits on it), blocksCardId or blocksSubtaskId (it waits on this subtask)',
 			'internal subtask link, two ends': '400 Provide only one end',
 			'v1 subtask link, two ends': '400 Provide only one end',
-			'internal subtask unlink, an outsider': '403 No access',
-			'v1 subtask unlink, an outsider': '403 No access',
+			'internal subtask unlink, an outsider': '404 Subtask not found',
+			'v1 subtask unlink, an outsider': '404 Subtask not found',
 			'internal subtask unlink, no link': '404 Dependency not found',
 			'v1 subtask unlink, no link': '404 Dependency not found',
 			'internal milestone, no name': '400 name is required',
@@ -2183,18 +2186,19 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'internal plan PDF, an outsider': await said(`/api/milestones/${launch()}/pdf`),
 			'v1 plan PDF, an outsider': await said(`/api/v1/milestones/${launch()}/pdf`)
 		}).toEqual({
-			'internal links, an outsider': '403 No access',
-			'v1 links, an outsider': "403 No access to this card's board",
+			// What is on a board the caller cannot open is answered as not there (card 2719).
+			'internal links, an outsider': '404 Card not found',
+			'v1 links, an outsider': '404 Card not found',
 			'internal links, no card': '404 Card not found',
 			'v1 links, no card': '404 Card not found',
 			'v1 links, a direction that is none': '400 direction must be one of: blocked-by, blocks, both',
 			'v1 links, a direction that is none, no card': '404 Card not found',
-			'internal subtask links, an outsider': '403 No access',
-			'v1 subtask links, an outsider': '403 No access',
+			'internal subtask links, an outsider': '404 Subtask not found',
+			'v1 subtask links, an outsider': '404 Subtask not found',
 			'internal subtask links, no subtask': '404 Subtask not found',
 			'v1 subtask links, no subtask': '404 Subtask not found',
-			'internal cost, an outsider': '403 No access to this board',
-			'v1 cost, an outsider': '403 No access to this board',
+			'internal cost, an outsider': '404 Card not found',
+			'v1 cost, an outsider': '404 Card not found',
 			'internal cost, no card': '404 Card not found',
 			'v1 cost, no card': '404 Card not found',
 			'internal milestone, an outsider': '403 No access to this milestone',
@@ -2576,8 +2580,9 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			'v1 labels, no board': await said('/api/v1/boards/999/labels', s.owner),
 			'internal labels, a board id that is none': await said('/api/labels?boardId=two', s.owner)
 		}).toEqual({
-			'internal labels, an outsider': '403 No access to this board',
-			'v1 labels, an outsider': '403 No access to this board',
+			// A board the caller cannot open is answered as one that is not there (card 2719).
+			'internal labels, an outsider': '404 Board not found',
+			'v1 labels, an outsider': '404 Board not found',
 			'internal labels, no board': '404 Board not found',
 			'v1 labels, no board': '404 Board not found',
 			'internal labels, a board id that is none': '400 Invalid boardId'
@@ -2932,10 +2937,10 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'unassignFromCard', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'api', says: code('NO_EDIT_TO_UNASSIGN') }] }
 	],
 	'src/routes/api/cards/[id]/comments/+server.ts GET': [
-		{ service: 'listComments', args: [code('locals.user'), { cardId: code('cardId') }, { says: 'No access' }] }
+		{ service: 'listComments', args: [code('locals.user'), { cardId: code('cardId') }, {}] }
 	],
 	'src/routes/api/v1/cards/[cardId]/comments/+server.ts GET': [
-		{ service: 'listComments', args: [code('locals.user'), { cardId: code('cardId') }, { says: 'No access to this board' }] }
+		{ service: 'listComments', args: [code('locals.user'), { cardId: code('cardId') }, {}] }
 	],
 	'src/routes/api/cards/[id]/comments/+server.ts POST': [
 		{ service: 'addComment', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'ui', baseUrl: code('baseUrl'), says: 'No edit access' }] }
@@ -3026,7 +3031,7 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	],
 	'src/routes/api/subtasks/+server.ts GET': [{ service: 'listSubtasks', args: [code('locals.user'), { cardId: code('cardId') }, {}] }],
 	'src/routes/api/v1/cards/[cardId]/subtasks/+server.ts GET': [
-		{ service: 'listSubtasks', args: [code('locals.user'), { cardId: code('cardId') }, { says: "No access to this card's board" }] }
+		{ service: 'listSubtasks', args: [code('locals.user'), { cardId: code('cardId') }, {}] }
 	],
 	'src/routes/api/subtasks/+server.ts POST': [
 		{ service: 'createSubtask', args: [code('caller'), {}, code('body'), { source: 'ui', eventType: 'subtask' }] }
@@ -3083,13 +3088,13 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'removeWorkDependency', args: [code('caller'), { kind: 'card', id: code('cardId') }, code('body'), { source: 'ui', nothingToLink: true }] }
 	],
 	'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts GET': [
-		{ service: 'readWorkDependencies', args: [code('locals.user'), { kind: 'card', id: code('cardId') }, { says: code('NO_ACCESS'), withLinkDetails: true }] }
+		{ service: 'readWorkDependencies', args: [code('locals.user'), { kind: 'card', id: code('cardId') }, { withLinkDetails: true }] }
 	],
 	'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts POST': [
 		{ service: 'addWorkDependency', args: [code('caller'), { kind: 'card', id: code('cardId') }, code('body'), { source: 'api', says: code('NO_EDIT') }] }
 	],
 	'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts DELETE': [
-		{ service: 'removeWorkDependency', args: [code('caller'), { kind: 'card', id: code('cardId') }, code('body'), { source: 'api', says: code('NO_ACCESS') }] }
+		{ service: 'removeWorkDependency', args: [code('caller'), { kind: 'card', id: code('cardId') }, code('body'), { source: 'api' }] }
 	],
 	'src/routes/api/subtasks/[id]/dependencies/+server.ts GET': [
 		{ service: 'readWorkDependencies', args: [code('locals.user'), { kind: 'subtask', id: code('id') }, {}] }

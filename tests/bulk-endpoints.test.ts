@@ -162,7 +162,9 @@ describe('PUT /api/columns/reorder', () => {
 		const s = scene();
 		const updates = [...reversed(s), { id: s.B.cols['To Do'].id, position: 9 }];
 
-		await expectRefused(() => api('PUT', '/api/columns/reorder', { user: s.owner, body: { updates } }), 403);
+		// B is a board the caller cannot open: its column is answered as one that is not there (card 2719).
+		const refused = await expectRefused(() => api('PUT', '/api/columns/reorder', { user: s.owner, body: { updates } }), 404);
+		expect(refused.body.message).toBe('Column not found');
 		expect(positions(s.A)).toEqual({ 'To Do': 0, 'On Hold': 1, 'In Progress': 2, Complete: 3 });
 	});
 
@@ -268,13 +270,25 @@ describe('POST /api/v1/milestones/:milestoneId/cards/bulk', () => {
 		expect(res.body).toEqual({
 			message: 'Batch rejected — nothing was written',
 			attached: 0,
+			// Board B is one the owner cannot open: its card is reported as a missing one is (card 2719, D9).
 			problems: [
-				{ cardId: s.b.id, reason: `No edit access to the board holding card #${s.b.id}` },
+				{ cardId: s.b.id, reason: 'Card does not exist or is archived' },
 				{ cardId: 99999, reason: 'Card does not exist or is archived' }
 			],
 			wouldAttach: 1,
 			wouldSkipAlreadyIn: 0
 		});
+
+		// A viewer of board B can open its card and may not edit it: that is the refusal, named (code review, CR1).
+		addBoardMember(s.B.board, s.owner, 'viewer');
+		const viewing = await expectRefused(
+			() => api('POST', `/api/v1/milestones/${s.goal.id}/cards/bulk`, { user: s.owner, body: { cardIds } }),
+			409
+		);
+		expect(viewing.body.problems).toEqual([
+			{ cardId: s.b.id, reason: `No edit access to the board holding card #${s.b.id}` },
+			{ cardId: 99999, reason: 'Card does not exist or is archived' }
+		]);
 	});
 
 	it("names the card of a step on the critical path in the plan's mail: by its title where the attacher can open it, and as on a board they cannot where not", async () => {
@@ -433,8 +447,18 @@ describe('DELETE /api/v1/milestones/:milestoneId/cards/bulk', () => {
 		expect(res.body).toEqual({
 			message: 'Batch rejected — nothing was written',
 			detached: 0,
-			problems: [{ cardId: s.b.id, reason: `No edit access to the board holding card #${s.b.id}` }]
+			// Board B is one the owner cannot open: its card is reported as a missing one is (card 2719, D9).
+			problems: [{ cardId: s.b.id, reason: 'Card not found' }]
 		});
+		expect(s.a.map(milestoneOf)).toEqual([s.goal.id, s.goal.id, s.goal.id, null]);
+
+		// A viewer of board B can open its card and may not edit it: that is the refusal, named (code review, CR1).
+		addBoardMember(s.B.board, s.owner, 'viewer');
+		const viewing = await expectRefused(
+			() => api('DELETE', `/api/v1/milestones/${s.goal.id}/cards/bulk`, { user: s.owner, body: { cardIds } }),
+			409
+		);
+		expect(viewing.body.problems).toEqual([{ cardId: s.b.id, reason: `No edit access to the board holding card #${s.b.id}` }]);
 		expect(s.a.map(milestoneOf)).toEqual([s.goal.id, s.goal.id, s.goal.id, null]);
 	});
 
@@ -516,7 +540,8 @@ describe('DELETE /api/v1/milestones/:milestoneId/cards/bulk', () => {
 			detached: 0,
 			problems: [
 				{ cardId: 99999, reason: 'Card not found' },
-				{ cardId: s.b.id, reason: `No edit access to the board holding card #${s.b.id}` }
+				// Archived and on a board the owner cannot open: as a missing one (card 2719, D9).
+				{ cardId: s.b.id, reason: 'Card not found' }
 			]
 		});
 	});
@@ -698,8 +723,11 @@ describe('POST /api/v1/dependencies/bulk', () => {
 			409
 		);
 
-		expect(res.body.forbidden).toHaveLength(1);
-		expect(res.body.forbidden[0].message).toBe(`No edit access to the board holding the blocker card:${s.b.id}`);
+		// Board B is one the owner cannot open: the link's end is reported as one that is not there (card 2719, D12).
+		expect(res.body.forbidden).toEqual([]);
+		expect(res.body.rejected).toEqual([
+			{ link: { blocked: s.a[2].id, blockedType: 'card', blocker: s.b.id, blockerType: 'card' }, reason: 'missing-blocker', message: `#${s.b.id} does not exist or is archived` }
+		]);
 	});
 });
 

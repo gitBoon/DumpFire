@@ -230,10 +230,11 @@ describe('GET /api/boards/{id}/contents', () => {
 		}
 	});
 
-	it('answers 403 for a board the caller cannot open, 401 for nobody', async () => {
+	it('answers 404 for a board the caller cannot open, as for one that is not there, 401 for nobody', async () => {
 		const w = world();
 		const res = await api('GET', `/api/boards/${w.A.board.id}/contents`, { user: w.outsider });
-		expect(res.status).toBe(403);
+		// Card 2719: the same answer as a board that is not there.
+		expect([res.status, res.body]).toEqual([404, { message: 'Board not found' }]);
 		expect(JSON.stringify(res.body)).not.toContain('Board A');
 
 		expect((await api('GET', `/api/boards/${w.A.board.id}/contents`)).status).toBe(401);

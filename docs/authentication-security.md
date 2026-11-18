@@ -1,10 +1,13 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.134
+version: 1.135
 status: As-Built
-date: 2026-11-17
+date: 2026-11-18
 tags:
+  - card-2719
+  - not-found-not-forbidden
+  - accepted-risk-r5
   - card-2761
   - exif
   - card-2670
@@ -85,7 +88,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870)"
+description: "Deep-dive into DumpFire's authentication system, what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870)"
 ---
 
 # Authentication & Security
@@ -4095,6 +4098,7 @@ code, a secret or a link.
 | R2 | API keys made before the release, on a password alone, keep working | **Closed by card 2772 (built 2026-11-17)**: migration 0069 gives every key that exists at that release a deadline 60 days after it, and one not kept on the Account page, with the password and a code, stops working then (see [Keys Made Before Two-Step Sign-In: the Deadline](#keys-made-before-two-step-sign-in-the-deadline-card-2772)). Until the deadline a key is a non-interactive credential, a 256-bit secret kept hashed, recorded as such against ISO 27001 A.8.5; the enrolment notice and the report list the account's keys and webhooks |
 | R3 | A password holder can evict the owner's live challenge: an account has at most three, the oldest goes | The owner signs in again. Each eviction needs the right password, and a verify challenge left unused is itself a signal (S12) |
 | R4 | An older image started after the release makes sessions and cookies on a password alone that it would accept | This image refuses both; the deployment guide makes a rollback a security event |
+| R5 | A missing id is answered a little faster than one on a board the caller cannot open (card 2719): the first after one query, the second after the access queries, so the two could in principle be told apart by timing | The answers are identical in status and body. The difference is a query or two on a local SQLite file, well under the jitter of a network round trip, and every probe is bounded by the gate's 60 requests a minute per key or address. Equalising the time was not chosen (card 2719, D13). Named in A.8.3's accepted risks |
 
 ### ISO/IEC 27001:2022
 
@@ -6614,9 +6618,9 @@ sequenceDiagram
     G->>DB: SELECT card 42, then its column
     DB-->>G: card is on board 3
     G->>DB: caller's role on board 3
-    alt no row
+    alt no row, or no role on board 3 (card 2719)
         G-->>C: 404 Card not found
-    else caller cannot edit board 3
+    else caller can open board 3 and cannot edit it
         G-->>C: 403 No edit access to this board
     else allowed
         G-->>H: { card, boardId: 3 }
@@ -6644,7 +6648,92 @@ sequenceDiagram
 | `refuseOwnAccount(user, userId, says)` | no row: `403` for the caller's own account. Not a guard on its own, as it lets a null caller through: `requireUser` or `requireAdmin` is asked first (card 2253) | setting a user's password, whose check of the caller's own account comes before its role test; deleting a user and sending an invite make their own check of it inside `writeAs` |
 
 `need` is `'view'` or `'edit'`. Every guard answers 401 for no caller, 404 for no such
-row and 403 for a row on a board the caller may not view or edit.
+row, 404 in the same words for a row on a board the caller cannot open, and 403 for a row
+on a board they can open and may not edit (card 2719, below).
+
+### Not Found, Not Forbidden (Card 2719)
+
+Board and card ids are counted up one at a time. Until card 2719, a board or card that
+existed on a board the caller could not open was answered `403`, and one that did not exist
+`404`, so anyone with an account or an API key could walk the numbers and learn which boards
+and cards exist, how many there are and how fast they are made, on boards they will never
+see. Since card 2719 (built 2026-11-18):
+
+- **The rule (D1, D2).** A board, a card, a dashboard grouping holding only boards the caller
+  cannot open, or anything on a board they cannot open (a column, a label, a subtask, a
+  comment, a card category, a webhook, a template, a token entry, a dependency's other end) is
+  answered `404` with the very words one that is not there gets, by every route and page in
+  both trees. `403` is left for a caller who can open the board and whose role does not allow
+  the act. Administrators pass; a public board opens to every signed-in caller.
+- **One refusal.** `refuseOnBoard(caller, boardId, need, missing, says?)` in
+  `route-guards.ts` reads the caller's role once: no role is `404 missing`; a role short of
+  editor where `need` is not `'view'` is `403 says`. `requireBoard`, `requireColumn` and
+  `requireCard` take `missing`, so each guard answers in the words of what the route looked
+  up first: `Card not found`, `Subtask not found`, `Label not found`, `Comment not found`,
+  `Webhook not found`, `Template not found`, `Parent card not found`, and the reorder's `Card N
+  not found`. `requireBoardOwner`, the category guards and the grouping guards answer the
+  same way. The 403 sits under a literal `need !== 'view'`, so the OpenAPI document's reading
+  of a handler drops it for every read.
+- **The helpers that say their own words** answer their own 404: the board page and its
+  refresh (`Board not found`), the burndown and the activity report (`Board N not found`,
+  `Board category N not found`), the token ledger (`Card #N does not exist`, `Token entry #E
+  does not exist`), the dependency ends (`#N not found`), the milestone's board and card
+  (`Board not found`, `Card not found`), and `POST /api/v1/cards/:id/labels`, which answers a
+  label of any other board `404 Label not found`.
+- **Batches.** The milestone card batches report a card the caller cannot open as a missing
+  one; the token batch as `Card #N does not exist`. The v1 dependency batch resolves every
+  link's ends' boards first (D12): an end the caller cannot open is rejected
+  `missing-blocked` or `missing-blocker` in the missing words, and only the links whose ends
+  they can edit are checked for duplicates and loops, so nothing about the hidden end is told.
+- **Loops (D12, step 5).** A dependency that would close a loop through work the caller cannot
+  open names that node withheld: `{ kind, id: null, withheld: true }` in `cycle`, and `A card
+  on a board you cannot open` in the message, by the single add and the batch alike.
+- **What stays 403 (D6).** A viewer or guest asking to edit; anyone but the owner asking to
+  share, link or make public; an author rule (`You can only delete your own comments`); an
+  administrator-only rule; a key refused a person's act; the step-up; a milestone's own
+  visibility (`No access to this milestone`, card 2911); a task request a signed-in caller is
+  not let into (it is on no board until accepted). `POST /api/reports` and the report mail
+  answer a board that is not there and one the caller cannot open in one `403` sentence
+  already.
+- **Timing (R5).** A missing id is answered after one query and an unopenable one after the
+  access queries, so the difference could in principle be timed. It is an accepted risk:
+  see [Accepted Risks](#accepted-risks), R5.
+- **What it does not yet cover (card 2719's code review, CS1).** The rule is about an id the
+  caller asks for. The dependency lists of the caller's own cards and subtasks (`GET
+  …/dependencies`, a card's `blockedBy` and `blocks`, a plan's nodes) still give the id of
+  work on a board the caller cannot open that is linked to their own: withheld, with no title
+  and no board, but numbered, as card 2129 designed them. So a caller can still learn that
+  such work exists, and its id, where it is linked to work of theirs. Only a loop's nodes are
+  withheld without their ids (D12). A card of its own is raised to close it; until then the
+  ISO register's A.8.3 names it as still open.
+- **A card's board history** gives a stay on a board the caller cannot open by its dates
+  alone, `boardId` null and `withheld: true` (code review, CS2), where it gave the board's id.
+
+```mermaid
+flowchart TD
+    R["Request names a thing by id"] --> I{"id a whole number?"}
+    I -->|no| B400["400 Invalid … ID"]
+    I -->|yes| L{"thing exists?"}
+    L -->|no| N404["404 'X not found'"]
+    L -->|yes| V{"canViewBoard(caller, its board)?"}
+    V -->|no| N404
+    V -->|yes| E{"need met? (edit / owner / author)"}
+    E -->|no| F403["403 the route's words"]
+    E -->|yes| OK["handler goes on: body 400s, 409s, the write"]
+```
+
+`tests/not-found-not-forbidden.test.ts` asks each place a not-found sentence is chosen twice,
+for a thing on a board the caller cannot open and for an id that is no row, and expects the
+same status and the same body; `tests/access-every-route.test.ts` holds every route to the
+rule by its table (`RULES[kind].unopenable`, with per-row overrides, `stillForbids` for card
+2911's milestone rows, and the meta cases M1 to M3).
+
+In the ISO register (`/admin/iso-27001`, `src/lib/server/iso-27001.ts`), A.8.3 Information
+access restriction is partly met: this card is its evidence (`requireBoard`, the new test
+file), what is still open is card 2762 (attachment and comment routes ask about the
+attachment or comment before the card), the dependency lists' numbered withheld ends (CS1,
+above, a card of its own) and card 2730 (reads under an API key rest on a test scan), and R5
+is named among its accepted risks.
 
 Every route that reads a body reads it first and calls its guard after it, and nothing is
 awaited between a guard and the write it allows. The row that was checked is then the row

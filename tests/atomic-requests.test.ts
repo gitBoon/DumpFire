@@ -415,7 +415,8 @@ describe('PATCH /api/requests/:id, accept', () => {
 		expect(await message(patch(s.request.id, s.owner, { action: 'accept' }), 400)).toBe(
 			'Board and column are required to accept'
 		);
-		expect(await message(patch(s.request.id, s.owner, into(B)), 403)).toBe('No edit access to this board');
+		// A board the acceptor cannot open is answered as one that is not there (card 2719).
+		expect(await message(patch(s.request.id, s.owner, into(B)), 404)).toBe('Column not found');
 		expect(
 			await message(patch(s.request.id, s.owner, { ...into(s.A), boardId: B.board.id }), 400)
 		).toBe('That column is not on that board');
@@ -655,8 +656,9 @@ describe('POST /api/requests', () => {
 		).toBe('This form has expired. Reload the page and try again.');
 		expect(await message(() => submit(s, { title: '   ' }, '10.0.0.1'), 400)).toBe('Title is required');
 		// A board is optional (card 2128). Signed in, one named is one the caller can open.
-		expect(await message(() => api('POST', '/api/requests', { user: s.outsider, body: submission(s) }), 403)).toBe(
-			'No access to this board'
+		// One they cannot open is answered as one that is not there (card 2719).
+		expect(await message(() => api('POST', '/api/requests', { user: s.outsider, body: submission(s) }), 404)).toBe(
+			'Board not found'
 		);
 		expect(
 			await message(() => api('POST', '/api/requests', { user: s.helper, body: submission(s, { desiredBoardId: 99999 }) }), 404)

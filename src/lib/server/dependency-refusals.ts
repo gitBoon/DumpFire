@@ -17,7 +17,9 @@
  *
  * Who may remove a link is decided here too, in `removeDependencyLink`: 403
  * for a caller who may not edit the board of the end that waits, answered
- * before the link is looked for.
+ * before the link is looked for. An end on a board the caller cannot open is
+ * answered `404 <end> not found`, as one that is not there (card 2719), and a
+ * loop's node on such a board is withheld in the 409.
  *
  * The link is written, and removed, here as well, by `addDependencyLink` and
  * `removeDependencyLink`, for all four routes: with the activity entry that
@@ -26,19 +28,26 @@
  * the other three checked the graph outside any transaction.
  *
  * Each route answers for the card or subtask in its address before it gets
- * here, in its own words: one that does not exist (404), and a caller who may
- * not edit its board to add a link (403) or cannot open it to remove one
- * (403). Each reads its own body. The bulk endpoint,
+ * here, in its own words: one that does not exist, or is on a board the caller
+ * cannot open (404, card 2719), and a caller who can open its board and may not
+ * edit it, to add a link (403). Each reads its own body. The bulk endpoint,
  * /api/v1/dependencies/bulk, answers a rejected batch as a whole and does not
  * use this.
  */
 import { json, error } from '@sveltejs/kit';
 import { sqlite } from './db';
 import { inTransaction } from './db/transaction';
-import { canEditBoard } from './board-access';
+import { canViewBoard, getBoardRole } from './board-access';
 import { emit } from './events';
 import { ACTIONS, actorOf, logActivity, type ActivitySource } from './logActivity';
-import { createDependencyBatch, validateDependencyBatch, type DependencyLink, type WorkRef } from './planning';
+import {
+	createDependencyBatch,
+	validateDependencyBatch,
+	type BatchValidationOptions,
+	type CycleNode,
+	type DependencyLink,
+	type WorkRef
+} from './planning';
 import { describeWork, getCardBoardId, getSubtaskCardId, getWorkBoardId } from './work-access';
 import type { SessionUser } from './auth';
 
@@ -49,8 +58,8 @@ import type { SessionUser } from './auth';
  */
 export type CycleRefusal = {
 	rejected: true;
-	/** The chain the link would close, in order. */
-	cycle: WorkRef[];
+	/** The chain the link would close, in order; a node on a board the caller cannot open withheld (card 2719). */
+	cycle: CycleNode[];
 	/** The chain in words: "#2 waiting on #1 would create a cycle: #2 → #1 → #2". */
 	message: string;
 };
@@ -72,13 +81,21 @@ export type AcceptedLink = {
  * Safe inside `inTransaction`: what it throws rolls the transaction back and
  * reaches the caller unchanged, and a cycle is returned so that the answer is
  * made once the transaction is over.
+ *
+ * `opens` is the caller's open-board test, as the bulk endpoint passes it: a
+ * loop's node on a board they cannot open is withheld (card 2719, D12).
  */
-export function checkDependencyLink(blocked: WorkRef, blocker: WorkRef): CycleRefusal | AcceptedLink {
+export function checkDependencyLink(
+	blocked: WorkRef,
+	blocker: WorkRef,
+	opens?: BatchValidationOptions['opens']
+): CycleRefusal | AcceptedLink {
 	// The validation the bulk endpoint uses, so that one link and a batch can
 	// never disagree about what is allowed.
-	const v = validateDependencyBatch([
-		{ blocked: blocked.id, blockedType: blocked.kind, blocker: blocker.id, blockerType: blocker.kind }
-	]);
+	const v = validateDependencyBatch(
+		[{ blocked: blocked.id, blockedType: blocked.kind, blocker: blocker.id, blockerType: blocker.kind }],
+		{ opens }
+	);
 
 	if (v.duplicates.length > 0) throw error(409, 'That dependency already exists');
 	if (v.rejected.length > 0) {
@@ -123,8 +140,8 @@ function cardOf(work: WorkRef): { cardId: number; boardId: number } | null {
  * In this order, one transaction, a part of the caller's where it has one
  * open, having written nothing where it throws or refuses:
  *
- *     404  the other end is not there
- *     403  the caller may not edit the board the other end is on
+ *     404  the other end is not there, or is on a board the caller cannot open
+ *     403  the caller can open the board the other end is on and may not edit it
  *     409, 400  as `checkDependencyLink` throws them
  *     the cycle, returned for the route to answer with `cycleAnswer`
  *
@@ -150,14 +167,17 @@ export function addDependencyLink(
 		const other = sameWork(blocked, at) ? blocker : blocked;
 		const otherBoardId = getWorkBoardId(other);
 		if (otherBoardId === null) throw error(404, `${describeWork(other)} not found`);
-		if (!canEditBoard(user, otherBoardId)) {
+		// On a board the caller cannot open: as one that is not there (card 2719).
+		const role = getBoardRole(user, otherBoardId);
+		if (role === null) throw error(404, `${describeWork(other)} not found`);
+		if (role !== 'admin' && role !== 'owner' && role !== 'editor') {
 			throw error(403, `No edit access to the board holding ${describeWork(other)}`);
 		}
 
 		// Throws for a link that is already there (409) and for an end that
 		// waits on itself or is archived (400). A cycle is returned: nothing
-		// has been written.
-		const checked = checkDependencyLink(blocked, blocker);
+		// has been written, and a node of it the caller cannot open is withheld.
+		const checked = checkDependencyLink(blocked, blocker, (boardId) => canViewBoard(user, boardId));
 		if (checked.rejected) return checked;
 
 		createDependencyBatch(checked.valid, user.id);
@@ -192,8 +212,8 @@ export function addDependencyLink(
  *
  * In this order, having removed nothing where it throws:
  *
- *     404  the end that waits is not there
- *     403  the caller may not edit the board that end is on
+ *     404  the end that waits is not there, or is on a board the caller cannot open
+ *     403  the caller can open the board that end is on and may not edit it
  *     404  there is no such link
  *
  * The 403 comes before the link is looked for, so a caller who is refused is
@@ -228,7 +248,10 @@ export function removeDependencyLink(
 		const waiting = cardOf(blocked);
 		if (waiting === null) throw error(404, `${describeWork(blocked)} not found`);
 		const boardId = waiting.boardId;
-		if (!canEditBoard(user, boardId)) {
+		// On a board the caller cannot open: as one that is not there (card 2719).
+		const role = getBoardRole(user, boardId);
+		if (role === null) throw error(404, `${describeWork(blocked)} not found`);
+		if (role !== 'admin' && role !== 'owner' && role !== 'editor') {
 			throw error(403, `No edit access to the board holding ${describeWork(blocked)}, the end that waits`);
 		}
 

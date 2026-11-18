@@ -7009,12 +7009,13 @@ describe('a body that cannot be read is 400, to a caller who would be refused', 
 		expect(res.status).toBe(400);
 	});
 
-	it('and a body that can be read is still refused 403 to them, whatever is wrong in it', async () => {
+	it('and a body that can be read is still refused to them, whatever is wrong in it', async () => {
 		const s = scene();
 
 		const res = await api('PUT', `/api/v1/labels/${s.label.id}`, { user: s.outsider, body: { name: 5 } });
 
-		expect(res.status).toBe(403);
+		// The outsider cannot open the label's board: as a label that is not there (card 2719).
+		expect([res.status, res.body]).toEqual([404, { message: 'Label not found' }]);
 		expect(db.select({ name: labels.name }).from(labels).where(eq(labels.id, s.label.id)).get()).toEqual({ name: 'A label' });
 	});
 });

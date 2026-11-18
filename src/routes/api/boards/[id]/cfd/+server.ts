@@ -1,10 +1,9 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { boards, columns, dailySnapshots } from '$lib/server/db/schema';
+import { columns, dailySnapshots } from '$lib/server/db/schema';
 import { eq, and, gte, inArray, asc } from 'drizzle-orm';
-import { getBoardRole } from '$lib/server/board-access';
 import { pathId } from '$lib/server/request-body';
-import { requireUser } from '$lib/server/route-guards';
+import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { COLUMN_ORDER } from '$lib/server/card-order';
 import { isUpstreamColumn } from '$lib/column-role';
 import type { RequestHandler } from './$types';
@@ -32,11 +31,8 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 	const user = requireUser(locals.user);
 	const boardId = pathId(params.id, 'board');
 
-	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
-	if (!board) throw error(404, 'Board not found');
-
-	const role = getBoardRole(user, boardId);
-	if (!role) throw error(403, 'No access to this board');
+	// 404 for a board that is not there, and for one the caller cannot open alike (card 2719).
+	const board = requireBoard(user, boardId, 'view');
 
 	const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 365);
 	const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);

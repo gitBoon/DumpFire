@@ -231,9 +231,9 @@ export function createBoard(caller: SessionUser | null, at: Record<string, never
 	const upstreamParent = parent ? upstreamParentRefusal(parent) : null;
 	if (upstreamParent) error(409, upstreamParent);
 
-	// A grouping the caller is listed (card 2128, R2): 404 for none, and 403
-	// for one all of whose boards they cannot open, which filing a board
-	// under would put in their lists.
+	// A grouping the caller is listed (card 2128, R2): 404 for none, and for
+	// one all of whose boards they cannot open alike (card 2719), which filing
+	// a board under would put in their lists.
 	if (opts.allowCategory && categoryId != null) requireBoardCategory(user, categoryId);
 
 	const board = db
@@ -391,8 +391,8 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
 
 	// `boards.category_id` has no foreign key, so a grouping that is not
 	// there was stored as sent: 404. One all of whose boards the caller
-	// cannot open is 403, as reading it is (card 2128, R2). One sent back
-	// unchanged is left alone.
+	// cannot open is 404 too, in the same words, as reading it is (card 2128,
+	// R2; card 2719). One sent back unchanged is left alone.
 	if (categoryId !== undefined && categoryId !== null && categoryId !== board.categoryId) {
 		requireBoardCategory(user, categoryId);
 	}

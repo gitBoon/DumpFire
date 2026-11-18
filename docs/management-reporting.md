@@ -1,10 +1,11 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.15
+version: 1.16
 status: As-Built
-date: 2026-11-04
+date: 2026-11-18
 tags:
+  - card-2719
   - reporting
   - audit-log
   - activity
@@ -374,9 +375,11 @@ flowchart TD
     A --> L["The last span is current,<br/>or the card's own board is added"]
 ```
 
-A board the caller cannot open keeps its id and dates in the answer, with `boardName`
-`Board not visible to you`: hiding it would make the sequence lie, and since card 2181 the
-move's own entries name no board, so the name is not given here either.
+A board the caller cannot open keeps its dates in the answer, with `boardName`
+`Board not visible to you`, `boardId` `null` and `withheld: true`: hiding the stay would make
+the sequence lie, and since card 2181 the move's own entries name no board, so the name is
+not given here either; since card 2719 (its code review, CS2) its id is not given, which
+would tell that the board exists.
 
 ## A note on timestamps
 
@@ -421,7 +424,7 @@ Then **read `meta` before quoting a figure**:
 | `src/lib/server/reporting-fields.ts` | Validation of the five fields |
 | `src/lib/reporting.ts` | Vocabularies shared with the client |
 | `src/lib/server/logActivity.ts` | Single writer, canonical vocabulary, source marker |
-| `src/routes/api/v1/reports/activity/+server.ts` | Report endpoint. Reads the query; the builder reads only the boards the caller can open, and answers a board named in `boardIds` that does not exist `404` `Board N not found`, and one the caller cannot open `403` `No access to board N`, administrators included (card 2326) |
+| `src/routes/api/v1/reports/activity/+server.ts` | Report endpoint. Reads the query; the builder reads only the boards the caller can open, and answers a board named in `boardIds` that does not exist `404` `Board N not found`, administrators included (card 2326), and one the caller cannot open in the same words, as one that is not there (card 2719; it was `403` `No access to board N`) |
 | `src/routes/api/v1/audit-log/+server.ts` | Audit query, canonical action, paging |
 | `src/routes/api/v1/cards/[cardId]/board-history/+server.ts` | Board spans |
 | `src/lib/components/board/CompletionPromptModal.svelte` | Post-completion prompt |

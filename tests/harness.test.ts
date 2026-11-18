@@ -190,6 +190,8 @@ const TEST_FILES = [
 	'milestone-cross-board.test.ts',
 	// Card 2537: the New badge on the board's card and on the list's row, on one clock.
 	'new-badge.svelte.test.ts',
+	// Card 2719: an id on a board the caller cannot open is answered exactly as one that is not there.
+	'not-found-not-forbidden.test.ts',
 	'openapi-document.test.ts',
 	// Milestone 22, slice S1b: the Options column's rules and its strip.
 	'options-column.test.ts',

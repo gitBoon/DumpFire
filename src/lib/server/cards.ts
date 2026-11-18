@@ -726,11 +726,13 @@ export function moveCards(caller: SessionUser | null, at: Record<string, never>,
 	// left out nothing was checked at all. Checked once per distinct column,
 	// not once per card: a drop re-sends the position of every card in the
 	// columns it touched.
+	// A card's present column is named by the card: one on a board the caller
+	// cannot open is answered as a card that is not there (card 2719, S3).
 	const columnBoards = new Map<number, number>();
-	const editableBoardOf = (columnId: number): number => {
+	const editableBoardOf = (columnId: number, missing?: string): number => {
 		let found = columnBoards.get(columnId);
 		if (found === undefined) {
-			found = requireColumn(user, columnId, 'edit').boardId;
+			found = requireColumn(user, columnId, 'edit', undefined, missing).boardId;
 			columnBoards.set(columnId, found);
 		}
 		return found;
@@ -743,7 +745,7 @@ export function moveCards(caller: SessionUser | null, at: Record<string, never>,
 		const cardId = cardIds[i];
 		const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, cardId)).get();
 		if (!card) throw error(404, `Card ${cardId} not found`);
-		boardIds.add(editableBoardOf(card.columnId));
+		boardIds.add(editableBoardOf(card.columnId, `Card ${cardId} not found`));
 		const toColumnId = readId(update, 'columnId', { required: true, says: `updates[${i}].columnId must be an id` });
 		boardIds.add(editableBoardOf(toColumnId));
 		return { cardId, fromColumnId: card.columnId, toColumnId };

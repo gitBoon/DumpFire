@@ -201,7 +201,7 @@ describe('PUT /api/cards/:id', () => {
 		}
 	});
 
-	it('answers 403 from inside the transaction, having written nothing', async () => {
+	it('answers 404 from inside the transaction to a caller who cannot open the board, having written nothing', async () => {
 		const { A, first } = scene();
 		const outsider = makeUser({ username: 'outsider' });
 		const before = snapshotDb();
@@ -211,7 +211,8 @@ describe('PUT /api/cards/:id', () => {
 			body: { columnId: A.cols['Complete'].id, title: 'Hijacked' }
 		});
 
-		expect(res.status).toBe(403);
+		// As for a card that is not there (card 2719).
+		expect([res.status, res.body.message]).toEqual([404, 'Card not found']);
 		expectUnchanged(before);
 	});
 });
@@ -1771,14 +1772,15 @@ describe('PUT /api/v1/subtasks/:id', () => {
 		}
 	});
 
-	it('answers 403 from inside the transaction, having written nothing', async () => {
+	it('answers 404 from inside the transaction to a caller who cannot open the board, having written nothing', async () => {
 		const { step } = withStep();
 		const outsider = makeUser({ username: 'outsider' });
 		const before = snapshotDb();
 
 		const res = await api('PUT', `/api/v1/subtasks/${step.id}`, { user: outsider, body: { completed: true } });
 
-		expect(res.status).toBe(403);
+		// As for a subtask that is not there (card 2719).
+		expect([res.status, res.body.message]).toEqual([404, 'Subtask not found']);
 		expectUnchanged(before);
 	});
 });

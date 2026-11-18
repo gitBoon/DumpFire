@@ -518,9 +518,9 @@ describe('a stream and access to its board', () => {
 		expect(await asked('/api/boards/999999/events', w.admin)).toEqual({ status: 404, body: { message: 'Board not found' } });
 		expect(await asked('/api/boards/999999/events', w.viewer)).toEqual({ status: 404, body: { message: 'Board not found' } });
 		expect(await asked('/api/boards/abc/events', w.admin)).toEqual({ status: 400, body: { message: 'Invalid board ID' } });
-		// A board that is there and that the caller cannot open, as before.
+		// A board that is there and that the caller cannot open, answered as one that is not (card 2719).
 		const outsider = makeUser();
-		expect(await asked(`/api/boards/${w.board.id}/events`, outsider)).toEqual({ status: 403, body: { message: 'No access to this board' } });
+		expect(await asked(`/api/boards/${w.board.id}/events`, outsider)).toEqual({ status: 404, body: { message: 'Board not found' } });
 	});
 
 	it(`${EVENTS.route} stops sending a board's events at the next heartbeat to someone taken off it, and goes on with the rest`, async () => {

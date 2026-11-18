@@ -1,10 +1,11 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.77
+version: 1.78
 status: As-Built
-date: 2026-11-17
+date: 2026-11-18
 tags:
+  - card-2719
   - card-2751
   - card-2870
   - request-links
@@ -2234,12 +2235,13 @@ administrator, so a member's dashboard is not told of its deletion, and catches 
 is next brought to the front. A page open on the board itself is told, by the board's own
 stream, as the delete commits: it reads the board again and shows "Board not found".
 
-The board stream opens only on a board that is there and that the caller can open (`404`,
-administrators included; `403`; `400` for an id that is not one), and asks again at each
-heartbeat, of the account as it is now (card 2170). When the board has gone or the account
-can no longer open it, it sends one last `update` with `{"type":"access"}`, on that stream
-alone, and ends; the page re-reads and shows "You do not have access to this board" or
-"Board not found". A deleted board's own event always arrives first. See
+The board stream opens only on a board that is there and that the caller can open (`404`
+`Board not found`, administrators included, and for a board the caller cannot open alike since
+card 2719; `400` for an id that is not one), and asks again at each heartbeat, of the account
+as it is now (card 2170). When the board has gone or the account can no longer open it, it
+sends one last `update` with `{"type":"access"}`, on that stream alone, and ends; the page
+re-reads and shows "Board not found" either way (card 2719). A deleted board's own event
+always arrives first. See
 [An Open Stream and Its Session](authentication-security.md#an-open-stream-and-its-session).
 
 ## Webhooks
@@ -2301,7 +2303,9 @@ change either: see [Who May Change a Webhook](#who-may-change-a-webhook).
 
 ```mermaid
 flowchart TD
-    Read["GET or PUT a webhook"] --> View{"Can view the board?<br/>(edit, for a PUT)"}
+    Read["GET or PUT a webhook"] --> Open{"Can open the board?"}
+    Open -->|"No"| N404["404 Webhook not found (card 2719)"]
+    Open -->|"Yes"| View{"Edit access, for a PUT?"}
     View -->|"No"| R403["403"]
     View -->|"Yes"| Role{"Board owner or admin?"}
     Role -->|"Yes"| WithSecret["Webhook + url + secret + hasSecret<br/>+ lastDelivery + pausedBecause"]
@@ -2349,7 +2353,9 @@ fields that change.
 flowchart TD
     Put["PUT /api/v1/webhooks/{id}"] --> Found{"Is there such a webhook?"}
     Found -->|"No"| N404["404 Webhook not found"]
-    Found -->|"Yes"| Edit{"Edit access to its board?"}
+    Found -->|"Yes"| Opens{"Can open its board?"}
+    Opens -->|"No"| N404
+    Opens -->|"Yes"| Edit{"Edit access to its board?"}
     Edit -->|"No"| E403["403 No edit access"]
     Edit -->|"Yes"| Who{"Board owner or administrator?"}
     Who -->|"No, and url or secret is sent"| A403["403: address or secret"]

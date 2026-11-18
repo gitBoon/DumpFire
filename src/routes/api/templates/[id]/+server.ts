@@ -2,9 +2,8 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { cardTemplates } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { canEditBoard } from '$lib/server/board-access';
 import { pathId } from '$lib/server/request-body';
-import { requireUser } from '$lib/server/route-guards';
+import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -28,10 +27,9 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 		// what saving one on the board asks for: someone made a viewer could
 		// otherwise delete what they may no longer save. One saved on no board
 		// is shared with everyone, and has no board to ask about. An
-		// administrator can edit every board.
-		if (existing.boardId !== null && !canEditBoard(user, existing.boardId)) {
-			throw error(403, 'No edit access to this board');
-		}
+		// administrator can edit every board. One on a board the caller cannot
+		// open is answered as one that is not there (card 2719).
+		if (existing.boardId !== null) requireBoard(user, existing.boardId, 'edit', undefined, 'Template not found');
 
 		// Only the creator or admins can delete templates
 		const isAdmin = user.role === 'admin' || user.role === 'superadmin';

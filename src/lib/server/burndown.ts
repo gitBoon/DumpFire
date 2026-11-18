@@ -431,8 +431,8 @@ function resolveScope(user: SessionUser, q: BurndownQuery, accessible?: number[]
 			)
 		);
 		for (const id of q.boardIds) {
-			if (!found.has(id)) throw new BurndownError(404, `Board ${id} not found`);
-			if (!canViewBoard(user, id)) throw new BurndownError(403, `No access to board ${id}`);
+			// One the caller cannot open is answered as one that is not there (card 2719).
+			if (!found.has(id) || !canViewBoard(user, id)) throw new BurndownError(404, `Board ${id} not found`);
 		}
 		boardIds = q.boardIds;
 	} else if (q.boardCategoryId !== null) {
@@ -442,9 +442,9 @@ function resolveScope(user: SessionUser, q: BurndownQuery, accessible?: number[]
 		if (!cat) throw new BurndownError(404, `Board category ${q.boardCategoryId} not found`);
 		// One that holds boards, none of them the caller's, is another team's:
 		// it was charted empty, with its name and colour (card 2128). Refused as
-		// reports and report schedules refuse it, and as reading it is.
+		// reading it is: as one that is not there (card 2719, S5).
 		if (!boardCategoryRule(user, openToCaller())(cat.id)) {
-			throw new BurndownError(403, `No access to board category ${q.boardCategoryId}`);
+			throw new BurndownError(404, `Board category ${q.boardCategoryId} not found`);
 		}
 		boardCategory = cat;
 

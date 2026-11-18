@@ -21,7 +21,7 @@ import { db, sqlite } from './db';
 import { inTransaction } from './db/transaction';
 import { tokenUsage } from './db/schema';
 import { eq } from 'drizzle-orm';
-import { canEditBoard } from './board-access';
+import { getBoardRole } from './board-access';
 import { getCardBoardId, getSubtaskCardId } from './work-access';
 import type { SessionUser } from './auth';
 import { costOf, costInputOf, type CostInput } from '$lib/pricing';
@@ -249,23 +249,34 @@ function validateBreakdown(total: number, b: BreakdownInput): StoredBreakdown {
 /**
  * Resolve the target, check the caller may edit the board it lives on, and
  * return the board id so the caller can fire an SSE refresh.
+ *
+ * A target on a board the caller cannot open is answered as one that is not
+ * there (card 2719): `Card #N does not exist`, `Subtask #N does not exist`,
+ * or `missing` where the caller named something else first (an entry). One
+ * they can open and may not edit is the 403.
  */
-export function resolveTarget(user: SessionUser, target: TokenTarget): number {
+export function resolveTarget(user: SessionUser, target: TokenTarget, missing?: string): number {
 	if (target.kind === 'card') {
+		const notThere = missing ?? `Card #${target.id} does not exist`;
 		const boardId = getCardBoardId(target.id);
 		// Archived cards are deliberately still addressable: archiving is not
 		// deletion, and work that was done still cost what it cost.
-		if (boardId === null) throw new TokenError(404, `Card #${target.id} does not exist`);
-		if (!canEditBoard(user, boardId)) {
+		if (boardId === null) throw new TokenError(404, notThere);
+		const role = getBoardRole(user, boardId);
+		if (role === null) throw new TokenError(404, notThere);
+		if (role !== 'admin' && role !== 'owner' && role !== 'editor') {
 			throw new TokenError(403, `No edit access to the board holding card #${target.id}`);
 		}
 		return boardId;
 	}
+	const notThere = missing ?? `Subtask #${target.id} does not exist`;
 	const cardId = getSubtaskCardId(target.id);
-	if (cardId === null) throw new TokenError(404, `Subtask #${target.id} does not exist`);
+	if (cardId === null) throw new TokenError(404, notThere);
 	const boardId = getCardBoardId(cardId);
-	if (boardId === null) throw new TokenError(404, `Subtask #${target.id} has no reachable board`);
-	if (!canEditBoard(user, boardId)) {
+	if (boardId === null) throw new TokenError(404, missing ?? `Subtask #${target.id} has no reachable board`);
+	const role = getBoardRole(user, boardId);
+	if (role === null) throw new TokenError(404, notThere);
+	if (role !== 'admin' && role !== 'owner' && role !== 'editor') {
 		throw new TokenError(403, `No edit access to the board holding subtask #${target.id}`);
 	}
 	return boardId;
@@ -612,7 +623,8 @@ export function deleteTokenEntry(user: SessionUser, entryId: number): { cardId: 
 	const target: TokenTarget = entry.cardId
 		? { kind: 'card', id: entry.cardId }
 		: { kind: 'subtask', id: entry.subtaskId! };
-	const boardId = resolveTarget(user, target);
+	// An entry on a board the caller cannot open is answered as one that is not there (card 2719).
+	const boardId = resolveTarget(user, target, `Token entry #${entryId} does not exist`);
 	const cardId = entry.cardId ?? getSubtaskCardId(entry.subtaskId!)!;
 	// Removing an entry a correction balances would leave the correction alone, below zero.
 	checkWithinRecorded(target, entry.model, sumsOf(entry, -1), noSums(), entryId);

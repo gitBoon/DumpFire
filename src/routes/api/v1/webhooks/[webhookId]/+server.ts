@@ -19,7 +19,8 @@ function requireWebhook(user: SessionUser | null, webhookId: number, need: Need)
 	const hook = db.select().from(webhooks).where(eq(webhooks.id, webhookId)).get();
 	if (!hook) throw error(404, 'Webhook not found');
 
-	requireBoard(caller, hook.boardId, need);
+	// One on a board the caller cannot open is answered as one that is not there (card 2719).
+	requireBoard(caller, hook.boardId, need, undefined, 'Webhook not found');
 	return { hook, reveal: canSeeWebhookSecret(caller, hook.boardId) };
 }
 

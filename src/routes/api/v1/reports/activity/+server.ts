@@ -24,8 +24,8 @@ import type { RequestHandler } from './$types';
  *                        negative number, or one that is not whole, is a 400.
  *
  * Only the boards the caller can open are read (card 2326). A board named in
- * `boardIds` that they cannot open is refused, `403 No access to board N`, and
- * one that does not exist `404 Board N not found`, rather than left out of the
+ * `boardIds` that does not exist is refused `404 Board N not found`, and so is
+ * one they cannot open, in the same words (card 2719), rather than left out of the
  * report: a report with a hole in it should say so. The check is made inside
  * `buildActivityReport`. `meta.boardsExcludedForAccess` is always 0: it counted
  * the boards left out, which told the caller when those boards were worked on.

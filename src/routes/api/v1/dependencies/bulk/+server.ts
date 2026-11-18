@@ -3,11 +3,12 @@ import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { cards, columns, subtasks } from '$lib/server/db/schema';
 import { eq, inArray } from 'drizzle-orm';
-import { canEditBoard } from '$lib/server/board-access';
+import { getBoardRole } from '$lib/server/board-access';
 import {
 	validateDependencyBatch,
 	createDependencyBatch,
 	chainToLinks,
+	type BatchRejection,
 	type DependencyLink,
 	type WorkRef,
 	type WorkKind
@@ -45,6 +46,10 @@ const WORK_KINDS = ['card', 'subtask'] as const;
  *     so running the same list twice is safe.
  *   - Cycle detection considers the batch as a whole — two links that are each
  *     fine against the stored graph can still close a loop between themselves.
+ *   - Access is asked first (card 2719): an end on a board the caller cannot
+ *     open is reported as one that does not exist, and only the links whose
+ *     ends the caller can edit are checked for duplicates and loops. A loop's
+ *     node the caller cannot open is withheld: `id` null, `withheld` true.
  *   - Each link written is recorded as the single add records one: one
  *     `api:dependency_added` on the board of the card that waits, naming it,
  *     "#12 now waits on subtask #45" (card 2291). A link skipped as already
@@ -143,16 +148,23 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// now (card 2253): once for the whole batch, so a refusal writes none of it.
 	const outcome = writeAs(locals, (caller) => {
 		const user = requireUser(caller);
-		const validation = validateDependencyBatch(links);
 
-		// ── Access: resolve every referenced node's board once, not once per link.
-		//    A subtask has no board of its own — it inherits its parent card's.
+		// ── Access first (card 2719, D12): resolve every referenced node's board
+		//    once, not once per link, before the batch is validated. A subtask has
+		//    no board of its own — it inherits its parent card's.
 		const boardByNode = new Map<string, number>();
 		// The card each node is, or belongs to: the card a link's entry is on.
 		const cardByNode = new Map<string, number>();
 		{
-			const cardIds = validation.referencedNodes.filter((r) => r.kind === 'card').map((r) => r.id);
-			const subtaskIds = validation.referencedNodes.filter((r) => r.kind === 'subtask').map((r) => r.id);
+			const keyed = new Map<string, WorkRef>();
+			for (const link of links) {
+				for (const ref of [{ kind: link.blockedType ?? 'card', id: link.blocked }, { kind: link.blockerType ?? 'card', id: link.blocker }] as WorkRef[]) {
+					keyed.set(`${ref.kind}:${ref.id}`, ref);
+				}
+			}
+			const referencedNodes = [...keyed.values()];
+			const cardIds = referencedNodes.filter((r) => r.kind === 'card').map((r) => r.id);
+			const subtaskIds = referencedNodes.filter((r) => r.kind === 'subtask').map((r) => r.id);
 
 			const subtaskParents = subtaskIds.length
 				? db
@@ -187,30 +199,64 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			}
 		}
 
-		const editable = new Map<number, boolean>();
+		// The caller's role on each board, read once.
+		const roles = new Map<number, ReturnType<typeof getBoardRole>>();
+		const roleOn = (boardId: number) => {
+			if (!roles.has(boardId)) roles.set(boardId, getBoardRole(user, boardId));
+			return roles.get(boardId)!;
+		};
+		const opens = (boardId: number) => roleOn(boardId) !== null;
 		const mayEdit = (boardId: number) => {
-			if (!editable.has(boardId)) editable.set(boardId, canEditBoard(user, boardId));
-			return editable.get(boardId)!;
+			const role = roleOn(boardId);
+			return role === 'admin' || role === 'owner' || role === 'editor';
 		};
 
+		// A link with an end that is not there, or is on a board the caller
+		// cannot open, is answered in the very words a missing end gets, and
+		// goes no further: it is never judged a duplicate or part of a loop,
+		// which would tell that the end exists (card 2719, D12). A link that
+		// names one end twice is the validation's `self`, which reads nothing.
+		// A link with both ends openable and one not editable is `forbidden`.
+		// Only the links whose ends the caller can edit are validated.
+		const unseen: BatchRejection[] = [];
 		const forbidden: { link: DependencyLink; message: string }[] = [];
-		for (const link of validation.valid) {
+		const editableLinks: DependencyLink[] = [];
+		for (const link of links) {
 			const ends = [
-				{ key: `${link.blockedType ?? 'card'}:${link.blocked}`, role: 'blocked' },
-				{ key: `${link.blockerType ?? 'card'}:${link.blocker}`, role: 'blocker' }
+				{ ref: { kind: link.blockedType ?? 'card', id: link.blocked } as WorkRef, role: 'blocked' as const },
+				{ ref: { kind: link.blockerType ?? 'card', id: link.blocker } as WorkRef, role: 'blocker' as const }
 			];
-			for (const end of ends) {
-				const boardId = boardByNode.get(end.key);
-				if (boardId === undefined || !mayEdit(boardId)) {
-					forbidden.push({ link, message: `No edit access to the board holding the ${end.role} ${end.key}` });
-					break;
-				}
+			const keys = ends.map((end) => `${end.ref.kind}:${end.ref.id}`);
+			if (keys[0] === keys[1]) {
+				editableLinks.push(link);
+				continue;
 			}
+			const hidden = ends.find((end, i) => {
+				const boardId = boardByNode.get(keys[i]);
+				return boardId === undefined || !opens(boardId);
+			});
+			if (hidden) {
+				unseen.push({
+					link,
+					reason: hidden.role === 'blocked' ? 'missing-blocked' : 'missing-blocker',
+					message: `${describeWork(hidden.ref)} does not exist or is archived`
+				});
+				continue;
+			}
+			const locked = ends.findIndex((_end, i) => !mayEdit(boardByNode.get(keys[i])!));
+			if (locked !== -1) {
+				forbidden.push({ link, message: `No edit access to the board holding the ${ends[locked].role} ${keys[locked]}` });
+				continue;
+			}
+			editableLinks.push(link);
 		}
 
+		const validation = validateDependencyBatch(editableLinks, { opens });
+		const rejected = [...unseen, ...validation.rejected];
+
 		// ── All-or-nothing: report everything wrong, write nothing.
-		if (validation.rejected.length > 0 || forbidden.length > 0) {
-			return { rejected: true as const, validation, forbidden };
+		if (rejected.length > 0 || forbidden.length > 0) {
+			return { rejected: true as const, validation, rejections: rejected, forbidden };
 		}
 
 		// The links written, each by its own insert: the entries and the live
@@ -250,15 +296,16 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	});
 
 	if (outcome.rejected) {
-		const { validation, forbidden } = outcome;
+		const { validation, rejections, forbidden } = outcome;
 		return json(
 			{
 				message: 'Batch rejected — nothing was written',
 				written: 0,
-				rejected: validation.rejected,
+				rejected: rejections,
 				forbidden,
 				wouldSkipAsDuplicate: validation.duplicates.length,
-				wouldCreate: validation.valid.length - forbidden.length
+				// Only the links whose ends the caller can edit are validated, so each valid one would be written.
+				wouldCreate: validation.valid.length
 			},
 			{ status: 409 }
 		);

@@ -13,6 +13,7 @@ This document does not list every route. The complete list, with every field, st
   - [The Request Body](#the-request-body)
   - [What a Field May Hold](#what-a-field-may-hold)
   - [Answers That Are Not JSON](#answers-that-are-not-json)
+  - [Changes on 2026-11-18](#changes-on-2026-11-18)
   - [Changes on 2026-11-17](#changes-on-2026-11-17)
   - [Changes on 2026-11-13](#changes-on-2026-11-13)
   - [Changes on 2026-11-04](#changes-on-2026-11-04)
@@ -154,7 +155,7 @@ flowchart TD
     Method -->|"Yes"| Handler["The handler"]
     Handler -->|"body missing, not JSON<br/>or not an object"| E400["400 message"]
     Handler -->|"body read past 512 KB, sent with no length,<br/>or past the length it declared"| E413["413 message,<br/>and limitBytes for the first"]
-    Handler -->|"refused: 404 then 403 for what the path names,<br/>400 for a field, 404 for what a field names"| E4xx["400, 403, 404 or 409 message"]
+    Handler -->|"refused: 404 for what the path names, missing or unopenable,<br/>403 for the role, 400 for a field, 404 for what a field names"| E4xx["400, 403, 404 or 409 message"]
     Handler -->|"rejected batch,<br/>dependency cycle"| E409["409 message, and what was at fault"]
     Handler -->|"DumpFire fails"| E500["500 message: Internal Error"]
     Handler -->|"done"| Ok["200 or 201"]
@@ -172,8 +173,8 @@ Every answer DumpFire's gate gives carries `X-Content-Type-Options: nosniff`, `X
 | `201` | Resource created |
 | `400` | Bad request: a field is missing, is of the wrong type or holds what it may not (see [What a Field May Hold](#what-a-field-may-hold)), an id in the path or the query string is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not a JSON object |
 | `401` | Unauthorized: no `Authorization: Bearer <key>` header, or a key that is unknown or expired |
-| `403` | Forbidden: the key's user may not do this |
-| `404` | The resource in the path does not exist, whoever asks; an id in the body names nothing (a category, a user, a milestone); something to be removed is not there (an assignee, a label on a card, a card in the milestone named); or the path is no route: `{ "message": "Not found" }` |
+| `403` | Forbidden: the key's user can open the board the resource is on, and their role does not allow this (since 1.10.0, card 2719); a milestone's own visibility is still `403 No access to this milestone` (card 2911) |
+| `404` | The resource in the path does not exist, whoever asks, or is on a board the key's user cannot open: the two are answered alike, in the same words (since 1.10.0, card 2719); an id in the body names nothing (a category, a user, a milestone); something to be removed is not there (an assignee, a label on a card, a card in the milestone named); or the path is no route: `{ "message": "Not found" }` |
 | `405` | The route does not have this method: `{ "message": "PATCH method not allowed" }`. The `Allow` header names the methods it has |
 | `409` | Conflict: a card moved to a Complete column while it has open subtasks or sub-boards, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep (made under a card, or carried by a card moved to another board), a column renamed into or out of Complete or Done while it holds a card, a dependency that already exists or would close a loop, a board's 11th webhook, or a rejected batch |
 | `413` | The request body is over the size limit, 512 KB: `{ "message", "limitBytes" }`. See [The Request Body](#the-request-body) |
@@ -232,7 +233,7 @@ Every operation reads each field it uses by the field's type and range, and refu
 **The order a request is refused in.** One request is answered for the first thing wrong with it, in this order:
 
 1. The body is missing, is not JSON or is not an object (`400`), or an id in the path is not a whole number of 1 or more written in digits (`400` `Invalid card ID`, `Invalid board ID` and so on).
-2. What the path names is looked for (`404`), and then the caller is checked (`403`).
+2. What the path names is looked for (`404`), and then the caller is checked: `404` in the same words for what is on a board they cannot open, `403` for what their role does not allow (card 2719).
 3. Each field is read (`400`).
 4. What a field names is looked for: a column, a category, a user, a milestone (`404`). A card's `columnId` on `POST /boards/:boardId/cards` is the exception: a column that is not there, like one of another board, is `400` `Column does not belong to this board`.
 
@@ -251,6 +252,10 @@ Three answers are not JSON. Each is made by SvelteKit before DumpFire's gate is 
 `/api/v1` with nothing after it is not under `/api/v1/`. DumpFire's gate takes it for a path of the web application's own, which a key does not open: it is answered `401` `{ "message": "Not authenticated" }`, or, to a browser, with a redirect to the login page. Send `/api/v1/` and a route.
 
 A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retries](#writes-failures-and-retries).
+
+### Changes on 2026-11-18
+
+**Breaking: a board or card the key's user cannot open is answered 404, not 403** (card 2719; the OpenAPI document is version **1.10.0**, with a dated note, marked breaking, at the top of its description). Board and card ids are counted up one at a time, and a `403` for one that exists beside a `404` for one that does not told any key holder what exists on boards they will never see. (1) A board, a card, a dashboard grouping holding only boards the key's user cannot open, or anything on a board they cannot open (a column, a label, a subtask, a comment, a card category, a webhook, a token entry, a link's other end) is answered `404` by every operation, in the very words one that is not there gets (`Card not found`, `Webhook not found`, `Board 7 not found`, `#42 not found`), where it was `403`; a batch reports such an item as a missing one (`POST /tokens/bulk`: `Card #N does not exist`; the milestone card batches: a card that does not exist). (2) `POST /cards/:cardId/labels` answers `404 Label not found` for a label that is not of the card's board, wherever it is, where it answered `400`. (3) `POST /dependencies/bulk` looks at the boards of every link's ends first: a link with an end the key's user cannot open is rejected `missing-blocked` or `missing-blocker`, `#N does not exist or is archived`, and is never judged a duplicate or part of a loop; `wouldSkipAsDuplicate` and `wouldCreate` count only the links whose ends the user can edit. (4) A `409` for a link that would close a loop gives a node on a board the user cannot open as withheld: `{ "kind": "card", "id": null, "withheld": true }` in `cycle` (the schema `CycleNode`), and `A card on a board you cannot open` in its place in the message. (5) `GET /cards/:cardId/board-history` gives a stay on a board the user cannot open by its dates alone, `boardId` `null` and `withheld` `true`, where the board's id was given. (6) `403` now means the key's user can open the board and their role does not allow the operation; a milestone's own visibility is unchanged (`403 No access to this milestone`). A script that treats `403` as "no access" should treat `404` the same way. The rule is about an id the key's user asks for: the dependency lists of their own cards and subtasks still give the id of linked work on a board they cannot open, withheld with no title or board (card 2129's design), which a card of its own is to close.
 
 ### Changes on 2026-11-17
 
@@ -799,7 +804,8 @@ Four things about a `500`, a body that cannot be read and a field that cannot be
 - **Every handler that takes a body reads it before it looks for the resource or checks
   access to it.** Sent a body that cannot be read, it answers `400` even for a resource that
   does not exist or one the caller may not edit. With a body that is a JSON object, the
-  resource is looked for and the caller checked first, `404` then `403`, and what the fields
+  resource is looked for and the caller checked first, `404` (for one on a board they cannot
+  open too, card 2719) then `403`, and what the fields
   hold after that. Nothing is awaited between the check and the write, so access taken away
   while the body was arriving is seen. Until 2026-10-14
   eleven operations looked first: those that create a column, a label, a category or a
@@ -985,7 +991,7 @@ Returns all boards the API key's user has access to, newest first.
 GET /api/v1/boards/:boardId
 ```
 
-Returns a single board with its columns. A board that does not exist is `404` `Board not found` to everyone; one that is there and the key's user cannot open is `403`. Every operation under `/boards/:boardId` answers in that order.
+Returns a single board with its columns. A board that does not exist is `404` `Board not found` to everyone, and so is one that is there and the key's user cannot open, in the same words (card 2719; it was `403`). A `403` is for a board they can open where their role does not allow the operation. Every operation under `/boards/:boardId` answers so.
 
 **Response:**
 ```json
@@ -1066,7 +1072,8 @@ GET /api/v1/boards/:boardId/upstream
 
 What happened upstream of the commitment point on one board over a window, and the options it
 holds now (milestone 22, card 2464). View access to the board is enough: `404` `Board not
-found` for a board that is not there, to everyone, then `403` `No access to this board`.
+found` for a board that is not there, to everyone, and for one the key's user cannot open
+alike (card 2719).
 Nothing is written. They are the figures the board's Stats panel shows, worked out by the same
 code (`upstreamFigures`).
 
@@ -1428,7 +1435,8 @@ GET /api/v1/cards/:cardId/assignees
 ```
 
 Needs view access to the card's board, as reading the card does. A caller without it is
-answered `403` with `{ "message": "No access to this card's board" }`.
+answered `404` `{ "message": "Card not found" }`, as for a card that is not there (card 2719;
+it was `403` `No access to this card's board`).
 
 **Response:**
 ```json
@@ -1718,9 +1726,9 @@ names the subtask. Until 2026-10-14 no entry was written.
 
 | Route | Does | Needs | Answers |
 |-------|------|-------|---------|
-| `GET /api/v1/cards/:cardId/comments` | Lists the card's comments, newest first, those of one second the later first | View access | `200`, `400`, `403`, `404` |
+| `GET /api/v1/cards/:cardId/comments` | Lists the card's comments, newest first, those of one second the later first | View access | `200`, `400`, `404` (a card on a board the key's user cannot open too, card 2719) |
 | `POST /api/v1/cards/:cardId/comments` | Adds one: `content`, 1 to 50,000 characters once trimmed. Logs `api:comment_added`, fires `comment.added` | Edit access | `201`, `400`, `403`, `404` |
-| `GET /api/v1/comments/:commentId` | Reads one, with its author | View access | `200`, `400`, `403`, `404` |
+| `GET /api/v1/comments/:commentId` | Reads one, with its author | View access | `200`, `400`, `404` (`Comment not found`, for one on a board the key's user cannot open too, card 2719) |
 | `PUT /api/v1/comments/:commentId` | Replaces its `content`; the same text, once trimmed, writes nothing. Logs `api:comment_edited` | Its author with edit access, or an administrator | `200`, `400`, `403`, `404` |
 | `DELETE /api/v1/comments/:commentId` | Deletes it. No body. Logs `api:comment_deleted` | Its author with edit access, or an administrator | `200` `{ "success": true }`, `400`, `403`, `404` |
 
@@ -1845,8 +1853,8 @@ and `isBlocked` is whether the card in the path is blocked now.
 | `400` | The card id in the path is not a whole number of 1 or more | `{ "message": "Invalid card ID" }` |
 | `400` | An end waits on itself | `{ "message": "#1559 cannot depend on itself" }` |
 | `400` | An end is archived | `{ "message": "#1686 does not exist or is archived" }` |
-| `403` | No edit access to one of the two boards | `{ message }` |
-| `404` | The card in the path, or the card or subtask named in the body, does not exist | `{ "message": "#1686 not found" }` |
+| `403` | No edit access to one of the two boards, a board the key's user can open | `{ message }` |
+| `404` | The card in the path, or the card or subtask named in the body, does not exist, or is on a board the key's user cannot open: answered alike (card 2719) | `{ "message": "#1686 not found" }` |
 | `409` | That dependency already exists | `{ "message": "That dependency already exists" }` |
 | `409` | The dependency would create a cycle | `{ message, cycle }` |
 
@@ -1866,7 +1874,10 @@ cards on three boards:
 }
 ```
 
-In a message, `#1686` is card 1686 and `subtask #42` is subtask 42.
+In a message, `#1686` is card 1686 and `subtask #42` is subtask 42. A node of the loop on a
+board the key's user cannot open is withheld (card 2719): `{ "kind": "card", "id": null,
+"withheld": true }` in `cycle`, and `A card on a board you cannot open` in its place in the
+message, so the loop still reads as one and gives no id of the hidden work.
 
 #### Remove a Dependency
 
@@ -1900,10 +1911,11 @@ subtask's card). Both ends' boards are sent the live update, once where they are
 { "success": true, "removed": 1 }
 ```
 
-**Refusals, in the order they are decided.** `404` if the card in the path does not exist;
-`403` if the caller cannot view its board; `404` if the end that waits does not exist;
+**Refusals, in the order they are decided.** `404` `Card not found` if the card in the path
+does not exist or the caller cannot view its board; `404` `#1559 not found` if the end that
+waits does not exist or is on a board the caller cannot open (card 2719);
 `403` with `{ "message": "No edit access to the board holding #1559, the end that waits" }`
-if the caller cannot edit that end's board; and only then `404` with
+if the caller can open that end's board and cannot edit it; and only then `404` with
 `{ "message": "Dependency not found" }` for a link that is not there. The `403` is decided
 before the link is looked for, so a refused caller is answered the same whether the link
 exists or not.
@@ -2081,7 +2093,8 @@ POST /api/v1/milestones
 **Response:** `201 Created` with the milestone.
 
 With a `boardId`, that board is looked for and the caller checked first (`404`
-`Board not found`, then `403` `No edit access to that board`), and the other fields are read
+`Board not found`, for one the caller cannot open too, card 2719, then `403` `No edit access
+to that board`), and the other fields are read
 after. A cross-board goal has nothing to look for, and its fields are read at once.
 
 #### Get, Update, Delete
@@ -2482,14 +2495,20 @@ These rules apply to all three endpoints and are the reason they exist.
 ```
 
 The text is in `message`, as in every failure, and `written` is always 0. `rejected` lists
-the links that are wrong in themselves and `forbidden` the links that are right in themselves
-and have an end on a board the key's user cannot edit, each with the `link` and a `message`.
+the links that are wrong in themselves and `forbidden` the links whose ends are on boards the
+key's user can open, one of which they cannot edit, each with the `link` and a `message`.
+
+Since card 2719 (D12) the boards of every link's ends are looked at first: a link with an end
+on a board the key's user cannot open is rejected as that end not existing, in the same
+words, and is never counted a duplicate or judged part of a loop. Duplicates and loops are
+judged only among the links whose ends the user can edit, and `wouldSkipAsDuplicate` and
+`wouldCreate` count only those.
 
 | `reason` | Meaning |
 |----------|---------|
 | `self` | An end waits on itself |
-| `missing-blocked`, `missing-blocker` | That end does not exist or is archived |
-| `cycle` | The link would close a loop, with the stored links or with earlier links of the batch. `cycle` holds the chain, each entry a `kind` and an `id` |
+| `missing-blocked`, `missing-blocker` | That end does not exist or is archived, or is on a board the key's user cannot open (card 2719) |
+| `cycle` | The link would close a loop, with the stored links or with earlier links of the batch. `cycle` holds the chain, each entry a `kind` and an `id`; a node on a board the key's user cannot open is `{ "kind": "card", "id": null, "withheld": true }`, and `A card on a board you cannot open` in the message (card 2719) |
 | `duplicate-in-batch` | The batch has the same link twice |
 
 The two milestone endpoints answer a `409` of their own shape, with `problems` in place of
@@ -2752,7 +2771,7 @@ it is now, so a card returned to options leaves the past days' scope too.
 | Parameter | Description |
 |-----------|-------------|
 | `boardIds` | Comma-separated board ids. View access to each is required. |
-| `boardCategoryId` | Every board in this board category that you can see. Not with `boardIds`. A board category that holds boards, none of which you can open, is `403` `No access to board category <id>` (until 2026-10-14 it was charted empty under its name). |
+| `boardCategoryId` | Every board in this board category that you can see. Not with `boardIds`. A board category that holds boards, none of which you can open, is `404` `Board category <id> not found`, as one that does not exist (card 2719; `403` `No access to board category <id>` from 2026-10-14, and before that it was charted empty under its name). |
 | `milestoneId` | The milestone's cards, wherever they live. Combine with `boardIds` to narrow. |
 | `categoryIds` | Card category ids; `none` = uncategorised. |
 | `labelIds` | A card matches if it carries any of these labels. |
@@ -2849,8 +2868,9 @@ it is now, so a card returned to options leaves the past days' scope too.
 - **`meta.notes`** lists only the caveats that bear on this result — read it
   before quoting a figure.
 
-**Errors:** every invalid parameter is a `400` naming it; `403` for a board,
-milestone or board category you cannot see; `404` for one that does not exist.
+**Errors:** every invalid parameter is a `400` naming it; `404` for a board, milestone or
+board category that does not exist, and for a board or board category you cannot see, in the
+same words (card 2719); `403` for a milestone you cannot see (card 2911).
 
 ### Webhooks
 

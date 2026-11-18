@@ -224,9 +224,10 @@ export function canReadRequest(user: SessionUser, request: TaskRequest): boolean
  * (card 2132). Request ids are consecutive, and a `403` for one that is there
  * told anyone on the internet how many requests there are and, with the `400`
  * for a resolved one, when each was dealt with. A signed-in caller is answered
- * as every guard answers: `404` for one that is not there, `403 refusal` for
- * one that is not theirs. Its state is for the route to tell, once the caller
- * is let in.
+ * `404` for one that is not there and `403 refusal` for one that is not
+ * theirs: not as the board guards answer a thing on a board the caller cannot
+ * open, which is `404` (card 2719), since a request is on no board until it is
+ * accepted. Its state is for the route to tell, once the caller is let in.
  *
  * A request that awaits confirmation is `404` to every caller it does not let
  * in, signed in or not (card 2260): to the team it is not there until its

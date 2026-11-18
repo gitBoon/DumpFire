@@ -29,9 +29,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	if (boardId !== undefined) {
 		// Single-board mode (existing behaviour). A board that is not there is
-		// 404 to everyone, and then one the caller cannot see 403: everyone but
-		// an administrator was answered 403, and an administrator an empty list
-		// (card 2117, decision 10).
+		// 404 to everyone, and so is one the caller cannot see, in the same
+		// words (card 2719): everyone but an administrator was answered 403, and
+		// an administrator an empty list, until card 2117 (decision 10).
 		requireBoard(locals.user, boardId, 'view');
 
 		const activities = db

@@ -588,12 +588,27 @@ export type BatchRejectionReason =
 	| 'cycle'
 	| 'duplicate-in-batch';
 
+/**
+ * A node of a loop a link would close: the work, or, where it is on a board
+ * the caller cannot open, its kind alone, `withheld` (card 2719, D12).
+ */
+export type CycleNode = WorkRef | { kind: WorkKind; id: null; withheld: true };
+
 export interface BatchRejection {
 	link: DependencyLink;
 	reason: BatchRejectionReason;
 	/** For `cycle`, the chain the link would close. */
-	cycle?: WorkRef[];
+	cycle?: CycleNode[];
 	message: string;
+}
+
+/** What `validateDependencyBatch` may be told of the caller. */
+export interface BatchValidationOptions {
+	/**
+	 * Whether the caller can open a board. Given, a loop's node on a board they
+	 * cannot open is withheld in `cycle` and in the message (card 2719, D12).
+	 */
+	opens?: (boardId: number) => boolean;
 }
 
 export interface DependencyBatchValidation {
@@ -613,6 +628,22 @@ const linkBlocker = (l: DependencyLink): WorkRef => ({ kind: l.blockerType ?? 'c
 const describe = (r: WorkRef) => (r.kind === 'subtask' ? `subtask #${r.id}` : `#${r.id}`);
 
 /**
+ * The nodes of a loop, in order, each as itself or, where `opens` is given
+ * and says the caller cannot open its board, withheld. A node whose board
+ * cannot be read (archived, or gone) is withheld too: it is not shown on
+ * what cannot be checked.
+ */
+function cycleNodes(chain: NodeKey[], opens: BatchValidationOptions['opens']): CycleNode[] {
+	const refs = chain.map(parseNodeKey);
+	if (!opens) return refs;
+	const known = loadPlanNodes(chain);
+	return refs.map((ref, i) => {
+		const node = known.get(chain[i]);
+		return node && opens(node.boardId) ? ref : { kind: ref.kind, id: null, withheld: true as const };
+	});
+}
+
+/**
  * Validate a whole batch of proposed dependencies before any of it is written.
  *
  * Cycle detection is the reason links are checked as a batch here, and never
@@ -625,8 +656,12 @@ const describe = (r: WorkRef) => (r.kind === 'subtask' ? `subtask #${r.id}` : `#
  *
  * Reports every problem in one pass. Fixing a fifty-line list one error per
  * round trip is what makes bulk import not worth using.
+ *
+ * With `opens`, a node of a loop on a board the caller cannot open, or one
+ * whose board cannot be read, is given as withheld: `{ kind, id: null,
+ * withheld: true }`, and in the message in `withheld.ts`'s words (card 2719).
  */
-export function validateDependencyBatch(links: DependencyLink[]): DependencyBatchValidation {
+export function validateDependencyBatch(links: DependencyLink[], options: BatchValidationOptions = {}): DependencyBatchValidation {
 	const { blocks } = loadDependencyGraph();
 
 	const adjacency = new Map<NodeKey, Set<NodeKey>>();
@@ -712,12 +747,15 @@ export function validateDependencyBatch(links: DependencyLink[]): DependencyBatc
 
 		const chain = reaches(bk, rk);
 		if (chain) {
-			const refs = chain.map(parseNodeKey);
+			const nodes = cycleNodes(chain, options.opens);
+			const said = nodes.map((node) =>
+				node.id === null ? (node.kind === 'subtask' ? WITHHELD_SUBTASK_TITLE : WITHHELD_CARD_TITLE) : describe(node)
+			);
 			rejected.push({
 				link,
 				reason: 'cycle',
-				cycle: refs,
-				message: `${describe(blocked)} waiting on ${describe(blocker)} would create a cycle: ${refs.map(describe).join(' → ')} → ${describe(refs[0])}`
+				cycle: nodes,
+				message: `${describe(blocked)} waiting on ${describe(blocker)} would create a cycle: ${said.join(' → ')} → ${said[0]}`
 			});
 			continue;
 		}

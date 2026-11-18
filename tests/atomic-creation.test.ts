@@ -238,9 +238,8 @@ describe('POST /api/cards', () => {
 		const post = (user: SessionUser | null, columnId: number) => () =>
 			api('POST', '/api/cards', { user, body: { columnId, title: 'Not mine to raise' } });
 
-		expect((await expectRefused(post(s.outsider, s.A.cols['To Do'].id), 403)).body.message).toBe(
-			'No edit access to this board'
-		);
+		// A column on a board the caller cannot open is answered as one that is not there (card 2719).
+		expect((await expectRefused(post(s.outsider, s.A.cols['To Do'].id), 404)).body.message).toBe('Column not found');
 		expect((await expectRefused(post(s.viewer, s.A.cols['To Do'].id), 403)).body.message).toBe(
 			'No edit access to this board'
 		);
@@ -257,7 +256,7 @@ describe('POST /api/cards', () => {
 			api('POST', '/api/cards', { user, body: { columnId, title: 'x'.repeat(501) } });
 
 		expect((await expectRefused(post(s.owner, 99999), 404)).body.message).toBe('Column not found');
-		expect((await expectRefused(post(s.outsider, s.A.cols['To Do'].id), 403)).body.message).toBe('No edit access to this board');
+		expect((await expectRefused(post(s.outsider, s.A.cols['To Do'].id), 404)).body.message).toBe('Column not found');
 		expect((await expectRefused(post(s.owner, s.A.cols['To Do'].id), 400)).body.message).toBe('title must be at most 500 characters');
 	});
 });
@@ -308,7 +307,7 @@ describe('POST /api/subtasks', () => {
 		const post = (user: SessionUser, cardId: number) => () =>
 			api('POST', '/api/subtasks', { user, body: { cardId, title: 'Not mine to add' } });
 
-		await expectRefused(post(s.outsider, s.first.id), 403);
+		expect((await expectRefused(post(s.outsider, s.first.id), 404)).body.message).toBe('Card not found');
 		await expectRefused(post(s.viewer, s.first.id), 403);
 		expect((await expectRefused(post(s.owner, 99999), 404)).body.message).toBe('Card not found');
 	});
@@ -456,7 +455,7 @@ describe('POST /api/cards/:id/comments', () => {
 		expect((await expectRefused(post(s.owner, s.first.id, '   '), 400)).body.message).toBe('Comment cannot be empty');
 		expect((await expectRefused(post(s.owner, 99999, 'Hello'), 404)).body.message).toBe('Card not found');
 		expect((await expectRefused(post(s.viewer, s.first.id, 'Hello'), 403)).body.message).toBe('No edit access');
-		expect((await expectRefused(post(s.outsider, s.first.id, 'Hello'), 403)).body.message).toBe('No edit access');
+		expect((await expectRefused(post(s.outsider, s.first.id, 'Hello'), 404)).body.message).toBe('Card not found');
 		await expectRefused(post(null, s.first.id, 'Hello'), 401);
 	});
 });
@@ -644,7 +643,8 @@ describe('restoring a card from the archive', () => {
 			it('refuses a caller who may not edit the board, and a card that is not there', async () => {
 				const s = withArchived();
 
-				await expectRefused(() => restore(s, s.outsider), 403);
+				// A card on a board the caller cannot open is answered as one that is not there (card 2719).
+				expect((await expectRefused(() => restore(s, s.outsider), 404)).body.message).toBe('Card not found');
 				await expectRefused(() => restore(s, s.viewer), 403);
 				await expectRefused(() => restore(s, null), 401);
 				expect((await expectRefused(() => restore(s, s.owner, 99999), 404)).body.message).toBe('Card not found');

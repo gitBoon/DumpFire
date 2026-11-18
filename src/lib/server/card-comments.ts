@@ -50,8 +50,9 @@ function commentEvent(cardId: number): { type: 'comment'; cardId: number } {
 /**
  * A card's comments, newest first, each with its author's name and emoji
  * (`GET /api/cards/:id/comments`, `GET /api/v1/cards/:cardId/comments`). The
- * card is looked for and the caller asked for view access (404, then 403, in
- * the tree's words, `says`).
+ * card is looked for and the caller asked for view access: 404 `Card not
+ * found` for a card that is not there, and for one on a board the caller
+ * cannot open alike (card 2719).
  *
  * `created_at` is to the second, so comments made in the same second (a
  * request's discussion copied on accept, an agent posting several in a row)
@@ -173,7 +174,8 @@ function requireOwnComment(
 	const comment = db.select().from(cardComments).where(eq(cardComments.id, commentId)).get();
 	if (!comment || (cardId !== undefined && comment.cardId !== cardId)) throw error(404, 'Comment not found');
 
-	const { card, boardId } = requireCard(user, comment.cardId, 'edit');
+	// A comment on a board the caller cannot open is answered as one that is not there (card 2719).
+	const { card, boardId } = requireCard(user, comment.cardId, 'edit', undefined, 'Comment not found');
 
 	if (comment.userId !== user.id && !isAdmin(user)) {
 		throw error(403, `You can only ${verb} your own comments`);

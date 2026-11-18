@@ -96,8 +96,9 @@ describe('/api/report-schedules', () => {
 		await refused(post(user, { ...weekly, scope: 'category' }), 400, 'scopeId required for category scope');
 	});
 
-	it('answers 403 for a board the caller cannot see, and for every board when the caller is not an administrator', async () => {
-		await refused(post(user, { ...weekly, scopeId: theirs.board.id }), 403, 'No access to this board');
+	it('answers 404 for a board the caller cannot see, as for one that is not there, and 403 for every board when the caller is not an administrator', async () => {
+		// Card 2719: a board the caller cannot open is answered as one that is not there.
+		await refused(post(user, { ...weekly, scopeId: theirs.board.id }), 404, 'Board not found');
 		await refused(post(user, { ...weekly, scope: 'all' }), 403, 'Only admins can schedule all-boards reports');
 	});
 

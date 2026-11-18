@@ -549,25 +549,25 @@ describe('the report schedules and the webhooks decide with the account as it is
 		expectUnchanged(before);
 	});
 
-	it('POST /api/v1/boards/:boardId/webhooks and PUT and DELETE /api/v1/webhooks/:webhookId: an administrator lowered to user is refused 403, and nothing written', async () => {
+	it('POST /api/v1/boards/:boardId/webhooks and PUT and DELETE /api/v1/webhooks/:webhookId: an administrator lowered to user is refused, and nothing written', async () => {
 		const owner = makeUser({ username: 'owner' });
 		const { board } = makeBoard({ owner, name: 'Owned' });
 		const hook = makeWebhook(board);
 		const { user, credential } = lowered('admin', 'user');
 		const before = snapshotDb();
-		const NO_EDIT = { message: 'No edit access to this board' };
 
+		// Lowered, they cannot open the board: as one that is not there (card 2719).
 		const made = await api('POST', `/api/v1/boards/${board.id}/webhooks`, { user, credential, body: { url: 'https://hooks.example.test/new' } });
-		expect(made.status).toBe(403);
-		expect(made.body).toEqual(NO_EDIT);
+		expect(made.status).toBe(404);
+		expect(made.body).toEqual({ message: 'Board not found' });
 
 		const changed = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user, credential, body: { active: false } });
-		expect(changed.status).toBe(403);
-		expect(changed.body).toEqual(NO_EDIT);
+		expect(changed.status).toBe(404);
+		expect(changed.body).toEqual({ message: 'Webhook not found' });
 
 		const removed = await api('DELETE', `/api/v1/webhooks/${hook.id}`, { user, credential });
-		expect(removed.status).toBe(403);
-		expect(removed.body).toEqual(NO_EDIT);
+		expect(removed.status).toBe(404);
+		expect(removed.body).toEqual({ message: 'Webhook not found' });
 
 		expectUnchanged(before);
 	});
@@ -790,17 +790,18 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 		db.update(users).set({ role: 'user' }).where(eq(users.id, admin.id)).run();
 		const before = snapshotDb();
 
+		// Lowered, they cannot open the board: what is on it is answered as not there (card 2719).
 		const changed = await api('PUT', `/api/cards/${s.card.id}`, { user: admin, credential, body: { title: 'By an administrator' } });
-		expect(changed.status).toBe(403);
-		expect(changed.body).toEqual({ message: 'No edit access to this board' });
+		expect(changed.status).toBe(404);
+		expect(changed.body).toEqual({ message: 'Card not found' });
 
 		const shared = await api('POST', '/api/categories', { user: admin, credential, body: { name: 'Shared' } });
 		expect(shared.status).toBe(403);
 		expect(shared.body).toEqual({ message: 'Only an administrator can create a category that belongs to no board' });
 
 		const removed = await api('DELETE', `/api/categories/${s.category.id}`, { user: admin, credential });
-		expect(removed.status).toBe(403);
-		expect(removed.body).toEqual({ message: 'No edit access to this board' });
+		expect(removed.status).toBe(404);
+		expect(removed.body).toEqual({ message: 'Category not found' });
 
 		expectUnchanged(before);
 	});
@@ -989,21 +990,28 @@ describe('the boards, groupings, teams, goals and templates ask at the write (sl
 		onTestFinished(() => sent.restore());
 
 		const refusals: [Method, string, unknown, string][] = [
-			['POST', `/api/boards/${s.board.id}/share`, { type: 'user', targetId: s.guest.id }, 'Only board owners and admins can share boards'],
-			['PATCH', `/api/boards/${s.board.id}/share`, { isPublic: true }, 'Only board owners and admins can change visibility'],
-			['DELETE', `/api/boards/${s.board.id}/share`, { type: 'user', targetId: s.member.id }, 'Only board owners and admins can manage sharing'],
+			// The board, and the grouping that holds only it, the caller cannot open: as not there (card 2719).
+			['POST', `/api/boards/${s.board.id}/share`, { type: 'user', targetId: s.guest.id }, 'Board not found'],
+			['PATCH', `/api/boards/${s.board.id}/share`, { isPublic: true }, 'Board not found'],
+			['DELETE', `/api/boards/${s.board.id}/share`, { type: 'user', targetId: s.member.id }, 'Board not found'],
 			['POST', `/api/teams/${s.team.id}/members/${s.guest.id}`, {}, 'Forbidden'],
 			['DELETE', `/api/teams/${s.team.id}/members/${s.member.id}`, undefined, 'Forbidden'],
-			['PUT', `/api/board-categories/${s.grouping.id}`, { name: 'Taken over' }, 'This category groups boards you cannot edit'],
-			['DELETE', `/api/board-categories/${s.grouping.id}`, undefined, 'This category groups boards you cannot edit'],
+			['PUT', `/api/board-categories/${s.grouping.id}`, { name: 'Taken over' }, 'Board category not found'],
+			['DELETE', `/api/board-categories/${s.grouping.id}`, undefined, 'Board category not found'],
 			['DELETE', `/api/templates/${s.template.id}`, undefined, 'You can only delete your own templates'],
 			// Since card 2701 with the right password, refused before it is looked at.
-			['DELETE', `/api/boards/${s.board.id}`, { currentPassword: FIXTURE_PASSWORD }, 'Only board owners and admins can delete boards']
+			['DELETE', `/api/boards/${s.board.id}`, { currentPassword: FIXTURE_PASSWORD }, 'Board not found']
 		];
+		// A refusal in not-found words is a 404: what is on a board the caller cannot open is answered as
+		// what is not there (card 2719). Every other is a 403.
+		const got: unknown[] = [];
+		const wanted: unknown[] = [];
 		for (const [method, path, body, message] of refusals) {
 			const res = await api(method, path, { user: admin, credential, ...(body === undefined ? {} : { body }) });
-			expect({ method, path, status: res.status, body: res.body }).toEqual({ method, path, status: 403, body: { message } });
+			got.push({ method, path, status: res.status, body: res.body });
+			wanted.push({ method, path, status: / not found$/.test(message) ? 404 : 403, body: { message } });
 		}
+		expect(got).toEqual(wanted);
 		await sent.settle();
 
 		expectUnchanged(before);
@@ -2216,32 +2224,38 @@ describe('the boards side of /api/v1 asks at the write (slice 2253-6)', () => {
 		const before = snapshotDb();
 		const sent = effects();
 		onTestFinished(() => sent.restore());
-		const NO_EDIT = 'No edit access to this board';
+		const NO_BOARD_THERE = 'Board not found';
 		const NO_BOARD = 'Only an administrator can change a category that belongs to no board';
-		const GROUPED = 'This category groups boards you cannot edit';
 
 		const refusals: [Method, string, unknown, string][] = [
-			['POST', '/api/v1/boards', { name: 'Under the card', parentCardId: card.id }, "No edit access to the parent card's board"],
-			['PUT', `/api/v1/boards/${s.board.id}`, { name: 'Taken over' }, NO_EDIT],
-			['DELETE', `/api/v1/boards/${s.board.id}`, undefined, 'Only board owners and admins can delete boards'],
-			['POST', `/api/v1/boards/${s.board.id}/cards`, { columnId: s.cols['To Do'].id, title: 'By an administrator' }, NO_EDIT],
-			['POST', `/api/v1/boards/${s.board.id}/categories`, { name: 'By an administrator' }, NO_EDIT],
-			['POST', `/api/v1/boards/${s.board.id}/columns`, { title: 'By an administrator' }, NO_EDIT],
-			['POST', `/api/v1/boards/${s.board.id}/labels`, { name: 'By an administrator' }, NO_EDIT],
-			['PUT', `/api/v1/board-categories/${s.grouping.id}`, { name: 'Taken over' }, GROUPED],
-			['DELETE', `/api/v1/board-categories/${s.grouping.id}`, undefined, GROUPED],
-			['PUT', `/api/v1/categories/${s.category.id}`, { name: 'Taken over' }, NO_EDIT],
+			// The owner's board, and all on it, the caller cannot open: as not there (card 2719).
+			['POST', '/api/v1/boards', { name: 'Under the card', parentCardId: card.id }, 'Parent card not found'],
+			['PUT', `/api/v1/boards/${s.board.id}`, { name: 'Taken over' }, NO_BOARD_THERE],
+			['DELETE', `/api/v1/boards/${s.board.id}`, undefined, NO_BOARD_THERE],
+			['POST', `/api/v1/boards/${s.board.id}/cards`, { columnId: s.cols['To Do'].id, title: 'By an administrator' }, NO_BOARD_THERE],
+			['POST', `/api/v1/boards/${s.board.id}/categories`, { name: 'By an administrator' }, NO_BOARD_THERE],
+			['POST', `/api/v1/boards/${s.board.id}/columns`, { title: 'By an administrator' }, NO_BOARD_THERE],
+			['POST', `/api/v1/boards/${s.board.id}/labels`, { name: 'By an administrator' }, NO_BOARD_THERE],
+			['PUT', `/api/v1/board-categories/${s.grouping.id}`, { name: 'Taken over' }, 'Board category not found'],
+			['DELETE', `/api/v1/board-categories/${s.grouping.id}`, undefined, 'Board category not found'],
+			['PUT', `/api/v1/categories/${s.category.id}`, { name: 'Taken over' }, 'Category not found'],
 			['PUT', `/api/v1/categories/${s.shared.id}`, { name: 'Taken over' }, NO_BOARD],
 			['DELETE', `/api/v1/categories/${s.shared.id}`, undefined, NO_BOARD],
-			['PUT', `/api/v1/columns/${s.cols['On Hold'].id}`, { title: 'Taken over' }, NO_EDIT],
-			['DELETE', `/api/v1/columns/${s.cols['On Hold'].id}`, undefined, NO_EDIT],
-			['PUT', `/api/v1/labels/${s.label.id}`, { name: 'Taken over' }, NO_EDIT],
-			['DELETE', `/api/v1/labels/${s.label.id}`, undefined, NO_EDIT]
+			['PUT', `/api/v1/columns/${s.cols['On Hold'].id}`, { title: 'Taken over' }, 'Column not found'],
+			['DELETE', `/api/v1/columns/${s.cols['On Hold'].id}`, undefined, 'Column not found'],
+			['PUT', `/api/v1/labels/${s.label.id}`, { name: 'Taken over' }, 'Label not found'],
+			['DELETE', `/api/v1/labels/${s.label.id}`, undefined, 'Label not found']
 		];
+		// A refusal in not-found words is a 404: what is on a board the caller cannot open is answered as
+		// what is not there (card 2719). Every other is a 403.
+		const got: unknown[] = [];
+		const wanted: unknown[] = [];
 		for (const [method, path, body, message] of refusals) {
 			const res = await api(method, path, { user: admin, credential, ...(body === undefined ? {} : { body }) });
-			expect({ method, path, status: res.status, body: res.body }).toEqual({ method, path, status: 403, body: { message } });
+			got.push({ method, path, status: res.status, body: res.body });
+			wanted.push({ method, path, status: / not found$/.test(message) ? 404 : 403, body: { message } });
 		}
+		expect(got).toEqual(wanted);
 		await sent.settle();
 
 		expectUnchanged(before);
@@ -2249,7 +2263,7 @@ describe('the boards side of /api/v1 asks at the write (slice 2253-6)', () => {
 		expect(sent.events).toEqual([]);
 	});
 
-	it("decides with the account as it is now, through the gate: an administrator's key, lowered while the card's body arrives, is refused 403 and fires no webhook", async () => {
+	it("decides with the account as it is now, through the gate: an administrator's key, lowered while the card's body arrives, is refused 404 and fires no webhook", async () => {
 		const s = scene();
 		const admin = makeUser({ username: 'was-admin', role: 'admin' });
 		const key = makeApiKey(admin);
@@ -2263,7 +2277,8 @@ describe('the boards side of /api/v1 asks at the write (slice 2253-6)', () => {
 		});
 		await sent.settle();
 
-		expect(res).toEqual({ status: 403, body: { message: 'No edit access to this board' } });
+		// Lowered, they cannot open the board: as one that is not there (card 2719).
+		expect(res).toEqual({ status: 404, body: { message: 'Board not found' } });
 		expectUnchanged(before!);
 		expect(sent.webhooks).toEqual([]);
 	});
@@ -2623,55 +2638,61 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 		const before = snapshotDb();
 		const sent = effects();
 		onTestFinished(() => sent.restore());
-		const CARD = "No edit access to this card's board";
-		const SUBTASK = "No edit access to this subtask's board";
+		const NO_CARD = 'Card not found';
 		const MILESTONE = 'No access to this milestone';
 
 		// Each request with a body, as HELD sends it, and the deletes, with the
 		// refusal a user who is on nothing of the owner's is given.
 		const bodies = new Map(HELD.map((c) => [`${c.method} ${c.path(s)}`, c.body(s)]));
 		const refusals: [Method, string, number, unknown][] = [
-			['PUT', `/api/v1/cards/${s.a.id}`, 403, { message: CARD }],
-			['DELETE', `/api/v1/cards/${s.c.id}`, 403, { message: CARD }],
-			['POST', `/api/v1/cards/${s.b.id}/assignees`, 403, { message: CARD }],
-			['DELETE', `/api/v1/cards/${s.a.id}/assignees`, 403, { message: 'No edit access' }],
-			['POST', `/api/v1/cards/${s.a.id}/comments`, 403, { message: 'No edit access' }],
-			['POST', `/api/v1/cards/${s.b.id}/dependencies`, 403, { message: CARD }],
-			['DELETE', `/api/v1/cards/${s.a.id}/dependencies`, 403, { message: "No access to this card's board" }],
-			['POST', `/api/v1/cards/${s.a.id}/labels`, 403, { message: 'No edit access to this board' }],
-			['DELETE', `/api/v1/cards/${s.a.id}/labels`, 403, { message: 'No edit access to this board' }],
-			['PUT', `/api/v1/cards/${s.b.id}/move`, 403, { message: 'No edit access to this board' }],
-			['POST', `/api/v1/cards/${s.a.id}/subtasks`, 403, { message: CARD }],
-			['POST', `/api/v1/cards/${s.a.id}/tokens`, 403, { message: `No edit access to the board holding card #${s.a.id}` }],
-			['PUT', `/api/v1/comments/${s.comment.id}`, 403, { message: 'No edit access to this board' }],
+			// What is on a board the caller cannot open is answered as not there (card 2719).
+			['PUT', `/api/v1/cards/${s.a.id}`, 404, { message: NO_CARD }],
+			['DELETE', `/api/v1/cards/${s.c.id}`, 404, { message: NO_CARD }],
+			['POST', `/api/v1/cards/${s.b.id}/assignees`, 404, { message: NO_CARD }],
+			['DELETE', `/api/v1/cards/${s.a.id}/assignees`, 404, { message: NO_CARD }],
+			['POST', `/api/v1/cards/${s.a.id}/comments`, 404, { message: NO_CARD }],
+			['POST', `/api/v1/cards/${s.b.id}/dependencies`, 404, { message: NO_CARD }],
+			['DELETE', `/api/v1/cards/${s.a.id}/dependencies`, 404, { message: NO_CARD }],
+			['POST', `/api/v1/cards/${s.a.id}/labels`, 404, { message: NO_CARD }],
+			['DELETE', `/api/v1/cards/${s.a.id}/labels`, 404, { message: NO_CARD }],
+			['PUT', `/api/v1/cards/${s.b.id}/move`, 404, { message: NO_CARD }],
+			['POST', `/api/v1/cards/${s.a.id}/subtasks`, 404, { message: NO_CARD }],
+			['POST', `/api/v1/cards/${s.a.id}/tokens`, 404, { message: `Card #${s.a.id} does not exist` }],
+			['PUT', `/api/v1/comments/${s.comment.id}`, 404, { message: 'Comment not found' }],
 			// The board is asked about before whose comment it is (card 2283).
-			['DELETE', `/api/v1/comments/${s.comment.id}`, 403, { message: 'No edit access to this board' }],
-			['POST', '/api/v1/milestones', 403, { message: 'No edit access to that board' }],
+			['DELETE', `/api/v1/comments/${s.comment.id}`, 404, { message: 'Comment not found' }],
+			['POST', '/api/v1/milestones', 404, { message: 'Board not found' }],
 			['PATCH', `/api/v1/milestones/${s.milestone.id}`, 403, { message: MILESTONE }],
 			['DELETE', `/api/v1/milestones/${s.milestone.id}`, 403, { message: MILESTONE }],
 			['POST', `/api/v1/milestones/${s.milestone.id}/cards`, 403, { message: MILESTONE }],
 			['DELETE', `/api/v1/milestones/${s.milestone.id}/cards`, 403, { message: MILESTONE }],
 			['POST', `/api/v1/milestones/${s.milestone.id}/cards/bulk`, 403, { message: MILESTONE }],
 			['DELETE', `/api/v1/milestones/${s.milestone.id}/cards/bulk`, 403, { message: MILESTONE }],
-			['PUT', `/api/v1/subtasks/${s.subtask.id}`, 403, { message: SUBTASK }],
-			['DELETE', `/api/v1/subtasks/${s.subtask.id}`, 403, { message: SUBTASK }],
-			['POST', `/api/v1/subtasks/${s.subtask.id}/dependencies`, 403, { message: SUBTASK }],
+			['PUT', `/api/v1/subtasks/${s.subtask.id}`, 404, { message: 'Subtask not found' }],
+			['DELETE', `/api/v1/subtasks/${s.subtask.id}`, 404, { message: 'Subtask not found' }],
+			['POST', `/api/v1/subtasks/${s.subtask.id}/dependencies`, 404, { message: 'Subtask not found' }],
 			// The subtask in the path need only be readable for a removal, as the card route's DELETE.
-			['DELETE', `/api/v1/subtasks/${s.subtask.id}/dependencies`, 403, { message: 'No access' }],
-			['POST', `/api/v1/subtasks/${s.subtask.id}/tokens`, 403, { message: `No edit access to the board holding subtask #${s.subtask.id}` }],
-			['DELETE', `/api/v1/tokens/${s.entry.id}`, 403, { message: `No edit access to the board holding card #${s.a.id}` }]
+			['DELETE', `/api/v1/subtasks/${s.subtask.id}/dependencies`, 404, { message: 'Subtask not found' }],
+			['POST', `/api/v1/subtasks/${s.subtask.id}/tokens`, 404, { message: `Subtask #${s.subtask.id} does not exist` }],
+			['DELETE', `/api/v1/tokens/${s.entry.id}`, 404, { message: `Token entry #${s.entry.id} does not exist` }]
 		];
+		const got: unknown[] = [];
+		const wanted: unknown[] = [];
 		for (const [method, path, status, answer] of refusals) {
 			const body = bodies.get(`${method} ${path}`);
 			const res = await api(method, path, { user: admin, credential, ...(body === undefined ? {} : { body }) });
-			expect({ method, path, status: res.status, body: res.body }).toEqual({ method, path, status, body: answer });
+			got.push({ method, path, status: res.status, body: res.body });
+			wanted.push({ method, path, status, body: answer });
 		}
+		expect(got).toEqual(wanted);
 
 		// The two batches that answer every problem at once are refused whole, 409.
 		const links = await api('POST', '/api/v1/dependencies/bulk', { user: admin, credential, body: bodies.get('POST /api/v1/dependencies/bulk') });
 		expect(links.status).toBe(409);
 		expect(links.body).toMatchObject({ message: 'Batch rejected — nothing was written', written: 0, wouldCreate: 0 });
-		expect(links.body.forbidden).toHaveLength(2);
+		// Each link's end is on a board the caller cannot open: reported as not there (card 2719, D12).
+		expect(links.body.forbidden).toEqual([]);
+		expect(links.body.rejected).toHaveLength(2);
 		const spent = await api('POST', '/api/v1/tokens/bulk', { user: admin, credential, body: bodies.get('POST /api/v1/tokens/bulk') });
 		expect(spent.status).toBe(409);
 		expect(spent.body).toMatchObject({ message: 'Batch rejected — nothing was written', written: 0 });
@@ -2683,7 +2704,7 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 		expect(sent.events).toEqual([]);
 	});
 
-	it("decides with the account as it is now, through the gate: an administrator's key, lowered while a move's body arrives, is refused 403 and fires no webhook", async () => {
+	it("decides with the account as it is now, through the gate: an administrator's key, lowered while a move's body arrives, is refused 404 and fires no webhook", async () => {
 		const s = scene();
 		const admin = makeUser({ username: 'was-admin', role: 'admin' });
 		const key = makeApiKey(admin);
@@ -2697,7 +2718,8 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 		});
 		await sent.settle();
 
-		expect(res).toEqual({ status: 403, body: { message: 'No edit access to this board' } });
+		// Lowered, they cannot open the board: as a card that is not there (card 2719).
+		expect(res).toEqual({ status: 404, body: { message: 'Card not found' } });
 		expectUnchanged(before!);
 		expect(sent.webhooks).toEqual([]);
 	});

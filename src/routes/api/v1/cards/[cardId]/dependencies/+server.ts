@@ -7,10 +7,11 @@ import { addWorkDependency, readWorkDependencies, removeWorkDependency } from '$
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
-/** This route's words for a caller who may not read the card in its path, which it keeps (card 2012, R2). */
-const NO_ACCESS = "No access to this card's board";
-
-/** And for one who may not edit it. */
+/**
+ * This route's words for a caller who can open the card's board and may not
+ * edit it, which it keeps (card 2012, R2). One who cannot open it is answered
+ * `404 Card not found`, as for a card that is not there (card 2719).
+ */
 const NO_EDIT = "No edit access to this card's board";
 
 /**
@@ -26,14 +27,15 @@ const NO_EDIT = "No edit access to this card's board";
  * The read is `readWorkDependencies` in `$lib/server/work-dependencies`, which
  * the internal route shares (card 2012); this route asks it for each link's
  * id, who made it and when (`withLinkDetails`). The card is looked for and the
- * caller checked (404, then 403) before `direction` is read (400).
+ * caller checked (404, for a card on a board they cannot open too: card 2719)
+ * before `direction` is read (400).
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
 	const cardId = pathId(params.cardId, 'card');
 
-	const links = readWorkDependencies(locals.user, { kind: 'card', id: cardId }, { says: NO_ACCESS, withLinkDetails: true });
+	const links = readWorkDependencies(locals.user, { kind: 'card', id: cardId }, { withLinkDetails: true });
 
 	const direction = url.searchParams.get('direction') ?? 'both';
 	if (!['blocked-by', 'blocks', 'both'].includes(direction)) {
@@ -109,7 +111,7 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 	// that board, naming this card where it is on that board and otherwise the
 	// card that waits. The work is `removeWorkDependency` (card 2012).
 	const { removed } = writeAs(locals, (caller) =>
-		removeWorkDependency(caller, { kind: 'card', id: cardId }, body, { source: 'api', says: NO_ACCESS })
+		removeWorkDependency(caller, { kind: 'card', id: cardId }, body, { source: 'api' })
 	);
 
 	return json({ success: true, removed });

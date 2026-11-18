@@ -585,7 +585,8 @@ describe('the board a request names (card 2128)', () => {
 		const before = snapshotDb();
 		const notTheirs = await api('POST', '/api/requests', { user: other, body: submission() });
 		const missing = await api('POST', '/api/requests', { user: other, body: submission({ desiredBoardId: 99999 }) });
-		expect([notTheirs.status, notTheirs.body]).toEqual([403, { message: 'No access to this board' }]);
+		// One they cannot open is answered as one that is not there (card 2719).
+		expect([notTheirs.status, notTheirs.body]).toEqual([404, { message: 'Board not found' }]);
 		expect([missing.status, missing.body]).toEqual([404, { message: 'Board not found' }]);
 		expectUnchanged(before);
 		expect(mail.sent).toHaveLength(0);

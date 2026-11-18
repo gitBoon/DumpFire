@@ -94,8 +94,10 @@ export function toggleCardLabel(caller: SessionUser | null, at: Record<string, n
 
 /**
  * Put a label on a card (`POST /api/v1/cards/:cardId/labels`). Body:
- * `{ labelId }`. A label of another board is a 400. One already on the card
- * is left as it is, with nobody told; the answer says whether it was.
+ * `{ labelId }`. A label of another board, wherever it is, is answered as a
+ * label that is not there, `404 Label not found`: a 400 for one that is there
+ * told that it exists (card 2719, S2). One already on the card is left as it
+ * is, with nobody told; the answer says whether it was.
  */
 export function addCardLabel(
 	caller: SessionUser | null,
@@ -111,8 +113,7 @@ export function addCardLabel(
 	const labelId = readId(body, 'labelId', { required: true, says: { missing: 'labelId is required' } });
 
 	const label = db.select().from(labels).where(eq(labels.id, labelId)).get();
-	if (!label) throw error(404, 'Label not found');
-	if (label.boardId !== boardId) throw error(400, "Label does not belong to this card's board");
+	if (!label || label.boardId !== boardId) throw error(404, 'Label not found');
 
 	if (isOn(cardId, labelId)) return { already: true, labelId };
 	putOn(cardId, labelId, boardId);

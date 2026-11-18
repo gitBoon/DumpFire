@@ -425,12 +425,16 @@ export interface CreateMilestoneInput {
 /**
  * The board a new milestone is to belong to, if it is there and the caller
  * may edit it. A route that reads its body field by field asks this first,
- * as the milestone's guard, and reads the other fields after it.
+ * as the milestone's guard, and reads the other fields after it. A board the
+ * caller cannot open is answered as one that is not there (card 2719).
  */
 export function requireMilestoneBoard(user: SessionUser, boardId: number): void {
 	const board = db.select({ id: boards.id }).from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) throw new MilestoneError(404, 'Board not found');
-	if (!canEditBoard(user, boardId)) throw new MilestoneError(403, 'No edit access to that board');
+	if (!canEditBoard(user, boardId)) {
+		if (!canViewBoard(user, boardId)) throw new MilestoneError(404, 'Board not found');
+		throw new MilestoneError(403, 'No edit access to that board');
+	}
 }
 
 export function createMilestone(user: SessionUser, input: CreateMilestoneInput): MilestoneRow {
@@ -611,7 +615,11 @@ export function deleteMilestone(
  */
 export const ARCHIVED_CARD = 'Card does not exist or is archived';
 
-/** The card, and the board it is on, if the caller may edit that board. */
+/**
+ * The card, and the board it is on, if the caller may edit that board. One on
+ * a board the caller cannot open is answered as one that is not there (card
+ * 2719).
+ */
 function editableCard(user: SessionUser, cardId: number) {
 	const card = db
 		.select({ id: cards.id, title: cards.title, columnId: cards.columnId, milestoneId: cards.milestoneId, archivedAt: cards.archivedAt })
@@ -621,8 +629,11 @@ function editableCard(user: SessionUser, cardId: number) {
 	if (!card) throw new MilestoneError(404, 'Card not found');
 
 	const col = db.select({ boardId: columns.boardId }).from(columns).where(eq(columns.id, card.columnId)).get();
-	if (!col) throw new MilestoneError(404, 'Card column not found');
-	if (!canEditBoard(user, col.boardId)) throw new MilestoneError(403, 'No edit access to this card\'s board');
+	if (!col) throw new MilestoneError(404, 'Card not found');
+	if (!canEditBoard(user, col.boardId)) {
+		if (!canViewBoard(user, col.boardId)) throw new MilestoneError(404, 'Card not found');
+		throw new MilestoneError(403, 'No edit access to this card\'s board');
+	}
 	return { card, boardId: col.boardId };
 }
 

@@ -200,8 +200,9 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 			if (!user) throw error(404, 'User not found');
 		}
 
-		// A board the caller names is one they can open: 404 for none, 403 for one
-		// they cannot. Any board was taken, and named to whoever the request is for.
+		// A board the caller names is one they can open: 404 for none, and for one
+		// they cannot open alike (card 2719). Any board was taken, and named to
+		// whoever the request is for.
 		if (desiredBoardId !== null) requireBoard(caller, desiredBoardId, 'view');
 
 		const name = caller ? caller.username : (requesterName || 'Anonymous');

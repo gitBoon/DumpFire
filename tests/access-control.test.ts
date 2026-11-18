@@ -84,7 +84,8 @@ describe('cards: the board comes from the card, not the request body', () => {
 			body: { title: 'Hijacked', boardId: B.board.id }
 		});
 
-		expect(res.status).toBe(403);
+		// A card on a board the caller cannot open is answered as one that is not there (card 2719).
+		expect([res.status, res.body.message]).toEqual([404, 'Card not found']);
 		expect(cardRow(card.id)?.title).toBe('Original');
 	});
 
@@ -93,7 +94,7 @@ describe('cards: the board comes from the card, not the request body', () => {
 
 		for (const path of [`/api/cards/${card.id}`, `/api/cards/${card.id}?permanent=true`]) {
 			const res = await api('DELETE', path, { user: outsider, body: { boardId: B.board.id } });
-			expect(res.status).toBe(403);
+			expect([res.status, res.body.message]).toEqual([404, 'Card not found']);
 		}
 		expect(cardRow(card.id)?.archivedAt).toBeNull();
 	});
@@ -104,7 +105,7 @@ describe('cards: the board comes from the card, not the request body', () => {
 			body: { columnId: A.cols['To Do'].id, boardId: B.board.id, title: 'Planted' }
 		});
 
-		expect(res.status).toBe(403);
+		expect([res.status, res.body.message]).toEqual([404, 'Column not found']);
 		expect(db.select().from(cards).all()).toHaveLength(0);
 	});
 
@@ -146,7 +147,7 @@ describe('cards: only named fields are writable', () => {
 			body: { columnId: A.cols['To Do'].id }
 		});
 
-		expect(res.status).toBe(403);
+		expect([res.status, res.body.message]).toEqual([404, 'Column not found']);
 		expect(cardRow(card.id)?.columnId).toBe(B.cols['To Do'].id);
 	});
 
@@ -315,7 +316,7 @@ describe('reorder: checked whether or not a board id is sent', () => {
 			body: { updates: [{ id: card.id, columnId: A.cols['Complete'].id, position: 0 }] }
 		});
 
-		expect(res.status).toBe(403);
+		expect([res.status, res.body.message]).toEqual([404, `Card ${card.id} not found`]);
 		expect(cardRow(card.id)?.columnId).toBe(A.cols['To Do'].id);
 	});
 
@@ -330,7 +331,7 @@ describe('reorder: checked whether or not a board id is sent', () => {
 			}
 		});
 
-		expect(res.status).toBe(403);
+		expect([res.status, res.body.message]).toEqual([404, `Card ${card.id} not found`]);
 	});
 
 	it('refuses to drag a card onto a board the caller cannot edit', async () => {
@@ -341,7 +342,7 @@ describe('reorder: checked whether or not a board id is sent', () => {
 			body: { updates: [{ id: card.id, columnId: A.cols['To Do'].id, position: 0 }] }
 		});
 
-		expect(res.status).toBe(403);
+		expect([res.status, res.body.message]).toEqual([404, 'Column not found']);
 	});
 
 	it('keeps a reorder within one board', async () => {
@@ -373,10 +374,10 @@ describe('reorder: checked whether or not a board id is sent', () => {
 		const col = A.cols['To Do'];
 		const updates = [{ id: col.id, position: 99 }];
 
-		expect((await api('PUT', '/api/columns/reorder', { user: outsider, body: { updates } })).status).toBe(403);
-		expect(
-			(await api('PUT', '/api/columns/reorder', { user: outsider, body: { updates, boardId: B.board.id } })).status
-		).toBe(403);
+		const without = await api('PUT', '/api/columns/reorder', { user: outsider, body: { updates } });
+		const named = await api('PUT', '/api/columns/reorder', { user: outsider, body: { updates, boardId: B.board.id } });
+		expect([without.status, without.body.message]).toEqual([404, 'Column not found']);
+		expect([named.status, named.body.message]).toEqual([404, 'Column not found']);
 		expect(db.select().from(columns).where(eq(columns.id, col.id)).get()?.position).toBe(col.position);
 	});
 });
@@ -397,7 +398,11 @@ describe('subtasks', () => {
 		});
 		const remove = await api('DELETE', `/api/subtasks/${sub.id}`, { user: outsider, body: spoof });
 
-		expect([create.status, update.status, remove.status]).toEqual([403, 403, 403]);
+		expect([create, update, remove].map((res) => [res.status, res.body.message])).toEqual([
+			[404, 'Card not found'],
+			[404, 'Subtask not found'],
+			[404, 'Subtask not found']
+		]);
 		const rows = db.select().from(subtasks).all();
 		expect(rows).toHaveLength(1);
 		expect(rows[0].title).toBe('Original');
@@ -406,7 +411,8 @@ describe('subtasks', () => {
 	it('refuses to list the subtasks of a card on a board the caller cannot open', async () => {
 		const card = makeCard(A.cols['To Do']);
 		makeSubtask(card);
-		expect((await api('GET', `/api/subtasks?cardId=${card.id}`, { user: outsider })).status).toBe(403);
+		const refused = await api('GET', `/api/subtasks?cardId=${card.id}`, { user: outsider });
+		expect([refused.status, refused.body.message]).toEqual([404, 'Card not found']);
 		expect((await api('GET', `/api/subtasks?cardId=${card.id}`, { user: viewer })).status).toBe(200);
 	});
 
@@ -439,7 +445,10 @@ describe('labels', () => {
 		});
 		const remove = await api('DELETE', '/api/labels', { user: outsider, body: { id: label.id, ...spoof } });
 
-		expect([toggle.status, remove.status]).toEqual([403, 403]);
+		expect([toggle, remove].map((res) => [res.status, res.body.message])).toEqual([
+			[404, 'Card not found'],
+			[404, 'Label not found']
+		]);
 		expect(db.select().from(cardLabels).all()).toHaveLength(0);
 	});
 
@@ -462,7 +471,8 @@ describe('archive and restore', () => {
 		makeCard(A.cols['To Do'], { archivedAt: stamp(), title: 'Secret' });
 
 		expect((await api('GET', `/api/boards/${A.board.id}/archive`)).status).toBe(401);
-		expect((await api('GET', `/api/boards/${A.board.id}/archive`, { user: outsider })).status).toBe(403);
+		const refused = await api('GET', `/api/boards/${A.board.id}/archive`, { user: outsider });
+		expect([refused.status, refused.body.message]).toEqual([404, 'Board not found']);
 		const ok = await api('GET', `/api/boards/${A.board.id}/archive`, { user: viewer });
 		expect(ok.status).toBe(200);
 		expect(ok.body).toHaveLength(1);
@@ -479,7 +489,8 @@ describe('archive and restore', () => {
 		const anonymous = await api('POST', `/api/cards/${card.id}/restore`);
 		const asViewer = await api('POST', `/api/cards/${card.id}/restore`, { user: viewer });
 
-		expect([viaBoard.status, viaCard.status, anonymous.status, asViewer.status]).toEqual([403, 403, 401, 403]);
+		expect([viaBoard.status, viaCard.status, anonymous.status, asViewer.status]).toEqual([404, 404, 401, 403]);
+		expect([viaBoard.body.message, viaCard.body.message]).toEqual(['Card not found', 'Card not found']);
 		expect(cardRow(card.id)?.archivedAt).not.toBeNull();
 	});
 
@@ -512,7 +523,12 @@ describe('categories', () => {
 			body: { name: 'Hijacked' }
 		});
 
-		expect([rename.status, remove.status, create.status, v1Rename.status]).toEqual([403, 403, 403, 403]);
+		expect([rename, remove, create, v1Rename].map((res) => [res.status, res.body.message])).toEqual([
+			[404, 'Category not found'],
+			[404, 'Category not found'],
+			[404, 'Board not found'],
+			[404, 'Category not found']
+		]);
 		expect(db.select().from(categories).all().map((c) => c.name)).toEqual(['Original']);
 		expect((await api('PUT', `/api/categories/${category.id}`, { user: editor, body: { name: 'Ok' } })).status).toBe(200);
 	});
@@ -531,8 +547,11 @@ describe('categories', () => {
 		db.update(boards).set({ categoryId: grouping.id }).where(eq(boards.id, A.board.id)).run();
 
 		for (const path of [`/api/board-categories/${grouping.id}`, `/api/v1/board-categories/${grouping.id}`]) {
-			expect((await api('PUT', path, { user: outsider, body: { name: 'Hijacked' } })).status).toBe(403);
-			expect((await api('DELETE', path, { user: outsider })).status).toBe(403);
+			// The grouping holds only board A, which the outsider cannot open: as one that is not there (card 2719, S5).
+			const rename = await api('PUT', path, { user: outsider, body: { name: 'Hijacked' } });
+			const remove = await api('DELETE', path, { user: outsider });
+			expect([rename.status, rename.body.message]).toEqual([404, 'Board category not found']);
+			expect([remove.status, remove.body.message]).toEqual([404, 'Board category not found']);
 		}
 		expect(
 			(await api('PUT', `/api/board-categories/${grouping.id}`, { user: owner, body: { name: 'Renamed' } })).status
@@ -543,7 +562,8 @@ describe('categories', () => {
 describe('favourites and templates', () => {
 	it('refuses to favourite a board the caller cannot open', async () => {
 		expect((await api('POST', `/api/boards/${A.board.id}/favourite`)).status).toBe(401);
-		expect((await api('POST', `/api/boards/${A.board.id}/favourite`, { user: outsider })).status).toBe(403);
+		const refused = await api('POST', `/api/boards/${A.board.id}/favourite`, { user: outsider });
+		expect([refused.status, refused.body.message]).toEqual([404, 'Board not found']);
 		expect(db.select().from(boardFavourites).all()).toHaveLength(0);
 		expect((await api('POST', `/api/boards/${A.board.id}/favourite`, { user: viewer })).body.favourited).toBe(true);
 	});
@@ -559,9 +579,9 @@ describe('favourites and templates', () => {
 			body: { boardId: A.board.id, name: 'Planted' }
 		});
 
-		expect(byBoard.status).toBe(403);
+		expect([byBoard.status, byBoard.body.message]).toEqual([404, 'Board not found']);
 		expect(everything.body.map((t: { name: string }) => t.name)).toEqual(['Shared']);
-		expect(create.status).toBe(403);
+		expect([create.status, create.body.message]).toEqual([404, 'Board not found']);
 		expect((await api('GET', `/api/templates?boardId=${A.board.id}`, { user: viewer })).body).toHaveLength(2);
 	});
 });
@@ -588,7 +608,7 @@ describe('task requests', () => {
 			body: { action: 'accept', boardId: A.board.id, columnId: A.cols['To Do'].id }
 		});
 
-		expect(res.status).toBe(403);
+		expect([res.status, res.body.message]).toEqual([404, 'Column not found']);
 		expect(db.select().from(cards).all()).toHaveLength(0);
 	});
 
@@ -738,8 +758,10 @@ describe('comments and assigned work do not outlive board access', () => {
 			.get();
 		const path = `/api/cards/${card.id}/comments/${comment.id}`;
 
-		expect((await api('PUT', path, { user: outsider, body: { content: 'Edited later' } })).status).toBe(403);
-		expect((await api('DELETE', path, { user: outsider })).status).toBe(403);
+		const edit = await api('PUT', path, { user: outsider, body: { content: 'Edited later' } });
+		const remove = await api('DELETE', path, { user: outsider });
+		expect([edit.status, edit.body.message]).toEqual([404, 'Comment not found']);
+		expect([remove.status, remove.body.message]).toEqual([404, 'Comment not found']);
 		expect(db.select().from(cardComments).get()?.content).toBe('Written while a member');
 	});
 
@@ -978,8 +1000,10 @@ describe('webhook secrets and addresses', () => {
 
 	it('refuses someone who cannot open the board at all', async () => {
 		const hook = makeHook();
-		expect((await api('GET', `/api/v1/boards/${A.board.id}/webhooks`, { user: outsider })).status).toBe(403);
-		expect((await api('GET', `/api/v1/webhooks/${hook.id}`, { user: outsider })).status).toBe(403);
+		const list = await api('GET', `/api/v1/boards/${A.board.id}/webhooks`, { user: outsider });
+		expect([list.status, list.body.message]).toEqual([404, 'Board not found']);
+		const one = await api('GET', `/api/v1/webhooks/${hook.id}`, { user: outsider });
+		expect([one.status, one.body.message]).toEqual([404, 'Webhook not found']);
 	});
 });
 

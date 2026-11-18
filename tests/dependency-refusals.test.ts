@@ -290,6 +290,12 @@ describe.each(ROUTES)('$name', (route) => {
 		expect((await refused(post(viewer, self.id, { dependsOnCardId: second.id }), 403)).body).toEqual({
 			message: route.says.noEdit
 		});
+		// The other end on a board the caller cannot open is answered as one that is not there (card 2719) ...
+		expect((await refused(post(owner, self.id, { dependsOnCardId: far.id }), 404)).body).toEqual({
+			message: `#${far.id} not found`
+		});
+		// ... and on one they can open and may not edit, the 403.
+		addBoardMember(B.board, owner, 'viewer');
 		expect((await refused(post(owner, self.id, { dependsOnCardId: far.id }), 403)).body).toEqual({
 			message: `No edit access to the board holding #${far.id}`
 		});

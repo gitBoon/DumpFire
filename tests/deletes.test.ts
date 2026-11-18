@@ -646,14 +646,16 @@ describe.each([
 		const outsider = makeUser({ username: 'outsider' });
 		const before = snapshotDb();
 
-		for (const [path, body] of [
-			[`${root}/cards/${w.doomed.id}?permanent=true`],
-			[`${root}/cards/${w.doomed.id}`],
+		// The outsider cannot open board A: each is answered as a row that is not there (card 2719).
+		for (const [path, message, body] of [
+			[`${root}/cards/${w.doomed.id}?permanent=true`, 'Card not found'],
+			[`${root}/cards/${w.doomed.id}`, 'Card not found'],
 			// With the right password since card 2701, refused before it is looked at.
-			[`${root}/columns/${w.A.cols['To Do'].id}`, { currentPassword: FIXTURE_PASSWORD }],
-			[`${root}/boards/${w.A.board.id}`, { currentPassword: FIXTURE_PASSWORD }]
+			[`${root}/columns/${w.A.cols['To Do'].id}`, 'Column not found', { currentPassword: FIXTURE_PASSWORD }],
+			[`${root}/boards/${w.A.board.id}`, 'Board not found', { currentPassword: FIXTURE_PASSWORD }]
 		] as const) {
-			expect((await api('DELETE', path, { user: outsider, ...(body ? { body } : {}) })).status, path).toBe(403);
+			const res = await api('DELETE', path, { user: outsider, ...(body ? { body } : {}) });
+			expect([res.status, res.body.message], path).toEqual([404, message]);
 		}
 
 		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
