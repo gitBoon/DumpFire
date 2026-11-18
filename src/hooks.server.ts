@@ -33,6 +33,7 @@ import {
 	removeSettingsOfNonAdministrators,
 	reportInstallation
 } from '$lib/server/startup-checks';
+import { recheckStoredImages } from '$lib/server/image-recheck';
 import { ensureFormSecret } from '$lib/server/request-tokens';
 import { startChallengeSweep } from '$lib/server/sign-in-challenges';
 
@@ -145,6 +146,17 @@ endPlainRequestLinks();
 // schedulers start, and the owners hear of a schedule before its next run. It
 // never rejects. See $lib/server/startup-checks.ts.
 void announceReportSchedules();
+
+// Check, once, every image stored before card 2761 as an upload is checked
+// now: its hidden data taken out in place, or, where it is refused by the
+// check (not the image its type names, animated, too large, or malformed),
+// typed as a download, kept as it was. One WARN line with the counts, then a
+// settings row that says it was done, written only when no row failed (a row
+// that failed the same way at three starts is given up), so a second start
+// does nothing. An import of a backup runs it again. Not awaited, and before the schedulers, so the
+// attachment sweep's first run (15 minutes on) finds the files it rewrote
+// new. It never rejects. See $lib/server/image-recheck.ts.
+void recheckStoredImages();
 
 // Start the backup, report and snapshot schedulers, the decision reminder and
 // the attachment file sweep, or leave all five off. SCHEDULERS=on or =off

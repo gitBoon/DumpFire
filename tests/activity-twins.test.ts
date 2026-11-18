@@ -2965,8 +2965,25 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	],
 	// Card 2337: the card window's files. Card 2754: `/api/v1` lists a card's files and uploads an image, the card
 	// window's upload's twin through `attachImage`, which writes the same row, entry and event (`TWINS`); it deletes
-	// nothing, so the delete has no twin. The web list reads the rows itself, with their names on disk.
+	// nothing, so the delete has no twin. The web list reads the rows itself, with their names on disk. Card 2761: the
+	// card window's upload of a file declared as an image goes through `attachImage` too, as the key's does; any other
+	// file through `attachFile`, as before.
 	'src/routes/api/cards/[id]/attachments/+server.ts POST': [
+		{
+			service: 'attachImage',
+			args: [
+				code('caller'),
+				{ cardId: code('cardId') },
+				{
+					filename: code('filename'),
+					name: code('file.name'),
+					mimeType: code('checked.mimeType'),
+					extension: code('checked.extension'),
+					sizeBytes: code('checked.bytes.byteLength')
+				},
+				{ source: 'ui' }
+			]
+		},
 		{
 			service: 'attachFile',
 			args: [

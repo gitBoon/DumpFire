@@ -119,6 +119,119 @@ export function jpeg(
 	);
 }
 
+// ─── EXIF (card 2761) ───────────────────────────────────────────────────────
+
+/** What a phone writes into a photo's EXIF, each piece plainly findable in the bytes. */
+export const EXIF_MAKE = 'Pixelphone secret-maker\0';
+export const EXIF_MODEL = 'Pixelphone secret-model 9\0';
+export const EXIF_DATE = '2026:11:17 09:41:07\0';
+export const EXIF_THUMBNAIL = bytes(0xff, 0xd8, 'secret-thumbnail', 0xff, 0xd9);
+
+/** How a phone's EXIF is to be written, and the faults to write into it (card 2761, E14). */
+export type ExifOptions = {
+	/** The TIFF byte order: `II` little-endian, `MM` big-endian. */
+	order?: 'II' | 'MM';
+	/** The orientation's value (6 unless said), or null for no orientation entry at all. */
+	orientation?: number | null;
+	/** The orientation entry's type, 3 (SHORT) unless said. */
+	orientationType?: number;
+	/** The orientation entry's count, 1 unless said. */
+	orientationCount?: number;
+	/** A second orientation entry, at the end of IFD0, with this value. */
+	orientationAgain?: number;
+	/** The IFD0 offset the header gives, in place of where IFD0 is (8). */
+	ifd0Offset?: number;
+	/** The entry count IFD0 gives, in place of how many it holds. */
+	ifd0Count?: number;
+	/** The four bytes of the TIFF header, in place of the order's. */
+	header?: Bytes;
+	/** The TIFF cut this many bytes after IFD0's entries: under 4 leaves the next IFD's offset outside the segment. */
+	cutAfterIfd0Entries?: number;
+};
+
+/**
+ * The body of a JPEG's EXIF `APP1` as a phone writes it: `Exif\0\0`, then a
+ * TIFF of IFD0 (Make, Model, Orientation, XResolution as a RATIONAL, and
+ * pointers to the Exif sub-IFD and the GPS IFD, the orientation not first),
+ * the Exif sub-IFD (DateTimeOriginal), the GPS IFD (latitude and longitude,
+ * each three RATIONALs, and their references), and IFD1, the thumbnail's
+ * (JPEGInterchangeFormat and its length), then the values that do not fit in
+ * an entry, and the thumbnail. Also handed back, the GPS IFD's bytes as
+ * written and the latitude and longitude, to look for in what is kept.
+ *
+ * Laid out here, offset by offset, and not by anything under test.
+ */
+export function phoneExif(options: ExifOptions = {}): { body: Bytes; gps: Bytes; position: Bytes } {
+	const { order = 'II', orientation = 6, orientationType = 3, orientationCount = 1 } = options;
+	const w16 = (n: number) => (order === 'II' ? le16(n) : be16(n));
+	const w32 = (n: number) => (order === 'II' ? le32(n) : be32(n));
+	/** A SHORT in an entry's four value bytes: in its first two, in the file's order. */
+	const short = (n: number) => [...w16(n), 0, 0];
+	const entry = (tag: number, type: number, count: number, value: readonly number[]) => bytes(w16(tag), w16(type), w32(count), value);
+	const rational = (num: number, den: number) => [...w32(num), ...w32(den)];
+
+	const ifd0Entries = 6 + (orientation === null ? 0 : 1) + (options.orientationAgain === undefined ? 0 : 1);
+	const ifd0At = 8;
+	const exifAt = ifd0At + 2 + 12 * ifd0Entries + 4;
+	const gpsAt = exifAt + 2 + 12 + 4;
+	const ifd1At = gpsAt + 2 + 12 * 4 + 4;
+	const makeAt = ifd1At + 2 + 12 * 2 + 4;
+	const modelAt = makeAt + EXIF_MAKE.length;
+	const xResolutionAt = modelAt + EXIF_MODEL.length;
+	const dateAt = xResolutionAt + 8;
+	const latitudeAt = dateAt + EXIF_DATE.length;
+	const longitudeAt = latitudeAt + 24;
+	const thumbnailAt = longitudeAt + 24;
+
+	const orientationValue = (value: number) => (orientationType === 4 ? w32(value) : short(value));
+	const ifd0 = bytes(
+		w16(options.ifd0Count ?? ifd0Entries),
+		entry(0x010f, 2, EXIF_MAKE.length, w32(makeAt)),
+		entry(0x0110, 2, EXIF_MODEL.length, w32(modelAt)),
+		orientation === null ? [] : entry(0x0112, orientationType, orientationCount, orientationValue(orientation)),
+		entry(0x011a, 5, 1, w32(xResolutionAt)),
+		entry(0x0128, 3, 1, short(2)),
+		entry(0x8769, 4, 1, w32(exifAt)),
+		entry(0x8825, 4, 1, w32(gpsAt)),
+		options.orientationAgain === undefined ? [] : entry(0x0112, 3, 1, short(options.orientationAgain)),
+		w32(ifd1At)
+	);
+	const exif = bytes(w16(1), entry(0x9003, 2, EXIF_DATE.length, w32(dateAt)), w32(0));
+	const gps = bytes(
+		w16(4),
+		entry(0x0001, 2, 2, ['N'.charCodeAt(0), 0, 0, 0]),
+		entry(0x0002, 5, 3, w32(latitudeAt)),
+		entry(0x0003, 2, 2, ['W'.charCodeAt(0), 0, 0, 0]),
+		entry(0x0004, 5, 3, w32(longitudeAt)),
+		w32(0)
+	);
+	const ifd1 = bytes(w16(2), entry(0x0201, 4, 1, w32(thumbnailAt)), entry(0x0202, 4, 1, w32(EXIF_THUMBNAIL.length)), w32(0));
+	const position = bytes(rational(51, 1), rational(30, 1), rational(2615, 100), rational(0, 1), rational(7, 1), rational(3912, 100));
+
+	const header = options.header ?? (order === 'II' ? bytes('II', 0x2a, 0x00) : bytes('MM', 0x00, 0x2a));
+	const tiff = bytes(
+		header,
+		w32(options.ifd0Offset ?? ifd0At),
+		ifd0,
+		exif,
+		gps,
+		ifd1,
+		EXIF_MAKE,
+		EXIF_MODEL,
+		rational(72, 1),
+		EXIF_DATE,
+		position,
+		EXIF_THUMBNAIL
+	);
+	const cut = options.cutAfterIfd0Entries === undefined ? tiff : tiff.subarray(0, ifd0At + 2 + 12 * ifd0Entries + options.cutAfterIfd0Entries);
+	return { body: bytes('Exif\0\0', cut), gps, position };
+}
+
+/** A JPEG photo as a phone writes it: JFIF, then its EXIF `APP1` (`phoneExif`), then `after`. */
+export function phoneJpeg(options: ExifOptions = {}, after: Bytes[] = []): Bytes {
+	return jpeg({ before: [JFIF, jpegSegment(0xe1, phoneExif(options).body), ...after] });
+}
+
 // ─── GIF ────────────────────────────────────────────────────────────────────
 
 /** A GIF extension: its label and its data in sub-blocks, then the terminator. */

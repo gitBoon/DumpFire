@@ -2823,14 +2823,61 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.9.0, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.9.1, with its dated notes newest first, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.9.0');
+		expect(res.body.info.version).toBe('1.9.1');
+
+		// Card 2761 (E8): every dated note's heading, in the order the description gives them, newest first, in
+		// one list, in place of each note's test counting the notes before it. A new version's note is added at
+		// its head, and nothing else here moves.
+		const note = res.body.info.description as string;
+		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])).toEqual([
+			'**Changed on 2026-11-17 (version 1.9.1).**',
+			'**Changed on 2026-11-17 (version 1.9.0).**',
+			'**Changed on 2026-11-17 (version 1.8.0), breaking.**',
+			'**Changed on 2026-11-13 (version 1.7.1).**',
+			'**Changed on 2026-11-05 (version 1.7.0).**',
+			'**Changed on 2026-11-04 (version 1.6.0).**',
+			'**Changed on 2026-11-04 (version 1.5.0).**',
+			'**Changed on 2026-11-03 (version 1.4.0).**',
+			'**Changed on 2026-10-27 (version 1.3.1).**',
+			'**Changed on 2026-10-26 (version 1.3.0).**',
+			'**Changed on 2026-10-14 (version 1.2.0).**',
+			'**Changed on 2026-10-13 (version 1.1.0).**'
+		]);
+		// The newest is the version the document is.
+		expect(note.match(/\*\*Changed on [^*]+\*\*/)?.[0]).toContain(`(version ${res.body.info.version})`);
+
+		// The 1.9.1 note (card 2761): the card window's images count against a key's user's allowances, a JPEG
+		// keeps its orientation, and the images stored before the release are checked once; nothing else changed.
+		const changes = note.slice(0, note.indexOf('**Changed on 2026-11-17 (version 1.9.0).**')).slice(note.indexOf('**Changed on 2026-11-17 (version 1.9.1).**'));
+		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5]);
+		for (const words of [
+			'(card 2761)',
+			'the 30 images an hour and 100 MB a day of a key\'s user also count the images that user uploads through DumpFire\'s own card window',
+			'so a key can be answered 429 sooner',
+			'keeps its EXIF orientation, a value of 2 to 8, as one EXIF segment that holds nothing else',
+			'every other piece of its metadata is still taken out',
+			// The code review's CS1 and CR1.
+			"a JPEG's trailing data, whatever follows the end of its image (a gain map, a motion photo's video, a trailer), is cut off and the image kept",
+			'anything after the end of a PNG, GIF or WebP is still refused',
+			'every image stored before this release is checked once, at the first start after it and after an import of a backup',
+			'its sizeBytes is the smaller size',
+			'one refused by the check (not the image its type names, animated, too large, or malformed) is kept as it was and answered with mimeType application/octet-stream',
+			'(5) nothing else changed: no operation, field, status or schema'
+		]) {
+			expect(changes, words).toContain(words);
+		}
+		const upload = res.body.paths['/api/v1/cards/{cardId}/attachments'].post;
+		expect(upload.description).toContain("but a JPEG's orientation, kept as one EXIF segment that holds nothing else (since 1.9.1)");
+		expect(upload.description).toContain("a PNG, GIF or WebP with anything after its end, is refused, and a JPEG's trailing data after its image is cut off (since 1.9.1)");
+		expect(upload.description).toContain('whichever of their keys is used, and uploads through the card window count too');
+		expect(upload.responses['429'].description).toContain("and so do the user's image uploads through the card window");
 		const schema = answerSchema(name, 200);
 		expect(keysOf(res.body)).toEqual(propertiesOf(schema));
 		expect(keysOf(res.body.info)).toEqual(propertiesOf(schema.properties.info));
@@ -2995,9 +3042,7 @@ describe('what a route answers, against the schema the document gives for it', (
 		const start = note.indexOf('**Changed on 2026-10-27 (version 1.3.1).**');
 		expect(start).toBeGreaterThan(0);
 		expect(start).toBeLessThan(note.indexOf('**Changed on 2026-10-26 (version 1.3.0).**'));
-		// Eighth of the dated notes since 1.9.0 (card 2891), 1.8.0 (card 2772), 1.7.1 (card 2845), 1.7.0 (card 2754), 1.6.0 (card 2682), 1.5.0 (card 2681) and 1.4.0 (card 2673), which come first.
-		expect(start).toBeGreaterThan(note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**'));
-		expect(note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**')).toBeGreaterThan(note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**'));
+		// Where it is among the dated notes: the ordered list in the version's test (card 2761, E8).
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-10-26'));
 		expect(changes).toContain('(1) GET /api/v1/reports/activity puts a card in the created bucket');
 		expect(changes).toContain('card_reopened');
@@ -3007,15 +3052,11 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// Card 2772 (E8): a breaking change, so a minor version and a note of its own, dated; the
 	// deadline said where a key is described (bearerAuth) and where its refusal is (Unauthorized).
-	// Second since 1.9.0 (card 2891), whose note is first; the version is pinned with the document's answer.
-	it('says in the 1.8.0 note, second of the dated notes, that keys made before it stop working 60 days after it unless kept (card 2772)', () => {
+	// Where it is among the dated notes is the ordered list in the version's test (card 2761, E8).
+	it('says in the 1.8.0 note that keys made before it stop working 60 days after it unless kept (card 2772)', () => {
 		const note = spec.info.description as string;
 		const start = note.indexOf('**Changed on 2026-11-17 (version 1.8.0), breaking.**');
 		expect(start).toBeGreaterThan(0);
-		// After the 1.9.0 note (card 2891) alone.
-		const nineteen = note.indexOf('**Changed on 2026-11-17 (version 1.9.0).**');
-		expect(note.indexOf('**Changed on')).toBe(nineteen);
-		expect(note.indexOf('**Changed on', nineteen + 1)).toBe(start);
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-13 (version 1.7.1).**'));
 		expect(changes.startsWith('**Changed on 2026-11-17 (version 1.8.0), breaking.** API keys made before this release stop working 60 days after it unless kept on the Account page (card 2772)')).toBe(true);
 		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3]);
@@ -3043,15 +3084,11 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(note).toContain('a write whose key is ended (revoked, expired, or ended by a password reset of its user) while its body is still arriving');
 	});
 
-	// Card 2845: a note of its own, for a change of what costUsd answers; third since 1.9.0 (card 2891) and 1.8.0 (card 2772).
-	it('announces the Fable 5.2 and Mythos 5.2 prices and Sonnet 5.5\'s cache reads in the 1.7.1 note, third of the dated notes (card 2845)', () => {
+	// Card 2845: a note of its own, for a change of what costUsd answers.
+	it('announces the Fable 5.2 and Mythos 5.2 prices and Sonnet 5.5\'s cache reads in the 1.7.1 note (card 2845)', () => {
 		const note = spec.info.description as string;
 		const start = note.indexOf('**Changed on 2026-11-13 (version 1.7.1).**');
 		expect(start).toBeGreaterThan(0);
-		// After the 1.9.0 note (card 2891) and the 1.8.0 note (card 2772) alone.
-		const eighteen = note.indexOf('**Changed on 2026-11-17 (version 1.8.0), breaking.**');
-		expect(note.indexOf('**Changed on', note.indexOf('**Changed on') + 1)).toBe(eighteen);
-		expect(note.indexOf('**Changed on', eighteen + 1)).toBe(start);
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-05 (version 1.7.0).**'));
 		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3]);
 		for (const words of ['claude-fable-5-2 and claude-mythos-5-2 at $8 / $40 per million, with cache reads at $0.20', 'cache reads of claude-sonnet-5-5 are priced at $0.10 per million', 're-price past entries', '(3) nothing else changed']) {
@@ -3059,16 +3096,10 @@ describe('what a route answers, against the schema the document gives for it', (
 		}
 	});
 
-	it('announces the attachments operations, the image upload and its limits in the 1.7.0 note, fourth of the dated notes (card 2754)', () => {
+	it('announces the attachments operations, the image upload and its limits in the 1.7.0 note (card 2754)', () => {
 		const note = spec.info.description as string;
 		const start = note.indexOf('**Changed on 2026-11-05 (version 1.7.0).**');
 		expect(start).toBeGreaterThan(0);
-		// After the 1.9.0 note (card 2891), the 1.8.0 note (card 2772) and the 1.7.1 note (card 2845) alone.
-		const eighteen = note.indexOf('**Changed on 2026-11-17 (version 1.8.0), breaking.**');
-		const seventeenOne = note.indexOf('**Changed on 2026-11-13 (version 1.7.1).**');
-		expect(note.indexOf('**Changed on', note.indexOf('**Changed on') + 1)).toBe(eighteen);
-		expect(note.indexOf('**Changed on', eighteen + 1)).toBe(seventeenOne);
-		expect(note.indexOf('**Changed on', seventeenOne + 1)).toBe(start);
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**'));
 		const numbers = [...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]));
 		expect(numbers).toEqual([1, 2, 3, 4, 5, 6, 7]);
@@ -3095,25 +3126,12 @@ describe('what a route answers, against the schema the document gives for it', (
 			'POST /api/v1/cards/{cardId}/attachments',
 			'GET /api/v1/cards/{cardId}/attachments/{attachmentId}'
 		]);
-
-		// The 1.6.0 note (card 2682) is third.
-		const second = note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**');
-		expect(second).toBeGreaterThan(start);
-		expect(note.indexOf('**Changed on', start + 1)).toBe(second);
 	});
 
-	it('announces the decisions operations and what a key does not do with a decision in the 1.6.0 note, fifth of the dated notes (card 2682)', () => {
+	it('announces the decisions operations and what a key does not do with a decision in the 1.6.0 note (card 2682)', () => {
 		const note = spec.info.description as string;
 		const start = note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**');
 		expect(start).toBeGreaterThan(0);
-		// After the 1.9.0 note (card 2891), the 1.8.0 note (card 2772), the 1.7.1 note (card 2845) and the 1.7.0 note (card 2754) alone.
-		const eighteen = note.indexOf('**Changed on 2026-11-17 (version 1.8.0), breaking.**');
-		const seventeenOne = note.indexOf('**Changed on 2026-11-13 (version 1.7.1).**');
-		const seventeen = note.indexOf('**Changed on 2026-11-05 (version 1.7.0).**');
-		expect(note.indexOf('**Changed on', note.indexOf('**Changed on') + 1)).toBe(eighteen);
-		expect(note.indexOf('**Changed on', eighteen + 1)).toBe(seventeenOne);
-		expect(note.indexOf('**Changed on', seventeenOne + 1)).toBe(seventeen);
-		expect(note.indexOf('**Changed on', seventeen + 1)).toBe(start);
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**'));
 		const numbers = [...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]));
 		expect(numbers).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -3136,26 +3154,12 @@ describe('what a route answers, against the schema the document gives for it', (
 		const decisions = OPS.filter((op) => (op.entry.tags ?? []).includes('Decisions')).map((op) => op.name);
 		expect(decisions).toHaveLength(17);
 		expect(decisions.filter((name) => /\/(open|close|republish|dry-run|resend|rule|release|publish)$/.test(name))).toEqual([]);
-
-		// The 1.5.0 note (card 2681) is second.
-		const second = note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**');
-		expect(second).toBeGreaterThan(start);
-		expect(note.indexOf('**Changed on', start + 1)).toBe(second);
 	});
 
-	it('announces the people and groups operations, the refused keys and no addresses in the 1.5.0 note, sixth of the dated notes (card 2681)', () => {
+	it('announces the people and groups operations, the refused keys and no addresses in the 1.5.0 note (card 2681)', () => {
 		const note = spec.info.description as string;
 		const start = note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**');
 		expect(start).toBeGreaterThan(0);
-		// After the 1.9.0 note (card 2891), the 1.8.0 note (card 2772), the 1.7.1 note (card 2845), the 1.7.0 note (card 2754) and the 1.6.0 note (card 2682) alone.
-		const eighteen = note.indexOf('**Changed on 2026-11-17 (version 1.8.0), breaking.**');
-		const seventeenOne = note.indexOf('**Changed on 2026-11-13 (version 1.7.1).**');
-		const first = note.indexOf('**Changed on 2026-11-05 (version 1.7.0).**');
-		expect(note.indexOf('**Changed on', note.indexOf('**Changed on') + 1)).toBe(eighteen);
-		expect(note.indexOf('**Changed on', eighteen + 1)).toBe(seventeenOne);
-		expect(note.indexOf('**Changed on', seventeenOne + 1)).toBe(first);
-		expect(note.indexOf('**Changed on', first + 1)).toBe(note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**'));
-		expect(note.indexOf('**Changed on', note.indexOf('**Changed on', first + 1) + 1)).toBe(start);
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-03'));
 		expect(changes).toContain('GET /api/v1/people and GET /api/v1/people-groups');
 		expect(changes).toContain("No answer carries a person's email address or account id");
@@ -3173,11 +3177,8 @@ describe('what a route answers, against the schema the document gives for it', (
 			'PUT /api/v1/people-groups/{groupId}/members'
 		]);
 
-		// The 1.4.0 note (card 2673) comes next.
-		const second = note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**');
-		expect(second).toBeGreaterThan(start);
-		expect(note.indexOf('**Changed on', start + 1)).toBe(second);
-		const earlier = note.slice(second, note.indexOf('**Changed on 2026-10-27'));
+		// The 1.4.0 note (card 2673), which comes next (the ordered list in the version's test).
+		const earlier = note.slice(note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**'), note.indexOf('**Changed on 2026-10-27'));
 		expect(earlier).toContain('every board answer, Board and BoardDetail, carries productOwnerUserId');
 		expect(earlier).toContain('PUT /api/v1/boards/{boardId} takes productOwnerUserId');
 	});

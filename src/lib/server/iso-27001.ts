@@ -475,18 +475,24 @@ export const CHECKLIST: readonly IsoItem[] = [
 		title: 'Protection against malware',
 		theme: 'technological',
 		applicability: 'supports',
-		status: 'partly-met',
+		status: 'met',
 		how:
-			'Images attached through the API are checked byte by byte, and attachments are served with nosniff and a sandbox. ' +
-			'Still open: the web upload is not checked the same way.',
+			'Every image attached, through the API or the card window, is checked byte by byte by allow-list: the type its bytes are, ' +
+			"metadata taken out but a JPEG's orientation, animation refused, data after a PNG's, GIF's or WebP's end refused and after a JPEG's " +
+			'image cut off; capped at 20 a card and 30 uploads an hour ' +
+			'and 100 MB a day for each account. The images stored before were checked once in the same way (card 2761). Every other file ' +
+			'is stored as sent and only ever served as a download; every attachment is served with nosniff and a sandbox.',
 		evidence: [
 			{ path: 'src/lib/server/image-check.ts', symbol: 'checkImage' },
 			{ path: 'tests/image-check.test.ts' },
-			{ path: 'src/lib/server/gate-answers.ts', symbol: 'nosniff' }
+			{ path: 'src/lib/server/gate-answers.ts', symbol: 'nosniff' },
+			{ path: 'src/routes/api/cards/[id]/attachments/+server.ts' },
+			{ path: 'src/lib/server/image-recheck.ts', symbol: 'recheckStoredImages' },
+			{ path: 'tests/uploads.test.ts' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2761],
-		organisationalPart: 'Malware protection on the host and on endpoints.'
+		gapCards: [],
+		organisationalPart: 'Malware protection on the host and on endpoints, which is what scans a file downloaded from a card: DumpFire checks images only.'
 	},
 	{
 		ref: 'A.8.8',

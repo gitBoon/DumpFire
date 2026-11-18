@@ -129,7 +129,8 @@ const BODY_READERS = ['readBody'];
 const ALLOWED: Record<string, string> = {
 	'src/routes/api/cards/[id]/attachments/+server.ts POST':
 		'The upload asks before it reads 25 MB, so that a caller with no access is not sent it, and asks again with the row inside ' +
-		'the transaction that attaches it (docs/authentication-security.md, "An upload is the one request that checks twice").',
+		'the transaction that attaches it (docs/authentication-security.md, "An upload is the one request that checks twice"); ' +
+		'and, for an image, counts the upload after the form is read, in a writeAs (card 2761, D2: the type is inside the form).',
 	'src/routes/api/v1/cards/[cardId]/attachments/+server.ts POST':
 		"A key's image upload (card 2754), the card window's upload's twin: it asks for the card and edit access before it reads " +
 		'5 MB, as the card window does, and again with the row inside the transaction that attaches it; it reads the declared type ' +
@@ -2369,9 +2370,13 @@ const OUTSIDE_WRITE: Record<string, string> = {
 		"The file `writeUploadFile` wrote, removed after a refused or failed transaction, and the card's folder if the " +
 		'upload made it (`$lib/server/uploads`, card 2754): no row.',
 	checkImage:
-		"A key's uploaded image, checked against its declared type and its metadata taken out (`$lib/server/image-check`, card " +
-		'2754): the bytes alone, no imports, no row; it decides nothing about the caller, who is asked for in the writeAs ' +
-		'that charges the bytes and again in the one that writes the row.',
+		'An uploaded image, from either tree, checked against its declared type and its metadata taken out ' +
+		'(`$lib/server/image-check`, cards 2754 and 2761): the bytes alone, no imports, no row; it decides nothing about the ' +
+		'caller, who is asked for in the writeAs that charges the bytes and again in the one that writes the row.',
+	imageTypeOf:
+		"The card window's upload's declared type, read from the form as one of the four image types or none " +
+		'(`$lib/server/image-check`, card 2761, D1): a string alone, no row; it decides which path the file takes, not ' +
+		'anything about the caller.',
 	refuseWrongLink:
 		'A personal link that opened no decision, counted in memory against the address once the write has refused it ' +
 		'(`$lib/server/decision-view`, card 2677, decision 8): it reads no row and writes none, but one WARN line in the log ' +

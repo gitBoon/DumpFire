@@ -34,7 +34,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.9.0',
+		version: '1.9.1',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -42,6 +42,16 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-17 (version 1.9.1).** An account\'s image uploads through the card window count against the same allowances, and a JPEG keeps its orientation (card 2761): ' +
+			'(1) the 30 images an hour and 100 MB a day of a key\'s user also count the images that user uploads through DumpFire\'s own card window, and those count these, so a key can be answered 429 sooner; ' +
+			'(2) a JPEG uploaded through POST /api/v1/cards/{cardId}/attachments keeps its EXIF orientation, a value of 2 to 8, as one EXIF segment that holds nothing else, so a photo taken upright shows upright; ' +
+			'every other piece of its metadata is still taken out; ' +
+			'(3) a JPEG\'s trailing data, whatever follows the end of its image (a gain map, a motion photo\'s video, a trailer), is cut off and the image kept, where it was refused 400; ' +
+			'anything after the end of a PNG, GIF or WebP is still refused; ' +
+			'(4) every image stored before this release is checked once, at the first start after it and after an import of a backup, as an upload is now: ' +
+			'one that held metadata or trailing data is stored again without it, and its sizeBytes is the smaller size; ' +
+			'one refused by the check (not the image its type names, animated, too large, or malformed) is kept as it was and answered with mimeType application/octet-stream, and downloaded as such; ' +
+			'(5) nothing else changed: no operation, field, status or schema.\n\n' +
 			'**Changed on 2026-11-17 (version 1.9.0).** GET /api/v1/milestones takes touching=true with boardId (card 2891): ' +
 			'(1) with boardId alone the list is as before, the milestones of that board, and no milestone that spans boards; ' +
 			'touching=true adds each milestone that spans boards and has a card on that board that is not archived, as the plan page reached from a board lists them, ' +
@@ -5158,8 +5168,10 @@ const spec = {
 					'Attaches a PNG, JPEG, GIF or WebP image to a card. The body is the image itself, not JSON and not a form, sent with its type as Content-Type, ' +
 					'up to 5 MB; Content-Length may be left out (a body sent in chunks is counted as it is read). Needs edit access to the card\'s board. ' +
 					'The bytes must be the type they are sent as and a whole, still image of it, at most 8000 pixels on a side and 40 megapixels in all: ' +
-					'an animated image, or one with anything after its end, is refused. Its metadata (EXIF, XMP, text chunks, comments, thumbnails) is taken out before it is kept; ' +
-					'nothing is decoded or re-encoded. A key\'s user may upload 30 images an hour and 100 MB a day, whichever of their keys is used, and a card holds at most 20 images, ' +
+					'an animated image, or a PNG, GIF or WebP with anything after its end, is refused, and a JPEG\'s trailing data after its image is cut off (since 1.9.1). Its metadata (EXIF, XMP, text chunks, comments, thumbnails) is taken out before it is kept, ' +
+					'but a JPEG\'s orientation, kept as one EXIF segment that holds nothing else (since 1.9.1); ' +
+					'nothing is decoded or re-encoded. A key\'s user may upload 30 images an hour and 100 MB a day, whichever of their keys is used, and uploads through the card window count too; ' +
+					'a card holds at most 20 images, ' +
 					'whichever way they were attached. Logs api:attachment_added to the activity feed and emits a live board update; no webhook is sent. ' +
 					'In order: the card is looked for (404) and the caller checked (403), the Content-Type is read (415) and the upload counted against the hour (429), ' +
 					'all before a byte of the body is read; then the body is read (413 past 5 MB, not counted against the day), every byte read is counted against the day (429), ' +
@@ -5202,7 +5214,7 @@ const spec = {
 					},
 					'400': {
 						description:
-							'cardId is not a whole number of 1 or more; or the bytes are not a valid image of their type: cut short, malformed, animated, with anything after the image\'s end, ' +
+							'cardId is not a whole number of 1 or more; or the bytes are not a valid image of their type: cut short, malformed, animated, a PNG, GIF or WebP with anything after the image\'s end, ' +
 							'or over 8000 pixels on a side or 40 megapixels. The message says which. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
 					},
@@ -5235,7 +5247,7 @@ const spec = {
 					'429': {
 						description:
 							'More than 60 requests in a minute with this key (see RateLimited); or the key\'s user has uploaded 30 images in the last hour, counted before the body is read, ' +
-							'or this image would take them past 100 MB in a day, counted with the bytes read, before they are checked. Every key of the user counts against the same hour and day. ' +
+							'or this image would take them past 100 MB in a day, counted with the bytes read, before they are checked. Every key of the user counts against the same hour and day, and so do the user\'s image uploads through the card window. ' +
 							'Nothing was written: send it again after the Retry-After seconds.',
 						headers: {
 							'Retry-After': {

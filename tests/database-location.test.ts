@@ -589,6 +589,7 @@ describe('a database with no users while another is beside it', () => {
 			'endPlainInvites();',
 			'endPlainRequestLinks();',
 			'void announceReportSchedules();',
+			'void recheckStoredImages();',
 			'startSchedulers();',
 			'reportInstallation();'
 		]) {
@@ -601,6 +602,9 @@ describe('a database with no users while another is beside it', () => {
 		// report schedules are announced (card 2870, E3).
 		expect(at('endPlainRequestLinks();')).toBeGreaterThan(at('endPlainInvites();'));
 		expect(at('void announceReportSchedules();')).toBeGreaterThan(at('endPlainRequestLinks();'));
+		// The images stored before card 2761 checked once, straight after, and before the schedulers start (D10).
+		expect(at('void recheckStoredImages();')).toBeGreaterThan(at('void announceReportSchedules();'));
+		expect(at('startSchedulers();')).toBeGreaterThan(at('void recheckStoredImages();'));
 	});
 });
 

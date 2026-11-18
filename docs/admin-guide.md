@@ -1,10 +1,12 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.113
+version: 1.114
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2761
+  - images
   - card-2670
   - iso-27001
   - card-2751
@@ -40,7 +42,7 @@ tags:
   - mfa-reset
   - enrolment-links
   - invites
-description: "Administration guide covering what an API key, an administrator's included, may and may not do with a decision (card 2682), who may do what on the admin page, the Account page's two-step section and helping someone replace or lose a phone, the deadline of API keys made before two-step sign-in and Keep this key (card 2772), report schedules and report mail behind your password and a code and the one mail at the release listing the schedules running (card 2751), the forty actions that ask for your password and a code again (the code checked by the server since card 2771, the Account page's email, password and key forms among them, the password kept after a code refused before it is compared) and the sign-out after three wrong answers, the Options column every delivery board has, ideas boards and when to use options, user management and what a password reset ends, switches off and pauses, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, each user's mail switches, what the activity log records and the words its panels use, the Audit page's filters, a board beneath one of its own cards and how to put it right, the people directory and what an administrator's API key may change in it, what a backup and the export hold of two-step sign-in and what a restore does with second factors (card 2768), resetting an account's two-step sign-in with 🛡️ and its link shown once, 📧 refused for an account with a second factor, the host's reset for the superadmin and changing the key (card 2773), what people see of two-step sign-in and how to help someone paused, locked or with a set-up left unfinished, the release that turns it on (stop every instance, a real App URL, reviewing API keys, resetting administrators first, and the Users panel's 'may set up on password until' line) (card 2769), invites kept only as a fingerprint of their link and the waiting ones ended and sent again at that release (card 2849), the shorter sessions from that release and a role change signing the person out (card 2775), every requester link ended by a restore and none brought in (card 2870), and system settings"
+description: "Administration guide covering what an image dropped onto a card must be, its refusals, its allowances shared with API keys and the one-off check of the images stored before (card 2761), what an API key, an administrator's included, may and may not do with a decision (card 2682), who may do what on the admin page, the Account page's two-step section and helping someone replace or lose a phone, the deadline of API keys made before two-step sign-in and Keep this key (card 2772), report schedules and report mail behind your password and a code and the one mail at the release listing the schedules running (card 2751), the forty actions that ask for your password and a code again (the code checked by the server since card 2771, the Account page's email, password and key forms among them, the password kept after a code refused before it is compared) and the sign-out after three wrong answers, the Options column every delivery board has, ideas boards and when to use options, user management and what a password reset ends, switches off and pauses, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, each user's mail switches, what the activity log records and the words its panels use, the Audit page's filters, a board beneath one of its own cards and how to put it right, the people directory and what an administrator's API key may change in it, what a backup and the export hold of two-step sign-in and what a restore does with second factors (card 2768), resetting an account's two-step sign-in with 🛡️ and its link shown once, 📧 refused for an account with a second factor, the host's reset for the superadmin and changing the key (card 2773), what people see of two-step sign-in and how to help someone paused, locked or with a set-up left unfinished, the release that turns it on (stop every instance, a real App URL, reviewing API keys, resetting administrators first, and the Users panel's 'may set up on password until' line) (card 2769), invites kept only as a fingerprint of their link and the waiting ones ended and sent again at that release (card 2849), the shorter sessions from that release and a role change signing the person out (card 2775), every requester link ended by a restore and none brought in (card 2870), and system settings"
 ---
 
 # Admin Operations Guide
@@ -1237,6 +1239,25 @@ A file of up to 25 MB can be attached to a card. A file that is not attached is 
 | "…" is larger than this server accepts. The limit here is 26 MB | DumpFire refused it for its size. A limit of 512 KB there means the server was started without `BODY_SIZE_LIMIT`: see [Upload Size Limits](deployment.md#upload-size-limits) |
 
 The card used to say nothing when an upload failed, and could go on saying "Uploading..." until it was closed.
+
+### What an image must be
+
+Since card 2761, a PNG, JPEG, GIF or WebP dropped onto a card goes through the same checks as one sent through an API key, and the card shows DumpFire's reason when one is refused:
+
+| The card says | Why |
+|---------------|-----|
+| "The body is not a PNG, JPEG, GIF or WebP image", or "The body is a JPEG image, not the image/png its Content-Type says" | The file is named and typed as an image but its bytes are not that image: a page renamed `.png`, for instance. Nothing is attached |
+| "The PNG image is not valid: …" (or JPEG, GIF, WebP), with the reason | It is cut short or malformed, it is animated (an animated GIF, PNG or WebP), or something is stuck on after the end of a PNG, GIF or WebP picture. What a phone stores after the end of a JPEG photo (a motion photo's video, an HDR gain map) is cut off instead, and the photo attached |
+| "The image is … pixels: the most accepted is 8000 on a side and 40,000,000 in all" | Larger than any screenshot or photo needs |
+| "This card already has 20 images" | A card holds at most 20 images, however they were attached. Other files can still be attached |
+| "This card was closed more than 180 days ago, so its images are moved to the trash: reopen or restore it to attach one" | [Image retention](backup-reporting.md#image-retention) would move it at its next run |
+| "An account can upload at most 30 images an hour. Nothing was written. Try again in …", or "… at most 100 MB of images a day …" | Each account has 30 image uploads an hour and 100 MB of images a day, **shared with that account's API keys**: an upload either way counts against both |
+
+What is kept of an accepted image: the picture as sent, with its hidden data taken out (location, camera make and model, dates, comments, thumbnails). A JPEG keeps only its "which way up" tag, so a phone photo still shows upright. Its name keeps what was typed but takes the extension of what the file really is (`photo.PNG` is shown as `photo.png`). Up to 25 MB, as for any file.
+
+Every other file (PDFs, documents, spreadsheets, and an image the browser does not call one of the four types, such as HEIC) is attached as before, counts against no hourly or daily allowance, and is only ever saved to disk when opened.
+
+**At the first start after the update that brings card 2761**, DumpFire checks every image already attached, once, in the same way: one with hidden data (or a video or gain map after a JPEG photo) is cleaned in place, and one refused by the check (not the image its type names, animated, too large, or malformed) is changed to a plain download, kept as it was, hidden data included, and never shown in the browser again. The same check runs straight after an Import Backup, since the backup may be from before the update. The Audit page's Live Console shows one `[WARN] [UPLOADS]` line, "Checked the *n* images stored before card 2761: …", with the counts and the attachment ids of any changed to downloads, any that could not be checked and any given up. A start after that says nothing. If the line says some "could not be checked", the next start checks again; a file that fails the same way at three starts is given up and named, so that the check can finish: see [Deployment](deployment.md#what-the-first-start-says-card-2761) for what to do then, and [Authentication and Security](authentication-security.md#the-images-stored-before-card-2761).
 
 ### Attachments that download
 

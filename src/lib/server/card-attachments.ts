@@ -14,7 +14,9 @@
  * hold these writes as they hold every other. `/api/v1` lists a card's
  * files and attaches an image (card 2754): its upload is the second tree's
  * twin of the card window's, and records the same entry and sends the same
- * event, through the one helper both call. It deletes nothing.
+ * event, through the one helper both call. It deletes nothing. The card
+ * window's upload of an image is held to the same rules through
+ * `attachImage` too (card 2761); its other files go through `attachFile`.
  *
  * The file itself is the routes' (written before the row, moved to the
  * trash after the delete commits): nothing here touches the disk.
@@ -163,7 +165,7 @@ export function listAttachments(user: SessionUser | null | undefined, at: { card
 export type AttachedImage = {
 	/** Its name in the card's folder: `<uuid>.<extension>`, the server's own. */
 	filename: string;
-	/** The name the caller asked for (`?name=`), as sent, or null for none. */
+	/** The name the caller asked for (`?name=`, or the card window's file name), as sent, or null for none. */
 	name: string | null;
 	/** The type the bytes are, as the check found it. */
 	mimeType: ImageType;
@@ -175,8 +177,10 @@ export type AttachedImage = {
 
 /**
  * The row of an image a key has uploaded (`POST /api/v1/cards/:cardId/attachments`,
- * card 2754), with the entry and the live event the card window's upload
- * writes (`addAttachment`). The card is looked for and the caller asked for
+ * card 2754), or the card window has (`POST /api/cards/:id/attachments`, an
+ * upload declared as one of the four image types, card 2761, with the file's
+ * own name as `name` and `source: 'ui'`), with the entry and the live event
+ * every upload writes (`addAttachment`). The card is looked for and the caller asked for
  * edit access again (404, then 403): either may have changed while the
  * upload was read. A card closed longer than `IMAGE_RETENTION_DAYS`, whose
  * images retention moves to the trash, is refused 409 (`isExpiredCard`, S6).

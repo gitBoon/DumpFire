@@ -917,8 +917,13 @@ describe('through the route', () => {
 		expect(logged[0]).toMatch(/Filled in: first_completed_at on 0 card\(s\)\.$/);
 		expect(`${response.body.message} ${logged[0]}`).not.toMatch(/working copy|switched off|removed/i);
 		expect(reachingOutside(sqlite)).toEqual(AS_THE_BACKUP_HAS_IT);
-		// The settings as the backup has them, beside the form signing key the restore makes (card 2750).
-		for (const table of OUTSIDE_TABLES) expect(withoutFormKey(contentsOf(sqlite)[table])).toEqual(withoutFormKey(contentsOf(backup)[table]));
+		// The settings as the backup has them, beside the form signing key the restore makes (card 2750), and the flag
+		// the check of the stored images writes once the import has committed, the backup holding no image and no flag
+		// (card 2761, the code review's CS3).
+		const made = (rows: string[]) => withoutFormKey(rows).filter((row) => !row.includes('"key":"stored_images_rechecked"'));
+		for (const table of OUTSIDE_TABLES) expect(made(contentsOf(sqlite)[table])).toEqual(made(contentsOf(backup)[table]));
+		expect(contentsOf(backup).settings.filter((row) => row.includes('"key":"stored_images_rechecked"'))).toEqual([]);
+		expect(contentsOf(sqlite).settings.filter((row) => row.includes('"key":"stored_images_rechecked"'))).toHaveLength(1);
 	});
 
 	it('says what a working copy of a backup made since card 2169 had on, and the webhooks to enter', async () => {

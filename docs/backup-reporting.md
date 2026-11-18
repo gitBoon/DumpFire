@@ -1,10 +1,11 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.44
+version: 1.45
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2761
   - card-2751
   - card-2870
   - request-links
@@ -124,10 +125,11 @@ grow for ever.
   where the schedulers run (15 minutes after a start, then every six hours) and never while a
   transaction is open. Whatever retention meets, the orphan sweep after it still runs, and
   moves any file whose move to the trash failed.
-- **An upload to such a card.** An image sent through an API key to a card retention would
-  already take is refused `409` ("reopen or restore it to attach one"), since the next run
-  would move it. The card window's upload is not refused (card 2754's code review, C3): its
-  image is moved by the next run.
+- **An upload to such a card.** An image sent to a card retention would already take is
+  refused `409` ("reopen or restore it to attach one"), since the next run would move it:
+  through an API key since card 2754, and through the card window since card 2761 (which took
+  card 2754's code review C3, that the card window's upload was not refused). A file of any
+  other type is still attached there, as retention takes only images.
 - **Getting one back.** Within 30 days, an Import Backup of a backup that holds the row puts
   the file back from the trash. The card is still closed in that backup, so set
   `IMAGE_RETENTION_DAYS` higher, or `off`, before the import, or the next run moves it again.

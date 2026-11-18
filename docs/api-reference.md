@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.134
+version: 1.135
 status: As-Built
 date: 2026-11-17
 tags:
@@ -32,7 +32,9 @@ tags:
   - breaking-change
   - milestones
   - cross-board
-description: "REST API reference for DumpFire's external v1 API: authentication, the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+  - card-2761
+  - exif
+description: "REST API reference for DumpFire's external v1 API: authentication, the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -165,7 +167,7 @@ have at most 10: delete 1 before adding another.`).
 | `409` | Conflict: a card moved to a Complete column while it has open subtasks or sub-boards, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep (made under a card, or carried by a card moved to another board), a dependency that already exists or would close a loop, a board's 11th webhook, a card's 21st image or an image sent to a card whose images retention is moving to the trash, or a rejected batch |
 | `413` | The request body is over the size limit, 512 KB (5 MB for the image upload): `{ "message", "limitBytes" }`. See [The Request Body](#the-request-body) |
 | `415` | The image upload only: the `Content-Type` is not `image/png`, `image/jpeg`, `image/gif` or `image/webp`, or the bytes are not the type it names. See [Attachments](#attachments) |
-| `429` | Rate limited: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts; for the image upload, also 30 uploads in the hour or 100 MB in the day for the key's user |
+| `429` | Rate limited: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts; for the image upload, also 30 uploads in the hour or 100 MB in the day for the key's user, their image uploads through the card window counted too |
 | `500` | DumpFire failed: `{ "message": "Internal Error" }`. Nothing of the fault is in the answer; it is written to DumpFire's system log, with the route and the key's user |
 
 ### The Request Body
@@ -368,10 +370,41 @@ either.
 
 ### Changes on 2026-11-17
 
-Seven changes are dated 2026-11-17: card 2891's, additive, which takes the OpenAPI document
-to `1.9.0` (first); card 2751's, which changes no `/api/v1` route; card 2772's, which is
-**breaking** for API keys made before its release; that of cards 2770 and 2771, which is not
-(after it); and cards 2888's, 2851's and 2847's, which change no `/api/v1` route (last).
+Eight changes are dated 2026-11-17: card 2761's, a patch, which takes the OpenAPI document to
+`1.9.1` (first); card 2891's, additive, which took it to `1.9.0`; card 2751's, which changes
+no `/api/v1` route; card 2772's, which is **breaking** for API keys made before its release;
+that of cards 2770 and 2771, which is not (after it); and cards 2888's, 2851's and 2847's,
+which change no `/api/v1` route (last).
+
+**The card window's image upload is checked as the API's, and the images already stored are
+checked once (card 2761; OpenAPI document version `1.9.1`, with a dated note at the top of its
+description).** No `/api/v1` operation, status, field or schema changes, but four things a
+key sees do:
+
+- **The allowances are shared.** The 30 images an hour and 100 MB a day of a key's user now
+  also count the images that user uploads through DumpFire's own card window, and those count
+  these: a key can meet the `429` sooner.
+- **A JPEG keeps its orientation.** A JPEG uploaded through
+  `POST /api/v1/cards/{cardId}/attachments` keeps its EXIF orientation (a value of 2 to 8),
+  as one EXIF segment holding nothing else, so a photo taken upright shows upright. Every other
+  piece of its metadata is still taken out. See [Attachments](#attachments).
+- **A JPEG's trailing data is cut off.** Whatever follows the end of a JPEG's image (a gain
+  map, a motion photo's video, a trailer) is cut off and the image kept, where it was refused
+  `400`. Anything after the end of a PNG, GIF or WebP is still refused.
+- **The images stored before the release are checked once**, at the first start after it and
+  after an import of a backup, as an upload is now: one that held metadata or trailing data is
+  stored again without it, and its `sizeBytes` is the smaller size; one refused by the check
+  (not the image its type names, animated, too large, or malformed) is kept as it was and
+  answered with `mimeType` `application/octet-stream`, and is only ever downloaded as such.
+
+Internal routes, stricter, not breaking: `POST /api/cards/:id/attachments`, the card window's
+upload, holds a file declared as `image/png`, `image/jpeg`, `image/gif` or `image/webp` to the
+API upload's rules: its bytes checked (`415` not that type, `400` not a valid image), its
+metadata taken out, its name's extension the bytes', `409` for the 21st image on a card or a
+card whose images retention is moving to the trash, and `429` (with `Retry-After` and
+`retryAfterSecs`) past the account's shared hour or day, counted once the form is read. Its
+answer for an image is the row without `filename`. Every other file is stored as before. See
+[Authentication and Security](authentication-security.md#the-card-windows-images-card-2761).
 
 **The milestone list of a board can also list the cross-board goals that hold its cards (card
 2891, additive; OpenAPI document version `1.9.0`, with a dated note at the top of its
@@ -726,8 +759,9 @@ are new, under the tag Attachments, described in [Attachments](#attachments):
 body itself, up to 5 MB; `GET /api/v1/cards/{cardId}/attachments/{attachmentId}` downloads one
 file, always as a download. A key deletes no file. The upload's bytes are checked by
 allow-list, its metadata is taken out, and an animated image or one with anything after its
-end is refused. A key's user may upload 30 images an hour and 100 MB a day, whichever of their
-keys is used, and a card holds at most 20 images, however they were attached.
+end is refused (since card 2761, 1.9.1, a JPEG's trailing data is cut off instead). A key's user may upload 30 images an hour and 100 MB a day, whichever of their
+keys is used, and a card holds at most 20 images, however they were attached. (Since card 2761,
+1.9.1, the user's image uploads through the card window count against the same hour and day.)
 
 Images of cards closed long ago are now moved to the trash by DumpFire itself: an image on a
 card archived, or completed and still in its Complete column, more than `IMAGE_RETENTION_DAYS`
@@ -4919,7 +4953,7 @@ server's disk, in the uploads folder beside the database, with a small row each 
 | Operation | Access | Limits |
 |---|---|---|
 | `GET /api/v1/cards/:cardId/attachments` | View access to the card's board | The key's 60 a minute |
-| `POST /api/v1/cards/:cardId/attachments` | Edit access, asked before the body is read and again at the write | 5 MB a body; 30 uploads an hour and 100 MB a day for the key's user, whichever of their keys; 20 images a card |
+| `POST /api/v1/cards/:cardId/attachments` | Edit access, asked before the body is read and again at the write | 5 MB a body; 30 uploads an hour and 100 MB a day for the key's user, whichever of their keys, their image uploads through the card window counted too (card 2761); 20 images a card |
 | `GET /api/v1/cards/:cardId/attachments/:attachmentId` | View access to the card's board | The key's 60 a minute |
 
 An **`Attachment`** is the row without the name the file is kept under on the server:
@@ -4974,8 +5008,18 @@ Invoke-RestMethod -Method Post -Uri "$base/api/v1/cards/2754/attachments?name=lo
   `NETSCAPE2.0` blocks. **Metadata is taken out**: text chunks, EXIF, XMP, IPTC, comments,
   thumbnails and every other application segment or extension. Nothing is decoded or
   re-encoded: the pixel data is kept as sent.
-- **Refused** (`400`): anything after the image's end (`IEND`, `EOI`, the GIF trailer, the RIFF
-  size), any animation (APNG, a GIF of more than one image, an animated WebP), a structure the
+- **A JPEG's orientation is kept** (card 2761, 1.9.1), so a photo taken upright shows upright:
+  read from the first EXIF `APP1` alone, from IFD0 alone (tag `0x0112`, once, `SHORT`, count 1,
+  a value of 2 to 8; no pointer followed, so nothing of the thumbnail, the Exif sub-IFD or GPS
+  is read), and written again in that segment's place as a 36-byte `APP1` of DumpFire's own
+  that holds the value and nothing else. Anything else about it drops it, as before, and never
+  refuses the image. A PNG's or a WebP's EXIF is still dropped whole.
+- **A JPEG's trailing data is cut off** (card 2761, 1.9.1): whatever follows the `EOI` of its
+  image, a gain map (Ultra HDR, MPF), a motion photo's video or a trailer, is never kept and
+  never read, and the image is stripped as above. An MPF `APP2` index in the image is dropped
+  with every other application segment.
+- **Refused** (`400`): anything after the end of a PNG, GIF or WebP (`IEND`, the GIF trailer,
+  the RIFF size), any animation (APNG, a GIF of more than one image, an animated WebP), a structure the
   format does not allow to be dropped, a file cut short or malformed, and more than 8000 pixels
   on a side or 40 megapixels in all.
 - **The name** is `?name=` cleaned: only what follows its last `/` or `\`, with control and
@@ -4995,12 +5039,13 @@ Errors, in the order they are asked:
 3. `400` `Invalid card ID`.
 4. `404` `Card not found`; `403` `No edit access to this board`.
 5. `415` the `Content-Type` is not one of the four. Nothing has been read.
-6. `429` the upload count: the key's user has uploaded 30 images in the hour, with
-   `Retry-After` and `retryAfterSecs`. Nothing has been read.
+6. `429` the upload count: the key's user has uploaded 30 images in the hour, through a key
+   or the card window (card 2761), with `Retry-After` and `retryAfterSecs`. Nothing has been
+   read.
 7. `413` while the body is read: one sent in chunks, or one running past its declared length,
    passes 5 MB. Not counted against the day.
 8. The bytes read are counted against the day: `429` when they would take the key's user past
-   100 MB in 24 hours (then nothing is counted), with `Retry-After`; `401` if the key or its
+   100 MB in 24 hours, their card window's images counted too (then nothing is counted), with `Retry-After`; `401` if the key or its
    account changed while the body was read. Counted before the check, so a body refused at 9
    still counts what was sent.
 9. `415` the bytes are not one of the four, or are another of them than declared; `400` they

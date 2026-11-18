@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.121
+version: 1.122
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2761
   - card-2751
   - card-2870
   - migration-0070
@@ -56,7 +57,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Docker deployment, the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Docker deployment, the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -6645,6 +6646,114 @@ for new links. If that delete fails too, the server **does not start**: it stops
 listens, as it does when the form's signing key cannot be made, rather than run with links that
 may open other people's threads (card 2870's code review, CS3). Fix the database (it is the
 same cause that stops every other write) and start again.
+
+### The Release That Checks the Card Window's Images (Card 2761)
+
+**Card 2761 (card 2754's D20 and code review C3), built 2026-11-17.** Until this release an
+image dropped onto a card was stored as the browser sent it: its type as claimed, its hidden
+data kept, and no limit a card or a person. From this release **an image uploaded through the
+card window goes through the same checks as one sent through an API key**, and **the images
+already stored are checked once, at the first start**. How it works is in
+[The Card Window's Images](authentication-security.md#the-card-windows-images-card-2761); the
+plan is `docs/planning/card-2761-web-upload-checks.md`.
+
+**What people notice.**
+
+- A file named and typed as an image that is not one (a page renamed `.png`) is refused, with
+  the reason under the upload area. So are an animated GIF, PNG or WebP, a PNG, GIF or WebP
+  with anything stuck on after the end of the picture, and one over 8000 pixels on a side or
+  40 megapixels.
+- A phone photo loses its location, camera make and model and other hidden data, and keeps its
+  "which way up" tag, so it still shows upright. What a phone stores after the end of a JPEG
+  photo (a motion photo's video, an HDR gain map, a trailer) is cut off, and the photo is
+  attached. Its shown name takes the extension of what the file really is (`photo.PNG` is
+  `photo.png`).
+- The 21st image on a card is refused ("This card already has 20 images"); an image for a card
+  closed longer than `IMAGE_RETENTION_DAYS` is refused, as through a key.
+- Each person has 30 image uploads an hour and 100 MB of images a day, **shared with their API
+  keys**: a script uploading through the wrapper's `add-attachment` and the same person's card
+  window count together, and a key can meet the `429` sooner than before.
+- **Images already attached that are animated or too large become downloads**, kept as they
+  were, metadata included: the one-off check below refuses them, as it refuses one that is not
+  the image its type names or is malformed, and changes each to a plain download, never shown
+  in the browser again. Nothing of such a file is rewritten.
+- PDFs, documents, spreadsheets and every other file are attached as before.
+
+**Release rules.**
+
+- **Nothing to migrate**, no setting, no new environment variable. The OpenAPI document goes to
+  `1.9.1`, a patch: no `/api/v1` operation, status or field changes (its dated note lists what a
+  key sees differently).
+- **The one-off check runs at every start until it has finished once**, whatever `SCHEDULERS`
+  says, a rehearsal or a dev copy included, and again straight after every Import Backup (the
+  restore replaces the setting that says it was done): it rewrites stored image files in place.
+  Back up the uploads folder with the database before the first start of this image if a copy
+  of the originals is wanted; the check keeps no copy. Each file is written to a temp file
+  (`.recheck-<uuid>`) in its card's folder, flushed to the disk, and renamed over the original.
+- **Order.** After card 2751 and card 2870 (it starts after `announceReportSchedules()`), in the
+  same deploy or later. Cards 2719 and 2762 build after it.
+
+```mermaid
+flowchart TD
+    D["Deploy, first start, or an Import Backup"] --> F{"settings.stored_images_rechecked?"}
+    F -->|"present"| Q["Nothing done, nothing said"]
+    F -->|"absent"| R["Every image row, oldest first: checkImage on its file"]
+    R --> S["clean: untouched, its size set if wrong; stripped: rewritten in place, size set;<br/>retyped: application/octet-stream, file untouched; missing: untouched"]
+    S --> W["One WARN line under UPLOADS with the counts and ids"]
+    W --> N{"Any row failed, and not yet<br/>three starts the same way?"}
+    N -->|"no"| Flag["Flag written: later starts do nothing"]
+    N -->|"yes"| Again["No flag: the next start checks again"]
+```
+
+#### What the first start says (card 2761)
+
+One line on the Audit page's Live Console, when there is an image attachment at all:
+`[WARN] [UPLOADS] Checked the n images stored before card 2761: s had hidden data taken out,
+z had only their recorded size corrected, r were refused by the check (not the image its type
+names, animated, too large, or malformed) and are now downloads only (attachment ids …), m had
+no file, f could not be checked (attachment ids …), g were given up after failing the same way
+at 3 starts (attachment ids …).` The ids are the attachments' (their card and name are not
+logged). A row refused by the check is kept as it was, metadata included, is never shown in the
+browser again, and no longer counts toward a card's 20. "had no file" counts rows whose file is
+not in the uploads folder (a restore without the files): nothing is done to them. With `f`
+above 0 the line ends "The next start checks them again.", and so it does; anything already
+cleaned checks to itself and is left. A restart after a clean run writes no line. An import of
+a backup made before this release carries no flag, so its images are checked straight after the
+import.
+
+**When `f` stays above 0.** Each failed row is named by id, and its failure (its error code) is
+kept in `settings.stored_images_recheck_failures` between starts. A row that fails the same way
+at three starts in a row is given up: counted under `g`, named, and no longer keeping the check
+from finishing, so the flag is then written and later starts say nothing. For a row named under
+`f` or `g`:
+
+1. Find its file, read-only, with the container's own reader as in the 2769 release above:
+   `SELECT card_id, filename FROM card_attachments WHERE id = <id>;` names
+   `uploads/<card_id>/<filename>`.
+2. Fix what the code names: `EACCES` or `EPERM`, the server cannot write the card's folder
+   (the volume's ownership); `ENOSPC`, the disk is full; `EIO`, the disk or the volume is
+   failing. A `.recheck-<uuid>` file left in the folder is a temp file and may be deleted.
+3. Restart. A row given up is not tried again once the flag is written: delete the attachment
+   from its card, or download it and attach it again through the card window, which checks it
+   as an upload.
+
+**Hands-on checks** (on a copy of production's database and uploads folder, never the live
+files; the plan's section 6 has the full list, H1 to H9):
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| U1 | Start this image | One `Checked the … images stored before card 2761` line; restart: no line | No line, or a second one |
+| U2 | Drop a PNG screenshot on a card | Attached, thumbnail shown | Refused |
+| U3 | Rename a `.html` file to `.png` and drop it | Refused: "The body is not a PNG, JPEG, GIF or WebP image" | Attached |
+| U4 | Drop an upright phone photo with location on, then download it | Shown upright; the download has Orientation alone in any EXIF viewer | Sideways, or location kept |
+| U5 | Drop a motion photo or an Ultra HDR photo from a phone | Attached; the download is the still photo alone, smaller than the original | Refused, or the video kept |
+| U6 | Admin → ISO 27001 checklist, A.8.7 | Met, no gap card | 2761 still listed |
+
+#### Going back to the previous image
+
+No step is needed. The previous image reads the rows and files as this one left them: a cleaned
+image is still an image, and a row retyped `application/octet-stream` is a download there too.
+The flag stays; coming forward again does not re-check.
 
 ## Changing the Schema
 

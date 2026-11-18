@@ -1,17 +1,27 @@
 /**
  * upload-allowance.ts — how many images, and how many bytes of them, one
  * account may upload through `/api/v1` (card 2754, D6 and the review's S2
- * and S3).
+ * and S3) and through the card window (card 2761, D2): one allowance for
+ * both, so an upload either way counts against the other.
  *
- *   30 uploads an hour        taken before the body is read, once the card
- *                             and the type have been asked
+ *   30 uploads an hour        through `/api/v1`, taken before the body is
+ *                             read, once the card and the type have been
+ *                             asked; through the card window, whose type is
+ *                             inside the form, taken straight after the form
+ *                             is read (`afterRead`), in the writeAs that
+ *                             charges the bytes (card 2761, S13: counting
+ *                             before the body for every upload is card 2910)
  *   100 MB a day              charged with the bytes actually read, straight
  *                             after the read and before the bytes are
  *                             checked; a body refused 413 while it is read
  *                             is not charged
  *
- * Both are kept for the key's user and not for the key, so a second key buys
- * nothing: `attachment-upload:user:<id>` and `attachment-bytes:user:<id>`.
+ * Only images count: a file the card window stores as sent, of any other
+ * type, takes nothing from either (card 2761, D1).
+ *
+ * Both are kept for the account and not for the key or the session, so a
+ * second key buys nothing: `attachment-upload:user:<id>` and
+ * `attachment-bytes:user:<id>`.
  * Both are in memory, with the same durability as the gate's 60 a minute
  * (`takeAllowance` in rate-limit.ts). A refusal after an allowance was taken
  * leaves it taken: an upload refused at the check or at the write was still
@@ -21,10 +31,10 @@
  * Cloudflare Tunnel passes one on, is counted as it is read and held to the
  * route's 5 MB by the gate (`heldToLimit`), and then charged what was read.
  *
- * Each take is handed the caller as the gate read it (the upload count, a
- * quick check before the body) or as a writeAs callback hands it (the
- * bytes), and refuses with `UploadAllowanceRefused`, which the route answers
- * 429 with `Retry-After`.
+ * Each take is handed the caller as the gate read it (`/api/v1`'s upload
+ * count, a quick check before the body) or as a writeAs callback hands it
+ * (the bytes, and the card window's count), and refuses with
+ * `UploadAllowanceRefused`, which each route answers 429 with `Retry-After`.
  */
 import type { SessionUser } from './auth';
 import { takeAllowance } from './rate-limit';
@@ -59,14 +69,18 @@ function waitOf(retryAfterSecs: number): string {
 /**
  * Count one upload against the caller's hour (401 for no caller). Refused
  * with `UploadAllowanceRefused` once there have been `UPLOADS_PER_HOUR`.
- * Reads no row: the route asks it before it reads the body.
+ * Reads no row: `/api/v1`'s route asks it before it reads the body, and its
+ * refusal says nothing was read. The card window's route asks it once the
+ * form is read (`afterRead`, card 2761, D3), and its refusal says only that
+ * nothing was written.
  */
-export function takeUploadCount(user: SessionUser | null | undefined): void {
+export function takeUploadCount(user: SessionUser | null | undefined, opts: { afterRead?: boolean } = {}): void {
 	const caller = requireUser(user);
 	const took = takeAllowance(`attachment-upload:user:${caller.id}`, 1, UPLOADS_PER_HOUR, HOUR_MS);
 	if (took.taken) return;
+	const nothing = opts.afterRead ? 'Nothing was written.' : 'Nothing was read or written.';
 	throw new UploadAllowanceRefused(
-		`An account can upload at most ${UPLOADS_PER_HOUR} images an hour. Nothing was read or written. Try again in ${waitOf(took.retryAfterSecs)}.`,
+		`An account can upload at most ${UPLOADS_PER_HOUR} images an hour. ${nothing} Try again in ${waitOf(took.retryAfterSecs)}.`,
 		took.retryAfterSecs
 	);
 }

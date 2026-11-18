@@ -106,6 +106,7 @@ import { resetFormSecretCache } from '$lib/server/request-tokens';
 import { KNOWN_BROWSER_SECRET_KEY, resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { reportBoardLoops } from '$lib/server/startup-checks';
+import { recheckStoredImages } from '$lib/server/image-recheck';
 import { anyRemoved, removeSettingsOfFormerAdministrators, type SettingsRemoved } from '$lib/server/setting-setters';
 import {
 	CONFIRMATION_HEADER,
@@ -571,6 +572,12 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			} catch (err) {
 				log.error(`The restored boards could not be checked for a loop: ${(err as Error)?.message ?? err}`);
 			}
+			// The restore replaced `settings`, and the flag that says the images
+			// stored before card 2761 were checked with it: a backup made before
+			// that release has none. So its images are checked now, as a start
+			// checks them (the code review's CS3), and not first at the next start.
+			// Not awaited: the answer does not wait on the files. It never rejects.
+			void recheckStoredImages();
 
 			if (errors.length > 0) {
 				// Committed, with something to report. Said in the log, in the

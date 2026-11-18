@@ -25,6 +25,10 @@ import {
 	bytes,
 	DHT,
 	DQT,
+	EXIF_DATE,
+	EXIF_MAKE,
+	EXIF_MODEL,
+	EXIF_THUMBNAIL,
 	gif,
 	gifExtension,
 	gifImage,
@@ -37,6 +41,8 @@ import {
 	le24,
 	le32,
 	LOOP,
+	phoneExif,
+	phoneJpeg,
 	png,
 	pngChunk,
 	riffChunk,
@@ -47,7 +53,8 @@ import {
 	vp8x,
 	webp,
 	webpOf,
-	type Bytes
+	type Bytes,
+	type ExifOptions
 } from './helpers/image-bytes';
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -326,8 +333,6 @@ describe('a JPEG', () => {
 		['a second SOI', bytes(SOI, SOI, afterSoi), /marker out of place/],
 		['a byte that is not a marker between segments', bytes(SOI, JFIF, 0x00, jpeg({ before: [] }).subarray(2)), /not a marker/],
 		['no EOI', jpeg().subarray(0, jpeg().length - 2), /ends inside a scan/],
-		['a byte after EOI', bytes(jpeg(), 0), /bytes after EOI/],
-		['a second file after EOI', bytes(jpeg(), png()), /bytes after EOI/],
 		['no scan', bytes(SOI, JFIF, DQT, sof(2, 2), 0xff, 0xd9), /no image data/]
 	] as const)('is refused 400 for %s', (_what, input, message) => {
 		expect(invalid(input, 'image/jpeg')).toMatch(message);
@@ -538,5 +543,210 @@ describe('bytes nobody would write', () => {
 		// What is accepted, once stripped, is accepted again unchanged.
 		expect(notStable).toEqual([]);
 		expect(Date.now() - start).toBeLessThan(10_000);
+	});
+});
+
+// ─── A JPEG's orientation (card 2761) ───────────────────────────────────────
+
+describe("a JPEG's orientation, kept from its EXIF (card 2761, D4)", () => {
+	// Written out byte by byte from the plan's D4, not built by anything under test: FF E1, the length 0x0022,
+	// Exif\0\0, the TIFF header with IFD0 at 8, one entry (0x0112, SHORT, count 1, the value 6), next IFD 0.
+	const KEPT_II = bytes(
+		[0xff, 0xe1, 0x00, 0x22],
+		[0x45, 0x78, 0x69, 0x66, 0x00, 0x00],
+		[0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00],
+		[0x01, 0x00],
+		[0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00],
+		[0x00, 0x00, 0x00, 0x00]
+	);
+	const KEPT_MM = bytes(
+		[0xff, 0xe1, 0x00, 0x22],
+		[0x45, 0x78, 0x69, 0x66, 0x00, 0x00],
+		[0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08],
+		[0x00, 0x01],
+		[0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00],
+		[0x00, 0x00, 0x00, 0x00]
+	);
+	/** Whether `part` is anywhere in `whole`. */
+	const holds = (whole: Bytes, part: Bytes) => Buffer.from(whole).indexOf(Buffer.from(part)) >= 0;
+	/** Each APP1 segment kept, whole. */
+	const app1s = (input: Bytes): Bytes[] => {
+		const found: Bytes[] = [];
+		for (let at = 2; at < input.length && input[at + 1] !== 0xda; at += 2 + input[at + 2] * 256 + input[at + 3]) {
+			if (input[at + 1] === 0xe1) found.push(input.subarray(at, at + 2 + input[at + 2] * 256 + input[at + 3]));
+		}
+		return found;
+	};
+
+	it('8. keeps orientation 6 of a phone photo, in II and in MM, as the one 36-byte APP1 of D4, in its place, and nothing else of the EXIF', () => {
+		const plain = accepted(jpeg(), 'image/jpeg').bytes;
+		for (const [order, kept] of [
+			['II', KEPT_II],
+			['MM', KEPT_MM]
+		] as const) {
+			const exif = phoneExif({ order });
+			const result = accepted(phoneJpeg({ order }), 'image/jpeg');
+
+			expect(app1s(result.bytes), order).toEqual([kept]);
+			// In the EXIF segment's place: straight after JFIF, before the tables.
+			expect(jpegMarkers(result.bytes), order).toEqual([0xd8, 0xe0, 0xe1, 0xdb, 0xc0, 0xc4, 0xda, 0xd9]);
+			expect(result.bytes.subarray(20, 56), order).toEqual(kept);
+			// No byte of the make, the model, the date, the GPS IFD, the position or the thumbnail left.
+			for (const [what, part] of [
+				['make', bytes(EXIF_MAKE)],
+				['model', bytes(EXIF_MODEL)],
+				['date', bytes(EXIF_DATE)],
+				['GPS IFD', exif.gps],
+				['position', exif.position],
+				['thumbnail', EXIF_THUMBNAIL]
+			] as const) {
+				expect(holds(result.bytes, part), `${order}: ${what}`).toBe(false);
+			}
+			expect(text(result.bytes), order).not.toMatch(/secret|Pixelphone/);
+			// The rest of the file is the photo without its EXIF.
+			expect(Buffer.compare(Buffer.concat([result.bytes.subarray(0, 20), result.bytes.subarray(56)]), Buffer.from(plain)), order).toBe(0);
+		}
+	});
+
+	it('9. drops the EXIF and accepts the photo for every arm that is not exactly an orientation of 2 to 8; the first EXIF APP1 alone is read', () => {
+		const plain = Buffer.from(accepted(jpeg(), 'image/jpeg').bytes);
+		const arms: [string, ExifOptions][] = [
+			['value 1, the default', { orientation: 1 }],
+			['value 9, which EXIF does not have', { orientation: 9 }],
+			['no orientation entry', { orientation: null }],
+			['the orientation entry twice', { orientationAgain: 6 }],
+			['type 4 (LONG)', { orientationType: 4 }],
+			['count 2', { orientationCount: 2 }],
+			['an IFD0 offset of 4', { ifd0Offset: 4 }],
+			['an IFD0 past the segment', { ifd0Offset: 100_000 }],
+			['an IFD0 of 0 entries', { ifd0Count: 0 }],
+			// The code review's CR3: a count no segment can hold, and entries that fit with only the next IFD's offset outside.
+			['an IFD0 of 0xffff entries', { ifd0Count: 0xffff }],
+			['an IFD0 whose next-IFD offset alone is past the segment', { cutAfterIfd0Entries: 2 }],
+			['a header II+\\0', { header: bytes('II+\0') }]
+		];
+		for (const [what, options] of arms) {
+			for (const order of ['II', 'MM'] as const) {
+				const result = checkImage(phoneJpeg({ order, ...options }), 'image/jpeg');
+				expect(result.ok, `${what}, ${order}: ${(result as RefusedImage).message}`).toBe(true);
+				const kept = (result as CheckedImage).bytes;
+				expect(app1s(kept), `${what}, ${order}`).toEqual([]);
+				expect(Buffer.compare(Buffer.from(kept), plain), `${what}, ${order}`).toBe(0);
+			}
+		}
+
+		// The bound the last arm meets: with the whole of the next-IFD offset inside, the orientation is kept.
+		expect(app1s(accepted(phoneJpeg({ cutAfterIfd0Entries: 4 }), 'image/jpeg').bytes)).toEqual([KEPT_II]);
+
+		// A second EXIF APP1, of orientation 3, after a first of 6: the first wins, kept once.
+		const twice = accepted(phoneJpeg({ order: 'II' }, [jpegSegment(0xe1, phoneExif({ order: 'MM', orientation: 3 }).body)]), 'image/jpeg');
+		expect(app1s(twice.bytes)).toEqual([KEPT_II]);
+		// And a first that is dropped does not let a second be read.
+		const afterDropped = accepted(phoneJpeg({ order: 'II', orientation: 1 }, [jpegSegment(0xe1, phoneExif({ order: 'II', orientation: 3 }).body)]), 'image/jpeg');
+		expect(app1s(afterDropped.bytes)).toEqual([]);
+	});
+
+	it('10. answers seeded changes inside the EXIF APP1 with an image or a refusal, never a throw, in bounded time; and checks what it keeps to itself', () => {
+		const random = seeded(2761);
+		const byte = () => Math.floor(random() * 256);
+		const fixtures = (['II', 'MM'] as const).flatMap((order) => [
+			phoneJpeg({ order }),
+			phoneJpeg({ order, orientation: 3 }),
+			phoneJpeg({ order, orientationAgain: 8 }),
+			phoneJpeg({ order }, [jpegSegment(0xe1, phoneExif({ order, orientation: 5 }).body)])
+		]);
+		const inputs: Bytes[] = [];
+		for (const fixture of fixtures) {
+			// The first APP1's body, after its marker and length: straight after JFIF's 18 bytes.
+			const from = 2 + 18 + 4;
+			const to = 2 + 18 + 2 + fixture[2 + 18 + 2] * 256 + fixture[2 + 18 + 3];
+			expect(fixture[2 + 18 + 1]).toBe(0xe1);
+			for (let n = 0; n < 400; n++) {
+				const changed = fixture.slice();
+				const changes = 1 + Math.floor(random() * 4);
+				for (let c = 0; c < changes; c++) changed[from + Math.floor(random() * (to - from))] = byte();
+				inputs.push(changed);
+			}
+		}
+
+		const thrown: string[] = [];
+		const notStable: string[] = [];
+		let kept = 0;
+		const start = Date.now();
+		for (const input of inputs) {
+			try {
+				const result = checkImage(input, 'image/jpeg');
+				if (!result.ok) {
+					expect([400, 415]).toContain(result.status);
+					continue;
+				}
+				if (app1s(result.bytes).length > 0) kept++;
+				const again = checkImage(result.bytes, 'image/jpeg');
+				if (!again.ok || Buffer.compare(Buffer.from(again.bytes), Buffer.from(result.bytes)) !== 0) notStable.push(Buffer.from(input).toString('hex'));
+			} catch (err) {
+				thrown.push(`${Buffer.from(input).toString('hex')}: ${err instanceof Error ? err.stack : String(err)}`);
+			}
+		}
+
+		expect(thrown).toEqual([]);
+		expect(notStable).toEqual([]);
+		// The changes reach the reader on both sides: some keep an orientation, and some drop it.
+		expect(kept).toBeGreaterThan(0);
+		expect(kept).toBeLessThan(inputs.length);
+		expect(Date.now() - start).toBeLessThan(10_000);
+	});
+
+	// The code review's CS1: what a phone appends after the primary image is cut off, and the primary stripped as any other.
+	/** `input` checked, the answer the stripped primary alone, its orientation kept, and checked again to itself. */
+	const cutTo = (input: Bytes, primary: Bytes, what: string) => {
+		const result = accepted(input, 'image/jpeg');
+		expect(Buffer.compare(Buffer.from(result.bytes), Buffer.from(accepted(primary, 'image/jpeg').bytes)), what).toBe(0);
+		expect(Buffer.compare(Buffer.from(accepted(result.bytes, 'image/jpeg').bytes), Buffer.from(result.bytes)), `${what}, again`).toBe(0);
+		return result.bytes;
+	};
+
+	it('14. cuts an Ultra HDR or MPF gain map after the primary image: an MPF APP2 dropped, the second JPEG after EOI gone, the orientation kept', () => {
+		// The MPF index (APP2 "MPF\0", a TIFF of its own) in the primary, and the gain map, a whole second JPEG with
+		// EXIF and a position of its own, after the primary's EOI.
+		const mpf = jpegSegment(0xe2, bytes('MPF\0', 'MM', 0x00, 0x2a, be32(8), be16(1), be16(0xb000), be16(7), be32(4), '0100', be32(0), 'secret-mp-index'));
+		const gainMap = phoneJpeg({ order: 'MM', orientation: 3 });
+		const exif = phoneExif({ order: 'II' });
+		const primary = phoneJpeg({ order: 'II' }, [mpf]);
+
+		const kept = cutTo(bytes(primary, gainMap), phoneJpeg({ order: 'II' }), 'MPF and gain map');
+		expect(app1s(kept)).toEqual([KEPT_II]);
+		expect(jpegMarkers(kept)).toEqual([0xd8, 0xe0, 0xe1, 0xdb, 0xc0, 0xc4, 0xda, 0xd9]);
+		for (const [what, part] of [
+			['MPF', bytes('MPF\0')],
+			['position', exif.position],
+			['GPS IFD', exif.gps],
+			['make', bytes(EXIF_MAKE)],
+			['thumbnail', EXIF_THUMBNAIL]
+		] as const) {
+			expect(holds(kept, part), what).toBe(false);
+		}
+		// One EOI, at the end: nothing of the gain map after it.
+		expect(kept.subarray(-2)).toEqual(bytes(0xff, 0xd9));
+		expect(Buffer.from(kept).indexOf(Buffer.from([0xff, 0xd9]))).toBe(kept.length - 2);
+	});
+
+	it("15. cuts a motion photo's video, a trailer, a byte and a second file after EOI, and keeps refusing every other fault", () => {
+		const exif = phoneExif({ order: 'MM' });
+		const video = bytes(be32(0x18), 'ftypmp42', be32(0), 'mp42isom', be32(0x20), 'mdat', 'secret-video-frames', exif.position);
+		const kept = cutTo(bytes(phoneJpeg({ order: 'MM' }), video), phoneJpeg({ order: 'MM' }), 'a motion photo');
+		expect(app1s(kept)).toEqual([KEPT_MM]);
+		expect(text(kept)).not.toMatch(/ftyp|mdat|secret/);
+		expect(holds(kept, exif.position)).toBe(false);
+
+		// A Samsung-style trailer, one byte, and a second file: each cut off.
+		cutTo(bytes(jpeg(), 'SEFH', le32(1), 'secret-trailer', 'SEFT'), jpeg(), 'a trailer');
+		cutTo(bytes(jpeg(), 0), jpeg(), 'a byte');
+		cutTo(bytes(jpeg(), png()), jpeg(), 'a second file');
+
+		// Only what follows EOI is cut: a primary image cut short, or a byte between its segments, is still refused,
+		// and a PNG with a byte after IEND is still refused.
+		expect(invalid(bytes(jpeg().subarray(0, jpeg().length - 2), video), 'image/jpeg')).toMatch(/not a marker|ends|marker/);
+		expect(invalid(bytes([0xff, 0xd8], JFIF, 0x00, jpeg({ before: [] }).subarray(2), video), 'image/jpeg')).toMatch(/not a marker/);
+		expect(invalid(bytes(png(), 0), 'image/png')).toMatch(/bytes after IEND/);
 	});
 });

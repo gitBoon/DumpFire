@@ -5014,11 +5014,14 @@ describe('restoring a backup taken before the latest migrations', () => {
 			// And it is what it says: the backup is in, without that one row.
 			expect(sqlite.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
 			// And the form signing key, made again once the restore committed (card 2750),
-			// and this server's API key deadline, written back for a backup made before 0069 (card 2772).
+			// and this server's API key deadline, written back for a backup made before 0069 (card 2772),
+			// and the flag the check of the stored images writes once the import has committed, the backup
+			// holding no image (card 2761, the code review's CS3).
 			expect(sqlite.prepare('SELECT key FROM settings ORDER BY key').all()).toEqual([
 				{ key: 'api_key_deadline' },
 				{ key: 'request_form_secret' },
 				{ key: 'smtp_host' },
+				{ key: 'stored_images_rechecked' },
 				{ key: 'theme' }
 			]);
 		});

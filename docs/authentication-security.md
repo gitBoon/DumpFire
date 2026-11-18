@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.133
+version: 1.134
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2761
+  - exif
   - card-2670
   - iso-27001
   - card-2751
@@ -83,7 +85,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870)"
+description: "Deep-dive into DumpFire's authentication system, the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870)"
 ---
 
 # Authentication & Security
@@ -668,7 +670,8 @@ current-password route whose write is not a `writeAs` inside `whilePasswordHolds
 body only the guards of `QUICK_CHECKS` (`requireUser`, `requireSuperadmin`, `requireAdmin`,
 `refuseOwnAccount`, each reading no row) may take `locals.user`, in a call that binds no name.
 Four narrow allowances, each by handler with its reason: `QUICK_CHECKS_IN` (`requireCard` before
-the attachment upload, so that a caller with no access is not sent 25 MB first, and
+the attachment upload, so that a caller with no access is not sent 25 MB first, its image's
+upload count taken only after the form is read, in a `writeAs`, card 2761, and
 `screenAnonymous` before the public form's body); `READS_IN` (the import's safety copy reads
 every table with `sqlite.prepare(…).all()` outside a transaction, as the restore must run
 outside one); `USER_FIELDS_IN` (`.user` on a name declared inside the mail settings' callback
@@ -6338,11 +6341,11 @@ credential, so this is a new way to put bytes on the server's disk. What bounds 
 |---|---|
 | **Access asked before the body and again at the write** | The upload asks for the card (`404`) and edit access to its board (`403`) before it reads a byte of the body, so a caller with no access is not sent 5 MB first, and `attachImage` asks both again inside the `writeAs` that writes the row, with the key itself (`401`). A key revoked or an access removed while the body arrives writes nothing. List and download need view access; a download of a file on another card is `404` before any access is asked |
 | **Images only, by their bytes** | The declared `Content-Type` must be `image/png`, `image/jpeg`, `image/gif` or `image/webp` (`415`, nothing read). Then the bytes' magic must be that type (`415`), and `checkImage()` in `src/lib/server/image-check.ts` walks the file structure by structure to its end, keeping by allow-list: a structure the format marks safe to drop is dropped, any other unknown one refused (`400`). Nothing is decoded or re-encoded, and the module imports nothing |
-| **Metadata stripped** | Text chunks, EXIF, XMP, IPTC, comments, JPEG thumbnails and every other application segment or extension are taken out; for WebP only the EXIF and XMP flags of `VP8X` are cleared. Kept structures that could carry data (GIF graphic control and `NETSCAPE2.0`, JPEG `APP14 Adobe` and `DRI`) must have their exact shape, else `400` |
-| **Animation and trailing data refused** | APNG (`acTL`, `fcTL`, `fdAT`), a GIF of more than one image, an animated WebP (`ANIM`, `ANMF` or the `VP8X` flag), and any byte after `IEND`, `EOI`, the GIF trailer or the RIFF size: `400`. Trailing data is how a second file rides inside an image |
+| **Metadata stripped** | Text chunks, EXIF, XMP, IPTC, comments, JPEG thumbnails and every other application segment or extension are taken out; for WebP only the EXIF and XMP flags of `VP8X` are cleared. Since card 2761 a JPEG's EXIF orientation alone is kept, written again as a 36-byte segment of DumpFire's own (see [A JPEG's orientation](#a-jpegs-orientation)). Kept structures that could carry data (GIF graphic control and `NETSCAPE2.0`, JPEG `APP14 Adobe` and `DRI`) must have their exact shape, else `400` |
+| **Animation and trailing data refused** | APNG (`acTL`, `fcTL`, `fdAT`), a GIF of more than one image, an animated WebP (`ANIM`, `ANMF` or the `VP8X` flag), and any byte after `IEND`, the GIF trailer or the RIFF size: `400`. Trailing data is how a second file rides inside an image. After a JPEG's `EOI` it is cut off instead, since card 2761 (the code review's CS1): phones put a gain map, a motion photo's video or a trailer there, and it never reaches what is kept |
 | **Size** | 5 MB a body, held by the gate whether the length is declared or the body is chunked; at most 8000 pixels on a side and 40 megapixels (`400`) |
 | **Names are the server's** | The file on disk is `<uuid>.<extension>`, the extension from the bytes. The name shown is `?name=` cleaned (last path segment, control and format characters and `<>:"\|?*` out, cut to 100 characters, extension replaced by the bytes'), never a path |
-| **Allowances keyed per user** | 30 uploads an hour (`attachment-upload:user:<id>`), taken before the body is read, and 100 MB a day (`attachment-bytes:user:<id>`), charged with every byte read, before the check, so an invalid body costs what was sent. Keyed on the key's user, so a second key buys nothing. In memory, like the gate's 60 a minute; one taken stays taken whatever is refused after it (`src/lib/server/upload-allowance.ts`) |
+| **Allowances keyed per user** | 30 uploads an hour (`attachment-upload:user:<id>`), taken before the body is read, and 100 MB a day (`attachment-bytes:user:<id>`), charged with every byte read, before the check, so an invalid body costs what was sent. Keyed on the key's user, so a second key buys nothing, and shared with the user's image uploads through the card window (card 2761, which takes the count there once the form is read). In memory, like the gate's 60 a minute; one taken stays taken whatever is refused after it (`src/lib/server/upload-allowance.ts`) |
 | **20 images a card** | Counted inside the write transaction, every image row whichever tree attached it, so two uploads cannot both find room for the 20th (`409`) |
 | **A download is always inert** | Always `Content-Disposition: attachment`; `Content-Type` the image type only when the stored type is one of the four and the bytes' magic is it, else `application/octet-stream`; `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox` and `Cache-Control: no-store`, so no cache between keeps a copy of a file the key's user may later lose access to (`downloadHeaders()` in `src/lib/server/uploads.ts`) |
 | **No delete** | A key removes no file: evidence on a card stays until a person deletes it in the web application, or [image retention](backup-reporting.md#image-retention) moves it |
@@ -6373,8 +6376,158 @@ sequenceDiagram
 write scope (upload). The code review's F3, that a download answers `404` for a file on
 another card before it asks access, so ids on a card the caller cannot open can be told
 apart (`403` against `404`), is shared with the web tree (card 2361) and goes to its own card,
-both trees together. The card window's upload still takes the browser's claimed type and has
-no per-card or per-user cap: a new card (the plan's D20).
+both trees together. The card window's upload took the browser's claimed type and had no
+per-card or per-user cap (the plan's D20): since card 2761 its images are held to every control
+above, and the allowances are shared, below.
+
+### The Card Window's Images (Card 2761)
+
+Until card 2761 the card window's upload (`POST /api/cards/:id/attachments`, a form) stored
+whatever type the browser claimed and the bytes as sent: an image kept its hidden data
+(location, camera details, comments), a file declared as an image need not be one, and no
+card or account had a limit. Card 2754 only kept such a file from being *shown* unless its
+bytes match. Now a file the browser declares as `image/png`, `image/jpeg`, `image/gif` or
+`image/webp` (read by `imageTypeOf`, parameters and case ignored) is held to the API upload's
+rules, through the same `checkImage()` and `attachImage()`:
+
+| Control | What it does |
+|---|---|
+| **Same checks** | `checkImage()`: bytes not the declared type `415`; not a valid image of it, animated, anything after the end of a PNG, GIF or WebP, over 8000 pixels on a side or 40 megapixels `400`; metadata taken out, and a JPEG's trailing data cut off (below). Stored as `<uuid>.<extension>`, its name `attachImage`'s cleaned name with the bytes' extension (`photo.PNG` is `photo.png`) |
+| **Same caps** | `attachImage()`, in the `writeAs` that writes the row: the session, the card and edit access asked again (`401`, `404`, `403`); a card closed longer than `IMAGE_RETENTION_DAYS` `409`; the 21st image on a card `409`, counted in the write transaction, every image row whichever tree attached it |
+| **Shared allowances** | The account's 30 uploads an hour and 100 MB a day (`src/lib/server/upload-allowance.ts`), the same keys as a key's upload: an upload either way counts against both. A refusal is `429` with `Retry-After` and `retryAfterSecs`, and the words "Nothing was written." (`takeUploadCount(…, { afterRead: true })`), since the form has been read |
+| **Other files unchanged** | A PDF, a document, a spreadsheet, and an image's bytes declared as any other type (`image/heic`, `image/jpg`, none) are stored as sent, take nothing from either allowance, and are only ever served as a download unless their bytes are the image their type names (card 2754). Their size is still held to 25 MB; their own limits are card 2910 |
+| **Size** | 25 MB a file for images too (the API keeps 5 MB): phone photos pass 5 MB, and the 100 MB a day bounds them. The gate's 26 MB body limit is unchanged |
+
+The order, after the form is read (no file `400`, over 25 MB `400`):
+
+```mermaid
+flowchart TD
+    P["POST /api/cards/:id/attachments (form)"] --> G["requireCard edit, before the body: 404, 403"]
+    G --> F["form read: no file 400, over 25 MB 400"]
+    F --> T{"imageTypeOf(file.type)"}
+    T -->|"not one of the four"| O["attachFile: type and bytes as sent, 200"]
+    T -->|"PNG, JPEG, GIF, WebP"| A["writeAs: session 401 (nothing taken),<br/>takeUploadCount 30 an hour, takeUploadBytes 100 MB a day: 429"]
+    A --> C["checkImage: 415 not that type, 400 not a valid image;<br/>metadata out, a JPEG's orientation kept"]
+    C --> W["writeUploadFile uuid.ext"]
+    W --> S["writeAs attachImage: 401, 404, 403 again,<br/>409 card expired, 409 the 21st image; row, entry, event"]
+    S -->|"refused"| R["removeUploadFile, and the folder it made; the refusal"]
+    S --> OK["200, the row without filename"]
+```
+
+The count and the bytes are taken in one `writeAs`, so an ended session is `401` with nothing
+taken; once taken they stay taken whatever is refused after (an image the check refuses was
+still sent). The answer for an image is `attachImage`'s, the row without `filename`; the card
+window never reads that field.
+
+**Accepted (the plan review's S13): the count is taken after the form is read.** The card
+window sends the declared type inside the form, so the upload cannot be counted before the
+body is read, as the API's is: an account past its 30 can still make the server read up to
+26 MB bodies it then refuses. The gate's per-minute limit still holds, and the bytes refused
+are not stored. Counting before the body, for every upload, image or not, is card 2910.
+
+#### A JPEG's orientation
+
+Stripping every `APP1` also took out the EXIF orientation a phone writes, so a photo taken
+upright would show on its side. `checkImage()` now keeps that one value, for both trees
+(`orientationSegment()` in `src/lib/server/image-check.ts`; the plan's D4 and S12):
+
+- **Read** from the first `APP1` whose body starts `Exif\0\0` only; every other `APP1` (a
+  second EXIF, XMP) is dropped as before. After the six bytes, a TIFF header `II*\0`
+  (little-endian) or `MM\0*` (big-endian); the IFD0 offset at least 8, and IFD0's count, its
+  12-byte entries and the 4-byte next offset inside the segment; at least one entry. Tag
+  `0x0112` exactly once, of type 3 (`SHORT`) and count 1, its value the `u16` at the entry's
+  offset + 8 in the file's byte order, 2 to 8. **No pointer is followed**: not IFD1 (the
+  thumbnail), not the Exif sub-IFD, not GPS.
+- **Kept** as one new `APP1` in that segment's place, 36 bytes: `FF E1 00 22`, then
+  `45 78 69 66 00 00`, the TIFF header (`49 49 2A 00 08 00 00 00` or
+  `4D 4D 00 2A 00 00 00 08`), the count (`01 00` / `00 01`), the entry (tag `12 01` / `01 12`,
+  type `03 00` / `00 03`, count `01 00 00 00` / `00 00 00 01`, value `vv 00 00 00` /
+  `00 vv 00 00`), and a next IFD of `00 00 00 00`. Nothing of the original but the value.
+- **Dropped, never refused**: a value of 1 or outside 2 to 8, no `0x0112` or two, the wrong type
+  or count, an IFD0 offset under 8 or out of bounds, no entries, any other header. The image is
+  accepted without the segment. A PNG's `eXIf` and a WebP's `EXIF` are still dropped whole.
+
+**A JPEG's trailing data is cut off** (the code review's CS1). Until the review the walk
+refused a JPEG with anything after its `EOI` (`400`), so the photos most likely to hold a
+location, those with an Ultra HDR or MPF gain map, a motion photo's video, or a Samsung
+trailer appended, were refused as uploads and, already stored, only retyped as downloads with
+their location still on the disk. Now, in `checkImage()` itself and so for both trees and the
+one-off below, whatever follows the primary image's `EOI` is cut off, never read, and the image
+is walked and stripped as any other (an MPF `APP2` index in it is dropped with every other
+application segment). Every other fault is refused as before, and a PNG, GIF or WebP with
+anything after its end still is.
+
+The segment checks to itself: an image already cleaned is accepted again unchanged, which the
+one-off below relies on. Not claimed: an embedded colour profile (JPEG `APP2 ICC_PROFILE`, PNG
+`iCCP`, WebP `ICCP`) is kept whole and not cleaned; card 2913.
+
+#### The images stored before card 2761
+
+The rule would cover only new uploads, so the images already stored are checked once, at the
+first start after the release (`recheckStoredImages()` in `src/lib/server/image-recheck.ts`,
+called from `hooks.server.ts` as `void recheckStoredImages();` after the report schedules are
+announced and before the schedulers start; the plan's D10 and S11), and again straight after
+every committed Import Backup (`/api/admin/import`, the code review's CS3): the restore
+replaces `settings`, so a backup made before the release brings no flag. For every
+`card_attachments` row whose stored type is one of the four, oldest first, its file is read and
+checked against that type:
+
+| Outcome | What is done |
+|---|---|
+| Accepted, the bytes unchanged | Nothing written: `clean`. Where the row's `size_bytes` is not the file's size, that size is set (`resized`, the code review's CR2) |
+| Accepted, metadata or a JPEG's trailing data taken out | The new bytes written into the card's folder as `.recheck-<uuid>` (a short name, whatever the file's), flushed to the disk (`datasync`) and closed, then renamed over the file, then the row's `size_bytes` set in a transaction of its own: `stripped` (CS4) |
+| Refused by the check (not the image its type names, animated, too large, or malformed; `415` or `400`) | The row's `mime_type` set to `application/octet-stream`, the file kept as it was, metadata included: `retyped`. From then on it is only a download, and no longer counts toward a card's 20 |
+| A name that names no file in the card's folder, or no file | Nothing: `missing` |
+| A read, write or rename that fails | Counted `failed` and named by id (a temp file left is removed); the run goes on. Its error code is kept in `settings.stored_images_recheck_failures`; a row that fails with the same code at three starts in a row is `givenUp` instead, named, and no longer keeps the flag from being written (CS2) |
+
+Then one `WARN` line under `UPLOADS`: "Checked the *n* images stored before card 2761: *s* had
+hidden data taken out, *z* had only their recorded size corrected, *r* were refused by the
+check (not the image its type names, animated, too large, or malformed) and are now downloads
+only (attachment ids …), *m* had no file, *f* could not be checked (attachment ids …), *g* were
+given up after failing the same way at 3 starts (attachment ids …)." Rows are named by id only,
+never by card or file name. With no image rows there is nothing to say and no line. The flag
+`settings.stored_images_rechecked` (the date, `INSERT OR IGNORE`) is written only when no row
+failed (a given-up row does not count), and the failures row is then deleted; otherwise the
+next start runs it again, which changes nothing already done. What to do when *f* stays above
+0 is in [Deployment](deployment.md#what-the-first-start-says-card-2761). It never throws: a failure outside a row is one `WARN` line, no flag. No activity entry
+and no live event: nothing a person did. A file it rewrote is new, so the attachment sweep,
+which moves no file changed in the last 24 hours, leaves it.
+
+```mermaid
+sequenceDiagram
+    participant H as hooks.server.ts at start, or a committed import
+    participant R as recheckStoredImages
+    participant D as Database
+    participant U as uploads folder
+    H->>R: void, after announceReportSchedules, before the schedulers
+    R->>D: settings stored_images_rechecked?
+    alt present
+        R-->>H: null
+    else absent
+        loop every image row, oldest first
+            R->>U: read the file
+            R->>R: checkImage(bytes, stored type)
+            alt cleaned, bytes changed
+                R->>U: write .recheck-uuid, datasync, close, rename over
+                R->>D: size_bytes
+            else clean, size_bytes wrong
+                R->>D: size_bytes
+            else refused by the check
+                R->>D: mime_type application/octet-stream
+            else a read, write or rename fails
+                R->>R: failed, or given up at the third start failing the same way
+            end
+        end
+        R->>R: one WARN line with the counts and ids
+        R->>D: the flag, only if nothing failed, or else the failures by id
+    end
+```
+
+Covered by `tests/uploads.test.ts` ("uploading an image through the card window"),
+`tests/image-check.test.ts` (the orientation, its every drop arm, a fuzz run and the fixed
+point; a JPEG's gain map, motion-photo video and trailer cut off) and
+`tests/image-recheck.test.ts` (each outcome, a failed and a given-up row, a size corrected, a
+motion photo stripped in place, and the check after an import).
 
 ## Board Access Control
 
@@ -9034,7 +9187,7 @@ flowchart TD
 |---------|--------------|
 | **A download unless proven inert** | Everything is answered `Content-Disposition: attachment` with `Content-Type: application/octet-stream`, except five types that cannot run a script: PNG, JPEG, GIF, WebP and plain text (`.txt`). HTML, SVG and PDF are never shown in the browser |
 | **Extension and stored type must agree** | Both are the uploader's. A file named `.png` that was uploaded as `text/html` is a download |
-| **An image is shown only when its bytes match** | Since card 2754 the name and the stored type are not enough for an image: it is inline only when `sniffImage()` (`src/lib/server/image-check.ts`) finds the stored type's magic at the start of the file. A page uploaded as `shot.png` and typed `image/png`, which the card window's upload still accepts, is a download. Text has no magic, and is served as `text/plain` with `nosniff` whatever it holds |
+| **An image is shown only when its bytes match** | Since card 2754 the name and the stored type are not enough for an image: it is inline only when `sniffImage()` (`src/lib/server/image-check.ts`) finds the stored type's magic at the start of the file. A page stored as `shot.png` and typed `image/png`, which the card window's upload accepted until card 2761 (whose one-off check retypes such a row as a download), is a download. Text has no magic, and is served as `text/plain` with `nosniff` whatever it holds |
 | **The served type is DumpFire's, not the uploader's** | An inline file is answered with the type written in the code for its kind (`image/png`, `text/plain; charset=utf-8`), never with the stored text |
 | **`X-Content-Type-Options: nosniff`** on every answer | The browser shows the file as the type named and does not guess another |
 | **`Content-Security-Policy: sandbox`** on every answer | Whatever is shown can run nothing. A PDF is a download for this reason: a browser shows one in its own viewer, which does not start under a sandbox, so a PDF could be shown only by leaving the sandbox off it |
@@ -9042,7 +9195,10 @@ flowchart TD
 | **The file name is encoded** | The name in `Content-Disposition` is the uploader's. It is written as a plain ASCII `filename`, with quotes, backslashes and anything outside printable ASCII replaced, and as an RFC 5987 `filename*`, so a quote or a line break in a name cannot write a header |
 | **The stored file name is checked before it becomes a path** | After a restore a file name is data. A name with a separator, a drive letter or `..` is refused, and the request is answered as a file that is not there |
 
-Uploading needs edit access to the card and is limited to 25 MB. Deleting an attachment
+Uploading needs edit access to the card and is limited to 25 MB. Since card 2761 a file the
+browser declares as one of the four image types is checked and capped as a key's image is, and
+counts against the account's shared hour and day: see
+[The Card Window's Images](#the-card-windows-images-card-2761). Deleting an attachment
 needs edit access; its row is deleted in a transaction and its file is moved to the
 [uploads trash](architecture.md#uploads-and-the-trash) once that has committed. Both trees
 write an upload's file through `writeUploadFile()` and remove it through `removeUploadFile()`
@@ -9054,7 +9210,8 @@ are moved to the trash by DumpFire itself, with an entry whose source is `system
 [Image Retention](backup-reporting.md#image-retention).
 
 Covered by `tests/uploads.test.ts`, and for the v1 routes and the image check by
-`tests/v1-attachments.test.ts` and `tests/image-check.test.ts`.
+`tests/v1-attachments.test.ts` and `tests/image-check.test.ts`; the one-off check of the images
+stored before card 2761 by `tests/image-recheck.test.ts`.
 
 ## First-Run Setup Guard
 

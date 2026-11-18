@@ -157,6 +157,8 @@ const TEST_FILES = [
 	'ideas-screens.svelte.test.ts',
 	// Card 2754, slice S1: whether bytes are a PNG, JPEG, GIF or WebP image, and their metadata taken out.
 	'image-check.test.ts',
+	// Card 2761, slice S2: the images stored before the card checked once at the first start.
+	'image-recheck.test.ts',
 	// Card 2754, slice S3: the images of cards closed long ago moved to the trash, as DumpFire itself.
 	'image-retention.test.ts',
 	'import-working-copy.test.ts',

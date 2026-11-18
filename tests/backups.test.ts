@@ -1553,6 +1553,9 @@ describe('the running database’s system log, at start', () => {
 		// report schedules are announced (card 2751).
 		expect(hooks.indexOf('\nendPlainRequestLinks();')).toBeGreaterThan(hooks.indexOf('\nendPlainInvites();'));
 		expect(hooks.indexOf('\nvoid announceReportSchedules();')).toBeGreaterThan(hooks.indexOf('\nendPlainRequestLinks();'));
+		// And the images stored before card 2761 checked once after that, before the schedulers start (D10).
+		expect(hooks.indexOf('\nvoid recheckStoredImages();')).toBeGreaterThan(hooks.indexOf('\nvoid announceReportSchedules();'));
+		expect(hooks.indexOf('\nstartSchedulers();')).toBeGreaterThan(hooks.indexOf('\nvoid recheckStoredImages();'));
 	});
 
 	it('cannot keep the server from starting: a failure is said at WARN, and nothing is thrown', () => {

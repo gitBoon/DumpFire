@@ -23,9 +23,13 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { activityLog, boardMembers, cardAttachments, cards, type Card, type CardAttachment } from '$lib/server/db/schema';
+import { activityLog, boardMembers, cardAttachments, cards, sessions, type Card, type CardAttachment } from '$lib/server/db/schema';
+import { imageTypeOf } from '$lib/server/image-check';
+import { stamp } from '$lib/timestamps';
 import type { SessionUser } from '$lib/server/auth';
 import { initLogMaintenance } from '$lib/server/logger';
+import { allowanceState, resetAllRateLimits, takeAllowance } from '$lib/server/rate-limit';
+import { UPLOAD_BYTES_PER_DAY, UPLOADS_PER_HOUR } from '$lib/server/upload-allowance';
 import {
 	attachmentHeaders,
 	attachmentPath,
@@ -39,7 +43,7 @@ import {
 	UploadsDirError,
 	writeUploadFile
 } from '$lib/server/uploads';
-import { bytes, gif, jpeg, le32, png, webp } from './helpers/image-bytes';
+import { bytes, gif, jpeg, le32, png, pngChunk, webp } from './helpers/image-bytes';
 import { api } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects } from './helpers/effects';
@@ -49,9 +53,12 @@ import {
 	makeAttachment,
 	makeBoard,
 	makeCard,
+	makeSession,
 	makeUser,
 	makeWebhook,
 	resetDb,
+	sessionCredential,
+	sessionHashOf,
 	testUploadsDir,
 	type BoardFixture
 } from './helpers/fixtures';
@@ -94,6 +101,10 @@ beforeEach(() => {
 		return realWriteFile(...args);
 	});
 	resetDb();
+	// The upload allowances are in memory, kept for the account, and outlast a
+	// reset of the database: every test starts with the whole hour and day
+	// (card 2761, E12).
+	resetAllRateLimits();
 	owner = makeUser({ username: 'owner' });
 	A = makeBoard({ owner, name: 'A' });
 	card = makeCard(A.cols['To Do'], { title: 'Has files' });
@@ -837,17 +848,198 @@ describe('uploading an attachment', () => {
 	});
 });
 
+// ─── An image through the card window (card 2761) ───────────────────────────
+
+describe('uploading an image through the card window (card 2761)', () => {
+	const HOUR_MS = 3_600_000;
+	const DAY_MS = 86_400_000;
+	const hourKey = () => `attachment-upload:user:${owner.id}`;
+	const dayKey = () => `attachment-bytes:user:${owner.id}`;
+	/** The account's hour and day as they stand, nothing taken. */
+	const allowances = () => ({
+		hour: allowanceState(hourKey(), UPLOADS_PER_HOUR, HOUR_MS, Date.now()).used,
+		day: allowanceState(dayKey(), UPLOAD_BYTES_PER_DAY, DAY_MS, Date.now()).used
+	});
+	const image = (content: Uint8Array, name = 'shot.png', type = 'image/png') => new File([content as BlobPart], name, { type });
+	const pdf = () => new File(['%PDF-1.4 a paper'], 'paper.pdf', { type: 'application/pdf' });
+	const daysAgo = (days: number) => stamp(new Date(Date.now() - days * DAY));
+
+	it('1. checks a PNG, takes its metadata out and stores it as <uuid>.png, named by its bytes, through attachImage', async () => {
+		const sent = png({ before: [pngChunk('tEXt', 'Comment\0secret-location')] });
+		let status = 0;
+		let body: Record<string, unknown> = {};
+		const said = await told(async () => {
+			const res = await upload(card, image(sent, 'photo.PNG'));
+			status = res.status;
+			body = res.body;
+		});
+
+		expect(status, JSON.stringify(body)).toBe(200);
+		// attachImage's answer: the row without its name on disk.
+		expect(body).not.toHaveProperty('filename');
+		const [row] = rows();
+		expect(row.filename).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.png$/);
+		const kept = readFileSync(at(card.id, row.filename));
+		// The PNG without its tEXt chunk: what the same image made without one is.
+		expect(Buffer.compare(kept, Buffer.from(png()))).toBe(0);
+		expect(kept.toString('latin1')).not.toContain('secret-location');
+		expect(row).toMatchObject({ originalName: 'photo.png', mimeType: 'image/png', sizeBytes: png().length, uploadedBy: owner.id });
+		expect(body).toMatchObject({ id: row.id, originalName: 'photo.png', mimeType: 'image/png', sizeBytes: png().length });
+		expect(said.entries).toEqual([
+			{ boardId: A.board.id, cardId: card.id, userId: owner.id, action: 'attachment_added', detail: 'Attached "photo.png" to "Has files"', source: 'ui' }
+		]);
+		expect(said.events).toEqual([{ boardId: A.board.id, event: 'update', data: { type: 'attachment', cardId: card.id } }]);
+	});
+
+	it('2. refuses bytes that are not the declared type 415, and an image with bytes after its end 400, writing nothing', async () => {
+		const notPng = await upload(card, image(jpeg(), 'shot.png', 'image/png'));
+		expect([notPng.status, notPng.body.message]).toEqual([415, 'The body is a JPEG image, not the image/png its Content-Type says']);
+
+		const trailing = await upload(card, image(bytes(png(), 'a second file'), 'shot.png', 'image/png'));
+		expect(trailing.status).toBe(400);
+		expect(trailing.body.message).toBe('The PNG image is not valid: there are bytes after IEND');
+
+		expect(rows()).toEqual([]);
+		expect(entries()).toEqual([]);
+		expect(fileIn(card.id)).toBe(false);
+	});
+
+	it('3. refuses the 21st image on a card 409, however the 20 were typed, and removes its file and the folder it made; a PDF is still taken', async () => {
+		// Rows alone (E17); some typed as the card window stored them before card 2761.
+		for (let i = 0; i < 20; i++) {
+			makeAttachment(card, { name: `shot-${i}.jpg`, mimeType: i % 2 === 0 ? 'IMAGE/JPEG' : 'image/png', file: false });
+		}
+
+		const refused = await upload(card, image(png()));
+		expect([refused.status, refused.body.message]).toEqual([409, 'This card already has 20 images']);
+		expect(rows()).toHaveLength(20);
+		expect(entries()).toEqual([]);
+		expect(fileIn(card.id)).toBe(false);
+
+		const paper = await upload(card, pdf());
+		expect(paper.status).toBe(200);
+		expect(paper.body).toMatchObject({ originalName: 'paper.pdf', mimeType: 'application/pdf' });
+		expect(rows()).toHaveLength(21);
+	});
+
+	it('4. refuses an image for a card closed longer than IMAGE_RETENTION_DAYS 409, writing nothing; a PDF is taken, and with retention off the image', async () => {
+		const closed = makeCard(A.cols['Complete'], { title: 'Shipped', completedAt: daysAgo(181) });
+
+		const refused = await upload(closed, image(png()));
+		expect([refused.status, refused.body.message]).toEqual([
+			409,
+			'This card was closed more than 180 days ago, so its images are moved to the trash: reopen or restore it to attach one'
+		]);
+		expect(rows()).toEqual([]);
+		expect(entries()).toEqual([]);
+		expect(fileIn(closed.id)).toBe(false);
+
+		expect((await upload(closed, pdf())).status).toBe(200);
+
+		vi.stubEnv('IMAGE_RETENTION_DAYS', 'off');
+		try {
+			expect((await upload(closed, image(png()))).status).toBe(200);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+		expect(rows().map((row) => row.mimeType)).toEqual(['application/pdf', 'image/png']);
+	});
+
+	it("5. shares the account's hour with /api/v1: one left, a key's upload takes it and the card window's image is 429; a PDF takes nothing", async () => {
+		expect(takeAllowance(hourKey(), UPLOADS_PER_HOUR - 1, UPLOADS_PER_HOUR, HOUR_MS).taken).toBe(true);
+
+		const byKey = await api('POST', `/api/v1/cards/${card.id}/attachments?name=shot.png`, {
+			user: owner,
+			body: png(),
+			headers: { 'content-type': 'image/png' }
+		});
+		expect(byKey.status).toBe(201);
+
+		const refused = await upload(card, image(png()));
+		expect(refused.status).toBe(429);
+		expect(refused.body.message).toMatch(/^An account can upload at most 30 images an hour\. Nothing was written\. Try again in \d+ minute\(s\)\.$/);
+		expect(refused.headers.get('retry-after')).toBe(String(refused.body.retryAfterSecs));
+		expect(refused.body.retryAfterSecs).toBeGreaterThan(0);
+		expect(rows()).toHaveLength(1);
+
+		// The PDF arm (E13): read before and after, nothing taken from either.
+		const before = allowances();
+		expect(before).toEqual({ hour: UPLOADS_PER_HOUR, day: png().length });
+		expect((await upload(card, pdf())).status).toBe(200);
+		expect(allowances()).toEqual(before);
+	});
+
+	it("6. shares the account's day, charged with the bytes read before they are checked", async () => {
+		const sentPng = png();
+		const sentJpeg = jpeg();
+		// One byte short of the PNG.
+		takeAllowance(dayKey(), UPLOAD_BYTES_PER_DAY - (sentPng.length - 1), UPLOAD_BYTES_PER_DAY, DAY_MS);
+		const short = await upload(card, image(sentPng));
+		expect(short.status).toBe(429);
+		expect(short.body.message).toMatch(/^An account can upload at most 100 MB of images a day, and this image would pass it\. Nothing was written\. Try again in \d+ (hour|minute)\(s\)\.$/);
+		expect(short.headers.get('retry-after')).toBe(String(short.body.retryAfterSecs));
+
+		// Room for a JPEG sent as a PNG and one byte short of a PNG after it: the JPEG is refused at the check,
+		// and still charged, so the PNG no longer fits.
+		resetAllRateLimits();
+		takeAllowance(dayKey(), UPLOAD_BYTES_PER_DAY - (sentJpeg.length + sentPng.length - 1), UPLOAD_BYTES_PER_DAY, DAY_MS);
+		expect((await upload(card, image(sentJpeg, 'shot.png', 'image/png'))).status).toBe(415);
+		expect((await upload(card, image(sentPng))).status).toBe(429);
+		expect(rows()).toEqual([]);
+		expect(fileIn(card.id)).toBe(false);
+	});
+
+	it('7. is 401 for a session ended while the form is read, with nothing taken from either allowance and nothing written (E16)', async () => {
+		const token = makeSession(owner);
+		const mine = image(png());
+		const real = Blob.prototype.arrayBuffer;
+		let ended = false;
+		// The route reads the bytes of the file it parsed out of the request: the session ends then, after
+		// the route's first check of the card and before the writeAs that counts the upload.
+		vi.spyOn(Blob.prototype, 'arrayBuffer').mockImplementation(function (this: Blob) {
+			if (this !== mine && this instanceof File && this.name === mine.name && !ended) {
+				db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
+				ended = true;
+			}
+			return real.call(this);
+		});
+		const form = new FormData();
+		form.set('file', mine);
+
+		const res = await api('POST', `/api/cards/${card.id}/attachments`, { user: owner, body: form, credential: sessionCredential(token) });
+
+		expect(ended).toBe(true);
+		expect([res.status, res.body.message]).toEqual([401, 'Not authenticated']);
+		expect(allowances()).toEqual({ hour: 0, day: 0 });
+		expect(rows()).toEqual([]);
+		expect(entries()).toEqual([]);
+		expect(fileIn(card.id)).toBe(false);
+	});
+});
+
 // ─── Serving ────────────────────────────────────────────────────────────────
 
 describe('serving an attachment', () => {
-	/** Upload a file and open it. */
-	const served = async (name: string, type: string, content: string | Uint8Array = 'x') => {
-		const sent = await upload(card, new File([content as BlobPart], name, { type }));
-		expect(sent.status).toBe(200);
-		const res = await api('GET', `/api/cards/${card.id}/attachments/${sent.body.id}`, { user: owner });
+	/** Open a file. */
+	const opened = async (id: number) => {
+		const res = await api('GET', `/api/cards/${card.id}/attachments/${id}`, { user: owner });
 		expect(res.status).toBe(200);
 		return res;
 	};
+	/** Upload a file and open it: only a file the card window's upload accepts (card 2761). */
+	const served = async (name: string, type: string, content: string | Uint8Array = 'x') => {
+		const sent = await upload(card, new File([content as BlobPart], name, { type }));
+		expect(sent.status, `${name} as ${type}: ${JSON.stringify(sent.body)}`).toBe(200);
+		return opened(sent.body.id);
+	};
+	/**
+	 * A row and its file as the card window stored them before card 2761, the
+	 * type and the name as the browser claimed them, and open it. Such a row is
+	 * still served by these rules, whatever the one-off check of stored images
+	 * later makes of it.
+	 */
+	const stored = (name: string, type: string, content: string | Uint8Array = 'x') =>
+		opened(makeAttachment(card, { name, mimeType: type, content }).id);
 	const disposition = (res: { headers: Headers }) => res.headers.get('content-disposition') ?? '';
 	/** Bytes that are an image of `type`, for one of the four; anything else is a byte of text. */
 	const contentOf = (type: string): string | Uint8Array =>
@@ -897,7 +1089,8 @@ describe('serving an attachment', () => {
 			['moving.gif', 'image/gif', 'GIF8'],
 			['small.webp', 'image/webp', bytes('RIFF', le32(4), 'WAVE')]
 		] as const) {
-			const res = await served(name, type, content);
+			// Stored as the card window stored them before card 2761: its upload now refuses each (415 or 400).
+			const res = await stored(name, type, content);
 			expect(disposition(res), `${name} holding ${String(content).slice(0, 10)}`).toMatch(/^attachment; /);
 			expect(res.headers.get('content-type'), name).toBe('application/octet-stream');
 		}
@@ -922,8 +1115,9 @@ describe('serving an attachment', () => {
 			['notes.txt', 'text/html'],
 			['shot.png.html', 'image/png']
 		]) {
-			// The bytes are the stored type's image where it is one, so that only the name disagrees.
-			const res = await served(name, type, contentOf(type));
+			// The bytes are the stored type's image where it is one, so that only the name disagrees. An image
+			// type is stored as before card 2761, whose upload names an image by its bytes' extension.
+			const res = imageTypeOf(type) ? await stored(name, type, contentOf(type)) : await served(name, type, contentOf(type));
 			expect(disposition(res), `${name} as ${type}`).toMatch(/^attachment; /);
 			expect(res.headers.get('content-type'), `${name} as ${type}`).toBe('application/octet-stream');
 		}
@@ -941,7 +1135,8 @@ describe('serving an attachment', () => {
 			// Named as a PDF and uploaded as a page.
 			['paper.pdf', 'text/html']
 		]) {
-			const res = await served(name, type);
+			// A byte that is no PNG, typed as one, as stored before card 2761.
+			const res = imageTypeOf(type) ? await stored(name, type) : await served(name, type);
 			expect(res.headers.get('content-security-policy'), name).toBe('sandbox');
 			expect(res.headers.get('x-content-type-options'), name).toBe('nosniff');
 			expect(res.headers.get('content-length'), name).toBe('1');

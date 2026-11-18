@@ -11,9 +11,24 @@
  * IPTC, comments, thumbnails and the like. Nothing is decoded or re-encoded:
  * the pixel data is copied as it came.
  *
+ * One value is kept from a JPEG's EXIF (card 2761, D4 and S12): its
+ * orientation, which a phone photo needs to be shown upright. It is read from
+ * the first EXIF segment alone, from IFD0 alone, no pointer followed, and
+ * written again as a 36-byte segment (a 32-byte body) of this module's own
+ * that holds nothing else (`orientationSegment`). Anything about it that is
+ * not exactly as EXIF has it drops it, and never refuses the image. A PNG's
+ * or WebP's EXIF is still dropped whole: screenshots do not need it.
+ *
+ * A JPEG's bytes after the primary image's `EOI` are cut off, never kept and
+ * never read (card 2761, the code review's CS1): a phone appends a gain map
+ * (Ultra HDR, MPF), a motion photo's video or a trailer there, and those are
+ * the photos most likely to hold a location. The primary image is then
+ * walked and stripped as any other.
+ *
  * Refused, whatever else the file holds:
- * - bytes after the end of the image (after `IEND`, `EOI`, the GIF trailer or
- *   the RIFF size), which is how a second file rides along inside an image;
+ * - bytes after the end of a PNG, GIF or WebP (after `IEND`, the GIF trailer
+ *   or the RIFF size), which is how a second file rides along inside an
+ *   image;
  * - animation: an APNG, a GIF of more than one image, an animated WebP;
  * - more than `MAX_SIDE` pixels on a side or `MAX_PIXELS` in all, which no
  *   screenshot needs and a decompression bomb does.
@@ -230,11 +245,74 @@ const JPEG_FRAMES: ReadonlySet<number> = new Set([0xc0, 0xc1, 0xc2]);
 /** Huffman and quantisation tables, kept as they are. */
 const JPEG_TABLES: ReadonlySet<number> = new Set([0xc4, 0xdb]);
 
+/** EXIF's orientation tag, in IFD0. */
+const ORIENTATION_TAG = 0x0112;
+
+/**
+ * The segment a JPEG's orientation is kept in, from the body of its first
+ * EXIF `APP1` (card 2761, D4 and S12), or null to drop it.
+ *
+ * Read: after `Exif\0\0`, a TIFF header, `II*\0` (little-endian) or `MM\0*`
+ * (big-endian); its IFD0 offset at least 8, and IFD0's count, its entries
+ * and the next IFD's offset inside the body; at least one entry. Tag 0x0112
+ * once among them, of type 3 (SHORT) and count 1, its value the u16 at the
+ * entry's offset + 8 in the file's byte order, 2 to 8 (1 is the default, and
+ * says nothing). No pointer is followed: not IFD1 (the thumbnail), not the
+ * Exif sub-IFD, not GPS. Anything else answers null, and the segment is
+ * dropped as every other `APP1` is; the image is never refused for it.
+ *
+ * Kept: `FF E1 00 22` and a 32-byte body, `Exif\0\0`, the TIFF header in the
+ * file's byte order with IFD0 at 8, a count of 1, the one entry, and a next
+ * IFD of 0. Nothing of the original segment is copied but the value.
+ */
+function orientationSegment(body: Uint8Array): Uint8Array | null {
+	const tiff = body.subarray(6);
+	if (tiff.length < 8) return null;
+	let little: boolean;
+	if (tiff[0] === 0x49 && tiff[1] === 0x49 && tiff[2] === 0x2a && tiff[3] === 0x00) little = true;
+	else if (tiff[0] === 0x4d && tiff[1] === 0x4d && tiff[2] === 0x00 && tiff[3] === 0x2a) little = false;
+	else return null;
+	// Every read below is inside `tiff`: IFD0's bounds are checked first.
+	const u16 = (at: number) => (little ? tiff[at] + tiff[at + 1] * 0x100 : tiff[at] * 0x100 + tiff[at + 1]);
+	const u32 = (at: number) =>
+		little
+			? tiff[at] + tiff[at + 1] * 0x100 + tiff[at + 2] * 0x10000 + tiff[at + 3] * 0x1000000
+			: tiff[at] * 0x1000000 + tiff[at + 1] * 0x10000 + tiff[at + 2] * 0x100 + tiff[at + 3];
+
+	const ifd = u32(4);
+	if (ifd < 8 || ifd + 2 > tiff.length) return null;
+	const count = u16(ifd);
+	if (count < 1 || ifd + 2 + 12 * count + 4 > tiff.length) return null;
+	let entry = -1;
+	for (let i = 0; i < count; i++) {
+		const at = ifd + 2 + 12 * i;
+		if (u16(at) !== ORIENTATION_TAG) continue;
+		if (entry >= 0) return null;
+		entry = at;
+	}
+	if (entry < 0 || u16(entry + 2) !== 3 || u32(entry + 4) !== 1) return null;
+	const value = u16(entry + 8);
+	if (value < 2 || value > 8) return null;
+
+	const segment = new Uint8Array(36);
+	segment.set([0xff, 0xe1, 0x00, 0x22, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00]);
+	segment.set(
+		little
+			? [0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, value, 0x00, 0x00, 0x00]
+			: [0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08, 0x00, 0x01, 0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, value, 0x00, 0x00],
+		10
+	);
+	// The next IFD's offset, 0: the four bytes left are already 0.
+	return segment;
+}
+
 function walkJpeg(b: Uint8Array): Walked {
 	const parts: Uint8Array[] = [b.subarray(0, 2)];
 	let at = 2;
 	let frame: { width: number; height: number } | null = null;
 	let scans = 0;
+	/** Whether an EXIF `APP1` has been met: only the first is read (D4). */
+	let exif = false;
 
 	for (;;) {
 		if (at >= b.length) invalid('it ends before EOI');
@@ -324,6 +402,13 @@ function walkJpeg(b: Uint8Array): Walked {
 				if (body.length !== 12) invalid('its Adobe segment is the wrong length');
 				parts.push(segment);
 			}
+		} else if (marker === 0xe1 && !exif && startsWith(body, 0, 'Exif\0\0')) {
+			// The first EXIF segment: its orientation alone kept, as a segment of
+			// this module's own, in its place (card 2761, D4). Any other APP1, a
+			// second EXIF or XMP, is dropped below.
+			exif = true;
+			const orientation = orientationSegment(body);
+			if (orientation) parts.push(orientation);
 		} else if ((marker >= 0xe1 && marker <= 0xef) || marker === 0xfe) {
 			// EXIF, XMP, IPTC and every other application segment, and comments: dropped.
 		} else {
@@ -331,7 +416,9 @@ function walkJpeg(b: Uint8Array): Walked {
 		}
 	}
 
-	if (at !== b.length) invalid('there are bytes after EOI');
+	// Anything after the primary image's EOI (a gain map, a motion photo, a
+	// trailer, a second file) is cut off: it is not among `parts`, so it never
+	// reaches the output (CS1).
 	if (!frame) invalid('it has no frame');
 	return { bytes: concat(parts), width: frame.width, height: frame.height };
 }
