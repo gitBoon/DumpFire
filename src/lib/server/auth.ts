@@ -925,6 +925,8 @@ export type AccessEnded = {
 	webhooks: number;
 	/** The account's report schedules that were on, paused. */
 	reportSchedules: number;
+	/** The ids of the API keys deleted, in order (card 2915's code review, CS2). */
+	apiKeyIds: number[];
 	webhookIds: number[];
 	reportScheduleIds: number[];
 };
@@ -941,13 +943,15 @@ export const namingIds = (ids: number[]): string =>
  * is true, every API key it has and every webhook it set that is on, which is
  * switched off; and every report schedule of it that is on, which is paused,
  * always (card 2894: no option). In that order. Returns how many of each, and
- * which webhooks and schedules.
+ * which keys (card 2915's code review, CS2), webhooks and schedules.
  *
  * Every way of setting a password ends the sessions and the waiting invites:
  * a waiting invite would let whoever holds it set the password again. The keys
- * end on an administrator's reset and when an invite is used, which are how an
- * account is taken back from someone who has its password or a session, and
- * when an administrator disables the account (`disableAccount`, card 2671),
+ * end on an administrator's password set and when an invite is used, which are
+ * how an account is taken back from someone who has its password or a
+ * session, on a reset of the account's two-step sign-in (`resetTwoStep`, card
+ * 2915), which answers a lost or stolen authenticator that a key would skip,
+ * and when an administrator disables the account (`disableAccount`, card 2671),
  * which ends all of this with the keys and the webhooks. On
  * the holder's own change, made with their current password, they end only
  * when the holder asks: a routine change is not about an intruder, and ending
@@ -986,6 +990,9 @@ export const namingIds = (ids: number[]): string =>
  * the webhook is given a new secret, and until then nobody else may make a
  * webhook to its receiver on that board.
  *
+ * It mails nobody: a board's owners are not told here that a webhook on their
+ * board was switched off (card 2923).
+ *
  * It throws if no transaction is open.
  */
 export function endAccountAccess(userId: number, opts: { apiKeys: boolean }): AccessEnded {
@@ -998,8 +1005,10 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean }): Ac
 	const sessionsEnded = db.delete(sessions).where(eq(sessions.userId, userId)).run().changes;
 	const invitesEnded = endUnusedInvites(userId);
 	const pending = endPendingSignIns(userId);
-	const apiKeysEnded = opts.apiKeys ? db.delete(apiKeys).where(eq(apiKeys.userId, userId)).run().changes : 0;
 	const ids = (rows: { id: number }[]) => rows.map((row) => row.id).sort((a, b) => a - b);
+	// The ids of the keys deleted, in order (card 2915's code review, CS2): a log line's meta names them.
+	const apiKeyIds = opts.apiKeys ? ids(db.delete(apiKeys).where(eq(apiKeys.userId, userId)).returning({ id: apiKeys.id }).all()) : [];
+	const apiKeysEnded = apiKeyIds.length;
 	const webhookIds = opts.apiKeys
 		? ids(
 				db
@@ -1030,6 +1039,7 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean }): Ac
 		apiKeys: apiKeysEnded,
 		webhooks: webhookIds.length,
 		reportSchedules: reportScheduleIds.length,
+		apiKeyIds,
 		webhookIds,
 		reportScheduleIds
 	};

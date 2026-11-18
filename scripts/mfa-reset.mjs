@@ -2,7 +2,7 @@
  * mfa-reset.mjs — resets an account's two-step sign-in from the server's host
  * (card 2773, plan 4.5).
  *
- *     docker exec <container> node scripts/mfa-reset.mjs <username>
+ *     docker exec <container> node scripts/mfa-reset.mjs [--keep-api-keys] [--] <username>
  *     node scripts/mfa-reset.mjs <username>          outside the image, DB_PATH or ./dumpfire.db
  *
  * Nobody manages the superadmin's account through the app, so when the
@@ -10,22 +10,34 @@
  * (decision 10). It works for any account, by its username, trimmed and
  * matched exactly, as sign-in matches it (decision 12).
  *
+ * The options are read strictly (card 2915, S2): each argument trimmed;
+ * `--keep-api-keys`, once only, keeps the account's API keys and the webhooks
+ * it set; any other argument starting with "-" is an unknown option, unless
+ * it comes after a lone `--`, which ends the options, so a username starting
+ * with "-" can be named. Exactly one username. Every refusal of the arguments
+ * is a usage error, before the database is opened: a misspelt flag is never
+ * read as a username, nor a reset that ends keys the operator meant to keep.
+ *
  * It does what `resetTwoStep` (src/lib/server/mfa-store.ts) does, statement
  * for statement, in raw SQL in one `BEGIN IMMEDIATE` transaction: the
  * account's factors and recovery codes are deleted, its wrong-code counts set
  * to 0 and their pauses cleared, its sessions, unused invites, pending
- * sign-ins and enrolment links ended, its report schedules that are on paused
- * (`endAccountAccess` with API keys kept; it pauses schedules always, card
- * 2894), and one enrolment link issued, `issued_by 'host-reset'`, for seven
- * days. A CRITICAL line goes to `system_logs` in the same transaction, so
- * there is no reset without its line; its meta has the fields the route's
- * has (`twoStepResetMeta` in mfa-store.ts), the ids of the schedules paused
- * included. Its password, API keys, webhooks, security banner and last
- * sign-in are kept. tests/mfa-reset-script.test.ts compares every table and
- * column after this with what `resetTwoStep` leaves, and the line's meta with
- * the route's, so a change to one that is not made to the other fails there.
- * A scheduled report run already claimed when the pause commits still sends
- * once.
+ * sign-ins and enrolment links ended, its API keys deleted and the webhooks it
+ * set that are on switched off with the hold 'setter access ended' (card
+ * 2915: `endAccountAccess` with `apiKeys: true`, unless `--keep-api-keys`,
+ * which is `resetTwoStep`'s `apiKeys: false`), its report schedules that are
+ * on paused (always, card 2894), and one enrolment link issued, `issued_by
+ * 'host-reset'`, for seven days. A CRITICAL line goes to `system_logs` in the
+ * same transaction, so there is no reset without its line; its meta has the
+ * fields the route's has (`twoStepResetMeta` in mfa-store.ts), the ids of the
+ * keys ended (ids only), the webhooks switched off and the schedules paused
+ * included, and, on a keep,
+ * the live keys and the webhooks kept, with their ids (S3). Its password,
+ * security banner and last sign-in are kept. tests/mfa-reset-script.test.ts
+ * compares every table and column after this with what `resetTwoStep` leaves,
+ * and the line's meta with the route's, so a change to one that is not made
+ * to the other fails there. A scheduled report run already claimed when the
+ * pause commits still sends once.
  *
  * Standalone: better-sqlite3 and node's own modules, no `$lib` and no
  * TypeScript, because the image holds the built server and not its source.
@@ -40,15 +52,19 @@
  * administrator before, so a row may still be theirs) and is said so; failing
  * all three, the path alone, to put the server's address in front of. It
  * says which it used. The link goes to stdout only, and never to the log; so
- * do the account's live API keys and the webhooks it set that are on, which
- * the reset keeps, each by its name (a webhook by its board and host) and the
- * day it was made (card 2894's code review, CS1): the host may read them, and
- * passes on any the holder should check.
+ * do the account's API keys and the webhooks it set that the reset ended, or,
+ * on a keep, kept, each by its name (a webhook by its board and host) and the
+ * day it was made (card 2894's code review, CS1; card 2915), the keys read
+ * before they are deleted and the webhooks by the switch-off's own ids (S5):
+ * the host may read them, and passes them on to the holder. So do the
+ * settings the account is recorded as having set (`setting_setters`, card
+ * 2915, S1): recorded, since whether one is still at the recorded place needs
+ * the server's own rules, which this does not copy.
  *
  * Exit code 0 when the account was reset; 1 when it was refused (run as root,
- * no database file, a database with no two-step sign-in tables or no report
- * schedules, no such account, or the database stayed busy) with nothing
- * changed; 2 for a usage error.
+ * no database file, a database with no two-step sign-in tables, no report
+ * schedules or no webhook holds, no such account, a disabled account, or the
+ * database stayed busy) with nothing changed; 2 for a usage error.
  */
 import Database from 'better-sqlite3';
 import { createHash, randomBytes } from 'node:crypto';
@@ -70,7 +86,15 @@ const PLACEHOLDER_ORIGIN = 'http://localhost:3000';
  */
 const NEEDED_TABLES = ['mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges', 'enrolment_links', 'system_logs', 'report_schedules'];
 
-const USAGE = 'Usage: node scripts/mfa-reset.mjs <username>\n\nResets the two-step sign-in of the account with that username, and prints the link that sets up a new one.';
+/** What `held_because` records for a webhook whose setter's access ended: `'setter access ended'` in src/lib/server/webhooks.ts. */
+const SETTER_ACCESS_ENDED = 'setter access ended';
+
+const USAGE =
+	'Usage: node scripts/mfa-reset.mjs [--keep-api-keys] [--] <username>\n\n' +
+	'Resets the two-step sign-in of the account with that username, and prints the link that sets up a new one. ' +
+	"It ends the account's API keys and switches off the webhooks it set up, as a password reset does.\n\n" +
+	'  --keep-api-keys  keeps them.\n' +
+	'  --               ends the options, so a username starting with "-" can be named.';
 
 /** A refusal: said on stderr, with the exit code it ends with. */
 class Refused extends Error {
@@ -265,7 +289,8 @@ function refuseRoot() {
 
 /**
  * Open the database, never making one: a path that names no file is refused,
- * as is a database the server has not migrated to two-step sign-in.
+ * as is a database the server has not migrated to two-step sign-in, report
+ * schedules or webhook holds.
  *
  * @param {string} path
  */
@@ -286,6 +311,15 @@ function openDatabase(path) {
 		const what = missing.length === 1 && missing[0] === 'report_schedules' ? 'no report schedules table' : 'no two-step sign-in tables';
 		throw new Refused(`Refused: this database has ${what}; start the server once to migrate it (${path}).`);
 	}
+	// The webhook holds (migration 0071, card 2752) the switch-off records (card 2915, E16): a database
+	// from between 0065 and 0071 is refused, not reset in part.
+	const webhookColumns = new Set(
+		/** @type {{ name: string }[]} */ (database.prepare('PRAGMA table_info(webhooks)').all()).map((column) => column.name)
+	);
+	if (!webhookColumns.has('held_because') || !webhookColumns.has('held_at')) {
+		database.close();
+		throw new Refused(`Refused: this database has no webhook holds; start the server once to migrate it (${path}).`);
+	}
 	// As the server's connection: wait for its write to end rather than fail at once, and keep the keys to users.
 	database.pragma('busy_timeout = 5000');
 	database.pragma('foreign_keys = ON');
@@ -293,14 +327,17 @@ function openDatabase(path) {
 }
 
 /**
- * `resetTwoStep(userId, 'host-reset')` in raw SQL, with the account looked up
- * in the same transaction, and the CRITICAL line written in it. Answers the
- * counts and the token, which is stored only as its hash.
+ * `resetTwoStep(userId, 'host-reset')` in raw SQL, or with `keep`
+ * `resetTwoStep(userId, 'host-reset', { apiKeys: false })`, with the account
+ * looked up in the same transaction, and the CRITICAL line written in it.
+ * Answers the counts, what ended or was kept, the settings recorded, and the
+ * token, which is stored only as its hash.
  *
  * @param {Database.Database} database
  * @param {string} username
+ * @param {boolean} keep
  */
-function reset(database, username) {
+function reset(database, username, keep) {
 	return database
 		.transaction(() => {
 			// Every column, so that a database from before 0072, with no disabled_at, is read too.
@@ -315,6 +352,26 @@ function reset(database, username) {
 				);
 			}
 			const id = account.id;
+			const now = new Date();
+			const nowStamp = stamp(now);
+
+			// Read before anything ends (card 2915): the live keys, `liveApiKeysOf` in second-step.ts, which the
+			// end statements below delete; for stdout alone, never the log. The host may read these names.
+			const keys = /** @type {{ name: string, created_at: string, expires_at: string | null, deadline_at: string | null }[]} */ (
+				database.prepare('SELECT name, created_at, expires_at, deadline_at FROM api_keys WHERE user_id = ? ORDER BY id').all(id)
+			)
+				.filter((key) => !keyEnded(key, nowStamp))
+				.map((key) => ({ name: key.name, createdAt: key.created_at }));
+			// And the settings the account is recorded as having set (S1): the rows of setting_setters, not
+			// whether each is still at the recorded place, which needs the server's rules (`settingsHeldBy`).
+			const recorded = /** @type {{ setting: string }[]} */ (
+				database.prepare('SELECT DISTINCT setting FROM setting_setters WHERE user_id = ? ORDER BY setting').all(id)
+			).map((row) => row.setting);
+			const settings = {
+				mail: recorded.includes('mail'),
+				destinations: recorded.filter((setting) => setting.startsWith('backup_destination:')).length,
+				appUrl: recorded.includes('app_url')
+			};
 
 			const factors = database.prepare('DELETE FROM mfa_factors WHERE user_id = ?').run(id).changes;
 			const recoveryCodes = database.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(id).changes;
@@ -327,10 +384,10 @@ function reset(database, username) {
 				)
 				.run(id);
 
-			// endAccountAccess(id, { apiKeys: false }): sessions, unused invites
-			// (endUnusedInvites), then endPendingSignIns' challenges and links, then the report schedules that are
-			// on paused, stamped, their ids in order (card 2894). Keys and webhooks kept.
-			const now = new Date();
+			// endAccountAccess(id, { apiKeys: !keep }): sessions, unused invites (endUnusedInvites), then
+			// endPendingSignIns' challenges and links, then, unless kept, the keys deleted and the webhooks the
+			// account set that are on switched off with their hold (card 2915), then the report schedules that are
+			// on paused, stamped, their ids in order (card 2894).
 			const sessions = database.prepare('DELETE FROM sessions WHERE user_id = ?').run(id).changes;
 			const invites = database.prepare('DELETE FROM invite_tokens WHERE user_id = ? AND used = 0').run(id).changes;
 			// Sign-ins left at their second step are ended unfinished: said at WARN below, and not mailed (card 2769, CS1).
@@ -339,6 +396,46 @@ function reset(database, username) {
 			).n;
 			const challenges = database.prepare('DELETE FROM sign_in_challenges WHERE user_id = ?').run(id).changes;
 			database.prepare('DELETE FROM enrolment_links WHERE user_id = ?').run(id);
+			/** @type {number[]} */
+			let apiKeyIds = [];
+			/** @type {number[]} */
+			let webhookIds = [];
+			if (!keep) {
+				// The ids of the keys deleted, in order, for the meta (card 2915's code review, CS2): ids only.
+				apiKeyIds = /** @type {{ id: number }[]} */ (database.prepare('DELETE FROM api_keys WHERE user_id = ? RETURNING id').all(id))
+					.map((row) => row.id)
+					.sort((a, b) => a - b);
+				// The hold endAccountAccess records (SETTER_ACCESS_ENDED, copied from webhooks.ts): switched on again
+				// by the board's owner or an administrator, the webhook is given a new secret.
+				webhookIds = /** @type {{ id: number }[]} */ (
+					database
+						.prepare('UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE set_by = ? AND active = 1 RETURNING id')
+						.all(SETTER_ACCESS_ENDED, stamp(now), id)
+				)
+					.map((row) => row.id)
+					.sort((a, b) => a - b);
+			}
+			// The webhooks listed: those switched off, by their own ids (S5), or, kept, those the account set that
+			// are on, as `keysAndWebhooksOf` in second-step.ts lists them. For stdout alone, never the log.
+			const hooks = /** @type {{ id: number, board: string, url: string, created_at: string }[]} */ (
+				keep
+					? database
+							.prepare(
+								'SELECT w.id, b.name AS board, w.url, w.created_at FROM webhooks w JOIN boards b ON b.id = w.board_id ' +
+									'WHERE w.set_by = ? AND w.active = 1 ORDER BY w.id'
+							)
+							.all(id)
+					: webhookIds.length === 0
+						? []
+						: database
+								.prepare(
+									'SELECT w.id, b.name AS board, w.url, w.created_at FROM webhooks w JOIN boards b ON b.id = w.board_id ' +
+										`WHERE w.id IN (${webhookIds.map(() => '?').join(', ')}) ORDER BY w.id`
+								)
+								.all(...webhookIds)
+			).map((hook) => ({ id: hook.id, board: hook.board, host: hostOf(hook.url), createdAt: hook.created_at }));
+			const keptWebhookIds = keep ? hooks.map((hook) => hook.id) : [];
+			const apiKeys = apiKeyIds.length;
 			const reportScheduleIds = /** @type {{ id: number }[]} */ (
 				database.prepare('UPDATE report_schedules SET enabled = 0, updated_at = ? WHERE user_id = ? AND enabled = 1 RETURNING id').all(stamp(now), id)
 			)
@@ -354,10 +451,15 @@ function reset(database, username) {
 
 			// The route's line, said as the host's; the counts and the account, never the token or the link.
 			const name = printable(account.username);
+			// On a keep, what was kept, with the webhooks' ids (card 2915, S3): a keep is never silent in the log.
+			const endedOrKept = keep
+				? `ended ${sessions} session(s), ${challenges} pending sign-in(s) and ${invites} invite(s), kept ${keys.length} live ` +
+					`API key(s) and ${hooks.length} webhook(s) they set up${namingIds(keptWebhookIds)}, as --keep-api-keys asked, and paused `
+				: `ended ${sessions} session(s), ${challenges} pending sign-in(s), ${invites} invite(s) and ${apiKeys} API key(s), ` +
+					`switched off ${webhookIds.length} webhook(s) they set up${namingIds(webhookIds)}, and paused `;
 			const message =
 				`Two-step sign-in reset for user ${id} ("${name}") on the server's host, with scripts/mfa-reset.mjs: removed ` +
-				`${factors} factor(s) and ${recoveryCodes} recovery code(s), ended ${sessions} session(s), ${challenges} ` +
-				`pending sign-in(s) and ${invites} invite(s), and paused ${reportScheduleIds.length} report schedule(s)` +
+				`${factors} factor(s) and ${recoveryCodes} recovery code(s), ${endedOrKept}${reportScheduleIds.length} report schedule(s)` +
 				`${namingIds(reportScheduleIds)}; an enrolment link was issued`;
 			// The route's meta (`twoStepResetMeta` in mfa-store.ts), field for field, the host as who reset it (S15).
 			const meta = printable(
@@ -369,6 +471,14 @@ function reset(database, username) {
 					sessionsEnded: sessions,
 					challengesEnded: challenges,
 					invitesEnded: invites,
+					apiKeysEnded: apiKeys,
+					apiKeyIds,
+					webhooksSwitchedOff: webhookIds.length,
+					webhookIds,
+					apiKeysKept: keep,
+					liveApiKeysKept: keep ? keys.length : 0,
+					webhooksKept: keptWebhookIds.length,
+					keptWebhookIds,
 					reportSchedulesPaused: reportScheduleIds.length,
 					reportScheduleIds
 				})
@@ -390,32 +500,63 @@ function reset(database, username) {
 					);
 			}
 
-			// What the reset kept (card 2894's code review, CS1): `keysAndWebhooksOf` in second-step.ts, read
-			// in the same transaction, for stdout alone, never the log. The host may read these names.
-			const nowStamp = stamp(now);
-			const keys = /** @type {{ name: string, created_at: string, expires_at: string | null, deadline_at: string | null }[]} */ (
-				database.prepare('SELECT name, created_at, expires_at, deadline_at FROM api_keys WHERE user_id = ? ORDER BY id').all(id)
-			)
-				.filter((key) => !keyEnded(key, nowStamp))
-				.map((key) => ({ name: key.name, createdAt: key.created_at }));
-			const hooks = /** @type {{ board: string, url: string, created_at: string }[]} */ (
-				database
-					.prepare(
-						'SELECT b.name AS board, w.url, w.created_at FROM webhooks w JOIN boards b ON b.id = w.board_id ' +
-							'WHERE w.set_by = ? AND w.active = 1 ORDER BY w.id'
-					)
-					.all(id)
-			).map((hook) => ({ board: hook.board, host: hostOf(hook.url), createdAt: hook.created_at }));
-
-			return { id, name, factors, recoveryCodes, sessions, invites, challenges, schedules: reportScheduleIds.length, keys, hooks, token };
+			return {
+				id,
+				name,
+				factors,
+				recoveryCodes,
+				sessions,
+				invites,
+				challenges,
+				schedules: reportScheduleIds.length,
+				apiKeys,
+				keys,
+				hooks,
+				settings,
+				token
+			};
 		})
 		.immediate();
 }
 
+/**
+ * The command's arguments, read strictly (card 2915, S2, E7): each trimmed;
+ * until a lone `--`, `--keep-api-keys` sets `keep` (a second one is refused)
+ * and any other argument starting with "-" is an unknown option; `--` itself
+ * is consumed; everything after it, and every other argument, is a username,
+ * of which there must be exactly one, not empty. Every refusal is a usage
+ * error, exit 2, before the database is opened.
+ *
+ * @param {string[]} args
+ * @returns {{ keep: boolean, username: string }}
+ */
+function readArguments(args) {
+	let keep = false;
+	let options = true;
+	/** @type {string[]} */
+	const names = [];
+	for (const given of args) {
+		const arg = given.trim();
+		if (options && arg === '--') {
+			options = false;
+		} else if (options && arg === '--keep-api-keys') {
+			if (keep) throw new Refused(`--keep-api-keys was given twice.\n\n${USAGE}`, 2);
+			keep = true;
+		} else if (options && arg.startsWith('-')) {
+			throw new Refused(`Unknown option "${printable(arg)}".\n\n${USAGE}`, 2);
+		} else {
+			names.push(arg);
+		}
+	}
+	if (names.length !== 1 || names[0] === '') throw new Refused(USAGE, 2);
+	return { keep, username: names[0] };
+}
+
+/** "a", "a and b", "a, b and c". @param {string[]} parts */
+const joined = (parts) => (parts.length <= 1 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`);
+
 function main() {
-	const args = process.argv.slice(2);
-	const username = args.length === 1 ? args[0].trim() : '';
-	if (username === '') throw new Refused(USAGE, 2);
+	const { keep, username } = readArguments(process.argv.slice(2));
 
 	refuseRoot();
 	const path = resolve(process.env.DB_PATH || join(process.cwd(), 'dumpfire.db'));
@@ -423,7 +564,7 @@ function main() {
 	try {
 		let done;
 		try {
-			done = reset(database, username);
+			done = reset(database, username, keep);
 		} catch (err) {
 			if (err instanceof Refused) throw err;
 			throw new Refused(`Refused: the reset could not be written, and nothing was changed: ${/** @type {Error} */ (err).message}`);
@@ -436,23 +577,46 @@ function main() {
 				`sign-in(s) and ${done.invites} invite(s), and paused ${done.schedules} report schedule(s). The account's ` +
 				'owner turns back on the ones they recognise on the Reports page.'
 		);
-		// What the reset kept, each by its name and the day it was made (card 2894's code review, CS1).
+		// What the reset ended, or on a keep kept, each by its name and the day it was made (card 2894's code
+		// review, CS1; card 2915, E5, E6): the keys that were still working, of every key ended.
 		const day = (/** @type {string} */ at) => String(at).slice(0, 10);
-		if (done.keys.length === 0 && done.hooks.length === 0) {
-			console.log('They have no API key and no webhook they set up.');
+		const keyList = done.keys.map((key) => `${printable(key.name)} (made ${day(key.createdAt)})`).join('; ');
+		const hookList = done.hooks.map((hook) => `${printable(hook.board)}, to ${printable(hook.host)} (made ${day(hook.createdAt)})`).join('; ');
+		if (keep) {
+			if (done.keys.length === 0 && done.hooks.length === 0) {
+				console.log('They have no API key and no webhook they set up.');
+			} else {
+				console.log(done.keys.length === 0 ? 'They keep no API key.' : `They keep ${done.keys.length} API key(s): ${keyList}.`);
+				console.log(
+					done.hooks.length === 0 ? 'They keep no webhook they set up.' : `They keep ${done.hooks.length} webhook(s) they set up: ${hookList}.`
+				);
+				console.log('Kept, as --keep-api-keys asked: a password reset ends them.');
+			}
+		} else if (done.apiKeys === 0 && done.hooks.length === 0) {
+			console.log('They had no API key and no webhook they set up.');
 		} else {
 			console.log(
-				done.keys.length === 0
-					? 'They keep no API key.'
-					: `They keep ${done.keys.length} API key(s): ${done.keys.map((key) => `${printable(key.name)} (made ${day(key.createdAt)})`).join('; ')}.`
+				done.apiKeys === 0
+					? 'They had no API key.'
+					: `Ended ${done.apiKeys} API key(s); ` +
+							(done.keys.length === 0 ? 'none was still working.' : `the ${done.keys.length} still working: ${keyList}.`)
 			);
 			console.log(
-				done.hooks.length === 0
-					? 'They keep no webhook they set up.'
-					: `They keep ${done.hooks.length} webhook(s) they set up: ` +
-							`${done.hooks.map((hook) => `${printable(hook.board)}, to ${printable(hook.host)} (made ${day(hook.createdAt)})`).join('; ')}.`
+				done.hooks.length === 0 ? 'They had no webhook they set up.' : `Switched off ${done.hooks.length} webhook(s) they set up: ${hookList}.`
 			);
-			console.log('Revoke any they do not recognise: a password reset ends them.');
+			console.log(
+				"Give them the names: they make new keys once signed in, and the board's owner or an administrator switches back on " +
+					'any webhook they recognise, which gives it a new secret.'
+			);
+		}
+		// The settings the account is recorded as having set (card 2915, S1): recorded, not judged here.
+		const set = [
+			done.settings.mail ? 'the mail settings' : null,
+			done.settings.destinations === 0 ? null : `${done.settings.destinations} backup destination(s)`,
+			done.settings.appUrl ? 'the App URL' : null
+		].filter((part) => part !== null);
+		if (set.length > 0) {
+			console.log(`They are recorded as having set ${joined(set)}; some may have changed since: review them on the admin page.`);
 		}
 		console.log('');
 		console.log(

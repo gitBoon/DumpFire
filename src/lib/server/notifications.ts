@@ -407,11 +407,13 @@ export function sendInviteEmail(email: string, username: string, inviteToken: st
  * review): an account that had none is not told that one stopped working,
  * only that its set-up was begun again with a new link.
  *
- * `kept` (card 2894, D2, S14): how many of the account's report schedules the
- * reset paused, said when there was one, and the live API keys and the
- * webhooks the account set that are on, which the reset keeps, each with when
- * it was made: they are what someone who held the password may have left
- * behind. The administrator's message says the same, and is the channel that
+ * `ended` (card 2894, D2, S14; card 2915, decision 7): how many of the
+ * account's report schedules the reset paused, said when there was one, and
+ * the live API keys it ended and the webhooks the account set that it
+ * switched off, each named with when it was made (a key with when it was last
+ * used), so the holder can make new keys for the scripts they recognise and
+ * spot one they did not make; nothing of keys where it ended none. The
+ * administrator's message says the same by count, and is the channel that
  * reaches the holder for certain (S16): this mail may not go, and the mailbox
  * may be what was taken.
  */
@@ -420,7 +422,7 @@ export function sendMfaResetNotice(
 	username: string,
 	resetBy: string,
 	hadFactor: boolean,
-	kept: { schedulesPaused: number; apiKeys: NoticeKey[]; webhooks: NoticeWebhook[] }
+	ended: { schedulesPaused: number; apiKeysEnded: NoticeKey[]; webhooksSwitchedOff: NoticeWebhook[] }
 ): Promise<MailOutcome> {
 	if (!isSmtpConfigured()) {
 		return Promise.resolve({ sent: false, problem: 'not-configured', detail: MAIL_PROBLEM_WORDS['not-configured'] });
@@ -431,14 +433,26 @@ export function sendMfaResetNotice(
 		? 'Your authenticator and your recovery codes no longer work, and you have been signed out everywhere. An administrator will give you a link to set up a new authenticator themselves: it is never sent by email.'
 		: 'Your account had no authenticator set up: its two-step sign-in was reset and a new set-up link issued, and you have been signed out everywhere. An administrator will give you that link themselves: it is never sent by email.';
 	const paused =
-		kept.schedulesPaused > 0
+		ended.schedulesPaused > 0
 			? `<p style="color: #334155; line-height: 1.6;">
-			${schedulesPausedWords(kept.schedulesPaused)}: each emails a report of board activity whether or not you are signed in. Turn on the ones you recognise on the Reports page, once you have set up your new authenticator: it asks for your password and a code.
+			${schedulesPausedWords(ended.schedulesPaused)}: each emails a report of board activity whether or not you are signed in. Turn on the ones you recognise on the Reports page, once you have set up your new authenticator: it asks for your password and a code.
 		</p>`
 			: '';
 	const list = (heading: string, items: string[]) =>
 		`<p style="color: #334155; line-height: 1.6;">${heading}</p>` +
 		(items.length === 0 ? '<p style="color: #64748b;">None.</p>' : `<ul style="color: #334155;">${items.join('')}</ul>`);
+	// What the reset ended (card 2915), each named; nothing of keys where it ended none.
+	const endedSaid =
+		ended.apiKeysEnded.length === 0 && ended.webhooksSwitchedOff.length === 0
+			? ''
+			: `<p style="color: #334155; line-height: 1.6;">
+			The reset also ended your API keys and switched off the webhooks you set up:
+		</p>
+		${list('Your API keys:', ended.apiKeysEnded.map(keyItem))}
+		${list('Your webhooks:', ended.webhooksSwitchedOff.map(hookItem))}
+		<p style="color: #334155; line-height: 1.6;">
+			Make new keys for the scripts you recognise once your new authenticator is set up. A webhook you recognise is switched back on by the board's owner or an administrator, which gives it a new secret. If any is one you did not make, someone else had your password: change it, and tell an administrator.
+		</p>`;
 	const html = emailTemplate('Your two-step sign-in was reset', `
 		<p style="color: #334155; line-height: 1.6;">
 			Hi <strong style="color: #0f172a;">${escapeHtml(username)}</strong>, <strong style="color: #0f172a;">${escapeHtml(resetBy)}</strong> reset the two-step sign-in of your DumpFire account on ${escapeHtml(when)}.
@@ -447,14 +461,7 @@ export function sendMfaResetNotice(
 			${lost}
 		</p>
 		${paused}
-		<p style="color: #334155; line-height: 1.6;">
-			The reset kept your API keys and the webhooks you set up.
-		</p>
-		${list('Your API keys:', kept.apiKeys.map(keyItem))}
-		${list('Your webhooks:', kept.webhooks.map(hookItem))}
-		<p style="color: #334155; line-height: 1.6;">
-			Revoke any you do not recognise.
-		</p>
+		${endedSaid}
 		<p style="color: #64748b; font-size: 12px;">
 			If you did not ask for this, tell an administrator straight away. Use only a link an administrator hands you directly.
 		</p>

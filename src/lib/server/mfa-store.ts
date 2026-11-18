@@ -26,9 +26,9 @@ import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, sqlite } from './db';
-import { enrolmentLinks, mfaFactors, mfaRecoveryCodes, settings, signInChallenges, users, type MfaFactor } from './db/schema';
+import { apiKeys, enrolmentLinks, mfaFactors, mfaRecoveryCodes, settings, signInChallenges, users, webhooks, type MfaFactor } from './db/schema';
 import { afterCommit, inTransaction } from './db/transaction';
-import { endAccountAccess } from './auth';
+import { endAccountAccess, keyEnded } from './auth';
 import { forgetPendingAdd } from './pending-authenticators';
 import { createLogger } from './logger';
 import { registerStampFunctions } from './db/timestamps';
@@ -424,6 +424,19 @@ export type TwoStepReset = {
 	sessions: number;
 	invites: number;
 	challenges: number;
+	/** The account's API keys deleted, every row, one already ended included (card 2915): 0 where they were kept. */
+	apiKeys: number;
+	/** Their ids, in order (the code review's CS2): the meta names them, never a name. */
+	apiKeyIds: number[];
+	/** The webhooks it set that were on, switched off with the hold 'setter access ended', and their ids, in order (card 2915). */
+	webhooks: number;
+	webhookIds: number[];
+	/** Whether the keys and webhooks were kept: only as the model of the host's `--keep-api-keys` (card 2915, S3). */
+	apiKeysKept: boolean;
+	/** Where they were kept, the live keys kept and the webhooks it set that are on, with their ids; 0 and none otherwise. */
+	liveApiKeysKept: number;
+	webhooksKept: number;
+	keptWebhookIds: number[];
 	/** How many of the account's report schedules that were on it paused, and their ids, in order (card 2894, D2). */
 	reportSchedules: number;
 	reportScheduleIds: number[];
@@ -433,10 +446,13 @@ export type TwoStepReset = {
 /**
  * The meta of a two-step reset's CRITICAL line (card 2894, S15): the
  * account, who reset it (an administrator's id, or `'host'` for
- * scripts/mfa-reset.mjs), and the counts, with the ids of the report
- * schedules paused. The script writes the same fields from its own SQL, and
- * tests/mfa-reset-script.test.ts (T21) holds its meta equal to this for the
- * same reset.
+ * scripts/mfa-reset.mjs), and the counts, with the ids of the API keys ended
+ * (card 2915's code review, CS2: ids only), the webhooks switched off and the
+ * report schedules paused; where the host kept the keys
+ * (`--keep-api-keys`, card 2915, S3), the live keys and the webhooks kept, with
+ * their ids. The script writes the same fields from its own SQL, and
+ * tests/mfa-reset-script.test.ts (T21, T34) holds its meta equal to this for
+ * the same reset.
  */
 export function twoStepResetMeta(targetUserId: number, resetBy: number | 'host', reset: TwoStepReset) {
 	return {
@@ -447,6 +463,14 @@ export function twoStepResetMeta(targetUserId: number, resetBy: number | 'host',
 		sessionsEnded: reset.sessions,
 		challengesEnded: reset.challenges,
 		invitesEnded: reset.invites,
+		apiKeysEnded: reset.apiKeys,
+		apiKeyIds: reset.apiKeyIds,
+		webhooksSwitchedOff: reset.webhooks,
+		webhookIds: reset.webhookIds,
+		apiKeysKept: reset.apiKeysKept,
+		liveApiKeysKept: reset.liveApiKeysKept,
+		webhooksKept: reset.webhooksKept,
+		keptWebhookIds: reset.keptWebhookIds,
 		reportSchedulesPaused: reset.reportSchedules,
 		reportScheduleIds: reset.reportScheduleIds
 	};
@@ -462,10 +486,19 @@ export function twoStepResetMeta(targetUserId: number, resetBy: number | 'host',
  * sends a board's activity whether or not anyone is signed in, so one made by
  * whoever took the device would outlive the reset; the holder turns back on
  * the ones they recognise through the step-up (card 2751).
- * Its password, API keys, webhooks, security banner, last sign-in and failed
- * codes since it are kept: the banner and that count are about the password
- * and the last sign-in, which a reset does not change. The keys and webhooks
- * kept are listed in the administrator's message and the holder's mail (S14).
+ * Its API keys are deleted, and the webhooks it set that are on switched off
+ * with the hold 'setter access ended' (card 2915, decision 1), as an
+ * administrator's password reset does: a reset answers a lost or stolen
+ * authenticator, and a key skips the second factor, so one made by whoever
+ * took the device would outlive the reset. `apiKeys: false` keeps them, and
+ * exists only as the model of the host's `--keep-api-keys`
+ * (scripts/mfa-reset.mjs), which tests/mfa-reset-script.test.ts (T21, T34)
+ * compares against: nothing under src passes it (S4, a source scan in
+ * tests/check-at-the-write.test.ts). Kept, it counts the live keys and the
+ * webhooks it set that are on, for the line (S3).
+ * Its password, security banner, last sign-in and failed codes since it are
+ * kept: the banner and that count are about the password and the last
+ * sign-in, which a reset does not change.
  * The link is issued last, because ending the account's access deletes its
  * links. Once the reset is committed, an authenticator the account was adding
  * on its Account page is forgotten (card 2772, D1, S7): its sessions are gone,
@@ -474,7 +507,7 @@ export function twoStepResetMeta(targetUserId: number, resetBy: number | 'host',
  * Inside the caller's transaction, the one that checked the account may be
  * reset. It throws if no transaction is open.
  */
-export function resetTwoStep(userId: number, issuedBy: string = 'admin-reset'): TwoStepReset {
+export function resetTwoStep(userId: number, issuedBy: string = 'admin-reset', { apiKeys: endKeys = true }: { apiKeys?: boolean } = {}): TwoStepReset {
 	if (!sqlite.inTransaction) {
 		throw new Error(
 			'resetTwoStep must be called inside the transaction that checks the account may be reset: wrap the ' +
@@ -498,7 +531,26 @@ export function resetTwoStep(userId: number, issuedBy: string = 'admin-reset'): 
 		})
 		.where(eq(users.id, userId))
 		.run();
-	const ended = endAccountAccess(userId, { apiKeys: false });
+	const ended = endAccountAccess(userId, { apiKeys: endKeys });
+	// Where kept (the host's --keep-api-keys alone), what was kept, by the rule `keysAndWebhooksOf` lists them by.
+	const now = stamp();
+	const liveKept = endKeys
+		? 0
+		: db
+				.select({ expiresAt: apiKeys.expiresAt, deadlineAt: apiKeys.deadlineAt })
+				.from(apiKeys)
+				.where(eq(apiKeys.userId, userId))
+				.all()
+				.filter((key) => !keyEnded(key, now)).length;
+	const keptWebhookIds = endKeys
+		? []
+		: db
+				.select({ id: webhooks.id })
+				.from(webhooks)
+				.where(and(eq(webhooks.setBy, userId), eq(webhooks.active, true)))
+				.all()
+				.map((row) => row.id)
+				.sort((a, b) => a - b);
 	const token = issueEnrolmentLink(userId, issuedBy);
 	afterCommit(() => forgetPendingAdd(userId));
 	return {
@@ -507,6 +559,14 @@ export function resetTwoStep(userId: number, issuedBy: string = 'admin-reset'): 
 		sessions: ended.sessions,
 		invites: ended.invites,
 		challenges: ended.challenges,
+		apiKeys: ended.apiKeys,
+		apiKeyIds: ended.apiKeyIds,
+		webhooks: ended.webhooks,
+		webhookIds: ended.webhookIds,
+		apiKeysKept: !endKeys,
+		liveApiKeysKept: liveKept,
+		webhooksKept: keptWebhookIds.length,
+		keptWebhookIds,
 		reportSchedules: ended.reportSchedules,
 		reportScheduleIds: ended.reportScheduleIds,
 		token

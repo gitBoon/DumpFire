@@ -443,8 +443,9 @@ export const webhooks = sqliteTable('webhooks', {
 	setBy: integer('set_by').references(() => users.id, { onDelete: 'set null' }),
 	// Why and when the webhook was switched off for good (card 2752, migration
 	// 0071): 'setter cannot open' or 'no setter' (switchOffHeld in webhooks.ts),
-	// 'setter access ended' (a reset, an invite used or the account deleted:
-	// endAccountAccess, deleteUser; the code review's CS4), and card 2893's
+	// 'setter access ended' (a password reset, a two-step reset (card 2915), an
+	// invite used, or the account disabled or deleted: endAccountAccess,
+	// deleteUser, scripts/mfa-reset.mjs; the code review's CS4), and card 2893's
 	// 'key ended'. Set only with `active` off; carried by a restore onto the
 	// same webhook (carryHolds, fillSecretGaps); cleared only when the board's
 	// owner or an administrator switches it on. NULL for one that is on, and for

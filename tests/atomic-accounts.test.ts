@@ -1791,6 +1791,52 @@ describe('what taking an account back switches off (card 2168)', () => {
 		expect(run.effects).toEqual([]);
 	});
 
+	// Card 2915 (case 10, E11): the two-step reset takes the account back as the password set does, and the
+	// statements it makes are pinned whole, the App URL set for its link.
+	it("on an administrator's two-step reset, ends the account's keys, switches off the webhooks it set and pauses its report schedules, or does none of it", async () => {
+		const withKey = () => {
+			const s = scene();
+			makeApiKey(s.target, 'Deploy');
+			sqlite.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://dumpfire.example.test')").run();
+			return s;
+		};
+		const run = await eachWriteInTurn({
+			build: withKey,
+			request: ({ admin, target }) =>
+				api('POST', `/api/users/${target.id}/mfa/reset`, {
+					user: admin,
+					body: { currentPassword: FIXTURE_PASSWORD, ...codeOf(admin) },
+					headers: from('the-admin')
+				}),
+			apart: [...STEP_UP_APART],
+			afterSuccess: (s, res: ApiResult) => {
+				expect(res.status, JSON.stringify(res.body)).toBe(200);
+				expect(res.body).toMatchObject({ success: true, apiKeysEnded: 1, webhooksSwitchedOff: 1, reportSchedulesPaused: 1 });
+				expect(db.select().from(apiKeys).where(eq(apiKeys.userId, s.target.id)).all()).toEqual([]);
+				expectTakenBack(s, { schedules: true });
+			}
+		});
+
+		// Each failure in turn left the key, the webhook on and the schedule enabled, with nothing sent.
+		expect(shape(run.writes)).toEqual([
+			...STEP_UP_WRITES,
+			'delete from mfa_factors',
+			'delete from mfa_recovery_codes',
+			'update users set',
+			'delete from sessions',
+			'delete from invite_tokens',
+			'delete from sign_in_challenges',
+			'delete from enrolment_links',
+			'delete from api_keys',
+			'update webhooks set',
+			'update report_schedules set',
+			// The link (issueEnrolmentLink), issued last.
+			'delete from enrolment_links',
+			'insert into enrolment_links'
+		]);
+		expect(run.effects).toEqual([]);
+	});
+
 	it('sends the next event to every webhook of the board but those switched off, and names what went in the log', async () => {
 		await atInfo(async () => {
 			const s = scene();

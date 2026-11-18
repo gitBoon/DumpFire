@@ -1,10 +1,12 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.83
+version: 1.84
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2915
+  - two-step-reset-ends-keys
   - card-2671
   - account-disable
   - card-2894
@@ -32,7 +34,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Complete guide to DumpFire's notification pipeline: the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
+description: "Complete guide to DumpFire's notification pipeline: the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -918,20 +920,28 @@ true`). The administrator's reset notice of card 2773 (`sendMfaResetNotice()`) i
 these, and holds no link either.
 
 **The two-step reset's notice** (`sendMfaResetNotice(email, username, resetBy, hadFactor,
-kept)`), sent by the reset route once its transaction has committed, and awaited: "Your DumpFire
+ended)`), sent by the reset route once its transaction has committed, and awaited: "Your DumpFire
 two-step sign-in was reset", who reset it and when, what stopped working, and that an
-administrator gives the set-up link by hand. Since card 2894 (D2, S14, E24) `kept` is `{
-schedulesPaused, apiKeys, webhooks }`: where the reset paused a report schedule it says "Your 1
-report schedule was paused" or "Your N report schedules were paused", that each emails a report
-whether or not they are signed in, and to turn on the ones they recognise on the Reports page
-once the new authenticator is set up (nothing for none); then "The reset kept your API keys and
-the webhooks you set up.", "Your API keys:" and "Your webhooks:" listed as the security notices
-list them (`keyItem`, `hookItem`: when each was made, a key's last use, a webhook's board and
-host), "None." for an empty list, and "Revoke any you do not recognise." Every text is escaped
-(`tests/mail-escaping.test.ts`, with markup in the keys' and webhooks' names). The
-administrator's message gives the same counts and the day each was made, and no name (card
-2894's code review, CS2), and is the channel that reaches the holder for certain (S16): this mail
-may not go, and the mailbox may be what was taken. The names are this mail's alone.
+administrator gives the set-up link by hand. Since card 2915 `ended` is `{ schedulesPaused,
+apiKeysEnded, webhooksSwitchedOff }` (card 2894's `kept` before: the reset kept the keys then).
+Where the reset paused a report schedule it says "Your 1 report schedule was paused" or "Your N
+report schedules were paused", that each emails a report whether or not they are signed in, and to
+turn on the ones they recognise on the Reports page once the new authenticator is set up (nothing
+for none; card 2894, D2, E24). Where it ended a key or switched off a webhook (card 2915, decision
+7): "The reset also ended your API keys and switched off the webhooks you set up:", "Your API
+keys:" and "Your webhooks:" listed as the security notices list them (`keyItem`, `hookItem`: when
+each was made, a key's last use, a webhook's board and host), "None." for an empty list, then
+"Make new keys for the scripts you recognise once your new authenticator is set up. A webhook you
+recognise is switched back on by the board's owner or an administrator, which gives it a new
+secret. If any is one you did not make, someone else had your password: change it, and tell an
+administrator." Nothing of keys where the reset ended none. The keys listed are those still
+working before the reset, read before it deleted them (`liveApiKeysOf`); the webhooks are read by
+the switch-off's own ids (`webhooksByIds`, S5), so the list is exactly what was switched off.
+Every text is escaped (`tests/mail-escaping.test.ts`, with markup in the keys' and webhooks'
+names). The administrator's message gives the same counts and the day each was made, and no name
+(card 2894's code review, CS2), and is the channel that reaches the holder for certain (S16): this
+mail may not go, and the mailbox may be what was taken. The names are this mail's alone. The
+board's owners are not mailed that the reset switched a webhook off on their board: card 2923.
 
 ```mermaid
 sequenceDiagram
@@ -940,8 +950,10 @@ sequenceDiagram
     participant D as Database
     participant M as Mail server
     A->>R: POST /api/users/{id}/mfa/reset, password and code
-    R->>D: resetTwoStep, schedules paused, keys and webhooks read
-    D-->>R: counts, schedule ids, keys and webhooks kept
+    R->>D: read the live keys and the settings the account set
+    R->>D: resetTwoStep, keys deleted, webhooks switched off, schedules paused
+    R->>D: read the webhooks switched off, by their ids
+    D-->>R: counts, ids, the keys and webhooks that ended
     R->>M: sendMfaResetNotice with the count and both lists, awaited
     M-->>R: sent or not
     R-->>A: message with the counts and days, no names, the link once
@@ -2837,9 +2849,10 @@ whether or not its write succeeds; a failed write is an `ERROR`. **Giving the se
 back changes nothing**: it stays off until the board's owner or an administrator switches it on
 ([Who May Change a Webhook](#who-may-change-a-webhook)), which makes them its setter and, for a
 setter who lost the board or had its access ended, gives it a new secret, given in that answer and
-readable by the board's owner or an administrator. A password reset, an invite used and a
-deleted account record their own hold, `'setter access ended'` (the code review's CS4), as they
-switch off the webhooks the account set. An event already
+readable by the board's owner or an administrator. A password reset, a reset of the two-step
+sign-in (card 2915), an invite used, a disabled account (card 2671) and a deleted account record
+their own hold, `'setter access ended'` (the code review's CS4), as they switch off the webhooks
+the account set; none of them mails the owners (card 2923). An event already
 on its way when access was removed may still arrive, up to 10 seconds later: there are no
 retries and no queue.
 
@@ -2885,9 +2898,10 @@ webhook switched off by a hold it reads, word for word, the reason kept as recor
   it; to keep it, switch it on with your own key, which makes you its setter and gives it a new
   secret, given in that answer and readable by the board's owner or an administrator, and update
   the receiver."
-- switched off by a password reset, an invite used or a delete of its setter (CS4): "This was
-  switched off because the account that set it up had its password reset, used an invite, or was
-  deleted. …", with the same advice.
+- switched off by a password reset, a two-step reset (card 2915), an invite used, a disable (card
+  2671) or a delete of its setter (CS4): "This was switched off because the account that set it
+  up had its password or its two-step sign-in reset, used an invite, was disabled, or was deleted.
+  …", with the same advice.
 - switched off because nobody was recorded as its setter: "This was switched off because nobody
   is recorded as having set it up. Delete it unless you recognise the address; to keep it,
   switch it on with your own key, which makes you its setter, and set a new secret."
@@ -2904,7 +2918,7 @@ stateDiagram-v2
     Sending --> HeldOff: a write takes the setter's access away<br/>(or a start, a restore, a delivery finds it held)
     HeldOff --> HeldOff: the setter is given the board back
     HeldOff --> Sending: owner or admin switches it on<br/>(they become the setter, new secret unless no setter)
-    Sending --> HeldOff: the setter's reset, invite or account deleted<br/>(setter access ended)
+    Sending --> HeldOff: the setter's password or two-step reset, invite,<br/>account disabled or deleted (setter access ended)
     Sending --> Off: switched off by a PUT
     Off --> Sending: owner or admin switches it on, and can open the board
     Off --> [*]: deleted

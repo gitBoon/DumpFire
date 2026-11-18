@@ -1904,8 +1904,9 @@ describe('the two-step sign-in reset on the users panel and its dialog, mounted 
 		expect(confirm).toHaveBeenCalledTimes(1);
 		expect(confirm.mock.calls[0][0]).toBe('Reset Two-Step Sign-In');
 		expect(confirm.mock.calls[0][1]).toBe(
-			// Card 2894 (case 8, E24): the reset pauses the account's report schedules, and the confirm says so first.
-			"Reset bob's two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their report schedules are paused, and you are given a link, once, to pass on to them yourself. " +
+			// Card 2894 (case 8, E24): the reset pauses the account's report schedules, and the confirm says so first;
+			// card 2915 (case 16): it ends their API keys and switches off their webhooks, said with no counts.
+			"Reset bob's two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their API keys end, the webhooks they set up are switched off, their report schedules are paused, and you are given a link, once, to pass on to them yourself. " +
 				ASKS_FOR_PASSWORD
 		);
 		expect(confirm.mock.calls[0][3]).toEqual({ askPassword: true });

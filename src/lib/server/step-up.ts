@@ -172,7 +172,7 @@ export const STEP_UP_ACTIONS = Object.freeze({
 	'PUT /api/users/[id]/password': "Sets another account's password: a takeover",
 	'POST /api/users/[id]/invite': 'A password reset by another way, whose link is answered when the mail fails',
 	// Card 2773: what stands in for a lost authenticator, and hands the caller the link that sets up its successor.
-	'POST /api/users/[id]/mfa/reset': "Removes another account's second factor and issues the link that sets up a new one",
+	'POST /api/users/[id]/mfa/reset': "Removes another account's second factor, ends its API keys and the webhooks it set, and issues the link that sets up a new one",
 	// Card 2671: an account disabled, which ends its every credential, and enabled again, which lets it sign in.
 	'POST /api/users/[id]/disable': "Disables another account: ends its sessions, keys and webhooks, and refuses it at every gate",
 	'POST /api/users/[id]/enable': 'Enables a disabled account again: it may sign in with its own password and authenticator',

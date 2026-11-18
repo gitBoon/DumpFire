@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.91
+version: 1.92
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2915
+  - two-step-reset-ends-keys
   - card-2910
   - upload-limits
   - card-2671
@@ -713,7 +715,7 @@ From 13 November 2026 (card 2769), **every account signs in in two steps**: the 
 - **Wrong codes** — five in a row pause code entry for 15 minutes, and longer each time after, up to a lock at thirty; a recovery code always works
 - **Told when something is wrong** — the owner is emailed when two-step sign-in is set up, when a recovery code is used, when codes are paused or locked, when someone gets the password right but the code wrong, and when an authenticator is added or removed or new recovery codes are made. After such a thing the next sign-in shows what happened, with the account's API keys and webhooks to check, and a warning stays at the top of **My Account** until its holder clears it with **That was me** (password and a code) or changes their password
 - **Several authenticators** (card 2772, since this server took that release) — **My Account → 🛡️ Two-step sign-in** lists your authenticators, each with when it was added and last used, and lets you add one (up to three: a main phone, a spare, a new phone), remove one (never the last: add the new one first; removing one signs your other browsers out), and make a new set of ten recovery codes, shown once. A code from any of your authenticators works. Each wrong code counts once for each authenticator that can be checked on the server, so codes are no easier to guess: with two, three wrong codes in a row pause code entry and two wrong answers at a confirmation sign the browser out, and the confirmation dialog says so before you send (it counts every authenticator you hold, so it never says less than is counted)
-- **A lost phone** — now self-service while you still have a recovery code: sign in with a recovery code, add your new phone on My Account, remove the lost one, then make new recovery codes and change your password. Without a recovery code, an administrator resets the account's two-step sign-in and hands the person a set-up link themselves; the superadmin's is reset on the server. The reset pauses the account's report schedules (card 2894), and the administrator is told how many, and how many API keys and webhooks the account still has with the day each was made, to pass on; the person's email names each
+- **A lost phone** — now self-service while you still have a recovery code: sign in with a recovery code, add your new phone on My Account, remove the lost one, then make new recovery codes and change your password. Without a recovery code, an administrator resets the account's two-step sign-in and hands the person a set-up link themselves; the superadmin's is reset on the server. The reset pauses the account's report schedules (card 2894), ends the account's API keys and switches off the webhooks it set up (card 2915: a key skips the second factor, so one made by whoever had the phone would outlive the reset), and the administrator is told how many of each, with the day each was made, to pass on; the person's email names each, and they make new keys once their new authenticator is set up. On the server the superadmin's reset can keep the keys when told to
 - **API keys made before two-step sign-in** (card 2772) — each key that existed on the day of that release gets a deadline 60 days later, shown beside it on My Account with **Keep this key**: keeping it, with your password and a code, leaves the key itself unchanged. A key not kept stops working on that date. Keys made since have no deadline
 
 ```mermaid
@@ -733,7 +735,7 @@ On the day it was turned on everyone was signed out once and set it up at their 
 
 - **Roles**: Superadmin, Admin, and User
 - **Invite via email** — send password-set links to new users, who then set up two-step sign-in
-- **Reset two-step sign-in** — for someone who has lost their phone and has no recovery code left: a set-up link, shown once, to hand over in person. With a recovery code they can replace the phone themselves on My Account
+- **Reset two-step sign-in** — for someone who has lost their phone and has no recovery code left: a set-up link, shown once, to hand over in person. The reset also ends the account's API keys and switches off its webhooks (card 2915). With a recovery code they can replace the phone themselves on My Account
 - **Disable and enable** (card 2671) — a disabled account cannot sign in, its sessions, API keys and request links end, its webhooks are switched off and its report schedules paused, and nobody can assign, share with, include or mail it; its name stays on everything it did. Enabling gives back its sign-in alone. An account the superadmin disabled is enabled or deleted by the superadmin only
 - **Delete** — only an account already disabled, for when the person and their comments must go
 - **Emoji avatars** — each user chooses their own emoji identity

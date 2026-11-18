@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.87
+version: 1.88
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2915
+  - two-step-reset-ends-keys
   - card-2671
   - migration-0072
   - account-disable
@@ -1570,7 +1572,7 @@ itself over it.
 
 | Column | Type | Written by | Meaning |
 |---|---|---|---|
-| `held_because` | text, NULL | `switchOffHeld` (card 2752), `endAccountAccess` and `deleteUser` (the code review's CS4); carried by a restore (`carryHolds`, `fillSecretGaps`); cleared by `PUT /api/v1/webhooks/{id}` switching it on | Why the webhook was switched off for good: `'setter cannot open'`, `'no setter'`, `'setter access ended'` (a password reset, an invite used or the account deleted), or card 2893's `'key ended'`. NULL for one that is on, and for one switched off by a `PUT` or a working copy |
+| `held_because` | text, NULL | `switchOffHeld` (card 2752), `endAccountAccess` and `deleteUser` (the code review's CS4), and `scripts/mfa-reset.mjs` in its own SQL (card 2915); carried by a restore (`carryHolds`, `fillSecretGaps`); cleared by `PUT /api/v1/webhooks/{id}` switching it on | Why the webhook was switched off for good: `'setter cannot open'`, `'no setter'`, `'setter access ended'` (a password reset, a two-step reset (card 2915), an invite used, or the account disabled or deleted), or card 2893's `'key ended'`. NULL for one that is on, and for one switched off by a `PUT` or a working copy |
 | `held_at` | text, NULL | with `held_because` | The moment, in the stored form (`YYYY-MM-DD HH:MM:SS`, UTC) |
 | `set_by_key` | integer, NULL, `REFERENCES api_keys(id) ON DELETE SET NULL`, `idx_webhooks_set_by_key` | both v1 writers, with `set_by` (`keyOfWrite`, card 2893): the create, and a `PUT` that changes the address or secret or switches it on; a change of events alone keeps it | The API key that last set the address or secret, or switched the webhook on. Read by `holdOf`: gone, ended (`keyEnded`) or another account's holds it, `'key ended'`; counted for each key by `GET /api/account/api-keys` (`webhooks`) |
 | `set_with_key` | integer, NULL (0/1) | with `set_by_key` | 1: written with a credential, a key's id in `set_by_key` or none (a session), which holds it; 0: written with no credential at all, only a test's call; NULL: set before keys were recorded, held once the setter has no working key made before `webhook_keys_recorded_at`. `set_with_key = 1 AND set_by_key IS NULL` reads "its key was deleted, or it was not set with a key" |
@@ -1597,7 +1599,7 @@ flowchart LR
 ```mermaid
 stateDiagram-v2
     [*] --> On: active 1, held_because NULL
-    On --> HeldOff: switchOffHeld, a reset, an invite, a deleted account (active 0, held_because, held_at)
+    On --> HeldOff: switchOffHeld, a password or two-step reset, an invite, a disabled or deleted account (active 0, held_because, held_at)
     On --> Off: PUT active false, a working copy (active 0, held_because NULL)
     HeldOff --> HeldOff: a restore (carryHolds)
     HeldOff --> On: PUT active true by the owner or an administrator (both cleared, set_by the caller)
@@ -1610,7 +1612,14 @@ setter is the one it was judged on. `switchOffLostWebhooks(scope, cause)` reads 
 are on within a scope (`{ boardIds }`, `{ setters }` or `'all'`), asks `holdOf` of each, and
 calls it for each held, inside the transaction of the write that took the access away; a
 delivery calls `switchOffHeld` for its one webhook. `endAccountAccess` and `deleteUser` write
-`'setter access ended'` beside `active` off. A restore reads this server's holds before the
+`'setter access ended'` beside `active` off: `endAccountAccess` for an administrator's password
+set, an invite used, a holder's own change that ends their keys, a disable (card 2671) and, since
+card 2915, a reset of the two-step sign-in (`resetTwoStep`, which passes `apiKeys: true`). The
+host's `scripts/mfa-reset.mjs` writes the same in its own SQL, `UPDATE webhooks SET active = 0,
+held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND active = 1 RETURNING id`,
+unless run with `--keep-api-keys`, and refuses a database whose `webhooks` lacks `held_because`
+or `held_at` (one from between migrations 0065 and 0071). None of these mails the board's owners
+(card 2923). A restore reads this server's holds before the
 clear, whatever the secret, and carries each onto the restored row of the same webhook (same id,
 board, address and setter: `carryHolds`); `fillSecretGaps` never switches on a restored webhook
 that is held off here or in the backup's row, and carries this server's hold.

@@ -17,8 +17,9 @@
  * (card 2325), as a mail is sent only to recipients who can (`whoCanOpen`).
  * One whose setter cannot, or that nobody is recorded as having set up, is
  * switched off for good (card 2752): `active` off, with why and when in
- * `held_because` and `held_at`, by `switchOffHeld` (a reset, an invite used
- * and an account deleted record theirs too, the code review's CS4). It stays off
+ * `held_because` and `held_at`, by `switchOffHeld` (a password or two-step
+ * reset, an invite used and an account disabled or deleted record theirs too,
+ * the code review's CS4; card 2915). It stays off
  * when the setter is given the board back, and only the board's owner or an
  * administrator switches it on, with a key. It is switched off at the write
  * that takes the setter's access away (`switchOffLostWebhooks`, called by the
@@ -248,7 +249,9 @@ export function keyOfWrite(credential: App.Locals['credential']): { setByKey: nu
 /**
  * Why a webhook was switched off for good, as `held_because` stores it (card
  * 2752): a hold (`Hold`), or `'setter access ended'`, written by a password
- * reset, an invite used, the account disabled (card 2671) or deleted
+ * reset, a reset of the two-step sign-in (`resetTwoStep`, and
+ * scripts/mfa-reset.mjs in raw SQL, card 2915), an invite used, the account
+ * disabled (card 2671) or deleted
  * (`endAccountAccess`, `deleteUser`; the code review's CS4), so that switching it on gives it a new
  * secret as a lost setter's does. `'key ended'` is card 2893's hold.
  */
@@ -273,7 +276,7 @@ export const SWITCHED_OFF_BECAUSE: Record<HeldBecause, string> = {
 		'This was switched off because nobody is recorded as having set it up. Delete it unless you recognise the address; to keep ' +
 		'it, switch it on with your own key, which makes you its setter, and set a new secret.',
 	'setter access ended':
-		"This was switched off because the account that set it up had its password reset, used an invite, was disabled, or was deleted. The address " +
+		"This was switched off because the account that set it up had its password or its two-step sign-in reset, used an invite, was disabled, or was deleted. The address " +
 		'was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which ' +
 		"makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, " +
 		'and update the receiver.',

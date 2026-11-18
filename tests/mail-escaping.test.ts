@@ -356,11 +356,12 @@ describe('every mail in notifications.ts', () => {
 		{
 			name: 'sendMfaResetNotice',
 			link: false,
+			// Card 2915: the keys ended and the webhooks switched off, each named as a row holds it.
 			send: () =>
 				notifications.sendMfaResetNotice('holder@example.test', MARKER, MARKER, true, {
 					schedulesPaused: 2,
-					apiKeys: [{ name: MARKER, createdAt: MARKER, lastUsedAt: MARKER }],
-					webhooks: [{ board: MARKER, host: MARKER, createdAt: MARKER }]
+					apiKeysEnded: [{ name: MARKER, createdAt: MARKER, lastUsedAt: MARKER }],
+					webhooksSwitchedOff: [{ board: MARKER, host: MARKER, createdAt: MARKER }]
 				})
 		},
 		// Card 2769 (4.9): each security notice, with no link, naming the owner from the row and the address as received;

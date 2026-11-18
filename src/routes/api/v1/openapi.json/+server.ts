@@ -34,7 +34,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.13.1',
+		version: '1.14.0',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -42,6 +42,11 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-18 (version 1.14.0), breaking.** A reset of an account\'s two-step sign-in, by an administrator or on the server\'s host, ends the account\'s API keys and switches off the webhooks it set (card 2915): ' +
+			'(1) its keys answer 401, as after a password reset; ' +
+			'(2) the webhooks it set are switched off, active false, recording setter access ended, so switching one on again is the board owner\'s or an administrator\'s and gives it a new secret; ' +
+			'(3) pausedBecause for that hold now names a two-step reset; ' +
+			'(4) nothing else changed: no operation, field or schema.\n\n' +
 			'**Changed on 2026-11-18 (version 1.13.1).** Every upload counts, and only so many at once (card 2910): ' +
 			'(1) the 30 uploads an hour and 100 MB a day of a key\'s user now count every file that user uploads through the card window, not only images, so a key can be answered 429 sooner; ' +
 			'(2) the upload is also answered 429 when the user already has 3 uploads in progress, either way, or the server 6, with Retry-After 5, before the body is read and with nothing counted; ' +
@@ -996,7 +1001,7 @@ const spec = {
 					'at the change that takes the access away, at every start of the server, after every restore, and at its next event where none of those saw it, and pausedBecause says why. ' +
 					'It stays off when the setter is given the board back. Only the board owner or an administrator switches it on again, with active true, which makes them its setter; ' +
 					'one switched off because its setter lost the board is given a new secret in that answer, to give its receiver. ' +
-					'A password reset, an invite used, a disabled account (since 1.13.0) and a deleted account record theirs too (setter access ended). ' +
+					'A password reset, a two-step reset (since 1.14.0), an invite used, a disabled account (since 1.13.0) and a deleted account record theirs too (setter access ended). ' +
 					'It is switched off for good too when the API key that created it, last set its url or secret, or switched it on ends (since 1.11.0, card 2893): revoked, expired, past its deadline, deleted, or not its setter\'s; ' +
 					'one set with no API key is switched off at its next event, and one made before 1.11.0, which records no key, once its setter has no working API key made before then. ' +
 					'Switched on again, it is given a new secret in that answer, and records the caller\'s key. While one is switched off this way, a webhook to its receiver (scheme, host and port) on the board is made, and it is deleted, only by the board owner or an administrator. ' +
@@ -1058,7 +1063,7 @@ const spec = {
 							'Why nothing is sent to the webhook (since 2026-10-20). Present only when the caller is the board owner or an administrator, as the address is, and in the response to the request that created the webhook, where it is null: its creator is its setter and can open the board. ' +
 							'Since 1.11.0, history: for a webhook switched off for good because its setter can no longer open the board, nobody is recorded as having set it up, or the API key that set it up ended, it says why, word for word, the reason kept as it was recorded. ' +
 							'Switched off because the account that set it up lost the board: "This was switched off because the account that set it up could no longer open this board. It stays off if that account is given the board back. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
-							'Switched off by a password reset, an invite used, a disable (since 1.13.0, card 2671) or a delete of its setter (since 1.11.0, the code review\'s CS4): "This was switched off because the account that set it up had its password reset, used an invite, was disabled, or was deleted. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
+							'Switched off by a password reset, a two-step reset (since 1.14.0, card 2915), an invite used, a disable (since 1.13.0, card 2671) or a delete of its setter (since 1.11.0, the code review\'s CS4): "This was switched off because the account that set it up had its password or its two-step sign-in reset, used an invite, was disabled, or was deleted. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
 							'Switched off because the API key that set it up ended (since 1.11.0, card 2893): "This was switched off because the API key that set it up ended: it expired, passed its deadline, was deleted or is not the setter\'s; or, for a webhook set up before keys were recorded, the account that set it up has no working key from then. To keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
 							'Switched off because nobody was recorded as its setter: "This was switched off because nobody is recorded as having set it up. Delete it unless you recognise the address; to keep it, switch it on with your own key, which makes you its setter, and set a new secret." ' +
 							'For one that is still on and held now, which only a change made outside DumpFire\'s own writes can leave until its next event, it begins "Nothing is sent: ". ' +

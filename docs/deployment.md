@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.134
+version: 1.135
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2915
+  - two-step-reset-ends-keys
   - card-2910
   - upload-limits
   - card-2671
@@ -72,7 +74,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Docker deployment, the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Docker deployment, the release that ends API keys at a two-step reset (card 2915: always from the admin page, on the host unless --keep-api-keys, a read-only check of what will end, going back, OpenAPI 1.14.0 breaking), the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -1232,19 +1234,26 @@ Nobody manages the superadmin's account through the application, so the admin pa
 
 ```bash
 docker exec <container> node scripts/mfa-reset.mjs <username>
+docker exec <container> node scripts/mfa-reset.mjs --keep-api-keys <username>   # keeps the account's API keys and webhooks
+docker exec <container> node scripts/mfa-reset.mjs -- <username>                 # a username that starts with "-"
 ```
 
-It works for any account, by its username, trimmed and matched exactly as sign-in matches it, so it is also the way back when no administrator can reach the admin page. It does what 🛡️ does, in one `BEGIN IMMEDIATE` transaction: the account's authenticators and recovery codes are deleted, its counts of wrong codes set to nought and their pauses cleared, its sessions, unused invites, sign-ins waiting for a second factor and enrolment links ended, its report schedules that are on paused (card 2894, 2026-11-18), and one new enrolment link issued (`issued_by` `host-reset`), good for seven days. Its password, API keys, webhooks and security banner are kept: it sets no password (for a lost password, see [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin)). The same transaction writes one `CRITICAL` line under `AUTH` to the system log, which the Audit page's Live Console shows: `Two-step sign-in reset for user 1 ("greg") on the server's host, with scripts/mfa-reset.mjs: removed 1 factor(s) and 10 recovery code(s), ended 2 session(s), 0 pending sign-in(s) and 0 invite(s), and paused 1 report schedule(s) (id 3); an enrolment link was issued`, its details the same fields as 🛡️'s line. Neither the line nor anything else holds the link.
+It works for any account, by its username, trimmed and matched exactly as sign-in matches it, so it is also the way back when no administrator can reach the admin page. It does what 🛡️ does, in one `BEGIN IMMEDIATE` transaction: the account's authenticators and recovery codes are deleted, its counts of wrong codes set to nought and their pauses cleared, its sessions, unused invites, sign-ins waiting for a second factor and enrolment links ended, **its API keys deleted and the webhooks it set switched off for good** (`setter access ended`, card 2915, 2026-11-18), its report schedules that are on paused (card 2894), and one new enrolment link issued (`issued_by` `host-reset`), good for seven days. Its password and security banner are kept: it sets no password (for a lost password, see [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin)).
+
+**`--keep-api-keys` keeps the keys and webhooks** (card 2915, decision 4). The superadmin is the account likeliest to hold the keys an integration uses, and whoever runs this on the host often knows whether the phone was lost or stolen: lost, keep them; stolen, or not sure, let them end, as 🛡️ always does. A keep is never silent: stdout says so and the log line names what was kept. The options are read strictly: each argument trimmed; `--keep-api-keys` once only; any other argument starting with "-" refused as an unknown option, unless after a lone `--`, which ends the options. A refused argument changes nothing and opens nothing.
+
+The same transaction writes one `CRITICAL` line under `AUTH` to the system log, which the Audit page's Live Console shows: `Two-step sign-in reset for user 1 ("greg") on the server's host, with scripts/mfa-reset.mjs: removed 1 factor(s) and 10 recovery code(s), ended 2 session(s), 0 pending sign-in(s), 0 invite(s) and 2 API key(s), switched off 1 webhook(s) they set up (id 7), and paused 1 report schedule(s) (id 3); an enrolment link was issued`, or with `--keep-api-keys` `…, ended 2 session(s), 0 pending sign-in(s) and 0 invite(s), kept 1 live API key(s) and 1 webhook(s) they set up (id 7), as --keep-api-keys asked, and paused 1 report schedule(s) (id 3); …`, its details the same fields as 🛡️'s line. Neither the line nor anything else holds the link or a key's name.
 
 It runs while the server runs, with no restart, waiting up to five seconds for a write of the server's to finish. `docker exec` runs it as the image's own user, `node`, which the server runs as (card 2776). It refuses to run as root (`docker exec -u root`), because a write as root would leave the database's `-wal` and `-shm` files root's and the server could not open its database again. It opens `DB_PATH` (the image sets `/app/data/dumpfire.db`) and never makes a database.
 
-It prints the counts, the API keys and webhooks the account keeps (card 2894's code review: each key by its name and the day it was made, each webhook by its board, its host alone and the day it was made; an expired key is not listed; never in the log), where the link's address came from, and the link, on the terminal only:
+It prints the counts, the API keys and webhooks it ended (card 2915: every key ended counted, those still working named; each key by its name and the day it was made, each webhook by its board, its host alone and the day it was made; never in the log), the settings the account is recorded as having set, where the link's address came from, and the link, on the terminal only:
 
 ```
 Two-step sign-in was reset for "greg" (user 1): removed 1 factor(s) and 10 recovery code(s), ended 2 session(s), 0 pending sign-in(s) and 0 invite(s), and paused 1 report schedule(s). The account's owner turns back on the ones they recognise on the Reports page.
-They keep 1 API key(s): Deploy (made 2026-11-01).
-They keep 1 webhook(s) they set up: Sales, to hooks.example.com (made 2026-11-12).
-Revoke any they do not recognise: a password reset ends them.
+Ended 2 API key(s); the 1 still working: Deploy (made 2026-11-01).
+Switched off 1 webhook(s) they set up: Sales, to hooks.example.com (made 2026-11-12).
+Give them the names: they make new keys once signed in, and the board's owner or an administrator switches back on any webhook they recognise, which gives it a new secret.
+They are recorded as having set the mail settings, 1 backup destination(s) and the App URL; some may have changed since: review them on the admin page.
 
 Give greg this link yourself, by a way only they read. It is shown once and works for seven days, and the account still needs its password.
 The link's address is from ORIGIN.
@@ -1252,18 +1261,23 @@ The link's address is from ORIGIN.
 https://dumpfire.example.com/enrol/<token>
 ```
 
+Where it ended no key that still worked: "Ended 1 API key(s); none was still working." or "They had no API key."; no webhook: "They had no webhook they set up."; neither: "They had no API key and no webhook they set up." alone. With `--keep-api-keys` the lines read as before card 2915, "They keep 1 API key(s): Deploy (made 2026-11-01)." and "They keep 1 webhook(s) they set up: …" (or "They keep no API key." / "They keep no webhook they set up."), then "Kept, as --keep-api-keys asked: a password reset ends them."; or "They have no API key and no webhook they set up." The settings line is there only where `setting_setters` records the account, and says "recorded": the command does not judge whether each setting is still where that account put it, as the admin page does.
+
 The link's address is the host's own configuration first, and the App URL setting only where the host sets none: `APP_URL`; then `ORIGIN`, unless it is the image's `http://localhost:3000`, which is nobody's address; then the App URL setting, with a warning that an administrator set it (the superadmin alone since card 2847, any administrator before), so check it is this server's address before passing the link on (read as the server reads it: one with a user name, password, query, fragment, backslash or control character, or a path beginning `//`, is not used); and with none of them, the path alone (`/enrol/<token>`) and "put your server's address in front of this path". The admin page's 🛡️ takes its address as mailed links do, the App URL setting first where it is on the configured address (see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from)).
 
 | It prints, on stderr where it refused | Exit code | What happened |
 |---------------------------------------|-----------|---------------|
 | The counts and the link, as above | `0` | The account was reset |
-| `Usage: node scripts/mfa-reset.mjs <username>` … | `2` | No username, an empty one, or more than one argument. Nothing was opened |
+| `Usage: node scripts/mfa-reset.mjs [--keep-api-keys] [--] <username>` … | `2` | No username, an empty one, or more than one. A padded `" --keep-api-keys"` is the flag, trimmed, and leaves no username. Nothing was opened |
+| `Unknown option "-k".` and the usage | `2` | An argument starting with "-" that is not `--keep-api-keys`, before any `--` (card 2915). Nothing was opened: put `--` before a username that starts with "-" |
+| `--keep-api-keys was given twice.` and the usage | `2` | The flag more than once (card 2915). Nothing was opened |
 | `Refused: there is no account with the username "gerg". Nothing was changed.` | `1` | The name matched nobody, exactly. Names are case-sensitive, as at sign-in |
 | `Refused: the account "bob" is disabled. An administrator enables it on the admin page first. Nothing was changed.` | `1` | The account is disabled (card 2671). Nothing was written. Enable it on the admin page (✅) first, then run the reset |
 | `Refused: this is running as root. Run it as the user the server runs as, …: docker exec -u node <container> node scripts/mfa-reset.mjs <username>` | `1` | Run as root. Nothing was opened |
 | `Refused: there is no database at <path> (…). Set DB_PATH to the server's database file.` | `1` | `DB_PATH` names no file. No file was made |
 | `Refused: this database has no two-step sign-in tables; start the server once to migrate it (<path>).` | `1` | A database from before migration 0065 |
 | `Refused: this database has no report schedules table; start the server once to migrate it (<path>).` | `1` | A database with the two-step sign-in tables and no `report_schedules` (card 2894), which the reset pauses: it is refused rather than reset in part |
+| `Refused: this database has no webhook holds; start the server once to migrate it (<path>).` | `1` | A database whose `webhooks` has no `held_because` or `held_at`, one from between migrations 0065 and 0071 (card 2915): the switch-off records its hold there, so it is refused rather than reset in part, with or without `--keep-api-keys` |
 | `Refused: the reset could not be written, and nothing was changed: database is locked` | `1` | The server, or something else, held the database for more than five seconds. Run it again |
 
 The page the link opens is card 2769's, which is never released without this command: it names the account and sends its holder to sign in with the account's password, which then leads to setting up a new authenticator. The same command is the way back for a first-run set-up left unfinished. A newer reset, from here or from 🛡️, ends the link, and so does setting the account's password or changing its email address or role. Reset the password first, if that is needed too, and two-step sign-in after.
@@ -6926,7 +6940,8 @@ open the board again". Someone who is not the board's owner or an administrator 
 webhook to a receiver (scheme, host and port) switched off on that board (`409`), nor delete one
 switched off (`403`). A password reset, an invite used or an account deleted now records why it
 switched a webhook off (`setter access ended`), so switching such a webhook on gives it a new
-secret too (the code review's CS1, CS2, CS4). A team manager who takes a member out
+secret too (the code review's CS1, CS2, CS4); since card 2671 a disabled account, and since card
+2915 a reset of the two-step sign-in, record the same. A team manager who takes a member out
 of a team switches off that member's webhooks on the boards they lose.
 
 **Going back** to the previous image needs no step. It does not read the four columns, and its
@@ -6947,7 +6962,7 @@ O2, and a receiver allowed by `WEBHOOK_ALLOW_INSIDE` or a public one):
 | D5 | The owner `PUT {"active": true}` | On; the answer's `secret` is new; deliveries signed with it | The old secret, or still off |
 | D6 | Repeat D2-D3 with T's share removed, E taken out of T by T's manager, T deleted, and the board made private then public | Each: off at the change, the cause named, off after access returns | Any resumes |
 | D7 | Back up (E still on the board), take E off (switched off), restore the older backup with `keep`, move a card | Off after the restore with its hold kept, though E can open the board in the backup; nothing delivered | On again, or delivered |
-| D10 | Reset E's password as an administrator; then the owner `PUT {"active": true}` on one of E's webhooks | Off with "This was switched off because the account that set it up had its password reset …"; the switch-on answers a new `secret` | The old secret |
+| D10 | Reset E's password as an administrator; then the owner `PUT {"active": true}` on one of E's webhooks | Off with "This was switched off because the account that set it up had its password or its two-step sign-in reset …" (the words since card 2915); the switch-on answers a new `secret` | The old secret |
 | D8 | `GET /api/v1/openapi.json` | `info.version` `1.11.0`; its note first, "breaking" | 1.10.x |
 | D9 | Admin → ISO 27001 checklist, A.5.14 and A.5.18 | 2752 and 2893 no longer listed (they ship together); A.5.14 met; A.5.18 gap card 2671 on an image without card 2671 (and 2894 on one without card 2894), met with none from card 2671's release | 2752 or 2893 still listed |
 
@@ -7402,6 +7417,99 @@ account whose hour is not):
 | H6 | As the second editor, on a card with 20 PDFs, drop another PDF, then an image | PDF refused "This card already has 20 files other than images"; image attached | PDF attached |
 | H7 | Admin → ISO 27001 checklist, A.8.6 and A.8.7 | Both describe every upload's limits; A.8.7 still met, and says other files' names are cleaned and types normalised | Images only |
 | H8 | On the production path (behind its proxy or tunnel), with the account's hour spent, drop a 20 MB file | The card shows the hour's words promptly, well before a 20 MB upload would finish; the Network tab shows `429` with `Connection: close` | The upload runs to the end before the refusal, or a proxy page in place of the words |
+
+### The Release That Ends API Keys at a Two-Step Reset (Card 2915)
+
+**Card 2915 (card 2894's S14 and F1), built 2026-11-18.** Until this release a reset of an
+account's two-step sign-in, by an administrator's 🛡️ or on the host with
+`scripts/mfa-reset.mjs`, kept the account's API keys and the webhooks it set, and listed them.
+A key skips the second factor, so a key made by whoever had the lost phone and the password went
+on reading every board after the reset. From this release **a reset ends the account's API keys
+and switches off the webhooks it set**, as an administrator's password reset does: always from
+the admin page, and on the host unless it is told `--keep-api-keys`. How it works is in
+[The Administrator's Reset](authentication-security.md#the-administrators-reset) and
+[The Host's Command](authentication-security.md#the-hosts-command); the plan is
+`docs/planning/card-2915-reset-ends-keys.md`.
+
+```mermaid
+flowchart TD
+    Lost["An authenticator is lost"] --> Where{"Reset where?"}
+    Where -->|"🛡️ on the admin page"| Always["Keys end, webhooks switched off,<br/>always: no box"]
+    Where -->|"the host's command"| Flag{"--keep-api-keys?"}
+    Flag -->|"no (the default)"| Always
+    Flag -->|"yes"| Keep["Keys and webhooks kept,<br/>said on stdout and in the log line"]
+    Always --> Tell["The message, stdout and the mail<br/>say what ended"]
+```
+
+**What people notice.**
+
+- 🛡️'s confirm says "…, their API keys end, the webhooks they set up are switched off, …", and
+  the dialog after says how many ended, with the day each was made ("Their 1 API key (made …) was
+  ended and the 1 webhook they set up (made …) switched off; …"). The superadmin resetting an
+  administrator who set the mail settings, the App URL or a backup destination is told to review
+  them; the reset removes none of them (card 2922).
+- The holder's mail names each key and webhook that ended, says to make new keys for the scripts
+  they recognise, and that one they did not make means someone else had their password.
+- A script using the account's key is answered `401` until the holder makes a new key, once their
+  new authenticator is set up. A webhook the account set stops; the board's owner or an
+  administrator switches it on again, which gives it a new secret. Its `pausedBecause` reads "…had
+  its password or its two-step sign-in reset, …". **The board's owners are not mailed** when a
+  reset switches a webhook off, as they are not for a password reset: card 2923.
+
+**Release rules.**
+
+- **Nothing to migrate**, no setting, no new environment variable. The OpenAPI document goes to
+  `1.14.0`, **breaking**: a two-step reset ends the account's keys (`401`) and switches off its
+  webhooks; no operation, field or schema changes.
+- **A host reset of the superadmin now ends that account's integration keys** unless
+  `--keep-api-keys` is given. The superadmin is the account likeliest to hold the keys an
+  integration uses. Before running the command, decide: phone lost, and the password safe, keep
+  them (`node scripts/mfa-reset.mjs --keep-api-keys <username>`); phone stolen, or not sure, let
+  them end and make new keys afterwards. Every refused argument (an unknown option, the flag twice,
+  no username) changes nothing.
+- **See what will end, without changing anything.** The command has no dry run; this reads the
+  account's keys and the webhooks it set that are on, on the live database, read-only:
+
+  ```bash
+  docker exec <container> node -e "
+    const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+    const user = db.prepare('SELECT id FROM users WHERE username = ?').get(process.argv[1]);
+    if (user === undefined) { console.log('No such account'); process.exit(1); }
+    console.table(db.prepare('SELECT id, name, created_at, expires_at, deadline_at, last_used_at FROM api_keys WHERE user_id = ? ORDER BY id').all(user.id));
+    console.table(db.prepare('SELECT w.id, b.name AS board, w.created_at FROM webhooks w JOIN boards b ON b.id = w.board_id WHERE w.set_by = ? AND w.active = 1 ORDER BY w.id').all(user.id));
+  " <username>
+  ```
+
+  Every key listed ends (one with `expires_at` or `deadline_at` passed is already refused by the
+  gate, and is counted among the ended but not named as still working); every webhook listed is
+  switched off. It prints no webhook address: a path or query may hold the receiver's secret.
+- **A database from before migration 0071** (between 0065 and 0071) is refused by the command,
+  "this database has no webhook holds": start the server once to migrate it.
+- **Going back** to the previous image needs no step and undoes nothing. Keys a reset ended stay
+  ended: their rows are deleted, and the holder makes new ones. Webhooks it switched off stay off,
+  held `setter access ended`, which the previous image already reads (card 2752): the board's
+  owner or an administrator switches each on, with a new secret. On the previous image a reset
+  keeps keys again, and its command takes no option: `--keep-api-keys` there is a usage error,
+  exit 2, nothing changed.
+
+**Hands-on checks** (the plan's section 6; on the development server: an administrator with an
+authenticator, `ada`; a user `holder` with an authenticator, one API key, a board of their own
+with a webhook made with that key, and one report schedule on; for H10, the superadmin and an
+administrator who saved the App URL. Never run the host command on the repository's
+`dumpfire.db` directly):
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | As `ada`, Admin → Users → 🛡️ on `holder` | The confirm says their API keys end, the webhooks they set up are switched off and their report schedules are paused | It names only schedules, or offers a box |
+| H2 | Confirm with your password and code | "Their 1 report schedule was paused. Their 1 API key (made …) was ended and the 1 webhook they set up (made …) switched off; …" | A key's name, a board or a host appears; "They keep" appears |
+| H3 | `GET /api/v1/boards` with `holder`'s old key | `401` | Anything else |
+| H4 | As the board's owner, `GET /api/v1/boards/{id}/webhooks` with a key | `active: false`, `pausedBecause` "…had its password or its two-step sign-in reset…" | `active: true`, or the old words |
+| H5 | With mail set up, read `holder`'s notice | Names the ended key and the webhook, how to get them back, and what an unknown one means | "The reset kept your API keys" |
+| H6 | Audit → Live Console | One `CRITICAL` line with "and 1 API key(s), switched off 1 webhook(s) they set up (id N)" | No key count or no webhook id |
+| H7 | Give `holder` a new key and webhook. Copy the database with the server stopped, or while it runs with `node -e "require('better-sqlite3')('dumpfire.db',{readonly:true}).exec(\"VACUUM INTO 'scratch.db'\")"`. `DB_PATH=scratch.db node scripts/mfa-reset.mjs holder` | Exit 0; "Ended 1 API key(s); the 1 still working: …" and "Switched off 1 webhook(s) …" | Keys kept; names on stderr or in the log |
+| H8 | On a fresh copy: `… mfa-reset.mjs --keep-api-keys holder` | Exit 0; "They keep …" and "Kept, as --keep-api-keys asked"; the line "kept 1 live API key(s) and 1 webhook(s) …" | Keys ended |
+| H9 | On a fresh copy: `… mfa-reset.mjs -k holder`, then `… mfa-reset.mjs --keep-api-keys --keep-api-keys holder` | Exit 2 each, nothing changed | Any reset |
+| H10 | As the superadmin, 🛡️ on the administrator who saved the App URL | The message says "They set the App URL: review them on the admin page." (before the notice's sentence, where mail went) | No settings sentence |
 
 ## Changing the Schema
 

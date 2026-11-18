@@ -662,14 +662,16 @@
 	 * 🛡️ pressed (card 2773, plan 4.4): the page's confirm asks first, for the
 	 * caller's own password too, as the server does (a reset hands the caller a
 	 * link that sets up another account's second factor), and Confirm sends it.
-	 * It says the account's report schedules are paused (card 2894, D2); the
-	 * server's message after says how many, and which keys and webhooks stay.
+	 * It says the account's API keys end, the webhooks it set are switched off
+	 * (card 2915) and its report schedules are paused (card 2894, D2), with no
+	 * counts: the page's may be older than a key made since. The server's
+	 * message after says how many.
 	 */
 	function askResetTwoStep(userId: number, username: string, control?: HTMLElement) {
 		if (inviteInFlight !== null || inviteLink !== null) return;
 		confirm(
 			'Reset Two-Step Sign-In',
-			`Reset ${username}'s two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their report schedules are paused, and you are given a link, once, to pass on to them yourself. ${ASKS_FOR_PASSWORD}`,
+			`Reset ${username}'s two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their API keys end, the webhooks they set up are switched off, their report schedules are paused, and you are given a link, once, to pass on to them yourself. ${ASKS_FOR_PASSWORD}`,
 			(proof: StepUpProof) => resetTwoStepOf(userId, username, proof, control),
 			{ askPassword: true }
 		);

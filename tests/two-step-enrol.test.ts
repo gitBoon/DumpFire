@@ -419,12 +419,15 @@ describe('setting up after an invite or the first-run set-up (slice 3)', () => {
 	});
 
 	it('T59: with mail set up, a set-up mails one notice naming the time, the address, the keys and the webhooks, and no secret, code or link', async () => {
+		// The reset first: it ends the keys and webhooks the account had (card 2915), and the set-up's notice
+		// names those it has when it is set up.
+		const link = resetByAdmin();
 		makeApiKey(user, 'Deploy key');
 		const { board } = makeBoard({ owner: user, name: 'Ops' });
 		db.insert(webhooks).values({ boardId: board.id, url: 'https://hooks.example.test/in/its-own-secret', setBy: user.id }).run();
 		// On a set-up link, which a mail host set up meanwhile does not end (a
 		// set-up on the password alone it does: CS6).
-		const token = await startEnrolment(user, { [ENROL_LINK_COOKIE]: resetByAdmin() });
+		const token = await startEnrolment(user, { [ENROL_LINK_COOKIE]: link });
 		makeSmtp();
 		const page = await view(token);
 		const shown = page.type === 'data' ? page.data.secret : '';

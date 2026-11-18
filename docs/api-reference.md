@@ -1,11 +1,13 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.146
+version: 1.147
 status: As-Built
 date: 2026-11-18
 tags:
   - api
+  - card-2915
+  - two-step-reset-ends-keys
   - card-2910
   - upload-limits
   - card-2671
@@ -48,7 +50,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "REST API reference for DumpFire's external v1 API: authentication, every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -388,6 +390,35 @@ either.
 
 ### Changes on 2026-11-18
 
+**Breaking: a reset of an account's two-step sign-in ends its API keys and switches off its
+webhooks** (card 2915; OpenAPI document version `1.14.0`, with a dated note, marked breaking, at
+the top of its description). A reset by an administrator, on the admin page, or on the server's
+host (`scripts/mfa-reset.mjs`, unless it is run with `--keep-api-keys`) now does what a password
+reset has done since 1.11.0:
+
+1. The account's keys answer `401 {"message": "Invalid or expired API key"}`, as after a password
+   reset. Its holder makes new ones on the Account page once their new authenticator is set up.
+2. The webhooks it set are switched off, `active` `false`, recording `setter access ended`, so
+   switching one on again is the board owner's or an administrator's and gives it a new secret.
+3. `pausedBecause` for that hold now names a two-step reset: "This was switched off because the
+   account that set it up had its password or its two-step sign-in reset, used an invite, was
+   disabled, or was deleted."
+4. Nothing else changed: no operation, field or schema.
+
+Before, a reset kept the keys and webhooks and listed them for the holder to look over; a key
+skips the second factor, so one made by whoever had the lost phone and the password outlived the
+reset. The board's owners are not mailed when a reset switches a webhook off (card 2923).
+
+**Internal route, additive** (card 2915): `POST /api/users/{id}/mfa/reset` answers two more
+fields, `apiKeysEnded` (every key row ended, one already ended included) and
+`webhooksSwitchedOff`, in both branches. Its `message` says what ended: where the link is given,
+how many working keys ended and webhooks were switched off, with the day each was made and no
+name ("Their 2 API keys (made 2026-11-01 and 2026-11-10) were ended and the 1 webhook they set up
+(made 2026-11-12) switched off; the lists are in the notice mailed to them."), and, for an
+account that set the mail settings, the App URL or backup destinations, "They set …: review them
+on the admin page."; where the link is withheld, the counts alone. See
+[The Administrator's Reset](authentication-security.md#the-administrators-reset).
+
 **Every upload counts, and only so many at once** (card 2910; OpenAPI document version
 `1.13.1`, with a dated note at the top of its description; not breaking). No operation, status,
 field or schema changes, but five things a key sees do (the fifth with a new `408`):
@@ -443,7 +474,8 @@ disables an account on the admin page, not through a key. From this release:
    `409 {"message": "<name> cannot be included: their account is disabled"}`, and writes nothing.
 4. The webhooks it set are switched off for good (`setter access ended`), and `pausedBecause`
    says of them "This was switched off because the account that set it up had its password
-   reset, used an invite, was disabled, or was deleted."
+   reset, used an invite, was disabled, or was deleted." (since 1.14.0, "had its password or its
+   two-step sign-in reset, …").
 5. Nothing else changed: no operation, field or schema. Enabling the account again gives back
    its sign-in alone: none of its keys, and none of its webhooks switched back on.
 
@@ -588,7 +620,7 @@ administrator's reset of another account's two-step sign-in, pauses them too and
 adds how many live API keys the account has and webhooks it set that are on, with the day each
 was made and no name ("They keep 2 API keys (made 2026-11-01 and 2026-11-10) and 1 webhook they
 set up (made 2026-11-12); the lists are in the notice mailed to them. A password reset ends
-them."). A paused schedule
+them."; since card 2915 the reset ends them, and says so: see the 1.14.0 change above). A paused schedule
 is turned on again by its owner with `PUT /api/report-schedules/{id}`, which asks for the
 password and a code (card 2751). See
 [What Setting a Password Ends](authentication-security.md#what-setting-a-password-ends).
@@ -980,7 +1012,8 @@ set up on its password alone.
   sets its wrong-code counts back, ends its sessions, unused invites, sign-ins waiting for a
   second factor and enrolment links, and issues one enrolment link, good for seven days; the
   password, API keys, webhooks and report schedules are kept (since card 2894 they are paused,
-  and the answer adds `reportSchedulesPaused`). The link is given once, in the
+  and the answer adds `reportSchedulesPaused`; since card 2915 the keys end and the webhooks are
+  switched off, and the answer adds `apiKeysEnded` and `webhooksSwitchedOff`). The link is given once, in the
   answer, and never mailed; the account's address, where mail is set up, is sent a notice that
   holds no link. Answered `200` with `Cache-Control: no-store`:
 
@@ -5657,8 +5690,9 @@ flowchart TD
   lost it with the team deleted or the board made private, or was an administrator made an
   ordinary user, is switched off at that change: `active` becomes `false`. So is one nobody is
   recorded as having set up (made before setters were recorded on 2026-10-18/19, or brought
-  back by restoring an older backup), at the first start; and one whose setter's password was
-  reset, who used an invite, or whose account was deleted. Every start, every restore and every
+  back by restoring an older backup), at the first start; and one whose setter's password or
+  two-step sign-in (since 1.14.0) was reset, who used an invite, or whose account was disabled
+  (since 1.13.0) or deleted. Every start, every restore and every
   event switch off what the changes did not see, and a restore never switches back on one
   switched off here. **It stays off when the setter is given the board back.**
   `pausedBecause`, given with the address (and `null` in the answer to the `POST`), says why,
@@ -5667,8 +5701,8 @@ flowchart TD
   was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it
   on with your own key, which makes you its setter and gives it a new secret, given in that
   answer and readable by the board's owner or an administrator, and update the receiver.",
-  "This was switched off because the account that set it up had its password reset, used an
-  invite, or was deleted. …" (the same advice) or "This was switched off because nobody is
+  "This was switched off because the account that set it up had its password or its two-step
+  sign-in reset, used an invite, was disabled, or was deleted. …" (the same advice) or "This was switched off because nobody is
   recorded as having set it up. Delete it unless you recognise the address; to keep it, switch
   it on with your own key, which makes you its setter, and set a new secret." For one still on
   and held by a change made outside DumpFire's own writes it begins "Nothing is sent: " until its

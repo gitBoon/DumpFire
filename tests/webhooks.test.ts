@@ -69,6 +69,7 @@ import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { activityLog, boards, columns, users, webhooks } from '$lib/server/db/schema';
 import { endAccountAccess, sessionTokenHash, type SessionUser } from '$lib/server/auth';
+import { resetTwoStep } from '$lib/server/mfa-store';
 import { disableAccount } from '$lib/server/account-disable';
 import { deleteUser } from '$lib/server/deletes';
 import { escapeHtml } from '$lib/escape-html';
@@ -2244,9 +2245,12 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 		'is given the board back. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, ' +
 		'switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by ' +
 		"the board's owner or an administrator, and update the receiver.";
-	/** `pausedBecause` for a webhook switched off by a reset, an invite used, a disable (card 2671) or a delete of its setter (the code review's CS4). */
+	/**
+	 * `pausedBecause` for a webhook switched off by a password or two-step reset (card 2915), an invite used, a disable
+	 * (card 2671) or a delete of its setter (the code review's CS4).
+	 */
 	const ACCESS_ENDED =
-		'This was switched off because the account that set it up had its password reset, used an invite, was disabled, or was deleted. The address ' +
+		'This was switched off because the account that set it up had its password or its two-step sign-in reset, used an invite, was disabled, or was deleted. The address ' +
 		'was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which ' +
 		"makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, " +
 		'and update the receiver.';
@@ -2935,6 +2939,8 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 
 	it.each([
 		{ row: 'a password reset (endAccountAccess)', end: (s: Scene) => inTransaction(() => endAccountAccess(s.editor.id, { apiKeys: true })) },
+		// Card 2915 (case 13, E10): a reset of the two-step sign-in records the same hold.
+		{ row: 'a two-step reset (resetTwoStep)', end: (s: Scene) => void inTransaction(() => resetTwoStep(s.editor.id)) },
 		// Card 2671: an account is disabled before it is deleted, and the disable switches its webhooks off.
 		{
 			row: 'the account disabled (disableAccount)',

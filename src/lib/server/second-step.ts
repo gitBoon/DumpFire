@@ -38,7 +38,7 @@
  * on the address's sign-in attempts, with no pause of its own (decision 14).
  */
 import { fail, redirect, type ActionFailure, type Cookies } from '@sveltejs/kit';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { apiKeys, boards, mfaRecoveryCodes, users, webhooks, type User } from './db/schema';
 import { afterCommit, inTransaction } from './db/transaction';
@@ -512,14 +512,36 @@ export type SignInReport = {
  * board and the host they send to: what the page after a right code and the
  * enrolment notice list (S2), and the Account page's two-step section and
  * the `factor-removed` notice (card 2772, D2). A live key has not ended
- * (`keyEnded`: its expiry and its deadline, by the gate's own rule).
+ * (`keyEnded`: its expiry and its deadline, by the gate's own rule). Its two
+ * halves are read apart by an administrator's two-step reset (card 2915): the
+ * keys by `liveApiKeysOf` before the reset deletes them, and the webhooks by
+ * `webhooksByIds`, by the switch-off's own ids (S5). scripts/mfa-reset.mjs
+ * copies both.
  */
 export function keysAndWebhooksOf(
 	userId: number,
 	now: number
 ): { apiKeys: { name: string; createdAt: string; lastUsedAt: string | null }[]; webhooks: { board: string; host: string; createdAt: string }[] } {
+	const keys = liveApiKeysOf(userId, now);
+	const hooks = db
+		.select({ board: boards.name, url: webhooks.url, createdAt: webhooks.createdAt })
+		.from(webhooks)
+		.innerJoin(boards, eq(boards.id, webhooks.boardId))
+		.where(and(eq(webhooks.setBy, userId), eq(webhooks.active, true)))
+		.all()
+		.map(hookAsListed);
+	return { apiKeys: keys, webhooks: hooks };
+}
+
+/**
+ * The account's live API keys, by name, with when each was made and last
+ * used: the half of `keysAndWebhooksOf` that an administrator's two-step reset
+ * reads in its transaction before it ends them (card 2915), for its message
+ * and the holder's mail. scripts/mfa-reset.mjs reads the same, in raw SQL.
+ */
+export function liveApiKeysOf(userId: number, now: number): { name: string; createdAt: string; lastUsedAt: string | null }[] {
 	const nowStamp = stamp(new Date(now));
-	const keys = db
+	return db
 		.select({
 			name: apiKeys.name,
 			createdAt: apiKeys.createdAt,
@@ -532,23 +554,37 @@ export function keysAndWebhooksOf(
 		.all()
 		.filter((key) => !keyEnded(key, nowStamp))
 		.map(({ name, createdAt, lastUsedAt }) => ({ name, createdAt, lastUsedAt }));
-	const hooks = db
-		.select({ board: boards.name, url: webhooks.url, createdAt: webhooks.createdAt })
+}
+
+/**
+ * The webhooks of `ids`, by the board and the host they send to, in the
+ * order of their ids: what an administrator's two-step reset lists, read by
+ * the ids its switch-off answered (card 2915, S5), so the message and the
+ * holder's mail name exactly what was switched off. scripts/mfa-reset.mjs
+ * reads the same, in raw SQL.
+ */
+export function webhooksByIds(ids: readonly number[]): { board: string; host: string; createdAt: string }[] {
+	if (ids.length === 0) return [];
+	return db
+		.select({ id: webhooks.id, board: boards.name, url: webhooks.url, createdAt: webhooks.createdAt })
 		.from(webhooks)
 		.innerJoin(boards, eq(boards.id, webhooks.boardId))
-		.where(and(eq(webhooks.setBy, userId), eq(webhooks.active, true)))
+		.where(inArray(webhooks.id, [...ids]))
 		.all()
-		.map(({ board, url, createdAt }) => {
-			// The host alone: a path or a query may hold the receiver's own secret.
-			let host: string;
-			try {
-				host = new URL(url).host;
-			} catch {
-				host = 'an address that cannot be read';
-			}
-			return { board, host, createdAt };
-		});
-	return { apiKeys: keys, webhooks: hooks };
+		.sort((a, b) => a.id - b.id)
+		.map(hookAsListed);
+}
+
+/** A webhook as a list names it: its board, the host alone and when it was made. */
+function hookAsListed({ board, url, createdAt }: { board: string; url: string; createdAt: string }): { board: string; host: string; createdAt: string } {
+	// The host alone: a path or a query may hold the receiver's own secret.
+	let host: string;
+	try {
+		host = new URL(url).host;
+	} catch {
+		host = 'an address that cannot be read';
+	}
+	return { board, host, createdAt };
 }
 
 /**

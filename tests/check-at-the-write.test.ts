@@ -4216,7 +4216,8 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 	'src/lib/server/auth.ts#endAccountAccess': {
 		does: 'switches off only',
 		writes: 1,
-		why: "A password change that ends the account's keys switches off the webhooks the account set (card 2168), recording the hold 'setter access ended' (card 2752's code review, CS4)."
+		why:
+			"An administrator's password set, an invite used, a holder's own change that ends their keys, a disable (card 2671) and a reset of the two-step sign-in (card 2915) switch off the webhooks the account set (card 2168), recording the hold 'setter access ended' (card 2752's code review, CS4)."
 	},
 	'src/lib/server/deletes.ts#deleteUser': {
 		does: 'switches off only',
@@ -5404,6 +5405,122 @@ describe('the webhooks table is written only by the writers listed, each as list
 			expect(judgeWebhookWrites(file, source, WEBHOOK_WRITERS).findings).toEqual(found);
 		});
 
+	});
+});
+
+// ─── A two-step reset under src always ends the keys (card 2915, S4) ────────
+
+/**
+ * Card 2915 (S4): `resetTwoStep` ends the account's API keys and switches off
+ * the webhooks it set unless told `{ apiKeys: false }`, an option that exists
+ * only as the test's model of the host's `--keep-api-keys`
+ * (scripts/mfa-reset.mjs; tests/mfa-reset-script.test.ts, T21 and T34). So
+ * every call of it under src passes no options, or options written out whose
+ * `apiKeys`, where given, is literally `true`; anything else is a finding, by
+ * file and line: `false`, a variable or any other expression, a shorthand, a
+ * spread or a computed name among the options, options not written out, and
+ * arguments spread. Calls are found by the name called, directly, as a
+ * property (`store.resetTwoStep`) or by its string (`store['resetTwoStep']`),
+ * under any name an import gives it (`import { resetTwoStep as reset }`), and
+ * through `as`, `satisfies` and `<T>` (card 2915's code review, CS1); any
+ * `.call`, `.apply` or `.bind` of it is a finding outright, its options not
+ * read. Not seen: `resetTwoStep` held in a variable or handed on and called
+ * under another name.
+ */
+function keysKeptAtReset(file: string, source: string): { calls: number; findings: string[] } {
+	const kind = /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+	const tree = ts.createSourceFile(file, file.endsWith('.svelte') ? scriptsOf(source) : source, ts.ScriptTarget.Latest, true, kind);
+	const at = (node: ts.Node) => `${file}:${tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1}`;
+	const reading = { calls: 0, findings: [] as string[] };
+	// The names the file calls it by: its own, and each an import gives it.
+	const names = new Set(['resetTwoStep']);
+	for (const statement of tree.statements) {
+		const bindings = ts.isImportDeclaration(statement) ? statement.importClause?.namedBindings : undefined;
+		if (bindings === undefined || !ts.isNamedImports(bindings)) continue;
+		for (const element of bindings.elements) if ((element.propertyName ?? element.name).text === 'resetTwoStep') names.add(element.name.text);
+	}
+	/** `node` without parentheses, `await`, `!`, `as`, `satisfies` and `<T>` round it. */
+	const stripped = (node: ts.Expression): ts.Expression => {
+		let inner = bare(node);
+		while (ts.isAsExpression(inner) || ts.isSatisfiesExpression(inner) || ts.isTypeAssertionExpression(inner)) inner = bare(inner.expression);
+		return inner;
+	};
+	/** Whether `node` is resetTwoStep: one of its names, `x.resetTwoStep` or `x['resetTwoStep']`. */
+	const isReset = (node: ts.Expression): boolean => {
+		const inner = stripped(node);
+		if (ts.isIdentifier(inner)) return names.has(inner.text);
+		if (ts.isPropertyAccessExpression(inner)) return inner.name.text === 'resetTwoStep';
+		if (ts.isElementAccessExpression(inner)) {
+			const key = stripped(inner.argumentExpression);
+			return (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) && key.text === 'resetTwoStep';
+		}
+		return false;
+	};
+	const visit = (node: ts.Node): void => {
+		if (ts.isPropertyAccessExpression(node) && ['call', 'apply', 'bind'].includes(node.name.text) && isReset(node.expression)) {
+			reading.calls++;
+			reading.findings.push(`${at(node)} calls resetTwoStep through .${node.name.text}, whose options cannot be read: call it directly`);
+		}
+		if (ts.isCallExpression(node)) {
+			if (isReset(node.expression)) {
+				reading.calls++;
+				if (node.arguments.some(ts.isSpreadElement)) reading.findings.push(`${at(node)} calls resetTwoStep with its arguments spread`);
+				const options = node.arguments[2] === undefined ? undefined : bare(node.arguments[2]);
+				if (options !== undefined && !ts.isObjectLiteralExpression(options)) {
+					reading.findings.push(`${at(node)} calls resetTwoStep with options that are not written out`);
+				} else if (options !== undefined) {
+					for (const property of options.properties) {
+						const key = ts.isPropertyAssignment(property) && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) ? property.name.text : null;
+						if (key === null) reading.findings.push(`${at(property)} calls resetTwoStep with an option that is not written out`);
+						else if (key === 'apiKeys' && (property as ts.PropertyAssignment).initializer.kind !== ts.SyntaxKind.TrueKeyword) {
+							reading.findings.push(`${at(property)} calls resetTwoStep with apiKeys not literally true: only the host keeps keys at a reset`);
+						}
+					}
+				}
+			}
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(tree);
+	return reading;
+}
+
+describe('a reset of the two-step sign-in under src always ends the keys (card 2915, S4)', () => {
+	it("finds no call of resetTwoStep under src that passes apiKeys other than literally true: { apiKeys: false } is the test's model of the host's --keep-api-keys", () => {
+		const readings = filesUnder('src', (path) => WEBHOOK_WALKED.test(path)).map((file) => ({ file, ...keysKeptAtReset(file, readFileSync(join(ROOT, file), 'utf8')) }));
+
+		expect(readings.flatMap(({ findings }) => findings)).toEqual([]);
+		// The route's own call is among those read: the scan is not reading nothing.
+		expect(readings.find(({ file }) => file === 'src/routes/api/users/[id]/mfa/reset/+server.ts')?.calls).toBe(1);
+		// And the rule finds each way of keeping them.
+		const EXAMPLE = 'src/lib/server/example.ts';
+		const judged = (call: string) => keysKeptAtReset(EXAMPLE, `import { resetTwoStep } from './mfa-store';\n${call}`).findings;
+		expect(judged("resetTwoStep(1, 'admin-reset', { apiKeys: true });")).toEqual([]);
+		expect(judged("resetTwoStep(1, 'admin-reset');")).toEqual([]);
+		expect(judged("resetTwoStep(1, 'admin-reset', { apiKeys: false });")).toHaveLength(1);
+		expect(judged("store.resetTwoStep(1, 'admin-reset', { 'apiKeys': keep });")).toHaveLength(1);
+		expect(judged("resetTwoStep(1, 'admin-reset', { apiKeys });")).toHaveLength(1);
+		expect(judged("resetTwoStep(1, 'admin-reset', { ...options });")).toHaveLength(1);
+		expect(judged("resetTwoStep(1, 'admin-reset', options);")).toHaveLength(1);
+		expect(judged('resetTwoStep(...args);')).toHaveLength(1);
+	});
+
+	// Card 2915's code review (CS1): each way of reaching it that the first walk did not see, one example each.
+	it.each([
+		{ form: 'an aliased import', source: "import { resetTwoStep as reset } from './mfa-store';\nreset(1, 'admin-reset', { apiKeys: false });" },
+		{ form: '.call', source: "import { resetTwoStep } from './mfa-store';\nresetTwoStep.call(null, 1, 'admin-reset', { apiKeys: false });" },
+		{ form: '.apply', source: "import { resetTwoStep } from './mfa-store';\nresetTwoStep.apply(null, [1, 'admin-reset', { apiKeys: false }]);" },
+		{ form: '.bind', source: "import { resetTwoStep } from './mfa-store';\nconst keep = resetTwoStep.bind(null, 1, 'admin-reset', { apiKeys: false });" },
+		{ form: 'an element access by its string', source: "import * as store from './mfa-store';\nstore['resetTwoStep'](1, 'admin-reset', { apiKeys: false });" },
+		{ form: 'as', source: "import { resetTwoStep } from './mfa-store';\n(resetTwoStep as typeof resetTwoStep)(1, 'admin-reset', { apiKeys: false });" },
+		{ form: 'satisfies', source: "import { resetTwoStep } from './mfa-store';\n(resetTwoStep satisfies typeof resetTwoStep)(1, 'admin-reset', { apiKeys: false });" },
+		{ form: 'a <T> assertion', source: "import { resetTwoStep } from './mfa-store';\n(<typeof resetTwoStep>resetTwoStep)(1, 'admin-reset', { apiKeys: false });" }
+	])('finds resetTwoStep keeping the keys reached through $form (code review, CS1)', ({ source }) => {
+		const reading = keysKeptAtReset('src/lib/server/example.ts', source);
+
+		expect(reading.calls).toBe(1);
+		expect(reading.findings).toHaveLength(1);
+		expect(reading.findings[0]).toMatch(/^src\/lib\/server\/example\.ts:2 calls resetTwoStep /);
 	});
 });
 

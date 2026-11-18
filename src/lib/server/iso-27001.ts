@@ -284,7 +284,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Removing an authenticator ends the account\'s other sessions and pending sign-ins (card 2772). ' +
 			'A change that takes an account\'s board access away switches off, for good, the webhooks it set on that board; giving the access back does not switch them on (card 2752). ' +
 			'Revoking an API key switches off, in the same change, the webhooks it set up, and one whose key expires or passes its deadline is switched off at the next start, restore or event (card 2893). ' +
-			'Every way of setting a password, the holder\'s own change included, and a reset of an account\'s two-step sign-in, from the admin page or the host, pause the account\'s report schedules; the reset says how many API keys and webhooks the account still has, and its mail names them, and removing an authenticator lists its schedules that are on (card 2894). ' +
+			'Every way of setting a password, the holder\'s own change included, and a reset of an account\'s two-step sign-in, from the admin page or the host, pause the account\'s report schedules, and removing an authenticator lists its schedules that are on (card 2894). ' +
+			'The reset also ends the account\'s API keys and switches off the webhooks it set, as an administrator\'s password reset does; the reset\'s mail names them, and the host keeps them only when told to (card 2915). ' +
 			'Disabling an account ends all of this at once and refuses it at every gate, on every board and on every decision; a restore keeps it disabled (card 2671).',
 		evidence: [
 			{ path: 'src/lib/server/auth.ts', symbol: 'endAccountAccess' },

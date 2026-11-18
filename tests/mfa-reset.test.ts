@@ -55,13 +55,15 @@ import {
 	sessions,
 	settings,
 	signInChallenges,
-	users
+	users,
+	webhooks
 } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS } from '$lib/server/email';
 import { sha256Hex } from '$lib/server/mfa-crypto';
 import { ENROLMENT_LINK_LIFETIME_MS, addTotpFactor, issueEnrolmentLink, storeRecoveryCodes } from '$lib/server/mfa-store';
 import { newRecoveryCodes } from '$lib/server/recovery-codes';
+import { mailPlacesNow, recordDestinationSetter, recordMailSetters, settingsHeldBy } from '$lib/server/setting-setters';
 import { newTotpSecret } from '$lib/server/totp';
 import { isStamp, parseStamp, stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
@@ -71,6 +73,7 @@ import {
 	FIXTURE_PASSWORD_HASH,
 	inviteHashOf,
 	makeApiKey,
+	makeApiKeyRow,
 	makeBoard,
 	makeSession,
 	makeSmtp,
@@ -131,12 +134,16 @@ const scheduleOf = (id: number) =>
  * whose address holds a secret in its query (card 2894, S14): with when each
  * was made, as stored.
  */
-function giveKeyAndWebhook(holder: Parameters<typeof makeApiKey>[0]): { keyMade: string; hookMade: string } {
+function giveKeyAndWebhook(holder: Parameters<typeof makeApiKey>[0]): { keyMade: string; hookMade: string; hookId: number } {
 	makeApiKey(holder, 'Deploy');
 	const hook = makeWebhook(makeBoard({ owner: holder, name: 'Sales' }).board, { url: 'https://hooks.example.test/x?secret=s', setBy: holder });
 	const key = db.select({ createdAt: apiKeys.createdAt }).from(apiKeys).where(eq(apiKeys.userId, holder.id)).get()!;
-	return { keyMade: key.createdAt, hookMade: hook.createdAt };
+	return { keyMade: key.createdAt, hookMade: hook.createdAt, hookId: hook.id };
 }
+
+/** A webhook's switch and hold, as stored (card 2915). */
+const hookOf = (id: number) =>
+	db.select({ active: webhooks.active, heldBecause: webhooks.heldBecause, heldAt: webhooks.heldAt }).from(webhooks).where(eq(webhooks.id, id)).get()!;
 
 let sent: Effects;
 
@@ -156,7 +163,7 @@ afterEach(() => {
 });
 
 describe('POST /api/users/[id]/mfa/reset', () => {
-	it("T1: resets every part of decision 11, keeps the rest, issues one link it shows once, and logs one CRITICAL line with no token", async () => {
+	it("T1: resets every part of decision 11, ends the account's keys (card 2915), keeps the rest, issues one link it shows once, and logs one CRITICAL line with no token", async () => {
 		setAppUrl();
 		sent = effects();
 		const admin = makeUser({ role: 'admin', username: 'ada' });
@@ -190,6 +197,7 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			.where(eq(users.id, holder.id))
 			.run();
 		const before = userRow(holder.id);
+		const keyIds = db.select({ id: apiKeys.id }).from(apiKeys).where(eq(apiKeys.userId, holder.id)).all().map((key) => key.id);
 
 		const res = await reset(admin, holder.id);
 
@@ -203,6 +211,9 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			sessionsEnded: 2,
 			challengesEnded: 1,
 			invitesEnded: 1,
+			// Card 2915: the key ended; the account set no webhook.
+			apiKeysEnded: 1,
+			webhooksSwitchedOff: 0,
 			// Card 2894 (E21): none was on.
 			reportSchedulesPaused: 0
 		});
@@ -229,11 +240,11 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			mfaRecoveryResumesAt: null,
 			mfaPasswordEnrol: 0
 		});
-		// Kept: the password, the keys, the banner and the failed codes since the last sign-in.
+		// Kept: the password, the banner and the failed codes since the last sign-in. Ended: the key (card 2915).
 		expect(after.passwordHash).toBe(FIXTURE_PASSWORD_HASH);
 		expect(after.securityBanner).toBe('codes-failed');
 		expect(after.failedCodesSinceSignIn).toBe(5);
-		expect(db.select().from(apiKeys).where(eq(apiKeys.userId, holder.id)).all()).toHaveLength(1);
+		expect(db.select().from(apiKeys).where(eq(apiKeys.userId, holder.id)).all()).toEqual([]);
 
 		// One link, the one shown: its hash stored, issued by the reset, for seven days.
 		const links = linksOf(holder.id);
@@ -254,9 +265,24 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 		expect(lines[0]).toMatchObject({ context: 'AUTH', userId: admin.id });
 		expect(lines[0].message).toBe(
 			`Two-step sign-in reset for user ${holder.id} ("holder") by "ada": removed 1 factor(s) and 10 recovery code(s), ` +
-				'ended 2 session(s), 1 pending sign-in(s) and 1 invite(s), and paused 0 report schedule(s); an enrolment link was issued'
+				'ended 2 session(s), 1 pending sign-in(s), 1 invite(s) and 1 API key(s), switched off 0 webhook(s) they set up, ' +
+				'and paused 0 report schedule(s); an enrolment link was issued'
 		);
-		expect(JSON.parse(lines[0].meta)).toMatchObject({ targetUserId: holder.id, resetBy: admin.id, factorsRemoved: 1 });
+		expect(JSON.parse(lines[0].meta)).toMatchObject({
+			targetUserId: holder.id,
+			resetBy: admin.id,
+			factorsRemoved: 1,
+			// Card 2915: the fields of what ended, and of what the host's --keep-api-keys would keep; the key by
+			// its id alone (the code review's CS2).
+			apiKeysEnded: 1,
+			apiKeyIds: keyIds,
+			webhooksSwitchedOff: 0,
+			webhookIds: [],
+			apiKeysKept: false,
+			liveApiKeysKept: 0,
+			webhooksKept: 0,
+			keptWebhookIds: []
+		});
 		expect(JSON.stringify(sqlite.prepare('SELECT message, meta FROM system_logs').all())).not.toContain(token);
 		expect(sent.duringTransaction).toEqual([]);
 	});
@@ -484,12 +510,13 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 	});
 
 	// Card 2894 (case 2, D2, S14, E24): both branches of the message, the link shown and withheld (a newer link
-	// issued while the notice is sent, as T12's third row).
+	// issued while the notice is sent, as T12's third row). Card 2915 (case 2, E9, S5): the keys ended and the
+	// webhook switched off with its hold, another account's left, and the answer, the message and the mail agree.
 	it.each([
 		{ branch: 'the link shown', withheld: false },
 		{ branch: 'the link withheld', withheld: true }
 	])(
-		"T17 (card 2894, $branch): pauses the holder's report schedules that are on, says how many, and counts the keys and webhooks it keeps with the day each was made, naming none",
+		"T17 (card 2894, card 2915, $branch): pauses the holder's report schedules that are on, ends their keys, switches off their webhooks, and says how many, with the day each was made where the link is shown, naming none",
 		async ({ withheld }) => {
 			setAppUrl();
 			makeSmtp();
@@ -500,7 +527,11 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			const on = [giveSchedule(holder.id), giveSchedule(holder.id)];
 			const off = giveSchedule(holder.id, false);
 			const theirs = giveSchedule(other.id);
-			const kept = giveKeyAndWebhook(holder);
+			const ended = giveKeyAndWebhook(holder);
+			// Another account's key and webhook, which nothing may touch.
+			makeApiKey(other, 'Theirs');
+			const othersHook = makeWebhook(makeBoard({ owner: other, name: 'Elsewhere' }).board, { url: 'https://other.example.test/in', setBy: other });
+			const othersKeys = db.select().from(apiKeys).where(eq(apiKeys.userId, other.id)).all();
 			sent = effects(
 				withheld
 					? {
@@ -518,17 +549,36 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			expect(res.status, JSON.stringify(res.body)).toBe(200);
 			expect(res.body.reportSchedulesPaused).toBe(2);
 			expect(res.body.enrolmentUrl === null).toBe(withheld);
-			// What it kept, by count and day only, where the link is given; the paused sentence alone where it is
+			// Card 2915 (E9): what ended, in both branches.
+			expect(res.body).toMatchObject({ apiKeysEnded: 1, webhooksSwitchedOff: 1 });
+			// What ended, by count and the day each was made, where the link is given; by count alone where it is
 			// withheld (the code review's CS2).
-			expect(res.body.message).toContain(
+			expect(res.body.message).toBe(
 				withheld
-					? ' Their 2 report schedules were paused. holder was sent a notice that holds no link.'
-					: ` Their 2 report schedules were paused. They keep 1 API key (made ${kept.keyMade.slice(0, 10)}) and 1 webhook they set ` +
-							`up (made ${kept.hookMade.slice(0, 10)}); the lists are in the notice mailed to them. A password reset ends them. ` +
-							'holder was sent a notice that holds no link.'
+					? "holder's two-step sign-in was reset, but its link cannot be shown to you now. Run the reset again to issue a new one." +
+							' Their 2 report schedules were paused. Their 1 API key was ended and the 1 webhook they set up switched off.' +
+							' holder was sent a notice that holds no link.'
+					: "holder's two-step sign-in was reset. Give them the link yourself: it is shown once, and works for seven days." +
+							` Their 2 report schedules were paused. Their 1 API key (made ${ended.keyMade.slice(0, 10)}) was ended and the 1 webhook ` +
+							`they set up (made ${ended.hookMade.slice(0, 10)}) switched off; the lists are in the notice mailed to them.` +
+							' holder was sent a notice that holds no link.'
 			);
 			// Never a key's name, a board's name or a host: the caller may not open the board (CS2).
 			for (const text of ['Deploy', 'Sales', 'hooks.example.test', 'secret=s']) expect(res.body.message).not.toContain(text);
+
+			// The holder's key deleted and webhook switched off with its hold; another account's as they were.
+			expect(db.select().from(apiKeys).where(eq(apiKeys.userId, holder.id)).all()).toEqual([]);
+			const hook = hookOf(ended.hookId);
+			expect(hook).toMatchObject({ active: false, heldBecause: 'setter access ended' });
+			expect(isStamp(hook.heldAt)).toBe(true);
+			expect(db.select().from(apiKeys).where(eq(apiKeys.userId, other.id)).all()).toEqual(othersKeys);
+			expect(hookOf(othersHook.id)).toEqual({ active: true, heldBecause: null, heldAt: null });
+			// S5: the count the message says, the answer's and the mail's list of webhooks are the one switch-off's.
+			const [mail] = sent.emails;
+			const listed = mail.html.match(/<li>[^<]*, to [^<]*: made [^<]*<\/li>/g) ?? [];
+			expect(listed).toEqual([`<li>Sales, to hooks.example.test: made ${ended.hookMade} UTC</li>`]);
+			expect(Number(/the (\d+) webhook/.exec(res.body.message)?.[1])).toBe(res.body.webhooksSwitchedOff);
+			expect(listed).toHaveLength(res.body.webhooksSwitchedOff);
 
 			// The holder's two that were on paused and stamped; the one already off, and another account's, as they were.
 			for (const id of on) {
@@ -542,70 +592,244 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 
 			const lines = sqlite.prepare("SELECT message, meta FROM system_logs WHERE level = 'CRITICAL'").all() as { message: string; meta: string }[];
 			expect(lines).toHaveLength(1);
-			expect(lines[0].message).toContain(`, and paused 2 report schedule(s) (ids ${on[0]}, ${on[1]}); an enrolment link was issued`);
+			expect(lines[0].message).toContain(
+				`and 1 API key(s), switched off 1 webhook(s) they set up (id ${ended.hookId}), and paused 2 report schedule(s) ` +
+					`(ids ${on[0]}, ${on[1]}); an enrolment link was issued`
+			);
 			expect(JSON.parse(lines[0].meta)).toMatchObject({ reportSchedulesPaused: 2, reportScheduleIds: on });
 		}
 	);
 
-	// Card 2894 (case 5, E24, S14): the mail says the count above nought, in the singular for one, and lists what was
-	// kept; the message says the same count, and what was kept by count and day alone, one row per wording (the code
-	// review's CR1 and CS2). `D` in a row's words is the day the keys and the webhook were made, all today.
-	it.each<{ row: string; paused: number; keys: number; hook: boolean; refused?: boolean; says: string | null; message: string }>([
-		{ row: 'none paused', paused: 0, keys: 1, hook: true, says: null, message: ' They keep 1 API key (made D) and 1 webhook they set up (made D); the lists are in the notice mailed to them. A password reset ends them.' },
-		{ row: 'one paused', paused: 1, keys: 1, hook: true, says: 'Your 1 report schedule was paused', message: ' Their 1 report schedule was paused. They keep 1 API key' },
-		{ row: 'two paused', paused: 2, keys: 1, hook: true, says: 'Your 2 report schedules were paused', message: ' Their 2 report schedules were paused. They keep 1 API key' },
-		{ row: 'neither a key nor a webhook', paused: 0, keys: 0, hook: false, says: null, message: ' They have no API key and no webhook they set up.' },
-		{ row: 'a key and no webhook', paused: 0, keys: 1, hook: false, says: null, message: ' They keep 1 API key (made D) and no webhook they set up; the lists are in the notice mailed to them.' },
-		{ row: 'a webhook and no key', paused: 0, keys: 0, hook: true, says: null, message: ' They keep no API key and 1 webhook they set up (made D); the lists are in the notice mailed to them.' },
-		{ row: 'two keys', paused: 0, keys: 2, hook: false, says: null, message: ' They keep 2 API keys (made D and D) and no webhook they set up;' },
+	// Card 2894 (case 5, E24, S14): the mail says the count above nought, in the singular for one; the message says the
+	// same count, one row per wording (the code review's CR1 and CS2). Card 2915 (case 3, E5): each row pins the whole
+	// message, what ended said by count and the day each was made, and the mail names each key and webhook ended, or
+	// nothing of keys where none did. `D` in a row's words is the day the keys and the webhooks were made, all today.
+	// The code review's CR2: the withheld branch for a key alone, a webhook alone and neither, the notice not sent with
+	// one list, and two webhooks.
+	it.each<{
+		row: string;
+		paused: number;
+		keys: number;
+		endedKey?: boolean;
+		hooks: number;
+		refused?: boolean;
+		withheld?: boolean;
+		says: string | null;
+		message: string;
+	}>([
+		{
+			row: 'none paused',
+			paused: 0,
+			keys: 1,
+			hooks: 1,
+			says: null,
+			message: ' Their 1 API key (made D) was ended and the 1 webhook they set up (made D) switched off; the lists are in the notice mailed to them.'
+		},
+		{
+			row: 'one paused',
+			paused: 1,
+			keys: 1,
+			hooks: 1,
+			says: 'Your 1 report schedule was paused',
+			message:
+				' Their 1 report schedule was paused. Their 1 API key (made D) was ended and the 1 webhook they set up (made D) switched off; ' +
+				'the lists are in the notice mailed to them.'
+		},
+		{
+			row: 'two paused',
+			paused: 2,
+			keys: 1,
+			hooks: 1,
+			says: 'Your 2 report schedules were paused',
+			message:
+				' Their 2 report schedules were paused. Their 1 API key (made D) was ended and the 1 webhook they set up (made D) switched off; ' +
+				'the lists are in the notice mailed to them.'
+		},
+		{ row: 'neither a key nor a webhook', paused: 0, keys: 0, hooks: 0, says: null, message: ' They had no API key and no webhook they set up.' },
+		{
+			row: 'a key and no webhook',
+			paused: 0,
+			keys: 1,
+			hooks: 0,
+			says: null,
+			message: ' Their 1 API key (made D) was ended, and they had no webhook they set up; the list is in the notice mailed to them.'
+		},
+		{
+			row: 'a webhook and no key',
+			paused: 0,
+			keys: 0,
+			hooks: 1,
+			says: null,
+			message: ' They had no API key, and the 1 webhook they set up (made D) was switched off; the list is in the notice mailed to them.'
+		},
+		{
+			row: 'two keys',
+			paused: 0,
+			keys: 2,
+			hooks: 0,
+			says: null,
+			message: ' Their 2 API keys (made D and D) were ended, and they had no webhook they set up; the list is in the notice mailed to them.'
+		},
+		{
+			row: 'two webhooks',
+			paused: 0,
+			keys: 0,
+			hooks: 2,
+			says: null,
+			message: ' They had no API key, and the 2 webhooks they set up (made D and D) were switched off; the list is in the notice mailed to them.'
+		},
 		{
 			row: 'the notice not sent',
 			paused: 0,
 			keys: 1,
-			hook: true,
+			hooks: 1,
 			refused: true,
 			says: null,
-			message: '; the notice with the lists was not sent: ask them to look over their keys and webhooks. A password reset ends them.'
+			message:
+				' Their 1 API key (made D) was ended and the 1 webhook they set up (made D) switched off; the notice with the lists was not sent: ' +
+				'tell them how many ended and the day each was made.'
+		},
+		{
+			row: 'the notice not sent, one list',
+			paused: 0,
+			keys: 1,
+			hooks: 0,
+			refused: true,
+			says: null,
+			message:
+				' Their 1 API key (made D) was ended, and they had no webhook they set up; the notice with the list was not sent: ' +
+				'tell them how many ended and the day each was made.'
+		},
+		{ row: 'the link withheld, a key alone', paused: 0, keys: 1, hooks: 0, withheld: true, says: null, message: ' Their 1 API key was ended.' },
+		{ row: 'the link withheld, a webhook alone', paused: 0, keys: 0, hooks: 1, withheld: true, says: null, message: ' The 1 webhook they set up was switched off.' },
+		{ row: 'the link withheld, neither', paused: 0, keys: 0, hooks: 0, withheld: true, says: null, message: '' },
+		// Card 2915 (case 3, row 9): a key that had already ended is deleted and counted in the answer, and is not said or named.
+		{
+			row: 'a key that had already ended beside a live one',
+			paused: 0,
+			keys: 1,
+			endedKey: true,
+			hooks: 0,
+			says: null,
+			message: ' Their 1 API key (made D) was ended, and they had no webhook they set up; the list is in the notice mailed to them.'
 		}
-	])("T18 (card 2894, $row): the reset's mail and message say how many schedules were paused and what was kept", async ({ paused, keys, hook, refused, says, message }) => {
+	])(
+		"T18 (card 2894, card 2915, $row): the reset's mail and message say how many schedules were paused and what ended",
+		async ({ paused, keys, endedKey, hooks, refused, withheld, says, message }) => {
+			setAppUrl();
+			makeSmtp();
+			const admin = makeUser({ role: 'admin' });
+			const holder = makeUser({ username: 'holder' });
+			sent = effects(
+				refused
+					? { refuseMailTo: [holder.email] }
+					: withheld
+						? {
+								// A newer link issued while the notice is sent, as T12's third row: the link is withheld.
+								mailRefusal: () => {
+									inTransaction(() => issueEnrolmentLink(holder.id, 'admin-reset'));
+									return undefined;
+								}
+							}
+						: {}
+			);
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+			giveFactor(holder.id);
+			for (let i = 0; i < paused; i++) giveSchedule(holder.id);
+			for (let i = 0; i < keys; i++) makeApiKey(holder, `Deploy ${i + 1}`);
+			const keysMade = db.select({ createdAt: apiKeys.createdAt }).from(apiKeys).where(eq(apiKeys.userId, holder.id)).all().map((key) => key.createdAt);
+			const old = endedKey ? makeApiKeyRow(holder, { expiresAt: stamp(new Date(Date.now() - 24 * 60 * 60 * 1000)) }) : null;
+			const oldName = old === null ? null : db.select({ name: apiKeys.name }).from(apiKeys).where(eq(apiKeys.id, old.id)).get()!.name;
+			const board = hooks === 0 ? null : makeBoard({ owner: holder, name: 'Sales' }).board;
+			const made: string[] = [];
+			for (let i = 0; i < hooks; i++) made.push(makeWebhook(board!, { url: `https://hooks.example.test/x${i}?secret=s`, setBy: holder }).createdAt);
+			const day = (keysMade[0] ?? made[0] ?? '').slice(0, 10);
+			for (const at of [...keysMade, ...made]) expect(at.slice(0, 10)).toBe(day);
+
+			const res = await reset(admin, holder.id);
+
+			expect(res.status).toBe(200);
+			expect(res.body.reportSchedulesPaused).toBe(paused);
+			expect(res.body.enrolmentUrl === null).toBe(withheld === true);
+			// Every row ended, the one that had already ended among them (F3).
+			expect(res.body).toMatchObject({ apiKeysEnded: keys + (endedKey ? 1 : 0), webhooksSwitchedOff: hooks });
+			expect(res.body.message).toBe(
+				(withheld
+					? "holder's two-step sign-in was reset, but its link cannot be shown to you now. Run the reset again to issue a new one."
+					: "holder's two-step sign-in was reset. Give them the link yourself: it is shown once, and works for seven days.") +
+					message.replaceAll('D', day) +
+					(refused ? '' : ' holder was sent a notice that holds no link.')
+			);
+			if (says === null) expect(res.body.message).not.toContain('report schedule');
+			for (const text of ['Deploy', 'Sales', 'hooks.example.test', ...(oldName === null ? [] : [oldName])]) expect(res.body.message).not.toContain(text);
+			if (refused) {
+				expect(sent.emails).toEqual([]);
+				return;
+			}
+			expect(sent.emails).toHaveLength(1);
+			const [mail] = sent.emails;
+			if (says === null) {
+				expect(mail.html).not.toContain('report schedule');
+			} else {
+				expect(mail.html).toContain(says);
+				expect(mail.html).toContain('Turn on the ones you recognise on the Reports page');
+			}
+			// The mail names each that ended, with when it was made (S14), and what to do; nothing of keys where none ended.
+			if (keys === 0 && hooks === 0) {
+				expect(mail.html).not.toContain('API key');
+				expect(mail.html).not.toContain('webhook');
+			} else {
+				expect(mail.html).toContain('The reset also ended your API keys and switched off the webhooks you set up:');
+				expect(mail.html).toContain('Make new keys for the scripts you recognise once your new authenticator is set up.');
+			}
+			for (let i = 0; i < keys; i++) expect(mail.html).toContain(`Deploy ${i + 1}: made ${keysMade[i]} UTC, never used`);
+			expect(mail.html.match(/<li>Sales, to hooks\.example\.test: made [^<]* UTC<\/li>/g) ?? []).toEqual(
+				made.map((at) => `<li>Sales, to hooks.example.test: made ${at} UTC</li>`)
+			);
+			if (oldName !== null) expect(mail.html).not.toContain(oldName);
+			expect(mail.html).not.toContain('secret=s');
+		}
+	);
+
+	// Card 2915 (case 4, S1): the settings the account set, said where the link is given, never a destination's name.
+	// The code review's CR2: two destinations in the plural, and nothing of settings where the link is withheld.
+	it.each([
+		{ row: 'one destination', destinations: 1, withheld: false, says: ' They set the mail settings, 1 backup destination and the App URL: review them on the admin page.' },
+		{ row: 'two destinations', destinations: 2, withheld: false, says: ' They set the mail settings, 2 backup destinations and the App URL: review them on the admin page.' },
+		{ row: 'the link withheld', destinations: 1, withheld: true, says: null }
+	])('T19 (card 2915, $row): the superadmin resetting an administrator recorded as setter of settings is told to review them', async ({ destinations, withheld, says }) => {
+		const chief = makeUser({ role: 'superadmin', username: 'chief' });
+		const admin = makeUser({ role: 'admin', username: 'ada' });
+		giveFactor(admin.id);
+		// Ada recorded as setter of the mail settings, the App URL and the destinations, as their saves record them.
+		const before = mailPlacesNow();
 		setAppUrl();
 		makeSmtp();
-		const admin = makeUser({ role: 'admin' });
-		const holder = makeUser();
-		sent = effects(refused ? { refuseMailTo: [holder.email] } : {});
-		giveFactor(holder.id);
-		for (let i = 0; i < paused; i++) giveSchedule(holder.id);
-		for (let i = 0; i < keys; i++) makeApiKey(holder, `Deploy ${i + 1}`);
-		const made = hook
-			? makeWebhook(makeBoard({ owner: holder, name: 'Sales' }).board, { url: 'https://hooks.example.test/x?secret=s', setBy: holder }).createdAt
-			: null;
-		const keysMade = db.select({ createdAt: apiKeys.createdAt }).from(apiKeys).where(eq(apiKeys.userId, holder.id)).all().map((key) => key.createdAt);
-		const day = (keysMade[0] ?? made ?? '').slice(0, 10);
-		for (const at of [...keysMade, ...(made === null ? [] : [made])]) expect(at.slice(0, 10)).toBe(day);
+		sent = effects(
+			withheld
+				? {
+						mailRefusal: () => {
+							inTransaction(() => issueEnrolmentLink(admin.id, 'admin-reset'));
+							return undefined;
+						}
+					}
+				: {}
+		);
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		recordMailSetters(before, { id: admin.id, superadmin: false }, true);
+		const names = ['Offsite copies', 'Second copies'].slice(0, destinations);
+		const list = names.map((name, i) => ({ type: 's3', name, region: 'eu-west-2', bucket: `ada-bucket-${i}`, accessKeyId: 'AKIA', secretAccessKey: 'secret', prefix: '' }));
+		db.insert(settings).values({ key: 'backup_config', value: JSON.stringify({ destinations: list }) }).run();
+		for (const destination of list) recordDestinationSetter(destination, admin.id);
+		expect(settingsHeldBy(admin.id).get(admin.id)).toEqual({ mail: true, appUrl: true, destinations: names });
 
-		const res = await reset(admin, holder.id);
+		const res = await reset(chief, admin.id);
 
-		expect(res.status).toBe(200);
-		expect(res.body.reportSchedulesPaused).toBe(paused);
-		expect(res.body.message).toContain(message.replaceAll('D', day));
-		if (says === null) expect(res.body.message).not.toContain('report schedule');
-		for (const text of ['Deploy', 'Sales', 'hooks.example.test']) expect(res.body.message).not.toContain(text);
-		if (refused) {
-			expect(sent.emails).toEqual([]);
-			return;
-		}
-		expect(sent.emails).toHaveLength(1);
-		const [mail] = sent.emails;
-		if (says === null) {
-			expect(mail.html).not.toContain('report schedule');
-		} else {
-			expect(mail.html).toContain(says);
-			expect(mail.html).toContain('Turn on the ones you recognise on the Reports page');
-		}
-		// The mail names each, with when it was made (S14).
-		for (let i = 0; i < keys; i++) expect(mail.html).toContain(`Deploy ${i + 1}: made ${keysMade[i]} UTC, never used`);
-		if (made !== null) expect(mail.html).toContain(`Sales, to hooks.example.test: made ${made} UTC`);
-		expect(mail.html).not.toContain('secret=s');
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body.enrolmentUrl === null).toBe(withheld);
+		if (says === null) expect(res.body.message).not.toContain('They set');
+		else expect(res.body.message).toContain(says);
+		for (const name of names) expect(res.body.message).not.toContain(name);
 	});
 });
 
