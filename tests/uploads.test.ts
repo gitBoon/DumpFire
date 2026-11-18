@@ -20,16 +20,17 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { activityLog, boardMembers, cardAttachments, cards, sessions, type Card, type CardAttachment } from '$lib/server/db/schema';
 import { imageTypeOf } from '$lib/server/image-check';
 import { stamp } from '$lib/timestamps';
-import type { SessionUser } from '$lib/server/auth';
-import { initLogMaintenance } from '$lib/server/logger';
-import { allowanceState, resetAllRateLimits, takeAllowance } from '$lib/server/rate-limit';
-import { UPLOAD_BYTES_PER_DAY, UPLOADS_PER_HOUR } from '$lib/server/upload-allowance';
+import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { initLogMaintenance, subscribeToLogs, type LogEntry } from '$lib/server/logger';
+import { allowanceState, inFlightAt, resetAllRateLimits, sweepRateLimits, takeAllowance } from '$lib/server/rate-limit';
+import { takeUploadPlace, UPLOAD_BYTES_PER_DAY, UPLOAD_READ_DEADLINE_MS, UPLOADS_PER_HOUR } from '$lib/server/upload-allowance';
+import { BodyReadTimedOut, bytesCounted, heldToLimit, readBodyWithin } from '$lib/server/body-limits';
 import {
 	attachmentHeaders,
 	attachmentPath,
@@ -45,6 +46,7 @@ import {
 } from '$lib/server/uploads';
 import { bytes, gif, jpeg, le32, png, pngChunk, webp } from './helpers/image-bytes';
 import { api } from './helpers/api';
+import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects } from './helpers/effects';
 import { failingWrite } from './helpers/failing-write';
@@ -741,7 +743,8 @@ describe('uploading an attachment', () => {
 			sizeBytes: 12,
 			uploadedBy: owner.id
 		});
-		expect(res.body.filename).toMatch(/^[0-9a-f-]{36}-my_page\.html$/);
+		// Named on disk by the server alone, nothing of the uploader's (card 2910, S5).
+		expect(res.body.filename).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 		expect(rows()).toHaveLength(1);
 		expect(readFileSync(at(card.id, res.body.filename), 'utf8')).toBe('<p>hello</p>');
 	});
@@ -767,7 +770,8 @@ describe('uploading an attachment', () => {
 		const name = 'invoice‮fdp.exe​';
 		const res = await upload(card, new File(['x'], name, { type: 'application/octet-stream' }));
 		expect(res.status).toBe(200);
-		expect(res.body.originalName).toBe(name);
+		// Stored without them too since card 2910 (D11), where it was stored as sent.
+		expect(res.body.originalName).toBe('invoicefdp.exe');
 		expect((await api('DELETE', `/api/cards/${card.id}/attachments/${res.body.id}`, { user: owner })).status).toBe(200);
 
 		expect(entries().map((entry) => entry.detail)).toEqual(['Attached "invoicefdp.exe" to "Has files"', 'Deleted the file "invoicefdp.exe" from "Has files"']);
@@ -975,7 +979,7 @@ describe('uploading an image through the card window (card 2761)', () => {
 		expect(rows().map((row) => row.mimeType)).toEqual(['application/pdf', 'image/png']);
 	});
 
-	it("5. shares the account's hour with /api/v1: one left, a key's upload takes it and the card window's image is 429; a PDF takes nothing", async () => {
+	it("5. shares the account's hour with /api/v1: one left, a key's upload takes it and the card window's image is 429; a PDF counts too (card 2910)", async () => {
 		expect(takeAllowance(hourKey(), UPLOADS_PER_HOUR - 1, UPLOADS_PER_HOUR, HOUR_MS).taken).toBe(true);
 
 		const byKey = await api('POST', `/api/v1/cards/${card.id}/attachments?name=shot.png`, {
@@ -987,16 +991,21 @@ describe('uploading an image through the card window (card 2761)', () => {
 
 		const refused = await upload(card, image(png()));
 		expect(refused.status).toBe(429);
-		expect(refused.body.message).toMatch(/^An account can upload at most 30 images an hour\. Nothing was written\. Try again in \d+ minute\(s\)\.$/);
+		expect(refused.body.message).toMatch(/^An account can upload at most 30 files an hour\. Nothing was read or written\. Try again in \d+ minute\(s\)\.$/);
 		expect(refused.headers.get('retry-after')).toBe(String(refused.body.retryAfterSecs));
 		expect(refused.body.retryAfterSecs).toBeGreaterThan(0);
 		expect(rows()).toHaveLength(1);
 
-		// The PDF arm (E13): read before and after, nothing taken from either.
+		// The PDF arm (E13), inverted by card 2910: the spent hour refuses a PDF too, and with the hour and the day
+		// back a PDF takes one from the hour and what was read from the day (its one part, called directly).
 		const before = allowances();
 		expect(before).toEqual({ hour: UPLOADS_PER_HOUR, day: png().length });
-		expect((await upload(card, pdf())).status).toBe(200);
+		expect((await upload(card, pdf())).status).toBe(429);
 		expect(allowances()).toEqual(before);
+		resetAllRateLimits();
+		expect((await upload(card, pdf())).status).toBe(200);
+		expect(allowances()).toEqual({ hour: 1, day: pdf().size });
+		expect(rows()).toHaveLength(2);
 	});
 
 	it("6. shares the account's day, charged with the bytes read before they are checked", async () => {
@@ -1006,7 +1015,7 @@ describe('uploading an image through the card window (card 2761)', () => {
 		takeAllowance(dayKey(), UPLOAD_BYTES_PER_DAY - (sentPng.length - 1), UPLOAD_BYTES_PER_DAY, DAY_MS);
 		const short = await upload(card, image(sentPng));
 		expect(short.status).toBe(429);
-		expect(short.body.message).toMatch(/^An account can upload at most 100 MB of images a day, and this image would pass it\. Nothing was written\. Try again in \d+ (hour|minute)\(s\)\.$/);
+		expect(short.body.message).toMatch(/^An account can upload at most 100 MB a day, and this upload would pass it\. Nothing was written\. Try again in \d+ (hour|minute)\(s\)\.$/);
 		expect(short.headers.get('retry-after')).toBe(String(short.body.retryAfterSecs));
 
 		// Room for a JPEG sent as a PNG and one byte short of a PNG after it: the JPEG is refused at the check,
@@ -1019,15 +1028,15 @@ describe('uploading an image through the card window (card 2761)', () => {
 		expect(fileIn(card.id)).toBe(false);
 	});
 
-	it('7. is 401 for a session ended while the form is read, with nothing taken from either allowance and nothing written (E16)', async () => {
+	it('7. is 401 for a session ended while the form is read, with the hour taken before it, nothing charged to the day and nothing written (E16; card 2910)', async () => {
 		const token = makeSession(owner);
 		const mine = image(png());
-		const real = Blob.prototype.arrayBuffer;
+		const real = Request.prototype.formData;
 		let ended = false;
-		// The route reads the bytes of the file it parsed out of the request: the session ends then, after
-		// the route's first check of the card and before the writeAs that counts the upload.
-		vi.spyOn(Blob.prototype, 'arrayBuffer').mockImplementation(function (this: Blob) {
-			if (this !== mine && this instanceof File && this.name === mine.name && !ended) {
+		// The route reads the form: the session ends then, after the route's first check of the card and its
+		// count of the upload (card 2910), and before the writeAs that charges the day.
+		vi.spyOn(Request.prototype, 'formData').mockImplementation(function (this: Request) {
+			if (!ended) {
 				db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 				ended = true;
 			}
@@ -1040,10 +1049,578 @@ describe('uploading an image through the card window (card 2761)', () => {
 
 		expect(ended).toBe(true);
 		expect([res.status, res.body.message]).toEqual([401, 'Not authenticated']);
-		expect(allowances()).toEqual({ hour: 0, day: 0 });
+		expect(allowances()).toEqual({ hour: 1, day: 0 });
 		expect(rows()).toEqual([]);
 		expect(entries()).toEqual([]);
 		expect(fileIn(card.id)).toBe(false);
+	});
+});
+
+// ─── Every upload's limits (card 2910) ──────────────────────────────────────
+
+describe("every upload's limits (card 2910)", () => {
+	const M = 1024 * 1024;
+	const MINUTE_MS = 60_000;
+	const HOUR_MS = 3_600_000;
+	const DAY_MS = 86_400_000;
+	const hourKey = () => `attachment-upload:user:${owner.id}`;
+	const dayKey = () => `attachment-bytes:user:${owner.id}`;
+	/** The account's hour and day as they stand, nothing taken. */
+	const allowances = () => ({
+		hour: allowanceState(hourKey(), UPLOADS_PER_HOUR, HOUR_MS, Date.now()).used,
+		day: allowanceState(dayKey(), UPLOAD_BYTES_PER_DAY, DAY_MS, Date.now()).used
+	});
+	/** The places in flight the owner holds, and the server. */
+	const places = () => ({ own: inFlightAt(`upload-in-flight:user:${owner.id}`), server: inFlightAt('upload-in-flight:server') });
+	const spendHour = () => expect(takeAllowance(hourKey(), UPLOADS_PER_HOUR, UPLOADS_PER_HOUR, HOUR_MS).taken).toBe(true);
+	const spendDay = () => expect(takeAllowance(dayKey(), UPLOAD_BYTES_PER_DAY, UPLOAD_BYTES_PER_DAY, DAY_MS).taken).toBe(true);
+	const pdf = (name = 'paper.pdf') => new File(['%PDF-1.4 a paper'], name, { type: 'application/pdf' });
+	const image = (content: Uint8Array, name = 'shot.png', type = 'image/png') => new File([content as BlobPart], name, { type });
+	const formOf = (...parts: [string, string | File][]) => {
+		const form = new FormData();
+		for (const [name, value] of parts) form.append(name, value);
+		return form;
+	};
+	/** A form written out as a browser sends it: its bytes, and the Content-Type with its boundary. */
+	const writtenOut = async (form: FormData) => {
+		const res = new Response(form);
+		return { type: res.headers.get('content-type') ?? '', body: new Uint8Array(await res.arrayBuffer()) };
+	};
+	/** A body sent in chunks with no length declared: `bytes` in one. */
+	const inOne = (bytes: Uint8Array) =>
+		new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(bytes);
+				controller.close();
+			}
+		});
+	/** A body sent in chunks of 64 KB with no length declared, `total` bytes in all. */
+	const chunked = (total: number) => {
+		let sent = 0;
+		return new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (sent >= total) return controller.close();
+				const size = Math.min(64 * 1024, total - sent);
+				sent += size;
+				controller.enqueue(new Uint8Array(size));
+			}
+		});
+	};
+	/** A body whose sender goes away once it has sent a little of it, as a closed connection fails the read. */
+	const cutOff = () => {
+		let started = false;
+		return new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (started) return controller.error(new Error('aborted'));
+				started = true;
+				controller.enqueue(new TextEncoder().encode('------dumpfire\r\n'));
+			}
+		});
+	};
+	/** Sent through the gate, as the card window sends it, in a session of the owner's: the answer, parsed. */
+	const throughGate = async (body: Uint8Array | ReadableStream<Uint8Array>, type: string) => {
+		const res = await gate('POST', `/api/cards/${card.id}/attachments`, {
+			headers: {
+				cookie: `${SESSION_COOKIE_NAME}=${makeSession(owner)}`,
+				...FROM_THE_PAGE,
+				origin: 'http://localhost',
+				accept: 'application/json',
+				'content-type': type
+			},
+			body
+		});
+		const text = await res.text();
+		let parsed: any = text;
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			// Not JSON: kept as its text, to be seen as it was.
+		}
+		return { status: res.status, body: parsed, headers: res.headers };
+	};
+	/** A form of one PDF, written out and sent through the gate. */
+	const pdfThroughGate = async () => {
+		const sent = await writtenOut(formOf(['file', pdf()]));
+		return throughGate(sent.body, sent.type);
+	};
+	/** Each read of a form: the reader the request is guarded with. */
+	const watchForm = () => vi.spyOn(Request.prototype, 'formData');
+	const HOUR_WORDS = /^An account can upload at most 30 files an hour\. Nothing was read or written\. Try again in \d+ minute\(s\)\.$/;
+	const DAY_WORDS = /^An account can upload at most 100 MB a day, and this upload would pass it\. Nothing was written\. Try again in \d+ (hour|minute)\(s\)\.$/;
+	const AT_ONCE = { message: 'Too many uploads are in progress. Nothing was read or written. Try again when the others have finished.', retryAfterSecs: 5 };
+	const FORM_WORDS = 'Send one file, as the only part of the form, named "file"';
+
+	// The gate's server, started once before the cases that send through it, as tests/v1-attachments.test.ts starts it.
+	beforeAll(async () => {
+		await gate('GET', '/login', { headers: { accept: 'text/html' } });
+	}, 120_000);
+
+	it('1. refuses a PDF past the hour 429, with Retry-After, before its form is read, writing nothing', async () => {
+		spendHour();
+		const read = watchForm();
+
+		const res = await upload(card, pdf());
+
+		expect(res.status).toBe(429);
+		expect(res.body.message).toMatch(HOUR_WORDS);
+		expect(res.headers.get('retry-after')).toBe(String(res.body.retryAfterSecs));
+		expect(read).not.toHaveBeenCalled();
+		expect(rows()).toEqual([]);
+		expect(fileIn(card.id)).toBe(false);
+	});
+
+	it('2. counts a PDF against the hour and charges the day the length its request declared; one byte short of the next, that one is 429', async () => {
+		const first = await writtenOut(formOf(['file', pdf()]));
+		// The form is larger than its file: the day is charged the form.
+		expect(first.body.byteLength).toBeGreaterThan(pdf().size);
+
+		const res = await throughGate(first.body, first.type);
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(allowances()).toEqual({ hour: 1, day: first.body.byteLength });
+
+		const second = await writtenOut(formOf(['file', pdf('second.pdf')]));
+		const left = UPLOAD_BYTES_PER_DAY - allowances().day;
+		expect(takeAllowance(dayKey(), left - (second.body.byteLength - 1), UPLOAD_BYTES_PER_DAY, DAY_MS).taken).toBe(true);
+		const refused = await throughGate(second.body, second.type);
+
+		expect(refused.status).toBe(429);
+		expect(refused.body.message).toMatch(DAY_WORDS);
+		expect(rows()).toHaveLength(1);
+		expect(readdirSync(at(card.id))).toEqual([rows()[0].filename]);
+	});
+
+	it('3. refuses a form that is not one part named "file" 400, charged the whole body first, writing nothing (S4)', async () => {
+		for (const [what, form] of [
+			['the file and a text field', formOf(['file', pdf()], ['note', 'hello'])],
+			['two files', formOf(['file', pdf()], ['file', pdf('second.pdf')])],
+			['the file under another name', formOf(['upload', pdf()])]
+		] as const) {
+			const sent = await writtenOut(form);
+			const before = allowances().day;
+
+			const res = await throughGate(sent.body, sent.type);
+
+			expect([res.status, res.body.message], what).toEqual([400, FORM_WORDS]);
+			expect(allowances().day - before, what).toBe(sent.body.byteLength);
+		}
+		expect(rows()).toEqual([]);
+		expect(fileIn(card.id)).toBe(false);
+	});
+
+	it("4. charges a form sent in chunks, with no Content-Length, the bytes the gate counted (S4)", async () => {
+		const sent = await writtenOut(formOf(['file', pdf()]));
+
+		const res = await throughGate(inOne(sent.body), sent.type);
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(allowances()).toEqual({ hour: 1, day: sent.body.byteLength });
+	});
+
+	it("5. refuses an upload 429 with Retry-After 5 while the account has 3 in flight, before its form is read and counting nothing; once one is given back it is taken", async () => {
+		const held = [takeUploadPlace(owner), takeUploadPlace(owner), takeUploadPlace(owner)];
+		const read = watchForm();
+
+		const refused = await upload(card, pdf());
+
+		expect([refused.status, refused.body]).toEqual([429, AT_ONCE]);
+		expect(refused.headers.get('retry-after')).toBe('5');
+		expect(read).not.toHaveBeenCalled();
+		expect(allowances().hour).toBe(0);
+
+		held[0]();
+		expect((await upload(card, pdf())).status).toBe(200);
+		expect(allowances().hour).toBe(1);
+	});
+
+	it("6. refuses an upload 429 in the same words while the server has 6 in flight, and the account's place is given back (S3)", async () => {
+		for (let i = 0; i < 6; i++) takeUploadPlace(makeUser({ username: `other-${i}` }));
+
+		const refused = await upload(card, pdf());
+
+		expect([refused.status, refused.body]).toEqual([429, AT_ONCE]);
+		expect(allowances().hour).toBe(0);
+		expect(places()).toEqual({ own: 0, server: 6 });
+	});
+
+	it('7. drops a place 10 minutes old at the sweep, its late release frees no other, and a release called twice frees one (S2)', () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		const stale = takeUploadPlace(owner);
+		vi.setSystemTime(Date.now() + 9 * MINUTE_MS);
+		sweepRateLimits();
+		expect(places()).toEqual({ own: 1, server: 1 });
+
+		vi.setSystemTime(Date.now() + 2 * MINUTE_MS);
+		sweepRateLimits();
+		expect(places()).toEqual({ own: 0, server: 0 });
+
+		// The account's 3 are its own again at once.
+		const fresh = [takeUploadPlace(owner), takeUploadPlace(owner), takeUploadPlace(owner)];
+		stale();
+		expect(places()).toEqual({ own: 3, server: 3 });
+		expect(() => takeUploadPlace(owner)).toThrow(AT_ONCE.message);
+
+		fresh[0]();
+		fresh[0]();
+		expect(places()).toEqual({ own: 2, server: 2 });
+	});
+
+	const EXITS: { exit: string; send: () => Promise<void> }[] = [
+		{
+			exit: 'the hour 429',
+			send: async () => {
+				spendHour();
+				expect((await upload(card, pdf())).status).toBe(429);
+			}
+		},
+		{
+			exit: 'the day 429',
+			send: async () => {
+				spendDay();
+				expect((await upload(card, pdf())).status).toBe(429);
+			}
+		},
+		{
+			exit: '401 for a session ended while the form is read',
+			send: async () => {
+				const token = makeSession(owner);
+				const real = Request.prototype.formData;
+				vi.spyOn(Request.prototype, 'formData').mockImplementation(function (this: Request) {
+					db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
+					return real.call(this);
+				});
+				const res = await api('POST', `/api/cards/${card.id}/attachments`, { user: owner, body: formOf(['file', pdf()]), credential: sessionCredential(token) });
+				expect(res.status).toBe(401);
+			}
+		},
+		{
+			exit: "413 from the gate's count past 26 MB",
+			send: async () => {
+				expect((await throughGate(chunked(26 * M + 1), 'multipart/form-data; boundary=----dumpfire')).status).toBe(413);
+			}
+		},
+		{
+			exit: 'the client gone during the read',
+			send: async () => {
+				vi.spyOn(console, 'error').mockImplementation(() => {});
+				expect((await throughGate(cutOff(), 'multipart/form-data; boundary=----dumpfire')).status).toBeGreaterThanOrEqual(400);
+			}
+		},
+		{
+			exit: "checkImage's 415",
+			send: async () => {
+				expect((await upload(card, image(jpeg()))).status).toBe(415);
+			}
+		},
+		{
+			exit: "checkImage's 400",
+			send: async () => {
+				expect((await upload(card, image(bytes(png(), 'a second file')))).status).toBe(400);
+			}
+		},
+		{
+			exit: "400 for the form's shape",
+			send: async () => {
+				const res = await api('POST', `/api/cards/${card.id}/attachments`, { user: owner, body: formOf(['file', pdf()], ['note', 'hello']) });
+				expect([res.status, res.body.message]).toEqual([400, FORM_WORDS]);
+			}
+		},
+		{
+			exit: "409 for the card's cap",
+			send: async () => {
+				for (let i = 0; i < 20; i++) makeAttachment(card, { name: `shot-${i}.png`, mimeType: 'image/png', file: false });
+				expect((await upload(card, image(png()))).status).toBe(409);
+			}
+		},
+		{
+			exit: 'a write that fails',
+			send: async () => {
+				const writes = failingWrite();
+				try {
+					writes.failNth(1);
+					await expect(upload(card, pdf())).rejects.toThrow(/made to fail/);
+					expect(writes.fired).toBe(true);
+				} finally {
+					writes.restore();
+				}
+			}
+		}
+	];
+
+	it.each(EXITS)('8. gives back its places on every exit (S1): $exit', async ({ send }) => {
+		await send();
+
+		expect(places()).toEqual({ own: 0, server: 0 });
+	});
+
+	it("9. closes the connection on a 429 before the form is read, the place's and the hour's, and not on the day's after it (S7)", async () => {
+		const held = [takeUploadPlace(owner), takeUploadPlace(owner), takeUploadPlace(owner)];
+		const atOnce = await pdfThroughGate();
+		expect([atOnce.status, atOnce.headers.get('connection')]).toEqual([429, 'close']);
+		for (const release of held) release();
+
+		spendHour();
+		const hour = await pdfThroughGate();
+		expect([hour.status, hour.headers.get('connection')]).toEqual([429, 'close']);
+
+		resetAllRateLimits();
+		spendDay();
+		const day = await pdfThroughGate();
+		expect([day.status, day.headers.get('connection')]).toEqual([429, null]);
+	});
+
+	const LOGGED: { row: string; run: (logged: () => LogEntry[]) => Promise<void> }[] = [
+		{
+			row: 'the hour',
+			run: async (logged) => {
+				expect(takeAllowance(hourKey(), UPLOADS_PER_HOUR - 1, UPLOADS_PER_HOUR, HOUR_MS).taken).toBe(true);
+				expect((await upload(card, pdf())).status).toBe(200);
+				expect(logged()).toEqual([]);
+				expect((await upload(card, pdf())).status).toBe(429);
+				expect((await upload(card, pdf())).status).toBe(429);
+				expect(logged()).toEqual([
+					expect.objectContaining({
+						level: 'WARN',
+						message: `Account "owner" (user ${owner.id}) reached its limit of 30 uploads an hour: uploads are refused until the hour is up`,
+						userId: owner.id
+					})
+				]);
+			}
+		},
+		{
+			row: 'the day',
+			run: async (logged) => {
+				spendDay();
+				expect((await upload(card, pdf())).status).toBe(429);
+				expect((await upload(card, pdf())).status).toBe(429);
+				expect(logged()).toEqual([
+					expect.objectContaining({
+						level: 'WARN',
+						message: `Account "owner" (user ${owner.id}) reached its limit of 100 MB of uploads a day: uploads are refused until the day is up`,
+						userId: owner.id
+					})
+				]);
+			}
+		},
+		{
+			row: 'uploads at once',
+			run: async (logged) => {
+				for (let i = 0; i < 3; i++) takeUploadPlace(owner);
+				expect((await upload(card, pdf())).status).toBe(429);
+				expect((await upload(card, pdf())).status).toBe(429);
+				expect(logged()).toEqual([
+					expect.objectContaining({
+						level: 'WARN',
+						message: `Account "owner" (user ${owner.id}) has 3 uploads in progress: more are refused until one finishes`,
+						userId: owner.id
+					})
+				]);
+			}
+		},
+		// Card 2910's code review (CR3): the server's places.
+		{
+			row: "the server's uploads at once",
+			run: async (logged) => {
+				for (let i = 0; i < 6; i++) takeUploadPlace(makeUser({ username: `other-${i}` }));
+				expect((await upload(card, pdf())).status).toBe(429);
+				expect((await upload(card, pdf())).status).toBe(429);
+				expect(logged()).toEqual([
+					expect.objectContaining({
+						level: 'WARN',
+						message: '6 uploads are in progress on the server: more are refused until one finishes',
+						userId: null
+					})
+				]);
+			}
+		}
+	];
+
+	it.each(LOGGED)('10. writes one WARN line in the log the first time an account is refused, and none for the next: $row', async ({ run }) => {
+		process.env.LOG_LEVEL = 'WARN';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const lines: LogEntry[] = [];
+		const stop = subscribeToLogs((entry) => {
+			if (entry.context === 'UPLOADS') lines.push(entry);
+		});
+		try {
+			await run(() => lines);
+		} finally {
+			stop();
+		}
+	});
+
+	/** A name the server gave a file on disk: a UUID and nothing else (S5). */
+	const UUID_ALONE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+	it('14. refuses the 21st file that is not an image on a card 409, removing its file and the folder it made; an image is still taken', async () => {
+		// Rows alone, as card 2761's case 3 seeds its images.
+		for (let i = 0; i < 20; i++) makeAttachment(card, { name: `paper-${i}.pdf`, mimeType: 'application/pdf', file: false });
+
+		const refused = await upload(card, pdf());
+
+		expect([refused.status, refused.body.message]).toEqual([409, 'This card already has 20 files other than images']);
+		expect(rows()).toHaveLength(20);
+		expect(entries()).toEqual([]);
+		expect(fileIn(card.id)).toBe(false);
+
+		expect((await upload(card, image(png()))).status).toBe(200);
+		expect(rows()).toHaveLength(21);
+	});
+
+	it('15. cleans a name of its folders, its unprintable characters and <>, cuts its stem to 100 characters and keeps its extension as sent; on disk <uuid> alone', async () => {
+		const stem = '​ab <x>' + 'a'.repeat(295);
+		const kept = `abx${'a'.repeat(97)}.PDF`;
+		makeWebhook(A.board);
+
+		let res!: Awaited<ReturnType<typeof upload>>;
+		const said = await told(async () => {
+			res = await upload(card, new File(['%PDF-1.4'], `..\\dir/‮${stem}.PDF`, { type: 'application/pdf' }));
+		});
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		const [row] = rows();
+		expect(row.originalName).toBe(kept);
+		expect(row.filename).toMatch(UUID_ALONE);
+		expect(readFileSync(at(card.id, row.filename), 'utf8')).toBe('%PDF-1.4');
+		expect(said.entries.map((entry) => entry.detail)).toEqual([`Attached "${kept}" to "Has files"`]);
+	});
+
+	it.each([
+		{ sent: 'README', stored: /^README$/ },
+		{ sent: '<>?.zip', stored: /^file-\d{4}-\d{2}-\d{2}-\d{6}\.zip$/ },
+		{ sent: '.env', stored: /^file-\d{4}-\d{2}-\d{2}-\d{6}\.env$/ }
+	])('16. names a file sent as $sent by what is left of it, or by the time with its extension; on disk <uuid> alone', async ({ sent, stored }) => {
+		const res = await upload(card, new File(['x'], sent, { type: 'application/octet-stream' }));
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		const [row] = rows();
+		expect(row.originalName).toMatch(stored);
+		expect(row.filename).toMatch(UUID_ALONE);
+	});
+
+	it.each([
+		{ declared: 'TEXT/Plain; charset=utf-8', stored: 'text/plain' },
+		{ declared: '', stored: 'application/octet-stream' }
+	])('17. stores a file declared as "$declared" as $stored', async ({ declared, stored }) => {
+		const res = await upload(card, new File(['x'], 'notes.txt', { type: declared }));
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(rows().map((row) => row.mimeType)).toEqual([stored]);
+	});
+
+	it('18. is 401 for a PDF whose session ended while the form is read, with the hour taken before it, nothing charged to the day and nothing written', async () => {
+		const token = makeSession(owner);
+		const real = Request.prototype.formData;
+		let ended = false;
+		vi.spyOn(Request.prototype, 'formData').mockImplementation(function (this: Request) {
+			if (!ended) {
+				db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
+				ended = true;
+			}
+			return real.call(this);
+		});
+
+		const res = await api('POST', `/api/cards/${card.id}/attachments`, { user: owner, body: formOf(['file', pdf()]), credential: sessionCredential(token) });
+
+		expect(ended).toBe(true);
+		expect([res.status, res.body.message]).toEqual([401, 'Not authenticated']);
+		expect(allowances()).toEqual({ hour: 1, day: 0 });
+		expect(rows()).toEqual([]);
+		expect(entries()).toEqual([]);
+		expect(fileIn(card.id)).toBe(false);
+	});
+
+	// ─── The code review (2026-11-18) ───────────────────────────────────────
+
+	const FORM_TYPE = 'multipart/form-data; boundary=----dumpfire';
+	const FAILED_READS: { read: string; send: () => Promise<{ status: number }>; charged: number }[] = [
+		{ read: 'a multipart body that is no form', send: () => throughGate(new TextEncoder().encode('not a form at all'), FORM_TYPE), charged: 17 },
+		{ read: 'a body whose sender goes away part way', send: () => throughGate(cutOff(), FORM_TYPE), charged: '------dumpfire\r\n'.length },
+		{ read: 'a body sent in chunks past 26 MB', send: () => throughGate(chunked(26 * M + 1), FORM_TYPE), charged: 26 * M + 1 }
+	];
+
+	it.each(FAILED_READS)('CS1. charges the day what the gate counted of a read that failed, and answers the failure: $read', async ({ send, charged }) => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+
+		const res = await send();
+
+		expect(res.status).toBeGreaterThanOrEqual(400);
+		expect(allowances()).toEqual({ hour: 1, day: charged });
+		expect(places()).toEqual({ own: 0, server: 0 });
+		expect(rows()).toEqual([]);
+	});
+
+	it("CS2. stops a read that has not finished within its deadline, the gate's count kept, and fails it with BodyReadTimedOut", async () => {
+		let sent = false;
+		// Ten bytes, and then nothing, as a sender that trickles its body.
+		const stalled = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (sent) return;
+				sent = true;
+				controller.enqueue(new Uint8Array(10));
+			}
+		});
+		const held = heldToLimit(
+			new Request('http://localhost/', { method: 'POST', body: stalled, duplex: 'half', headers: { 'content-type': 'application/octet-stream' } } as RequestInit),
+			1000
+		);
+
+		await expect(readBodyWithin(held, 50, () => held.arrayBuffer())).rejects.toBeInstanceOf(BodyReadTimedOut);
+		expect(bytesCounted(held)).toBe(10);
+		expect(UPLOAD_READ_DEADLINE_MS).toBe(120_000);
+	});
+
+	it('CS2. answers a form that has not arrived after 120 seconds 408 with Connection: close, giving back its place and charging what was read', async () => {
+		let sent = false;
+		let asked!: () => void;
+		const wasAsked = new Promise<void>((resolve) => (asked = resolve));
+		const stalled = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (sent) return;
+				sent = true;
+				controller.enqueue(new TextEncoder().encode('------dumpfire\r\n'));
+				asked();
+			}
+		});
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+		const answer = throughGate(stalled, FORM_TYPE);
+		await wasAsked;
+		await vi.advanceTimersByTimeAsync(UPLOAD_READ_DEADLINE_MS);
+		const res = await answer;
+
+		expect([res.status, res.body.message, res.headers.get('connection')]).toEqual([408, 'The upload did not arrive within 120 seconds. Nothing was written.', 'close']);
+		expect(places()).toEqual({ own: 0, server: 0 });
+		expect(allowances()).toEqual({ hour: 1, day: '------dumpfire\r\n'.length });
+	});
+
+	it("CS3. closes the connection on every refusal before the form is read: the session, the id, the card, its access, and the gate's 413", async () => {
+		const viewer = makeUser({ username: 'viewer' });
+		db.insert(boardMembers).values({ boardId: A.board.id, userId: viewer.id, role: 'viewer' }).run();
+		const send = (path: string, user: SessionUser | null) => api('POST', path, { user, body: formOf(['file', pdf()]) });
+
+		for (const [what, res, status] of [
+			['no session', await send(`/api/cards/${card.id}/attachments`, null), 401],
+			['an id that is no id', await send('/api/cards/abc/attachments', owner), 400],
+			['no such card', await send(`/api/cards/${card.id + 1000}/attachments`, owner), 404],
+			['view access only', await send(`/api/cards/${card.id}/attachments`, viewer), 403]
+		] as const) {
+			expect([res.status, res.headers.get('connection')], what).toEqual([status, 'close']);
+		}
+
+		const declared = await gate('POST', `/api/cards/${card.id}/attachments`, {
+			headers: {
+				cookie: `${SESSION_COOKIE_NAME}=${makeSession(owner)}`,
+				...FROM_THE_PAGE,
+				origin: 'http://localhost',
+				accept: 'application/json',
+				'content-type': FORM_TYPE,
+				'content-length': String(26 * M + 1)
+			},
+			body: inOne(new Uint8Array(10))
+		});
+		expect([declared.status, declared.headers.get('connection')]).toEqual([413, 'close']);
+		expect(allowances()).toEqual({ hour: 0, day: 0 });
 	});
 });
 
@@ -1174,7 +1751,8 @@ describe('serving an attachment', () => {
 	});
 
 	it('encodes the file name, which is the uploader\'s, instead of writing it into the header', async () => {
-		const res = await served('résumé "final"\r\nSet-Cookie: x=1 (v2).pdf', 'application/pdf');
+		// A row holding the raw name, as one stored before card 2910 does: an upload's name is cleaned now (E4).
+		const res = await stored('résumé "final"\r\nSet-Cookie: x=1 (v2).pdf', 'application/pdf');
 
 		// A quote or a line break in it used to end the value and start another header.
 		expect(disposition(res)).toBe(

@@ -55,6 +55,8 @@ const TEST_FILES = [
 	'account-disable.test.ts',
 	'account-two-step.test.ts',
 	'activity-twins.test.ts',
+	// Card 2910: the name and the type a file that is not an image is stored with.
+	'attachment-names.test.ts',
 	'all-tasks.test.ts',
 	'all-tasks-page.test.ts',
 	'access-every-route.test.ts',

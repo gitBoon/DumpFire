@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.133
+version: 1.134
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2910
+  - upload-limits
   - card-2671
   - account-disable
   - card-2719
@@ -2951,7 +2953,7 @@ How the queue behaves:
 - **A database error is not caught and carried on from**, unless the part that failed is its own nested `inTransaction`.
 - **No raw `sqlite.transaction` under the helper.**
 - **Slow work comes first.** Hashing a password takes about a fifth of a second, on a worker thread, and is awaited, which a transaction cannot do, so the hash is made before the transaction starts. See [Work Kept Off the Server's Thread](#work-kept-off-the-servers-thread).
-- **The check is made where the write is.** Every route that reads a body reads it first and calls its guard after it, and nothing is awaited between a guard and the write it allows. The handlers card 2115 moved call their guard inside the transaction that writes; a `DELETE` that reads no body checks and writes with no transaction, which is as safe, because the database calls are synchronous and nothing is awaited between the two. `tests/check-at-the-write.test.ts` reads every handler under `src/routes/api` and fails on any call before the body but those that read no row, and on a handler whose text reads a body where it cannot find the read. The attachment upload is the one handler that also looks before its body, so that a caller with no access is not sent 25 MB, and it reads the row again inside the transaction. That is also why an invite cannot be used twice and set-up cannot create two superadmins.
+- **The check is made where the write is.** Every route that reads a body reads it first and calls its guard after it, and nothing is awaited between a guard and the write it allows. The handlers card 2115 moved call their guard inside the transaction that writes; a `DELETE` that reads no body checks and writes with no transaction, which is as safe, because the database calls are synchronous and nothing is awaited between the two. `tests/check-at-the-write.test.ts` reads every handler under `src/routes/api` and fails on any call before the body but those that read no row, and on a handler whose text reads a body where it cannot find the read. The attachment upload is the one handler that also looks before its body, so that a caller with no access is not sent 25 MB, and it reads the row again inside the transaction. Before its body it also takes a place in flight (3 an account, 6 the server, given back in a `finally` and lapsing after 10 minutes) and counts the upload against the account's hour, both in memory and reading no row; after it, it charges the day what was read inside a `writeAs`, for every file (card 2910, both the card window's upload and a key's). That is also why an invite cannot be used twice and set-up cannot create two superadmins.
 
 Two things open their own transactions and do not use the helper, because they switch foreign keys off around them: the migration runner, and the restore behind Import Backup. The import of the old JSON export was a third; it was removed on 2026-10-14 (card 2157), and Import Backup takes a `.db` backup only.
 

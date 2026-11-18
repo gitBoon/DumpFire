@@ -493,8 +493,10 @@ export const CHECKLIST: readonly IsoItem[] = [
 		]
 	},
 	organisational('A.8.6', 'annex-a', 'Capacity management', {
-		how: 'request body and upload limits.',
-		evidence: [{ path: 'src/lib/server/body-limits.ts' }, { path: 'src/lib/server/upload-allowance.ts' }]
+		how:
+			'request body limits, and every upload\'s limits: for each account 30 an hour, 100 MB a day and 3 at once, 6 at once for the server, ' +
+			'and for each card 20 images and 20 other files.',
+		evidence: [{ path: 'src/lib/server/body-limits.ts' }, { path: 'src/lib/server/upload-allowance.ts' }, { path: 'src/lib/server/card-attachments.ts' }]
 	}),
 	{
 		ref: 'A.8.7',
@@ -506,15 +508,17 @@ export const CHECKLIST: readonly IsoItem[] = [
 		how:
 			'Every image attached, through the API or the card window, is checked byte by byte by allow-list: the type its bytes are, ' +
 			"metadata taken out but a JPEG's orientation, animation refused, data after a PNG's, GIF's or WebP's end refused and after a JPEG's " +
-			'image cut off; capped at 20 a card and 30 uploads an hour ' +
-			'and 100 MB a day for each account. The images stored before were checked once in the same way (card 2761). Every other file ' +
-			'is stored as sent and only ever served as a download; every attachment is served with nosniff and a sandbox.',
+			'image cut off; capped at 20 images a card; every file, image or not, counts against each account\'s 30 uploads an hour ' +
+			'and 100 MB a day (card 2910). The images stored before were checked once in the same way (card 2761). Every other file ' +
+			'has its bytes stored as sent, its name cleaned and its type normalised, and is only ever served as a download; ' +
+			'every attachment is served with nosniff and a sandbox.',
 		evidence: [
 			{ path: 'src/lib/server/image-check.ts', symbol: 'checkImage' },
 			{ path: 'tests/image-check.test.ts' },
 			{ path: 'src/lib/server/gate-answers.ts', symbol: 'nosniff' },
 			{ path: 'src/routes/api/cards/[id]/attachments/+server.ts' },
 			{ path: 'src/lib/server/image-recheck.ts', symbol: 'recheckStoredImages' },
+			{ path: 'src/lib/server/attachment-names.ts', symbol: 'fileName' },
 			{ path: 'tests/uploads.test.ts' }
 		],
 		owner: 'DumpFire',

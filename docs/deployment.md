@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.132
+version: 1.134
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2910
+  - upload-limits
   - card-2671
   - migration-0072
   - account-disable
@@ -70,7 +72,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Docker deployment, the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Docker deployment, the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -6696,7 +6698,8 @@ plan is `docs/planning/card-2761-web-upload-checks.md`.
   were, metadata included: the one-off check below refuses them, as it refuses one that is not
   the image its type names or is malformed, and changes each to a plain download, never shown
   in the browser again. Nothing of such a file is rewritten.
-- PDFs, documents, spreadsheets and every other file are attached as before.
+- PDFs, documents, spreadsheets and every other file are attached as before (until card 2910,
+  which counts every file: see [its release](#the-release-that-counts-every-upload-card-2910)).
 
 **Release rules.**
 
@@ -7324,6 +7327,82 @@ is a participant of an open decision):
 | D11 | Run the two commands above, then sign in on the older image as one of the accounts listed with their old password | The wrong-password answer | Signed in |
 | D12 | `GET /api/v1/openapi.json`; Admin → ISO 27001 checklist, A.5.16 and A.5.18 | `info.version` `1.13.0`, its note first, "breaking"; A.5.16 and A.5.18 met, 2671 no longer listed | 1.12.x, or 2671 still listed |
 
+### The Release That Counts Every Upload (Card 2910)
+
+**Card 2910 (card 2761's F1, with that plan review's S13 and S15), built 2026-11-18.** Until
+this release only an image counted against a person's uploads: a PDF, a document or a zip
+dropped onto a card took nothing from any allowance and met no limit on its card, so one
+editor, or one stolen session, could fill the server's disk 25 MB at a time. From this release
+**every file counts**, whichever way it is sent. How it works is in
+[Upload Limits For Every File](authentication-security.md#upload-limits-for-every-file-card-2910);
+the plan is `docs/planning/card-2910-upload-limits.md`.
+
+**What people notice.**
+
+- Each person has **30 uploads an hour and 100 MB a day, every file together**, shared with
+  their API keys. The 31st file in an hour, or one that would pass 100 MB in a day, is refused
+  with the wait, in the same words for an image and any other file ("An account can upload at
+  most 30 files an hour. Nothing was read or written. Try again in …").
+- A person can have **3 uploads going at once**, and the server 6 among everyone ("Too many
+  uploads are in progress. … Try again when the others have finished."). The card window sends
+  a drop's files one at a time, so an ordinary drop never meets it.
+- A card holds **20 files that are not images**, beside its 20 images: the 21st PDF is refused
+  ("This card already has 20 files other than images"). A card already holding more keeps them.
+- A file's shown name is cleaned (odd and invisible characters and `<>:"|?*` out) and cut to
+  100 characters, its extension kept; a file named `.env` is shown as `file-<date>-<time>.env`.
+  Its type is kept only when it is a plain one. On disk a file that is not an image is named
+  `<uuid>` alone. Files attached before keep their names and their names on disk.
+- An over-limit upload is refused before the server reads it, so the refusal comes at once
+  rather than after the file has been sent.
+- Nothing changes for an ordinary day's use.
+
+**Release rules.**
+
+- **Nothing to migrate**, no setting, no new environment variable: the counts are in memory, as
+  the image allowances were, and a restart empties them; the per-card limit is counted from the
+  stored rows. The OpenAPI document goes to `1.13.1`, a patch: no `/api/v1` operation, status,
+  field or schema changes (its dated note lists what a key sees differently).
+- **Memory, not connections.** A 25 MB upload costs the server roughly 75 to 100 MB of memory
+  while it is handled, so the 3 places an account and 6 the server hold uploads to about 300 MB
+  for one person and 600 MB for the server. A refusal before the body bounds what the server
+  reads, not the connection: the unread body still arrives on the socket. So every refusal
+  before the body (no session, no such card, no access, a key's wrong type, a declared length
+  over the limit, the places and the hour) is sent with `Connection: close`, and Node ends the
+  connection after its answer rather than reading the rest into it. Behind a proxy, whether the
+  browser stops sending at once depends on the proxy passing that on: check it by hand on the
+  production path (H8).
+- **A deadline on the body.** An upload's body is given 120 seconds to arrive once its read
+  begins; past it the read is stopped, the upload answered `408` ("The upload did not arrive
+  within 120 seconds. Nothing was written.") with `Connection: close`, its place given back and
+  what was read charged to the day. Without it a few accounts sending their bodies a byte at a
+  time could hold the server's six places for Node's whole `server.requestTimeout` of 300 seconds
+  (see [How Large an Import Can Be](#how-large-an-import-can-be)), again and again. Every place
+  also lapses after 10 minutes whatever happens to its upload. A person on a very slow
+  connection uploading a large file may meet the `408`: a 25 MB file needs about 1.7 Mbit/s.
+- **A failed read is charged.** A read that fails part way, is cut off past the size limit or
+  runs out of time is charged what was read to the person's day, as a finished one is.
+- **The log.** The first refusal of a person's hour or day, and the first refusal for want of a
+  place in 15 minutes, writes one `[WARN] [UPLOADS]` line naming the account (or the server); no
+  mail. A run of such lines for one account is someone pushing the limits.
+- **Not covered.** Nothing refuses an upload when the disk is nearly full: card 2920. Images held
+  inline in text as `data:` addresses are outside every upload limit: card 2921.
+
+**Hands-on checks** (the plan's section 6; on the development server, signed in as an editor of a
+test board and, for H6, a second editor account, a card open on its Files tab; the order
+matters: the restart comes before the hour is spent, and the card's limit is checked on an
+account whose hour is not):
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | Drop a PDF and a `.docx` | Both attached, saved to disk when clicked | Refused |
+| H2 | Drop a file named with 150 characters and `.pdf` | Attached; its name shown cut to 100 characters, still ending `.pdf` | Refused, or the extension lost |
+| H3 | Restart the dev server | The counts start empty (in memory) | |
+| H4 | Upload 30 files in an hour (mix PDFs and images, and the wrapper's `add-attachment`), then one more PDF | The 31st refused: "An account can upload at most 30 files an hour. Nothing was read or written. Try again in …" | Attached |
+| H5 | Admin → Audit → Live Console after H4 | One `[WARN] [UPLOADS]` line naming the account; a further refused upload adds none | No line, or one a refusal |
+| H6 | As the second editor, on a card with 20 PDFs, drop another PDF, then an image | PDF refused "This card already has 20 files other than images"; image attached | PDF attached |
+| H7 | Admin → ISO 27001 checklist, A.8.6 and A.8.7 | Both describe every upload's limits; A.8.7 still met, and says other files' names are cleaned and types normalised | Images only |
+| H8 | On the production path (behind its proxy or tunnel), with the account's hour spent, drop a 20 MB file | The card shows the hour's words promptly, well before a 20 MB upload would finish; the Network tab shows `429` with `Connection: close` | The upload runs to the end before the refusal, or a proxy page in place of the words |
+
 ## Changing the Schema
 
 The structure of the database is changed in one way only:
@@ -7570,7 +7649,7 @@ So the server needs memory for the whole backup and, at the same moment, for the
 
 Two limits outside DumpFire end an upload before it is read:
 
-- **The server's own time limit for a request.** Node gives a request five minutes, its `server.requestTimeout` default of 300 seconds, to arrive in full, and the image does not change it. An upload that takes longer is cut off and the import never starts. Behind nginx, which reads the whole upload before it passes it on, the server is handed it in a moment, whatever the caller's connection. With no proxy, or behind one that passes the upload on as it arrives (Cloudflare Tunnel, Caddy, nginx with `proxy_request_buffering off`), the server receives it at the caller's speed, and an import that takes more than five minutes to upload cannot be done that way: upload it from somewhere closer to the server.
+- **The server's own time limit for a request.** Node gives a request five minutes, its `server.requestTimeout` default of 300 seconds, to arrive in full, and the image does not change it. An upload that takes longer is cut off and the import never starts. Behind nginx, which reads the whole upload before it passes it on, the server is handed it in a moment, whatever the caller's connection. With no proxy, or behind one that passes the upload on as it arrives (Cloudflare Tunnel, Caddy, nginx with `proxy_request_buffering off`), the server receives it at the caller's speed, and an import that takes more than five minutes to upload cannot be done that way: upload it from somewhere closer to the server. A card's upload has a shorter limit of its own: its body is given 120 seconds once its read begins (card 2910's code review), so a slow sender holds its place among the uploads in flight for at most that.
 - **Cloudflare's own limit on a request's body.** Behind Cloudflare, a Cloudflare Tunnel included, Cloudflare refuses a request whose body is over its plan's limit before it reaches the server: 100 MB on the Free and Pro plans. A backup larger than that cannot be imported through it; import it through an address that does not pass through Cloudflare.
 
 Both files are written beside the database, which in the image is `/app/data`: **on the volume** (card 2776). They were written to the working directory, `/app`, inside the container, which the server, running as `node`, cannot write. They need that much free space on the volume. `dumpfire.db.restore-temp` is deleted when the import ends; one left by an import that was stopped (the server out of memory) has no `.db` at its end, so the start-up guard never takes it for a database hidden on the volume, and it can be removed. `.pre-restore-safety.json` is not: it stays until the next import replaces it, now across a container being recreated, and it holds everything the database held, password hashes and live sessions included, but for the key remembered browsers are signed with: as much as the database file beside it, and it rides in any copy of the volume. Once the import is known to be good, remove it:
@@ -7664,4 +7743,10 @@ The external API `/api/v1/*` is rate-limited, in memory, per process:
   **100 MB a day** (`attachment-bytes:user:<id>`), charged the bytes actually read, before
   they are checked. Each is `429` with `Retry-After`; one taken stays taken when a later step
   refuses the upload. They are in memory too: a restart starts them again. Each card holds
-  at most 20 images (`409`).
+  at most 20 images (`409`). Since card 2910 both count **every file** the user uploads,
+  through a key or the card window, and a place in flight is taken before either, before the
+  body is read: 3 for the user and 6 for the server, `429` with `Retry-After: 5`, each given
+  back when its upload ends and lapsing after 10 minutes. Every refusal given before the body is
+  read closes the connection (`Connection: close`), and the body is given 120 seconds to arrive
+  (`408`). See
+  [The Release That Counts Every Upload](#the-release-that-counts-every-upload-card-2910).

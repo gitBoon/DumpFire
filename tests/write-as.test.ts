@@ -774,8 +774,9 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 			expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
 		}
 		// The upload asks before it reads the file, as the gate read the
-		// caller, and writes the file; the writeAs then refuses, and the file
-		// is removed again (decision 7). Only the attachment's own is left.
+		// caller; the writeAs that charges what was read then refuses, before
+		// the file is written (decision 7; card 2910). Only the attachment's
+		// own is left.
 		const uploaded = await api('POST', `/api/cards/${s.card.id}/attachments`, { user: s.owner, credential, body: upload() });
 		expect(uploaded.status).toBe(401);
 		expect(uploaded.body).toEqual({ message: 'Not authenticated' });

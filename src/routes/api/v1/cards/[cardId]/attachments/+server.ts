@@ -1,11 +1,18 @@
-import { error } from '@sveltejs/kit';
+import { error, isHttpError, type HttpError } from '@sveltejs/kit';
 import { randomUUID } from 'crypto';
 import { json } from '$lib/server/v1-json';
+import { BodyReadTimedOut, bytesCounted, readBodyWithin } from '$lib/server/body-limits';
 import { attachImage, listAttachments } from '$lib/server/card-attachments';
 import { checkImage, imageTypeOf } from '$lib/server/image-check';
 import { pathId } from '$lib/server/request-body';
 import { requireCard, requireUser } from '$lib/server/route-guards';
-import { takeUploadBytes, takeUploadCount, UploadAllowanceRefused } from '$lib/server/upload-allowance';
+import {
+	takeUploadBytes,
+	takeUploadCount,
+	takeUploadPlace,
+	UPLOAD_READ_DEADLINE_MS,
+	UploadAllowanceRefused
+} from '$lib/server/upload-allowance';
 import { removeUploadFile, writeUploadFile } from '$lib/server/uploads';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
@@ -23,12 +30,16 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	return json(listAttachments(locals.user, { cardId }, {}));
 };
 
-/** A refused allowance, answered as the gate answers its own 429: the wait in the body and in `Retry-After`. */
-function tooMany(refused: UploadAllowanceRefused): Response {
-	return json(
-		{ message: refused.message, retryAfterSecs: refused.retryAfterSecs },
-		{ status: 429, headers: { 'Retry-After': String(refused.retryAfterSecs) } }
-	);
+/**
+ * A refused allowance, answered as the gate answers its own 429: the wait in
+ * the body and in `Retry-After`. A refusal before the body is read closes the
+ * connection (`beforeBody`, card 2910, the review's S7), so that the body it
+ * did not read is not drained into a connection kept alive.
+ */
+function tooMany(refused: UploadAllowanceRefused, opts: { beforeBody?: boolean } = {}): Response {
+	const headers: Record<string, string> = { 'Retry-After': String(refused.retryAfterSecs) };
+	if (opts.beforeBody) headers.Connection = 'close';
+	return json({ message: refused.message, retryAfterSecs: refused.retryAfterSecs }, { status: 429, headers });
 }
 
 /**
@@ -44,68 +55,144 @@ function tooMany(refused: UploadAllowanceRefused): Response {
  * 2754)"). In order:
  *
  *   1. the card (404) and edit access to its board (403);
- *   2. the declared type, one of the four (415): nothing is read;
- *   3. the upload count, 30 an hour for the key's user (429 with
- *      `Retry-After`): nothing is read;
- *   4. the body read (413 past 5 MB, from the gate's count): nothing is
- *      charged;
- *   5. the bytes read charged to the day's 100 MB for the key's user (429),
+ *   2. the declared type, one of the four (415): nothing is read. Every
+ *      refusal before the body is read, these and 3 and 4, closes the
+ *      connection (card 2910's code review, CS3);
+ *   3. a place in flight, the key's user's (3) and then the server's (6),
+ *      shared with the card window (429, `Retry-After: 5`, `Connection:
+ *      close`): nothing is read or counted (card 2910, D6). The `try` whose
+ *      `finally` gives it back opens on the next line, and that `finally` is
+ *      the only release (the review's S1);
+ *   4. the upload count, 30 an hour for the key's user, every file the user
+ *      uploads either way counted (429 with `Retry-After` and `Connection:
+ *      close`): nothing is read;
+ *   5. the body read, given 120 seconds to arrive (408, `Connection: close`,
+ *      CS2), and 413 past 5 MB from the gate's count. A read that fails, for
+ *      any of these or because the caller went away, is charged what the
+ *      gate counted to the day before its failure is answered (CS1);
+ *   6. the bytes read charged to the day's 100 MB for the key's user (429),
  *      in a writeAs, which asks again whether the key is still open (401).
  *      Charged before the check, so a body the check refuses still costs
  *      what was sent;
- *   6. the bytes checked and their metadata taken out (`checkImage`): not
+ *   7. the bytes checked and their metadata taken out (`checkImage`): not
  *      the declared type 415, not a valid image of it 400;
- *   7. the file written as `<uuid>.<extension>`, and its row written by
+ *   8. the file written as `<uuid>.<extension>`, and its row written by
  *      `attachImage` in a writeAs that asks for the key again (401), the card
  *      and the access again (404, 403), and room for one more image (409).
  *
- * A refusal at 7 removes the file, and the card's folder if this upload made
- * it. An allowance taken at 3 or 5 stays taken whatever is refused after it.
+ * A refusal at 8 removes the file, and the card's folder if this upload made
+ * it. An allowance taken at 4 or 6 stays taken whatever is refused after it;
+ * the place of 3 is given back however the upload ends.
  */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
-	requireUser(locals.user);
-
-	const cardId = pathId(params.cardId, 'card');
-	requireCard(locals.user, cardId, 'edit');
-	const declared = imageTypeOf(request.headers.get('content-type'));
-	if (declared === null) {
-		throw error(415, 'Send the image as the body, with Content-Type image/png, image/jpeg, image/gif or image/webp');
-	}
+	// Whether the body has begun to be read: every refusal before it closes the
+	// connection (card 2910's code review, CS3).
+	let reading = false;
 	try {
-		takeUploadCount(locals.user);
+		requireUser(locals.user);
+
+		const cardId = pathId(params.cardId, 'card');
+		requireCard(locals.user, cardId, 'edit');
+		const declared = imageTypeOf(request.headers.get('content-type'));
+		if (declared === null) {
+			throw error(415, 'Send the image as the body, with Content-Type image/png, image/jpeg, image/gif or image/webp');
+		}
+
+		const release = takeUploadPlace(locals.user);
+		try {
+			takeUploadCount(locals.user);
+
+			reading = true;
+			let bytes: Uint8Array;
+			try {
+				// Given UPLOAD_READ_DEADLINE_MS to arrive (CS2).
+				bytes = new Uint8Array(await readBodyWithin(request, UPLOAD_READ_DEADLINE_MS, () => request.arrayBuffer()));
+			} catch (failed) {
+				// A read that failed, was cut off or ran out of time still cost what
+				// it read: the gate's count is charged to the day (CS1), unless the
+				// key ended or the day is spent, and the read's own failure is the
+				// answer.
+				const counted = bytesCounted(request);
+				if (counted) {
+					try {
+						writeAs(locals, (caller) => takeUploadBytes(caller, counted));
+					} catch {
+						// Nothing charged: the answer is the read's.
+					}
+				}
+				// The words written out, as the document quotes them: UPLOAD_READ_DEADLINE_MS is 120 seconds.
+				if (failed instanceof BodyReadTimedOut) {
+					return json({ message: 'The upload did not arrive within 120 seconds. Nothing was written.' }, { status: 408, headers: { Connection: 'close' } });
+				}
+				throw failed;
+			}
+			// Charged with every byte read, before the check: a body refused 415 or
+			// 400 below was still sent, and a body the check strips is charged its
+			// size as sent, not as kept. The body is the image: what was read.
+			try {
+				writeAs(locals, (caller) => takeUploadBytes(caller, bytes.byteLength));
+			} catch (refused) {
+				if (refused instanceof UploadAllowanceRefused) return tooMany(refused);
+				throw refused;
+			}
+			const checked = checkImage(bytes, declared);
+			if (!checked.ok) throw checked.status === 415 ? error(415, checked.message) : error(400, checked.message);
+
+			const name = url.searchParams.get('name');
+			const filename = `${randomUUID()}.${checked.extension}`;
+			const written = await writeUploadFile(cardId, filename, checked.bytes);
+			try {
+				const attachment = writeAs(locals, (caller) =>
+					attachImage(
+						caller,
+						{ cardId },
+						{ filename, name, mimeType: checked.mimeType, extension: checked.extension, sizeBytes: checked.bytes.byteLength },
+						{ source: 'api' }
+					)
+				);
+				return json(attachment, { status: 201 });
+			} catch (err) {
+				await removeUploadFile(written);
+				throw err;
+			}
+		} finally {
+			release();
+		}
 	} catch (refused) {
-		if (refused instanceof UploadAllowanceRefused) return tooMany(refused);
+		// Every refusal before the body is read closes the connection: the key's
+		// user, the id, the card, the type, the place and the hour (CS3). The
+		// day's is answered above, after the read, and anything after it is
+		// thrown on.
+		if (!reading) {
+			if (refused instanceof UploadAllowanceRefused) return tooMany(refused, { beforeBody: true });
+			if (isHttpError(refused)) return closing(refused);
+		}
 		throw refused;
-	}
-
-	const bytes = new Uint8Array(await request.arrayBuffer());
-	// Charged with every byte read, before the check: a body refused 415 or
-	// 400 below was still sent, and a body the check strips is charged its
-	// size as sent, not as kept.
-	try {
-		writeAs(locals, (caller) => takeUploadBytes(caller, bytes.byteLength));
-	} catch (refused) {
-		if (refused instanceof UploadAllowanceRefused) return tooMany(refused);
-		throw refused;
-	}
-	const checked = checkImage(bytes, declared);
-	if (!checked.ok) throw checked.status === 415 ? error(415, checked.message) : error(400, checked.message);
-
-	const name = url.searchParams.get('name');
-	const filename = `${randomUUID()}.${checked.extension}`;
-	const written = await writeUploadFile(cardId, filename, checked.bytes);
-	try {
-		const attachment = writeAs(locals, (caller) =>
-			attachImage(
-				caller,
-				{ cardId },
-				{ filename, name, mimeType: checked.mimeType, extension: checked.extension, sizeBytes: checked.bytes.byteLength },
-				{ source: 'api' }
-			)
-		);
-		return json(attachment, { status: 201 });
-	} catch (err) {
-		await removeUploadFile(written);
-		throw err;
 	}
 };
+
+/**
+ * A guard's refusal before the body is read, answered as it was thrown and
+ * with `Connection: close` (card 2910's code review, CS3). Each status is
+ * written out, so that tests/openapi-document.test.ts reads what this
+ * operation can answer: the key's user (401), the id (400), the card (404),
+ * its access (403) and the type (415). Any other is thrown on.
+ */
+function closing(refused: HttpError): Response {
+	const headers = { Connection: 'close' };
+	const message = refused.body.message;
+	switch (refused.status) {
+		case 400:
+			return json({ message }, { status: 400, headers });
+		case 401:
+			return json({ message }, { status: 401, headers });
+		case 403:
+			return json({ message }, { status: 403, headers });
+		case 404:
+			return json({ message }, { status: 404, headers });
+		case 415:
+			return json({ message }, { status: 415, headers });
+		default:
+			throw refused;
+	}
+}

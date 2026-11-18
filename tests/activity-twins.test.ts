@@ -2973,7 +2973,8 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	// window's upload's twin through `attachImage`, which writes the same row, entry and event (`TWINS`); it deletes
 	// nothing, so the delete has no twin. The web list reads the rows itself, with their names on disk. Card 2761: the
 	// card window's upload of a file declared as an image goes through `attachImage` too, as the key's does; any other
-	// file through `attachFile`, as before.
+	// file through `attachFile`, as before. Card 2910: that file's name cleaned (`fileName`), its type normalised
+	// (`storedType`), and its size the bytes read.
 	'src/routes/api/cards/[id]/attachments/+server.ts POST': [
 		{
 			service: 'attachImage',
@@ -2995,7 +2996,7 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 			args: [
 				code('caller'),
 				{ cardId: code('cardId') },
-				{ filename: code('filename'), originalName: code('file.name'), mimeType: code("file.type || 'application/octet-stream'"), sizeBytes: code('file.size') },
+				{ filename: code('filename'), originalName: code('name'), mimeType: code('type'), sizeBytes: code('bytes.byteLength') },
 				{ source: 'ui' }
 			]
 		}

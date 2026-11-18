@@ -119,7 +119,11 @@ const READER_METHODS = ['json', 'formData', 'arrayBuffer', 'text', 'blob', 'byte
  * other function given the request is taken for a read and fails, by name, so
  * that a new helper cannot read the body unseen.
  */
-const BODY_READERS = ['readBody'];
+const BODY_READERS = [
+	'readBody',
+	// Card 2910's code review (CS2): an upload's read, given its deadline; the read it is handed is the request's own.
+	'readBodyWithin'
+];
 
 /**
  * The handlers that ask something else before their body, by file and method,
@@ -130,13 +134,15 @@ const ALLOWED: Record<string, string> = {
 	'src/routes/api/cards/[id]/attachments/+server.ts POST':
 		'The upload asks before it reads 25 MB, so that a caller with no access is not sent it, and asks again with the row inside ' +
 		'the transaction that attaches it (docs/authentication-security.md, "An upload is the one request that checks twice"); ' +
-		'and, for an image, counts the upload after the form is read, in a writeAs (card 2761, D2: the type is inside the form).',
+		'and, for every file, takes a place in flight and counts the upload against the account\'s hour in memory before the form ' +
+		'is read (takeUploadPlace and takeUploadCount, 429 answered by tooMany, card 2910), so that a caller who would be refused ' +
+		'is not sent the form. The place and the count read no row.',
 	'src/routes/api/v1/cards/[cardId]/attachments/+server.ts POST':
 		"A key's image upload (card 2754), the card window's upload's twin: it asks for the card and edit access before it reads " +
 		'5 MB, as the card window does, and again with the row inside the transaction that attaches it; it reads the declared type ' +
-		'from the request\'s header (415, imageTypeOf), and counts the upload against the key\'s user\'s hour in memory ' +
-		'(takeUploadCount, 429 answered by tooMany), so that a caller who would be refused is not sent the body. The type and the ' +
-		'count read no row.',
+		'from the request\'s header (415, imageTypeOf), takes a place in flight (takeUploadPlace, card 2910) and counts the upload ' +
+		'against the key\'s user\'s hour in memory (takeUploadCount, 429 answered by tooMany), so that a caller who would be refused ' +
+		'is not sent the body. The type, the place and the count read no row.',
 	'src/routes/api/requests/+server.ts POST':
 		'The public request form: the form token and the rate limits are asked before the body. They read no row.',
 	'src/routes/api/requests/[id]/confirm/+server.ts POST':
@@ -575,21 +581,33 @@ const STILL_CALLER_NOW: Record<string, { reason: string; guards: RegExp[] }> = {
  */
 const QUICK_CHECKS = ['requireUser', 'requireSuperadmin', 'requireAdmin', 'refuseOwnAccount'];
 
-/** And, by handler, a guard that reads a row and is asked before the body there too, with why. */
-const QUICK_CHECKS_IN: Record<string, { guards: string[]; reason: string }> = {
+/**
+ * And, by handler, a guard that reads a row and is asked before the body there too, with why. `binds` names a guard
+ * of them that answers something the handler keeps, and the one name it may bind it to, as a const, from
+ * `locals.user` alone (card 2910): what it answers decides nothing about the caller, and the name is not followed as
+ * one bound from `locals.user`.
+ */
+const QUICK_CHECKS_IN: Record<string, { guards: string[]; binds?: Record<string, string>; reason: string }> = {
 	'src/routes/api/cards/[id]/attachments/+server.ts POST': {
-		guards: ['requireCard'],
+		guards: ['requireCard', 'takeUploadPlace', 'takeUploadCount'],
+		binds: { takeUploadPlace: 'release' },
 		reason:
 			'The upload asks before it reads 25 MB, so that a caller with no access is not sent it (card 2115\'s ALLOWED), ' +
-			'and asks again with caller inside the writeAs that attaches it (decision 7).'
+			'and asks again with caller inside the writeAs that attaches it (decision 7). Before the body too (card 2910): it ' +
+			'takes a place in flight for the account the gate read and counts the upload against its hour, in memory, so that ' +
+			'a caller who would be refused is not sent the form. takeUploadPlace binds `release`, which gives back the places ' +
+			'it took, in the finally of the try that opens after it, and reads no row; takeUploadCount binds no name.'
 	},
 	'src/routes/api/v1/cards/[cardId]/attachments/+server.ts POST': {
-		guards: ['requireCard', 'takeUploadCount'],
+		guards: ['requireCard', 'takeUploadPlace', 'takeUploadCount'],
+		binds: { takeUploadPlace: 'release' },
 		reason:
 			"A key's image upload (card 2754) asks for the card before it reads 5 MB, as the card window's upload does, and asks " +
-			'again with caller inside the writeAs that attaches it; and counts the upload against the hour of the account the gate ' +
-			"read, before the body (the review's S2): an account whose key is revoked meanwhile is refused at the write, and its " +
-			'count stays taken, as any refusal after it leaves it. Each binds no name.'
+			'again with caller inside the writeAs that attaches it; and takes a place in flight (card 2910) and counts the ' +
+			"upload against the hour of the account the gate read, before the body (the review's S2): an account whose key is " +
+			'revoked meanwhile is refused at the write, and its count stays taken, as any refusal after it leaves it. ' +
+			'takeUploadPlace binds `release`, which gives back the places it took, in the finally of the try that opens after ' +
+			'it, and reads no row; the others bind no name.'
 	},
 	'src/routes/api/requests/+server.ts POST': {
 		guards: ['screenAnonymous'],
@@ -991,6 +1009,23 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 		(ts.isPropertyAccessExpression(node) && node.name.text === 'user') ||
 		(ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && node.argumentExpression.text === 'user');
 	const isLocalsUser = (node: ts.Node) => isUserRead(node) && isTheLocals(node.expression);
+	/**
+	 * The `locals.user` of `const <name> = <guard>(locals.user)` before the body, where QUICK_CHECKS_IN's `binds`
+	 * lets that guard bind that name (card 2910): a quick check, and the name is not one bound from locals.user.
+	 */
+	const binds = QUICK_CHECKS_IN[key]?.binds ?? {};
+	const quickBinding = (declaration: ts.VariableDeclaration): ts.Node | undefined => {
+		const value = declaration.initializer && bare(declaration.initializer);
+		if (!value || !ts.isCallExpression(value) || !ts.isIdentifier(declaration.name)) return undefined;
+		if ((declaration.parent.flags & ts.NodeFlags.Const) === 0 || declaration.getStart(tree) >= boundary) return undefined;
+		const [argument, ...rest] = value.arguments;
+		const guard = calleeOf(value, tree);
+		// Only a guard the handler's entry lists (the code review): `binds` names no call it does not also allow.
+		if (!quickChecks.includes(guard) || binds[guard] !== declaration.name.text) return undefined;
+		if (rest.length > 0 || !argument || !isLocalsUser(argument)) return undefined;
+		return argument;
+	};
+	const boundQuickly = new Set(declarations.flatMap((declaration) => quickBinding(declaration) ?? []));
 	/** The reads of locals.user, and the uses of names bound from it, in `node`. */
 	const fromUser = (node: ts.Node): ts.Node[] => {
 		const hits: ts.Node[] = [];
@@ -1033,7 +1068,7 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 	for (let changed = true; changed; ) {
 		changed = false;
 		for (const declaration of declarations) {
-			if (bindings.has(declaration) || forALine(declaration)) continue;
+			if (bindings.has(declaration) || forALine(declaration) || quickBinding(declaration)) continue;
 			const value = declaration.initializer && bare(declaration.initializer);
 			if (!value) continue;
 			const fromEvent = given.eventName && ts.isIdentifier(value) && value.text === given.eventName;
@@ -1200,11 +1235,12 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 			const ownParameter =
 				callback !== undefined && ts.isIdentifier(node.expression) && callback.parameters.some((p) => boundNames(p.name).includes((node.expression as ts.Identifier).text));
 			const quickCheck =
-				isLocalsUser(node) &&
-				ts.isCallExpression(node.parent) &&
-				node.parent.arguments.includes(node as ts.Expression) &&
-				ts.isExpressionStatement(node.parent.parent) &&
-				quickChecks.includes(calleeOf(node.parent, tree));
+				boundQuickly.has(node) ||
+				(isLocalsUser(node) &&
+					ts.isCallExpression(node.parent) &&
+					node.parent.arguments.includes(node as ts.Expression) &&
+					ts.isExpressionStatement(node.parent.parent) &&
+					quickChecks.includes(calleeOf(node.parent, tree)));
 			// A field named `user` that USER_FIELDS_IN says is no account: on a name
 			// that resolves, by scope, to a const or let declared inside this
 			// writeAs callback, from something that is not the locals, and never
@@ -1829,14 +1865,58 @@ describe("card 2253's rule itself", () => {
 			`src/routes/api/example/+server.ts:1 POST reads locals.user at line 8 before the body other than in a quick check that binds no name (${QUICK}): decide inside writeAs with caller`
 		]);
 		expect(judged(code, upload)).toEqual([
-			`${upload}:1 POST reads locals.user at line 6 before the body other than in a quick check that binds no name (${QUICK}, requireCard): decide inside writeAs with caller`,
-			`${upload}:1 POST reads locals.user at line 8 before the body other than in a quick check that binds no name (${QUICK}, requireCard): decide inside writeAs with caller`
+			// The upload's place and count (card 2910) are its quick checks too.
+			`${upload}:1 POST reads locals.user at line 6 before the body other than in a quick check that binds no name (${QUICK}, requireCard, takeUploadPlace, takeUploadCount): decide inside writeAs with caller`,
+			`${upload}:1 POST reads locals.user at line 8 before the body other than in a quick check that binds no name (${QUICK}, requireCard, takeUploadPlace, takeUploadCount): decide inside writeAs with caller`
 		]);
 		// The public request form's screen of a caller with no session, there alone (slice 2253-4).
 		expect(judged(code, form)).toEqual([
 			`${form}:1 POST reads locals.user at line 6 before the body other than in a quick check that binds no name (${QUICK}, screenAnonymous): decide inside writeAs with caller`,
 			`${form}:1 POST reads locals.user at line 7 before the body other than in a quick check that binds no name (${QUICK}, screenAnonymous): decide inside writeAs with caller`
 		]);
+	});
+
+	// Card 2910's code review (CR2): `binds` lets one const of one guard stand, in the handler it names, and nothing near it.
+	it("lets the upload's place bind `release` from locals.user before the body, and reports every other form of it (card 2910)", () => {
+		const upload = 'src/routes/api/cards/[id]/attachments/+server.ts';
+		const handler = (before: string[], after: string[] = [], name = 'release') =>
+			[
+				'export const POST = async ({ request, locals }) => {',
+				'\trequireUser(locals.user);',
+				...before,
+				'\ttry {',
+				'\t\tconst body = await readBody(request);',
+				...after,
+				'\t\twriteAs(locals, (caller) => requireCard(caller, 1, "edit"));',
+				'\t} finally {',
+				`\t\t${name}();`,
+				'\t}',
+				'};'
+			].join('\n');
+		const bound = handler(['\tconst release = takeUploadPlace(locals.user);']);
+
+		/** What the rule says of a name bound from locals.user at `at`, and used in the finally at `use`. */
+		const reported = (file: string, name: string, at: number, use: number) => [
+			`${file}:1 POST binds ${name} from locals.user at line ${at}; quick checks bind no name: decide inside writeAs with caller`,
+			`${file}:1 POST uses ${name}, bound from locals.user at line ${at}, at line ${use}: decide inside writeAs with caller`
+		];
+
+		expect(judged(bound, upload)).toEqual([]);
+		// Another name.
+		expect(judged(handler(['\tconst leave = takeUploadPlace(locals.user);'], [], 'leave'), upload)).toEqual(reported(upload, 'leave', 3, 8));
+		// A let, declared with it or assigned after.
+		expect(judged(handler(['\tlet release = takeUploadPlace(locals.user);']), upload)).toEqual(reported(upload, 'release', 3, 8));
+		expect(judged(handler(['\tlet release;'], ['\t\trelease = takeUploadPlace(locals.user);']), upload)).toEqual(reported(upload, 'release', 6, 9));
+		// Bound after the body is read.
+		expect(judged(handler([], ['\t\tconst release = takeUploadPlace(locals.user);']), upload)).toEqual(reported(upload, 'release', 5, 8));
+		// Given something beside locals.user.
+		expect(judged(handler(['\tconst release = takeUploadPlace(locals.user, 3);']), upload)).toEqual(reported(upload, 'release', 3, 8));
+		// The same code in a handler whose entry has no `binds`.
+		expect(judged(bound)).toEqual(reported('src/routes/api/example/+server.ts', 'release', 3, 8));
+		// Every name `binds` gives is a guard's of the same entry.
+		for (const [key, entry] of Object.entries(QUICK_CHECKS_IN)) {
+			for (const guard of Object.keys(entry.binds ?? {})) expect(entry.guards, key).toContain(guard);
+		}
 	});
 
 	it('lets a SELECT asked of sqlite outside writeAs stand only where READS_IN says, and nothing else asked of it (slice 2253-5)', () => {
@@ -2380,6 +2460,21 @@ const OUTSIDE_WRITE: Record<string, string> = {
 		"The card window's upload's declared type, read from the form as one of the four image types or none " +
 		'(`$lib/server/image-check`, card 2761, D1): a string alone, no row; it decides which path the file takes, not ' +
 		'anything about the caller.',
+	bytesRead:
+		"What was read of the card window's upload, the length its request declared or the gate's count of a body sent in " +
+		'chunks (`$lib/server/body-limits`, card 2910, S4): the request alone, no row; it is charged to the day in the writeAs ' +
+		'that follows, which asks for the caller.',
+	bytesCounted:
+		"What the gate's count read of an upload's body whose read failed, was cut off or ran out of time " +
+		'(`$lib/server/body-limits`, card 2910\'s code review, CS1): the request alone, no row; it is charged to the day in ' +
+		'the writeAs that follows, which asks for the caller.',
+	fileName:
+		"The name the card window's upload of a file that is not an image is stored with, cleaned and cut, its extension " +
+		'kept (`$lib/server/attachment-names`, card 2910, D11): strings alone, no row, no caller, and not a service; the ' +
+		'row is written in the writeAs that follows.',
+	storedType:
+		"The type that file is stored with, the declared one when it is plain, else application/octet-stream " +
+		'(`$lib/server/attachment-names`, card 2910, D12): a string alone, no row, no caller, and not a service.',
 	refuseWrongLink:
 		'A personal link that opened no decision, counted in memory against the address once the write has refused it ' +
 		'(`$lib/server/decision-view`, card 2677, decision 8): it reads no row and writes none, but one WARN line in the log ' +

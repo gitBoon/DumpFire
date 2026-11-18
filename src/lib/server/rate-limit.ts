@@ -20,10 +20,13 @@
  *     that succeeds gives back that account's attempts and no others
  *     (`refundSignInAttempts`, card 2226).
  *
- * And one that is not a count over time: `enterSignIn` and `leaveSignIn`
+ * And two that are not a count over time: `enterSignIn` and `leaveSignIn`
  * hold the sign-ins in flight at one account, or at one remembered browser,
  * to a number (card 2194), and an account's checks in the first lane of
- * password checks (the review's L1).
+ * password checks (the review's L1); `enterInFlight` and `leaveInFlight` hold
+ * the uploads in flight at one account and on the server to a number (card
+ * 2910), each place given back by its own token, and dropped by the sweep
+ * once it is older than `IN_FLIGHT_LAPSE_MS` whether or not it was given back.
  *
  * All of it is in memory: a restart empties every count. Entries auto-expire
  * to prevent memory leaks.
@@ -63,9 +66,14 @@ export const WRONG_SIGN_IN_KEYS = 10_000;
 /** How long after the last wrong password an account's count is forgotten. */
 export const SIGN_IN_IDLE_MS = 15 * 60 * 1000;
 
-// Cleanup stale entries every 5 minutes. Unref'd: housekeeping must never be
-// the reason a process stays alive.
-setInterval(() => {
+/**
+ * Drop what is stale: a window that has ended, a count of wrong passwords or a
+ * refusal said 15 minutes ago, and an upload's place in flight older than
+ * `IN_FLIGHT_LAPSE_MS` (card 2910, the review's S2), which a fault never gave
+ * back. Run every 5 minutes, so such a place is gone within 15; exported so
+ * that a test can run it at a clock it has moved.
+ */
+export function sweepRateLimits(): void {
 	const now = Date.now();
 	for (const [key, entry] of store) {
 		if (now > entry.resetAt) store.delete(key);
@@ -76,7 +84,17 @@ setInterval(() => {
 	for (const [key, at] of oneAtATimeSaid) {
 		if (now - at > SIGN_IN_IDLE_MS) oneAtATimeSaid.delete(key);
 	}
-}, 5 * 60 * 1000).unref();
+	for (const [key, places] of inFlight) {
+		for (const [token, takenAt] of places) {
+			if (now - takenAt > IN_FLIGHT_LAPSE_MS) places.delete(token);
+		}
+		if (places.size === 0) inFlight.delete(key);
+	}
+}
+
+// Cleanup stale entries every 5 minutes. Unref'd: housekeeping must never be
+// the reason a process stays alive.
+setInterval(sweepRateLimits, 5 * 60 * 1000).unref();
 
 /**
  * Count an attempt for `key`, and say whether it is over the limit.
@@ -315,6 +333,11 @@ const oneAtATimeSaid = new Map<string, number>();
  * once a refusal. Held to `WRONG_SIGN_IN_KEYS` keys as the wrong passwords are.
  */
 export function firstSignInRefusal(key: string): boolean {
+	return firstInSpell(key);
+}
+
+/** `firstSignInRefusal` and `firstInFlightRefusal`: one bounded map, whose keys never meet. */
+function firstInSpell(key: string): boolean {
 	const now = Date.now();
 	const last = oneAtATimeSaid.get(key);
 	oneAtATimeSaid.delete(key);
@@ -326,12 +349,66 @@ export function firstSignInRefusal(key: string): boolean {
 	return last === undefined || now - last > SIGN_IN_IDLE_MS;
 }
 
+// ─── Uploads in flight (card 2910) ──────────────────────────────────────────
+//
+// An upload takes a place at its account's key and one at the server's before
+// its body is read, and gives both back in a `finally` once it is answered
+// (`takeUploadPlace` in upload-allowance.ts). Each place is a token of its
+// own, so a release gives back the place it took and no other, and a release
+// called twice, or after its place lapsed, gives back nothing (the review's
+// S1). A place is stamped when it is taken and dropped by the sweep once it is
+// older than `IN_FLIGHT_LAPSE_MS` (S2): a place a fault never gave back is
+// gone within 15 minutes. Node ends a request that is still being sent after
+// five minutes (`server.requestTimeout`), so no upload outlives its place.
+
+/** How long an upload's place in flight is held at most: 10 minutes. */
+export const IN_FLIGHT_LAPSE_MS = 10 * 60 * 1000;
+
+/** The places in flight at each key, by token, and when each was taken. A key with none has no entry. */
+const inFlight = new Map<string, Map<symbol, number>>();
+
+/**
+ * Take a place at `key` if fewer than `allowed` are held there, and answer its
+ * token, or null when `allowed` are held. Every token taken is given back with
+ * `leaveInFlight`, or lapses.
+ */
+export function enterInFlight(key: string, allowed: number): symbol | null {
+	const places = inFlight.get(key);
+	if ((places?.size ?? 0) >= allowed) return null;
+	const token = Symbol(key);
+	if (places) places.set(token, Date.now());
+	else inFlight.set(key, new Map([[token, Date.now()]]));
+	return token;
+}
+
+/** Give back the place `token` holds at `key`: that one and no other, and nothing for a token given back already or lapsed. */
+export function leaveInFlight(key: string, token: symbol): void {
+	const places = inFlight.get(key);
+	if (!places?.delete(token)) return;
+	if (places.size === 0) inFlight.delete(key);
+}
+
+/** How many places are held at `key` now, read with nothing taken. */
+export function inFlightAt(key: string): number {
+	return inFlight.get(key)?.size ?? 0;
+}
+
+/**
+ * Note a refusal at `key` for want of a place in flight, and say whether it
+ * is the first since 15 minutes passed without one, for one line in the log a
+ * spell (card 2910, S2), as `firstSignInRefusal` says it for a sign-in.
+ */
+export function firstInFlightRefusal(key: string): boolean {
+	return firstInSpell(key);
+}
+
 /** Forget every count. For tests, which would otherwise limit each other. */
 export function resetAllRateLimits(): void {
 	store.clear();
 	wrongSignIns.clear();
 	signInsInFlight.clear();
 	oneAtATimeSaid.clear();
+	inFlight.clear();
 }
 
 /** Reset the rate limit for a key (the public request form's reply count). */

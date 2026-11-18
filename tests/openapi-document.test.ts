@@ -2876,20 +2876,21 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.13.0, with its dated notes newest first, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.13.1, with its dated notes newest first, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.13.0');
+		expect(res.body.info.version).toBe('1.13.1');
 
 		// Card 2761 (E8): every dated note's heading, in the order the description gives them, newest first, in
 		// one list, in place of each note's test counting the notes before it. A new version's note is added at
 		// its head, and nothing else here moves.
 		const note = res.body.info.description as string;
 		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])).toEqual([
+			'**Changed on 2026-11-18 (version 1.13.1).**',
 			'**Changed on 2026-11-18 (version 1.13.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.12.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.11.0), breaking.**',
@@ -2909,6 +2910,24 @@ describe('what a route answers, against the schema the document gives for it', (
 		]);
 		// The newest is the version the document is.
 		expect(note.match(/\*\*Changed on [^*]+\*\*/)?.[0]).toContain(`(version ${res.body.info.version})`);
+
+		// The 1.13.1 note (card 2910): every upload counts, and only so many at once; not breaking.
+		const counted = note.slice(note.indexOf('**Changed on 2026-11-18 (version 1.13.1).**'), note.indexOf('**Changed on 2026-11-18 (version 1.13.0), breaking.**'));
+		expect([...counted.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6]);
+		for (const words of [
+			'Every upload counts, and only so many at once (card 2910)',
+			"(1) the 30 uploads an hour and 100 MB a day of a key's user now count every file that user uploads through the card window, not only images, so a key can be answered 429 sooner",
+			'(2) the upload is also answered 429 when the user already has 3 uploads in progress, either way, or the server 6, with Retry-After 5, before the body is read and with nothing counted',
+			'(3) a 429 given before the body is read, for the hour or for uploads in progress, closes the connection (`Connection: close`)',
+			// The code review's CS3, CS2 and CS1.
+			'and so does every other refusal given before the body is read: the 404, the 403, the 415 and a declared Content-Length over 5 MB answered 413',
+			"(4) the 429's words say files where they said images",
+			'(5) the body must arrive within 120 seconds of its read beginning, else the upload is answered 408 with `Connection: close` and the read stopped',
+			'a body whose read fails, is cut off past 5 MB or runs out of time is counted against the day with what was read before its failure is answered',
+			'(6) nothing else changed: no operation, field or schema.'
+		]) {
+			expect(counted, words).toContain(words);
+		}
 
 		// The 1.9.1 note (card 2761): the card window's images count against a key's user's allowances, a JPEG
 		// keeps its orientation, and the images stored before the release are checked once; nothing else changed.
@@ -2933,8 +2952,14 @@ describe('what a route answers, against the schema the document gives for it', (
 		const upload = res.body.paths['/api/v1/cards/{cardId}/attachments'].post;
 		expect(upload.description).toContain("but a JPEG's orientation, kept as one EXIF segment that holds nothing else (since 1.9.1)");
 		expect(upload.description).toContain("a PNG, GIF or WebP with anything after its end, is refused, and a JPEG's trailing data after its image is cut off (since 1.9.1)");
-		expect(upload.description).toContain('whichever of their keys is used, and uploads through the card window count too');
-		expect(upload.responses['429'].description).toContain("and so do the user's image uploads through the card window");
+		// Card 2910 (1.13.1): every file through the card window counts, and only so many at once.
+		expect(upload.description).toContain('whichever of their keys is used, and every file they upload through the card window counts too (since 1.13.1)');
+		expect(upload.description).toContain('they may have 3 uploads in progress at once, either way, and the server 6 (since 1.13.1)');
+		expect(upload.responses['429'].description).toContain("and so do all the user's uploads through the card window, every file and not only images (since 1.13.1)");
+		expect(upload.responses['429'].description).toContain('Or the user already has 3 uploads in progress, either way, or the server 6 (since 1.13.1)');
+		expect(upload.responses['429'].description).toContain('closes the connection (`Connection: close`, since 1.13.1)');
+		expect(upload.responses['408'].description).toContain('The body did not arrive within 120 seconds of its read beginning (since 1.13.1)');
+		expect(upload.description).toContain('and each of these refusals closes the connection (since 1.13.1)');
 		const schema = answerSchema(name, 200);
 		expect(keysOf(res.body)).toEqual(propertiesOf(schema));
 		expect(keysOf(res.body.info)).toEqual(propertiesOf(schema.properties.info));
@@ -2951,11 +2976,11 @@ describe('what a route answers, against the schema the document gives for it', (
 	});
 
 	// Card 2671: a disabled account has no access to anything, a key's among it.
-	it('announces in the 1.13.0 note, first and breaking, that a disabled account has no access to anything, and holds the document to it (card 2671)', () => {
+	it('announces in the 1.13.0 note, breaking, that a disabled account has no access to anything, and holds the document to it (card 2671)', () => {
 		const note = spec.info.description as string;
 		const heading = '**Changed on 2026-11-18 (version 1.13.0), breaking.**';
-		// First of the dated notes, and marked breaking.
-		expect(note.match(/\*\*Changed on [^*]+\*\*/)?.[0]).toBe(heading);
+		// Second of the dated notes, after card 2910's 1.13.1, and marked breaking.
+		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])[1]).toBe(heading);
 		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-18 (version 1.12.0), breaking.**'));
 		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5]);
 		for (const words of [

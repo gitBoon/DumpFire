@@ -1,11 +1,13 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.144
+version: 1.146
 status: As-Built
 date: 2026-11-18
 tags:
   - api
+  - card-2910
+  - upload-limits
   - card-2671
   - account-disable
   - card-2914
@@ -46,7 +48,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "REST API reference for DumpFire's external v1 API: authentication, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -179,7 +181,7 @@ have at most 10: delete 1 before adding another.`).
 | `409` | Conflict: a card moved to a Complete column while it has open subtasks or sub-boards, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep (made under a card, or carried by a card moved to another board), a dependency that already exists or would close a loop, a board's 11th webhook, a card's 21st image or an image sent to a card whose images retention is moving to the trash, or a rejected batch |
 | `413` | The request body is over the size limit, 512 KB (5 MB for the image upload): `{ "message", "limitBytes" }`. See [The Request Body](#the-request-body) |
 | `415` | The image upload only: the `Content-Type` is not `image/png`, `image/jpeg`, `image/gif` or `image/webp`, or the bytes are not the type it names. See [Attachments](#attachments) |
-| `429` | Rate limited: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts; for the image upload, also 30 uploads in the hour or 100 MB in the day for the key's user, their image uploads through the card window counted too |
+| `429` | Rate limited: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts; for the image upload, also 30 uploads in the hour or 100 MB in the day for the key's user, every file they upload through the card window counted too (since 1.13.1), or 3 uploads of theirs, or 6 on the server, already in progress (since 1.13.1) |
 | `500` | DumpFire failed: `{ "message": "Internal Error" }`. Nothing of the fault is in the answer; it is written to DumpFire's system log, with the route and the key's user |
 
 ### The Request Body
@@ -385,6 +387,45 @@ some fields were answered in that form, which names no zone, and the same field 
 either.
 
 ### Changes on 2026-11-18
+
+**Every upload counts, and only so many at once** (card 2910; OpenAPI document version
+`1.13.1`, with a dated note at the top of its description; not breaking). No operation, status,
+field or schema changes, but five things a key sees do (the fifth with a new `408`):
+
+1. The 30 uploads an hour and 100 MB a day of a key's user now count every file that user
+   uploads through the card window, not only images, so a key can be answered `429` sooner.
+2. `POST /api/v1/cards/{cardId}/attachments` is also answered `429` when the user already has
+   3 uploads in progress, either way, or the server 6, with `Retry-After: 5`, before the body is
+   read and with nothing counted: `{"message": "Too many uploads are in progress. Nothing was
+   read or written. Try again when the others have finished.", "retryAfterSecs": 5}`.
+3. A `429` given before the body is read, for the hour or for uploads in progress, closes the
+   connection (`Connection: close`), and so does every other refusal given before the body is
+   read: the `404`, the `403`, the `415`, and a declared `Content-Length` over 5 MB answered
+   `413`. The day's `429`, given after the body, does not.
+4. The `429`'s words say files where they said images: `An account can upload at most 30 files
+   an hour. Nothing was read or written. …` and `An account can upload at most 100 MB a day, and
+   this upload would pass it. Nothing was written. …`.
+5. The body must arrive within 120 seconds of its read beginning, else the upload is answered
+   `408 {"message": "The upload did not arrive within 120 seconds. Nothing was written."}` with
+   `Connection: close`, and the read is stopped. A body whose read fails, is cut off past 5 MB
+   (`413`) or runs out of time is counted against the day with what was read, before its failure
+   is answered.
+
+Internal routes, stricter, not breaking: `POST /api/cards/:id/attachments`, the card window's
+upload, takes a place in flight and counts the upload against the account's hour **before the
+form is read, for every file** (`429`, `Connection: close`), and charges the day what was read
+of the form, before anything in it is checked. Every refusal before the form is read (`401`,
+`400`, `404`, `403`, the gate's `413` for a declared length, the `429`s) closes the connection;
+the form is given 120 seconds to arrive (`408`, `Connection: close`), and a read that fails,
+is cut off or runs out of time is charged what was read. A form that is not exactly one part named
+`file` is `400 Send one file, as the only part of the form, named "file"` (it was `400 No file
+provided` for no file, and other parts were read and ignored). The 21st file that is not an
+image on a card is `409 This card already has 20 files other than images`. A file that is not
+an image has its name cleaned and cut to 100 characters, its extension kept as sent
+(`file-<UTC date>-<time>` with nothing left), its type kept only when plain and in lower case
+(else `application/octet-stream`), and is stored on disk as `<uuid>` alone, so the list's
+`filename` for such a file is a bare UUID. See
+[Authentication and Security](authentication-security.md#upload-limits-for-every-file-card-2910).
 
 **Breaking: a disabled account has no access to anything** (card 2671; OpenAPI document version
 `1.13.0`, with a dated note, marked breaking, at the top of its description). An administrator
@@ -5222,7 +5263,7 @@ server's disk, in the uploads folder beside the database, with a small row each 
 | Operation | Access | Limits |
 |---|---|---|
 | `GET /api/v1/cards/:cardId/attachments` | View access to the card's board | The key's 60 a minute |
-| `POST /api/v1/cards/:cardId/attachments` | Edit access, asked before the body is read and again at the write | 5 MB a body; 30 uploads an hour and 100 MB a day for the key's user, whichever of their keys, their image uploads through the card window counted too (card 2761); 20 images a card |
+| `POST /api/v1/cards/:cardId/attachments` | Edit access, asked before the body is read and again at the write | 5 MB a body; 30 uploads an hour and 100 MB a day for the key's user, whichever of their keys, every file they upload through the card window counted too (card 2761 for images, card 2910 for every file); 3 uploads in progress for the user and 6 for the server (card 2910); 20 images a card |
 | `GET /api/v1/cards/:cardId/attachments/:attachmentId` | View access to the card's board | The key's 60 a minute |
 
 An **`Attachment`** is the row without the name the file is kept under on the server:
@@ -5307,19 +5348,28 @@ Errors, in the order they are asked:
 2. `401` no key or a bad one; `429` the key's 60 a minute.
 3. `400` `Invalid card ID`.
 4. `404` `Card not found`; `403` `No edit access to this board`.
-5. `415` the `Content-Type` is not one of the four. Nothing has been read.
-6. `429` the upload count: the key's user has uploaded 30 images in the hour, through a key
-   or the card window (card 2761), with `Retry-After` and `retryAfterSecs`. Nothing has been
-   read.
-7. `413` while the body is read: one sent in chunks, or one running past its declared length,
-   passes 5 MB. Not counted against the day.
-8. The bytes read are counted against the day: `429` when they would take the key's user past
-   100 MB in 24 hours, their card window's images counted too (then nothing is counted), with `Retry-After`; `401` if the key or its
-   account changed while the body was read. Counted before the check, so a body refused at 9
+5. `415` the `Content-Type` is not one of the four. Nothing has been read. Since 1.13.1 every
+   refusal up to here, and at 6 and 7, closes the connection (`Connection: close`), the gate's
+   `413` at 1 included.
+6. `429` uploads in progress (since 1.13.1, card 2910): the key's user already has 3, through
+   a key or the card window, or the server 6, with `Retry-After: 5`, `retryAfterSecs` 5 and
+   `Connection: close`. Nothing has been read or counted. The place taken here is given back
+   however the upload ends, and lapses after 10 minutes.
+7. `429` the upload count: the key's user has uploaded 30 files in the hour, through a key
+   or the card window (card 2761; every file since card 2910), with `Retry-After`,
+   `retryAfterSecs` and `Connection: close` (since 1.13.1). Nothing has been read.
+8. `413` while the body is read: one sent in chunks, or one running past its declared length,
+   passes 5 MB; `408` (since 1.13.1) when it has not arrived within 120 seconds of its read
+   beginning, with `Connection: close`, the read stopped. Since 1.13.1 what was read of a body
+   whose read fails, for these or because the client went away, is counted against the day
+   before the failure is answered; until then it was not.
+9. The bytes read are counted against the day: `429` when they would take the key's user past
+   100 MB in 24 hours, every file of theirs through the card window counted too (then nothing is counted), with `Retry-After`; `401` if the key or its
+   account changed while the body was read. Counted before the check, so a body refused at 10
    still counts what was sent.
-9. `415` the bytes are not one of the four, or are another of them than declared; `400` they
+10. `415` the bytes are not one of the four, or are another of them than declared; `400` they
    are not a valid image of their type, as above. The message says which.
-10. As the image is written, in one transaction: `401` the key or its account changed; `404`
+11. As the image is written, in one transaction: `401` the key or its account changed; `404`
     and `403` again; `409` the card was closed more than `IMAGE_RETENTION_DAYS` ago, so retention
     is moving its images to the trash (`This card was closed more than 180 days ago, so its
     images are moved to the trash: reopen or restore it to attach one`; not asked when
@@ -5327,7 +5377,7 @@ Errors, in the order they are asked:
     the card whichever tree attached it.
 
 Nothing is written on any refusal: a file written before a refused row is removed, and the
-card's folder if this request made it. An upload counted against the hour or the day (6, 8)
+card's folder if this request made it. An upload counted against the hour or the day (7, 9)
 stays counted when a later step refuses it.
 
 ```mermaid
@@ -5347,7 +5397,8 @@ sequenceDiagram
     G->>R: request, body held to 5 MB
     R->>R: card id 400, card 404, edit access 403
     R->>R: Content-Type one of four, else 415
-    R->>A: takeUploadCount (30 an hour, per user): 429
+    R->>A: takeUploadPlace (3 per user, 6 on the server): 429, Connection close
+    R->>A: takeUploadCount (30 an hour, per user): 429, Connection close
     R->>R: read the body (413 past 5 MB)
     R->>A: takeUploadBytes(bytes read) in writeAs (100 MB a day, per user): 429
     R->>I: checkImage: 415 type, 400 structure, trailing data, animation, size
@@ -5355,6 +5406,7 @@ sequenceDiagram
     R->>D: writeUploadFile uuid.ext
     R->>S: writeAs: key 401, card 404, edit 403, retention 409, 20 images 409
     S-->>R: row, api:attachment_added, live event (no webhook)
+    R->>A: release the place, in finally, on every exit
     R-->>C: 201 Attachment
     Note over R,D: on a refusal at the write, removeUploadFile removes the file and a folder it made
 ```

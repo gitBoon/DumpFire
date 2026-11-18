@@ -25,11 +25,11 @@ import { join } from 'node:path';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from '$lib/server/db';
-import { activityLog, boardMembers, cardAttachments, type Card } from '$lib/server/db/schema';
+import { activityLog, apiKeys, boardMembers, cardAttachments, type Card } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { tooLargeBody } from '$lib/server/body-limits';
-import { resetAllRateLimits, resetRateLimit, takeAllowance } from '$lib/server/rate-limit';
-import { UPLOAD_BYTES_PER_DAY, UPLOADS_PER_HOUR } from '$lib/server/upload-allowance';
+import { allowanceState, inFlightAt, resetAllRateLimits, resetRateLimit, takeAllowance } from '$lib/server/rate-limit';
+import { takeUploadPlace, UPLOAD_BYTES_PER_DAY, UPLOADS_PER_HOUR } from '$lib/server/upload-allowance';
 import { attachmentPath } from '$lib/server/uploads';
 import { stamp } from '$lib/timestamps';
 import { api, type ApiResult } from './helpers/api';
@@ -260,7 +260,7 @@ describe('POST /api/v1/cards/{cardId}/attachments, the allowances of the key’s
 		expect(retry).toBeGreaterThan(0);
 		expect(retry).toBeLessThanOrEqual(3600);
 		expect(await refused.json()).toEqual({
-			message: expect.stringMatching(/^An account can upload at most 30 images an hour\. Nothing was read or written\. Try again in \d+ minute\(s\)\.$/),
+			message: expect.stringMatching(/^An account can upload at most 30 files an hour\. Nothing was read or written\. Try again in \d+ minute\(s\)\.$/),
 			retryAfterSecs: retry
 		});
 		expectNothingWritten(before);
@@ -278,7 +278,7 @@ describe('POST /api/v1/cards/{cardId}/attachments, the allowances of the key’s
 		const before = now();
 		const refused = await upload(owner, sent);
 		expect(refused.status).toBe(429);
-		expect(refused.body.message).toMatch(/^An account can upload at most 100 MB of images a day, and this image would pass it\. Nothing was written\./);
+		expect(refused.body.message).toMatch(/^An account can upload at most 100 MB a day, and this upload would pass it\. Nothing was written\./);
 		expect(refused.body.retryAfterSecs).toBeGreaterThan(0);
 		expectNothingWritten(before);
 
@@ -301,7 +301,183 @@ describe('POST /api/v1/cards/{cardId}/attachments, the allowances of the key’s
 		expect((await upload(owner, png())).status).toBe(201);
 		const countRefused = await upload(owner, png());
 		expect(countRefused.status).toBe(429);
-		expect(countRefused.body.message).toMatch(/30 images an hour/);
+		expect(countRefused.body.message).toMatch(/30 files an hour/);
+	});
+});
+
+// ─── Every upload's limits (card 2910) ───────────────────────────────────────
+
+describe("POST /api/v1/cards/{cardId}/attachments, every upload's limits (card 2910)", () => {
+	const AT_ONCE = { message: 'Too many uploads are in progress. Nothing was read or written. Try again when the others have finished.', retryAfterSecs: 5 };
+	/** Each request's body read: the reader the request is guarded with. */
+	const watchRead = () => vi.spyOn(Request.prototype, 'arrayBuffer');
+	const hourUsed = (user: SessionUser) => allowanceState(`attachment-upload:user:${user.id}`, UPLOADS_PER_HOUR, HOUR_MS, Date.now()).used;
+	/** The places in flight the owner holds, and the server. */
+	const places = () => ({ own: inFlightAt(`upload-in-flight:user:${owner.id}`), server: inFlightAt('upload-in-flight:server') });
+	const json = async (res: Response) => ({ status: res.status, body: await res.json().catch(() => null) });
+	/** Through the gate with a key of the owner's, as a script sends it: `body` with no length declared. */
+	const byKey = (body: ReadableStream<Uint8Array>) =>
+		gate('POST', `/api/v1/cards/${card.id}/attachments`, { headers: { ...PNG, authorization: `Bearer ${makeApiKey(owner)}` }, body });
+	/** A body sent in chunks of 64 KB with no length declared, `total` bytes in all. */
+	const chunked = (total: number) => {
+		let sent = 0;
+		return new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (sent >= total) return controller.close();
+				const size = Math.min(64 * 1024, total - sent);
+				sent += size;
+				controller.enqueue(new Uint8Array(size));
+			}
+		});
+	};
+	/** A body whose sender goes away once it has sent a little of it, as a closed connection fails the read. */
+	const cutOff = () => {
+		let started = false;
+		return new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (started) return controller.error(new Error('aborted'));
+				started = true;
+				controller.enqueue(png().subarray(0, 8));
+			}
+		});
+	};
+
+	it("11. counts a card window PDF against the hour a key's upload uses: the key's is then 429 in the hour's words, its body unread", async () => {
+		countLeft(owner, 1);
+		const form = new FormData();
+		form.set('file', new File(['%PDF-1.4 a paper'], 'paper.pdf', { type: 'application/pdf' }));
+		expect((await api('POST', `/api/cards/${card.id}/attachments`, { user: owner, body: form })).status).toBe(200);
+		const read = watchRead();
+
+		const res = await upload(owner, png());
+
+		expect(res.status).toBe(429);
+		expect(res.body.message).toMatch(/^An account can upload at most 30 files an hour\. Nothing was read or written\. Try again in \d+ minute\(s\)\.$/);
+		expect(read).not.toHaveBeenCalled();
+	});
+
+	it("12. refuses a key's upload 429 while its user has 3 uploads in flight, before its body is read, counting nothing", async () => {
+		for (let i = 0; i < 3; i++) takeUploadPlace(owner);
+		const read = watchRead();
+		const before = now();
+
+		const res = await upload(owner, png());
+
+		expect(res).toMatchObject({ status: 429, body: AT_ONCE });
+		expect(res.headers.get('retry-after')).toBe('5');
+		expect(read).not.toHaveBeenCalled();
+		expect(hourUsed(owner)).toBe(0);
+		expectNothingWritten(before);
+	});
+
+	const EXITS: { exit: string; send: () => Promise<void> }[] = [
+		{
+			exit: 'the hour 429',
+			send: async () => {
+				countLeft(owner, 0);
+				expect((await upload(owner, png())).status).toBe(429);
+			}
+		},
+		{
+			exit: 'the day 429',
+			send: async () => {
+				bytesLeft(owner, 0);
+				expect((await upload(owner, png())).status).toBe(429);
+			}
+		},
+		{
+			exit: '401 for a key revoked while the body is read',
+			send: async () => {
+				const res = await sendAround('POST', `/api/v1/cards/${card.id}/attachments`, { key: makeApiKey(owner) }, png(), () => {
+					db.delete(apiKeys).run();
+				}, { headers: PNG });
+				expect(res.status).toBe(401);
+			}
+		},
+		{
+			exit: "413 from the gate's count past 5 MB",
+			send: async () => {
+				expect((await json(await byKey(chunked(5 * M + 1)))).status).toBe(413);
+			}
+		},
+		{
+			exit: 'the client gone during the read',
+			send: async () => {
+				vi.spyOn(console, 'error').mockImplementation(() => {});
+				expect((await json(await byKey(cutOff()))).status).toBeGreaterThanOrEqual(400);
+			}
+		},
+		{
+			exit: "checkImage's 415",
+			send: async () => {
+				expect((await upload(owner, jpeg())).status).toBe(415);
+			}
+		},
+		{
+			exit: "checkImage's 400",
+			send: async () => {
+				expect((await upload(owner, new Uint8Array([...png(), 0x3c, 0x73, 0x76, 0x67, 0x3e]))).status).toBe(400);
+			}
+		},
+		{
+			exit: '201',
+			send: async () => {
+				expect((await upload(owner, png())).status).toBe(201);
+			}
+		}
+	];
+
+	it.each(EXITS)('13. gives back its places on every exit (S1, E9): $exit', async ({ send }) => {
+		await send();
+
+		expect(places()).toEqual({ own: 0, server: 0 });
+	});
+
+	// ─── The code review (2026-11-18) ───────────────────────────────────────
+
+	it("CR1. closes the connection on the places' and the hour's 429 through the gate, and not on the day's", async () => {
+		const send = () => gate('POST', `/api/v1/cards/${card.id}/attachments`, { headers: { ...PNG, authorization: `Bearer ${makeApiKey(owner)}` }, body: png() });
+
+		const held = [takeUploadPlace(owner), takeUploadPlace(owner), takeUploadPlace(owner)];
+		const atOnce = await send();
+		expect([atOnce.status, atOnce.headers.get('connection')]).toEqual([429, 'close']);
+		for (const release of held) release();
+
+		countLeft(owner, 0);
+		const hour = await send();
+		expect([hour.status, hour.headers.get('connection')]).toEqual([429, 'close']);
+
+		resetAllRateLimits();
+		bytesLeft(owner, 0);
+		const day = await send();
+		expect([day.status, day.headers.get('connection')]).toEqual([429, null]);
+	});
+
+	it("CS1. charges the day what the gate counted of a body whose sender went away, and gives back the place", async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+
+		const res = await byKey(cutOff());
+
+		expect(res.status).toBeGreaterThanOrEqual(400);
+		expect(allowanceState(`attachment-bytes:user:${owner.id}`, UPLOAD_BYTES_PER_DAY, DAY_MS, Date.now()).used).toBe(8);
+		expect(places()).toEqual({ own: 0, server: 0 });
+	});
+
+	it("CS3. closes the connection on every refusal before the body: the key's user, the card, its access, the type, and the gate's 413", async () => {
+		for (const [what, res, status] of [
+			['no user', await upload(null as unknown as SessionUser, png()), 401],
+			['no such card', await upload(owner, png(), { cardId: card.id + 1000 }), 404],
+			['view access only', await upload(viewer, png()), 403],
+			['a type that is not an image', await upload(owner, png(), { type: 'image/svg+xml' }), 415]
+		] as const) {
+			expect([res.status, res.headers.get('connection')], what).toEqual([status, 'close']);
+		}
+
+		const declared = await gate('POST', `/api/v1/cards/${card.id}/attachments`, {
+			headers: { ...PNG, 'content-length': String(5 * M + 1), authorization: `Bearer ${makeApiKey(owner)}` },
+			body: png()
+		});
+		expect([declared.status, declared.headers.get('connection')]).toEqual([413, 'close']);
 	});
 });
 

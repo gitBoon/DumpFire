@@ -16,7 +16,9 @@
  * twin of the card window's, and records the same entry and sends the same
  * event, through the one helper both call. It deletes nothing. The card
  * window's upload of an image is held to the same rules through
- * `attachImage` too (card 2761); its other files go through `attachFile`.
+ * `attachImage` too (card 2761); its other files go through `attachFile`,
+ * which holds a card to 20 of them beside its 20 images (card 2910, D4).
+ * Names are cleaned by `attachment-names.ts` (card 2910, D11).
  *
  * The file itself is the routes' (written before the row, moved to the
  * trash after the delete commits): nothing here touches the disk.
@@ -32,6 +34,7 @@ import { asc, eq } from 'drizzle-orm';
 import { db } from './db';
 import { cardAttachments, type Card, type CardAttachment } from './db/schema';
 import type { SessionUser } from './auth';
+import { cleanedName, stampOf } from './attachment-names';
 import { requireCard, requireUser } from './route-guards';
 import { emit } from './events';
 import { imageTypeOf, type ImageType } from './image-check';
@@ -44,6 +47,9 @@ export const READS: readonly string[] = ['listAttachments'];
 
 /** The most images a card holds, whichever tree attached them (card 2754, D5 and S10). */
 const MOST_IMAGES_ON_A_CARD = 20;
+
+/** The most files that are not images a card holds, beside its images (card 2910, D4). */
+const MOST_OTHER_FILES_ON_A_CARD = 20;
 
 /** The longest name an image is given, before its extension (card 2754, D7 and S11). */
 const LONGEST_IMAGE_NAME = 100;
@@ -103,13 +109,28 @@ export type AttachedFile = {
  * /api/cards/:id/attachments`), uploaded by the caller, with its entry
  * `Attached "<file>" to "<card>"` and the live event. The card is looked for
  * and the caller asked for edit access again (404, then 403): it may have
- * gone, or the access, while the upload was read. A refusal or a failure
- * here rolls the row and the entry back, and the route removes the file.
+ * gone, or the access, while the upload was read. A card that already holds
+ * `MOST_OTHER_FILES_ON_A_CARD` files whose stored type is not one of the four
+ * image types is refused, 409 (card 2910, D4): counted here, in the
+ * transaction that writes, as `attachImage` counts images, so that two
+ * uploads cannot both find room for one; a card already over it keeps what it
+ * holds. The name and the type are the route's (`attachment-names.ts`). A
+ * refusal or a failure here rolls the row and the entry back, and the route
+ * removes the file.
  */
 export function attachFile(caller: SessionUser | null, at: { cardId: number }, file: AttachedFile, opts: ServiceOptions): CardAttachment {
 	inWrite();
 	const user = requireUser(caller);
 	const { card, boardId } = requireCard(user, at.cardId, 'edit', opts.says);
+
+	const others = db
+		.select({ mimeType: cardAttachments.mimeType })
+		.from(cardAttachments)
+		.where(eq(cardAttachments.cardId, card.id))
+		.all()
+		.filter((row) => imageTypeOf(row.mimeType) === null).length;
+	if (others >= MOST_OTHER_FILES_ON_A_CARD) throw error(409, 'This card already has 20 files other than images');
+
 	return addAttachment(user, card, boardId, file, opts);
 }
 
@@ -229,7 +250,8 @@ export function attachImage(caller: SessionUser | null, at: { cardId: number }, 
  * The name an uploaded image is given (card 2754, D7 and S11): the caller's,
  * cleaned, or `image-<UTC date>-<time>.<extension>` where it leaves nothing.
  * Only its last part after a `/` or `\` is kept; control and format
- * characters and `<>:"|?*` are taken out, and the ends trimmed; it is cut to
+ * characters, line and paragraph separators (since card 2910, S6) and
+ * `<>:"|?*` are taken out, and the ends trimmed (`cleanedName`); it is cut to
  * `LONGEST_IMAGE_NAME` characters, and then an extension left at its end (a
  * dot and one to five letters or digits) is taken off and the one the bytes
  * are put on, so the extension always survives the cut. A dot that starts
@@ -239,13 +261,11 @@ export function attachImage(caller: SessionUser | null, at: { cardId: number }, 
  * server.
  */
 function imageName(asked: string | null, extension: string, now: Date): string {
-	const last = (asked ?? '').split(/[\\/]/).pop() ?? '';
-	const cleaned = last.replace(/[\p{Cc}\p{Cf}<>:"|?*]/gu, '').trim();
+	const cleaned = cleanedName(asked ?? '');
 	const cut = Array.from(cleaned).slice(0, LONGEST_IMAGE_NAME).join('');
 	const stem = cut.replace(/\.[A-Za-z0-9]{1,5}$/, '').replace(/[.\s]+$/, '').trim();
 	if (stem !== '') return `${stem}.${extension}`;
-	const [date, time] = now.toISOString().split('T');
-	return `image-${date}-${time.slice(0, 8).replace(/:/g, '')}.${extension}`;
+	return `image-${stampOf(now)}.${extension}`;
 }
 
 /**

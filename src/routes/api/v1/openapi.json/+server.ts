@@ -34,7 +34,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.13.0',
+		version: '1.13.1',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -42,6 +42,15 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-18 (version 1.13.1).** Every upload counts, and only so many at once (card 2910): ' +
+			'(1) the 30 uploads an hour and 100 MB a day of a key\'s user now count every file that user uploads through the card window, not only images, so a key can be answered 429 sooner; ' +
+			'(2) the upload is also answered 429 when the user already has 3 uploads in progress, either way, or the server 6, with Retry-After 5, before the body is read and with nothing counted; ' +
+			'(3) a 429 given before the body is read, for the hour or for uploads in progress, closes the connection (`Connection: close`), ' +
+			'and so does every other refusal given before the body is read: the 404, the 403, the 415 and a declared Content-Length over 5 MB answered 413; ' +
+			'(4) the 429\'s words say files where they said images; ' +
+			'(5) the body must arrive within 120 seconds of its read beginning, else the upload is answered 408 with `Connection: close` and the read stopped, ' +
+			'and a body whose read fails, is cut off past 5 MB or runs out of time is counted against the day with what was read before its failure is answered; ' +
+			'(6) nothing else changed: no operation, field or schema.\n\n' +
 			'**Changed on 2026-11-18 (version 1.13.0), breaking.** An administrator can disable an account, on the admin page and not through a key, and a disabled account has no access to anything (card 2671): ' +
 			'(1) its API keys end when it is disabled, and a key of a disabled account is answered `401 {"message": "Invalid or expired API key"}` by every operation, as an ended key is; ' +
 			'(2) it can open and edit no board, so it is refused as an account without the board: named as userId on POST /cards/{cardId}/assignees it is `400 {"message": "User does not have access to this board"}`, ' +
@@ -5218,11 +5227,13 @@ const spec = {
 					'The bytes must be the type they are sent as and a whole, still image of it, at most 8000 pixels on a side and 40 megapixels in all: ' +
 					'an animated image, or a PNG, GIF or WebP with anything after its end, is refused, and a JPEG\'s trailing data after its image is cut off (since 1.9.1). Its metadata (EXIF, XMP, text chunks, comments, thumbnails) is taken out before it is kept, ' +
 					'but a JPEG\'s orientation, kept as one EXIF segment that holds nothing else (since 1.9.1); ' +
-					'nothing is decoded or re-encoded. A key\'s user may upload 30 images an hour and 100 MB a day, whichever of their keys is used, and uploads through the card window count too; ' +
+					'nothing is decoded or re-encoded. A key\'s user may upload 30 files an hour and 100 MB a day, whichever of their keys is used, and every file they upload through the card window counts too (since 1.13.1); ' +
+					'they may have 3 uploads in progress at once, either way, and the server 6 (since 1.13.1); ' +
 					'a card holds at most 20 images, ' +
 					'whichever way they were attached. Logs api:attachment_added to the activity feed and emits a live board update; no webhook is sent. ' +
-					'In order: the card is looked for (404) and the caller checked (403), the Content-Type is read (415) and the upload counted against the hour (429), ' +
-					'all before a byte of the body is read; then the body is read (413 past 5 MB, not counted against the day), every byte read is counted against the day (429), ' +
+					'In order: the card is looked for (404) and the caller checked (403), the Content-Type is read (415), a place among the uploads in progress taken (429, nothing counted) and the upload counted against the hour (429), ' +
+					'all before a byte of the body is read, and each of these refusals closes the connection (since 1.13.1); then the body is read, given 120 seconds to arrive (408, since 1.13.1), ' +
+					'413 past 5 MB (what was read of a body that fails, is cut off or runs out of time is counted against the day, since 1.13.1), every byte read is counted against the day (429), ' +
 					'and the bytes are checked (415, 400), so a body the check refuses still counts against the day; ' +
 					'then, as the image is written, the key, the card and the caller are asked again (401, 404, 403), whether the card was closed more than IMAGE_RETENTION_DAYS ago, ' +
 					'so that its images are being moved to the trash (409), and the card\'s room for one more image (409). ' +
@@ -5281,10 +5292,21 @@ const spec = {
 							'so its images are moved to the trash: reopen or restore it first. Or the card already holds 20 images, however they were attached. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This card already has 20 images' } } }
 					},
+					'408': {
+						description:
+							'The body did not arrive within 120 seconds of its read beginning (since 1.13.1): the read is stopped, the connection closed (`Connection: close`), ' +
+							'and what was read is counted against the day. Nothing was written: send it again from somewhere closer, or a smaller image.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { message: 'The upload did not arrive within 120 seconds. Nothing was written.' }
+							}
+						}
+					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'415': {
 						description:
-							'The Content-Type is not image/png, image/jpeg, image/gif or image/webp (the body is not read); or the bytes are not the type it names. Nothing was written.',
+							'The Content-Type is not image/png, image/jpeg, image/gif or image/webp (the body is not read, and the connection is closed, since 1.13.1); or the bytes are not the type it names. Nothing was written.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
@@ -5294,8 +5316,10 @@ const spec = {
 					},
 					'429': {
 						description:
-							'More than 60 requests in a minute with this key (see RateLimited); or the key\'s user has uploaded 30 images in the last hour, counted before the body is read, ' +
-							'or this image would take them past 100 MB in a day, counted with the bytes read, before they are checked. Every key of the user counts against the same hour and day, and so do the user\'s image uploads through the card window. ' +
+							'More than 60 requests in a minute with this key (see RateLimited); or the key\'s user has uploaded 30 files in the last hour, counted before the body is read, ' +
+							'or this image would take them past 100 MB in a day, counted with the bytes read, before they are checked. Every key of the user counts against the same hour and day, and so do all the user\'s uploads through the card window, every file and not only images (since 1.13.1). ' +
+							'Or the user already has 3 uploads in progress, either way, or the server 6 (since 1.13.1): asked before the body is read, with nothing counted, and answered with Retry-After 5. ' +
+							'A 429 given before the body is read, for the hour or for uploads in progress, closes the connection (`Connection: close`, since 1.13.1). ' +
 							'Nothing was written: send it again after the Retry-After seconds.',
 						headers: {
 							'Retry-After': {

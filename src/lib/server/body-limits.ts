@@ -34,8 +34,9 @@
  * or through a proxy that passes it on so, as `cloudflared` does unless it is
  * told not to (docs/deployment.md).
  *
- * Each function here works on the one request it is given and keeps nothing.
- * Where they are asked is the gate's to say.
+ * Each function here works on the one request it is given and keeps nothing,
+ * but the count `heldToLimit` keeps of the request it makes, held weakly, for
+ * `bytesRead` (card 2910). Where they are asked is the gate's to say.
  */
 import { json } from '@sveltejs/kit';
 import { dev } from '$app/environment';
@@ -199,7 +200,10 @@ export function tooLargeBody(limit: number, declared: number | null = null): { m
  * which is held to the limit here, and one that is sent in chunks with none
  * declared, which is let through to be counted as it is read (`heldToLimit`).
  *
- * It is an answer and not an error thrown: the gate returns it.
+ * It is an answer and not an error thrown: the gate returns it. It closes the
+ * connection (`Connection: close`, card 2910's code review, CS3): the body it
+ * will not read is still on its way, and is not drained into a connection
+ * kept alive.
  */
 export function refuseBody(request: Request, limit: number): Response | null {
 	if (request.body === null) return null;
@@ -208,7 +212,7 @@ export function refuseBody(request: Request, limit: number): Response | null {
 	if (declared !== null && declared > limit) {
 		// Written out, so that tests/error-shape.test.ts can read its keys.
 		const { message, limitBytes } = tooLargeBody(limit, declared);
-		return json({ message, limitBytes }, { status: 413 });
+		return json({ message, limitBytes }, { status: 413, headers: { Connection: 'close' } });
 	}
 	return null;
 }
@@ -254,7 +258,11 @@ export function heldToLimit(request: Request, limit: number): Request {
 	if (request.body === null || limit === Infinity) return request;
 
 	let read = 0;
+	let stream: TransformStreamDefaultController<Uint8Array> | undefined;
 	const counting = new TransformStream<Uint8Array, Uint8Array>({
+		start(controller) {
+			stream = controller;
+		},
 		transform(chunk, controller) {
 			read += chunk.byteLength;
 			if (read > limit) controller.error(new BodyOverLimit(limit));
@@ -263,8 +271,75 @@ export function heldToLimit(request: Request, limit: number): Request {
 	});
 	// `duplex` is what Node asks for when a body is a stream, and is how the
 	// adapter makes every request that has one.
-	return new Request(request, {
+	const held = new Request(request, {
 		body: request.body.pipeThrough(counting, { preventCancel: true }),
 		duplex: 'half'
 	} as RequestInit);
+	counts.set(held, { read: () => read, stop: (reason) => stream?.error(reason) });
+	return held;
+}
+
+/**
+ * What `heldToLimit` has counted of each request it made, as far as it has
+ * been read, and how to stop the read: the count's stream failed with a
+ * reason, the rest of the body left unread as a 413 leaves it.
+ */
+const counts = new WeakMap<Request, { read: () => number; stop: (reason: unknown) => void }>();
+
+/**
+ * How many bytes of `request`'s body were read, once the handler has read it
+ * (card 2910, the review's S4): the length it declared, which the adapter
+ * holds a body to exactly (see the head of this file), or, for a body sent in
+ * chunks with none declared, the count `heldToLimit` kept as it was read. Null
+ * for a request that declares no length and was not held by the gate, which
+ * no request the gate hands on is. Keeps nothing and reads no row: the
+ * attachment upload charges an account's day with it.
+ */
+export function bytesRead(request: Request): number | null {
+	return declaredLength(request) ?? counts.get(request)?.read() ?? null;
+}
+
+/**
+ * The bytes the gate's count has read of `request`'s body so far, whatever
+ * its declared length: exact after a read that failed part way, was cut off
+ * past its limit or was stopped (card 2910's code review, CS1). Null for a
+ * request the gate did not hold.
+ */
+export function bytesCounted(request: Request): number | null {
+	return counts.get(request)?.read() ?? null;
+}
+
+/** A body that did not arrive within its deadline (`readBodyWithin`, card 2910's code review, CS2). */
+export class BodyReadTimedOut extends Error {
+	readonly status = 408;
+
+	constructor(ms: number) {
+		super(`The upload did not arrive within ${Math.round(ms / 1000)} seconds. Nothing was written.`);
+		this.name = 'BodyReadTimedOut';
+	}
+}
+
+/**
+ * `read()`, a read of `request`'s body, given `ms` to finish (card 2910's
+ * code review, CS2). Past it the gate's count is stopped, so the read ends
+ * and no more of the body is taken in, and this fails with
+ * `BodyReadTimedOut`; a request the gate did not hold is only no longer
+ * waited for. Without it a sender that trickles its body holds what the read
+ * holds, an upload's place among them, for as long as Node's own request
+ * timeout allows.
+ */
+export async function readBodyWithin<T>(request: Request, ms: number, read: () => Promise<T>): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => {
+			const late = new BodyReadTimedOut(ms);
+			counts.get(request)?.stop(late);
+			reject(late);
+		}, ms);
+	});
+	try {
+		return await Promise.race([read(), deadline]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
