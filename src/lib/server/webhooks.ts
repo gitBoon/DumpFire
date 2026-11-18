@@ -15,23 +15,34 @@
  *
  * A webhook is sent only while the account that set it up can open its board
  * (card 2325), as a mail is sent only to recipients who can (`whoCanOpen`).
- * `deliver` asks first, at each event, so anything that sends goes through
- * it; one whose setter cannot, or that nobody is recorded as having set up,
- * is held: nothing is sent, nothing is written but an hourly WARN, and
- * `active` is left as it is. The answer says why, as `pausedBecause`.
+ * One whose setter cannot, or that nobody is recorded as having set up, is
+ * switched off for good (card 2752): `active` off, with why and when in
+ * `held_because` and `held_at`, by `switchOffHeld` (a reset, an invite used
+ * and an account deleted record theirs too, the code review's CS4). It stays off
+ * when the setter is given the board back, and only the board's owner or an
+ * administrator switches it on, with a key. It is switched off at the write
+ * that takes the setter's access away (`switchOffLostWebhooks`, called by the
+ * six writes that can), at every start and after every restore (the scope
+ * `'all'`), and at delivery as the backstop: `deliver` asks first, at each
+ * event, so anything that sends goes through it. Each switch-off writes one
+ * WARN and mails the board's owners (`notifyWebhooksSwitchedOff`), after the
+ * commit. The answer says why, as `pausedBecause`.
  */
 
 import http from 'node:http';
 import https from 'node:https';
 import { error } from '@sveltejs/kit';
 import { db, sqlite } from './db';
+import { afterCommit } from './db/transaction';
 import { boardTeams, teamMembers, webhooks, type Board } from './db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, asc, inArray } from 'drizzle-orm';
 import { createHash, createHmac } from 'crypto';
 import { createLogger } from './logger';
 import { canViewBoard, getBoardRole, roleOnBoard, type Actor } from './board-access';
+import { notifyWebhooksSwitchedOff } from './notifications';
 import { onTheWire } from './v1-json';
 import { addressRefusal, guardedLookup } from './webhook-address';
+import { stamp } from '$lib/timestamps';
 
 const log = createLogger('Webhooks');
 
@@ -62,20 +73,23 @@ export function canSeeWebhookSecret(user: Actor, boardId: number): boolean {
  *
  * `setBy`, the account that last set the address or the secret (card 2168),
  * is left out for every caller: it is what a password reset reads, not
- * something a caller needs.
+ * something a caller needs. So are `heldBecause` and `heldAt` (card 2752),
+ * which `pausedBecause` says in words, and card 2893's `setByKey` and
+ * `setWithKey`.
  *
  * `lastDelivery` (card 2178) goes with the address: given only with `reveal`,
  * so the people told a webhook is failing are the people who may read and
  * change where it sends. Null until a delivery since the server started, and
  * after the address changes.
  *
- * `pausedBecause` (card 2325) goes with it: why a webhook that is on is held
- * (`holdOf`), in one of two fixed sentences, or null. Null for one that is
- * off, whoever set it. Worked out here, so it is there after a restart, when
- * `lastDelivery` is null until the next event.
+ * `pausedBecause` (card 2325) goes with it: for a webhook switched off by a
+ * hold, why it was, as history (card 2752, E14); for one that is on and held
+ * now (`holdOf`), that nothing is sent; null otherwise, for one switched off
+ * by a `PUT` or a password reset included. Worked out here, so it is there
+ * after a restart, when `lastDelivery` is null until the next event.
  */
 export function presentWebhook(hook: Webhook, reveal: boolean) {
-	const { secret, url, events, setBy: _setBy, ...rest } = hook;
+	const { secret, url, events, setBy: _setBy, heldBecause: _heldBecause, heldAt: _heldAt, setByKey: _setByKey, setWithKey: _setWithKey, ...rest } = hook;
 	return {
 		...rest,
 		events: JSON.parse(events || '[]') as string[],
@@ -111,27 +125,230 @@ export function holdOf(hook: Webhook, cache: Map<string, boolean> = new Map()): 
 	return open ? null : 'setter cannot open';
 }
 
-/** What `pausedBecause` says for each hold, word for word (the plan's decision 4). */
-const PAUSED_BECAUSE: Record<Hold, string> = {
+/**
+ * Why a webhook was switched off for good, as `held_because` stores it (card
+ * 2752): a hold (`Hold`), or `'setter access ended'`, written by a password
+ * reset, an invite used or the account deleted (`endAccountAccess`,
+ * `deleteUser`; the code review's CS4), so that switching it on gives it a new
+ * secret as a lost setter's does. Card 2893 adds `'key ended'`.
+ */
+export type HeldBecause = Hold | 'setter access ended';
+
+/** The reasons whose switch-on gives the webhook a new secret: a known account held the old one (D3, S4; CS4). */
+export const NEW_SECRET_REASONS: readonly string[] = ['setter cannot open', 'setter access ended', 'key ended'];
+
+/**
+ * What `pausedBecause` says of a webhook switched off for each reason, word
+ * for word (card 2752, 4.3): as history, since it stays off whatever happens
+ * to its setter's access. The new secret is given in the switch-on's answer,
+ * and stays readable by the board's owner or an administrator (CS6).
+ */
+export const SWITCHED_OFF_BECAUSE: Record<HeldBecause, string> = {
 	'setter cannot open':
-		'The account that set this up can no longer open this board, so nothing is sent. The address was chosen by that account: ' +
-		'delete the webhook unless you recognise it; to keep it, switch it off and on, which makes you its setter, and set a new ' +
-		'secret and update the receiver.',
+		'This was switched off because the account that set it up could no longer open this board. It stays off if that account ' +
+		'is given the board back. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, ' +
+		'switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by ' +
+		"the board's owner or an administrator, and update the receiver.",
 	'no setter':
-		'Nobody is recorded as having set this up. Delete it unless you recognise the address; to keep it, switch it off and on, ' +
-		'which makes you its setter, and set a new secret.'
+		'This was switched off because nobody is recorded as having set it up. Delete it unless you recognise the address; to keep ' +
+		'it, switch it on with your own key, which makes you its setter, and set a new secret.',
+	'setter access ended':
+		"This was switched off because the account that set it up had its password reset, used an invite, or was deleted. The address " +
+		'was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which ' +
+		"makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, " +
+		'and update the receiver.'
 };
 
-/** Why a webhook that is on is held, for its answer; null when it is off or is sent. */
+/**
+ * What `pausedBecause` says of a webhook that is on and held now: a window only
+ * a change outside the six writes that switch off can open (the member row
+ * deleted from the host, say), closed at its next event.
+ */
+const HELD_NOW: Record<Hold, string> = {
+	'setter cannot open':
+		'Nothing is sent: the account that set this up can no longer open this board. It is switched off at its next event, and ' +
+		"stays off until the board's owner or an administrator switches it on.",
+	'no setter':
+		"Nothing is sent: nobody is recorded as having set this up. It is switched off at its next event, and stays off until the board's " +
+		'owner or an administrator switches it on.'
+};
+
+/** A reason as stored in `held_because`, or null for one this build does not know (card 2893's, before it is built). */
+function storedHold(heldBecause: string): HeldBecause | null {
+	return Object.hasOwn(SWITCHED_OFF_BECAUSE, heldBecause) ? (heldBecause as HeldBecause) : null;
+}
+
+/**
+ * Why a webhook is not sent, for its answer (card 2752, E14): one switched off
+ * by a hold says why, the reason kept as stored; one on and held now says that
+ * nothing is sent; null for one that is sent, and for one switched off any
+ * other way.
+ */
 function pausedBecause(hook: Webhook): string | null {
-	if (!hook.active) return null;
+	if (!hook.active) {
+		if (hook.heldBecause === null) return null;
+		const hold = storedHold(hook.heldBecause);
+		return hold === null
+			? `This was switched off (${hook.heldBecause}). It stays off until the board's owner or an administrator switches it on.`
+			: SWITCHED_OFF_BECAUSE[hold];
+	}
 	const hold = holdOf(hook);
-	return hold === null ? null : PAUSED_BECAUSE[hold];
+	return hold === null ? null : HELD_NOW[hold];
+}
+
+// ─── Switched off for good (card 2752) ────────────────────────────────────
+
+/** The host of a webhook's address, for a mail: never the path, the query or anything before the host. */
+export function hostOf(address: string): string {
+	try {
+		return new URL(address).host || 'an address with no host';
+	} catch {
+		return 'an address that is not a URL';
+	}
+}
+
+/**
+ * The receiver an address sends to, as the create's refusal compares it (the
+ * code review's CS2): its origin, the scheme, the host (in lower case, a name
+ * in punycode) and the port, a default port dropped, as `URL` reads it. Null
+ * for an address that is not an http or https URL. Another path, a query, a
+ * fragment, the case of the host or `:443` written out reach the same receiver.
+ */
+export function receiverOf(address: string): string | null {
+	try {
+		const url = new URL(address);
+		return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null;
+	} catch {
+		return null;
+	}
+}
+
+/** A webhook this process switched off, as its WARN and its mail name it. */
+export type SwitchedOff = { id: number; boardId: number; setBy: number | null; url: string; hold: Hold };
+
+/**
+ * Switch one held webhook off for good (D1), and say whether this call did:
+ * `active` off, `held_because` the hold, `held_at` now, only while it is on and
+ * its setter is the one it was judged on (S8). A webhook switched on again, or
+ * given a new setter, between the read and the write is left alone, and two
+ * callers switch it off once: only the caller whose write changed the row
+ * logs and mails. The one writer of a hold for lost access ('setter access
+ * ended' is `endAccountAccess`'s and `deleteUser`'s); switching on clears it
+ * (`PUT /api/v1/webhooks/{id}`).
+ */
+export function switchOffHeld(hook: Pick<Webhook, 'id' | 'setBy'>, hold: Hold): boolean {
+	return (
+		sqlite
+			.prepare('UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE id = ? AND active = 1 AND set_by IS ?')
+			.run(hold, stamp(), hook.id, hook.setBy).changes === 1
+	);
+}
+
+/**
+ * Which webhooks a sweep reads (S10): those on these boards (a share removed,
+ * a board made private), those these accounts set, on any board (taken out of
+ * a team, a team deleted, a role changed), or every one (a start, a restore).
+ * Only those that are on are read. A delivery, the backstop, switches off its
+ * one webhook with `switchOffHeld` itself (the code review's CR3: the plan's
+ * `{ ids }` had no caller, and went).
+ */
+export type SweepScope = { boardIds: number[] } | { setters: number[] } | 'all';
+
+/** How a sweep's switch-offs are told: mailed to the boards' owners, or not, with why (S2). */
+export type Telling = { mail: true } | { mail: false; because: string };
+
+/**
+ * Switch off, for good, every webhook within `scope` that is on and held now
+ * (`holdOf`, one cache for the sweep), and return those this call switched off
+ * (D2). Inside the transaction of the write that took the access away, so a
+ * write that fails leaves the webhooks as they were: it throws outside one.
+ *
+ * `cause` is a fixed sentence naming the write and who made it (S6), which
+ * each WARN and the owners' mail carry. Told after the commit (`afterCommit`),
+ * mailed unless `telling` says not; the restore, whose transaction is its
+ * own, passes `told: 'by the caller'` and tells after its commit
+ * (`tellSwitchedOff`).
+ */
+export function switchOffLostWebhooks(
+	scope: SweepScope,
+	cause: string,
+	options: { telling?: Telling; told?: 'after commit' | 'by the caller' } = {}
+): SwitchedOff[] {
+	if (!sqlite.inTransaction) {
+		throw new Error('switchOffLostWebhooks switches off inside the transaction of the write that took the access away, and none is open');
+	}
+	const on = eq(webhooks.active, true);
+	const where =
+		scope === 'all'
+			? on
+			: 'boardIds' in scope
+				? and(on, inArray(webhooks.boardId, scope.boardIds))
+				: and(on, inArray(webhooks.setBy, scope.setters));
+	const cache = new Map<string, boolean>();
+	const done: SwitchedOff[] = [];
+	for (const hook of db.select().from(webhooks).where(where).orderBy(asc(webhooks.id)).all()) {
+		const hold = holdOf(hook, cache);
+		if (hold !== null && switchOffHeld(hook, hold)) {
+			done.push({ id: hook.id, boardId: hook.boardId, setBy: hook.setBy, url: hook.url, hold });
+		}
+	}
+	if (done.length > 0 && options.told !== 'by the caller') {
+		const telling = options.telling ?? { mail: true };
+		afterCommit(() => tellSwitchedOff(done, cause, telling));
+	}
+	return done;
+}
+
+/** Why, in a WARN line: the hold in words, with the setter's id. */
+const HOLD_IN_WORDS: Record<Hold, (setBy: number | null) => string> = {
+	'setter cannot open': (setBy) => `the account that set it up (user ${setBy}) can no longer open the board`,
+	'no setter': () => 'nobody is recorded as having set it up'
+};
+
+/** Why, in the owners' mail: the hold in words, naming nobody. */
+const HOLD_IN_MAIL: Record<Hold, string> = {
+	'setter cannot open': 'the account that set it up can no longer open the board',
+	'no setter': 'nobody is recorded as having set it up'
+};
+
+/**
+ * Say what was switched off, once its write has committed: one WARN a webhook,
+ * naming it, its board, its setter's id and the cause, never the address
+ * (4.3); then the boards' owners mailed (D4), or, where `telling` says not, one
+ * WARN that they were not, and why (S2).
+ */
+export function tellSwitchedOff(done: readonly SwitchedOff[], cause: string, telling: Telling): void {
+	if (done.length === 0) return;
+	for (const hook of done) {
+		log.warn(
+			`Webhook ${hook.id} on board ${hook.boardId} switched off: ${HOLD_IN_WORDS[hook.hold](hook.setBy)} (${cause}). ` +
+				'It stays off until an owner of the board or an administrator switches it on.'
+		);
+	}
+	if (telling.mail) {
+		notifyWebhooksSwitchedOff(
+			done.map((hook) => ({
+				boardId: hook.boardId,
+				id: hook.id,
+				host: hostOf(hook.url),
+				why: HOLD_IN_MAIL[hook.hold]
+			})),
+			cause
+		);
+	} else {
+		log.warn(
+			`The owners of the boards of the ${done.length} webhook(s) switched off above were not mailed, as ${telling.because}. ` +
+				'The lines above name each.'
+		);
+	}
 }
 
 /** What the Share window says of a board's webhooks (card 2329). */
 export type WebhookShareNotes = {
-	/** Webhooks that are on and held now (`holdOf`): no setter, or one who cannot open the board. */
+	/**
+	 * Webhooks that send nothing for a hold: switched off by one, for whatever
+	 * reason (card 2752, E18), and those on and held now (`holdOf`).
+	 */
 	held: number;
 	/** For each member, by user id: the webhooks sent now that their removal would hold. */
 	byMember: Map<number, number>;
@@ -159,10 +376,15 @@ export type WebhookShareNotes = {
  * The switch to private is asked the same way (card 2385): `roleOnBoard`
  * reads `isPublic` from the board it is handed, so the board handed in as
  * private is the board without its public way in, every other as it is.
+ *
+ * Since card 2752 a removal switches the webhooks it stops off for good, and
+ * `held` counts those switched off by a hold too, whatever the hold (E18).
  */
 export function webhookShareNotes(board: Pick<Board, 'id' | 'createdBy' | 'isPublic'>): WebhookShareNotes {
 	const notes: WebhookShareNotes = { held: 0, byMember: new Map(), byTeam: new Map(), privateStops: 0 };
-	const hooks = db.select().from(webhooks).where(and(eq(webhooks.boardId, board.id), eq(webhooks.active, true))).all();
+	const all = db.select().from(webhooks).where(eq(webhooks.boardId, board.id)).all();
+	notes.held = all.filter((hook) => !hook.active && hook.heldBecause !== null).length;
+	const hooks = all.filter((hook) => hook.active);
 	if (hooks.length === 0) return notes;
 	const sharedTeams = db.select({ teamId: boardTeams.teamId }).from(boardTeams).where(eq(boardTeams.boardId, board.id)).all();
 	const add = (counts: Map<number, number>, id: number) => counts.set(id, (counts.get(id) ?? 0) + 1);
@@ -321,7 +543,7 @@ const WARN_AGAIN_AFTER_MS = 60 * 60 * 1000;
 export const WARNINGS_REMEMBERED = 10_000;
 
 /** The kinds of WARN about one webhook, each held to its own hour. */
-type WarnKind = 'refused as written' | 'resolves inside' | 'redirect' | 'events not a list' | Hold;
+type WarnKind = 'refused as written' | 'resolves inside' | 'redirect' | 'events not a list';
 
 /**
  * Each webhook and kind of WARN written, with when and how many like it were
@@ -556,11 +778,15 @@ export function activeWebhooksRefused(): { id: number; boardId: number; reason: 
  * Send one webhook its event, or say in the system log why it was not sent.
  *
  * Held first, before the address is judged, when its setter cannot open the
- * board or it has no setter (`holdOf`, card 2325): one WARN an hour, naming
- * the webhook, its board and the setter's id, never the address; a not-sent
- * result; nothing written; `active` untouched. Here, not in the dispatch, so
- * that anything that sends is held by it. A check that throws throws before
- * any request: in a dispatch, the webhook's own `try` logs it, unsent.
+ * board or it has no setter (`holdOf`, card 2325): a not-sent result, and,
+ * as the backstop of the writes that switch it off (card 2752, D2), switched
+ * off for good (`switchOffHeld`, the scope of one webhook). Only the delivery
+ * whose write changed the row writes the WARN and mails the owners, so a
+ * stale row delivered twice is switched off, said and mailed once. A write
+ * that fails is an ERROR, and the delivery is still not sent (S8). Here, not
+ * in the dispatch, so that anything that sends is held by it. A check that
+ * throws throws before any request: in a dispatch, the webhook's own `try`
+ * logs it, unsent.
  *
  * Refused before any request, with a WARN, when `refusalAsWritten` refuses
  * its address. Then the request is made
@@ -622,16 +848,20 @@ export function deliver(
 		setTimeout(() => recordDelivery(hook, dispatch, event, result), after).unref?.();
 	};
 
-	// Held while nobody who can open the board answers for it (card 2325).
+	// Held while nobody who can open the board answers for it (card 2325), and
+	// switched off for good (card 2752): not sent whatever the write does.
 	const hold = holdOf(hook, holds);
 	if (hold !== null) {
-		notSent(
-			hold,
-			hold === 'no setter'
-				? 'nobody is recorded as having set it up'
-				: `the account that set it up (user ${hook.setBy}) can no longer open the board`
-		);
 		record(notSentResult(hold));
+		let switched = false;
+		try {
+			switched = switchOffHeld(hook, hold);
+		} catch (err) {
+			log.error(`${which} could not be switched off, and was not sent: ${(err as Error)?.message ?? err}`);
+		}
+		if (switched) {
+			tellSwitchedOff([{ id: hook.id, boardId: hook.boardId, setBy: hook.setBy, url: hook.url, hold }], 'found when an event was sent', { mail: true });
+		}
 		return;
 	}
 

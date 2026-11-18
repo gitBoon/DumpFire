@@ -391,7 +391,8 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 		// The current password, counted on the session as it arrives, the code
 		// spent and the count cleared for the right one, apart from the
 		// transaction (cards 2701 and 2771). Then the five, in the order of the list, the requests' address,
-		// the webhooks they set switched off (card 2168), and then the user.
+		// the webhooks they set switched off (card 2168), with the hold 'setter
+		// access ended' (card 2752's code review, CS4), and then the user.
 		// Nothing else is written: the rest is the keys' doing.
 		expect(run.writes).toEqual([
 			...COUNTS,
@@ -401,7 +402,7 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 			'UPDATE work_dependencies SET created_by_user_id = NULL WHERE created_by_user_id = ?',
 			'UPDATE card_dependencies SET created_by_user_id = NULL WHERE created_by_user_id = ?',
 			'UPDATE task_requests SET requester_email = (SELECT email FROM users WHERE id = ?) WHERE requester_user_id = ?',
-			'UPDATE webhooks SET active = 0 WHERE set_by = ? AND active = 1 RETURNING id',
+			"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND active = 1 RETURNING id",
 			'DELETE FROM users WHERE id = ?'
 		]);
 		expect(run.effects).toEqual([]);

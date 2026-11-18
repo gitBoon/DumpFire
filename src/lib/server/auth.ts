@@ -930,9 +930,14 @@ export const namingIds = (ids: number[]): string =>
  *
  * It ends nothing else. A webhook nobody is recorded as having set, one made
  * before migration 0056 or whose setter's account was deleted, is left on, and
- * so is one somebody else set since. Since card 2325 one with no setter is
- * held at delivery all the same (webhooks.ts, `holdOf`), as is one whose
- * setter can no longer open its board.
+ * so is one somebody else set since. One with no setter is switched off for
+ * good all the same (card 2752: at every start, after every restore and at
+ * delivery; webhooks.ts, `switchOffLostWebhooks`), as is one whose setter can
+ * no longer open its board, at the write that takes the board away. This
+ * switch-off records a hold too, 'setter access ended' (card 2752's code
+ * review, CS4): switched on again by the board's owner or an administrator,
+ * the webhook is given a new secret, and until then nobody else may make a
+ * webhook to its receiver on that board.
  *
  * It throws if no transaction is open.
  */
@@ -952,7 +957,10 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; repor
 		? ids(
 				db
 					.update(webhooks)
-					.set({ active: false })
+					// Recorded as a hold (the code review of card 2752, CS4): switched
+					// on again, it is given a new secret, which whoever held the
+					// account may know; and its receiver is the owner's to send to.
+					.set({ active: false, heldBecause: 'setter access ended', heldAt: stamp() })
 					.where(and(eq(webhooks.setBy, userId), eq(webhooks.active, true)))
 					.returning({ id: webhooks.id })
 					.all()

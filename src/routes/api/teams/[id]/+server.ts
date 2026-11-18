@@ -1,9 +1,10 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { teams } from '$lib/server/db/schema';
+import { teamMembers, teams } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { pathId, readBody, readText } from '$lib/server/request-body';
 import { requireTeamManager, requireUser } from '$lib/server/route-guards';
+import { switchOffLostWebhooks } from '$lib/server/webhooks';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -44,9 +45,19 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	// its account is now (card 2253). The check and the delete were two steps
 	// with no transaction around them.
 	writeAs(locals, (caller) => {
-		requireTeamManager(caller, teamId);
+		const team = requireTeamManager(caller, teamId);
 
+		// Its members, read before the delete takes them: each webhook one of
+		// them set whose board they can no longer open is switched off for
+		// good, in this write (card 2752, D2).
+		const members = db.select({ userId: teamMembers.userId }).from(teamMembers).where(eq(teamMembers.teamId, teamId)).all();
 		db.delete(teams).where(eq(teams.id, teamId)).run();
+		if (members.length > 0) {
+			switchOffLostWebhooks(
+				{ setters: members.map((member) => member.userId) },
+				`the team ${team.name} was deleted by ${requireUser(caller).username}`
+			);
+		}
 	});
 	return json({ success: true });
 };

@@ -219,7 +219,7 @@ export type SecretsAccount = { kept: SecretsKept; toEnter: SecretsToEnter };
 export type SecretsHere = {
 	mail: Record<(typeof MAIL_KEYS)[number], string | null>;
 	destinations: Entry[];
-	webhooks: { id: number; boardId: number; url: string; secret: string; setBy: number | null }[];
+	webhooks: { id: number; boardId: number; url: string; secret: string; setBy: number | null; heldBecause: string | null; heldAt: string | null }[];
 };
 
 const isEntry = (value: unknown): value is Entry => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -880,16 +880,18 @@ export function unsealedBecause(backup: Database.Database, key: string | null): 
  * This server's secrets, and the fields that decide where each goes: the mail
  * host, port, way out, user and password; every destination whole; each
  * webhook that has a secret, with its board, its address and who set them
- * (`set_by`, card 2168; none before migration 0056). Read by
+ * (`set_by`, card 2168; none before migration 0056), and the hold it was
+ * switched off for, and when (card 2752; none before migration 0071). Read by
  * `restoreFromBackup` inside its transaction, before the first table is
  * cleared. A table or setting that is not there reads as none.
  */
 export function readSecretsHere(live: Database.Database): SecretsHere {
 	const mail = readMailHere(live);
 	const setBy = hasColumns(live, 'webhooks', 'set_by') ? 'set_by' : 'NULL';
+	const held = hasColumns(live, 'webhooks', 'held_because', 'held_at') ? 'held_because AS heldBecause, held_at AS heldAt' : 'NULL AS heldBecause, NULL AS heldAt';
 	const webhooks = hasColumns(live, 'webhooks', 'id', 'board_id', 'url', 'secret')
 		? (live
-				.prepare(`SELECT id, board_id AS boardId, url, secret, ${setBy} AS setBy FROM webhooks WHERE secret IS NOT NULL AND secret <> ''`)
+				.prepare(`SELECT id, board_id AS boardId, url, secret, ${setBy} AS setBy, ${held} FROM webhooks WHERE secret IS NOT NULL AND secret <> ''`)
 				.all() as SecretsHere['webhooks'])
 		: [];
 	return { mail, destinations: destinationsIn(settingOf(live, 'backup_config')), webhooks };
@@ -1335,7 +1337,9 @@ function boardName(database: Database.Database, boardId: number): string | null 
  *     by another account than the one the backup's row names was set again
  *     since, and filled it would be the other account's secret under the
  *     backup's setter, which that account's reset would not reach. One with a
- *     secret in the backup is left as it is.
+ *     secret in the backup is left as it is. Never switched on where it is
+ *     held off (card 2752, S1): the webhook here switched off by a hold keeps
+ *     its hold, and stays off, and so does a restored row with one.
  *
  * A value the backup has is never replaced. `writeMarker`, for a restore as it
  * is, writes the marker into the restored settings trimmed to the webhooks
@@ -1435,11 +1439,17 @@ export function fillSecretGaps(
 	const leftListed: ListedWebhook[] = [];
 	if (hasColumns(live, 'webhooks', 'id', 'board_id', 'url', 'secret', 'active')) {
 		const setBy = hasColumns(live, 'webhooks', 'set_by') ? 'set_by' : 'NULL';
-		const find = live.prepare(`SELECT id, board_id AS boardId, url, secret, active, ${setBy} AS setBy FROM webhooks WHERE id = ?`);
-		const fill = live.prepare('UPDATE webhooks SET secret = ?, active = ? WHERE id = ?');
+		// The hold (card 2752, migration 0071), where this server has its columns.
+		const holds = hasColumns(live, 'webhooks', 'held_because', 'held_at');
+		const find = live.prepare(
+			`SELECT id, board_id AS boardId, url, secret, active, ${setBy} AS setBy, ${holds ? 'held_because' : 'NULL'} AS heldBecause FROM webhooks WHERE id = ?`
+		);
+		const fill = live.prepare(
+			`UPDATE webhooks SET secret = @secret, active = @active${holds ? ', held_because = COALESCE(@heldBecause, held_because), held_at = COALESCE(@heldAt, held_at)' : ''} WHERE id = @id`
+		);
 		for (const entry of listed) {
 			const row = find.get(entry.id) as
-				| { id: number; boardId: number; url: string; secret: string | null; active: number; setBy: number | null }
+				| { id: number; boardId: number; url: string; secret: string | null; active: number; setBy: number | null; heldBecause: string | null }
 				| undefined;
 			if (!row || has(row.secret)) continue;
 			const match = here.webhooks.find(
@@ -1449,8 +1459,12 @@ export function fillSecretGaps(
 				// On or off as the marker says it was. The marker is the backup's
 				// word, but `here` holds anything only for a backup whose seal
 				// verified (S1): one this server made, whose marker this server
-				// wrote, and nobody changed since.
-				fill.run(match.secret, entry.active ? 1 : 0, row.id);
+				// wrote, and nobody changed since. Never on where it is held off,
+				// here or in the restored row (card 2752, S1): it stays off, with
+				// this server's hold, or the row's own.
+				const heldOff = (match.heldBecause ?? null) !== null || (row.heldBecause ?? null) !== null;
+				const params = { secret: match.secret, active: entry.active && !heldOff ? 1 : 0, id: row.id };
+				fill.run(holds ? { ...params, heldBecause: match.heldBecause ?? null, heldAt: match.heldAt ?? null } : params);
 				kept.webhooks.push(row.id);
 			} else {
 				unfilled.webhooks.push({ id: row.id, boardId: row.boardId, board: boardName(live, row.boardId) });

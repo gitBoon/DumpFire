@@ -362,7 +362,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 					}
 					writeFileSync(importPaths.safety, JSON.stringify(safetyBackup), { mode: 0o600 });
 
-					result = restoreFromBackup(sqlite, backupDb, { outside });
+					result = restoreFromBackup(sqlite, backupDb, { outside, by: caller.username });
 				}
 			} finally {
 				backupDb.close();

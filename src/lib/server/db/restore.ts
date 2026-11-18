@@ -40,6 +40,8 @@ import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
 import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, type MfaRestore } from '../mfa-backup';
 import { createLogger } from '../logger';
 import { REPLACE_PLAIN_USED_INVITES, inHashForm } from '../invites';
+import { switchOffLostWebhooks, tellSwitchedOff, type SwitchedOff } from '../webhooks';
+import { sqlite } from './index';
 
 const log = createLogger('AUTH');
 
@@ -156,6 +158,15 @@ export type RestoreResult = {
 	 */
 	unsealed: Unsealed | null;
 	/**
+	 * Webhooks switched off for good inside the restore's transaction (card
+	 * 2752, S1): each restored on whose setter cannot open its board in the
+	 * restored data, or that nobody is recorded as having set up. 0 for a
+	 * working copy, which switches every webhook off, and for a restore into
+	 * any connection but the server's own, which is not swept:
+	 * the next start that opens it as the server's database does.
+	 */
+	webhooksSwitchedOff: number;
+	/**
 	 * What became of the second factors and recovery codes (card 2768): how
 	 * many accounts kept this server's and how many took the backup's, whose
 	 * the backup held that were left out and why, and, once two-step sign-in
@@ -263,6 +274,58 @@ const API_KEY_DEADLINE_SETTING = 'api_key_deadline';
  */
 const GIVE_API_KEY_DEADLINES =
 	'UPDATE api_keys SET deadline_at = @deadline WHERE expires_at IS NULL OR stamp_of(expires_at) > @deadline';
+
+/**
+ * The setting migration 0071 writes: the moment API keys began to be recorded
+ * on webhooks (cards 2752 and 2893, S9). A restore keeps this server's value,
+ * over any the backup holds.
+ */
+const WEBHOOK_KEYS_RECORDED_SETTING = 'webhook_keys_recorded_at';
+
+/** 0071's setting put back as this server had it (`@value`), the backup's replaced. */
+const KEEP_WEBHOOK_KEYS_RECORDED_SETTING =
+	`INSERT INTO settings (key, value) VALUES ('${WEBHOOK_KEYS_RECORDED_SETTING}', @value) ON CONFLICT (key) DO UPDATE SET value = excluded.value`;
+
+/** A webhook of this server's switched off for good, as `webhookHoldsHere` reads it. */
+type HoldHere = { id: number; boardId: number; url: string; setBy: number | null; heldBecause: string; heldAt: string | null };
+
+/**
+ * This server's webhooks switched off for good (migration 0071), whatever
+ * their secret, read before a restore clears the table (card 2752's code
+ * review, CS5). None where the database has no such column.
+ */
+function webhookHoldsHere(live: Database.Database): HoldHere[] {
+	try {
+		return live
+			.prepare('SELECT id, board_id AS boardId, url, set_by AS setBy, held_because AS heldBecause, held_at AS heldAt FROM webhooks WHERE held_because IS NOT NULL')
+			.all() as HoldHere[];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Carry this server's holds onto the restored rows of the same webhooks (card
+ * 2752's code review, CS5): a restored row with the same id, board, address
+ * and setter as one switched off here is switched off with the same hold,
+ * whatever the backup had it as, so a restore never switches back on a
+ * webhook held off here, the backup's setter being able to open the board or
+ * not, its secret filled or not. Returns how many rows it changed.
+ */
+function carryHolds(live: Database.Database, holds: readonly HoldHere[]): number {
+	if (holds.length === 0) return 0;
+	const carry = live.prepare('UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE id = ? AND board_id = ? AND url = ? AND set_by IS ?');
+	let carried = 0;
+	for (const hold of holds) carried += carry.run(hold.heldBecause, hold.heldAt, hold.id, hold.boardId, hold.url, hold.setBy).changes;
+	return carried;
+}
+
+/** This server's 0071 setting as stored, read before a restore clears `settings`; null where it has none. */
+function webhookKeysRecordedHere(live: Database.Database): string | null {
+	if (!columnNamesOf(live, 'settings').includes('value')) return null;
+	const row = live.prepare('SELECT value FROM settings WHERE key = ?').get(WEBHOOK_KEYS_RECORDED_SETTING) as { value: unknown } | undefined;
+	return typeof row?.value === 'string' ? row.value : null;
+}
 
 /** 0069's setting, kept where a backup made before it held none (card 2772). */
 const KEEP_API_KEY_DEADLINE_SETTING =
@@ -881,6 +944,25 @@ export function defaultOutside(
  * that rolls back leaves all four as they were, and a working copy that could
  * not be switched off is not committed.
  *
+ * A webhook held off here is not brought back on by a restore (card 2752,
+ * S1). This server's webhooks switched off for good are read before the
+ * clear, whatever their secret, and once the rows are copied each restored row
+ * of the same webhook (id, board, address and setter) is switched off with the
+ * same hold (`carryHolds`, the code review's CS5). `fillSecretGaps` never switches on one whose `held_because` is set,
+ * here or in the restored row, and keeps this server's hold on it; and once
+ * the gaps are filled, inside the transaction, every restored webhook that is
+ * on and whose setter cannot open its board in the restored data, or that
+ * nobody is recorded as having set up, is switched off for good
+ * (`switchOffLostWebhooks('all')`; a backup made before migration 0071 holds
+ * no hold, so its webhooks come in on). The count is `webhooksSwitchedOff`.
+ * After the commit each is a WARN naming `by`, who restored, and the boards'
+ * owners are mailed where the schedulers run (S2). Not for a working copy,
+ * which switches every webhook off anyway. Only on the server's own
+ * connection, which the hold rule reads (`canViewBoard`): a restore into any
+ * other is not swept, and the start that opens it as the server's database
+ * sweeps it. This server's `webhook_keys_recorded_at` (migration 0071) is
+ * read before the clear and kept, over the backup's.
+ *
  * Throws a `RestoreError` in every case but a clean return. Its `committed`
  * says whether the database was changed: it is false, and the database is as
  * it was, for everything except foreign keys that could not be switched back
@@ -889,7 +971,7 @@ export function defaultOutside(
 export function restoreFromBackup(
 	live: Database.Database,
 	backup: Database.Database,
-	options: { outside?: Outside; key?: MfaKey | null } = {}
+	options: { outside?: Outside; key?: MfaKey | null; by?: string } = {}
 ): RestoreResult {
 	// Every read of the backup, from its list and its seal (and the file's
 	// checks before it) to the rows copied, inside one read transaction on its
@@ -911,7 +993,7 @@ export function restoreFromBackup(
 function restoreInOneSnapshot(
 	live: Database.Database,
 	backup: Database.Database,
-	options: { outside?: Outside; key?: MfaKey | null }
+	options: { outside?: Outside; key?: MfaKey | null; by?: string }
 ): RestoreResult {
 	const tables = restorableTables(live);
 	const errors: string[] = [];
@@ -921,6 +1003,9 @@ function restoreInOneSnapshot(
 	let requestLinksReplaced = 0;
 	let apiKeyDeadlines = 0;
 	let decisionLinksCleared = 0;
+	// The webhooks switched off for good inside the transaction (card 2752), told after the commit.
+	let swept: SwitchedOff[] = [];
+	const sweptBecause = `found after a restore${options.by ? ` by ${options.by}` : ''}`;
 	let secrets: SecretsAccount = {
 		kept: { mailPassword: false, destinations: [], webhooks: [] },
 		toEnter: { mailPassword: false, destinations: [], webhooks: [] }
@@ -1004,6 +1089,10 @@ function restoreInOneSnapshot(
 			// And its API key deadline (migration 0069, card 2772), for a backup
 			// made before it: see above. Null where there is none that can be read.
 			const deadlineHere = apiKeyDeadlineHere(live);
+			// And when it began to record keys on webhooks (migration 0071), kept over the backup's: see above.
+			const keysRecordedHere = webhookKeysRecordedHere(live);
+			// And its webhooks switched off for good, whatever their secret (card 2752's code review, CS5): see above.
+			const holdsHere = webhookHoldsHere(live);
 			// The sign-ins left at their second step, which the clear below
 			// ends (card 2769, CS1): said once the restore is committed. No
 			// notice is mailed, since the accounts are the backup's from here.
@@ -1159,6 +1248,13 @@ function restoreInOneSnapshot(
 				if (tables.includes('settings')) live.prepare(KEEP_API_KEY_DEADLINE_SETTING).run({ deadline });
 			}
 
+			// This server's 0071 setting, over the backup's (cards 2752 and
+			// 2893): see above. Not caught, so that a restore that could not keep
+			// it is rolled back.
+			if (keysRecordedHere !== null && tables.includes('settings')) {
+				live.prepare(KEEP_WEBHOOK_KEYS_RECORDED_SETTING).run({ value: keysRecordedHere });
+			}
+
 			// Every personal decision link ended, and recorded on its decision
 			// (card 2675, decision 13): see above. Not caught, so that a restore
 			// that could not end them is rolled back, and brings in no link a
@@ -1236,7 +1332,21 @@ function restoreInOneSnapshot(
 			// Only for a backup whose seal verified (S1): for any other, from
 			// nothing, so that nothing is filled and every gap is listed.
 			const working = options.outside === 'off';
+			// This server's holds carried onto the same webhooks restored (card
+			// 2752's code review, CS5): see above. Before the secrets are filled,
+			// so that no fill switches one on. Not caught.
+			carryHolds(live, holdsHere);
 			const filled = fillSecretGaps(live, sealVerified ? here : nothingHere(), listed, { writeMarker: !working });
+
+			// Every restored webhook that is on and held switched off for good
+			// (card 2752, S1): see above. On the server's own connection alone,
+			// which the hold rule reads, and not for a working copy, which
+			// switches every webhook off below and mails nobody. Not caught: a
+			// restore that could not switch them off is rolled back. Told after
+			// the commit.
+			if (live === sqlite && !working) {
+				swept = switchOffLostWebhooks('all', sweptBecause, { told: 'by the caller' });
+			}
 
 			// A working copy: see above. Not caught, so that a failure here rolls
 			// the restore back like any other.
@@ -1302,6 +1412,16 @@ function restoreInOneSnapshot(
 
 	// The restore is committed. A failure from here on is something to report
 	// about a restore that succeeded, not a failed restore.
+	// The webhooks it switched off, each a WARN, and the boards' owners mailed
+	// only where the schedulers run (card 2752, S1, S2).
+	if (swept.length > 0) {
+		try {
+			const setting = schedulerSetting(process.env.SCHEDULERS, dev);
+			tellSwitchedOff(swept, sweptBecause, setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` });
+		} catch (e) {
+			errors.push(`The ${swept.length} webhook(s) the restore switched off could not all be said: ${messageOf(e)}`);
+		}
+	}
 	if (unfinished.length > 0) {
 		log.warn(
 			`The restore ended ${unfinished.length} sign-in(s) left at their second step, of user id(s) ` +
@@ -1345,5 +1465,5 @@ function restoreInOneSnapshot(
 		);
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, mfa };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, webhooksSwitchedOff: swept.length, mfa };
 }

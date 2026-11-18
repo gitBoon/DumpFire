@@ -1,11 +1,13 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.137
+version: 1.139
 status: As-Built
 date: 2026-11-18
 tags:
   - api
+  - card-2752
+  - webhook-switched-off
   - rest
   - integration
   - developer
@@ -37,7 +39,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "REST API reference for DumpFire's external v1 API: authentication, a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -376,6 +378,45 @@ some fields were answered in that form, which names no zone, and the same field 
 either.
 
 ### Changes on 2026-11-18
+
+**Breaking: a webhook whose setter can no longer open its board is switched off for good**
+(card 2752; OpenAPI document version `1.11.0`, with a dated note, marked breaking, at the top
+of its description). Until this release such a webhook was held, and sent again by itself once
+its setter could open the board again, with no password asked. From this release:
+
+1. A webhook whose setter (the account that created it, or last set its `url` or `secret`, or
+   switched it on) can no longer open its board, and one nobody is recorded as having set up,
+   is switched off, `active` `false`: at the change that takes the access away (a person or a
+   team taken off the board, the setter taken out of a team, a team deleted, the board made
+   private, the setter's role changed), at every start, after every restore of a backup, and at
+   its next event where none of those saw it.
+2. It stays off when the setter is given the board back, the board is made public again or the
+   role is given back.
+3. A password reset, an invite used or the setter's account deleted, which switched off the
+   webhooks the account set, now records why too (`setter access ended`), so such a webhook is
+   held as one whose setter lost the board is.
+4. `pausedBecause` says, as history, why it was switched off and what to do; for one still on
+   and held now it begins "Nothing is sent: "; it is `null` for one switched off by `PUT`.
+5. `PUT /webhooks/:webhookId` with `{"active": true}`, the board's owner's or an
+   administrator's as before, makes the caller its setter and, for one whose setter lost the
+   board or had its access ended, answers a new `secret`, 64 hexadecimal characters, given
+   there and readable by the board's owner or an administrator; a `secret` sent with that
+   switch-on is `400`, nothing written. One with no recorded setter keeps its secret.
+6. `DELETE /webhooks/:webhookId` of a webhook switched off this way is the board's owner's or
+   an administrator's: an editor is `403`, nothing deleted.
+7. `POST /boards/:boardId/webhooks` by anyone but the board's owner or an administrator is
+   `409`, nothing created, for a receiver (the same scheme, host and port, whatever the path,
+   query, fragment, case or default port) of a webhook of the board switched off this way,
+   asked after every other check.
+8. The board's owners, or the administrators where it has none, are mailed when its webhooks
+   are switched off for lost access, naming the change and who made it, and when someone else
+   makes a webhook on the board.
+9. Nothing else changed: no operation, field, status or schema is new, and a webhook whose
+   setter can open its board is sent as before.
+
+**What to do.** An integration that stopped: read why with `GET /webhooks/:webhookId`, then
+switch it on with the board owner's key, `{"active": true}`, and give the receiver the new
+`secret` from the answer. See [Webhooks](#webhooks).
 
 **Breaking: a board or card the key's user cannot open is answered 404, not 403** (card
 2719; OpenAPI document version `1.10.0`, with a dated note, marked breaking, at the top of its
@@ -1974,7 +2015,8 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   when its setter can open the board again. The board's owner or an administrator takes one
   over by switching it off, then on (which makes them its setter), with a new secret, and
   updates the receiver; `{"active": true}` for one already on takes nothing over (item 81).
-  See [Webhooks](#webhooks).
+  See [Webhooks](#webhooks). (Since `1.11.0`, card 2752, such a webhook is switched off for
+  good instead, and is not sent again when its setter can open the board again.)
 - **`GET /cards/:cardId/comments` lists comments made in the same second the later first**
   (card 2301), by id, in a list that is still newest first. A comment's `createdAt` is kept
   to the second, and comments of one second came back in no set order, in practice the
@@ -5416,25 +5458,45 @@ flowchart TD
   failed, so poll `GET /api/v1/webhooks/{webhookId}` or the board's list. Every outcome and
   reason, with what to do about each: [Last Delivery](notifications-email.md#last-delivery).
 - **A webhook is sent only while the account that set it up can open the board** (card
-  2325): the account that created it, or last set its `url` or `secret`, or switched it on,
-  asked at each event with its role as it is then. One whose setter was taken off the board,
-  out of the team it is shared with, or lost it when it was made private, or was an
-  administrator made an ordinary user, is held: nothing is sent and `active` is left as it is.
-  **A webhook nobody is recorded as having set up (made before setters were recorded on
-  2026-10-18/19, or brought back by restoring an older backup) is held from the deploy on.**
-  `pausedBecause`, given with the address (and `null` in the answer to the `POST`), is `null`
-  unless the webhook is on and held, then one of two sentences, word for word: "The account
-  that set this up can no longer open this board, so nothing is sent. The address was chosen
-  by that account: delete the webhook unless you recognise it; to keep it, switch it off and
-  on, which makes you its setter, and set a new secret and update the receiver." or "Nobody is
-  recorded as having set this up. Delete it unless you recognise the address; to keep it,
-  switch it off and on, which makes you its setter, and set a new secret." It is worked out
-  each time, so it is there after a restart when `lastDelivery` is `null`. A held webhook is
-  sent again when its setter can open the board again. **Taking one over**: the board's owner
-  or an administrator sends `{"active": false}`, then `{"active": true, "secret": "<new>"}`,
-  and updates the receiver with the new secret; `{"active": true}` for one already on takes
-  nothing over. See
-  [When Nobody Who Can Open the Board Set It Up](notifications-email.md#when-nobody-who-can-open-the-board-set-it-up).
+  2325), and **one whose setter loses the board is switched off for good** (card 2752, since
+  `1.11.0`). The setter is the account that created it, or last set its `url` or `secret`, or
+  switched it on. One whose setter was taken off the board, out of the team it is shared with,
+  lost it with the team deleted or the board made private, or was an administrator made an
+  ordinary user, is switched off at that change: `active` becomes `false`. So is one nobody is
+  recorded as having set up (made before setters were recorded on 2026-10-18/19, or brought
+  back by restoring an older backup), at the first start; and one whose setter's password was
+  reset, who used an invite, or whose account was deleted. Every start, every restore and every
+  event switch off what the changes did not see, and a restore never switches back on one
+  switched off here. **It stays off when the setter is given the board back.**
+  `pausedBecause`, given with the address (and `null` in the answer to the `POST`), says why,
+  as history, word for word: "This was switched off because the account that set it up could
+  no longer open this board. It stays off if that account is given the board back. The address
+  was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it
+  on with your own key, which makes you its setter and gives it a new secret, given in that
+  answer and readable by the board's owner or an administrator, and update the receiver.",
+  "This was switched off because the account that set it up had its password reset, used an
+  invite, or was deleted. …" (the same advice) or "This was switched off because nobody is
+  recorded as having set it up. Delete it unless you recognise the address; to keep it, switch
+  it on with your own key, which makes you its setter, and set a new secret." For one still on
+  and held by a change made outside DumpFire's own writes it begins "Nothing is sent: " until its
+  next event switches it off; it is `null` for one that is sent, and for one switched off by a
+  `PUT`. **Switching it on**: the board's owner or an administrator sends `{"active": true}`
+  alone; for any reason but no recorded setter the answer's `secret` is a new one, 64
+  hexadecimal characters, to give the receiver, and a `secret` sent with it is `400` `A webhook
+  switched off this way is given a new secret when it is switched on: send active true alone,
+  and read the new secret from the answer.`; one with no recorded setter keeps its secret.
+  **Deleting it** is the board's owner's or an administrator's too: an editor's `DELETE` is
+  `403` `Only the board's owner or an administrator can delete a webhook that was switched off
+  this way. Ask the board's owner.` **The same receiver**: while one is switched off this way,
+  a `POST` by anyone but the board's owner or an administrator to its receiver on its board,
+  the same scheme, host and port whatever the path, query, fragment, case or default port, is
+  `409` `A webhook to this receiver (the same scheme, host and port) on this board was switched
+  off. Only the board's owner or an administrator can switch it on again, or add another webhook
+  to it.`, asked after every other check. The board's owners are mailed when webhooks are
+  switched off for lost access, naming the change and who made it, and when someone else makes
+  one on their board. See
+  [A Webhook Switched Off When Its Setter Loses the Board](authentication-security.md#a-webhook-switched-off-when-its-setter-loses-the-board-card-2752)
+  and [When Nobody Who Can Open the Board Set It Up](notifications-email.md#when-nobody-who-can-open-the-board-set-it-up).
 - **Only the board's owner or an administrator changes the address or the secret, or
   switches a webhook on.** An editor who sends `url` or `secret` at all, whatever the value,
   is `403` `Only the board's owner or an administrator can change a webhook's address or

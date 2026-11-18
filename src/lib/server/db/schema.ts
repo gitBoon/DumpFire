@@ -431,10 +431,27 @@ export const webhooks = sqliteTable('webhooks', {
 	// 0056): the caller of the create, and of an update that changes either.
 	// NULL for a webhook made before 0056, and once its setter's account is
 	// deleted. Never in an answer: presentWebhook leaves it out.
-	setBy: integer('set_by').references(() => users.id, { onDelete: 'set null' })
+	setBy: integer('set_by').references(() => users.id, { onDelete: 'set null' }),
+	// Why and when the webhook was switched off for good (card 2752, migration
+	// 0071): 'setter cannot open' or 'no setter' (switchOffHeld in webhooks.ts),
+	// 'setter access ended' (a reset, an invite used or the account deleted:
+	// endAccountAccess, deleteUser; the code review's CS4), and card 2893's
+	// 'key ended'. Set only with `active` off; carried by a restore onto the
+	// same webhook (carryHolds, fillSecretGaps); cleared only when the board's
+	// owner or an administrator switches it on. NULL for one that is on, and for
+	// one switched off by a PUT or a working copy. Never in an answer:
+	// presentWebhook leaves both out.
+	heldBecause: text('held_because'),
+	heldAt: text('held_at'),
+	// The API key that last set the address or the secret or switched it on,
+	// and whether one was used (card 2893, carried by migration 0071). Never in
+	// an answer.
+	setByKey: integer('set_by_key').references(() => apiKeys.id, { onDelete: 'set null' }),
+	setWithKey: integer('set_with_key', { mode: 'boolean' })
 }, (table) => [
 	index('idx_webhooks_board_id').on(table.boardId),
-	index('idx_webhooks_set_by').on(table.setBy)
+	index('idx_webhooks_set_by').on(table.setBy),
+	index('idx_webhooks_set_by_key').on(table.setByKey)
 ]);
 
 // ─── Card Dependencies ──────────────────────────────────────────────────────

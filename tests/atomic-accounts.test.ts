@@ -1722,8 +1722,8 @@ describe('what taking an account back switches off (card 2168)', () => {
 				dispatchWebhook(s.board.id, 'card.moved', { cardId: 1 });
 				await sent.settle();
 				// The one nobody is recorded as having set is left on by the
-				// reset, and held at delivery since card 2325.
-				expect(hookRow(s.hooks.nobodys)).toEqual({ active: 1, setBy: null });
+				// reset, and switched off for good at delivery since card 2752.
+				expect(hookRow(s.hooks.nobodys)).toEqual({ active: 0, setBy: null });
 				expect(sent.webhooks.map((hook) => hook.url)).toEqual(['https://hooks.example.test/editors']);
 			} finally {
 				sent.restore();

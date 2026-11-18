@@ -182,17 +182,19 @@ export const CHECKLIST: readonly IsoItem[] = [
 		how:
 			'Mail needs STARTTLS and checks the server\'s certificate, unless an administrator switches on mail without a checked, encrypted connection. Webhooks are signed with HMAC-SHA256. The SFTP host key is pinned. ' +
 			'Report schedules and report mail ask for the password and a code before board data goes to an address (card 2751). ' +
-			'A webhook set through an API key keeps sending after the key ends, and a held webhook starts sending again without the password when its setter regains board access.',
+			'A webhook whose setter loses the board is switched off for good, and only the board\'s owner or an administrator switches it on again, with an API key, which gives it a new secret; ' +
+			'the board\'s owners are told (card 2752). Still open: a webhook set through an API key keeps sending after the key ends.',
 		evidence: [
 			{ path: 'src/lib/server/email.ts', symbol: 'requireTLS' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'createHmac' },
+			{ path: 'src/lib/server/webhooks.ts', symbol: 'switchOffLostWebhooks' },
 			{ path: 'src/lib/server/ssh-host-key.ts' },
 			{ path: 'src/routes/api/reports/email/+server.ts', symbol: 'confirmStepUp' },
 			{ path: 'src/routes/api/report-schedules/+server.ts', symbol: 'confirmStepUp' },
 			{ path: AUTH_DOC, anchor: 'report-schedules-and-report-mail-card-2751' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2752, 2893],
+		gapCards: [2893],
 		organisationalPart: 'Rules for transferring information, and agreements with those who receive it.'
 	},
 	{
@@ -272,17 +274,19 @@ export const CHECKLIST: readonly IsoItem[] = [
 		how:
 			'A role change, a delete and a password reset end what the account held: its sessions and keys end, the webhooks it set are switched off and its report schedules paused, and each is logged. ' +
 			'Removing an authenticator ends the account\'s other sessions and pending sign-ins (card 2772). ' +
-			'Still open: an account cannot be disabled; a webhook set through a key outlives the key; a held webhook resumes without the password; ' +
+			'A change that takes an account\'s board access away switches off, for good, the webhooks it set on that board; giving the access back does not switch them on (card 2752). ' +
+			'Still open: an account cannot be disabled; a webhook set through a key outlives the key; ' +
 			'and changing your own password, or another recovery path, does not pause your report schedules.',
 		evidence: [
 			{ path: 'src/lib/server/auth.ts', symbol: 'endAccountAccess' },
+			{ path: 'src/lib/server/webhooks.ts', symbol: 'switchOffHeld' },
 			{ path: 'src/lib/server/mfa-store.ts', symbol: 'resetTwoStep' },
 			{ path: 'src/lib/server/account-two-step.ts' },
 			{ path: 'src/lib/server/audit-log.ts' },
 			{ path: AUTH_DOC, anchor: 'passwords-sessions-and-invites-change-together' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2671, 2752, 2893, 2894],
+		gapCards: [2671, 2893, 2894],
 		organisationalPart: 'Review regularly who holds which role.'
 	},
 	organisational('A.5.19', 'annex-a', 'Information security in supplier relationships'),

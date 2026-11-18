@@ -13,6 +13,7 @@ import { writeAs } from '$lib/server/write-as';
 import { endUnusedInvites } from '$lib/server/invites';
 import { endPendingSignIns } from '$lib/server/mfa-store';
 import { anyRemoved, removeSettingsSetBy, settingsHeldBy } from '$lib/server/setting-setters';
+import { switchOffLostWebhooks } from '$lib/server/webhooks';
 import { mayManageAccount } from '$lib/account-rule';
 import { createLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
@@ -205,6 +206,12 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 			if (Object.keys(updates).length === 0) return { ...answered(target), invitesEnded };
 
 			const row = db.update(users).set(updates).where(eq(users.id, userId)).returning(ANSWERED).get();
+
+			// A role changed: each webhook the account set on a board it can no
+			// longer open is switched off for good, in this write (card 2752, D2).
+			if (roleChanged) {
+				switchOffLostWebhooks({ setters: [target.id] }, `${target.username}'s role was changed to ${row.role} by ${actor.username}`);
+			}
 
 			// An administrator made a user loses what they set that sends mail or
 			// backups somewhere, in this transaction (card 2397): the mail settings,

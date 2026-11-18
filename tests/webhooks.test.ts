@@ -39,6 +39,15 @@
  * `milestone.card_removed` to its own board, by every route, with the entry's
  * words and every event's five fields; held as any event is (card 2325), and
  * asked for by name like any other.
+ *
+ * Card 2752: a webhook whose setter can no longer open its board is switched
+ * off for good, with why and when, at the write that takes the access away
+ * (six of them, each with its scope and the cause it names), at start, and at
+ * delivery as the backstop; it stays off when the setter is given the board
+ * back; switching it on is the owner's or an administrator's, and gives one
+ * held for a lost setter a new secret; a create at an address held off is
+ * refused to anyone else; the boards' owners are mailed. Card 2325's cases
+ * are extended in place; a restore's sweep is in backups.test.ts.
  */
 import dns from 'node:dns';
 import http from 'node:http';
@@ -49,15 +58,41 @@ import { isHttpError } from '@sveltejs/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { activityLog, boards, columns } from '$lib/server/db/schema';
-import type { SessionUser } from '$lib/server/auth';
+import { inTransaction } from '$lib/server/db/transaction';
+import { activityLog, boards, columns, users, webhooks } from '$lib/server/db/schema';
+import { endAccountAccess, type SessionUser } from '$lib/server/auth';
+import { deleteUser } from '$lib/server/deletes';
+import { escapeHtml } from '$lib/escape-html';
 import { ACTIONS, logActivity } from '$lib/server/logActivity';
-import { deliver, deliveryResultFor, dispatchWebhook, forgetDeliveries, WARNINGS_REMEMBERED, WEBHOOK_EVENTS, webhookShareNotes } from '$lib/server/webhooks';
+import {
+	deliver,
+	deliveryResultFor,
+	dispatchWebhook,
+	forgetDeliveries,
+	switchOffHeld,
+	switchOffLostWebhooks,
+	WARNINGS_REMEMBERED,
+	WEBHOOK_EVENTS,
+	webhookShareNotes
+} from '$lib/server/webhooks';
 import { addressRefusal, insideReason, parseAllowInside, readWebhookUrl } from '$lib/server/webhook-address';
-import { reportWebhookAllowInside, reportWebhooksOverCap, reportWebhooksRefused } from '$lib/server/startup-checks';
+import { reportWebhookAllowInside, reportWebhooksOverCap, reportWebhooksRefused, switchOffHeldWebhooksAtStart } from '$lib/server/startup-checks';
 import { api, type ApiResult } from './helpers/api';
+import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type Effects } from './helpers/effects';
-import { addBoardMember, makeBoard, makeCard, makeMilestone, makeTeam, makeUser, makeWebhook, resetDb, shareBoardWithTeam, stepUp } from './helpers/fixtures';
+import {
+	addBoardMember,
+	makeBoard,
+	makeCard,
+	makeMilestone,
+	makeSmtp,
+	makeTeam,
+	makeUser,
+	makeWebhook,
+	resetDb,
+	shareBoardWithTeam,
+	stepUp
+} from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 beforeEach(resetDb);
@@ -2184,21 +2219,46 @@ describe('which action sends which event, and what each move sends (card 2278)',
 
 // ─── Card 2325 ───────────────────────────────────────────────────────────
 
-describe('a webhook whose setter can no longer open the board (card 2325)', () => {
-	/** `pausedBecause` for a webhook whose setter lost the board, word for word (decision 4). */
+describe('a webhook whose setter can no longer open the board is switched off for good (cards 2325 and 2752)', () => {
+	/** `pausedBecause` for a webhook switched off because its setter lost the board, word for word (card 2752, 4.3). */
 	const LOST =
-		'The account that set this up can no longer open this board, so nothing is sent. The address was chosen by that account: ' +
-		'delete the webhook unless you recognise it; to keep it, switch it off and on, which makes you its setter, and set a new ' +
-		'secret and update the receiver.';
-	/** `pausedBecause` for a webhook nobody is recorded as having set up (decision 8). */
+		'This was switched off because the account that set it up could no longer open this board. It stays off if that account ' +
+		'is given the board back. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, ' +
+		'switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by ' +
+		"the board's owner or an administrator, and update the receiver.";
+	/** `pausedBecause` for a webhook switched off by a reset, an invite used or a delete of its setter (the code review's CS4). */
+	const ACCESS_ENDED =
+		'This was switched off because the account that set it up had its password reset, used an invite, or was deleted. The address ' +
+		'was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which ' +
+		"makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, " +
+		'and update the receiver.';
+	/** `pausedBecause` for a webhook switched off because nobody is recorded as having set it up. */
 	const NOBODY =
-		'Nobody is recorded as having set this up. Delete it unless you recognise the address; to keep it, switch it off and on, ' +
-		'which makes you its setter, and set a new secret.';
+		'This was switched off because nobody is recorded as having set it up. Delete it unless you recognise the address; to keep ' +
+		'it, switch it on with your own key, which makes you its setter, and set a new secret.';
 	const LOST_REASON = 'Not sent: the account that set it up can no longer open this board';
 	const NOBODY_REASON = 'Not sent: nobody is recorded as having set it up';
+	/** `pausedBecause` for one on and held now, a window only a change outside the six writes can open (D7). */
+	const LOST_NOW =
+		'Nothing is sent: the account that set this up can no longer open this board. It is switched off at its next event, and ' +
+		"stays off until the board's owner or an administrator switches it on.";
+	const NOBODY_NOW =
+		"Nothing is sent: nobody is recorded as having set this up. It is switched off at its next event, and stays off until the board's " +
+		'owner or an administrator switches it on.';
+	/** The answer to a `secret` sent with a switch-on that gives a new one (D3). */
+	const NEW_SECRET_REFUSAL =
+		'A webhook switched off this way is given a new secret when it is switched on: send active true alone, and read the new secret from the answer.';
+	/** The answer to a create at a receiver held off on the board (D6; the code review's CS2). */
+	const HELD_OFF_RECEIVER =
+		"A webhook to this receiver (the same scheme, host and port) on this board was switched off. Only the board's owner or an administrator can switch it on again, or add another webhook to it.";
+	/** The answer to an editor's delete of a webhook switched off for good (the code review's CS1). */
+	const HELD_OFF_DELETE = "Only the board's owner or an administrator can delete a webhook that was switched off this way. Ask the board's owner.";
+	/** The four columns no answer carries (D7). */
+	const WITHHELD = ['setBy', 'heldBecause', 'heldAt', 'setByKey', 'setWithKey'];
 
 	let sent: Effects;
 	beforeEach(() => {
+		makeSmtp();
 		sent = effects();
 	});
 	afterEach(() => sent.restore());
@@ -2206,26 +2266,32 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 	/**
 	 * Owner O's board, editor E a direct member unless `viaTeam` (then E edits
 	 * it through a team shared as editor, and is no member), and a superadmin
-	 * and an administrator who are on nothing.
+	 * and an administrator who are on nothing; with `coOwner`, a second owner
+	 * on its member list.
 	 */
-	function scene(opts: { isPublic?: boolean; viaTeam?: boolean } = {}) {
+	function scene(opts: { isPublic?: boolean; viaTeam?: boolean; coOwner?: boolean } = {}) {
 		const owner = makeUser({ username: 'owner' });
 		const editor = makeUser({ username: 'editor' });
 		const admin = makeUser({ username: 'admin', role: 'admin' });
 		const chief = makeUser({ username: 'chief', role: 'superadmin' });
 		const fixture = makeBoard({ owner, isPublic: opts.isPublic });
-		const team = opts.viaTeam ? makeTeam([editor]) : undefined;
+		const team = opts.viaTeam ? makeTeam([editor], 'Design') : undefined;
 		if (team) shareBoardWithTeam(fixture.board, team, 'editor');
 		else addBoardMember(fixture.board, editor, 'editor');
-		return { owner, editor, admin, chief, team, ...fixture };
+		const coOwner = opts.coOwner ? makeUser({ username: 'co-owner' }) : undefined;
+		if (coOwner) addBoardMember(fixture.board, coOwner, 'owner');
+		return { owner, editor, admin, chief, team, coOwner, ...fixture };
 	}
 	type Scene = ReturnType<typeof scene>;
 
 	/** A webhook made by `user`'s own POST, so that they are its setter. */
-	async function hookOf(s: Scene, user: SessionUser, name: string) {
-		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user, body: { url: `https://hooks.example.test/${name}` } });
+	async function hookOf(s: Scene, user: SessionUser, name: string, secret?: string) {
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, {
+			user,
+			body: { url: `https://hooks.example.test/${name}`, ...(secret === undefined ? {} : { secret }) }
+		});
 		expect(made.status).toBe(201);
-		return made.body as { id: number; url: string };
+		return made.body as { id: number; url: string; secret: string };
 	}
 
 	let raised = 0;
@@ -2242,9 +2308,17 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 		return sent.webhooks.map((w) => w.url);
 	}
 
-	/** O takes E off the board, as Share Board does. */
+	/** O takes E off the board, as Share Board does, and what it sends has gone. */
 	async function takeOff(s: Scene, user: SessionUser = s.editor) {
+		sent.clear();
 		const res = await api('DELETE', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { type: 'user', targetId: user.id } });
+		expect(res.status).toBe(200);
+		await sent.settle();
+	}
+
+	/** O shares the board with E again, as Share Board does. */
+	async function shareBack(s: Scene, user: SessionUser = s.editor, role: 'editor' | 'viewer' = 'editor') {
+		const res = await api('POST', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { type: 'user', targetId: user.id, role } });
 		expect(res.status).toBe(200);
 	}
 
@@ -2262,7 +2336,36 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 	const signedWith = (secret: string, delivery: Effects['webhooks'][number]) =>
 		delivery.headers['x-dumpfire-signature'] === sign(secret, JSON.stringify(delivery.body));
 
-	it("1. an editor taken off the board: the next event goes to the owner's webhook and not to theirs", async () => {
+	/** The webhook's row as stored: on or off, why and when it was held off, its setter and its secret. */
+	const rowOf = (id: number) =>
+		sqlite.prepare('SELECT active, held_because AS heldBecause, held_at AS heldAt, set_by AS setBy, secret FROM webhooks WHERE id = ?').get(id) as {
+			active: number;
+			heldBecause: string | null;
+			heldAt: string | null;
+			setBy: number | null;
+			secret: string;
+		};
+
+	/** Switched off for good by a hold: off, why, and a moment in the stored form (D1). */
+	function expectHeldOff(id: number, hold: 'setter cannot open' | 'no setter' = 'setter cannot open') {
+		expect(rowOf(id)).toMatchObject({ active: 0, heldBecause: hold, heldAt: expect.stringMatching(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/) });
+	}
+
+	/** On, with no hold. */
+	const expectOn = (id: number) => expect(rowOf(id)).toMatchObject({ active: 1, heldBecause: null, heldAt: null });
+
+	/** The WARN a switch-off writes, word for word (4.3): never the address. */
+	const offLine = (hook: { id: number }, boardId: number, setter: SessionUser | null, cause: string) =>
+		`Webhook ${hook.id} on board ${boardId} switched off: ` +
+		(setter ? `the account that set it up (user ${setter.id}) can no longer open the board` : 'nobody is recorded as having set it up') +
+		` (${cause}). It stays off until an owner of the board or an administrator switches it on.`;
+
+	/** The mails that say webhooks were switched off. */
+	const offMails = () => sent.emails.filter((mail) => / switched off$/.test(mail.subject));
+
+	// ─── Card 2325's cases, extended in place (card 2752, E1, E2) ───
+
+	it("1. (2752 case 1) an editor taken off the board: theirs switched off at the write, the owner told; shared back, it stays off", async () => {
 		const s = scene();
 		const theirs = await hookOf(s, s.editor, 'e');
 		const owners = await hookOf(s, s.owner, 'o');
@@ -2270,131 +2373,597 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 
 		await takeOff(s);
 
+		// Straight after the write, before any event (E1).
+		expectHeldOff(theirs.id);
+		expectOn(owners.id);
+		const cause = 'editor was taken off the board by owner';
+		expect(lines('WARN')).toEqual([offLine(theirs, s.board.id, s.editor, cause)]);
+		expect(offMails().map((mail) => mail.to)).toEqual([s.owner.email]);
+		expect(offMails()[0].html).toContain(cause);
+
+		await shareBack(s);
 		expect(await event(s)).toEqual([owners.url]);
+		expectHeldOff(theirs.id);
 	});
 
-	it("2. an editor through a team, the team's share taken away: not sent to theirs", async () => {
+	it.each([
+		{
+			// 2752 case 2.
+			row: "the team's share removed, then shared again",
+			remove: (s: Scene) => api('DELETE', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { type: 'team', targetId: s.team!.id } }),
+			cause: "the team Design's share was removed by owner",
+			back: async (s: Scene) => {
+				const res = await api('POST', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { type: 'team', targetId: s.team!.id, role: 'editor' } });
+				expect(res.status).toBe(200);
+			}
+		},
+		{
+			// 2752 case 6: the members are read before the delete takes them.
+			row: 'the team deleted, then a new team with them shared',
+			remove: (s: Scene) => api('DELETE', `/api/teams/${s.team!.id}`, { user: s.admin }),
+			cause: 'the team Design was deleted by admin',
+			back: async (s: Scene) => shareBoardWithTeam(s.board, makeTeam([s.editor]), 'editor')
+		}
+	])('2. (2752 cases 2 and 6) an editor through a team, $row: theirs switched off at the write, and stays off', async ({ remove, cause, back }) => {
 		const s = scene({ viaTeam: true });
 		const theirs = await hookOf(s, s.editor, 'e');
 		const owners = await hookOf(s, s.owner, 'o');
 
-		const res = await api('DELETE', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { type: 'team', targetId: s.team!.id } });
-		expect(res.status).toBe(200);
+		sent.clear();
+		expect((await remove(s)).status).toBe(200);
+		await sent.settle();
 
+		expectHeldOff(theirs.id);
+		expectOn(owners.id);
+		expect(lines('WARN')).toEqual([offLine(theirs, s.board.id, s.editor, cause)]);
+		expect(offMails().map((mail) => mail.to)).toEqual([s.owner.email]);
+		expect(offMails()[0].html).toContain(escapeHtml(cause));
+
+		await back(s);
 		expect(await event(s)).toEqual([owners.url]);
-		expect(await event(s)).not.toContain(theirs.url);
 	});
 
-	it('3. an editor through a team, taken out of the team: not sent to theirs', async () => {
+	it('3. (2752 case 3) an editor through a team, taken out of the team: theirs switched off at the write; put back, it stays off', async () => {
 		const s = scene({ viaTeam: true });
-		await hookOf(s, s.editor, 'e');
+		const theirs = await hookOf(s, s.editor, 'e');
 		const owners = await hookOf(s, s.owner, 'o');
 
+		sent.clear();
 		const res = await api('DELETE', `/api/teams/${s.team!.id}/members/${s.editor.id}`, { user: s.admin });
 		expect(res.status).toBe(200);
+		await sent.settle();
 
+		expectHeldOff(theirs.id);
+		const cause = 'editor was taken out of the team Design by admin';
+		expect(lines('WARN')).toEqual([offLine(theirs, s.board.id, s.editor, cause)]);
+		expect(offMails().map((mail) => mail.to)).toEqual([s.owner.email]);
+		expect(offMails()[0].html).toContain(cause);
+
+		expect((await api('POST', `/api/teams/${s.team!.id}/members/${s.editor.id}`, { user: s.admin, body: {} })).status).toBe(201);
 		expect(await event(s)).toEqual([owners.url]);
 	});
 
-	it("4. a public board's editor taken off its members can still open it, so their webhook is sent (a guard)", async () => {
+	it("4. a public board's editor taken off its members can still open it, so theirs stays on and is sent (a guard)", async () => {
 		const s = scene({ isPublic: true });
 		const theirs = await hookOf(s, s.editor, 'e');
 		const owners = await hookOf(s, s.owner, 'o');
 
 		await takeOff(s);
 
+		expectOn(theirs.id);
+		expect(lines('WARN')).toEqual([]);
+		expect(offMails()).toEqual([]);
 		expect(await event(s)).toEqual([theirs.url, owners.url]);
 	});
 
-	it('5. then the board made private: not sent to theirs', async () => {
+	it.each([
+		// 2752 case 4, by Share Board's switch.
+		{ row: 'the share PATCH', makePrivate: (s: Scene) => api('PATCH', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { isPublic: false } }) },
+		// 2752 case 7: the same through updateBoard.
+		{ row: 'PUT /api/v1/boards/{id}', makePrivate: (s: Scene) => api('PUT', `/api/v1/boards/${s.board.id}`, { user: s.owner, body: { isPublic: false } }) }
+	])('5. (2752 cases 4 and 7) then the board made private by $row: theirs switched off at the write; made public again, it stays off', async ({ makePrivate }) => {
 		const s = scene({ isPublic: true });
-		await hookOf(s, s.editor, 'e');
+		const theirs = await hookOf(s, s.editor, 'e');
 		const owners = await hookOf(s, s.owner, 'o');
 		await takeOff(s);
 
-		const res = await api('PATCH', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { isPublic: false } });
-		expect(res.status).toBe(200);
+		sent.clear();
+		expect((await makePrivate(s)).status).toBe(200);
+		await sent.settle();
 
+		expectHeldOff(theirs.id);
+		expectOn(owners.id);
+		const cause = 'the board was made private by owner';
+		expect(lines('WARN')).toEqual([offLine(theirs, s.board.id, s.editor, cause)]);
+		expect(offMails().map((mail) => mail.to)).toEqual([s.owner.email]);
+		expect(offMails()[0].html).toContain(cause);
+
+		expect((await api('PATCH', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { isPublic: true } })).status).toBe(200);
 		expect(await event(s)).toEqual([owners.url]);
 	});
 
-	it("6. an administrator on no member list made an ordinary user: not sent to theirs; another administrator's is", async () => {
+	it("6. (2752 case 5) an administrator on no member list made an ordinary user: theirs switched off at the write, another administrator's sent; made an administrator again, theirs stays off", async () => {
 		const s = scene();
 		const other = makeUser({ username: 'other-admin', role: 'admin' });
 		const theirs = await hookOf(s, s.admin, 'a');
 		const others = await hookOf(s, other, 'a2');
-		// While an administrator, sent: the role is read at each event, not when the webhook was made.
+		// While an administrator, sent.
 		expect(await event(s)).toEqual([theirs.url, others.url]);
 
-		const res = await api('PUT', `/api/users/${s.admin.id}`, stepUp(s.chief, { role: 'user' }));
-		expect(res.status).toBe(200);
+		sent.clear();
+		expect((await api('PUT', `/api/users/${s.admin.id}`, stepUp(s.chief, { role: 'user' }))).status).toBe(200);
+		await sent.settle();
 
+		expectHeldOff(theirs.id);
+		expectOn(others.id);
+		const cause = "admin's role was changed to user by chief";
+		expect(lines('WARN')).toEqual([offLine(theirs, s.board.id, s.admin, cause)]);
+		expect(offMails().map((mail) => mail.to)).toEqual([s.owner.email]);
+		expect(offMails()[0].html).toContain(escapeHtml(cause));
+
+		expect((await api('PUT', `/api/users/${s.admin.id}`, stepUp(s.chief, { role: 'admin' }))).status).toBe(200);
 		expect(await event(s)).toEqual([others.url]);
 	});
 
-	it('7. an editor taken off and given the board back as a viewer: sent to theirs again, with nothing else changed (a guard)', async () => {
+	it('7. an editor taken off and given the board back as a viewer: theirs is not sent again; it stays off (card 2325 pinned the reverse)', async () => {
 		const s = scene();
-		const theirs = await hookOf(s, s.editor, 'e');
+		await hookOf(s, s.editor, 'e');
 		const owners = await hookOf(s, s.owner, 'o');
 		await takeOff(s);
-		// Held here (case 1); not asked again, so that this case holds on the code before card 2325 too.
-		await event(s);
 
-		const res = await api('POST', `/api/boards/${s.board.id}/share`, {
-			user: s.owner,
-			body: { type: 'user', targetId: s.editor.id, role: 'viewer' }
-		});
-		expect(res.status).toBe(200);
+		await shareBack(s, s.editor, 'viewer');
 
-		expect(await event(s)).toEqual([theirs.url, owners.url]);
+		expect(await event(s)).toEqual([owners.url]);
 	});
 
-	it('8. a webhook with no setter is held and says why, until the owner takes it over with a new secret', async () => {
+	// ─── New (card 2752) ───
+
+	it('8. (2752 case 8) the backstop at delivery: access lost where no write sweeps; delivered twice from the same stale row, switched off, said and mailed once; given back, still off', async () => {
+		const s = scene();
+		const theirs = makeWebhook(s.board, { url: 'https://hooks.example.test/stale', setBy: s.editor });
+		// A path no sweep runs: the member row deleted from the host.
+		sqlite.prepare('DELETE FROM board_members WHERE board_id = ? AND user_id = ?').run(s.board.id, s.editor.id);
+		// Until its next event it is on, and its answer says nothing is sent (D7).
+		for (const answer of await answersTo(s, s.owner, theirs.id)) {
+			expect(answer).toMatchObject({ active: true, pausedBecause: LOST_NOW });
+		}
+		sent.clear();
+
+		deliver(theirs, 'card.created', '{}');
+		deliver(theirs, 'card.created', '{}');
+		await sent.settle();
+
+		expect(sent.webhooks).toEqual([]);
+		expectHeldOff(theirs.id);
+		expect(deliveryResultFor(theirs)).toMatchObject({ outcome: 'not-sent', status: null, reason: LOST_REASON });
+		expect(lines('WARN')).toEqual([offLine(theirs, s.board.id, s.editor, 'found when an event was sent')]);
+		expect(offMails().map((mail) => mail.to)).toEqual([s.owner.email]);
+
+		addBoardMember(s.board, s.editor, 'editor');
+		expect(await event(s)).toEqual([]);
+		expectHeldOff(theirs.id);
+	});
+
+	it('9. (2752 case 9) the backstop when the switch-off write fails: the delivery is still not sent, and one ERROR says so', async () => {
+		const s = scene();
+		const theirs = makeWebhook(s.board, { url: 'https://hooks.example.test/failing', setBy: s.editor });
+		sqlite.prepare('DELETE FROM board_members WHERE board_id = ? AND user_id = ?').run(s.board.id, s.editor.id);
+		const prepare = sqlite.prepare.bind(sqlite);
+		const failing = vi.spyOn(sqlite, 'prepare').mockImplementation(((source: string) => {
+			if (source.startsWith('UPDATE webhooks SET active = 0, held_because')) throw new Error('disk I/O error');
+			return prepare(source);
+		}) as typeof sqlite.prepare);
+		try {
+			deliver(theirs, 'card.created', '{}');
+		} finally {
+			failing.mockRestore();
+		}
+		await sent.settle();
+
+		expect(sent.webhooks).toEqual([]);
+		expect(deliveryResultFor(theirs)).toMatchObject({ outcome: 'not-sent', reason: LOST_REASON });
+		expect(lines('ERROR')).toEqual([`Webhook ${theirs.id} on board ${s.board.id} could not be switched off, and was not sent: disk I/O error`]);
+		expect(lines('WARN')).toEqual([]);
+		expect(offMails()).toEqual([]);
+		expectOn(theirs.id);
+	});
+
+	it('10. (2752 case 10) a webhook with no setter is switched off with its own sentence, until the owner switches it on, with a secret of their own', async () => {
 		const s = scene();
 		const nobodys = makeWebhook(s.board, { url: 'https://hooks.example.test/nobody', secret: 'old', setBy: null });
 		const owners = await hookOf(s, s.owner, 'o');
+		// Until its next event it is on, and its answer says nothing is sent (D7).
+		for (const answer of await answersTo(s, s.owner, nobodys.id)) {
+			expect(answer).toMatchObject({ active: true, pausedBecause: NOBODY_NOW });
+		}
 
 		expect(await event(s)).toEqual([owners.url]);
-		expect(lines('WARN')).toEqual([`Webhook ${nobodys.id} on board ${s.board.id} not sent: nobody is recorded as having set it up`]);
+		expectHeldOff(nobodys.id, 'no setter');
+		expect(lines('WARN')).toEqual([offLine(nobodys, s.board.id, null, 'found when an event was sent')]);
 		expect(lines('WARN')[0]).not.toContain('hooks.example.test');
 		const [listed, one] = await answersTo(s, s.owner, nobodys.id);
 		for (const answer of [listed, one]) {
-			expect(answer).toMatchObject({ active: true, pausedBecause: NOBODY });
+			expect(answer).toMatchObject({ active: false, pausedBecause: NOBODY });
 			expect(answer.lastDelivery).toMatchObject({ outcome: 'not-sent', status: null, reason: NOBODY_REASON });
 		}
 
-		expect((await put(s.owner, nobodys.id, { active: false })).status).toBe(200);
 		const taken = await put(s.owner, nobodys.id, { active: true, secret: 'new' });
 		expect(taken.status).toBe(200);
-		expect(taken.body).toMatchObject({ active: true, pausedBecause: null });
+		expect(taken.body).toMatchObject({ active: true, pausedBecause: null, secret: 'new' });
 
 		expect(await event(s)).toEqual([nobodys.url, owners.url]);
 		expect(signedWith('new', sent.webhooks[0])).toBe(true);
 	});
 
-	it('9. tells the owner and an administrator why it is held, after a restart too, when the last delivery is forgotten', async () => {
+	it('11. (2752 case 11) a stale read whose setter changed meanwhile is left on: the write changes nothing, and says and mails nothing', async () => {
 		const s = scene();
 		const theirs = await hookOf(s, s.editor, 'e');
-		const owners = await hookOf(s, s.owner, 'o');
+		// The sweep's row, read while the editor set it.
+		const stale = db.select().from(webhooks).where(eq(webhooks.id, theirs.id)).get()!;
+		// Meanwhile the owner switches it off and on: its setter is the owner now.
+		expect((await put(s.owner, theirs.id, { active: false })).status).toBe(200);
+		expect((await put(s.owner, theirs.id, { active: true })).status).toBe(200);
+		sqlite.prepare('DELETE FROM board_members WHERE board_id = ? AND user_id = ?').run(s.board.id, s.editor.id);
+		sent.clear();
+
+		expect(switchOffHeld(stale, 'setter cannot open')).toBe(false);
+		await sent.settle();
+
+		expect(rowOf(theirs.id)).toMatchObject({ active: 1, heldBecause: null, heldAt: null, setBy: s.owner.id });
+		expect(lines('WARN')).toEqual([]);
+		expect(offMails()).toEqual([]);
+	});
+
+	it.each([
+		{ row: 'where the schedulers run', value: 'on', mailed: true },
+		{ row: 'where they do not', value: 'off', mailed: false }
+	])('12. (2752 case 12) at start, $row: switched off with one WARN, the owners mailed only where the schedulers run; a second start changes nothing', async ({ value, mailed }) => {
+		const s = scene();
+		const theirs = makeWebhook(s.board, { setBy: s.editor });
+		sqlite.prepare('DELETE FROM board_members WHERE board_id = ? AND user_id = ?').run(s.board.id, s.editor.id);
+		const owners = makeWebhook(s.board);
+
+		expect(switchOffHeldWebhooksAtStart(value, false)).toBe(1);
+		await sent.settle();
+
+		expectHeldOff(theirs.id);
+		expectOn(owners.id);
+		const line = offLine(theirs, s.board.id, s.editor, 'found when the server started');
+		expect(lines('WARN')).toEqual(
+			mailed
+				? [line]
+				: [line, 'The owners of the boards of the 1 webhook(s) switched off above were not mailed, as the schedulers are off (SCHEDULERS=off). The lines above name each.']
+		);
+		expect(offMails().map((mail) => mail.to)).toEqual(mailed ? [s.owner.email] : []);
+
+		sent.clear();
+		expect(switchOffHeldWebhooksAtStart(value, false)).toBe(0);
+		await sent.settle();
+		expect(lines('WARN')).toHaveLength(mailed ? 1 : 2);
+		expect(sent.emails).toEqual([]);
+	});
+
+	it.each([
+		{ row: 'held for a lost setter: a new secret, given in the answer', hold: 'setter cannot open' as const, newSecret: true },
+		{ row: 'held for no setter: its secret kept', hold: 'no setter' as const, newSecret: false }
+	])('15. (2752 case 15) switched on by the owner, $row; the owner its setter, the hold cleared', async ({ hold, newSecret }) => {
+		const s = scene();
+		const held =
+			hold === 'setter cannot open'
+				? await hookOf(s, s.editor, 'e', 'old-secret')
+				: makeWebhook(s.board, { url: 'https://hooks.example.test/nobody', secret: 'old-secret', setBy: null, heldBecause: 'no setter' });
+		if (hold === 'setter cannot open') await takeOff(s);
+		expectHeldOff(held.id, hold);
+
+		const on = await put(s.owner, held.id, { active: true });
+
+		expect(on.status).toBe(200);
+		expect(on.body).toMatchObject({ active: true, pausedBecause: null });
+		if (newSecret) {
+			expect(on.body.secret).toMatch(/^[0-9a-f]{64}$/);
+			expect(on.body.secret).not.toBe('old-secret');
+		} else {
+			expect(on.body.secret).toBe('old-secret');
+		}
+		expect(rowOf(held.id)).toEqual({ active: 1, heldBecause: null, heldAt: null, setBy: s.owner.id, secret: on.body.secret });
+		expect(await event(s)).toEqual([held.url]);
+		expect(signedWith(on.body.secret, sent.webhooks[0])).toBe(true);
+	});
+
+	it('16. (2752 case 16) a secret sent with that switch-on is refused 400 and nothing is written; the former setter, given the board back, cannot switch it on', async () => {
+		const s = scene();
+		const theirs = await hookOf(s, s.editor, 'e', 'old-secret');
 		await takeOff(s);
+
+		const before = snapshotDb();
+		const refused = await put(s.owner, theirs.id, { active: true, secret: 'mine' });
+		expect(refused.status).toBe(400);
+		expect(refused.body.message).toBe(NEW_SECRET_REFUSAL);
+		expectUnchanged(before, 'after a secret sent with the switch-on');
+
+		// Its status is not asserted: card 2719 decides it.
+		await shareBack(s);
+		const shared = snapshotDb();
+		const theirOwn = await put(s.editor, theirs.id, { active: true });
+		expect(theirOwn.status).toBeGreaterThanOrEqual(400);
+		expectUnchanged(shared, "after the former setter's own switch-on");
+		expectHeldOff(theirs.id);
+	});
+
+	it.each([
+		{ row: 'an editor: refused 409, nothing written', who: 'editor' as const, status: 409 },
+		{ row: 'the owner: made', who: 'owner' as const, status: 201 }
+	])('17. (2752 case 17) a create at an address held off on the board, by $row', async ({ who, status }) => {
+		const s = scene();
+		const second = makeUser({ username: 'second' });
+		addBoardMember(s.board, second, 'editor');
+		const seconds = await hookOf(s, second, 'held-address');
+		await takeOff(s, second);
+		expectHeldOff(seconds.id);
+
+		const before = snapshotDb();
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s[who], body: { url: seconds.url } });
+
+		expect(made.status).toBe(status);
+		if (status === 409) {
+			expect(made.body.message).toBe(HELD_OFF_RECEIVER);
+			expectUnchanged(before, 'after a create refused');
+		} else {
+			expect(made.body).toMatchObject({ url: seconds.url, active: true });
+		}
+	});
+
+	it.each([
+		{ row: "an editor's: each owner mailed once", who: 'editor' as const, mailed: true },
+		{ row: "an owner's own: nobody mailed", who: 'owner' as const, mailed: false }
+	])("18. (2752 case 18) the owners are told of a webhook somebody else made: $row", async ({ who, mailed }) => {
+		const s = scene({ coOwner: true });
+		sent.clear();
+
+		const made = await hookOf(s, s[who], 'path-not-mailed?token=q');
+		await sent.settle();
+
+		const told = sent.emails.filter((mail) => mail.subject === `A webhook was made on ${s.board.name}`);
+		expect(told.map((mail) => mail.to).sort()).toEqual(mailed ? [s.owner.email, s.coOwner!.email].sort() : []);
+		for (const mail of told) {
+			expect(mail.html).toContain('editor');
+			expect(mail.html).toContain(`webhook ${made.id}`);
+			expect(mail.html).toContain('hooks.example.test');
+			expect(mail.html).not.toContain('path-not-mailed');
+		}
+	});
+
+	it.each([
+		{
+			row: 'the creator and an owner on the member list, one mail each for two webhooks',
+			run: async () => {
+				const s = scene({ coOwner: true });
+				const first = await hookOf(s, s.editor, 'e-secret-path?token=t1', 'never-mailed');
+				const second = await hookOf(s, s.editor, 'e-other-path');
+				await takeOff(s);
+				return { to: [s.owner.email, s.coOwner!.email], ids: [first.id, second.id], cause: 'editor was taken off the board by owner' };
+			}
+		},
+		{
+			row: 'a board with no owner: every administrator and the superadmin',
+			run: async () => {
+				const admin = makeUser({ username: 'admin', role: 'admin' });
+				const chief = makeUser({ username: 'chief', role: 'superadmin' });
+				const editor = makeUser({ username: 'editor' });
+				makeUser({ username: 'bystander' });
+				const { board } = makeBoard();
+				addBoardMember(board, editor, 'editor');
+				const hook = makeWebhook(board, { url: 'https://hooks.example.test/e-secret-path', setBy: editor });
+				sent.clear();
+				expect((await api('DELETE', `/api/boards/${board.id}/share`, { user: admin, body: { type: 'user', targetId: editor.id } })).status).toBe(200);
+				await sent.settle();
+				return { to: [admin.email, chief.email], ids: [hook.id], cause: 'editor was taken off the board by admin' };
+			}
+		},
+		{
+			row: 'an owner who switched their mail off: still mailed',
+			run: async () => {
+				const s = scene();
+				db.update(users).set({ notificationPrefs: JSON.stringify({ email_all: false }) }).where(eq(users.id, s.owner.id)).run();
+				const hook = await hookOf(s, s.editor, 'e-secret-path');
+				await takeOff(s);
+				return { to: [s.owner.email], ids: [hook.id], cause: 'editor was taken off the board by owner' };
+			}
+		}
+	])('19. (2752 case 19) who the switch-off mail goes to: $row, naming the cause and the host, never the path, query or secret', async ({ run }) => {
+		const { to, ids, cause } = await run();
+
+		expect(offMails().map((mail) => mail.to).sort()).toEqual([...to].sort());
+		for (const mail of offMails()) {
+			expect(mail.html).toContain(cause);
+			for (const id of ids) expect(mail.html).toContain(`webhook ${id} to <strong>hooks.example.test</strong>`);
+			for (const never of ['e-secret-path', 'e-other-path', 'token=', 'never-mailed']) expect(mail.html).not.toContain(never);
+		}
+	});
+
+	it.each([
+		{ row: '{ boardIds }', scope: (b: { a: number; b: number }) => ({ boardIds: [b.a] }), off: ['a1'] },
+		{ row: '{ setters }', scope: (_b: unknown, x: SessionUser) => ({ setters: [x.id] }), off: ['a1', 'b1'] },
+		{ row: "'all'", scope: () => 'all' as const, off: ['a1', 'b1', 'b2'] }
+	])('20. (2752 case 20) the scope $row switches off only the held webhooks within it; outside a transaction it throws', async ({ scope, off }) => {
+		const owner = makeUser({ username: 'owner' });
+		const x = makeUser({ username: 'x' });
+		const y = makeUser({ username: 'y' });
+		const a = makeBoard({ owner }).board;
+		const b = makeBoard({ owner }).board;
+		const hooks = {
+			a1: makeWebhook(a, { setBy: x }),
+			a2: makeWebhook(a),
+			b1: makeWebhook(b, { setBy: x }),
+			b2: makeWebhook(b, { setBy: y }),
+			b3: makeWebhook(b)
+		};
+		const ids = Object.fromEntries(Object.entries(hooks).map(([name, hook]) => [name, hook.id]));
+		const chosen = scope({ a: a.id, b: b.id }, x) as Parameters<typeof switchOffLostWebhooks>[0];
+
+		expect(() => switchOffLostWebhooks(chosen, 'a test')).toThrow(/none is open/);
+		const done = inTransaction(() => switchOffLostWebhooks(chosen, 'a test'));
+
+		expect(done.map((hook) => hook.id)).toEqual(off.map((name) => ids[name]));
+		for (const [name, hook] of Object.entries(hooks)) {
+			if (off.includes(name)) expectHeldOff(hook.id);
+			else expectOn(hook.id);
+		}
+	});
+
+	it.each([
+		{ row: 'switched off by a hold: its sentence', how: 'hold' as const, says: LOST },
+		{ row: 'switched off by a PUT: null', how: 'put' as const, says: null },
+		// The code review's CS4: a reset records its hold, and says so.
+		{ row: 'switched off by a password reset: its sentence', how: 'reset' as const, says: ACCESS_ENDED }
+	])('21. (2752 case 21) pausedBecause as history, for a webhook $row; to the owner and an administrator only', async ({ how, says }) => {
+		const s = scene();
+		const viewer = makeUser({ username: 'viewer' });
+		addBoardMember(s.board, viewer, 'viewer');
+		const theirs = await hookOf(s, s.editor, 'e');
+		if (how === 'hold') await takeOff(s);
+		if (how === 'put') expect((await put(s.owner, theirs.id, { active: false })).status).toBe(200);
+		if (how === 'reset') inTransaction(() => endAccountAccess(s.editor.id, { apiKeys: true, reportSchedules: false }));
+
+		for (const user of [s.owner, s.admin]) {
+			for (const answer of await answersTo(s, user, theirs.id)) expect(answer).toMatchObject({ active: false, pausedBecause: says });
+		}
+		for (const answer of await answersTo(s, viewer, theirs.id)) expect(answer).not.toHaveProperty('pausedBecause');
+	});
+
+	it('22. (2752 case 22) no answer carries the hold or the key columns: the list, one, and the create', async () => {
+		const s = scene();
+		const theirs = await hookOf(s, s.editor, 'e');
+		await takeOff(s);
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.owner, body: { url: 'https://hooks.example.test/new' } });
+		expect(made.status).toBe(201);
+
+		for (const answer of [...(await answersTo(s, s.owner, theirs.id)), made.body]) {
+			for (const key of WITHHELD) expect(answer, key).not.toHaveProperty(key);
+		}
+	});
+
+	// ─── The code review (2026-11-18) ───
+
+	it.each([
+		{ row: 'the address as typed in another case', url: 'HTTPS://Hooks.Example.Test/held-address' },
+		{ row: 'the default port written out', url: 'https://hooks.example.test:443/held-address' },
+		{ row: 'a trailing slash', url: 'https://hooks.example.test/held-address/' },
+		{ row: 'a query', url: 'https://hooks.example.test/held-address?a=1' },
+		{ row: 'a fragment', url: 'https://hooks.example.test/held-address#x' },
+		{ row: 'another path on the same host', url: 'https://hooks.example.test/somewhere-else' }
+	])('CS2. a create by an editor at the receiver held off on the board, $row, is refused 409 with nothing written', async ({ url }) => {
+		const s = scene();
+		const second = makeUser({ username: 'second' });
+		addBoardMember(s.board, second, 'editor');
+		const seconds = await hookOf(s, second, 'held-address');
+		await takeOff(s, second);
+
+		const before = snapshotDb();
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.editor, body: { url } });
+
+		expect([made.status, made.body.message]).toEqual([409, HELD_OFF_RECEIVER]);
+		expectUnchanged(before, 'after a create refused');
+		expect(seconds.url).toBe('https://hooks.example.test/held-address');
+	});
+
+	it('CS2. another host, another port or another scheme is another receiver: made (a guard)', async () => {
+		const s = scene();
+		const second = makeUser({ username: 'second' });
+		addBoardMember(s.board, second, 'editor');
+		await hookOf(s, second, 'held-address');
+		await takeOff(s, second);
+
+		for (const url of ['https://other.example.test/held-address', 'https://hooks.example.test:8443/held-address', 'http://hooks.example.test/held-address']) {
+			const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.editor, body: { url } });
+			expect(made.status, url).toBe(201);
+		}
+	});
+
+	it.each([
+		{ row: 'a secret over 256 characters', body: { secret: 'x'.repeat(257) } },
+		{ row: 'an event that is not one of the ten', body: { events: ['card.exploded'] } }
+	])('CS3. a malformed create at a held-off receiver is answered its own 400, as at any address: nothing says the receiver is held off ($row)', async ({ body }) => {
+		const s = scene();
+		const second = makeUser({ username: 'second' });
+		addBoardMember(s.board, second, 'editor');
+		const seconds = await hookOf(s, second, 'held-address');
+		await takeOff(s, second);
+
+		const atHeld = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.editor, body: { url: seconds.url, ...body } });
+		const elsewhere = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.editor, body: { url: 'https://other.example.test/x', ...body } });
+
+		expect(atHeld.status).toBe(400);
+		expect(atHeld.body).toEqual(elsewhere.body);
+	});
+
+	it("CS1. a webhook switched off for good is the owner's or an administrator's to delete: an editor is refused 403 with nothing written; one switched off by a PUT an editor still deletes", async () => {
+		const s = scene();
+		const second = makeUser({ username: 'second' });
+		addBoardMember(s.board, second, 'editor');
+		const seconds = await hookOf(s, second, 'held-address');
+		const owners = await hookOf(s, s.owner, 'o');
+		await takeOff(s, second);
+		expect((await put(s.owner, owners.id, { active: false })).status).toBe(200);
+
+		const before = snapshotDb();
+		const refused = await api('DELETE', `/api/v1/webhooks/${seconds.id}`, { user: s.editor });
+		expect([refused.status, refused.body.message]).toEqual([403, HELD_OFF_DELETE]);
+		expectUnchanged(before, "after an editor's delete refused");
+
+		expect((await api('DELETE', `/api/v1/webhooks/${owners.id}`, { user: s.editor })).status).toBe(200);
+		expect((await api('DELETE', `/api/v1/webhooks/${seconds.id}`, { user: s.owner })).status).toBe(200);
+	});
+
+	it.each([
+		{ row: 'a password reset (endAccountAccess)', end: (s: Scene) => inTransaction(() => endAccountAccess(s.editor.id, { apiKeys: true, reportSchedules: false })) },
+		{ row: 'the account deleted (deleteUser)', end: (s: Scene) => deleteUser(s.editor.id, s.chief) }
+	])("CS4. $row records the hold 'setter access ended': switched on, a new secret; the create at its receiver refused to an editor; the Share window counts it", async ({ end }) => {
+		const s = scene();
+		const other = makeUser({ username: 'other' });
+		addBoardMember(s.board, other, 'editor');
+		const theirs = await hookOf(s, s.editor, 'reset-receiver', 'old-secret');
+
+		end(s);
+
+		expect(rowOf(theirs.id)).toMatchObject({ active: 0, heldBecause: 'setter access ended', heldAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) });
+		for (const answer of await answersTo(s, s.owner, theirs.id)) expect(answer).toMatchObject({ active: false, pausedBecause: ACCESS_ENDED });
+		const share = await api('GET', `/api/boards/${s.board.id}/share`, { user: s.owner });
+		expect(share.body.heldWebhooks).toBe(1);
+		const refused = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: other, body: { url: theirs.url } });
+		expect([refused.status, refused.body.message]).toEqual([409, HELD_OFF_RECEIVER]);
+
+		const on = await put(s.owner, theirs.id, { active: true });
+		expect(on.status).toBe(200);
+		expect(on.body.secret).toMatch(/^[0-9a-f]{64}$/);
+		expect(rowOf(theirs.id)).toMatchObject({ active: 1, heldBecause: null, heldAt: null, setBy: s.owner.id, secret: on.body.secret });
+	});
+
+	// ─── Card 2325's other cases, to the switched-off state (card 2752) ───
+
+	it('9b. tells the owner and an administrator why it was switched off, after a restart too, when the last delivery is forgotten', async () => {
+		const s = scene();
+		const theirs = makeWebhook(s.board, { url: 'https://hooks.example.test/e', setBy: s.editor });
+		const owners = await hookOf(s, s.owner, 'o');
+		sqlite.prepare('DELETE FROM board_members WHERE board_id = ? AND user_id = ?').run(s.board.id, s.editor.id);
 		await event(s);
 
 		for (const user of [s.owner, s.admin]) {
 			for (const answer of await answersTo(s, user, theirs.id)) {
-				expect(answer).toMatchObject({ active: true, pausedBecause: LOST });
+				expect(answer).toMatchObject({ active: false, pausedBecause: LOST });
 				expect(answer.lastDelivery).toEqual({ at: expect.any(String), event: 'card.created', outcome: 'not-sent', status: null, reason: LOST_REASON });
 			}
 			for (const answer of await answersTo(s, user, owners.id)) expect(answer).toHaveProperty('pausedBecause', null);
 		}
 
-		// As a restart: the last delivery is forgotten, and why it is held is not.
+		// As a restart: the last delivery is forgotten, and why it was switched off is not.
 		forgetDeliveries();
 		for (const answer of await answersTo(s, s.owner, theirs.id)) {
 			expect(answer).toMatchObject({ pausedBecause: LOST, lastDelivery: null });
 		}
 	});
 
-	it("10. gives pausedBecause where it gives the address: the owner, an administrator and a create's answer, and no viewer or editor", async () => {
+	it("10b. gives pausedBecause where it gives the address: the owner, an administrator and a create's answer, and no viewer or editor", async () => {
 		const s = scene();
 		const viewer = makeUser({ username: 'viewer' });
 		const remaining = makeUser({ username: 'remaining' });
@@ -2402,7 +2971,6 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 		addBoardMember(s.board, remaining, 'editor');
 		const theirs = await hookOf(s, s.editor, 'e');
 		await takeOff(s);
-		await event(s);
 
 		for (const user of [viewer, remaining]) {
 			for (const answer of await answersTo(s, user, theirs.id)) {
@@ -2417,39 +2985,28 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 			for (const answer of await answersTo(s, user, theirs.id)) expect(answer).toHaveProperty('pausedBecause', LOST);
 		}
 
-		// The create's answer, to an editor too: its caller is its setter, and can open the board.
+		// The create's answer, to an editor too: its caller is its setter, and can open the board. Another receiver than
+		// the one held off, which an editor may not add to (the code review's CS2).
 		for (const user of [remaining, s.owner]) {
-			const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user, body: { url: `https://hooks.example.test/new-${user.id}` } });
+			const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user, body: { url: `https://new-${user.id}.example.test/x` } });
 			expect(made.status).toBe(201);
 			expect(made.body).toHaveProperty('pausedBecause', null);
 		}
 	});
 
-	it('11. the owner takes a held webhook over: off, then on with a new secret; an unchanged on leaves another held', async () => {
+	it('11b. one switched off by a hold and then sent active false stays held, and says so', async () => {
 		const s = scene();
-		const second = makeUser({ username: 'second' });
-		addBoardMember(s.board, second, 'editor');
 		const theirs = await hookOf(s, s.editor, 'e');
-		const seconds = await hookOf(s, second, 'f');
 		await takeOff(s);
-		await takeOff(s, second);
 
-		expect((await put(s.owner, theirs.id, { active: false })).status).toBe(200);
-		const taken = await put(s.owner, theirs.id, { active: true, secret: 'new' });
-		expect(taken.status).toBe(200);
-		expect(taken.body).toMatchObject({ active: true, pausedBecause: null });
-
-		expect(await event(s)).toEqual([theirs.url]);
-		expect(signedWith('new', sent.webhooks[0])).toBe(true);
-
-		// On for one already on is no change (card 2117): the setter stays the one who lost the board.
-		const unchanged = await put(s.owner, seconds.id, { active: true });
-		expect(unchanged.status).toBe(200);
-		expect(unchanged.body).toMatchObject({ active: true, pausedBecause: LOST });
-		expect(await event(s)).not.toContain(seconds.url);
+		const off = await put(s.owner, theirs.id, { active: false });
+		expect(off.status).toBe(200);
+		expect(off.body).toMatchObject({ active: false, pausedBecause: LOST });
+		expectHeldOff(theirs.id);
+		expect(await event(s)).toEqual([]);
 	});
 
-	it('12. writes one WARN for two held events, naming the webhook, the board and the setter, and not the address', async () => {
+	it('12b. writes one WARN, at the write, naming the webhook, the board and the setter, and not the address; the events after it write none', async () => {
 		const s = scene();
 		const theirs = await hookOf(s, s.editor, 'e-secret-path');
 		await takeOff(s);
@@ -2457,15 +3014,14 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 		await event(s);
 		await event(s);
 
-		const line = `Webhook ${theirs.id} on board ${s.board.id} not sent: the account that set it up (user ${s.editor.id}) can no longer open the board`;
-		expect(lines('WARN')).toEqual([line]);
+		expect(lines('WARN')).toEqual([offLine(theirs, s.board.id, s.editor, 'editor was taken off the board by owner')]);
 		expect(lines('WARN')[0]).not.toContain('e-secret-path');
 		expect(lines('WARN')[0]).not.toContain('hooks.example.test');
 	});
 
-	it('13. writes nothing for a held delivery but the log line', async () => {
+	it('13b. a webhook switched off is not dispatched: an event writes nothing for it', async () => {
 		const s = scene();
-		const theirs = await hookOf(s, s.editor, 'e');
+		await hookOf(s, s.editor, 'e');
 		const owners = await hookOf(s, s.owner, 'o');
 		await takeOff(s);
 		const card = makeCard(s.cols['To Do']);
@@ -2477,12 +3033,8 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 		dispatchWebhook(s.board.id, 'card.created', { cardId: card.id });
 		await sent.settle();
 
-		// The snapshot leaves out system_logs: every other table is as it was.
-		expectUnchanged(before, 'after a held delivery');
-		expect(logRows()).toBe(logged + 1);
-		expect(lines('WARN')).toEqual([
-			`Webhook ${theirs.id} on board ${s.board.id} not sent: the account that set it up (user ${s.editor.id}) can no longer open the board`
-		]);
+		expectUnchanged(before, 'after an event');
+		expect(logRows()).toBe(logged);
 		expect(sent.webhooks.map((w) => w.url)).toEqual([owners.url]);
 	});
 
@@ -2491,31 +3043,25 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 		const theirs = await hookOf(s, s.editor, 'e');
 		const owners = await hookOf(s, s.owner, 'o');
 
-		const res = await api('POST', `/api/boards/${s.board.id}/share`, {
-			user: s.owner,
-			body: { type: 'user', targetId: s.editor.id, role: 'viewer' }
-		});
-		expect(res.status).toBe(200);
+		await shareBack(s, s.editor, 'viewer');
 
+		expectOn(theirs.id);
 		expect(await event(s)).toEqual([theirs.url, owners.url]);
 	});
 
-	it('15. gives pausedBecause null for a webhook that is off, whoever set it', async () => {
+	it('15b. gives pausedBecause null for a webhook off with no hold, whoever set it', async () => {
 		const s = scene();
-		const theirs = await hookOf(s, s.editor, 'e');
 		const nobodysOff = makeWebhook(s.board, { setBy: null, active: false });
-		await takeOff(s);
+		const ownersOff = makeWebhook(s.board, { active: false });
 
-		const off = await put(s.owner, theirs.id, { active: false });
-		expect(off.status).toBe(200);
-		expect(off.body).toMatchObject({ active: false, pausedBecause: null });
-		for (const answer of await answersTo(s, s.owner, theirs.id)) expect(answer).toMatchObject({ active: false, pausedBecause: null });
-		for (const answer of await answersTo(s, s.owner, nobodysOff.id)) expect(answer).toMatchObject({ active: false, pausedBecause: null });
+		for (const hook of [nobodysOff, ownersOff]) {
+			for (const answer of await answersTo(s, s.owner, hook.id)) expect(answer).toMatchObject({ active: false, pausedBecause: null });
+		}
 	});
 
 	// ─── The review's (2026-10-20) ───
 
-	it('16. holds a webhook sent through deliver on its own, with no dispatch and no cache (decision 10)', async () => {
+	it('16b. switches off a webhook sent through deliver on its own, with no dispatch and no cache (decision 10)', async () => {
 		const s = scene();
 		const outsider = makeUser({ username: 'outsider' });
 		const hook = makeWebhook(s.board, { url: 'https://hooks.example.test/direct', setBy: outsider });
@@ -2525,12 +3071,11 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 
 		expect(sent.webhooks).toEqual([]);
 		expect(deliveryResultFor(hook)).toMatchObject({ outcome: 'not-sent', status: null, reason: LOST_REASON });
-		expect(lines('WARN')).toEqual([
-			`Webhook ${hook.id} on board ${s.board.id} not sent: the account that set it up (user ${outsider.id}) can no longer open the board`
-		]);
+		expectHeldOff(hook.id);
+		expect(lines('WARN')).toEqual([offLine(hook, s.board.id, outsider, 'found when an event was sent')]);
 	});
 
-	it("17. never carries one board's answer to another through a shared cache", async () => {
+	it("17b. never carries one board's answer to another through a shared cache", async () => {
 		const s = scene();
 		const outsider = makeUser({ username: 'outsider' });
 		const own = makeBoard({ owner: outsider }).board;
@@ -2544,9 +3089,11 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 
 		expect(sent.webhooks.map((w) => w.url)).toEqual([onTheirs.url]);
 		expect(deliveryResultFor(onOwners)).toMatchObject({ outcome: 'not-sent', reason: LOST_REASON });
+		expectOn(onTheirs.id);
+		expectHeldOff(onOwners.id);
 	});
 
-	it('18. holds a webhook whose setter names no account, as after a restore, with the lost-setter sentence', async () => {
+	it('18b. switches off a webhook whose setter names no account, as after a restore, with the lost-setter sentence', async () => {
 		const s = scene();
 		const owners = await hookOf(s, s.owner, 'o');
 		const dangling = makeWebhook(s.board, { url: 'https://hooks.example.test/dangling' });
@@ -2559,10 +3106,49 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 		}
 
 		expect(await event(s)).toEqual([owners.url]);
+		expectHeldOff(dangling.id);
 		for (const answer of await answersTo(s, s.owner, dangling.id)) {
-			expect(answer).toMatchObject({ active: true, pausedBecause: LOST });
+			expect(answer).toMatchObject({ active: false, pausedBecause: LOST });
 			expect(answer.lastDelivery).toMatchObject({ outcome: 'not-sent', reason: LOST_REASON });
 		}
+	});
+});
+
+describe('a switch-off and the write that caused it are one (card 2752, E8)', () => {
+	it('24. (2752 case 24) each write of a share removal failed in turn leaves the share and the webhook as they were, with no mail and no WARN; on success both come after the commit', async () => {
+		/** The WARN lines after each run of the request: the untouched run first. */
+		const warned: number[] = [];
+		const run = await eachWriteInTurn({
+			build: () => {
+				makeSmtp();
+				const owner = makeUser({ username: 'owner' });
+				const editor = makeUser({ username: 'editor' });
+				const { board } = makeBoard({ owner });
+				addBoardMember(board, editor, 'editor');
+				const hook = makeWebhook(board, { setBy: editor });
+				return { owner, editor, board, hook };
+			},
+			request: async ({ owner, editor, board }) => {
+				try {
+					return await api('DELETE', `/api/boards/${board.id}/share`, { user: owner, body: { type: 'user', targetId: editor.id } });
+				} finally {
+					warned.push(lines('WARN').length);
+				}
+			},
+			afterSuccess: ({ hook }, result, done) => {
+				expect(result.status).toBe(200);
+				expect(sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(hook.id)).toEqual({
+					active: 0,
+					heldBecause: 'setter cannot open'
+				});
+				expect(done.filter((effect) => effect.kind === 'email').map((effect) => (effect as { subject: string }).subject)).toEqual([
+					'A webhook on your board was switched off'
+				]);
+			}
+		});
+
+		expect(run.writes.length).toBeGreaterThanOrEqual(2);
+		expect(warned).toEqual([1, ...run.writes.map(() => 0)]);
 	});
 });
 
@@ -3042,7 +3628,7 @@ describe("the share list tells the board's owner which webhooks a removal stops 
 
 	// Card 2385: the switch to private gave no warning, though it holds every webhook whose
 	// setter opens the board only because it is public.
-	it('8. privateStopsWebhooks counts, on a public board, the webhooks whose setter opens it only because it is public; making it private holds exactly those', async () => {
+	it('8. privateStopsWebhooks counts, on a public board, the webhooks whose setter opens it only because it is public; making it private switches off exactly those, and the held one, for good (card 2752)', async () => {
 		const s = scene({ isPublic: true });
 		const outsider = makeUser({ username: 'outsider' });
 		const teamOnly = makeUser({ username: 'teamonly' });
@@ -3065,10 +3651,12 @@ describe("the share list tells the board's owner which webhooks a removal stops 
 		expect((await visibility(false)).status).toBe(200);
 		const after = await shareList(s, s.owner);
 		expect([after.privateStopsWebhooks, after.heldWebhooks]).toEqual([0, 3]);
+		expect(sqlite.prepare('SELECT COUNT(*) FROM webhooks WHERE active = 0 AND held_because IS NOT NULL').pluck().get()).toBe(3);
 
+		// Public again, they stay off (card 2752): nothing for the switch to stop, three held.
 		expect((await visibility(true)).status).toBe(200);
 		const again = await shareList(s, s.owner);
-		expect([again.privateStopsWebhooks, again.heldWebhooks]).toEqual([2, 1]);
+		expect([again.privateStopsWebhooks, again.heldWebhooks]).toEqual([0, 3]);
 	});
 
 	it('9. privateStopsWebhooks is 0 on a private board, and goes to the owner and an administrator alone', async () => {

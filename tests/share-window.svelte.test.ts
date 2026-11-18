@@ -13,6 +13,10 @@
  *   - The window says how many of the board's webhooks send nothing now
  *     (`heldWebhooks`), whatever stopped them, and says nothing at 0 or when
  *     the list gives no count (anyone but the owner and an administrator).
+ *   - Card 2752 (case 23): a removal, or the switch to private, switches
+ *     those webhooks off for good, so each confirm says they stay off until
+ *     the owner or an administrator switches them on with an API key; and
+ *     the count says they were switched off, naming no reason (E18).
  *
  *   - The switch to private asks first in the same way when it would stop
  *     webhooks whose setters open the board only because it is public
@@ -129,7 +133,7 @@ describe('✕ on a share whose removal stops webhooks asks first (card 2329)', (
 		const dialog = confirmDialog();
 		expect(dialog).not.toBeNull();
 		expect(dialog!.querySelector('.confirm-message')!.textContent).toBe(
-			'Removing sam stops 2 webhooks they set up on this board: nothing is sent to them until they can open the board again, or someone takes them over.'
+			'Removing sam switches off 2 webhooks they set up on this board. They stay off, even if they are given the board back, until you or an administrator switches them on again with an API key.'
 		);
 		await settle();
 		expect(deletes()).toEqual([]);
@@ -147,7 +151,7 @@ describe('✕ on a share whose removal stops webhooks asks first (card 2329)', (
 		removeButton('sam').click();
 		flushSync();
 		expect(confirmDialog()!.querySelector('.confirm-message')!.textContent).toBe(
-			'Removing sam stops 1 webhook they set up on this board: nothing is sent to it until they can open the board again, or someone takes it over.'
+			'Removing sam switches off 1 webhook they set up on this board. It stays off, even if they are given the board back, until you or an administrator switches it on again with an API key.'
 		);
 		button(confirmDialog()!, 'Cancel').click();
 		await settle();
@@ -163,7 +167,7 @@ describe('✕ on a share whose removal stops webhooks asks first (card 2329)', (
 		removeButton('Ops').click();
 		flushSync();
 		expect(confirmDialog()!.querySelector('.confirm-message')!.textContent).toBe(
-			'Removing Ops stops 1 webhook set up by its members on this board: nothing is sent to it until those members can open the board again, or someone takes it over.'
+			'Removing Ops switches off 1 webhook set up by its members on this board. It stays off, even if those members are given the board back, until you or an administrator switches it on again with an API key.'
 		);
 		button(confirmDialog()!, 'Remove').click();
 		await settle();
@@ -245,11 +249,12 @@ describe('after a removal the focus stays in the Share window', () => {
 describe('the Share window says how many of the board’s webhooks send nothing now (card 2329)', () => {
 	const said = () => document.querySelector('.share-held')?.textContent?.replace(/\s+/g, ' ').trim();
 
-	it('one held, in the singular, with where to read why', async () => {
+	// Card 2752, case 23 (E18): switched off, in words that name no reason, for a key that ended (card 2893) says the same.
+	it('23. one switched off, in the singular, naming no reason, with where to read why', async () => {
 		list.heldWebhooks = 1;
 		await open();
 		expect(said()).toBe(
-			"⚠️ 1 webhook on this board sends nothing: the account that set each up can no longer open the board, or nobody is recorded as setting it up. Read the board's webhooks with your API key (GET /api/v1/boards/3/webhooks) to see why each is held, and delete it or take it over."
+			'⚠️ 1 webhook on this board was switched off and sends nothing. Read why with your API key (GET /api/v1/boards/3/webhooks), and delete it or switch it on.'
 		);
 	});
 
@@ -264,7 +269,9 @@ describe('the Share window says how many of the board’s webhooks send nothing 
 		list = { members: [], teams: [], isPublic: false, heldWebhooks: 2 };
 		button(confirmDialog()!, 'Remove').click();
 		await settle();
-		expect(said()).toMatch(/^⚠️ 2 webhooks on this board send nothing:/);
+		expect(said()).toBe(
+			'⚠️ 2 webhooks on this board were switched off and send nothing. Read why with your API key (GET /api/v1/boards/3/webhooks), and delete each or switch it on.'
+		);
 	});
 
 	it('nothing when the list gives no count', async () => {
@@ -290,7 +297,7 @@ describe('the switch to private asks first when it stops webhooks, and the list 
 		theSwitch().click();
 		flushSync();
 		expect(privateDialog()!.querySelector('.confirm-message')!.textContent).toBe(
-			'Making this board private stops 2 webhooks set up by accounts that can open it only because it is public: nothing is sent to them until those accounts can open the board again, or someone takes them over.'
+			'Making this board private switches off 2 webhooks set up by accounts that can open it only because it is public. They stay off, even if the board is made public again, until you or an administrator switches them on again with an API key.'
 		);
 		button(privateDialog()!, 'Cancel').click();
 		await settle();
@@ -305,7 +312,9 @@ describe('the switch to private asks first when it stops webhooks, and the list 
 		expect(listReads()).toBe(2);
 		expect(privateDialog()).toBeNull();
 		expect(drawn!.target.textContent).toContain('Private Board');
-		expect(said()).toMatch(/^⚠️ 2 webhooks on this board send nothing:/);
+		expect(said()).toBe(
+			'⚠️ 2 webhooks on this board were switched off and send nothing. Read why with your API key (GET /api/v1/boards/3/webhooks), and delete each or switch it on.'
+		);
 	});
 
 	it('one, in the singular', async () => {
@@ -315,7 +324,7 @@ describe('the switch to private asks first when it stops webhooks, and the list 
 		theSwitch().click();
 		flushSync();
 		expect(privateDialog()!.querySelector('.confirm-message')!.textContent).toBe(
-			'Making this board private stops 1 webhook set up by an account that can open it only because it is public: nothing is sent to it until that account can open the board again, or someone takes it over.'
+			'Making this board private switches off 1 webhook set up by an account that can open it only because it is public. It stays off, even if the board is made public again, until you or an administrator switches it on again with an API key.'
 		);
 	});
 

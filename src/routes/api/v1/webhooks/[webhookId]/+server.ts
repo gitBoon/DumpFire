@@ -4,12 +4,21 @@ import { db } from '$lib/server/db';
 import { webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireBoard, requireUser, type Need } from '$lib/server/route-guards';
-import { canSeeWebhookSecret, forgetDelivery, presentWebhook, storedEvents, WEBHOOK_EVENTS } from '$lib/server/webhooks';
+import { canSeeWebhookSecret, forgetDelivery, NEW_SECRET_REASONS, presentWebhook, storedEvents, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import { pathId, readBody, readBoolean, readChoices, readText } from '$lib/server/request-body';
 import { readWebhookUrl } from '$lib/server/webhook-address';
 import type { SessionUser } from '$lib/server/auth';
 import { writeAs } from '$lib/server/write-as';
+import { randomBytes } from 'node:crypto';
 import type { RequestHandler } from './$types';
+
+/** Said to a `secret` sent with the switch-on that gives a webhook a new one (card 2752, D3). */
+const NEW_SECRET_ON_SWITCH_ON =
+	'A webhook switched off this way is given a new secret when it is switched on: send active true alone, and read the new secret from the answer.';
+
+/** Said to an editor deleting a webhook switched off for good (the code review's CS1). */
+const HELD_OFF_DELETE =
+	"Only the board's owner or an administrator can delete a webhook that was switched off this way. Ask the board's owner.";
 
 /** The webhook, if the caller may view or edit the board it belongs to. */
 function requireWebhook(user: SessionUser | null, webhookId: number, need: Need) {
@@ -56,6 +65,16 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * one sent back unchanged is accepted. Whoever changes the address or the
  * secret, or switches the webhook on, becomes its setter (`set_by`, card
  * 2168).
+ *
+ * Switching on a webhook switched off by a hold (card 2752) clears the hold
+ * in the same update. One held because its setter lost the board, had their
+ * access ended by a reset, an invite or a delete (the code review's CS4), or
+ * its key ended (card 2893), is given a new secret there too (D3, S4): the former
+ * setter knows the old one, and could sign deliveries with it. The new secret
+ * is in the answer, which goes to the board's owner or an administrator, the
+ * only callers who may switch it on; a `secret` sent with that switch-on is
+ * refused 400 before anything is written. One held because nobody was
+ * recorded as its setter keeps its secret.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -80,11 +99,16 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		if (!reveal && switchedOn) {
 			throw error(403, "Only the board's owner or an administrator can switch a webhook on. Ask the board's owner.");
 		}
+		// Switched off for a lost setter or an ended key: a new secret, never one sent (card 2752, D3).
+		const givenNewSecret = switchedOn && hook.heldBecause !== null && NEW_SECRET_REASONS.includes(hook.heldBecause);
+		if (givenNewSecret && Object.hasOwn(body, 'secret')) {
+			throw error(400, NEW_SECRET_ON_SWITCH_ON);
+		}
 
 		const updates: Partial<typeof webhooks.$inferInsert> = {};
 		const url = readWebhookUrl(body, { keep: hook.url });
 		if (url !== undefined) updates.url = url;
-		const secret = readText(body, 'secret', { max: 256, keep: hook.secret });
+		const secret = givenNewSecret ? randomBytes(32).toString('hex') : readText(body, 'secret', { max: 256, keep: hook.secret });
 		if (secret !== undefined) updates.secret = secret;
 		// Each name trimmed; an empty list is every event.
 		const events = readChoices(body, 'events', { from: WEBHOOK_EVENTS, trim: true, keep: storedEvents(hook.events) });
@@ -95,6 +119,11 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		// again answers for them, and their reset is what switches it off.
 		if ((url !== undefined && url !== hook.url) || (secret !== undefined && secret !== hook.secret) || switchedOn) {
 			updates.setBy = user.id;
+		}
+		// Switched on: whatever hold switched it off is over (card 2752, D1).
+		if (switchedOn) {
+			updates.heldBecause = null;
+			updates.heldAt = null;
 		}
 
 		if (Object.keys(updates).length === 0) throw error(400, 'No fields to update');
@@ -116,12 +145,20 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
  * Its last delivery result, held in memory (card 2178), is forgotten once the
  * delete has committed. The webhook is read, the caller checked and the row
  * deleted in one transaction that asks first whether the key is still open,
- * and who its account is now (card 2253).
+ * and who its account is now (card 2253). A webhook switched off for good
+ * (`held_because` set) is deleted only by the board's owner or an
+ * administrator: an editor is refused 403, as for switching one on (the code
+ * review's CS1).
  */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	const webhookId = pathId(params.webhookId, 'webhook');
 	writeAs(locals, (caller) => {
-		requireWebhook(caller, webhookId, 'edit');
+		const { hook, reveal } = requireWebhook(caller, webhookId, 'edit');
+		// One switched off for good is the owner's or an administrator's to
+		// delete, as it is theirs to switch on (the code review's CS1): an
+		// editor's delete would clear the hold off the board, and with it the
+		// refusal of a new webhook to its receiver.
+		if (!reveal && !hook.active && hook.heldBecause !== null) throw error(403, HELD_OFF_DELETE);
 		db.delete(webhooks).where(eq(webhooks.id, webhookId)).run();
 	});
 	forgetDelivery(webhookId);

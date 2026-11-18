@@ -1187,15 +1187,23 @@ const MIRRORS: Record<string, Mirror> = {
 		adds: {
 			hasSecret: 'presentWebhook says whether a secret is set, to callers it does not show the secret to',
 			lastDelivery: 'presentWebhook gives what the last delivery came to, held in memory and never stored (card 2178)',
-			pausedBecause: 'presentWebhook says why a webhook that is on is not sent to, worked out when the answer is made and never stored (card 2325)'
+			pausedBecause:
+				'presentWebhook says why nothing is sent to a webhook: as history for one switched off by a hold, from held_because (card 2752), and for one on and held now, worked out when the answer is made (card 2325)'
 		},
 		retyped: { events: 'stored as JSON text, and answered by presentWebhook as the array of event names it holds' },
-		withholds: { setBy: 'presentWebhook leaves it out for every caller: it is what a password reset reads (card 2168)' },
+		withholds: {
+			setBy: 'presentWebhook leaves it out for every caller: it is what a password reset reads (card 2168)',
+			heldBecause: 'presentWebhook leaves it out for every caller: pausedBecause says it in words (card 2752)',
+			heldAt: 'presentWebhook leaves it out for every caller, with heldBecause (card 2752)',
+			setByKey: 'presentWebhook leaves it out for every caller: the key that last set the webhook, which card 2893 reads',
+			setWithKey: 'presentWebhook leaves it out for every caller: whether a key set the webhook, which card 2893 reads'
+		},
 		sometimesAbsent: {
 			secret: 'presentWebhook leaves it out unless the caller is the board owner or an administrator, or has just created the webhook',
 			url: 'presentWebhook leaves the address out with the secret, for the same callers (card 2133)',
 			lastDelivery: 'presentWebhook leaves it out with the address, for the same callers: the people told it fails are the people who may change where it sends (card 2178)',
-			pausedBecause: 'presentWebhook leaves it out with the address, for the same callers: the people told it is held are the people who may take it over (card 2325)'
+			pausedBecause:
+				'presentWebhook leaves it out with the address, for the same callers: the people told why it was switched off are the people who may switch it on (cards 2325 and 2752)'
 		}
 	},
 	AuditLogEntry: {
@@ -2842,20 +2850,21 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.10.0, with its dated notes newest first, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.11.0, with its dated notes newest first, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.10.0');
+		expect(res.body.info.version).toBe('1.11.0');
 
 		// Card 2761 (E8): every dated note's heading, in the order the description gives them, newest first, in
 		// one list, in place of each note's test counting the notes before it. A new version's note is added at
 		// its head, and nothing else here moves.
 		const note = res.body.info.description as string;
 		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])).toEqual([
+			'**Changed on 2026-11-18 (version 1.11.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.10.0), breaking.**',
 			'**Changed on 2026-11-17 (version 1.9.1).**',
 			'**Changed on 2026-11-17 (version 1.9.0).**',
@@ -2913,12 +2922,66 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(res.body.tags.map((t: Json) => t.name)).toContain(itself.tags[0]);
 	});
 
-	// Card 2719, case 32 (D8, E7): what the key's user cannot open is answered as what is not there.
-	it('announces in the 1.10.0 note, first and breaking, that what the key\'s user cannot open is answered 404, and holds the document to it (card 2719)', () => {
+	// Card 2752: a webhook whose setter can no longer open its board is switched off for good.
+	it('announces in the 1.11.0 note, first and breaking, that a webhook whose setter lost the board is switched off for good, and holds the document to it (card 2752)', () => {
 		const note = spec.info.description as string;
-		const heading = '**Changed on 2026-11-18 (version 1.10.0), breaking.**';
+		const heading = '**Changed on 2026-11-18 (version 1.11.0), breaking.**';
 		// First of the dated notes, and marked breaking.
 		expect(note.match(/\*\*Changed on [^*]+\*\*/)?.[0]).toBe(heading);
+		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-18 (version 1.10.0), breaking.**'));
+		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+		for (const words of [
+			'(card 2752)',
+			'is switched off, active false: at the change that takes the access away',
+			'at every start of the server, after every restore of a backup, and at its next event where none of those saw it',
+			'(2) it stays off when the setter is given the board back',
+			'where until this version the next event was sent to it again with nothing else changed',
+			// The code review's CS4.
+			"(3) a password reset, an invite used, or the setter's account deleted, which switched off the webhooks the account set, now records why too (setter access ended)",
+			'(4) pausedBecause says, of such a webhook, as history, why it was switched off and what to do',
+			'it is null for one switched off by PUT; ',
+			"(5) switching it on again, PUT /webhooks/{webhookId} with active true, is the board's owner's or an administrator's",
+			'one switched off because its setter lost the board or had its access ended is given a new secret, 64 hexadecimal characters',
+			// The code review's CS6.
+			"given there and readable by the board's owner or an administrator",
+			'and a secret sent with that switch-on is answered 400 with nothing written',
+			'one switched off because nobody was recorded as its setter keeps its secret',
+			// The code review's CS1.
+			"(6) DELETE /webhooks/{webhookId} of a webhook switched off this way is the board's owner's or an administrator's: an editor is answered 403 with nothing deleted",
+			// The code review's CS2 and CS3.
+			"(7) POST /boards/{boardId}/webhooks by anyone but the board's owner or an administrator is answered 409",
+			'for a receiver (the same scheme, host and port, whatever the path, query, fragment, case or default port)',
+			'asked after every other check',
+			"(8) the board's owners, or the administrators where it has none, are mailed",
+			'(9) nothing else changed'
+		]) {
+			expect(changes, words).toContain(words);
+		}
+		expect(changes).not.toContain('shown once');
+
+		// The schema and the three operations say the same.
+		const webhook = spec.components.schemas.Webhook;
+		expect(webhook.description).toContain('is switched off for good (since 1.11.0)');
+		expect(webhook.description).toContain('It stays off when the setter is given the board back. Only the board owner or an administrator switches it on again');
+		expect(webhook.description).not.toContain('is sent again with nothing else changed');
+		expect(webhook.properties.pausedBecause.description).toContain('"This was switched off because the account that set it up could no longer open this board.');
+		expect(webhook.properties.pausedBecause.description).toContain('"This was switched off because the account that set it up had its password reset, used an invite, or was deleted.');
+		expect(webhook.properties.pausedBecause.description).not.toContain('shown once');
+		const update = spec.paths['/api/v1/webhooks/{webhookId}'].put;
+		expect(update.description).toContain('gives it a new secret, 64 hexadecimal characters, in this answer\'s secret');
+		expect(update.responses['400'].content['application/json'].examples.newSecret.value.message).toContain('is given a new secret when it is switched on');
+		const create = spec.paths['/api/v1/boards/{boardId}/webhooks'].post;
+		expect(create.responses['409'].content['application/json'].examples.heldOff.value.message).toContain('A webhook to this receiver (the same scheme, host and port)');
+		const remove = spec.paths['/api/v1/webhooks/{webhookId}'].delete;
+		expect(remove.responses['403'].content['application/json'].examples.heldOff.value.message).toContain('can delete a webhook that was switched off this way');
+	});
+
+	// Card 2719, case 32 (D8, E7): what the key's user cannot open is answered as what is not there.
+	it('announces in the 1.10.0 note, breaking, that what the key\'s user cannot open is answered 404, and holds the document to it (card 2719)', () => {
+		const note = spec.info.description as string;
+		const heading = '**Changed on 2026-11-18 (version 1.10.0), breaking.**';
+		// Among the dated notes, and marked breaking; where it stands is the ordered list's (card 2752 put 1.11.0 before it).
+		expect(note).toContain(heading);
 		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-17 (version 1.9.1).**'));
 		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
 		for (const words of [

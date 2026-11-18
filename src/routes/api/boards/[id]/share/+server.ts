@@ -7,7 +7,7 @@ import { notifyBoardShared } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readBoolean, readChoice, readId } from '$lib/server/request-body';
 import { requireBoard, requireBoardOwner, requireUser } from '$lib/server/route-guards';
-import { webhookShareNotes } from '$lib/server/webhooks';
+import { switchOffLostWebhooks, webhookShareNotes } from '$lib/server/webhooks';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -202,6 +202,11 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 			.set({ isPublic })
 			.where(eq(boards.id, boardId))
 			.run();
+		// Made private: each webhook whose setter opened the board only because
+		// it was public is switched off for good, in this write (card 2752, D2).
+		if (board.isPublic && !isPublic) {
+			switchOffLostWebhooks({ boardIds: [boardId] }, `the board was made private by ${requireUser(caller).username}`);
+		}
 		return isPublic;
 	});
 
@@ -227,6 +232,11 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 
 		const type = readChoice(body, 'type', { from: SHARE_TYPES, required: true, says: SHARE_TYPE_SAYS });
 		const targetId = readId(body, 'targetId', { required: true });
+		// Named in the cause of any webhook the removal switches off (card 2752, S6).
+		const removedName =
+			type === 'user'
+				? db.select({ name: users.username }).from(users).where(eq(users.id, targetId)).get()?.name
+				: db.select({ name: teams.name }).from(teams).where(eq(teams.id, targetId)).get()?.name;
 
 		const removed = type === 'user'
 			? db.delete(boardMembers)
@@ -238,6 +248,16 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 		if (removed.changes === 0) {
 			throw error(404, type === 'user' ? 'This board is not shared with that user' : 'This board is not shared with that team');
 		}
+		// Each webhook whose setter can no longer open the board is switched
+		// off for good, in this write (card 2752, D2): giving the share back
+		// does not switch it on again.
+		const by = requireUser(caller).username;
+		switchOffLostWebhooks(
+			{ boardIds: [boardId] },
+			type === 'user'
+				? `${removedName ?? `user ${targetId}`} was taken off the board by ${by}`
+				: `the team ${removedName ?? targetId}'s share was removed by ${by}`
+		);
 	});
 
 	return json({ success: true });

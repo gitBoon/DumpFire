@@ -34,7 +34,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.10.0',
+		version: '1.11.0',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -42,6 +42,22 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-18 (version 1.11.0), breaking.** A webhook whose setter can no longer open its board is switched off for good (card 2752): ' +
+			'(1) a webhook whose setter, the account that created it or last set its url or secret or switched it on, can no longer open its board, and one nobody is recorded as having set up, ' +
+			'is switched off, active false: at the change that takes the access away (a person or a team taken off the board, the setter taken out of a team, a team deleted, the board made private, ' +
+			'the setter\'s role changed), at every start of the server, after every restore of a backup, and at its next event where none of those saw it; ' +
+			'(2) it stays off when the setter is given the board back, the board is made public again or the role is given back, where until this version the next event was sent to it again with nothing else changed; ' +
+			'(3) a password reset, an invite used, or the setter\'s account deleted, which switched off the webhooks the account set, now records why too (setter access ended), so such a webhook is held as one whose setter lost the board is in what follows; ' +
+			'(4) pausedBecause says, of such a webhook, as history, why it was switched off and what to do; of one that is on and held now, which only a change none of those saw can leave, that nothing is sent; ' +
+			'and it is null for one switched off by PUT; ' +
+			'(5) switching it on again, PUT /webhooks/{webhookId} with active true, is the board\'s owner\'s or an administrator\'s, as before, and makes the caller its setter; ' +
+			'one switched off because its setter lost the board or had its access ended is given a new secret, 64 hexadecimal characters, in that answer\'s secret, given there and readable by the board\'s owner or an administrator, ' +
+			'and a secret sent with that switch-on is answered 400 with nothing written; one switched off because nobody was recorded as its setter keeps its secret; ' +
+			'(6) DELETE /webhooks/{webhookId} of a webhook switched off this way is the board\'s owner\'s or an administrator\'s: an editor is answered 403 with nothing deleted; ' +
+			'(7) POST /boards/{boardId}/webhooks by anyone but the board\'s owner or an administrator is answered 409, with nothing created, for a receiver (the same scheme, host and port, whatever the path, query, fragment, case or default port) of a webhook of the board switched off this way, asked after every other check; ' +
+			'(8) the board\'s owners, or the administrators where it has none, are mailed whenever webhooks of the board are switched off for lost access, naming the change that caused it and who made it, ' +
+			'and whenever someone else makes a webhook on the board; ' +
+			'(9) nothing else changed: no operation, field, status or schema is new, and a webhook whose setter can open its board is sent as before.\n\n' +
 			'**Changed on 2026-11-18 (version 1.10.0), breaking.** What the key\'s user cannot open is answered as what is not there (card 2719): ' +
 			'(1) a board, a card, a dashboard grouping holding only boards the key\'s user cannot open, or anything on a board they cannot open (a column, a label, a subtask, ' +
 			'a comment, a card category, a webhook, a token entry, a link\'s other end) is answered 404 by every operation, in the very words one that is not there gets, ' +
@@ -942,8 +958,12 @@ const spec = {
 					'with data.action card_discarded, sent before card.deleted, with the card\'s id, for a delete. Archiving any other card sends nothing. ' +
 					'milestone.card_added and milestone.card_removed (since 2026-10-21, item 102) are a card put in a milestone or taken out, sent to the card\'s board. A webhook with an empty events list receives every event, the four newest among them. ' +
 					'Who it is sent for (since 2026-10-20): a webhook is sent only while the account that set it up, the one that created it or last set its url or secret or switched it on, can open the board, asked at each event with that account\'s role as it is then. ' +
-					'One whose setter cannot, or that has no recorded setter (one made before setters were recorded on 2026-10-18/19), is held: nothing is sent to it, active is left as it is, and pausedBecause says why. ' +
-					'One whose setter is given the board back is sent again with nothing else changed. To keep one without that, the board owner or an administrator takes it over: switches it off, then on, which makes them its setter, sets a new secret and updates the receiver.',
+					'One whose setter cannot, or that has no recorded setter (one made before setters were recorded on 2026-10-18/19), is switched off for good (since 1.11.0): active becomes false, ' +
+					'at the change that takes the access away, at every start of the server, after every restore, and at its next event where none of those saw it, and pausedBecause says why. ' +
+					'It stays off when the setter is given the board back. Only the board owner or an administrator switches it on again, with active true, which makes them its setter; ' +
+					'one switched off because its setter lost the board is given a new secret in that answer, to give its receiver. ' +
+					'A password reset, an invite used and a deleted account record theirs too (setter access ended). While one is switched off this way, a webhook to its receiver (scheme, host and port) on the board is made, and it is deleted, only by the board owner or an administrator. ' +
+					'The board\'s owners are mailed when one is switched off this way, and when someone else makes a webhook on the board.',
 				properties: {
 					id: { type: 'integer' },
 					boardId: { type: 'integer' },
@@ -982,7 +1002,7 @@ const spec = {
 									'delivered: the receiver answered 2xx. answered: it answered any other status, a redirect included, which is not followed. ' +
 									'no-answer: no status came: the name was not found, the certificate could not be checked, or the receiver could not be reached or did not answer in time. ' +
 									'not-sent: no request was made: the address is inside the network, carries a user name or password, or is not http or https, or the webhook\'s events are not a list, ' +
-									'or (since 2026-10-20) the webhook is held because the account that set it up can no longer open the board or nobody is recorded as having set it up.'
+									'or (since 2026-10-20) the webhook is held because the account that set it up can no longer open the board or nobody is recorded as having set it up, and (since 1.11.0) is switched off for good at that event.'
 							},
 							status: { type: ['integer', 'null'], description: 'The status the receiver answered; null when it answered none' },
 							reason: {
@@ -998,11 +1018,13 @@ const spec = {
 					pausedBecause: {
 						type: ['string', 'null'],
 						description:
-							'Why the webhook is held, so that nothing is sent to it (since 2026-10-20). Present only when the caller is the board owner or an administrator, as the address is, and in the response to the request that created the webhook, where it is null: its creator is its setter and can open the board. ' +
-							'null unless the webhook is on (active) and held, so a webhook switched off is null whoever set it. Worked out when the answer is made, never stored, so it is there after a restart when lastDelivery is null. While held it is one of two sentences, word for word. ' +
-							'When the account that set it up can no longer open the board: "The account that set this up can no longer open this board, so nothing is sent. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it off and on, which makes you its setter, and set a new secret and update the receiver." ' +
-							'When nobody is recorded as having set it up: "Nobody is recorded as having set this up. Delete it unless you recognise the address; to keep it, switch it off and on, which makes you its setter, and set a new secret." ' +
-							'Sending active true for a webhook that is already on is no change and does not take it over.'
+							'Why nothing is sent to the webhook (since 2026-10-20). Present only when the caller is the board owner or an administrator, as the address is, and in the response to the request that created the webhook, where it is null: its creator is its setter and can open the board. ' +
+							'Since 1.11.0, history: for a webhook switched off for good because its setter can no longer open the board, or nobody is recorded as having set it up, it says why, word for word, the reason kept as it was recorded. ' +
+							'Switched off because the account that set it up lost the board: "This was switched off because the account that set it up could no longer open this board. It stays off if that account is given the board back. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
+							'Switched off by a password reset, an invite used or a delete of its setter (since 1.11.0, the code review\'s CS4): "This was switched off because the account that set it up had its password reset, used an invite, or was deleted. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
+							'Switched off because nobody was recorded as its setter: "This was switched off because nobody is recorded as having set it up. Delete it unless you recognise the address; to keep it, switch it on with your own key, which makes you its setter, and set a new secret." ' +
+							'For one that is still on and held now, which only a change made outside DumpFire\'s own writes can leave until its next event, it begins "Nothing is sent: ". ' +
+							'null for one that is sent, and for one switched off by PUT, whoever set it. Worked out when the answer is made from what is stored, so it is there after a restart when lastDelivery is null.'
 					}
 				},
 				required: ['id', 'boardId', 'hasSecret', 'events', 'active', 'createdAt']
@@ -6711,7 +6733,8 @@ const spec = {
 				description:
 					'Needs edit access to the board. The url may not point inside the network as written, nor carry a user name or password (see Webhook); no name is looked up here. ' +
 					'A board has at most 10 webhooks, switched-off ones counted: an 11th is answered 409, after every other check. The key\'s user is recorded as the one who set the webhook\'s address, ' +
-					'which no answer gives.',
+					'which no answer gives. Since 1.11.0, a caller who is not the board\'s owner or an administrator is answered 409, with nothing created, for a receiver (the same scheme, host and port, whatever the path, query, fragment, case or default port) ' +
+					'of a webhook of the board switched off for lost access (see Webhook), asked after every other check, so a request that fails one is told that; and when such a caller makes a webhook, the board\'s owners are mailed who made it, its id and its host.',
 				parameters: [{ $ref: '#/components/parameters/boardId' }],
 				requestBody: {
 					required: true,
@@ -6748,11 +6771,25 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
 					},
 					'409': {
-						description: 'The board already has 10 webhooks, switched off ones included. Nothing was created. The message gives the count and how many to delete.',
+						description:
+							'The board already has 10 webhooks, switched off ones included, and the message gives the count and how many to delete; or (since 1.11.0) the caller is not the board\'s owner or an administrator ' +
+							'and a webhook of the board at this receiver (scheme, host and port) was switched off for lost access. Nothing was created.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
-								example: { message: 'This board has 10 webhooks, and a board may have at most 10: delete 1 before adding another.' }
+								examples: {
+									tooMany: {
+										summary: 'The board has 10 webhooks',
+										value: { message: 'This board has 10 webhooks, and a board may have at most 10: delete 1 before adding another.' }
+									},
+									heldOff: {
+										summary: 'A receiver switched off on this board, by a caller who is not its owner',
+										value: {
+											message:
+												"A webhook to this receiver (the same scheme, host and port) on this board was switched off. Only the board's owner or an administrator can switch it on again, or add another webhook to it."
+										}
+									}
+								}
 							}
 						}
 					},
@@ -6797,7 +6834,10 @@ const spec = {
 					'Needs edit access to the board. Changing the url or the secret, and switching a webhook on, need the board\'s owner or an administrator: an editor who sends url or secret at all, ' +
 					'whatever the value, or active true for a webhook that is off, is answered 403 and nothing is written. An editor changes events, switches a webhook off, and may send active true for one already on. ' +
 					'Send only the fields that change. A new url is held to the rules of Webhook; the stored one sent back unchanged is accepted. ' +
-					'The key\'s user is recorded as the one who set the webhook when the url or the secret changes, or the webhook is switched on, which no answer gives.',
+					'The key\'s user is recorded as the one who set the webhook when the url or the secret changes, or the webhook is switched on, which no answer gives. ' +
+					'Since 1.11.0, switching on a webhook switched off for good because its setter lost the board or had its access ended (see Webhook) gives it a new secret, 64 hexadecimal characters, in this answer\'s secret: ' +
+					'send active true alone, as a secret sent with it is answered 400 and nothing is written; one switched off because nobody was recorded as its setter keeps its secret. ' +
+					'Switching it on clears why it was switched off, and pausedBecause is then null. Sending active false for one switched off that way leaves it so.',
 				parameters: [{ $ref: '#/components/parameters/webhookId' }],
 				requestBody: {
 					required: true,
@@ -6824,8 +6864,22 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'None of the four fields was sent, a field that is not what it may hold (a url that is not an http or https address, one that points inside the network as written, one that carries a user name or password, a secret over 256 characters, an event that is not one of the ten, active that is not true or false), webhookId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No fields to update' } } }
+						description: 'None of the four fields was sent, a field that is not what it may hold (a url that is not an http or https address, one that points inside the network as written, one that carries a user name or password, a secret over 256 characters, an event that is not one of the ten, active that is not true or false), a secret sent with the switch-on that gives a new one (since 1.11.0), webhookId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								examples: {
+									noFields: { summary: 'Nothing to change', value: { message: 'No fields to update' } },
+									newSecret: {
+										summary: 'A secret sent with the switch-on of a webhook switched off for a lost setter',
+										value: {
+											message:
+												'A webhook switched off this way is given a new secret when it is switched on: send active true alone, and read the new secret from the answer.'
+										}
+									}
+								}
+							}
+						}
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
@@ -6865,6 +6919,9 @@ const spec = {
 				tags: ['Webhooks'],
 				summary: 'Delete a webhook',
 				operationId: 'deleteWebhook',
+				description:
+					'Needs edit access to the board. A webhook switched off for good (see Webhook) is deleted only by the board\'s owner or an administrator (since 1.11.0): ' +
+					'an editor is answered 403 and nothing is deleted, as for switching one on.',
 				parameters: [{ $ref: '#/components/parameters/webhookId' }],
 				responses: {
 					'200': {
@@ -6881,7 +6938,23 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid webhook ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': { $ref: '#/components/responses/Forbidden' },
+					'403': {
+						description:
+							'View access where edit access is needed; or (since 1.11.0) a caller who is not the board\'s owner or an administrator deleting a webhook switched off for good. ' +
+							'One who cannot open the board is answered 404 `Webhook not found`. Nothing was deleted.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								examples: {
+									heldOff: {
+										summary: 'An editor deleted a webhook switched off for good',
+										value: { message: "Only the board's owner or an administrator can delete a webhook that was switched off this way. Ask the board's owner." }
+									},
+									viewer: { summary: 'View access only', value: { message: 'No edit access to this board' } }
+								}
+							}
+						}
+					},
 					'404': {
 						description: 'There is no such webhook',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Webhook not found' } } }

@@ -1,10 +1,12 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.78
+version: 1.80
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2752
+  - webhook-switched-off
   - card-2719
   - card-2751
   - card-2870
@@ -26,7 +28,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
+description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -2329,13 +2331,13 @@ the ones who may switch a webhook on (card 2154):
 
 | On a board, through `/api/v1/` | Editor | Board owner or administrator |
 |-------------------------------|--------|------------------------------|
-| Create a webhook (`POST /boards/{boardId}/webhooks`), with the address they type | ✅ | ✅ |
+| Create a webhook (`POST /boards/{boardId}/webhooks`), with the address they type | ✅ (`409` at a receiver, the same scheme, host and port, of one switched off on the board, asked last; the owners are mailed of the create; card 2752 and its code review's CS2, CS3) | ✅ |
 | Change its `events` | ✅ | ✅ |
 | Switch it off (`PUT /webhooks/{id}`, `{"active": false}`) | ✅ | ✅ |
 | Send `"active": true` for a webhook that is already on (a value unchanged) | ✅ | ✅ |
-| Switch it on: `"active": true` for a webhook that is off | ❌ `403` | ✅ |
+| Switch it on: `"active": true` for a webhook that is off | ❌ `403` | ✅ (one switched off for a lost setter: a new `secret` in the answer, and a `secret` sent with it `400`; card 2752) |
 | Send `url` or `secret` at all, whatever the value: a new one, the stored one, `null` | ❌ `403` | ✅ |
-| Delete it | ✅ | ✅ |
+| Delete it | ✅, but ❌ `403` for one switched off for good (the code review's CS1) | ✅ |
 
 An editor's refusals are `403` `Only the board's owner or an administrator can change a
 webhook's address or secret. Ask the board's owner.` and `403` `Only the board's owner or an
@@ -2656,8 +2658,8 @@ slow receiver queues, and each delivery still has its whole 10 seconds once it i
 | `not-sent` | `null` | `Not sent: the address carries a user name or password` | Credentials before the host | Take them out of the address: put a token in the path, or rely on the signature |
 | `not-sent` | `null` | `Not sent: the address is not an http or https address` | Another scheme, or a stored row that is not a URL | Register an `http://` or `https://` address |
 | `not-sent` | `null` | `Not sent: its events are not a list` | Its stored `events` is not a JSON list (card 2145) | `PUT` the webhook's `events` as a list (`[]` for every event) |
-| `not-sent` | `null` | `Not sent: the account that set it up can no longer open this board` | Held: its setter cannot open the board (card 2325) | Delete it unless you recognise the address; to keep it, take it over ([Who May Change a Webhook](#who-may-change-a-webhook)) |
-| `not-sent` | `null` | `Not sent: nobody is recorded as having set it up` | Held: it has no setter (card 2325) | The same |
+| `not-sent` | `null` | `Not sent: the account that set it up can no longer open this board` | Held: its setter cannot open the board (card 2325), and switched off for good at that event (card 2752) | Delete it unless you recognise the address; to keep it, switch it on with your key, which gives it a new secret ([Who May Change a Webhook](#who-may-change-a-webhook)) |
+| `not-sent` | `null` | `Not sent: nobody is recorded as having set it up` | Held: it has no setter (card 2325), and switched off for good at that event (card 2752) | Delete it unless you recognise the address; to keep it, switch it on and set a new secret |
 
 **A reason is fixed words.** One of the sentences above and nothing else: never the address,
 its path or query, a user name, a password, the secret, an address a name resolved to, or
@@ -2702,7 +2704,7 @@ flowchart TD
     Asks -->|"no"| R1["not-sent<br/>its events are not a list"]
     Asks -->|"yes, and not this event"| Skip["nothing recorded"]
     Asks -->|"yes, or empty"| Held{"held? (card 2325)<br/>no setter, or the setter<br/>cannot open the board"}
-    Held -->|"yes"| R0["not-sent, the hold's reason"]
+    Held -->|"yes"| R0["not-sent, the hold's reason;<br/>switched off for good (card 2752)"]
     Held -->|"no"| Written{"refused as written?<br/>credentials, inside, scheme"}
     Written -->|"yes"| R2["not-sent, its fixed reason"]
     Written -->|"no"| Deliver["deliver: http(s).request"]
@@ -2759,59 +2761,105 @@ is shared with, anyone for a public board, an administrator. That is the rule ma
 assignees (card 2180, `whoCanOpen`). A viewer can read everything a webhook sends, so an editor
 made a viewer is still sent to. A webhook nobody is recorded as having set up (made before
 migration 0056 on 2026-10-18/19, or brought back by restoring an older backup) is held too:
-nobody answers for where it sends. It stays held until it is taken over; it has no setter whose
-access could come back.
+nobody answers for where it sends. Since card 2752 either is switched off for good, and stays
+off until the board's owner or an administrator switches it on.
 
-**Where it is asked: in `deliver`, at each event.** Not where access is lost: there are at least
-seven ways to lose it, and a check at each would miss the next one added. `holdOf(hook, cache)`
-in `src/lib/server/webhooks.ts` reads the setter's row, with the role as it is now, and asks
-`canViewBoard`. `dispatchWebhook` makes one cache for the event and passes it to each
-webhook's `deliver`, so one event asks once per setter (all of an event's webhooks are on one
-board). The check sits in `deliver` itself, before the address is judged, so anything that
-sends goes through it; a `deliver` called on its own asks afresh. A check that throws throws
-before any request: in a dispatch the webhook's own `try` logs an `ERROR` and it is not sent.
+**Where it is asked: at the write that takes the access away, and at delivery as the backstop**
+(card 2752; card 2325 asked at delivery alone). `holdOf(hook, cache)` in
+`src/lib/server/webhooks.ts` reads the setter's row, with the role as it is now, and asks
+`canViewBoard`. `switchOffLostWebhooks(scope, cause)` asks it of every webhook that is on within
+a scope, inside the transaction of the write that took the access away: `{ boardIds }` for a
+person or a team taken off the board and for the board made private (the share `DELETE` and
+`PATCH`, `updateBoard`), `{ setters }` for the setter taken out of a team, a team deleted (its
+members read before the delete) and a role changed, and `'all'` at every start
+(`switchOffHeldWebhooksAtStart`) and after a restore as it is. A change none of those sees (a
+row changed from the host) is caught by `deliver`, which asks first, at each event, before the
+address is judged: access lost and given back between two events never reaches a delivery, so
+delivery alone could not hold. `dispatchWebhook` makes one cache for the event and passes it to
+each webhook's `deliver`, so one event asks once per setter.
 
-**What a hold does.** Nothing is sent. `active` is left as it is: it keeps its meaning, switched
-on or off by a person. Nothing is written but one `WARN` an hour in the system log, under
-`Webhooks`: `Webhook <id> on board <board> not sent: the account that set it up (user <id>) can
-no longer open the board`, or `Webhook <id> on board <board> not sent: nobody is recorded as
-having set it up`, never the address. `lastDelivery` records the not-sent result
-([Last Delivery](#last-delivery)). A webhook whose setter is given the board back is sent again
-at the next event, with nothing else changed. An event already on its way when access was
-removed may still arrive, up to 10 seconds later: there are no retries and no queue.
+**What a hold does: switches the webhook off for good.** One writer, `switchOffHeld`, sets
+`active` false, `held_because` (`'setter cannot open'` or `'no setter'`) and `held_at`, only
+while the webhook is on and its setter is still the one judged (`AND set_by IS ?`); only the
+caller whose write changed the row writes the `WARN` and mails, so a stale row delivered twice
+is said once. The `WARN`, under `Webhooks`, once: `Webhook <id> on board <board> switched off:
+the account that set it up (user <id>) can no longer open the board (<cause>). It stays off
+until an owner of the board or an administrator switches it on.` (or `… switched off: nobody is
+recorded as having set it up (<cause>) …`), never the address. The delivery records not-sent
+whether or not its write succeeds; a failed write is an `ERROR`. **Giving the setter the board
+back changes nothing**: it stays off until the board's owner or an administrator switches it on
+([Who May Change a Webhook](#who-may-change-a-webhook)), which makes them its setter and, for a
+setter who lost the board or had its access ended, gives it a new secret, given in that answer and
+readable by the board's owner or an administrator. A password reset, an invite used and a
+deleted account record their own hold, `'setter access ended'` (the code review's CS4), as they
+switch off the webhooks the account set. An event already
+on its way when access was removed may still arrive, up to 10 seconds later: there are no
+retries and no queue.
+
+**The owners' mails** (`notifyWebhooksSwitchedOff` and `notifyWebhookCreated` in
+`notifications.ts`). The board's creator and every account with a member row `owner`, or, where
+the board has neither, every administrator and the superadmin, are mailed once per write,
+grouped across its webhooks and boards: "A webhook on your board was switched off" (or "*N*
+webhooks on your boards were switched off"), naming each board, each webhook's id and host
+(never the path, the query or the secret), why, and the cause ("Sam was taken off the board by
+Ann", "found when the server started", …), with what to do. They are not subject to the
+recipients' mail switches. A start and a restore mail only where the schedulers run
+(`SCHEDULERS`); elsewhere one more `WARN` says the owners were not mailed, and why. And whenever
+someone who is neither an owner of the board nor an administrator makes a webhook on it, the
+same people get "A webhook was made on *board*", naming who made it, its id and its host.
+Neither mail carries a link.
+
+```mermaid
+sequenceDiagram
+    participant O as Owner (Share Board)
+    participant R as Share DELETE
+    participant W as webhooks.ts
+    participant DB as SQLite
+    participant M as Mail and log
+    O->>R: take Sam off the board
+    R->>DB: BEGIN, delete the member row
+    R->>W: switchOffLostWebhooks({ boardIds }, "Sam was taken off the board by Ann")
+    W->>DB: holdOf each webhook that is on
+    W->>DB: switchOffHeld: active 0, held_because, held_at
+    R->>DB: COMMIT
+    W->>M: one WARN each, then the owners' mail (afterCommit)
+```
 
 **`pausedBecause`.** Given where the address is given (the board's owner and administrators, and
-the answer to the create, where it is `null`), worked out when the answer is made and never
-stored, so it is there after a restart when `lastDelivery` is `null`. It is `null` unless the
-webhook is on and held, so a webhook switched off is `null` whoever set it. While held it reads,
-word for word:
+the answer to the create, where it is `null`), worked out when the answer is made, so it is
+there after a restart when `lastDelivery` is `null`. Since card 2752 it is history: for a
+webhook switched off by a hold it reads, word for word, the reason kept as recorded:
 
-- a setter who can no longer open the board: "The account that set this up can no longer open
-  this board, so nothing is sent. The address was chosen by that account: delete the webhook
-  unless you recognise it; to keep it, switch it off and on, which makes you its setter, and set
-  a new secret and update the receiver."
-- no recorded setter: "Nobody is recorded as having set this up. Delete it unless you recognise
-  the address; to keep it, switch it off and on, which makes you its setter, and set a new
-  secret."
+- switched off because its setter lost the board: "This was switched off because the account
+  that set it up could no longer open this board. It stays off if that account is given the
+  board back. The address was chosen by that account: delete the webhook unless you recognise
+  it; to keep it, switch it on with your own key, which makes you its setter and gives it a new
+  secret, given in that answer and readable by the board's owner or an administrator, and update
+  the receiver."
+- switched off by a password reset, an invite used or a delete of its setter (CS4): "This was
+  switched off because the account that set it up had its password reset, used an invite, or was
+  deleted. …", with the same advice.
+- switched off because nobody was recorded as its setter: "This was switched off because nobody
+  is recorded as having set it up. Delete it unless you recognise the address; to keep it,
+  switch it on with your own key, which makes you its setter, and set a new secret."
 
-Editors and viewers see neither field, as they see no `lastDelivery`: they see `active: true`.
-No page lists webhooks, and `pausedBecause` is read through the API.
-Taking one over is in [Who May Change a Webhook](#who-may-change-a-webhook). A held webhook
-still counts toward the board's 10, and still counts on the Account and admin pages among the
-webhooks an account set up that are on, since a reset of that account still switches it off.
+For one still on and held by a change none of the writes saw, it begins "Nothing is sent: " until
+its next event switches it off. It is `null` for one that is sent, and for one switched off by a
+`PUT`, whoever set it. Editors and viewers see neither field, as they see no
+`lastDelivery`. No page lists webhooks, and `pausedBecause` is read through the API. A webhook
+switched off still counts toward the board's 10.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Sending: created (the caller is the setter)
-    Sending --> Held: the setter loses the board<br/>(or the row has no setter)
-    Held --> Sending: the setter can open the board again
-    Held --> Sending: owner or admin switches it off, then on<br/>(they become the setter, new secret)
-    Sending --> Off: switched off, or the setter's reset
-    Held --> Off: switched off
-    Held --> Off: the setter's own reset, account delete<br/>or invite used (endAccountAccess, deleteUser)
+    Sending --> HeldOff: a write takes the setter's access away<br/>(or a start, a restore, a delivery finds it held)
+    HeldOff --> HeldOff: the setter is given the board back
+    HeldOff --> Sending: owner or admin switches it on<br/>(they become the setter, new secret unless no setter)
+    Sending --> HeldOff: the setter's reset, invite or account deleted<br/>(setter access ended)
+    Sending --> Off: switched off by a PUT
     Off --> Sending: owner or admin switches it on, and can open the board
     Off --> [*]: deleted
-    Held --> [*]: deleted
+    HeldOff --> [*]: deleted
     Sending --> [*]: deleted
 ```
 
@@ -2829,13 +2877,16 @@ owner and an administrator, from the same rule and to the same people as `paused
   setter who could still open the board another way (their own share as a member, for a team's
   removal, another team, the board being public, having made it, an administrator's role) is
   not counted. ✕ on a share
-  above 0 asks first in the app's confirm, "Removing Sam stops 1 webhook they set up on this
-  board: nothing is sent to it until they can open the board again, or someone takes it over."
-  (for a team, "… set up by its members … until those members can open the board again …"),
-  **Remove** or **Cancel**; ✕ on any other share removes at once.
-- **Held now.** The same answer carries `heldWebhooks`, how many are on and held, whatever held
-  them, webhooks with no setter included. Above 0, the window says so above the list, with
-  where to read why (`GET /api/v1/boards/{id}/webhooks`). The list is read again after each
+  above 0 asks first in the app's confirm, "Removing Sam switches off 1 webhook they set up on
+  this board. It stays off, even if they are given the board back, until you or an
+  administrator switches it on again with an API key." (for a team, "… set up by its members on
+  this board. … even if those members are given the board back …"; card 2752), **Remove** or
+  **Cancel**; ✕ on any other share removes at once.
+- **Switched off.** The same answer carries `heldWebhooks`: since card 2752, how many were
+  switched off by any hold, whatever the hold (card 2893's ended key included), and how many are
+  on and held now. Above 0, the window says so above the list in words that name no reason,
+  "1 webhook on this board was switched off and sends nothing. Read why with your API key (GET
+  /api/v1/boards/{boardId}/webhooks), and delete it or switch it on." (E18). The list is read again after each
   share added, changed or removed, and after the public switch (card 2385), so a change's
   count shows at once. Only the latest read of the list is shown: an older one answering last
   does not put back the list from before a later change.
@@ -2847,10 +2898,11 @@ owner and an administrator, from the same rule and to the same people as `paused
   (`{ ...board, isPublic: false }`), in the same per-setter pass: `roleOnBoard` takes
   `isPublic` from the board it is given, so no new `without` shape was needed. The switch,
   going to private while it is above 0, asks first in the app's confirm, **Make Private**:
-  "Making this board private stops 1 webhook set up by an account that can open it only
-  because it is public: nothing is sent to it until that account can open the board again, or
-  someone takes it over." (plural: "… set up by accounts that … until those accounts …"),
-  **Make Private** or **Cancel**. Going public, or a count of 0, switches at once.
+  "Making this board private switches off 1 webhook set up by an account that can open it only
+  because it is public. It stays off, even if the board is made public again, until you or an
+  administrator switches it on again with an API key." (plural: "… set up by accounts that …
+  They stay off …"), **Make Private** or **Cancel**. Going public, or a count of 0, switches at
+  once.
 
 Anyone else is answered none of the three keys. Nothing is stored: every count is worked out at
 the read, as `pausedBecause` is. A hold caused elsewhere (a team's members changed, a role

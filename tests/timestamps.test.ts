@@ -162,8 +162,9 @@ describe('timestampColumns', () => {
 		// directory was made (migration 0064, card 2681), and the 13 moments of two-step sign-in
 		// (migration 0065, card 2768): eight in its four tables and five on users; and an API key's
 		// deadline and an account's latest security signal (migration 0069, card 2772 and its code
-		// review's CS1); and when a requester's link was issued (migration 0070, card 2870).
-		expect(found).toHaveLength(79);
+		// review's CS1); and when a requester's link was issued (migration 0070, card 2870); and when a
+		// webhook was switched off by a hold (migration 0071, card 2752).
+		expect(found).toHaveLength(80);
 		for (const column of [
 			'activity_log.created_at',
 			'api_keys.expires_at',
@@ -182,7 +183,9 @@ describe('timestampColumns', () => {
 			'people_changes.created_at',
 			// Card 2768: a table's moment, and a pause's end on users (B1-D8).
 			'mfa_factors.created_at',
-			'users.mfa_known_resumes_at'
+			'users.mfa_known_resumes_at',
+			// Card 2752.
+			'webhooks.held_at'
 		]) {
 			expect(found).toContain(column);
 		}

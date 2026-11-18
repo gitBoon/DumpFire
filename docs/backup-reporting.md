@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.45
+version: 1.47
 status: As-Built
-date: 2026-11-17
+date: 2026-11-18
 tags:
+  - card-2752
+  - migration-0071
   - card-2761
   - card-2751
   - card-2870
@@ -24,7 +26,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "Scheduled backup system with multi-destination support, a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -570,6 +572,36 @@ flowchart TD
     Give --> S["Setting written back where the backup held none"]
     Now --> S
     S --> Ans["apiKeyDeadlines and the sentence<br/>in the import's answer and the report"]
+```
+
+- **A restore of a backup made before migration 0071** (card 2752), whose `webhooks` has no
+  `held_because`, `held_at`, `set_by_key` or `set_with_key`, brings its webhooks in with all four
+  NULL and `active` as the backup had it. Whatever the backup's age, this server's webhooks
+  switched off for good are read before the clear, whatever their secret, and each hold is carried
+  onto the restored row of the same webhook (same id, board, address and setter: `carryHolds`, the
+  code review's CS5), even where the backup had it on and its setter can open the board there. A
+  restore as it is (`outside=keep`) then, inside its transaction and after the secrets are filled
+  (`fillSecretGaps`), switches off for good every
+  restored webhook that is on and whose setter cannot open its board in the restored data, or
+  that nobody is recorded as having set up (`switchOffLostWebhooks('all')`), with the cause
+  "found after a restore by *name*". It does the same for a backup made since 0071, and
+  `fillSecretGaps` never switches on a webhook held off here or in the backup's row: it keeps this
+  server's hold. The count is `webhooksSwitchedOff` in the restore's result. After the commit
+  each is a `WARN` line under `Webhooks`, and the boards' owners are mailed only where the
+  schedulers run. A working copy (`outside=off`) is not swept: it switches every webhook off and
+  mails nobody. This server's `webhook_keys_recorded_at` (0071's setting, card 2893) is read
+  before the clear and kept over the backup's. See
+  [A Webhook Switched Off When Its Setter Loses the Board](authentication-security.md#a-webhook-switched-off-when-its-setter-loses-the-board-card-2752).
+
+```mermaid
+flowchart TD
+    R["Restore of a backup as it is"] --> Here["Read this server's secrets, holds<br/>and webhook_keys_recorded_at"]
+    Here --> Copy["Copy the backup's rows<br/>(before 0071: the four columns NULL)"]
+    Copy --> Carry["carryHolds: this server's holds<br/>onto the same webhooks"]
+    Carry --> Fill["fillSecretGaps: a secret filled,<br/>never switched on where held off"]
+    Fill --> Sweep["switchOffLostWebhooks('all'):<br/>each on and held, switched off"]
+    Sweep --> Commit["Commit"]
+    Commit --> Tell["One WARN each; owners mailed<br/>where the schedulers run"]
 ```
 
 - **The key remembered browsers are signed with is not in the file** (the row

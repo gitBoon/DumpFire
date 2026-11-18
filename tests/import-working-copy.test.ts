@@ -103,6 +103,13 @@ function contentsOf(database: Database.Database): Record<string, string[]> {
 /** A table's rows without the form signing key, which a restore makes in its transaction (card 2750) and no backup brings. */
 const withoutFormKey = (rows: string[]) => rows.filter((row) => !row.includes('"key":"request_form_secret"'));
 
+/**
+ * Settings rows without migration 0071's moment, which a restore keeps as this
+ * server had it, over the backup's (card 2752): two databases migrated a
+ * second apart hold two moments.
+ */
+const withoutKeysRecorded = (rows: string[]) => rows.filter((row) => !row.includes('"key":"webhook_keys_recorded_at"'));
+
 /** The tables that hold something a working copy switches off. */
 const OUTSIDE_TABLES = ['report_schedules', 'webhooks', 'settings'];
 
@@ -210,6 +217,9 @@ const APP_URL = 'https://dumpfire.example.test';
  *                      `app_url` and `theme`
  *
  * and two users, two boards, two columns and two cards for those to belong to.
+ * Each webhook's setter is its board's creator, who can open it, so that a
+ * restore as it is keeps the ones that are on (card 2752: one whose setter
+ * cannot open its board, or that has none, is switched off by the restore).
  * One of the users is the superadmin: the import refuses a backup that has
  * users and none. The cards are committed, as a card created in To Do is
  * (milestone 22), and each board has its Options column, as every delivery
@@ -232,10 +242,10 @@ function seed(database: Database.Database): void {
 			(2, 1, 'Monthly to finance', 1, 'finance@example.test'),
 			(3, 2, 'Paused', 0, 'nobody@example.test'),
 			(4, 2, 'Weekly to the team', 1, 'team@example.test');
-		INSERT INTO webhooks (id, board_id, url, secret, events, active) VALUES
-			(1, 1, 'https://hooks.example.test/a', 'secret-a', '[]', 1),
-			(2, 1, 'https://hooks.example.test/b', 'secret-b', '["card.moved"]', 0),
-			(3, 2, 'https://hooks.example.test/c', 'secret-c', '[]', 1);
+		INSERT INTO webhooks (id, board_id, url, secret, events, active, set_by) VALUES
+			(1, 1, 'https://hooks.example.test/a', 'secret-a', '[]', 1, 1),
+			(2, 1, 'https://hooks.example.test/b', 'secret-b', '["card.moved"]', 0, 1),
+			(3, 2, 'https://hooks.example.test/c', 'secret-c', '[]', 1, 2);
 	`);
 	const set = database.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
 	set.run('app_url', APP_URL);
@@ -381,8 +391,9 @@ describe('restoring as a working copy', () => {
 		const settings = settingsIn(live);
 		// With the form signing key the restore makes (card 2750), and the
 		// backup's two_step_released_at, written by migration 0066 (card 2769),
-		// and its api_key_deadline, written by migration 0069 (card 2772).
-		expect(Object.keys(settings).sort()).toEqual(['api_key_deadline', 'app_url', 'backup_config', 'request_form_secret', 'theme', 'two_step_released_at']);
+		// and its api_key_deadline, written by migration 0069 (card 2772), and this
+		// server's webhook_keys_recorded_at, written by migration 0071 and kept (card 2752).
+		expect(Object.keys(settings).sort()).toEqual(['api_key_deadline', 'app_url', 'backup_config', 'request_form_secret', 'theme', 'two_step_released_at', 'webhook_keys_recorded_at']);
 		expect(JSON.parse(settings['backup_config'])).toEqual(BACKUP_CONFIG_OFF);
 		expect(settings['app_url']).toBe(APP_URL);
 		expect(settings['theme']).toBe('dark');
@@ -435,7 +446,9 @@ describe('restoring as a working copy', () => {
 		expect(result.errors).toEqual([]);
 		expect(result.outside).toBeNull();
 		expect(reachingOutside(live)).toEqual(AS_THE_BACKUP_HAS_IT);
-		for (const table of OUTSIDE_TABLES) expect(withoutFormKey(contentsOf(live)[table])).toEqual(withoutFormKey(contentsOf(backup)[table]));
+		for (const table of OUTSIDE_TABLES) {
+			expect(withoutKeysRecorded(withoutFormKey(contentsOf(live)[table]))).toEqual(withoutKeysRecorded(withoutFormKey(contentsOf(backup)[table])));
+		}
 		expect(everythingElseIn(live)).toEqual(everythingElseIn(backup));
 	});
 
@@ -453,7 +466,7 @@ describe('restoring as a working copy', () => {
 			expect(result.errors).toEqual([]);
 			expect(result.outside).toEqual({ ...SWITCHED_OFF, backupScheduleWasOn: false, backupDestinations: 0 });
 			// It went on to the mail settings, and the restore is committed.
-			expect(Object.keys(settingsIn(live)).sort()).toEqual(['api_key_deadline', 'app_url', 'request_form_secret', 'theme', 'two_step_released_at']);
+			expect(Object.keys(settingsIn(live)).sort()).toEqual(['api_key_deadline', 'app_url', 'request_form_secret', 'theme', 'two_step_released_at', 'webhook_keys_recorded_at']);
 			expect(everythingElseIn(live)).toEqual(everythingElseIn(backup));
 		}
 	);
@@ -478,8 +491,17 @@ describe('restoring as a working copy', () => {
 			mailSettings: 0
 		});
 		// No configuration is written where there was none.
-		expect(settingsIn(live)).toEqual({ app_url: APP_URL, request_form_secret: expect.stringMatching(/^[0-9a-f]{64}$/), theme: 'dark' });
-		for (const table of OUTSIDE_TABLES) expect(withoutFormKey(contentsOf(live)[table])).toEqual(withoutFormKey(contentsOf(backup)[table]));
+		expect(settingsIn(live)).toEqual({
+			app_url: APP_URL,
+			request_form_secret: expect.stringMatching(/^[0-9a-f]{64}$/),
+			theme: 'dark',
+			// This server's, written by migration 0071 and kept by a restore (card 2752).
+			webhook_keys_recorded_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+		});
+		// The settings as the backup has them, but for this server's 0071 moment, kept (card 2752).
+		for (const table of OUTSIDE_TABLES) {
+			expect(withoutKeysRecorded(withoutFormKey(contentsOf(live)[table]))).toEqual(withoutFormKey(contentsOf(backup)[table]));
+		}
 	});
 
 	it('says the backup schedule was already off when it was, and still removes its destinations', () => {

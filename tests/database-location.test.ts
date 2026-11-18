@@ -590,6 +590,7 @@ describe('a database with no users while another is beside it', () => {
 			'endPlainRequestLinks();',
 			'void announceReportSchedules();',
 			'void recheckStoredImages();',
+			'switchOffHeldWebhooksAtStart();',
 			'startSchedulers();',
 			'reportInstallation();'
 		]) {
@@ -604,7 +605,11 @@ describe('a database with no users while another is beside it', () => {
 		expect(at('void announceReportSchedules();')).toBeGreaterThan(at('endPlainRequestLinks();'));
 		// The images stored before card 2761 checked once, straight after, and before the schedulers start (D10).
 		expect(at('void recheckStoredImages();')).toBeGreaterThan(at('void announceReportSchedules();'));
-		expect(at('startSchedulers();')).toBeGreaterThan(at('void recheckStoredImages();'));
+		// The webhooks held at start switched off for good after the settings of non-administrators are removed, and
+		// before the schedulers start (card 2752, E9).
+		expect(at('switchOffHeldWebhooksAtStart();')).toBeGreaterThan(at('removeSettingsOfNonAdministrators();'));
+		expect(at('switchOffHeldWebhooksAtStart();')).toBeGreaterThan(at('void recheckStoredImages();'));
+		expect(at('startSchedulers();')).toBeGreaterThan(at('switchOffHeldWebhooksAtStart();'));
 	});
 });
 

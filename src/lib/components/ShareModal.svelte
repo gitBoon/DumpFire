@@ -12,9 +12,13 @@
 	 *
 	 * A webhook is sent only while the account that set it up can open the
 	 * board (card 2325), and no screen showed one that had stopped (card 2329).
-	 * So ✕ on a person or a team whose removal would stop webhooks asks first,
-	 * saying how many, and the window says how many of the board's webhooks
-	 * send nothing now, whatever stopped them. Both counts come with the list,
+	 * Since card 2752 a removal that takes that away switches the webhook off
+	 * for good: it stays off when the account is given the board back, until
+	 * the board's owner or an administrator switches it on with an API key.
+	 * So ✕ on a person or a team whose removal would switch webhooks off asks
+	 * first, saying how many, and the window says how many of the board's
+	 * webhooks were switched off and send nothing, in words that name no
+	 * reason (E18): a key that ended switches one off too (card 2893). Both counts come with the list,
 	 * to the board's owner and an administrator only. The switch to private
 	 * asks first in the same way when it would stop webhooks whose setters
 	 * open the board only because it is public, from a third count the list
@@ -63,7 +67,7 @@
 	let allUsers = $state<AvailableUser[]>([]);
 	let allTeams = $state<AvailableTeam[]>([]);
 	let isPublic = $state(false);
-	/** How many of the board's webhooks are on and send nothing now (card 2329); 0 for anyone not told. */
+	/** How many of the board's webhooks send nothing for a hold, switched off or held now (cards 2329 and 2752); 0 for anyone not told. */
 	let heldWebhooks = $state(0);
 	/** How many webhooks sent now making this public board private would stop (card 2385); 0 for anyone not told. */
 	let privateStopsWebhooks = $state(0);
@@ -225,11 +229,11 @@
 		togglePublic();
 	}
 
-	/** What the confirm says: how many, and what brings a stopped webhook back. */
+	/** What the confirm says: how many, and that they stay off until switched on again (card 2752). */
 	function privateMessage(stops: number): string {
 		return stops === 1
-			? 'Making this board private stops 1 webhook set up by an account that can open it only because it is public: nothing is sent to it until that account can open the board again, or someone takes it over.'
-			: `Making this board private stops ${stops} webhooks set up by accounts that can open it only because it is public: nothing is sent to them until those accounts can open the board again, or someone takes them over.`;
+			? 'Making this board private switches off 1 webhook set up by an account that can open it only because it is public. It stays off, even if the board is made public again, until you or an administrator switches it on again with an API key.'
+			: `Making this board private switches off ${stops} webhooks set up by accounts that can open it only because it is public. They stay off, even if the board is made public again, until you or an administrator switches them on again with an API key.`;
 	}
 
 	function confirmPrivate() {
@@ -413,14 +417,15 @@
 		asking = { type, targetId, name, stops };
 	}
 
-	/** What the confirm says: who, how many, and what brings a stopped webhook back. */
+	/** What the confirm says: who, how many, and that they stay off until switched on again (card 2752, 4.3). */
 	function stopsMessage(ask: NonNullable<typeof asking>): string {
 		const one = ask.stops === 1;
 		const hooks = one ? '1 webhook' : `${ask.stops} webhooks`;
+		const stays = one ? 'It stays off' : 'They stay off';
 		const it = one ? 'it' : 'them';
 		return ask.type === 'user'
-			? `Removing ${ask.name} stops ${hooks} they set up on this board: nothing is sent to ${it} until they can open the board again, or someone takes ${it} over.`
-			: `Removing ${ask.name} stops ${hooks} set up by its members on this board: nothing is sent to ${it} until those members can open the board again, or someone takes ${it} over.`;
+			? `Removing ${ask.name} switches off ${hooks} they set up on this board. ${stays}, even if they are given the board back, until you or an administrator switches ${it} on again with an API key.`
+			: `Removing ${ask.name} switches off ${hooks} set up by its members on this board. ${stays}, even if those members are given the board back, until you or an administrator switches ${it} on again with an API key.`;
 	}
 
 	function confirmRemove() {
@@ -451,11 +456,11 @@
 				Loading...
 			</div>
 		{:else}
-			<!-- Webhooks that send nothing now, whatever stopped them (card 2329). The count comes to the board's owner and an administrator alone. -->
+			<!-- Webhooks switched off for a hold, whatever the hold (card 2329; card 2752, E18). The count comes to the board's owner and an administrator alone. -->
 			{#if heldWebhooks > 0}
 				<p class="share-held">
-					⚠️ {heldWebhooks === 1 ? '1 webhook on this board sends' : `${heldWebhooks} webhooks on this board send`} nothing: the account that set each up can no longer open the board, or nobody is recorded as setting it up.
-					Read the board's webhooks with your API key (GET /api/v1/boards/{boardId}/webhooks) to see why each is held, and delete it or take it over.
+					⚠️ {heldWebhooks === 1 ? '1 webhook on this board was switched off and sends' : `${heldWebhooks} webhooks on this board were switched off and send`} nothing.
+					Read why with your API key (GET /api/v1/boards/{boardId}/webhooks), and delete {heldWebhooks === 1 ? 'it' : 'each'} or switch it on.
 				</p>
 			{/if}
 

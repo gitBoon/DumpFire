@@ -4,6 +4,7 @@ import { teamMembers, users } from '$lib/server/db/schema';
 import { eq, and, ne } from 'drizzle-orm';
 import { pathId, readBody, readChoice, readId } from '$lib/server/request-body';
 import { requireTeamManager, requireUser } from '$lib/server/route-guards';
+import { switchOffLostWebhooks } from '$lib/server/webhooks';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -101,7 +102,7 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	// its account is now (card 2253). The check and the delete were two steps
 	// with no transaction around them.
 	writeAs(locals, (caller) => {
-		requireTeamManager(caller, teamId);
+		const team = requireTeamManager(caller, teamId);
 
 		const existing = db.select()
 			.from(teamMembers)
@@ -112,6 +113,13 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 		db.delete(teamMembers)
 			.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))
 			.run();
+		// Each webhook they set on a board they can no longer open is switched
+		// off for good, in this write (card 2752, D2). A team manager who is no
+		// owner of the board can do this, and its owners are told who did.
+		if (existing) {
+			const name = db.select({ username: users.username }).from(users).where(eq(users.id, userId)).get()?.username ?? `user ${userId}`;
+			switchOffLostWebhooks({ setters: [userId] }, `${name} was taken out of the team ${team.name} by ${requireUser(caller).username}`);
+		}
 	});
 
 	return json({ success: true });

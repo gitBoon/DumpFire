@@ -967,9 +967,13 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 			.prepare('UPDATE task_requests SET requester_email = (SELECT email FROM users WHERE id = ?) WHERE requester_user_id = ?')
 			.run(userId, userId);
 		// The webhooks they set, switched off while they still name them. By id,
-		// for the log line, as a reset names them (the review, O5).
+		// for the log line, as a reset names them (the review, O5). Recorded as
+		// a hold, as a reset records it (card 2752's code review, CS4): switched
+		// on again, each is given a new secret.
 		const webhookIds = (
-			sqlite.prepare('UPDATE webhooks SET active = 0 WHERE set_by = ? AND active = 1 RETURNING id').all(userId) as { id: number }[]
+			sqlite
+				.prepare("UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND active = 1 RETURNING id")
+				.all(stamp(), userId) as { id: number }[]
 		)
 			.map((row) => row.id)
 			.sort((a, b) => a - b);

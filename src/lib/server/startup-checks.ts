@@ -70,7 +70,11 @@
  * link (card 2870), and which stops the server, alone of the five, when it
  * can neither look nor end every link. And one thing said once, at the first start
  * after card 2751: `announceReportSchedules`, which tells each owner of a
- * report schedule that is on which of theirs are running.
+ * report schedule that is on which of theirs are running. And
+ * `switchOffHeldWebhooksAtStart` (card 2752), which switches off for good
+ * every webhook that is on and whose setter cannot open its board, or that
+ * nobody is recorded as having set up, and mails the boards' owners where the
+ * schedulers run.
  */
 import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
@@ -107,7 +111,8 @@ import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
 import { secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './backup-secrets';
 import { parseAllowInside } from './webhook-address';
-import { activeWebhooksRefused, boardsOverWebhookCap, MAX_WEBHOOKS_PER_BOARD } from './webhooks';
+import { activeWebhooksRefused, boardsOverWebhookCap, MAX_WEBHOOKS_PER_BOARD, switchOffLostWebhooks } from './webhooks';
+import { inTransaction } from './db/transaction';
 import { removeSettingsOfFormerAdministrators, settingsHeldBy } from './setting-setters';
 import {
 	MFA_KEY_CHECK_SETTING,
@@ -826,6 +831,45 @@ export function endPlainInvites(): number | null {
 			authLog.warn(
 				`Invites held in plain by an older image could not be ended: ${(err as Error)?.message ?? err}. ` +
 					'They do not work on this image, and would work again on the older one.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+}
+
+/**
+ * Switch off, for good, every webhook that is on and held (card 2752, D2):
+ * its setter cannot open its board, or nobody is recorded as having set it
+ * up. Returns how many, or null when it could not be done. Called once, from
+ * hooks.server.ts, after `removeSettingsOfNonAdministrators` and before the
+ * schedulers start.
+ *
+ * At the first start after the release it finds every webhook card 2325 was
+ * holding at delivery, and after that what changed in the database outside
+ * the writes that switch off (a row deleted from the host, a file put in
+ * place). A second start changes nothing. One WARN under Webhooks for each,
+ * written after the commit; the boards' owners are mailed only where the
+ * schedulers run, by the decision `startSchedulers` makes (S2), so that a
+ * rehearsal or a dev copy of production's data mails nobody: elsewhere one
+ * WARN says they were not, and why. It never throws: a failure is said at
+ * WARN, the server starts, and each such webhook is switched off at its next
+ * event.
+ */
+export function switchOffHeldWebhooksAtStart(value: string | undefined = process.env.SCHEDULERS, isDev: boolean = dev): number | null {
+	try {
+		const setting = schedulerSetting(value, isDev);
+		return inTransaction(() =>
+			switchOffLostWebhooks('all', 'found when the server started', {
+				telling: setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` }
+			})
+		).length;
+	} catch (err) {
+		try {
+			log.warn(
+				`The webhooks whose setter cannot open their board could not be switched off at start: ${(err as Error)?.message ?? err}. ` +
+					'Each is switched off at its next event.'
 			);
 		} catch {
 			// Nothing more to be done about it.

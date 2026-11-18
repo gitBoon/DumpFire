@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.87
+version: 1.88
 status: As-Built
-date: 2026-11-17
+date: 2026-11-18
 tags:
+  - card-2752
   - card-2761
   - card-2751
   - card-2870
@@ -249,9 +250,9 @@ Share boards with specific permissions:
 
 The share window lists every user and every team by name, so a board can be shared with anyone. Email addresses are shown only where you may see them: an administrator sees everyone's, and the board's owner sees those of the people the board is already shared with.
 
-The share window also tells the board's owner and an administrator about the board's webhooks (card 2329). A webhook is sent only while the person who set it up can open the board, so removing them, or a team they are in, can stop it. ✕ on such a person or team asks first: "Removing Sam stops 1 webhook they set up on this board: nothing is sent to it until they can open the board again, or someone takes it over.", with **Remove** and **Cancel**; ✕ on anyone else removes them at once. Above the list, the window says how many of the board's webhooks send nothing now, whatever stopped them (a person taken out of a team, the board made private, an administrator made an ordinary user, a webhook with no recorded setter), and where to read why: `GET /api/v1/boards/{id}/webhooks` with an API key, whose `pausedBecause` says why each is held and how to take it over. Editors and viewers see neither.
+The share window also tells the board's owner and an administrator about the board's webhooks (card 2329). A webhook is sent only while the person who set it up can open the board, and since card 2752 removing them, or a team they are in, switches it off for good: it stays off even if they are given the board back, until the board's owner or an administrator switches it on again with an API key, which gives it a new secret. ✕ on such a person or team asks first: "Removing Sam switches off 1 webhook they set up on this board. It stays off, even if they are given the board back, until you or an administrator switches it on again with an API key.", with **Remove** and **Cancel**; ✕ on anyone else removes them at once. The board's owners are emailed whenever a webhook on their board is switched off, saying what caused it, and whenever someone else makes one. Above the list, the window says how many of the board's webhooks were switched off and send nothing ("1 webhook on this board was switched off and sends nothing. Read why with your API key (GET /api/v1/boards/{boardId}/webhooks), and delete it or switch it on."), whatever switched them off, and `pausedBecause` there says why for each. Editors and viewers see neither.
 
-Making a public board private can stop webhooks too: those set up by someone who can open the board only because it is public (card 2385). The switch then asks first: "Making this board private stops 1 webhook set up by an account that can open it only because it is public: nothing is sent to it until that account can open the board again, or someone takes it over.", with **Make Private** and **Cancel**. Otherwise it switches at once, as before. After the switch, as after any share added, changed or removed, the window reads its list again, so the count of webhooks that send nothing is up to date at once.
+Making a public board private can switch webhooks off too: those set up by someone who can open the board only because it is public (card 2385). The switch then asks first: "Making this board private switches off 1 webhook set up by an account that can open it only because it is public. It stays off, even if the board is made public again, until you or an administrator switches it on again with an API key.", with **Make Private** and **Cancel**. Otherwise it switches at once, as before. After the switch, as after any share added, changed or removed, the window reads its list again, so the count of webhooks that send nothing is up to date at once.
 
 **A board's Product Owner** (card 2674, from 3 November 2026) is on a line of its own in the share window, under the public switch: the person who will decide the board's decisions by default. The board's owner and an administrator choose them from the people who can edit the board, or **None**, and press **Save**; everyone else sees "Product Owner: *name*". Someone who has since lost edit access stays Product Owner until it is changed, marked "(cannot edit this board)" in the list the owner chooses from.
 

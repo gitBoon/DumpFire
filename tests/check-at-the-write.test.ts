@@ -4118,12 +4118,12 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 	'src/lib/server/auth.ts#endAccountAccess': {
 		does: 'switches off only',
 		writes: 1,
-		why: "A password change that ends the account's keys switches off the webhooks the account set (card 2168)."
+		why: "A password change that ends the account's keys switches off the webhooks the account set (card 2168), recording the hold 'setter access ended' (card 2752's code review, CS4)."
 	},
 	'src/lib/server/deletes.ts#deleteUser': {
 		does: 'switches off only',
 		writes: 1,
-		why: 'A deleted account’s webhooks are switched off while they still name it (card 2168).'
+		why: "A deleted account’s webhooks are switched off while they still name it (card 2168), with the hold 'setter access ended' (card 2752’s code review, CS4)."
 	},
 	'src/lib/server/db/restore.ts#switchOffOutside': {
 		does: 'switches off only',
@@ -4139,8 +4139,18 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 		does: 'sets',
 		writes: 1,
 		why:
-			"An import's restore refills a secret from this server's own, for the same webhook only, and sets it on or off as the backup had it. " +
+			"An import's restore refills a secret from this server's own, for the same webhook only, and sets it on or off as the backup had it, never on where it is held off here or in the restored row, whose hold it keeps (card 2752). " +
 			'It runs behind the import’s confirmation of the password (POST /api/admin/import/confirm, on STEP_UP_ACTIONS); its importers are pinned (WEBHOOK_WRITER_IMPORTERS).'
+	},
+	'src/lib/server/webhooks.ts#switchOffHeld': {
+		does: 'switches off only',
+		writes: 1,
+		why: "Switches a webhook off for good when its setter can no longer open the board, recording why and when (card 2752): active off, held_because and held_at, and nothing else."
+	},
+	'src/lib/server/db/restore.ts#carryHolds': {
+		does: 'switches off only',
+		writes: 1,
+		why: "A restore carries this server's hold onto the same webhook restored, so that no restore switches back on one held off here (card 2752's code review, CS5): active off, held_because and held_at."
 	}
 };
 
@@ -4166,12 +4176,14 @@ const WEBHOOK_NAME_STRINGS: Record<string, { count: number; why: string }> = {
 		why: "hasColumns(copy, 'webhooks', …): whether a backup's working copy has the columns before its secrets are blanked."
 	},
 	'src/lib/server/backup-secrets.ts#readSecretsHere': {
-		count: 3,
-		why: "hasColumns(live, 'webhooks', …) twice, whether this server has the columns before its secrets are read; and the type SecretsHere['webhooks']."
+		count: 4,
+		why:
+			"hasColumns(live, 'webhooks', …) three times, whether this server has the columns before its secrets are read, the hold's of card 2752 among them; " +
+			"and the type SecretsHere['webhooks']."
 	},
 	'src/lib/server/backup-secrets.ts#fillSecretGaps': {
-		count: 2,
-		why: "hasColumns(live, 'webhooks', …) twice: whether this server has the columns before a secret is refilled."
+		count: 3,
+		why: "hasColumns(live, 'webhooks', …) three times: whether this server has the columns before a secret is refilled, the hold's of card 2752 among them."
 	},
 	'src/lib/server/backup-secrets.ts#secretsToEnter': {
 		count: 1,
@@ -4226,6 +4238,15 @@ const WEBHOOK_SQL_WRITE = new RegExp(
 
 /** What a switch-off-only writer may set: `active` off, or `secret` blank. */
 const SWITCH_OFF_SQL = /^["`[]?(?:active["`\]]?\s*=\s*0|secret["`\]]?\s*=\s*'')$/i;
+
+/** What a switch-off-only writer may also set, to any value, beside `active` off: why and when it was held off (card 2752, E11). */
+const HOLD_SQL = /^["`[]?held_(?:because|at)["`\]]?\s*=\s*\S[\s\S]*$/i;
+
+/** `active` off, as a switch-off-only writer sets it in SQL. */
+const ACTIVE_OFF_SQL = /^["`[]?active["`\]]?\s*=\s*0$/i;
+
+/** The hold's two columns, as a switch-off-only writer may set them in Drizzle beside `active: false` (card 2752, E11). */
+const HOLD_FIELDS = ['heldBecause', 'heldAt'];
 
 /** The Drizzle methods whose first argument reads the table. */
 const READS_TABLE = ['from', 'innerJoin', 'leftJoin', 'rightJoin', 'fullJoin', 'crossJoin'];
@@ -4596,20 +4617,27 @@ function judgeWebhookWrites(file: string, source: string, writers: Readonly<Reco
 			reading.findings.push(`${file}:${line(node)} ${what} in ${writerNameOf(node)}, which WEBHOOK_WRITERS lists as switching off only, and does more (card 2702)`);
 		}
 	};
-	/** `<handle>.update(table).set({ active: false })`, or with `secret: ''`, and nothing else, with no table reached off it. */
+	/**
+	 * `<handle>.update(table).set({ active: false })`, or with `secret: ''`, and nothing else, with no table reached off it; and,
+	 * beside `active: false` alone, `heldBecause` and `heldAt` at any value (card 2752, E11).
+	 */
 	const switchesOffInDrizzle = (update: ts.CallExpression): boolean => {
 		if (!ts.isPropertyAccessExpression(update.expression) || !isHandle(update.expression.expression) || hangsTable(update)) return false;
 		const set = update.parent;
 		if (!ts.isPropertyAccessExpression(set) || set.name.text !== 'set' || !ts.isCallExpression(set.parent)) return false;
 		const [values] = set.parent.arguments;
 		if (!values || !ts.isObjectLiteralExpression(values) || values.properties.length === 0) return false;
-		return values.properties.every(
-			(property) =>
-				ts.isPropertyAssignment(property) &&
-				ts.isIdentifier(property.name) &&
-				((property.name.text === 'active' && property.initializer.kind === ts.SyntaxKind.FalseKeyword) ||
-					(property.name.text === 'secret' && ts.isStringLiteralLike(property.initializer) && property.initializer.text === ''))
-		);
+		const offOrBlank = (property: ts.PropertyAssignment) =>
+			ts.isIdentifier(property.name) &&
+			((property.name.text === 'active' && property.initializer.kind === ts.SyntaxKind.FalseKeyword) ||
+				(property.name.text === 'secret' && ts.isStringLiteralLike(property.initializer) && property.initializer.text === ''));
+		const holds = (property: ts.PropertyAssignment) => ts.isIdentifier(property.name) && HOLD_FIELDS.includes(property.name.text);
+		const activeOff = (property: ts.PropertyAssignment) =>
+			ts.isIdentifier(property.name) && property.name.text === 'active' && property.initializer.kind === ts.SyntaxKind.FalseKeyword;
+		const assigned = values.properties.filter(ts.isPropertyAssignment);
+		if (assigned.length !== values.properties.length) return false;
+		if (!assigned.every((property) => offOrBlank(property) || holds(property))) return false;
+		return !assigned.some(holds) || assigned.some(activeOff);
 	};
 	/** Whether the chain `node` ends starts at the database or a transaction's handle. */
 	const startsAtHandle = (node: ts.Expression): boolean => {
@@ -4753,14 +4781,14 @@ function judgeWebhookWrites(file: string, source: string, writers: Readonly<Reco
 			}
 			const rest = text.slice(found.index ?? 0);
 			const assigned = /\bSET\s+([\s\S]*?)(?=\bWHERE\b|\bRETURNING\b|\bFROM\b|;|$)/i.exec(rest)?.[1];
+			// `active` off or `secret` blank; and, beside `active` off, the hold's two columns at any value (card 2752, E11).
+			const parts = (assigned ?? '').split(',').map((part) => part.trim());
 			const switchesOff = () =>
 				whole &&
 				/^UPDATE\b/i.test(found[1]) &&
 				assigned !== undefined &&
-				assigned
-					.split(',')
-					.map((part) => part.trim())
-					.every((part) => SWITCH_OFF_SQL.test(part));
+				parts.every((part) => SWITCH_OFF_SQL.test(part) || HOLD_SQL.test(part)) &&
+				(!parts.some((part) => HOLD_SQL.test(part)) || parts.some((part) => ACTIVE_OFF_SQL.test(part)));
 			write(node, 'writes webhooks in SQL', switchesOff);
 		}
 	};
@@ -5123,6 +5151,30 @@ describe('the webhooks table is written only by the writers listed, each as list
 			const DELETES = 'src/lib/server/deletes.ts';
 			const onAgain = ['export function deleteUser(userId: number) {', "\tsqlite.prepare('UPDATE webhooks SET active = 1 WHERE set_by = ?').run(userId);", '}'].join('\n');
 			expect(judgeWebhookWrites(DELETES, onAgain, WEBHOOK_WRITERS).findings).toEqual([doesMore(2, IN_SQL, DELETES, 'deleteUser')]);
+
+			// Card 2752 (E11): a switch-off writer may record why and when beside active off, in either form, and the hold alone is more.
+			const HOOKS = 'src/lib/server/webhooks.ts';
+			const switchOffHeld = (body: string) =>
+				[
+					"import { db, sqlite } from './db'; import { eq } from 'drizzle-orm';",
+					"import { webhooks } from './db/schema';",
+					"const log = createLogger('Webhooks');",
+					'export function switchOffHeld(id: number, hold: string) {',
+					`\t${body}`,
+					'}'
+				].join('\n');
+			const heldWith = (body: string) => judgeWebhookWrites(HOOKS, switchOffHeld(body), WEBHOOK_WRITERS).findings;
+			expect(heldWith("db.update(webhooks).set({ active: false, heldBecause: hold, heldAt: '2026-11-18 00:00:00' }).where(eq(webhooks.id, id)).run();")).toEqual([]);
+			expect(heldWith("sqlite.prepare('UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE id = ?').run(hold, 'x', id);")).toEqual([]);
+			expect(heldWith('db.update(webhooks).set({ heldBecause: null, heldAt: null }).where(eq(webhooks.id, id)).run();')).toEqual([
+				doesMore(5, 'updates webhooks', HOOKS, 'switchOffHeld')
+			]);
+			expect(heldWith("sqlite.prepare('UPDATE webhooks SET held_because = NULL, held_at = NULL WHERE id = ?').run(id);")).toEqual([
+				doesMore(5, IN_SQL, HOOKS, 'switchOffHeld')
+			]);
+			expect(heldWith("sqlite.prepare('UPDATE webhooks SET active = 0, held_because = ?, url = ? WHERE id = ?').run(hold, 'x', id);")).toEqual([
+				doesMore(5, IN_SQL, HOOKS, 'switchOffHeld')
+			]);
 
 			// The secret refill, imported by a file not allowed it: by name, under another name, and as a namespace.
 			const importing = [

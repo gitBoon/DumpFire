@@ -1,0 +1,72 @@
+-- Why and when a webhook was switched off for good, which API key last set
+-- it, and the moment keys began to be recorded (cards 2752 and 2893,
+-- 2026-11-18).
+--
+-- webhooks.held_because says why a webhook was switched off for good:
+-- 'setter cannot open' (the account that set it up can no longer open its
+-- board) or 'no setter' (nobody is recorded as having set it up), written by
+-- switchOffHeld in src/lib/server/webhooks.ts at the write that takes the
+-- setter's access away, at every start, after every restore and at
+-- delivery; 'setter access ended', written by a password reset, an invite
+-- used or the account deleted (endAccountAccess, deleteUser); and card
+-- 2893's 'key ended'. webhooks.held_at is the moment, in the stored form.
+-- Both are set only with active = 0. A restore carries this server's hold
+-- onto the same webhook restored (carryHolds in src/lib/server/db/restore.ts,
+-- and fillSecretGaps). Both are cleared only by PUT /api/v1/webhooks/{id}
+-- switching it on, by the board's owner or an administrator with a key, which
+-- makes the caller its setter and, for any reason but 'no setter', gives it a
+-- new secret. Giving the setter the board back changes nothing: until card
+-- 2752 a webhook held that way was sent again at the next event.
+--
+-- webhooks.set_by_key and webhooks.set_with_key are card 2893's: the API key
+-- that last set the address or the secret or switched the webhook on, ON
+-- DELETE SET NULL, and whether a key was used (1), none was recorded (0), or
+-- the webhook was set before keys were recorded (NULL). This file only adds
+-- them; card 2893 writes and reads them. The index is card 2106's rule, that
+-- every foreign key column leads an index, named idx_<table>_<column> and
+-- declared in src/lib/server/db/schema.ts under the same name. SQLite takes
+-- ADD COLUMN with a foreign key when the column's default is NULL.
+--
+-- The setting webhook_keys_recorded_at is the moment this file runs, written
+-- once (card 2893's S9: which keys count for a webhook set before keys were
+-- recorded). A restore keeps this server's value (restoreFromBackup in
+-- src/lib/server/db/restore.ts). A one-off change to data: one new row of
+-- settings, which the rehearsal notes as a row a migration put there; it
+-- rewrites and takes no row, so nothing is declared in
+-- tests/rehearsal/one-offs.ts.
+--
+-- Changes no webhook. Every webhook already stored has the four columns NULL:
+-- one that is on and held is switched off at the first start after this file
+-- (switchOffHeldWebhooksAtStart in src/lib/server/startup-checks.ts), and its
+-- board's owners are mailed where the schedulers run.
+--
+-- No IF NOT EXISTS, as 0063: a column, an index or a setting of these names
+-- already in a database would be one this file did not make, and the file
+-- fails rather than record itself over it.
+--
+-- Runs once. The runner records this file by name and never runs it again,
+-- and it would not survive a second run: "duplicate column" is tolerated only
+-- in a fixed list of older files, and this is not one of them.
+--
+-- A backup made before this file has none of the four columns: its webhooks
+-- are restored with all four NULL, active as the backup had it, and the
+-- restore's own sweep then switches off each whose setter cannot open its
+-- board in the restored data.
+--
+-- Going back to an older image: keep the columns, and do not drop them. The
+-- older image's schema check reports them as columns it does not know, and
+-- leaves them; it never reads them, so a webhook switched off here stays off
+-- there until an owner switches it on there. Coming forward again, 0071 is
+-- already recorded and is not run.
+
+ALTER TABLE `webhooks` ADD COLUMN `held_because` text;
+--> statement-breakpoint
+ALTER TABLE `webhooks` ADD COLUMN `held_at` text;
+--> statement-breakpoint
+ALTER TABLE `webhooks` ADD COLUMN `set_by_key` integer REFERENCES `api_keys`(`id`) ON DELETE SET NULL;
+--> statement-breakpoint
+ALTER TABLE `webhooks` ADD COLUMN `set_with_key` integer;
+--> statement-breakpoint
+CREATE INDEX `idx_webhooks_set_by_key` ON `webhooks` (`set_by_key`);
+--> statement-breakpoint
+INSERT INTO `settings` (`key`, `value`) VALUES ('webhook_keys_recorded_at', datetime('now'));

@@ -47,6 +47,7 @@ import { getCardBoardId } from './work-access';
 import { boardConversionSuffix } from './upstream';
 import { COLUMN_ORDER } from './card-order';
 import { stamp } from '$lib/timestamps';
+import { switchOffLostWebhooks } from './webhooks';
 import { inWrite, type ServiceOptions } from './write-as';
 import { BOARD_KINDS, OPTIONS_COLOUR, OPTIONS_TITLE, columnRole, isOptionsColumn, isUpstreamColumn, type BoardKind, type StoredColumnRole } from '$lib/column-role';
 
@@ -456,6 +457,11 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
 	const fields = Object.keys(changed);
 	if (fields.length === 0) return board;
 	const row = db.update(boards).set({ ...changed, updatedAt: stamp() }).where(eq(boards.id, boardId)).returning().get();
+	// Made private: each webhook whose setter opened the board only because it
+	// was public is switched off for good, in this write (card 2752, D2).
+	if ('isPublic' in changed && !row.isPublic) {
+		switchOffLostWebhooks({ boardIds: [boardId] }, `the board was made private by ${user.username}`);
+	}
 	// An empty board switched to the other kind is given that kind's columns
 	// in place of its own (ruling j, decision M22-18): a delivery board's
 	// Complete column has no place on an ideas board, and an ideas board's

@@ -31,7 +31,8 @@ import {
 	maskLiveLog,
 	refuseUserlessBesideAnother,
 	removeSettingsOfNonAdministrators,
-	reportInstallation
+	reportInstallation,
+	switchOffHeldWebhooksAtStart
 } from '$lib/server/startup-checks';
 import { recheckStoredImages } from '$lib/server/image-recheck';
 import { ensureFormSecret } from '$lib/server/request-tokens';
@@ -157,6 +158,16 @@ void announceReportSchedules();
 // attachment sweep's first run (15 minutes on) finds the files it rewrote
 // new. It never rejects. See $lib/server/image-recheck.ts.
 void recheckStoredImages();
+
+// Switch off, for good, every webhook that is on and whose setter cannot open
+// its board, or that nobody is recorded as having set up (card 2752): at the
+// first start after the card, every webhook card 2325 held at delivery; after
+// that, what changed outside the writes that switch off. One WARN line each,
+// and the boards' owners mailed only where the schedulers run, by the same
+// decision as startSchedulers. After the settings of non-administrators are
+// removed, and before the schedulers start. A second start changes nothing,
+// and it cannot throw. See $lib/server/startup-checks.ts.
+switchOffHeldWebhooksAtStart();
 
 // Start the backup, report and snapshot schedulers, the decision reminder and
 // the attachment file sweep, or leave all five off. SCHEDULERS=on or =off

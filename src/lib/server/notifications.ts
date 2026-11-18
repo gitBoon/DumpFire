@@ -766,6 +766,97 @@ export function notifyBoardShared(boardId: number, boardName: string, userEmail:
 	sendEmail(userEmail, `Board shared: ${boardName}`, html).catch(err => log.error(`Board-share notification failed for ${userEmail}`, err));
 }
 
+// ─── A board's webhooks (card 2752) ──────────────────────────────────────────
+
+/**
+ * Who is told of a board's webhooks (D4): its creator and every account with
+ * a member row `owner` on it, or, where it has none, every administrator and
+ * the superadmin. By id, with the address and name each is mailed by.
+ */
+function webhookRecipients(boardId: number): { id: number; email: string; username: string }[] {
+	const board = db.select({ createdBy: boards.createdBy }).from(boards).where(eq(boards.id, boardId)).get();
+	const ownerIds = new Set(
+		db.select({ userId: boardMembers.userId }).from(boardMembers)
+			.where(and(eq(boardMembers.boardId, boardId), eq(boardMembers.role, 'owner')))
+			.all()
+			.map((row) => row.userId)
+	);
+	if (board?.createdBy != null) ownerIds.add(board.createdBy);
+	const owners = ownerIds.size === 0
+		? []
+		: db.select({ id: users.id, email: users.email, username: users.username }).from(users).where(inArray(users.id, [...ownerIds])).all();
+	if (owners.length > 0) return owners;
+	return db.select({ id: users.id, email: users.email, username: users.username }).from(users)
+		.where(inArray(users.role, ['admin', 'superadmin']))
+		.all();
+}
+
+/** A webhook as the owners' mails name it: its board, its id, its host, and why it was switched off. */
+export type WebhookInMail = { boardId: number; id: number; host: string; why: string };
+
+/**
+ * Tell the owners of each board whose webhooks a write switched off for good
+ * (card 2752, D4, S5, S6, S7): one mail to each recipient for the write,
+ * however many webhooks and boards it covers, naming each board, each
+ * webhook's id and host, never its path, query or secret, why it was switched
+ * off, and `cause`, the write that caused it and who made it. Not subject to
+ * the recipients' mail switches: it is about where their board's data goes.
+ * No link, so no App URL is needed. Sent once the write is committed.
+ */
+export function notifyWebhooksSwitchedOff(items: readonly WebhookInMail[], cause: string): void {
+	if (!isSmtpConfigured() || items.length === 0) return;
+	const byRecipient = new Map<number, { email: string; items: WebhookInMail[] }>();
+	for (const boardId of [...new Set(items.map((item) => item.boardId))]) {
+		for (const recipient of webhookRecipients(boardId)) {
+			const entry = byRecipient.get(recipient.id) ?? { email: recipient.email, items: [] };
+			entry.items.push(...items.filter((item) => item.boardId === boardId));
+			byRecipient.set(recipient.id, entry);
+		}
+	}
+	for (const { email, items: theirs } of byRecipient.values()) {
+		const rows = theirs
+			.map(
+				(item) =>
+					`<li style="margin: 0 0 8px;">Board <strong>${escapeHtml(getBoardName(item.boardId))}</strong>: webhook ${item.id} to ` +
+					`<strong>${escapeHtml(item.host)}</strong>, switched off because ${escapeHtml(item.why)}.</li>`
+			)
+			.join('');
+		const one = theirs.length === 1;
+		const html = emailTemplate(one ? 'A webhook was switched off' : 'Webhooks were switched off', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #dc2626;">
+			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">What caused it: ${escapeHtml(cause)}.</p>
+			<ul style="margin: 0 0 12px; padding-left: 20px; font-size: 13px; color: #334155;">${rows}</ul>
+			<p style="margin: 0 0 8px; font-size: 13px; color: #334155;">${one ? 'It sends nothing, and stays off' : 'They send nothing, and stay off'}, even if the account that set ${one ? 'it' : 'them'} up is given the board back.</p>
+			<p style="margin: 0; font-size: 13px; color: #475569;">What to do: delete each you do not recognise. To keep one, switch it on with your own API key (PUT /api/v1/webhooks/{id} with active true), which makes you its setter; one switched off for a lost setter is given a new secret, given in that answer and readable by the board's owner or an administrator, to give its receiver.</p>
+		</div>
+	`);
+		sendEmail(email, one ? 'A webhook on your board was switched off' : `${theirs.length} webhooks on your boards were switched off`, html).catch((err) =>
+			log.error('A notice of webhooks switched off failed', err)
+		);
+	}
+}
+
+/**
+ * Tell a board's owners (as `notifyWebhooksSwitchedOff` finds them) that
+ * someone who is neither one of them nor an administrator made a webhook on
+ * it (card 2752, S3): who, the board, the webhook's id and its host. The
+ * create calls it only for such a caller. Not subject to the mail switches;
+ * no link. Sent once the create is committed.
+ */
+export function notifyWebhookCreated(boardId: number, creator: string, hook: { id: number; host: string }): void {
+	if (!isSmtpConfigured()) return;
+	const boardName = getBoardName(boardId);
+	const html = emailTemplate('A webhook was made on your board', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4338ca;">
+			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;"><strong>${escapeHtml(creator)}</strong> made webhook ${hook.id} on <strong>${escapeHtml(boardName)}</strong>, which sends the board's events to <strong>${escapeHtml(hook.host)}</strong>.</p>
+			<p style="margin: 0; font-size: 13px; color: #475569;">If you do not recognise it, delete it with your API key (DELETE /api/v1/webhooks/${hook.id}).</p>
+		</div>
+	`);
+	for (const recipient of webhookRecipients(boardId)) {
+		sendEmail(recipient.email, `A webhook was made on ${boardName}`, html).catch((err) => log.error(`The notice of webhook ${hook.id} made failed`, err));
+	}
+}
+
 /** Notify the target user(s) when a new task request is submitted. */
 export function notifyTaskRequest(targetType: string, targetId: number, title: string, requesterName: string, priority: string, baseUrl: string | null) {
 	if (!isSmtpConfigured()) return;

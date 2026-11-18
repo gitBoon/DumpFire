@@ -416,6 +416,18 @@ describe('every mail in notifications.ts', () => {
 			link: true,
 			send: () => notifications.notifyBoardShared(board.id, MARKER, recipient.email, MARKER, MARKER, MARKER, BASE)
 		},
+		// Card 2752 (D4, S3): a board's owners told of webhooks switched off and of one somebody else made, with no
+		// link, the board's name, the host, why and the cause each text.
+		{
+			name: 'notifyWebhooksSwitchedOff',
+			link: false,
+			send: () => notifications.notifyWebhooksSwitchedOff([{ boardId: board.id, id: 1, host: MARKER, why: MARKER }], MARKER)
+		},
+		{
+			name: 'notifyWebhookCreated',
+			link: false,
+			send: () => notifications.notifyWebhookCreated(board.id, MARKER, { id: 1, host: MARKER })
+		},
 		{
 			name: 'notifyTaskRequest',
 			link: true,
