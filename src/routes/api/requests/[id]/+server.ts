@@ -6,7 +6,7 @@ import type { SessionUser } from '$lib/server/auth';
 import { canViewBoard } from '$lib/server/board-access';
 import { requireAdmin, requireColumn, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
-import { awaitsConfirmation, canHandleRequest, canReadRequest, linkCheck, requesterAddress, requireRequest } from '$lib/server/request-access';
+import { canHandleRequest, canReadRequest, linkCheck, requesterAddress, requireRequest } from '$lib/server/request-access';
 import { publicRequest } from '$lib/server/request-tokens';
 import { notifyUserAssigned, notifyRequesterAccepted, notifyRequesterRejected } from '$lib/server/notifications';
 import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
@@ -25,7 +25,8 @@ import type { RequestHandler } from './$types';
  * and an address is not a secret.
  *
  * A caller with no session and without the link is answered 404, whether the
- * request is there or not (card 2132): it was 403 for one that is there. The
+ * request is there or not (card 2132): it was 403 for one that is there. So is
+ * a signed-in caller who cannot read it (card 2914), in the same words. The
  * link of a request nobody confirmed within seven days is answered alike (card
  * 2243), so the requester's thread page shows the link as gone, and no longer
  * offers "Confirm it" for a request the confirm route refuses.
@@ -82,15 +83,12 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 	// now, and decides with that (card 2253).
 	const answer = writeAs(locals, (caller) => {
 		const user = requireUser(caller);
-		const existing = db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
-		// One that awaits confirmation is not there for the team (card 2260):
-		// it was `400 Request already resolved`, which told them it was.
-		if (!existing || awaitsConfirmation(existing)) throw error(404, 'Request not found');
-
-		// Only the person or team the request is addressed to decides its fate.
-		if (!canHandleRequest(user, existing)) {
-			throw error(403, 'This request is not addressed to you');
-		}
+		// Only the person or team the request is addressed to decides its fate,
+		// asked by the one rule every request route asks (card 2914): one that is
+		// not there, awaits confirmation (card 2260: it was `400 Request already
+		// resolved`, which told the team it was) or the caller cannot read is
+		// `404 Request not found`; the requester, who can read it, is refused.
+		const existing = requireRequest(user, id, (row) => canHandleRequest(user, row), 'This request is not addressed to you');
 		if (existing.status !== 'pending') throw error(400, 'Request already resolved');
 
 		// Where the requester's mail goes, as it is now: the account's email

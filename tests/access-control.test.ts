@@ -639,7 +639,9 @@ describe('task requests', () => {
 			body: { action: 'reject' }
 		});
 
-		expect([read.status, thread.status, reply.status, reject.status]).toEqual([403, 403, 403, 403]);
+		// One they cannot read is not there to them (card 2914).
+		expect([read.status, thread.status, reply.status, reject.status]).toEqual([404, 404, 404, 404]);
+		for (const res of [read, thread, reply, reject]) expect(res.body).toEqual({ message: 'Request not found' });
 		expect(db.select().from(taskRequests).get()?.status).toBe('pending');
 	});
 

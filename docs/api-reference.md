@@ -1,11 +1,12 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.142
+version: 1.143
 status: As-Built
 date: 2026-11-18
 tags:
   - api
+  - card-2914
   - card-2911
   - hidden-milestone-not-found
   - card-2894
@@ -43,7 +44,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "REST API reference for DumpFire's external v1 API: authentication, a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -382,6 +383,23 @@ some fields were answered in that form, which names no zone, and the same field 
 either.
 
 ### Changes on 2026-11-18
+
+**Internal routes: a task request a signed-in caller cannot read is answered 404, not 403**
+(card 2914; the v1 API does not change, as no task request route is under `/api/v1/`). Request
+ids are counted up one at a time, and a `403` for one that exists beside a `404` for one that
+does not let any account learn which requests exist among those it cannot see. A signed-in
+caller who cannot read a request (its addressee, a member of the team it is addressed to, an
+administrator, or the requester signed in can) is answered `404 {"message": "Request not
+found"}`, the words one that is not there gets, by `GET /api/requests/{id}`,
+`GET /api/requests/{id}/messages`, `POST /api/requests/{id}/messages` (from the team, or as the
+requester without the link) and `PATCH /api/requests/{id}` (accept and reject), where it was
+`403` (`Access denied`, `This request is not addressed to you` or `Invalid or missing link
+token`). `403` is kept for a caller who can read it and asks for what they may not do: the
+requester accepting, rejecting or replying as the team (`This request is not addressed to
+you`), or a reader replying as the requester without the link (`Invalid or missing link
+token`). The accept and reject now ask the same rule as the other request routes. Nothing
+changes for the people a request is addressed to, for the requester's emailed link, or for the
+inbox. See [The Public Request Form](authentication-security.md#the-public-request-form).
 
 **Breaking: a milestone the key's user cannot see is answered 404, not 403** (card 2911;
 OpenAPI document version `1.12.0`, with a dated note, marked breaking, at the top of its

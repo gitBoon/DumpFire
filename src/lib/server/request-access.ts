@@ -223,16 +223,19 @@ export function canReadRequest(user: SessionUser, request: TaskRequest): boolean
  * they are not let into, whatever its state, as for one that is not there
  * (card 2132). Request ids are consecutive, and a `403` for one that is there
  * told anyone on the internet how many requests there are and, with the `400`
- * for a resolved one, when each was dealt with. A signed-in caller is answered
- * `404` for one that is not there and `403 refusal` for one that is not
- * theirs: not as the board guards answer a thing on a board the caller cannot
- * open, which is `404` (card 2719), since a request is on no board until it is
- * accepted. Its state is for the route to tell, once the caller is let in.
+ * for a resolved one, when each was dealt with. A signed-in caller who
+ * cannot read the request (`canReadRequest`) is answered `404 Request not
+ * found` too, in the same words (card 2914), as the board guards answer a
+ * thing on a board the caller cannot open (card 2719): any account could
+ * otherwise try ids and learn which requests exist among those it cannot see.
+ * Only a caller who can read it and whom the route's rule refuses is answered
+ * `403 refusal`: the requester accepting it or replying as the team, or a
+ * reader replying as the requester without the link. Its state is for the
+ * route to tell, once the caller is let in.
  *
  * A request that awaits confirmation is `404` to every caller it does not let
- * in, signed in or not (card 2260): to the team it is not there until its
- * requester confirms it, and a `403` to an outsider would tell them it exists
- * while the people it is addressed to are told it does not. Its own link still
+ * in, signed in or not (card 2260): `canReadRequest` is false for it, so to
+ * the team it is not there until its requester confirms it. Its own link still
  * opens it.
  */
 export function requireRequest(
@@ -243,6 +246,10 @@ export function requireRequest(
 ): TaskRequest {
 	const request = db.select().from(taskRequests).where(eq(taskRequests.id, id)).get();
 	if (request && letIn(request)) return request;
-	if (!user || !request || awaitsConfirmation(request)) throw error(404, 'Request not found');
+	// One the caller cannot read is answered as one that is not there (card 2914), as card 2132 answers
+	// a caller with no session; `canReadRequest` is false for one awaiting confirmation (card 2260).
+	// Asked once, here, and only for a caller the route's own rule has refused.
+	const reads = user !== null && request !== undefined && canReadRequest(user, request);
+	if (!reads) throw error(404, 'Request not found');
 	throw error(403, refusal);
 }

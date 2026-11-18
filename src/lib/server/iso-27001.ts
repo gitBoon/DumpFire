@@ -434,7 +434,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 		how:
 			'Every read is filtered by board access, pinned by tests of each page load and each route. ' +
 			'A board, a card, a grouping, anything on a board, or a milestone that the caller cannot open or see, asked for by its id, is answered as one that does not exist, ' +
-			'404 in the same words, in single answers and in batches (cards 2719, 2911). ' +
+			'404 in the same words, in single answers and in batches (cards 2719, 2911), and so is a task request a signed-in caller cannot read, as it is to a caller with no account (card 2914). ' +
 			'An id under a card\'s address, an attachment or a comment, is asked about only once the caller can open the card (card 2762). ' +
 			'Still open: the dependency lists still give the ids of work on a board the caller cannot open that is linked to their own, withheld but numbered (card 2129\'s design; a loop withholds its nodes\' ids, card 2719), awaiting the owner\'s ruling (2917); ' +
 			'reads under an API key rely on a test scan rather than a refusal at run time (2730).',
@@ -451,8 +451,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 		owner: 'DumpFire',
 		gapCards: [2730, 2917],
 		accepted: [
-			{ risk: 'R5: a missing id is answered a little faster than one the caller cannot open: a board, a card or a milestone', ...ACCEPTED_RISKS },
-			{ risk: 'R6: ids are counted up one at a time, so anyone who can make a board, a card or a milestone learns from its id how many were made since their last', ...ACCEPTED_RISKS }
+			{ risk: 'R5: a missing id is answered a little faster than one the caller cannot open: a board, a card, a milestone or a task request', ...ACCEPTED_RISKS },
+			{ risk: 'R6: ids are counted up one at a time, so anyone who can make a board, a card, a milestone or a task request learns from its id how many were made since their last', ...ACCEPTED_RISKS }
 		]
 	},
 	organisational('A.8.4', 'annex-a', 'Access to source code'),

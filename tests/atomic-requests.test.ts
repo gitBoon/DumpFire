@@ -408,10 +408,9 @@ describe('PATCH /api/requests/:id, accept', () => {
 
 		await expectRefused(patch(s.request.id, null, into(s.A)), 401);
 		expect(await message(patch(99999, s.owner, into(s.A)), 404)).toBe('Request not found');
-		// Whose request it is comes before what was asked of it.
-		expect(await message(patch(s.request.id, s.outsider, { action: 'no such thing' }), 403)).toBe(
-			'This request is not addressed to you'
-		);
+		// Whose request it is comes before what was asked of it. One the caller cannot read is not there to
+		// them (card 2914).
+		expect(await message(patch(s.request.id, s.outsider, { action: 'no such thing' }), 404)).toBe('Request not found');
 		expect(await message(patch(s.request.id, s.owner, { action: 'accept' }), 400)).toBe(
 			'Board and column are required to accept'
 		);
@@ -490,9 +489,8 @@ describe('PATCH /api/requests/:id, reject', () => {
 	it('refuses a caller the request is not addressed to', async () => {
 		const s = scene();
 
-		expect((await expectRefused(() => reject(s, s.outsider), 403)).body.message).toBe(
-			'This request is not addressed to you'
-		);
+		// One the caller cannot read is not there to them (card 2914).
+		expect((await expectRefused(() => reject(s, s.outsider), 404)).body.message).toBe('Request not found');
 		await expectRefused(() => reject(s, null), 401);
 	});
 });

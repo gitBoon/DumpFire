@@ -512,14 +512,16 @@ describe("a request nobody has confirmed is not the team's to read (card 2260)",
 		expect(requestRow(id).status).toBe('accepted');
 	});
 
-	it('leaves a pending request as it was: read by the person it is addressed to, 403 to someone else', async () => {
+	it('leaves a pending request as it was: read by the person it is addressed to, 404 to someone else', async () => {
 		const res = await api('POST', '/api/requests', { user: other, body: submission({ desiredBoardId: null }) });
 		expect(requestRow(res.body.id).status).toBe('pending');
 
 		expect((await api('GET', `/api/requests/${res.body.id}`, { user: staff })).status).toBe(200);
 		expect((await api('GET', `/api/requests/${res.body.id}`, { user: admin })).status).toBe(200);
 		const outsider = makeUser({ username: 'outsider' });
-		expect((await api('GET', `/api/requests/${res.body.id}`, { user: outsider })).status).toBe(403);
+		// One they cannot read is not there to them (card 2914).
+		const refused = await api('GET', `/api/requests/${res.body.id}`, { user: outsider });
+		expect([refused.status, refused.body]).toEqual([404, { message: 'Request not found' }]);
 	});
 
 	it('canHandleRequest and canReadRequest are false for an unconfirmed request, an administrator included', async () => {
@@ -922,15 +924,20 @@ describe('a request that cannot be opened', () => {
 		expect(mail.sent).toEqual([]);
 	});
 
-	it('still answers a signed-in caller as every guard does: 403 for one not theirs, 404 for one not there', async () => {
+	it('answers a signed-in caller who cannot read a request exactly as one that is not there (card 2914)', async () => {
 		const [pending] = requests();
+		const said = async (method: 'GET' | 'POST', path: string, body?: unknown) => {
+			const res = await api(method, path, { user: other, body });
+			return { status: res.status, body: res.body };
+		};
+		const notThere = { status: 404, body: { message: 'Request not found' } };
 
-		expect((await api('GET', `/api/requests/${pending.id}`, { user: other })).status).toBe(403);
-		expect((await api('GET', `/api/requests/${pending.id}/messages`, { user: other })).status).toBe(403);
-		expect((await api('GET', `/api/requests/${NO_SUCH_REQUEST}`, { user: other })).status).toBe(404);
 		const asRequester = { message: 'x', senderType: 'requester', token: 'f'.repeat(64) };
-		expect((await api('POST', `/api/requests/${pending.id}/messages`, { user: other, body: asRequester })).status).toBe(403);
-		expect((await api('POST', `/api/requests/${NO_SUCH_REQUEST}/messages`, { user: other, body: asRequester })).status).toBe(404);
+		for (const id of [pending.id, NO_SUCH_REQUEST]) {
+			expect(await said('GET', `/api/requests/${id}`), `${id}`).toEqual(notThere);
+			expect(await said('GET', `/api/requests/${id}/messages`), `${id}`).toEqual(notThere);
+			expect(await said('POST', `/api/requests/${id}/messages`, asRequester), `${id}`).toEqual(notThere);
+		}
 	});
 });
 

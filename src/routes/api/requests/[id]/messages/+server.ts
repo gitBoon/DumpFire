@@ -35,7 +35,8 @@ const replyCount = (requestId: number) => `request-reply:${requestId}`;
  * GET — Fetch all messages for a request. Requires auth or the request's own
  * token. A caller with no session and without the link is answered 404,
  * whether the request is there or not (card 2132), and so is the link of a
- * request nobody confirmed within seven days (card 2243).
+ * request nobody confirmed within seven days (card 2243), and a signed-in
+ * caller who cannot read it (card 2914), in the same words.
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	const requestId = pathId(params.id, 'request');
@@ -75,6 +76,11 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
  * the request is looked for. A reply as the requester without the link's token
  * is 404, as for a request that is not there; it was 403, and 400 for one
  * resolved or unconfirmed. The state is told only to a caller let in.
+ *
+ * A signed-in caller who cannot read the request is answered 404 too, as for
+ * one that is not there, whichever they send as (card 2914). Only one who can
+ * read it is refused 403: its requester replying as the team, or a reader
+ * replying as the requester without the link.
  */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
 	const requestId = pathId(params.id, 'request');

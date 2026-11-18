@@ -22,8 +22,12 @@
  * as its plan numbers them (`docs/planning/card-2911-hidden-milestone-not-found.md`,
  * 5.1), and ask as the rows above do, naming the hidden goal and an id that is
  * no row of `milestones`.
+ *
+ * Card 2914 does the same for a task request a signed-in caller cannot read
+ * (`docs/planning/card-2914-hidden-task-request-not-found.md`, 5.1): Q1 to Q5,
+ * with mail set up and nothing sent.
  */
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { db, sqlite } from '$lib/server/db';
 import {
 	activityLog,
@@ -32,6 +36,8 @@ import {
 	cards,
 	cardTemplates,
 	categories,
+	requestMessages,
+	taskRequests,
 	tokenUsage,
 	type Board,
 	type BoardCategory,
@@ -41,12 +47,14 @@ import {
 	type Column,
 	type Label,
 	type Milestone,
-	type Subtask
+	type Subtask,
+	type TaskRequest
 } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { eq } from 'drizzle-orm';
 import { api } from './helpers/api';
 import { pageLoad } from './helpers/actions';
+import { effects, type Effects } from './helpers/effects';
 import { gateRoutes } from './helpers/gate';
 import {
 	addBoardMember,
@@ -56,6 +64,7 @@ import {
 	makeDependency,
 	makeLabel,
 	makeMilestone,
+	makeSmtp,
 	makeSubtask,
 	makeUser,
 	makeWebhook,
@@ -103,6 +112,10 @@ type World = {
 	seenGoal: Milestone;
 	/** A card of the outsider's own board, in `seenGoal`. */
 	inSeen: Card;
+	/** Card 2914: a pending request addressed to the owner, made on the form with no account. */
+	requestOfOwner: TaskRequest;
+	/** Card 2914: a pending request addressed to the owner, raised by the outsider signed in. */
+	outsidersRequest: TaskRequest;
 };
 
 let w: World;
@@ -127,6 +140,15 @@ beforeEach(() => {
 		cards: [makeCard(cols['To Do'], { title: 'On A, in a goal across boards' }), inAcross]
 	});
 	const seenGoal = makeMilestone({ createdBy: owner, name: 'Seen by the outsider', cards: [inSeen] });
+	// Card 2914's requests, both pending and addressed to the owner.
+	const asked = (by: { requesterUserId: number | null; requesterName: string; requesterEmail: string }) =>
+		db
+			.insert(taskRequests)
+			.values({ ...by, targetType: 'user', targetId: owner.id, title: 'A request', status: 'pending' })
+			.returning()
+			.get();
+	const requestOfOwner = asked({ requesterUserId: null, requesterName: 'Rita', requesterEmail: 'rita@example.test' });
+	const outsidersRequest = asked({ requesterUserId: outsider.id, requesterName: 'outsider', requesterEmail: 'outsider@example.test' });
 	w = {
 		owner,
 		outsider,
@@ -149,7 +171,9 @@ beforeEach(() => {
 		acrossA,
 		inAcross,
 		seenGoal,
-		inSeen
+		inSeen,
+		requestOfOwner,
+		outsidersRequest
 	};
 });
 
@@ -559,6 +583,80 @@ describe('card 2911: a milestone the caller cannot see', () => {
 
 		expect([res.status, res.body]).toEqual([403, { message: 'No access to the milestone this card is in' }]);
 		expect(goalOf(w.inAcross.id)).toBe(w.acrossA.id);
+		expectUnchanged(before);
+	});
+});
+
+/** A request's status, as the table holds it. */
+const statusOf = (requestId: number) => db.select({ status: taskRequests.status }).from(taskRequests).where(eq(taskRequests.id, requestId)).get()?.status;
+
+/** Card 2914's rows: a task request the signed-in outsider cannot read, named by its id, answered as one that is not there. */
+const REQUEST_ROWS: Row[] = [
+	{
+		name: "Q1 GET /api/requests/:id, the owner's request (requireRequest, letIn the read rule or the link)",
+		table: 'task_requests',
+		onA: (w) => w.requestOfOwner.id,
+		ask: (w, id) => api('GET', `/api/requests/${id}`, { user: w.outsider })
+	},
+	{
+		name: "Q2 PATCH /api/requests/:id { action: 'reject' }, the owner's request (the accept and reject on requireRequest)",
+		table: 'task_requests',
+		onA: (w) => w.requestOfOwner.id,
+		ask: (w, id) => api('PATCH', `/api/requests/${id}`, { user: w.outsider, body: { action: 'reject' } })
+	},
+	{
+		name: "Q4 POST /api/requests/:id/messages from the team, the owner's request (letIn canHandleRequest)",
+		table: 'task_requests',
+		onA: (w) => w.requestOfOwner.id,
+		ask: (w, id) => api('POST', `/api/requests/${id}/messages`, { user: w.outsider, body: { senderType: 'admin', message: 'x' } })
+	},
+	{
+		name: "Q5 POST /api/requests/:id/messages as the requester with no token, the owner's request (letIn the link alone)",
+		table: 'task_requests',
+		onA: (w) => w.requestOfOwner.id,
+		ask: (w, id) => api('POST', `/api/requests/${id}/messages`, { user: w.outsider, body: { senderType: 'requester', message: 'x' } })
+	}
+];
+
+describe('card 2914: a task request the caller cannot read', () => {
+	// Mail is set up, so a request that went through would mail; nothing is sent by any case here.
+	let sent: Effects;
+	beforeEach(() => {
+		makeSmtp();
+		sent = effects();
+	});
+	afterEach(async () => {
+		await sent.settle();
+		const all = sent.all;
+		sent.restore();
+		expect(all, 'nothing sent').toEqual([]);
+	});
+
+	it.each(REQUEST_ROWS.map((row) => [row.name, row] as const))('is answered exactly as a request that is not there: %s', async (_name, row) => {
+		await answeredAsMissing(row);
+		expect(statusOf(w.requestOfOwner.id)).toBe('pending');
+	});
+
+	it('Q3 the outsider who raised a request, and so can read it, is still refused its reject: 403 This request is not addressed to you', async () => {
+		const before = snapshotDb();
+
+		const res = await api('PATCH', `/api/requests/${w.outsidersRequest.id}`, { user: w.outsider, body: { action: 'reject' } });
+
+		expect([res.status, res.body]).toEqual([403, { message: 'This request is not addressed to you' }]);
+		expect(statusOf(w.outsidersRequest.id)).toBe('pending');
+		expectUnchanged(before);
+	});
+
+	it('Q3b the outsider who raised a request, and so can read it, is still refused a reply as the team: 403 This request is not addressed to you', async () => {
+		const before = snapshotDb();
+
+		const res = await api('POST', `/api/requests/${w.outsidersRequest.id}/messages`, {
+			user: w.outsider,
+			body: { senderType: 'admin', message: 'x' }
+		});
+
+		expect([res.status, res.body]).toEqual([403, { message: 'This request is not addressed to you' }]);
+		expect(db.select().from(requestMessages).all()).toEqual([]);
 		expectUnchanged(before);
 	});
 });

@@ -709,8 +709,10 @@ const own = (mine: Who, notMine: Who[], req: (w: World) => Req, more: More = {})
  * The `unopenable` of a case whose callers can all open what it names, or
  * whose refusal is not about a board (card 2719, M3): a public board, which
  * every signed-in caller opens; a grouping holding boards A and B, which every
- * refused caller is listed; and a team, a request, a report schedule, a key or
- * a decision, which is on no board, or is refused by a rule of its own.
+ * refused caller is listed; and a team, a report schedule, a key or a
+ * decision, which is on no board, or is refused by a rule of its own. A task
+ * request is on no board too, but one a signed-in caller cannot read is
+ * answered as one that is not there (card 2914): its rows name who cannot.
  */
 const OPENED_BY_ALL: Who[] = [];
 
@@ -1712,27 +1714,29 @@ const TABLE: Record<string, Case | Case[]> = {
 		tellsEveryone: TEAM_NAMES
 	}),
 	'GET /api/requests/[id]': [
+		// The requests here have no signed-in requester, so every signed-in caller a row refuses cannot read the
+		// request, and is answered as for one that is not there (card 2914).
 		link((w) => `/api/requests/${w.request.id}`, {
 			withLink: (w) => `/api/requests/${w.request.id}?token=${LINK}`,
-			addressee: true
+			addressee: true,
+			unopenable: ['outsider']
 		}),
-		// `editor` is a member of the team and `viewer` is not. A request is on no board until it is accepted, and
-		// one a signed-in caller is not let into is a 403 (card 2719, F6: out of its scope).
+		// `editor` is a member of the team and `viewer` is not.
 		own('editor', ['outsider', 'viewer'], (w) => `/api/requests/${w.teamRequest.id}`, {
 			of: 'one addressed to a team',
 			opensByLink: true,
-			unopenable: OPENED_BY_ALL
+			unopenable: ['outsider', 'viewer']
 		})
 	],
 	'PATCH /api/requests/[id]': [
 		own('owner', ['outsider', 'editor'], (w) =>
-			json(`/api/requests/${w.request.id}`, { action: 'reject', reason: 'Not this quarter' }), { unopenable: OPENED_BY_ALL }
+			json(`/api/requests/${w.request.id}`, { action: 'reject', reason: 'Not this quarter' }), { unopenable: ['outsider', 'editor'] }
 		),
 		own(
 			'editor',
 			['outsider', 'viewer'],
 			(w) => json(`/api/requests/${w.teamRequest.id}`, { action: 'reject', reason: 'Not this quarter' }),
-			{ of: 'one addressed to a team', unopenable: OPENED_BY_ALL }
+			{ of: 'one addressed to a team', unopenable: ['outsider', 'viewer'] }
 		),
 		// Accepting makes a card, on the board and in the column the body names.
 		// `guest` is a member of the team too, and can only view board A.
@@ -1745,20 +1749,22 @@ const TABLE: Record<string, Case | Case[]> = {
 					boardId: w.A.board.id,
 					columnId: w.A.cols['To Do'].id
 				}),
-			// The request is asked about before the board it is to be accepted onto.
-			{ of: 'accepting one onto a board', unopenable: OPENED_BY_ALL }
+			// The request is asked about before the board it is to be accepted onto. `guest` can read it, a member
+			// of the team, and is refused by the column's edit check: a 403.
+			{ of: 'accepting one onto a board', unopenable: ['outsider', 'viewer'] }
 		),
 		// An administrator handles any request by role, as its addressee does (canHandleRequest).
 		own(
 			'admin',
 			['outsider', 'editor'],
 			(w) => json(`/api/requests/${w.request.id}`, { action: 'reject', reason: 'Not this quarter' }),
-			{ of: "the owner's, by an administrator", unopenable: OPENED_BY_ALL }
+			{ of: "the owner's, by an administrator", unopenable: ['outsider', 'editor'] }
 		)
 	],
 	'DELETE /api/requests/[id]': admin((w) => `/api/requests/${w.request.id}`),
 	'POST /api/requests/[id]/confirm': link((w) => json(`/api/requests/${w.unconfirmed.id}/confirm`, {}), {
-		withLink: (w) => json(`/api/requests/${w.unconfirmed.id}/confirm`, { token: UNCONFIRMED_LINK })
+		withLink: (w) => json(`/api/requests/${w.unconfirmed.id}/confirm`, { token: UNCONFIRMED_LINK }),
+		unopenable: ['outsider']
 	}),
 	// Card 2158: anyone may ask, and the answer is the same whatever is asked;
 	// the link goes only to the address the request was made with. Mail is set
@@ -1770,33 +1776,35 @@ const TABLE: Record<string, Case | Case[]> = {
 	'GET /api/requests/[id]/messages': [
 		link((w) => `/api/requests/${w.request.id}/messages`, {
 			withLink: (w) => `/api/requests/${w.request.id}/messages?token=${LINK}`,
-			addressee: true
+			addressee: true,
+			unopenable: ['outsider']
 		}),
 		own('editor', ['outsider', 'viewer'], (w) => `/api/requests/${w.teamRequest.id}/messages`, {
 			of: 'of one addressed to a team',
 			opensByLink: true,
-			unopenable: OPENED_BY_ALL
+			unopenable: ['outsider', 'viewer']
 		})
 	],
 	'POST /api/requests/[id]/messages': [
 		own('owner', ['outsider', 'editor'], (w) => json(`/api/requests/${w.request.id}/messages`, { message: 'On it' }), {
 			of: 'an answer from the one it is addressed to',
-			unopenable: OPENED_BY_ALL
+			unopenable: ['outsider', 'editor']
 		}),
 		own(
 			'editor',
 			['outsider', 'viewer'],
 			(w) => json(`/api/requests/${w.teamRequest.id}/messages`, { message: 'On it' }),
-			{ of: 'an answer from a member of the team it is addressed to', unopenable: OPENED_BY_ALL }
+			{ of: 'an answer from a member of the team it is addressed to', unopenable: ['outsider', 'viewer'] }
 		),
 		own('admin', ['outsider', 'editor'], (w) => json(`/api/requests/${w.request.id}/messages`, { message: 'On it' }), {
 			of: 'an answer from an administrator',
-			unopenable: OPENED_BY_ALL
+			unopenable: ['outsider', 'editor']
 		}),
 		link((w) => json(`/api/requests/${w.request.id}/messages`, { message: 'Thanks', senderType: 'requester' }), {
 			of: 'a reply from the requester',
 			withLink: (w) =>
-				json(`/api/requests/${w.request.id}/messages`, { message: 'Thanks', senderType: 'requester', token: LINK })
+				json(`/api/requests/${w.request.id}/messages`, { message: 'Thanks', senderType: 'requester', token: LINK }),
+			unopenable: ['outsider']
 		})
 	],
 

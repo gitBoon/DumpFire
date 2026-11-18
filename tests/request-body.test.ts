@@ -3096,8 +3096,13 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		expect(await answered('PUT', `/api/users/${admin2.id}`, w.admin, { username: 5 })).toBe(403);
 		expect(await answered('PUT', '/api/users/99999', w.admin, { username: 5 })).toBe(404);
 		expect(await answered('PUT', `/api/users/${admin2.id}/password`, w.admin, { password: 5 })).toBe(403);
-		expect(await answered('PATCH', ofRequest(w), w.outsider, { action: 'accept', columnId: 'x' })).toBe(403);
-		expect(await answered('POST', replies(w), w.outsider, { message: '' })).toBe(403);
+		// A request the caller cannot read is answered as one that is not there, in its words (card 2914).
+		const said = async (method: Method, path: string, user: SessionUser, body: unknown) => {
+			const res = await api(method, path, { user, body, headers: sessions.get(user.id) });
+			return [res.status, res.body?.message];
+		};
+		expect(await said('PATCH', ofRequest(w), w.outsider, { action: 'accept', columnId: 'x' })).toEqual([404, 'Request not found']);
+		expect(await said('POST', replies(w), w.outsider, { message: '' })).toEqual([404, 'Request not found']);
 		expect(await answered('POST', '/api/requests/99999/messages', w.owner, { message: '' })).toBe(404);
 		expect(await answered('POST', replies(w), w.owner, { message: '', senderType: 'requester', token: 'not it' })).toBe(403);
 		// A schedule's board is looked for, and the caller checked, before its other fields: its name was read first.
