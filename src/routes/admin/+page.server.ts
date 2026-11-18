@@ -5,7 +5,7 @@ import { mayManageAccount } from '$lib/account-rule';
 import { db } from '$lib/server/db';
 import { getDbPath } from '$lib/server/db';
 import { defaultOutside } from '$lib/server/db/restore';
-import { settingsHeldBy } from '$lib/server/setting-setters';
+import { isFailureAddress, settingsHeldBy } from '$lib/server/setting-setters';
 import { TWO_STEP_RELEASED_AT, passwordSetUpEnds } from '$lib/server/mfa-store';
 import { stamp } from '$lib/timestamps';
 import { boards, columns, cards, categories, users, teams, teamMembers } from '$lib/server/db/schema';
@@ -77,6 +77,18 @@ export const load: PageServerLoad = async ({ locals }) => {
 		emoji: users.emoji,
 		role: users.role,
 		createdAt: users.createdAt,
+		// Card 2671: when the account was disabled, by whom by name, and whether
+		// by the superadmin, whose disable only the superadmin undoes (S14). Null
+		// for an account that is enabled, and the name for a disabler since deleted.
+		disabledAt: users.disabledAt,
+		disabledByName: sql<string | null>`(SELECT "d"."username" FROM "users" AS "d" WHERE "d"."id" = "users"."disabled_by")`,
+		disabledBySuperadmin: sql<number>`EXISTS (SELECT 1 FROM "users" AS "d" WHERE "d"."id" = "users"."disabled_by" AND "d"."role" = 'superadmin')`,
+		// The backup settings as stored, read in this one query, for whether the
+		// account's address is among the backup failure address (card 2671, S7),
+		// which disabling takes it out of whatever the role (the code review's
+		// CS2): the users panel names it in the disable's confirmation. Read by
+		// `isFailureAddress`, the rule the removal asks (CR9), and never answered.
+		backupConfig: sql<string | null>`(SELECT "value" FROM "settings" WHERE "settings"."key" = 'backup_config')`,
 		apiKeys: sql<number>`(SELECT COUNT(*) FROM "api_keys" WHERE "api_keys"."user_id" = "users"."id")`,
 		webhooks: sql<number>`(SELECT COUNT(*) FROM "webhooks" WHERE "webhooks"."set_by" = "users"."id" AND "webhooks"."active" = 1)`,
 		reportSchedules: sql<number>`(SELECT COUNT(*) FROM "report_schedules" WHERE "report_schedules"."user_id" = "users"."id" AND "report_schedules"."enabled" = 1)`,
@@ -92,7 +104,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		// any other. The 14 days are added below.
 		releasedAt: sql<string | null>`CASE WHEN "users"."mfa_password_enrol" = 1 AND NOT EXISTS (SELECT 1 FROM "mfa_factors" WHERE "mfa_factors"."user_id" = "users"."id") AND NOT EXISTS (SELECT 1 FROM "enrolment_links" WHERE "enrolment_links"."user_id" = "users"."id" AND "enrolment_links"."issued_by" <> 'release-mail') AND NOT EXISTS (SELECT 1 FROM "settings" WHERE "settings"."key" = 'smtp_host' AND coalesce("settings"."value", '') <> '') THEN (SELECT "value" FROM "settings" WHERE "settings"."key" = ${TWO_STEP_RELEASED_AT}) END`
 	}).from(users).all()
-		.map(({ releasedAt, ...user }) => {
+		.map(({ releasedAt, backupConfig, ...user }) => {
 			const counted = mayReset(user);
 			// Until when it may, while the 14 days are running; null once they
 			// are over. Shown on the caller's own row too, which offers no
@@ -101,6 +113,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 			const shown = counted || user.id === caller.id;
 			return {
 				...user,
+				disabledBySuperadmin: user.disabledBySuperadmin === 1,
+				// For every row (the code review's CS2): a disable takes any account's address out.
+				failureAddress: isFailureAddress(backupConfig, user.email),
 				apiKeys: counted ? user.apiKeys : null,
 				webhooks: counted ? user.webhooks : null,
 				reportSchedules: counted ? user.reportSchedules : null,

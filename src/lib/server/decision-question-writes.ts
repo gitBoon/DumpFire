@@ -346,7 +346,8 @@ function questionNoticesOf(decision: Decision, participant: DecisionParticipant,
 	const notices: QuestionNotice[] = [];
 	for (const userId of recipients) {
 		if (askers.has(userId)) continue;
-		const recipient = db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, userId)).get();
+		// With `disabledAt` (card 2671): a disabled decider or author is not asked, read in this one row.
+		const recipient = db.select({ id: users.id, role: users.role, disabledAt: users.disabledAt }).from(users).where(eq(users.id, userId)).get();
 		if (recipient === undefined || !mayDo(decisionAccess(recipient, decision), 'answer', decision)) continue;
 		notices.push({ userId, ...questionNoticeFor(userId, earlier, now) });
 	}

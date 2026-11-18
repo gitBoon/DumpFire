@@ -69,6 +69,7 @@ import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { activityLog, boards, columns, users, webhooks } from '$lib/server/db/schema';
 import { endAccountAccess, sessionTokenHash, type SessionUser } from '$lib/server/auth';
+import { disableAccount } from '$lib/server/account-disable';
 import { deleteUser } from '$lib/server/deletes';
 import { escapeHtml } from '$lib/escape-html';
 import { ACTIONS, logActivity } from '$lib/server/logActivity';
@@ -2243,9 +2244,9 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 		'is given the board back. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, ' +
 		'switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by ' +
 		"the board's owner or an administrator, and update the receiver.";
-	/** `pausedBecause` for a webhook switched off by a reset, an invite used or a delete of its setter (the code review's CS4). */
+	/** `pausedBecause` for a webhook switched off by a reset, an invite used, a disable (card 2671) or a delete of its setter (the code review's CS4). */
 	const ACCESS_ENDED =
-		'This was switched off because the account that set it up had its password reset, used an invite, or was deleted. The address ' +
+		'This was switched off because the account that set it up had its password reset, used an invite, was disabled, or was deleted. The address ' +
 		'was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which ' +
 		"makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, " +
 		'and update the receiver.';
@@ -2934,7 +2935,20 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 
 	it.each([
 		{ row: 'a password reset (endAccountAccess)', end: (s: Scene) => inTransaction(() => endAccountAccess(s.editor.id, { apiKeys: true })) },
-		{ row: 'the account deleted (deleteUser)', end: (s: Scene) => deleteUser(s.editor.id, s.chief) }
+		// Card 2671: an account is disabled before it is deleted, and the disable switches its webhooks off.
+		{
+			row: 'the account disabled (disableAccount)',
+			end: (s: Scene) => inTransaction(() => disableAccount(db.select().from(users).where(eq(users.id, s.editor.id)).get()!, s.chief))
+		},
+		// Card 2671's code review, CR1: deleteUser still switches off what a disabled account holds, as a restore or a
+		// host edit can leave it: the columns written directly, the webhook left on.
+		{
+			row: 'the account deleted (deleteUser), disabled with its webhook still on',
+			end: (s: Scene) => {
+				sqlite.prepare("UPDATE users SET disabled_at = '2099-01-02 09:00:00', disabled_by = ? WHERE id = ?").run(s.chief.id, s.editor.id);
+				deleteUser(s.editor.id, s.chief);
+			}
+		}
 	])("CS4. $row records the hold 'setter access ended': switched on, a new secret; the create at its receiver refused to an editor; the Share window counts it", async ({ end }) => {
 		const s = scene();
 		const other = makeUser({ username: 'other' });

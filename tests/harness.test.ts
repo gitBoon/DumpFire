@@ -51,6 +51,8 @@ describe('database fixture', () => {
  */
 const TEST_FILES = [
 	'access-control.test.ts',
+	// Card 2671: an account disabled and enabled again, and every gate that refuses a disabled one.
+	'account-disable.test.ts',
 	'account-two-step.test.ts',
 	'activity-twins.test.ts',
 	'all-tasks.test.ts',

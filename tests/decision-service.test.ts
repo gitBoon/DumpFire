@@ -212,6 +212,20 @@ describe('createDecision', () => {
 		expect(eventsOf(second.id).map((event) => event.detail)).toEqual([{ decider: 'author' }]);
 	});
 
+	// Card 2671 (case 23): a disabled account can edit no board, so is decider by no default.
+	it('falls back to the author for a Product Owner whose account is disabled', () => {
+		const author = makeUser({ username: 'author' });
+		addBoardMember(board, author, 'editor');
+		const gone = makeUser({ username: 'gone', disabled: true });
+		addBoardMember(board, gone, 'editor');
+		db.update(boards).set({ productOwnerUserId: gone.id }).where(eq(boards.id, board.id)).run();
+
+		const decision = as(author, (caller) => createDecision(caller, { boardId: board.id }, { title: 'First' }, UI));
+
+		expect(decision).toMatchObject({ deciderUserId: author.id, deciderName: 'author' });
+		expect(eventsOf(decision.id).map((event) => event.detail)).toEqual([{ decider: 'author' }]);
+	});
+
 	it('refuses a title holding a control, direction or invisible character, and saves & and < as sent (47)', () => {
 		// S6: every other format character too, \p{Cf}: a word joiner, a soft hyphen, an Arabic letter mark, a tag character.
 		for (const title of ['Word\u{2060}joiner', 'Soft\u{ad}hyphen', 'Mark\u{61c}ed', 'Tag \u{e0041}', 'Budget ‮evil', 'Budget \u0007 bell', 'Bud​get']) {
@@ -2146,11 +2160,17 @@ describe('the ruling mail', () => {
 });
 
 describe('the rules that hold after opening', () => {
+	/** The account disabled, as `disableAccount` writes it, by the owner: only a disabled account is deleted (card 2671). */
+	const disabledByOwner = (id: number) =>
+		sqlite.prepare("UPDATE users SET disabled_at = '2099-01-01 09:00:00', disabled_by = ? WHERE id = ?").run(owner.id, id);
+
 	it('skips an account holder whose account was deleted: marked left, until an administrator marks them active and clears it (70)', async () => {
 		const r = await openedDecision();
 		const eventsBefore = eventsOf(r.id).length;
 		const admin = makeUser({ role: 'admin' });
 
+		// Disabled first, as an account is before it is deleted (card 2671).
+		disabledByOwner(r.holderAccount.id);
 		deleteUser(r.holderAccount.id, { id: owner.id, username: owner.username });
 
 		expect(participantRow(r.holder.id).userId).toBeNull();
@@ -2203,6 +2223,8 @@ describe('the rules that hold after opening', () => {
 		const level = process.env.LOG_LEVEL;
 		process.env.LOG_LEVEL = 'INFO';
 		const quiet = vi.spyOn(console, 'log').mockImplementation(() => {});
+		// Disabled first, as an account is before it is deleted (card 2671).
+		disabledByOwner(account.id);
 		try {
 			deleteUser(account.id, { id: owner.id, username: owner.username });
 		} finally {
@@ -2436,5 +2458,84 @@ describe('the rules that hold after opening', () => {
 		await sent.settle();
 		expect(sent.emails).toEqual([]);
 		expect(sent.duringTransaction).toEqual([]);
+	});
+});
+
+// ─── Card 2671: a disabled account on a decision (cases 27 and 28, S2) ──────
+
+describe('an account that is disabled, on a decision (card 2671)', () => {
+	/** The account disabled, as `disableAccount` writes it. */
+	const disable = (id: number) => sqlite.prepare("UPDATE users SET disabled_at = '2099-01-01 09:00:00' WHERE id = ?").run(id);
+	const include = (user: SessionUser, id: number, participants: { personId: number; role: string }[]) =>
+		as(user, (caller) => setParticipants(caller, { decisionId: id }, { participants, revision: revisionNow(id) }, UI));
+	/** A person linked to an account that is disabled. */
+	const goneAway = () => {
+		const account = makeUser({ username: 'gone' });
+		const person = makePerson({ fullName: 'Gone Away', user: account });
+		disable(account.id);
+		return person;
+	};
+	const REFUSED = { status: 409, message: 'Gone Away cannot be included: their account is disabled' };
+
+	it('case 27: refuses to include a person whose account is disabled in a draft (setParticipants), with nothing written', () => {
+		const ready = readyDraft();
+		const gone = goneAway();
+		const before = participantRows(ready.draft.id);
+
+		expect(
+			outcome(() =>
+				include(ready.author, ready.draft.id, [
+					{ personId: ready.holderPerson.id, role: 'consulted' },
+					{ personId: ready.linkPerson.id, role: 'informed' },
+					{ personId: gone.id, role: 'informed' }
+				])
+			)
+		).toEqual(REFUSED);
+		expect(participantRows(ready.draft.id)).toEqual(before);
+	});
+
+	it('case 27: refuses to include one in a decision that is open (the inclusion save), with nothing written', async () => {
+		const r = await openedDecision();
+		const gone = goneAway();
+		const before = { events: eventsOf(r.id).length, rows: participantRows(r.id) };
+
+		expect(
+			outcome(() =>
+				include(r.author, r.id, [
+					{ personId: r.holderPerson.id, role: 'consulted' },
+					{ personId: r.linkPerson.id, role: 'informed' },
+					{ personId: gone.id, role: 'informed' }
+				])
+			)
+		).toEqual(REFUSED);
+		expect({ events: eventsOf(r.id).length, rows: participantRows(r.id) }).toEqual(before);
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+	});
+
+	it('case 27: refuses Attach account where the account the directory holds for them is disabled (attachRefusal)', async () => {
+		const r = await openedDecision();
+		const admin = makeUser({ role: 'admin' });
+		const account = makeUser({ username: 'linky' });
+		db.update(people).set({ userId: account.id }).where(eq(people.id, r.linkPerson.id)).run();
+		disable(account.id);
+
+		expect(outcome(() => setAccount(admin, r.id, r.linked.id, 'person'))).toEqual({
+			status: 409,
+			message: "Linky's account is disabled: it cannot be attached until it is enabled again"
+		});
+		expect(participantRow(r.linked.id).userId).toBeNull();
+	});
+
+	it("case 28: skips a participant whose account is disabled (reachOf: account_disabled), and Resend is refused in its words", async () => {
+		const r = await openedDecision();
+		disable(r.holderAccount.id);
+
+		expect(outcome(() => resend(r.author, r.id, r.holder.id))).toEqual({
+			status: 409,
+			message: "Holder's account is disabled: they cannot be mailed about this decision"
+		});
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
 	});
 });

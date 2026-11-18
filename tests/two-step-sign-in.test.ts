@@ -32,6 +32,7 @@ import { db, sqlite } from '$lib/server/db';
 import { mfaFactors, sessions, settings, users, webhooks } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
 import {
+	AccountDisabled,
 	SECURE_SESSION_COOKIE_NAME,
 	SESSION_COOKIE_NAME,
 	createSession,
@@ -87,6 +88,24 @@ import { VERIFY_AT, codeFor, giveAuthenticator, giveFactor, openReleaseWindow, p
 
 /** Run while the password is being checked (T42): a password set meanwhile. */
 const duringCheck = vi.hoisted(() => ({ run: null as null | (() => void) }));
+
+/**
+ * Run when the second step asks whether the mail password is missing, between
+ * its first transaction and the release mail's (card 2671, case 12): an
+ * account disabled there.
+ */
+const beforeReleaseMail = vi.hoisted(() => ({ run: null as null | (() => void) }));
+
+vi.mock('$lib/server/email', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/email')>();
+	return {
+		...real,
+		smtpPasswordMissing: (...args: Parameters<typeof real.smtpPasswordMissing>) => {
+			beforeReleaseMail.run?.();
+			return real.smtpPasswordMissing(...args);
+		}
+	};
+});
 
 vi.mock('$lib/server/passwords', async (importOriginal) => {
 	const real = await importOriginal<typeof import('$lib/server/passwords')>();
@@ -279,6 +298,7 @@ describe('the second step (slice 2)', () => {
 		sent.restore();
 		vi.useRealTimers();
 		duringCheck.run = null;
+		beforeReleaseMail.run = null;
 		resetAllRateLimits();
 	});
 
@@ -1011,6 +1031,143 @@ describe('the second step (slice 2)', () => {
 
 		expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: SIGN_IN_EXPIRED } });
 		expect(challenges()).toEqual([]);
+	});
+
+	// ─── Card 2671: a disabled account (cases 10 to 14) ─────────────────────
+
+	/** Disable `id` now, as `disableAccount` writes it, by nobody. */
+	const disable = (id: number) => db.update(users).set({ disabledAt: stamp() }).where(eq(users.id, id)).run();
+
+	it('card 2671, case 10: the right password at a disabled account is answered as a wrong one, counted as one, issues nothing, and says why at WARN', async () => {
+		disable(user.id);
+
+		const { result, lines } = await logged(async () => {
+			const answers = [];
+			for (let i = 0; i < 5; i++) answers.push((await passwordStep(user)).res);
+			return answers;
+		});
+		const other = makeUser();
+		const wrong = (await passwordStep(other, { password: 'not the password' })).res;
+
+		// The answer a wrong password gets, word for word, but for the name typed, which each gives back.
+		const shape = (res: typeof wrong) => ({ type: res.type, status: res.status, cookies: res.cookies, error: res.type === 'failure' ? res.data.error : null });
+		expect(shape(wrong)).toEqual({ type: 'failure', status: 400, cookies: {}, error: 'Invalid username/email or password' });
+		expect(wrong).toMatchObject({ data: { identity: other.username } });
+		for (const res of result) {
+			expect(shape(res)).toEqual(shape(wrong));
+			expect(res).toMatchObject({ data: { identity: user.username } });
+		}
+		expect(challenges()).toEqual([]);
+		expect(sessionsOf(user.id)).toEqual([]);
+		// Five, each counted as a wrong password: the account's waits have begun.
+		expect(signInWait(`user:${user.id}`)).toBe(1000);
+		expect(lines.filter((line) => line.message.includes('the account is disabled')).map(({ level, message, userId }) => ({ level, message, userId }))).toEqual(
+			Array(5).fill({ level: 'WARN', message: `Sign-in refused at "${user.username}" (user ${user.id}) from IP 127.0.0.1: the account is disabled`, userId: user.id })
+		);
+	});
+
+	it('card 2671, case 11: an account disabled while its password was checked: the expired words, and no challenge', async () => {
+		duringCheck.run = () => disable(user.id);
+
+		const { res } = await passwordStep(user);
+
+		expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: SIGN_IN_EXPIRED } });
+		expect(res.cookies).toEqual({});
+		expect(challenges()).toEqual([]);
+	});
+
+	it('card 2671, case 12: an account disabled before its release mail is issued: the expired words, no link and no mail', async () => {
+		const plain = enrollable();
+		makeSmtp();
+		db.insert(settings).values({ key: 'app_url', value: 'https://dumpfire.example.test' }).run();
+		beforeReleaseMail.run = () => disable(plain.id);
+
+		const { res } = await passwordStep(plain);
+		await sent.settle();
+
+		expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: SIGN_IN_EXPIRED } });
+		expect(sqlite.prepare('SELECT COUNT(*) AS n FROM enrolment_links').get()).toEqual({ n: 0 });
+		expect(challenges()).toEqual([]);
+		expect(sent.emails).toEqual([]);
+	});
+
+	it('card 2671, case 13: a live challenge of an account disabled since: the right code gets the expired words, and no session', async () => {
+		const { challenge } = await passwordStep(user);
+		disable(user.id);
+
+		const res = await verify(challenge, { code: codeFor(factor.secret) });
+
+		expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: SIGN_IN_EXPIRED, restart: true } });
+		expect(sessionsOf(user.id)).toEqual([]);
+	});
+
+	// Card 2671's code review, CR2: a wrong code too is answered by openChallenge, before anything is counted, and
+	// not by createSession's refusal, which a wrong code never reaches.
+	it('card 2671, case 13: a live challenge of an account disabled since: a wrong code gets the expired words, counts nothing and says nothing of a last step', async () => {
+		const { challenge } = await passwordStep(user);
+		disable(user.id);
+		const counts = { challenge: challenges()[0].wrong_count, user: userRow() };
+
+		const { result: res, lines } = await logged(() => verify(challenge, { code: wrongCodeFor(factor.secret) }));
+
+		expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: SIGN_IN_EXPIRED, restart: true } });
+		expect(challenges()[0].wrong_count).toBe(counts.challenge);
+		expect(userRow()).toMatchObject({
+			mfaOtherWrong: counts.user.mfaOtherWrong,
+			mfaKnownWrong: counts.user.mfaKnownWrong,
+			failedCodesSinceSignIn: counts.user.failedCodesSinceSignIn
+		});
+		expect(lines.map((line) => line.message)).not.toContainEqual(expect.stringContaining('was refused at its last step'));
+		expect(lines.map((line) => line.message)).not.toContainEqual(expect.stringContaining('Wrong two-step sign-in code'));
+		expect(sessionsOf(user.id)).toEqual([]);
+	});
+
+	it('card 2671, case 14: createSession refuses a disabled account; the verify that reaches it is the expired words, rolled back, the challenge left', async () => {
+		const gone = makeUser();
+		disable(gone.id);
+		expect(() => inTransaction(() => createSession(gone.id))).toThrow(AccountDisabled);
+		expect(sessionsOf(gone.id)).toEqual([]);
+
+		const { challenge } = await passwordStep(user);
+		// Disabled inside the verify's own transaction, by its count of the code, after the challenge was opened.
+		sqlite.exec(`CREATE TEMP TRIGGER disable_meanwhile AFTER UPDATE OF failed_codes_since_sign_in ON users BEGIN UPDATE users SET disabled_at = '2099-01-01 09:00:00' WHERE id = ${user.id}; END`);
+		try {
+			const res = await verify(challenge, { code: codeFor(factor.secret) });
+			expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: SIGN_IN_EXPIRED, restart: true } });
+		} finally {
+			sqlite.exec('DROP TRIGGER IF EXISTS disable_meanwhile');
+		}
+		// Rolled back: the challenge untaken, the step unspent, the account as it was, no session.
+		expect(challenges()).toHaveLength(1);
+		expect(userRow()).toMatchObject({ disabledAt: null, failedCodesSinceSignIn: 0 });
+		expect(sessionsOf(user.id)).toEqual([]);
+	});
+
+	it('card 2671, case 14: the set-up confirm of an account disabled at its recovery codes is the expired words, rolled back, the challenge left', async () => {
+		const plain = enrollable();
+		const { challenge } = await passwordStep(plain);
+		const holding = { headers: { cookie: `${CHALLENGE_COOKIE}=${challenge}` } };
+		const shown = await pageLoad('/login/enrol', holding);
+		const groups = shown.type === 'data' ? (shown.data.secret as string) : '';
+		const secret = Buffer.from(
+			(groups.replace(/ /g, '').match(/.{1,8}/g) ?? [])
+				.flatMap((chunk) => {
+					const bits = [...chunk].map((char) => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.indexOf(char).toString(2).padStart(5, '0')).join('');
+					return bits.match(/.{8}/g)!.map((byte) => parseInt(byte, 2));
+				})
+		);
+		expect(await action('/login/enrol', { name: 'code', form: { code: codeFor(secret) }, cookies: { [CHALLENGE_COOKIE]: challenge! } })).toMatchObject({
+			type: 'redirect'
+		});
+		expect(await pageLoad('/login/enrol', holding)).toMatchObject({ type: 'data', data: { stage: 'codes_shown' } });
+		disable(plain.id);
+
+		const res = await action('/login/enrol', { name: 'confirm', form: {}, cookies: { [CHALLENGE_COOKIE]: challenge! } });
+
+		expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: SIGN_IN_EXPIRED, restart: true } });
+		expect(challenges()).toHaveLength(1);
+		expect(db.select().from(mfaFactors).where(eq(mfaFactors.userId, plain.id)).all()).toEqual([]);
+		expect(sessionsOf(plain.id)).toEqual([]);
 	});
 
 	it('T82: the report for a raised banner is shown once: the next sign-in goes home, and the banner stays', async () => {

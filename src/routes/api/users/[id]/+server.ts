@@ -1,7 +1,9 @@
 import { json, error } from '@sveltejs/kit';
-import { db, sqlite } from '$lib/server/db';
+import { db } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
 import { deleteUser } from '$lib/server/deletes';
+// The teams an account is the only owner of (card 2377), one query for the delete and the disable (card 2671).
+import { requireDisabledAccount, requireMayUndoDisable, soleOwnerOf } from '$lib/server/account-disable';
 import { users, type User } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
@@ -247,24 +249,14 @@ function answered(target: User) {
 }
 
 /**
- * The names of the teams `userId` is the only owner of, in name order: an
- * owner row of theirs, and no other owner in the team (card 2377).
- */
-function soleOwnerOf(userId: number): string[] {
-	return (
-		sqlite
-			.prepare(
-				`SELECT t.name FROM teams t
-				JOIN team_members m ON m.team_id = t.id AND m.user_id = ? AND m.role = 'owner'
-				WHERE NOT EXISTS (SELECT 1 FROM team_members o WHERE o.team_id = t.id AND o.role = 'owner' AND o.user_id <> ?)
-				ORDER BY t.name, t.id`
-			)
-			.all(userId, userId) as { name: string }[]
-	).map((row) => row.name);
-}
-
-/**
- * DELETE — Delete a user (admin only).
+ * DELETE — Delete a user (admin only), once it is disabled (card 2671, D14).
+ *
+ * An account that is not disabled is refused, 409 `Disable the account
+ * first`: disabling ends its every credential and keeps its name on what it
+ * did; a delete then removes it and its comments for good. An account the
+ * superadmin disabled is deleted by the superadmin alone, 403 (S14b), as it is
+ * enabled. Both asked after the checks of who may manage the account, and
+ * before the team check and the password.
  *
  * An account that is the only owner of a team is refused, 409, naming the
  * teams (card 2377): the delete takes its team rows with it, which left each
@@ -287,9 +279,9 @@ export const DELETE: RequestHandler = async ({ params, request, locals, cookies 
 
 	/**
 	 * Every refusal of the delete, read only: the caller as their account is
-	 * now, their own account, whose account they may delete, and a team's only
-	 * owner. Asked before the password, and again in the transaction that
-	 * deletes the account.
+	 * now, their own account, whose account they may delete, that it is
+	 * disabled and who disabled it (card 2671), and a team's only owner. Asked
+	 * before the password, and again in the transaction that deletes the account.
 	 */
 	const refusals = (caller: SessionUser | null) => {
 		const actor = requireAdmin(caller);
@@ -302,10 +294,15 @@ export const DELETE: RequestHandler = async ({ params, request, locals, cookies 
 		// Nobody deletes the superadmin, and only the superadmin deletes an
 		// administrator: the rule is the one for setting a password and
 		// changing an account, in route-guards.ts.
-		requireManagedAccount(actor, userId, {
+		const target = requireManagedAccount(actor, userId, {
 			superadmin: 'Cannot delete superadmin account',
 			admin: 'Only superadmin can delete admin users'
 		});
+
+		// Only a disabled account is deleted (card 2671, D14), and one the
+		// superadmin disabled only by the superadmin (S14b), as with Enable.
+		requireDisabledAccount(target);
+		requireMayUndoDisable(actor, target, 'delete');
 
 		// A team keeps an owner (card 2373), before anything is written.
 		const owned = soleOwnerOf(userId);

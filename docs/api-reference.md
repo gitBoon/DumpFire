@@ -1,11 +1,13 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.143
+version: 1.144
 status: As-Built
 date: 2026-11-18
 tags:
   - api
+  - card-2671
+  - account-disable
   - card-2914
   - card-2911
   - hidden-milestone-not-found
@@ -44,7 +46,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "REST API reference for DumpFire's external v1 API: authentication, the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -170,7 +172,7 @@ have at most 10: delete 1 before adding another.`).
 | `200` | Success |
 | `201` | Created |
 | `400` | Bad request: a field is missing, is of the wrong type or holds what it may not (see [What a Field May Hold](#what-a-field-may-hold)), an id in the path or the query string is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not a JSON object |
-| `401` | No `Authorization: Bearer <key>` header, or a key that is unknown or expired |
+| `401` | No `Authorization: Bearer <key>` header, or a key that is unknown or expired, or one of an account that is disabled (since 1.13.0, card 2671) |
 | `403` | The key's user can open the board the resource is on, and their role does not allow this (since 1.10.0, card 2719), or can see a milestone and may not change it (since 1.12.0, card 2911), or the milestone a card is in, when putting it in another or taking it out (`No access to the milestone this card is in`) |
 | `404` | The resource in the path does not exist, whoever asks, or is on a board the key's user cannot open: the two are answered alike, in the same words (since 1.10.0, card 2719), and so is a milestone they cannot see (since 1.12.0, card 2911); an id in the body names nothing (a category, a user, a milestone); something to be removed is not there (an assignee, a label on a card, a card in the milestone named); or the path is no route: `{ "message": "Not found" }` |
 | `405` | The route does not have this method: `{ "message": "PATCH method not allowed" }`. The `Allow` header names the methods it has |
@@ -383,6 +385,43 @@ some fields were answered in that form, which names no zone, and the same field 
 either.
 
 ### Changes on 2026-11-18
+
+**Breaking: a disabled account has no access to anything** (card 2671; OpenAPI document version
+`1.13.0`, with a dated note, marked breaking, at the top of its description). An administrator
+disables an account on the admin page, not through a key. From this release:
+
+1. Its API keys end when it is disabled, and a key of a disabled account is answered
+   `401 {"message": "Invalid or expired API key"}` by every operation, as an ended key is.
+2. It can open and edit no board, so it is refused as an account without the board: as `userId`
+   on `POST /cards/:cardId/assignees`, `400 {"message": "User does not have access to this
+   board"}`; as `productOwnerUserId` on `PUT /boards/:boardId`, `400 productOwnerUserId N cannot
+   edit this board: …`; as `deciderUserId` on `PUT /decisions/:decisionId/decider`,
+   `400 deciderUserId N cannot edit this board: …`. It is not among a decision's
+   `deciderCandidates`.
+3. `PUT /decisions/:decisionId/participants` refuses a person whose account is disabled,
+   `409 {"message": "<name> cannot be included: their account is disabled"}`, and writes nothing.
+4. The webhooks it set are switched off for good (`setter access ended`), and `pausedBecause`
+   says of them "This was switched off because the account that set it up had its password
+   reset, used an invite, was disabled, or was deleted."
+5. Nothing else changed: no operation, field or schema. Enabling the account again gives back
+   its sign-in alone: none of its keys, and none of its webhooks switched back on.
+
+**Internal routes, breaking: disable, enable, and delete only a disabled account** (card 2671).
+Each is a session's route, behind the password and a code (`currentPassword`, `currentCode`,
+step-up actions `POST /api/users/[id]/disable`, `POST /api/users/[id]/enable`):
+
+| Route | Answers |
+|-------|---------|
+| `POST /api/users/{id}/disable` (new) | `{ disabled: true, disabledAt, sessionsEnded, invitesEnded, apiKeysEnded, webhooksSwitchedOff, reportSchedulesPaused, requestLinksEnded, soleOwnerOf, noticeSent, settingsRemoved? }`, `settingsRemoved` being `{ mail, appUrl, destinations, failureAddress }` where something was. `403` for the caller's own account (`You cannot disable your own account`), the superadmin's, or an administrator's by an administrator; `409 This account is already disabled` |
+| `POST /api/users/{id}/enable` (new) | `{ enabled: true, noticeSent }`. `403` for the caller's own account, as disable, and for an account the superadmin disabled, by an administrator (`Only the superadmin can enable an account the superadmin disabled`); `409 This account is not disabled` |
+| `DELETE /api/users/{id}` (**breaking**) | `409 {"message": "Disable the account first"}` for an account that is not disabled, where it deleted it; `403 Only the superadmin can delete an account the superadmin disabled`. Both before the password is asked |
+| `PUT /api/users/{id}/password`, `POST /api/users/{id}/invite`, `POST /api/users/{id}/mfa/reset` | `409 This account is disabled: enable it first` for a disabled account |
+| `POST /api/boards/{id}/share`, `POST /api/teams/{id}/members/{userId}` | `400 That account is disabled` for a disabled account added, or given a higher role; lowering and removal stay open |
+| `POST /api/people`, `PUT /api/people/{id}`, `POST /api/people/from-accounts` | `400 userId N is a disabled account` for a link to one, or one added from accounts |
+| `GET /api/users`, `GET /api/requests/targets` | Leave disabled accounts out; the Teams page's list names them with `disabled: true` |
+| `POST /api/requests` | `404` for a disabled target, as for one that is not there |
+
+See [Disabled Accounts](authentication-security.md#disabled-accounts-card-2671).
 
 **Internal routes: a task request a signed-in caller cannot read is answered 404, not 403**
 (card 2914; the v1 API does not change, as no task request route is under `/api/v1/`). Request

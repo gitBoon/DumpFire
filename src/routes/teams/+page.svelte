@@ -431,7 +431,8 @@
 									}}
 								>
 									<option value="">Add member...</option>
-									{#each data.users.filter(u => !team.members.some(m => m.userId === u.id)) as u}
+									<!-- A disabled account is named on the page, and cannot be added (card 2671). -->
+									{#each data.users.filter(u => !u.disabled && !team.members.some(m => m.userId === u.id)) as u}
 										<option value={u.id}>{u.emoji} {u.username}</option>
 									{/each}
 								</select>

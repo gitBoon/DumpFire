@@ -509,11 +509,11 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
  * the role read from the account's own row). A reader is refused, someone
  * whose only access is a public board included: the Product Owner is the
  * default decider, and a decider must be able to edit the board (card 2673,
- * decision 4). "Active" means only that the account exists, as `users` has no
- * disabled column; card 2671, which adds one, refuses a disabled account here.
+ * decision 4). A disabled account can edit no board (card 2671), so it is
+ * refused here in the same words, read from the same row.
  */
 function requireProductOwner(userId: number, boardId: number): void {
-	const account = db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, userId)).get();
+	const account = db.select({ id: users.id, role: users.role, disabledAt: users.disabledAt }).from(users).where(eq(users.id, userId)).get();
 	if (!account) error(400, `productOwnerUserId ${userId} is not an account`);
 	if (!canEditBoard(account, boardId)) {
 		error(400, `productOwnerUserId ${userId} cannot edit this board: a board's Product Owner must be an account that can edit it`);

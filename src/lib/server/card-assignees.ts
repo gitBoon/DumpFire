@@ -65,7 +65,8 @@ export function assignToCard(
 
 	// The user, and their access to this board.
 	const assignee = db
-		.select({ id: users.id, email: users.email, username: users.username, role: users.role })
+		// With `disabledAt` (card 2671): a disabled account has no board, read in this one row.
+		.select({ id: users.id, email: users.email, username: users.username, role: users.role, disabledAt: users.disabledAt })
 		.from(users)
 		.where(eq(users.id, userId))
 		.get();

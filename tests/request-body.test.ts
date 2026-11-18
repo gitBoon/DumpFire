@@ -3071,6 +3071,9 @@ describe('the accounts, administration, teams, reports and requests that card 21
 			['DELETE', '/api/users/abc', 'admin', 'Invalid user ID'],
 			['PUT', '/api/users/0/password', 'admin', 'Invalid user ID'],
 			['POST', '/api/users/1e3/invite', 'admin', 'Invalid user ID'],
+			// Card 2671: an account disabled, and enabled again.
+			['POST', '/api/users/1.5/disable', 'admin', 'Invalid user ID'],
+			['POST', '/api/users/abc/enable', 'admin', 'Invalid user ID'],
 			// In v1's words since card 2294 (`Invalid boardId`, `Invalid userId`): one reader for both audit routes.
 			['GET', '/api/audit?boardId=2.5', 'admin', 'Invalid board ID'],
 			['GET', '/api/audit?userId=5abc', 'admin', 'Invalid user ID'],

@@ -29,7 +29,7 @@ export function readDirectory(): Directory {
 	const groupRows = db.select().from(peopleGroups).orderBy(asc(peopleGroups.name)).all();
 	const memberships = db.select().from(peopleGroupMembers).all();
 	const accountRows = db
-		.select({ id: users.id, username: users.username, email: users.email, emoji: users.emoji })
+		.select({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, disabledAt: users.disabledAt })
 		.from(users)
 		.orderBy(asc(users.username))
 		.all();
@@ -51,7 +51,9 @@ export function readDirectory(): Directory {
 			...group,
 			personIds: ids(memberships.filter((m) => m.groupId === group.id).map((m) => m.personId))
 		})),
-		accounts: accountRows.map((account) => ({
+		// The accounts to link and add from: a disabled one is neither (card
+		// 2671). A person already linked to one still names it, above.
+		accounts: accountRows.filter((account) => account.disabledAt === null).map((account) => ({
 			id: account.id,
 			username: account.username,
 			email: account.email,

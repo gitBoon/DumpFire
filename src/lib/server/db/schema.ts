@@ -89,8 +89,17 @@ export const users = sqliteTable('users', {
 	// banner only while this (or security_banner_at, where this is NULL) is
 	// the moment the page showed. Cleared with the banner (migration 0069,
 	// card 2772's code review, CS1).
-	securitySignalLastAt: text('security_signal_last_at')
-});
+	securitySignalLastAt: text('security_signal_last_at'),
+	// When the account was disabled, and by whom (migration 0072, card 2671):
+	// written by disableAccount and cleared together by enableAccount
+	// (account-disable.ts). NULL for an account that is enabled. Read by every
+	// gate (findSession, keyHolder, createSession, the sign-in, usableInvite).
+	// A restore keeps this server's disabled accounts disabled (carryDisabled).
+	disabledAt: text('disabled_at'),
+	disabledBy: integer('disabled_by').references((): AnySQLiteColumn => users.id, { onDelete: 'set null' })
+}, (table) => [
+	index('idx_users_disabled_by').on(table.disabledBy)
+]);
 
 export const sessions = sqliteTable('sessions', {
 	// The SHA-256 of the session's code, its 32 bytes as a BLOB (card 2775, as

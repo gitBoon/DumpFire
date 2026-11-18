@@ -159,6 +159,19 @@ export function requesterAddress(request: Pick<TaskRequest, 'requesterUserId' | 
 	return account?.email ?? null;
 }
 
+/**
+ * The address a mail to the request's requester goes to (card 2671, E12):
+ * `requesterAddress`, or null when the request was made by an account that is
+ * disabled, which is mailed nothing as an account holder. The address shown
+ * to the team is `requesterAddress`'s, and stays: the team still knows who
+ * asked. Read in the same one row.
+ */
+export function requesterMailAddress(request: Pick<TaskRequest, 'requesterUserId' | 'requesterEmail'>): string | null {
+	if (request.requesterUserId === null) return request.requesterEmail || null;
+	const account = db.select({ email: users.email, disabledAt: users.disabledAt }).from(users).where(eq(users.id, request.requesterUserId)).get();
+	return account === undefined || account.disabledAt !== null ? null : account.email;
+}
+
 /** A link issued by `issueRequestLinkFor`, with what its mail needs, as read in the transaction that wrote it. */
 export interface IssuedRequestLink {
 	token: string;
@@ -189,7 +202,8 @@ export function issueRequestLinkFor(requestId: number, expectedAddress: string, 
 	return inTransaction(() => {
 		const request = db.select().from(taskRequests).where(eq(taskRequests.id, requestId)).get();
 		if (!request || linkEnded(request)) return null;
-		const address = requesterAddress(request);
+		// Where the mail goes: none for a disabled requester (card 2671).
+		const address = requesterMailAddress(request);
 		if (address === null || comparable(address) !== comparable(expectedAddress)) return null;
 		return {
 			token: issueRequestLink(request.id, source),

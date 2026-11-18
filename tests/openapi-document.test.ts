@@ -71,6 +71,7 @@ import {
 	webhooks
 } from '$lib/server/db/schema';
 import { MAX_TOKENS_PER_ENTRY } from '$lib/server/tokens';
+import { SWITCHED_OFF_BECAUSE } from '$lib/server/webhooks';
 import { stamp } from '$lib/timestamps';
 import { api as call, routeMethods, routePatterns, type ApiOptions, type ApiResult } from './helpers/api';
 import {
@@ -2875,20 +2876,21 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.12.0, with its dated notes newest first, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.13.0, with its dated notes newest first, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.12.0');
+		expect(res.body.info.version).toBe('1.13.0');
 
 		// Card 2761 (E8): every dated note's heading, in the order the description gives them, newest first, in
 		// one list, in place of each note's test counting the notes before it. A new version's note is added at
 		// its head, and nothing else here moves.
 		const note = res.body.info.description as string;
 		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])).toEqual([
+			'**Changed on 2026-11-18 (version 1.13.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.12.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.11.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.10.0), breaking.**',
@@ -2948,12 +2950,62 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(res.body.tags.map((t: Json) => t.name)).toContain(itself.tags[0]);
 	});
 
-	// Card 2911, G11 (D5): a milestone the key's user cannot see is answered as one that is not there.
-	it("G11 announces in the 1.12.0 note, first and breaking, that a milestone the key's user cannot see is answered 404, and holds the document to it (card 2911)", () => {
+	// Card 2671: a disabled account has no access to anything, a key's among it.
+	it('announces in the 1.13.0 note, first and breaking, that a disabled account has no access to anything, and holds the document to it (card 2671)', () => {
 		const note = spec.info.description as string;
-		const heading = '**Changed on 2026-11-18 (version 1.12.0), breaking.**';
+		const heading = '**Changed on 2026-11-18 (version 1.13.0), breaking.**';
 		// First of the dated notes, and marked breaking.
 		expect(note.match(/\*\*Changed on [^*]+\*\*/)?.[0]).toBe(heading);
+		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-18 (version 1.12.0), breaking.**'));
+		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5]);
+		for (const words of [
+			'(card 2671)',
+			'on the admin page and not through a key',
+			'(1) its API keys end when it is disabled, and a key of a disabled account is answered `401 {"message": "Invalid or expired API key"}` by every operation',
+			'named as userId on POST /cards/{cardId}/assignees it is `400 {"message": "User does not have access to this board"}`',
+			'as productOwnerUserId on PUT /boards/{boardId} `400 productOwnerUserId N cannot edit this board: …`',
+			'as deciderUserId on PUT /decisions/{decisionId}/decider `400 deciderUserId N cannot edit this board: …`',
+			"it is not among a decision's deciderCandidates",
+			'(3) PUT /decisions/{decisionId}/participants refuses a person whose account is disabled, `409 {"message": "<name> cannot be included: their account is disabled"}`',
+			'(4) the webhooks it set are switched off for good (setter access ended)',
+			'(5) nothing else changed: no operation, field or schema',
+			'Enabling the account again gives back its sign-in alone'
+		]) {
+			expect(changes, words).toContain(words);
+		}
+
+		// The webhook's switch-off reason, word for word as webhooks.ts records it, in the note and in pausedBecause.
+		const sentence = 'This was switched off because the account that set it up had its password reset, used an invite, was disabled, or was deleted.';
+		expect(SWITCHED_OFF_BECAUSE['setter access ended'].startsWith(`${sentence} `)).toBe(true);
+		expect(changes).toContain(`"${sentence}"`);
+		expect(spec.components.schemas.Webhook.properties.pausedBecause.description).toContain(`"${SWITCHED_OFF_BECAUSE['setter access ended']}"`);
+		const webhook = spec.components.schemas.Webhook;
+		expect(webhook.description).toContain('A password reset, an invite used, a disabled account (since 1.13.0) and a deleted account record theirs too (setter access ended).');
+		expect(webhook.properties.pausedBecause.description).toContain(`a disable (since 1.13.0, card 2671) or a delete of its setter (since 1.11.0, the code review's CS4): "${sentence}`);
+
+		// Each operation says so where it is.
+		expect(spec.components.responses.Unauthorized.description).toContain('or one of an account that is disabled (since 1.13.0)');
+		expect(spec.paths['/api/v1/cards/{cardId}/assignees'].post.responses['400'].description).toContain(
+			"a user who has no access to the card's board (a disabled account has none, since 1.13.0)"
+		);
+		expect(spec.paths['/api/v1/boards/{boardId}'].put.requestBody.content['application/json'].schema.properties.productOwnerUserId.description).toContain(
+			'a reader of a public board and a disabled account (since 1.13.0) included'
+		);
+		expect(spec.paths['/api/v1/decisions/{decisionId}/decider'].put.description).toContain(
+			'A disabled account can edit no board, and is refused 400 in the same words (`deciderUserId 7 cannot edit this board: …`, since 1.13.0).'
+		);
+		expect(spec.paths['/api/v1/decisions/{decisionId}/participants'].put.responses['409'].description).toContain(
+			'or a participant would hold an account that is disabled (`<name> cannot be included: their account is disabled`, since 1.13.0)'
+		);
+		expect(spec.components.schemas.DecisionForEditor.properties.deciderCandidates.description).toContain('a disabled one never among them (since 1.13.0)');
+	});
+
+	// Card 2911, G11 (D5): a milestone the key's user cannot see is answered as one that is not there.
+	it("G11 announces in the 1.12.0 note, breaking, that a milestone the key's user cannot see is answered 404, and holds the document to it (card 2911)", () => {
+		const note = spec.info.description as string;
+		const heading = '**Changed on 2026-11-18 (version 1.12.0), breaking.**';
+		// Among the dated notes, and marked breaking; where it stands is the ordered list's (card 2671 put 1.13.0 before it).
+		expect(note).toContain(heading);
 		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-18 (version 1.11.0), breaking.**'));
 		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4]);
 		for (const words of [
@@ -3060,7 +3112,10 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(webhook.description).toContain('It stays off when the setter is given the board back. Only the board owner or an administrator switches it on again');
 		expect(webhook.description).not.toContain('is sent again with nothing else changed');
 		expect(webhook.properties.pausedBecause.description).toContain('"This was switched off because the account that set it up could no longer open this board.');
-		expect(webhook.properties.pausedBecause.description).toContain('"This was switched off because the account that set it up had its password reset, used an invite, or was deleted.');
+		// Card 2671 added "was disabled" to the sentence, word for word as webhooks.ts records it.
+		expect(webhook.properties.pausedBecause.description).toContain(
+			'"This was switched off because the account that set it up had its password reset, used an invite, was disabled, or was deleted.'
+		);
 		expect(webhook.properties.pausedBecause.description).not.toContain('shown once');
 		// Card 2893: the key that ended, in the schema, its pausedBecause word for word, the not-sent reason and the PUT.
 		expect(webhook.description).toContain('It is switched off for good too when the API key that created it, last set its url or secret, or switched it on ends (since 1.11.0, card 2893)');

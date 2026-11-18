@@ -3044,7 +3044,10 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'deleteUser', reads: 'sentAsking', done: ["showToast('User deleted')"] },
 		{ name: 'resendInvite', reads: 'sentAsking' },
 		// Card 2773: 🛡️, whose link opens the invite link's dialog only for an answer that is a success.
-		{ name: 'resetTwoStepOf', reads: 'sentAsking', done: ['await invalidateAll()'] }
+		{ name: 'resetTwoStepOf', reads: 'sentAsking', done: ['await invalidateAll()'] },
+		// Card 2671 (case 46): ⛔ and ✅, each asking through the confirm, the page's data read again only for a success.
+		{ name: 'disableUser', reads: 'sentAsking', done: ['await invalidateAll()'] },
+		{ name: 'enableUser', reads: 'sentAsking', done: ['await invalidateAll()'] }
 	],
 	'src/lib/components/admin/ResetPasswordDialog.svelte': [
 		{ name: 'resetPassword', reads: 'failureMessage', done: ['resetPasswordUserId = null'] }
@@ -6804,7 +6807,8 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 				"\ttitle={u.twoStep === true ? INVITE_REFUSED : 'Resend invite email'}",
 				">{inviteInFlight === u.id && twoStepInFlight === null ? '…' : '📧'}</button>",
 				'<button class="btn-ghost btn-sm" onclick={(e) => askResetTwoStep(u.id, u.username, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Reset two-step sign-in">{twoStepInFlight === u.id ? \'…\' : \'🛡️\'}</button>'
-			].join('\n\t\t\t\t\t\t\t')
+				// One level deeper since card 2671: offered only on an account that is not disabled.
+			].join('\n\t\t\t\t\t\t\t\t')
 		);
 		expect(functionNamed(tree, 'askResendInvite').body!.statements[0].getText()).toBe('if (inviteInFlight !== null || inviteLink !== null) return;');
 		expect(functionNamed(tree, 'askResetTwoStep').body!.statements[0].getText()).toBe('if (inviteInFlight !== null || inviteLink !== null) return;');

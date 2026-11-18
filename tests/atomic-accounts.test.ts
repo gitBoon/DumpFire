@@ -940,6 +940,80 @@ describe('PUT /api/users/:id/password', () => {
 	});
 });
 
+// ─── Disabling an account (card 2671) ───────────────────────────────────────
+
+describe('POST /api/users/:id/disable', () => {
+	/**
+	 * The target is signed in on two devices, has an invite not yet used, an API
+	 * key, a webhook they set that is on, a report schedule that is on and a
+	 * request they made with a link. The administrator has a session and a key,
+	 * which stay theirs.
+	 */
+	const scene = () => {
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const target = makeUser({ username: 'target' });
+		makeSession(admin, 'the-admin');
+		stepUpFactor(admin);
+		makeSession(target, 'target-laptop');
+		makeSession(target, 'target-phone');
+		makeInvite(target, 'target-invite');
+		makeApiKey(target, 'target key');
+		makeApiKey(admin, 'admin key');
+		makeWebhook(makeBoard({ owner: target }).board, { setBy: target });
+		db.insert(reportSchedules).values({ userId: target.id, name: 'Weekly', scope: 'all', enabled: true }).run();
+		const request = db
+			.insert(taskRequests)
+			.values({ targetType: 'user', targetId: admin.id, requesterName: 'target', requesterUserId: target.id, title: 'Help' })
+			.returning()
+			.get();
+		sqlite.prepare("INSERT INTO request_links (token_hash, request_id, source) VALUES (?, ?, 'mail')").run('a'.repeat(64), request.id);
+		return { admin, target };
+	};
+
+	it('case 6: disables the account and ends everything it ends, or does none of it', async () => {
+		const run = await eachWriteInTurn({
+			build: scene,
+			request: ({ admin, target }) =>
+				api('POST', `/api/users/${target.id}/disable`, { user: admin, body: { currentPassword: FIXTURE_PASSWORD, ...codeOf(admin) }, headers: from('the-admin') }),
+			apart: [...STEP_UP_APART],
+			afterSuccess: async ({ admin, target }, res: ApiResult) => {
+				expect(res.status, JSON.stringify(res.body)).toBe(200);
+				expect(res.body).toMatchObject({
+					disabled: true,
+					sessionsEnded: 2,
+					invitesEnded: 1,
+					apiKeysEnded: 1,
+					webhooksSwitchedOff: 1,
+					reportSchedulesPaused: 1,
+					requestLinksEnded: 1,
+					noticeSent: false
+				});
+				expect(userRow(target.id)).toMatchObject({ disabledAt: expect.any(String), disabledBy: admin.id });
+				expect(sessionsOf(target.id)).toEqual([]);
+				expect(invitesOf(target.id)).toEqual([]);
+				expect(keysOf(target.id)).toEqual([]);
+				// The administrator's are theirs, and stay.
+				expect(sessionsOf(admin.id)).toEqual([sessionHashOf('the-admin')]);
+				expect(keysOf(admin.id)).toEqual(['admin key']);
+			}
+		});
+
+		expect(shape(run.writes)).toEqual([
+			...STEP_UP_WRITES,
+			'update users set',
+			'delete from sessions',
+			'delete from invite_tokens',
+			'delete from sign_in_challenges',
+			'delete from enrolment_links',
+			'delete from api_keys',
+			'update webhooks set',
+			'update report_schedules set',
+			'delete from request_links'
+		]);
+		expect(run.effects).toEqual([]);
+	});
+});
+
 // ─── Creating a user ────────────────────────────────────────────────────────
 
 describe('POST /api/users', () => {

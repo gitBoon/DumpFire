@@ -327,3 +327,19 @@ describe('the breadcrumb walk (S5)', () => {
 		}
 	});
 });
+
+// Card 2671 (case 32): a disabled account keeps its name on the board, marked for the pickers to leave out.
+describe('boardUsers and a disabled account (card 2671)', () => {
+	it('names a disabled member, marked disabled, and names each enabled one as before; the card still names them as its assignee', async () => {
+		const w = world();
+		const gone = makeUser({ username: 'gone', disabled: true });
+		addBoardMember(w.A.board, gone, 'editor');
+		assignCard(w.full, gone);
+
+		const data = await loaded(`/board/${w.A.board.id}`, w.owner);
+
+		expect(data.boardUsers.find((u: { id: number }) => u.id === gone.id)).toEqual({ id: gone.id, username: 'gone', emoji: '👤', disabled: true });
+		expect(data.boardUsers.filter((u: { disabled?: true }) => u.disabled).map((u: { username: string }) => u.username)).toEqual(['gone']);
+		expect(data.columns[0].cards[0].assignees.map((a: { username: string }) => a.username).sort()).toEqual(['gone', 'viewer']);
+	});
+});

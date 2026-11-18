@@ -874,11 +874,15 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\t`security_banner` text,",
 		"\t`security_banner_at` text,",
 		"\t`mfa_password_enrol` integer DEFAULT 0 NOT NULL,",
-		"\t`security_signal_last_at` text",
+		"\t`security_signal_last_at` text,",
+		"\t`disabled_at` text,",
+		"\t`disabled_by` integer,",
+		"\tFOREIGN KEY (`disabled_by`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null",
 		");"
 	].join('\n'),
 	"CREATE UNIQUE INDEX `users_username_unique` ON `users` (`username`);",
 	"CREATE UNIQUE INDEX `users_email_unique` ON `users` (`email`);",
+	"CREATE INDEX `idx_users_disabled_by` ON `users` (`disabled_by`);",
 	[
 		"CREATE TABLE `webhooks` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",

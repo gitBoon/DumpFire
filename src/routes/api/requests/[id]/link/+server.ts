@@ -6,7 +6,7 @@ import { NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } f
 import { notifyRequesterNewLink } from '$lib/server/notifications';
 import { checkRateLimit } from '$lib/server/rate-limit';
 import { addressToCount } from '$lib/server/client-address';
-import { issueRequestLinkFor, linkEnded, requesterAddress } from '$lib/server/request-access';
+import { issueRequestLinkFor, linkEnded, requesterMailAddress } from '$lib/server/request-access';
 import { CANNOT_SEND_LINK, NO_MAIL_PASSWORD, requestConfirmUrl, requestReplyUrl } from '$lib/server/request-tokens';
 import { readBody, readText } from '$lib/server/request-body';
 import { createLogger } from '$lib/server/logger';
@@ -149,7 +149,8 @@ export const POST: RequestHandler = async ({ params, request, locals, url, getCl
 	// The address the request's mail goes to, which is the one the link goes
 	// to and the one compared: the account's email as it is now for a request
 	// made signed in (card 2171), the address given for one made without.
-	const address = found ? requesterAddress(found) : null;
+	// None for a requester whose account is disabled (card 2671): no new link is mailed.
+	const address = found ? requesterMailAddress(found) : null;
 	const unconfirmed = found?.status === 'unverified';
 	// One the form would have cleared by now is not there (R3), and nor is one
 	// settled more than 90 days ago, whose links have ended (card 2902).

@@ -13,6 +13,12 @@
  *
  * An account that is the only owner of a team is not deleted (card 2377): the
  * delete is refused, 409, naming the teams.
+ *
+ * Only a disabled account is deleted (card 2671, D14): every scene's leaver is
+ * disabled first, and what disabling already ended reads 0 in the delete's
+ * counts. An account that is not disabled is refused 409, before the
+ * password, and by `deleteUser` itself; one the superadmin disabled is the
+ * superadmin's alone to delete (S14b).
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -39,6 +45,9 @@ import {
 	type Card
 } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
+import { inTransaction } from '$lib/server/db/transaction';
+import { DISABLE_FIRST, ONLY_SUPERADMIN_DELETES, disableAccount } from '$lib/server/account-disable';
+import { deleteUser } from '$lib/server/deletes';
 import { userDeleteWarning } from '$lib/api';
 import { api, type ApiOptions, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
@@ -80,11 +89,15 @@ type Scene = {
 	second: Card;
 };
 
-/** A board that belongs to somebody else, with two cards for the leaver to have touched. */
-function scene(): Scene {
+/**
+ * A board that belongs to somebody else, with two cards for the leaver to have
+ * touched. The leaver is disabled by the administrator, as an account is
+ * before it is deleted (card 2671), unless `disabled` is false.
+ */
+function scene(disabled = true): Scene {
 	const admin = makeUser({ username: 'admin', role: 'admin' });
 	const owner = makeUser({ username: 'owner' });
-	const leaver = makeUser({ username: 'leaver' });
+	const leaver = makeUser({ username: 'leaver', ...(disabled ? { disabled: { by: admin } } : {}) });
 	const A = makeBoard({ owner, name: 'A' });
 	const first = makeCard(A.cols['To Do'], { title: 'First' });
 	const second = makeCard(A.cols['To Do'], { title: 'Second', position: 1 });
@@ -247,10 +260,12 @@ type Full = Scene & {
  * XP, a session, an API key, a report schedule, a comment, an assignment, a
  * board of their own, a webhook they set. Beside the key, the schedule and the
  * webhook, one each of somebody else's, and a webhook nobody is recorded as
- * having set.
+ * having set. Then the leaver is disabled by the administrator, through
+ * `disableAccount` (card 2671): their session and keys end, their webhook is
+ * switched off and their schedule paused, before the delete.
  */
-function full(): Full {
-	const s = scene();
+function full(disabledBy: 'disableAccount' | 'the columns' = 'disableAccount'): Full {
+	const s = scene(false);
 	const ids = REFERENCES.map((r) => r.make(s));
 
 	db.insert(userXp)
@@ -305,6 +320,13 @@ function full(): Full {
 	request(s.leaver, 'Second of the leaver');
 	request(s.owner, 'Of the owner');
 	db.update(users).set({ email: 'leaver.now@example.test' }).where(eq(users.id, s.leaver.id)).run();
+	// Card 2671's code review, CR1: or the columns written directly, as a restore or a host edit can leave a disabled
+	// account, still holding its keys and its webhook on, which the delete must still take and switch off.
+	if (disabledBy === 'the columns') {
+		db.update(users).set({ disabledAt: '2099-01-02 09:00:00', disabledBy: s.admin.id }).where(eq(users.id, s.leaver.id)).run();
+	} else {
+		inTransaction(() => disableAccount(userRow(s.leaver.id)!, { id: s.admin.id, username: s.admin.username, role: s.admin.role }));
+	}
 
 	return { ...s, ids, ownersKey, ownersSchedule, hooks };
 }
@@ -337,23 +359,24 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 					{ name: 'owner', xp: 100, emoji: '👤' }
 				]);
 
-				// Their API keys and report schedules go with them. Nobody else's do.
+				// Their API keys ended at the disable, and their report schedules go with them. Nobody else's do.
 				expect(db.select({ id: apiKeys.id }).from(apiKeys).all()).toEqual([{ id: s.ownersKey }]);
 				expect(db.select({ id: reportSchedules.id }).from(reportSchedules).all()).toEqual([
 					{ id: s.ownersSchedule }
 				]);
 
-				// A webhook they set is switched off before they go, and then names
-				// nobody (card 2168): left on, it would go on sending with no setter
-				// for a reset to reach. Nobody else's is touched.
+				// A webhook they set was switched off at the disable (card 2671), and
+				// then names nobody (card 2168): left on, it would go on sending with
+				// no setter for a reset to reach. Nobody else's is touched.
 				expect(hookRows()).toEqual([
 					{ id: s.hooks.leavers, active: 0, setBy: null },
 					{ id: s.hooks.owners, active: 1, setBy: s.owner.id },
 					{ id: s.hooks.nobodys, active: 1, setBy: null }
 				]);
 
-				// Their session, their comments and their assignments go with them
-				// too. The administrator's, which confirmed the delete, stays.
+				// Their session ended at the disable; their comments and their
+				// assignments go with them. The administrator's session, which
+				// confirmed the delete, stays.
 				expect(db.select({ userId: sessions.userId }).from(sessions).all()).toEqual([{ userId: s.admin.id }]);
 				expect(db.select({ content: cardComments.content }).from(cardComments).all()).toEqual([
 					{ content: 'Not mine' }
@@ -392,7 +415,8 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 		// spent and the count cleared for the right one, apart from the
 		// transaction (cards 2701 and 2771). Then the five, in the order of the list, the requests' address,
 		// the webhooks they set switched off (card 2168), with the hold 'setter
-		// access ended' (card 2752's code review, CS4), and then the user.
+		// access ended' (card 2752's code review, CS4), which finds none after the
+		// disable (card 2671) and is written all the same, and then the user.
 		// Nothing else is written: the rest is the keys' doing.
 		expect(run.writes).toEqual([
 			...COUNTS,
@@ -421,10 +445,31 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 				level: 'INFO',
 				userId: s.admin.id,
 				message:
-					`User ${s.leaver.id} "leaver" was deleted by admin: 2 API key(s), 1 report schedule(s) and ` +
-					`1 comment(s) went with them; 1 webhook(s) they set up were switched off (id ${s.hooks.leavers}); 5 row(s) they had uploaded, ` +
+					// The keys ended and the webhook was switched off at the disable (card 2671): none of either here.
+					`User ${s.leaver.id} "leaver" was deleted by admin: 0 API key(s), 1 report schedule(s) and ` +
+					`1 comment(s) went with them; 0 webhook(s) they set up were switched off; 5 row(s) they had uploaded, ` +
 					'created or recorded were kept and name nobody now'
 			}
+		]);
+	});
+
+	// Card 2671's code review, CR1: what a disable would have ended, still there, the delete takes and counts.
+	it('takes the keys and switches off the webhook of a disabled account that still holds them, and counts both', async () => {
+		process.env.LOG_LEVEL = 'INFO';
+		const s = full('the columns');
+		expect(sqlite.prepare('SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ?').get(s.leaver.id)).toEqual({ n: 2 });
+
+		await remove(s);
+
+		expect(sqlite.prepare('SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ?').get(s.leaver.id)).toEqual({ n: 0 });
+		expect(sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(s.hooks.leavers)).toEqual({
+			active: 0,
+			heldBecause: 'setter access ended'
+		});
+		expect(sqlite.prepare("SELECT message FROM system_logs WHERE context = 'DELETE'").pluck().all()).toEqual([
+			`User ${s.leaver.id} "leaver" was deleted by admin: 2 API key(s), 1 report schedule(s) and ` +
+				`1 comment(s) went with them; 1 webhook(s) they set up were switched off (id ${s.hooks.leavers}); 5 row(s) they had uploaded, ` +
+				'created or recorded were kept and name nobody now'
 		]);
 	});
 
@@ -455,20 +500,22 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 });
 
 describe('the confirmation an administrator is shown before a user is deleted', () => {
-	it("says the webhooks they set up are switched off, and who can switch one on again (card 2168)", () => {
+	// Card 2671 (D14): only a disabled account is deleted, which has ended its sessions, keys and webhooks already.
+	it('says the account is disabled already, what that ended, and what the delete still takes, for good', () => {
 		expect(userDeleteWarning('leaver')).toContain(
-			"Webhooks they set up are switched off; the board's owner or an administrator can switch one on again through the API."
+			'The account is disabled already, and its sessions, API keys and webhooks ended with that; deleting it also takes their ' +
+				'comments, report schedules, team and board memberships and card assignments, and cannot be undone.'
 		);
 	});
 
 	// Card 2380: the delete of an account that alone owns a team is refused (card 2377), and the confirmation says so first.
 	it('names the teams the account alone owns, in the refusal’s terms, after the question; and says nothing of teams for none (card 2380)', () => {
 		expect(userDeleteWarning('leaver', ['Alpha', 'Beta'])).toMatch(
-			/^Delete user "leaver"\? They are the only owner of: Alpha, Beta, so the delete will be refused: make someone else an owner or delete those teams first\. Their comments, /
+			/^Delete user "leaver" for good\? They are the only owner of: Alpha, Beta, so the delete will be refused: make someone else an owner or delete those teams first\. The account is disabled already, /
 		);
 		expect(userDeleteWarning('leaver', ['Solo'])).toContain('They are the only owner of: Solo, so the delete will be refused: make someone else an owner or delete that team first.');
 		expect(userDeleteWarning('leaver', [])).toBe(userDeleteWarning('leaver'));
-		expect(userDeleteWarning('leaver')).toMatch(/^Delete user "leaver"\? Their comments, /);
+		expect(userDeleteWarning('leaver')).toMatch(/^Delete user "leaver" for good\? The account is disabled already, /);
 		expect(userDeleteWarning('leaver')).not.toContain('only owner');
 	});
 });
@@ -513,14 +560,66 @@ describe('DELETE /api/users/:id, refused', () => {
 		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
 	});
 
-	it('lets the superadmin delete an admin', async () => {
+	it('lets the superadmin delete an admin, once disabled', async () => {
 		const s = scene();
 		const superadmin = makeUser({ username: 'root', role: 'superadmin' });
+		db.update(users).set({ disabledAt: '2099-01-01 09:00:00', disabledBy: superadmin.id }).where(eq(users.id, s.admin.id)).run();
 
 		const res = await api('DELETE', `/api/users/${s.admin.id}`, stepUp(superadmin));
 
 		expect(res.status).toBe(200);
 		expect(userRow(s.admin.id)).toBeUndefined();
+	});
+});
+
+// Card 2671 (case 7, D14, S14b): only a disabled account is deleted.
+describe('DELETE /api/users/:id, and an account that is not disabled', () => {
+	it('refuses an enabled account 409, before the password is asked, with nothing written', async () => {
+		const s = scene(false);
+		const sending = stepUp(s.admin);
+		const before = snapshotDb();
+
+		const res = await remove(s, s.admin, { ...sending, body: { ...sending.body, currentPassword: 'not the password' } });
+
+		expect({ status: res.status, body: res.body }).toEqual({ status: 409, body: { message: DISABLE_FIRST } });
+		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
+	});
+
+	it('deletes a disabled one', async () => {
+		const s = scene();
+
+		const res = await remove(s);
+
+		expect({ status: res.status, body: res.body }).toEqual({ status: 200, body: { success: true } });
+		expect(userRow(s.leaver.id)).toBeUndefined();
+	});
+
+	it('refuses, in deleteUser itself, an enabled account, 409, with nothing written', () => {
+		const s = scene(false);
+		const before = snapshotDb();
+
+		let thrown: unknown;
+		try {
+			deleteUser(s.leaver.id, { id: s.admin.id, username: s.admin.username });
+		} catch (err) {
+			thrown = err;
+		}
+		expect(thrown).toMatchObject({ status: 409, body: { message: DISABLE_FIRST } });
+		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
+	});
+
+	it("refuses an administrator the delete of an account the superadmin disabled, 403, before the password, with nothing written", async () => {
+		const s = scene(false);
+		const superadmin = makeUser({ username: 'root', role: 'superadmin' });
+		db.update(users).set({ disabledAt: '2099-01-01 09:00:00', disabledBy: superadmin.id }).where(eq(users.id, s.leaver.id)).run();
+		const sending = stepUp(s.admin);
+		const before = snapshotDb();
+
+		const res = await remove(s, s.admin, { ...sending, body: { ...sending.body, currentPassword: 'not the password' } });
+
+		expect({ status: res.status, body: res.body }).toEqual({ status: 403, body: { message: ONLY_SUPERADMIN_DELETES } });
+		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
+		expect(userRow(s.leaver.id)).toBeDefined();
 	});
 });
 

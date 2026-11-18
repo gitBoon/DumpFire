@@ -304,12 +304,15 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 	adminUsers.forEach(a => boardUserIds.add(a.id));
 
 	// By name and emoji: no screen reads an address, and every administrator's
-	// went to every viewer of the board (card 2128, R1).
+	// went to every viewer of the board (card 2128, R1). A disabled account is
+	// kept, for the names of those assigned and mentioned, marked `disabled`
+	// for the pickers to leave out (card 2671).
 	const boardUsers = boardUserIds.size > 0
-		? db.select({ id: users.id, username: users.username, emoji: users.emoji })
+		? db.select({ id: users.id, username: users.username, emoji: users.emoji, disabledAt: users.disabledAt })
 			.from(users)
 			.where(inArray(users.id, Array.from(boardUserIds)))
 			.all()
+			.map(({ disabledAt, ...u }) => (disabledAt === null ? u : { ...u, disabled: true as const }))
 		: [];
 
 	// Open blockers for every card on the board in one pass, so the "Blocked"

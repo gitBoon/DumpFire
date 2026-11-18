@@ -236,6 +236,25 @@ describe('the scheduled report, runDueReportSchedules', () => {
 		]);
 	});
 
+	// Card 2671 (case 37): disabling pauses every schedule; one a restore or a host edit left on is paused at its run.
+	it('pauses a schedule on for an owner whose account is disabled, says so once at WARN, and sends nothing', { timeout: 30_000 }, async () => {
+		makeSmtp();
+		const mail = mailServer();
+		const id = dueSchedule(A.board.id, 'a@example.test');
+		sqlite.prepare("UPDATE users SET disabled_at = '2099-01-01 09:00:00' WHERE id = ?").run(owner.id);
+
+		await runDueReportSchedules(new Date());
+		await runDueReportSchedules(new Date());
+
+		await mail.settle();
+		expect(mail.all).toEqual([]);
+		expect(scheduleRow(id).enabled).toBe(false);
+		expect(linesOf()).toEqual([
+			{ level: 'WARN', message: expect.stringMatching(new RegExp(`^Report schedule ${id} "Weekly", .+, was paused: its owner's account is disabled\\. Nothing was sent\\.$`)) }
+		]);
+		expect(filedAs()).toEqual([{ userId: owner.id, meta: null }]);
+	});
+
 	it('logs a WARN line for a schedule whose board is gone, and sends nothing', async () => {
 		makeSmtp();
 		const mail = mailServer();

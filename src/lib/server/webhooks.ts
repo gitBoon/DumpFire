@@ -152,7 +152,8 @@ export function holdOf(hook: Webhook, cache: Map<string, boolean> = new Map()): 
 	const key = `${hook.boardId}:${hook.setBy}`;
 	let open = cache.get(key);
 	if (open === undefined) {
-		const setter = sqlite.prepare('SELECT id, role FROM users WHERE id = ?').get(hook.setBy) as Actor | undefined;
+		// With `disabledAt` (card 2671): a disabled setter can open no board, read in this one row.
+		const setter = sqlite.prepare('SELECT id, role, disabled_at AS disabledAt FROM users WHERE id = ?').get(hook.setBy) as Actor | undefined;
 		open = setter !== undefined && canViewBoard(setter, hook.boardId);
 		cache.set(key, open);
 	}
@@ -247,8 +248,8 @@ export function keyOfWrite(credential: App.Locals['credential']): { setByKey: nu
 /**
  * Why a webhook was switched off for good, as `held_because` stores it (card
  * 2752): a hold (`Hold`), or `'setter access ended'`, written by a password
- * reset, an invite used or the account deleted (`endAccountAccess`,
- * `deleteUser`; the code review's CS4), so that switching it on gives it a new
+ * reset, an invite used, the account disabled (card 2671) or deleted
+ * (`endAccountAccess`, `deleteUser`; the code review's CS4), so that switching it on gives it a new
  * secret as a lost setter's does. `'key ended'` is card 2893's hold.
  */
 export type HeldBecause = Hold | 'setter access ended';
@@ -272,7 +273,7 @@ export const SWITCHED_OFF_BECAUSE: Record<HeldBecause, string> = {
 		'This was switched off because nobody is recorded as having set it up. Delete it unless you recognise the address; to keep ' +
 		'it, switch it on with your own key, which makes you its setter, and set a new secret.',
 	'setter access ended':
-		"This was switched off because the account that set it up had its password reset, used an invite, or was deleted. The address " +
+		"This was switched off because the account that set it up had its password reset, used an invite, was disabled, or was deleted. The address " +
 		'was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which ' +
 		"makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, " +
 		'and update the receiver.',
@@ -595,7 +596,7 @@ export function webhookShareNotes(board: Pick<Board, 'id' | 'createdBy' | 'isPub
 		const setterId = hook.setBy as number;
 		let stops = stopsBy.get(setterId);
 		if (!stops) {
-			const setter = sqlite.prepare('SELECT id, role FROM users WHERE id = ?').get(setterId) as Actor;
+			const setter = sqlite.prepare('SELECT id, role, disabled_at AS disabledAt FROM users WHERE id = ?').get(setterId) as Actor;
 			const theirTeams = new Set(
 				db.select({ teamId: teamMembers.teamId }).from(teamMembers).where(eq(teamMembers.userId, setterId)).all().map((t) => t.teamId)
 			);

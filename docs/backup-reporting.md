@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.49
+version: 1.50
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2671
+  - account-disable
   - card-2899
   - system-log
   - card-2752
@@ -28,7 +30,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "Scheduled backup system with multi-destination support, a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -603,6 +605,32 @@ flowchart TD
   mails nobody. This server's `webhook_keys_recorded_at` (0071's setting, card 2893) is read
   before the clear and kept over the backup's. See
   [A Webhook Switched Off When Its Setter Loses the Board](authentication-security.md#a-webhook-switched-off-when-its-setter-loses-the-board-card-2752).
+- **A restore keeps this server's disabled accounts disabled** (card 2671, migration 0072),
+  whatever the backup holds, a backup made before 0072 included. This server's disabled accounts
+  (id, `created_at`, `disabled_at`, `disabled_by`, and the disabler's `created_at` and role) are
+  read before `users` is cleared, a database without the columns read as having none and any
+  other failure rolling the restore back (the code review's CS4); after the copy, inside the
+  restore's transaction, each restored account with the same id and `created_at` that is not a
+  superadmin is disabled again (`carryDisabled`), with `disabled_by` kept only where that account
+  is restored as itself, by id and `created_at`, the restored superadmin where the superadmin
+  disabled it and is not, else NULL (CS3), its restored API keys deleted and its restored report
+  schedules paused. That runs before the superadmin check and the webhook sweep above, which
+  then switches off the webhooks it set. A restored superadmin is never disabled, and a backup
+  with user accounts and no enabled superadmin among them is refused before anything is written.
+  The settings an administrator disabled here set are removed after the restore, as for a demoted
+  one, with the lines ending `(found after a restore)`, and every disabled account's address is
+  taken out of the backup failure address again, whatever its role, one `WARN` under `BACKUP`
+  each (CS2). See
+  [Disabled Accounts](authentication-security.md#disabled-accounts-card-2671).
+
+```mermaid
+flowchart LR
+    R["Restore of a backup"] --> Read["disabledHere:<br/>this server's disabled accounts,<br/>before users is cleared"]
+    Read --> Copy["The backup's rows copied"]
+    Copy --> Carry["carryDisabled:<br/>same id and created_at, not a superadmin,<br/>disabled again, keys deleted, schedules paused"]
+    Carry --> Check["The enabled-superadmin check"]
+    Check --> Sweep["The webhook sweep"]
+```
 
 ```mermaid
 flowchart TD

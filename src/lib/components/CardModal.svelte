@@ -70,7 +70,7 @@
 		categories: CategoryType[];
 		labels: LabelType[];
 		boardId: number;
-		boardUsers?: { id: number; username: string; email?: string; emoji: string }[];
+		boardUsers?: { id: number; username: string; email?: string; emoji: string; disabled?: true }[];
 		onSave: (data: { title: string; description: string; priority: string; categoryId: number | null; dueDate: string | null; onHoldNote?: string; businessValue?: string; summary?: string | null; theme?: string | null; customerImpact?: string | null; closeReason?: string | null; releaseState?: string | null; pendingSubtasks?: string[]; pendingAssigneeIds?: number[]; pendingSubBoards?: string[]; pendingLabelIds?: number[] }) => void | Promise<unknown>;
 		onDelete?: () => void;
 		onClose: () => void;

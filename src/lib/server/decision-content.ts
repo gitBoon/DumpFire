@@ -662,7 +662,9 @@ export function optionChanges(live: DecisionOption[], listed: Set<number> | null
  */
 export function openFactsOf(decision: Decision, now: Stamp): OpenFacts {
 	const decider =
-		decision.deciderUserId === null ? undefined : db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, decision.deciderUserId)).get();
+		decision.deciderUserId === null
+			? undefined
+			: db.select({ id: users.id, role: users.role, disabledAt: users.disabledAt }).from(users).where(eq(users.id, decision.deciderUserId)).get();
 	const liveOptionCount = db
 		.select({ id: decisionOptions.id })
 		.from(decisionOptions)

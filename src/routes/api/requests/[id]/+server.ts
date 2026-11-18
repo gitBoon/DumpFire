@@ -6,7 +6,7 @@ import type { SessionUser } from '$lib/server/auth';
 import { canViewBoard } from '$lib/server/board-access';
 import { requireAdmin, requireColumn, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
-import { canHandleRequest, canReadRequest, linkCheck, requesterAddress, requireRequest } from '$lib/server/request-access';
+import { canHandleRequest, canReadRequest, linkCheck, requesterAddress, requesterMailAddress, requireRequest } from '$lib/server/request-access';
 import { publicRequest } from '$lib/server/request-tokens';
 import { notifyUserAssigned, notifyRequesterAccepted, notifyRequesterRejected } from '$lib/server/notifications';
 import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
@@ -95,6 +95,9 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 		// for a request made signed in (card 2171). The answer gives the same
 		// address, never the one stored when the request was made.
 		const requester = requesterAddress(existing);
+		// And where the mail goes: none to a requester whose account is disabled
+		// (card 2671), whose address the answer still gives the team (E12).
+		const mailTo = requesterMailAddress(existing);
 
 		// What was asked of it is read once whose it is is settled (card 2117,
 		// R1). Its ids are ids: one that was not was looked for as it came.
@@ -212,8 +215,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			}
 
 			// Notify requester via email
-			if (requester !== null) {
-				notifyRequesterAccepted(existing.id, requester, existing.title, user.username);
+			if (mailTo !== null) {
+				notifyRequesterAccepted(existing.id, mailTo, existing.title, user.username);
 			}
 
 			// After "Request accepted", so that mail starts first: the live update,
@@ -233,8 +236,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 			}).where(eq(taskRequests.id, id)).run();
 
 			// Notify requester via email
-			if (requester !== null) {
-				notifyRequesterRejected(existing.id, requester, existing.title, user.username, rejectReason || undefined);
+			if (mailTo !== null) {
+				notifyRequesterRejected(existing.id, mailTo, existing.title, user.username, rejectReason || undefined);
 			}
 
 			return { ...answered(existing, user), requesterEmail: requester, status: 'rejected' };

@@ -23,9 +23,9 @@
  * header says.
  */
 import { error } from '@sveltejs/kit';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { db } from './db';
-import { decisionParticipants, decisions, type Decision, type DecisionParticipant } from './db/schema';
+import { decisionParticipants, decisions, users, type Decision, type DecisionParticipant } from './db/schema';
 import type { SessionUser } from './auth';
 import { isAdmin } from './board-access';
 import { mayDo } from './decision-access';
@@ -486,11 +486,27 @@ function touch(decisionId: number, now: Stamp): Decision {
  * A 409, naming the person, when a row coming onto the decision would hold an
  * account another live row holds, or that another one coming on holds
  * (decision 29). `staying` is the accounts of the live rows that stay.
+ *
+ * And when a row coming on, an addition or a return, would hold an account
+ * that is disabled (card 2671, S2): it could neither be reached nor answer.
+ * The disabled ones among them are read in one query.
  */
 function requireOneRowPerAccount(coming: { name: string; userId: number | null }[], staying: (number | null)[]): void {
 	const held = new Set(staying.filter((id): id is number => id !== null));
+	const accounts = coming.map((row) => row.userId).filter((id): id is number => id !== null);
+	const disabled = new Set(
+		accounts.length === 0
+			? []
+			: db
+					.select({ id: users.id })
+					.from(users)
+					.where(and(inArray(users.id, accounts), isNotNull(users.disabledAt)))
+					.all()
+					.map((row) => row.id)
+	);
 	for (const row of coming) {
 		if (row.userId === null) continue;
+		if (disabled.has(row.userId)) error(409, `${row.name} cannot be included: their account is disabled`);
 		if (held.has(row.userId)) error(409, `${row.name} cannot be included: another participant of this decision holds the same account`);
 		held.add(row.userId);
 	}

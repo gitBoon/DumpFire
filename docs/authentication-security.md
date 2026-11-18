@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.144
+version: 1.145
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2671
+  - account-disable
   - card-2899
   - system-log
   - card-2914
@@ -103,7 +105,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, a restore that keeps the running system log and brings none of the backup's lines in, with the import's CRITICAL line naming who imported which file (card 2899), what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), a milestone the caller cannot see answered 404 Milestone not found, the goal a card is in refused in words of its own, and the id counter accepted as R6 (card 2911), a task request a signed-in caller cannot read answered 404 Request not found, the accept and reject on requireRequest (card 2914), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
+description: "Deep-dive into DumpFire's authentication system, disabled accounts (card 2671: who may disable, enable and delete, what disabling ends, every gate that refuses a disabled account, and a restore that keeps them disabled), a restore that keeps the running system log and brings none of the backup's lines in, with the import's CRITICAL line naming who imported which file (card 2899), what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), a milestone the caller cannot see answered 404 Milestone not found, the goal a card is in refused in words of its own, and the id counter accepted as R6 (card 2911), a task request a signed-in caller cannot read answered 404 Request not found, the accept and reject on requireRequest (card 2914), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty-two actions that ask for the current password and a code from the authenticator app again (card 2671's disable and enable among them) (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
 ---
 
 # Authentication & Security
@@ -773,7 +775,8 @@ reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, case
 | `POST /api/admin/reset-xp` | admin | Everyone's XP to 0 |
 | `POST /api/users` | admin | Makes an account: a credential that outlives the session |
 | `PUT /api/users/[id]`, **with `role` or `email`** | admin | An account's privileges, or the address its invites and resets go to |
-| `DELETE /api/users/[id]`, `PUT /api/users/[id]/password`, `POST /api/users/[id]/invite` | admin | Removes an account, sets its password, or a reset by another way |
+| `DELETE /api/users/[id]`, `PUT /api/users/[id]/password`, `POST /api/users/[id]/invite` | admin | Removes a disabled account (card 2671), sets its password, or a reset by another way |
+| `POST /api/users/[id]/disable`, `POST /api/users/[id]/enable` (card 2671) | admin, within whose account they may manage | Ends an account's access at once, or gives back its sign-in |
 | `POST /api/users/[id]/mfa/reset` (card 2773) | admin, within whose account they may manage | Removes another account's second factor and issues the link that sets up a new one, given to the caller |
 | `DELETE /api/boards/[id]` | the board's owner, or admin | A board and every sub-board under it, for good: boards have no archive |
 | `DELETE /api/columns/[id]`, **with a card in it, archived ones included** | editor of the board | Every card in the column, with their sub-boards and files |
@@ -803,7 +806,9 @@ reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, case
 | `PUT /api/report-schedules/[id]`, **with an address added, turned on, or its status filter widened** (card 2751) | the schedule's owner | Starts or widens a timetable that mails board activity outside |
 | `POST /api/reports/email` (card 2751) | anyone signed in who can read the report | Mails a report of board activity to the addresses given. Every send asks, whatever the addresses |
 
-The list is forty: card 2701's eighteen (the import among them, standing as its
+The list is forty-two: card 2671's two, disabling and enabling another account
+(`POST /api/users/[id]/disable`, `POST /api/users/[id]/enable`,
+[Disabled Accounts](#disabled-accounts-card-2671)), card 2701's eighteen (the import among them, standing as its
 confirmation), card 2697's eight: the five its plan listed, and the three People writes its
 code review's part B added on 2026-11-04, S1, so that every People write that sets or ends an
 address or an account asks ([Decision Access and Personal Links](#decision-access-and-personal-links)),
@@ -1152,7 +1157,7 @@ toast or in storage. Case 17 searches every log row and answer of a run for it.
 set up a weekly report of a board to be emailed to any address, or email a report once,
 without typing anything. A schedule keeps sending after the browser is closed and after the
 password is changed, so it was the real way to keep copying a board's activity out. Three
-routes are now on `STEP_UP_ACTIONS` (forty in all) and ask for the password and a code through
+routes are now on `STEP_UP_ACTIONS` (forty then; forty-two since card 2671's disable and enable) and ask for the password and a code through
 `confirmStepUp`, as every listed action does. The plan is
 `docs/planning/card-2751-report-mail-step-up.md`.
 
@@ -2366,10 +2371,10 @@ Covered by `tests/password-checks.test.ts` and `tests/atomic-accounts.test.ts`.
 
 ### Guessing a Current Password
 
-Forty actions ask a caller who is already signed in for their current password and, since
+Forty-two actions ask a caller who is already signed in for their current password and, since
 card 2771 (2026-11-17), a code from their authenticator app or a recovery code: the actions of
 [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701), among
-them the Account page's three, changing your email (`PUT /api/account/email`), changing your
+them card 2671's disable and enable of another account, and the Account page's three, changing your email (`PUT /api/account/email`), changing your
 password (`PUT /api/account/password`, which the admin page's dialog on your own row uses too)
 and Generate Key (`POST /api/account/api-keys`). Those three asked with checks of their own
 until card 2771 moved them onto `confirmStepUp`. The password and the code are what whoever
@@ -3343,7 +3348,9 @@ for statement, in raw SQL in one `BEGIN IMMEDIATE` transaction, with `issued_by`
   `node` (card 2776); a `DB_PATH` (or `./dumpfire.db`) that names no file, opened with
   `fileMustExist` so none is made; a database without migration 0065's tables, or without
   `report_schedules` (card 2894: "this database has no report schedules table"); no such account;
-  and the database still busy after `busy_timeout = 5000` (each exit 1). It opens the database
+  an account that is disabled (card 2671, S15: "the account … is disabled. An administrator
+  enables it on the admin page first."); and the database still busy after `busy_timeout = 5000`
+  (each exit 1). It opens the database
   with `foreign_keys = ON`, as the server does.
 
 How to run it, and every line it prints, are in
@@ -4175,7 +4182,7 @@ also names what is still open and the card that closes it. Its method is in
 
 | Control | How two-step sign-in meets it |
 |---|---|
-| A.8.5 Secure authentication | Two factors for every interactive sign-in: a password, then an authenticator code or a recovery code, before any session. No switch turns it off. Wrong codes are counted in the database, per challenge and per lane, with pauses and a lock that survive restarts. API keys are non-interactive credentials (R2). The code is asked for again, and checked, before every step-up action (cards 2770 and 2771, released together): the forty destructive, privilege-changing, exfiltrating and credential-issuing actions, the Account page's email, password and key forms, (card 2772) its two-step section and Keep this key, and (card 2751) report schedules and report mail among them. Every authenticator of an account is tried, at sign-in and at a step-up, with the guessing bounds held (card 2772) |
+| A.8.5 Secure authentication | Two factors for every interactive sign-in: a password, then an authenticator code or a recovery code, before any session. No switch turns it off. Wrong codes are counted in the database, per challenge and per lane, with pauses and a lock that survive restarts. API keys are non-interactive credentials (R2). The code is asked for again, and checked, before every step-up action (cards 2770 and 2771, released together): the forty-two destructive, privilege-changing, exfiltrating and credential-issuing actions, the Account page's email, password and key forms, (card 2772) its two-step section and Keep this key, (card 2751) report schedules and report mail, and (card 2671) disabling and enabling an account among them. Every authenticator of an account is tried, at sign-in and at a step-up, with the guessing bounds held (card 2772) |
 | A.5.17 Authentication information | Secrets sealed under a key kept out of the database; challenge tokens, link tokens and recovery codes kept only as hashes; nothing secret logged or answered. The owner is mailed at every enrolment, recovery-code use, pause, lock and likely stolen password, and shown the last sign-in and their keys |
 
 Covered by `tests/two-step-sign-in.test.ts`, `tests/two-step-enrol.test.ts`, and the pins in
@@ -4474,6 +4481,102 @@ Covered by `tests/account-two-step.test.ts` (T17 to T29), with rows in
 `tests/check-at-the-write.test.ts`, `tests/page-failures.test.ts`, `tests/step-up.test.ts` (case
 1, thirty-seven; forty since card 2751) and `tests/mail-escaping.test.ts`.
 
+## Disabled Accounts (Card 2671)
+
+An administrator takes an account away by **disabling** it, and deletes only an account already
+disabled. A disabled account keeps its row, its password hash and its authenticators, and its
+name stays on everything it did; it cannot sign in, and it has no access to anything. **Enable**
+gives back its sign-in alone. The plan is `docs/planning/card-2671-disable-accounts.md`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Enabled
+    Enabled --> Disabled: POST /api/users/:id/disable (step-up)
+    Disabled --> Enabled: POST /api/users/:id/enable (step-up)
+    Disabled --> Deleted: DELETE /api/users/:id (step-up)
+    Enabled --> Enabled: DELETE refused 409 Disable the account first
+    Deleted --> [*]
+```
+
+```mermaid
+sequenceDiagram
+    participant A as Administrator
+    participant R as POST disable
+    participant S as disableAccount
+    participant M as Mail
+    A->>R: password and code
+    R->>R: refusals: own account 403, whose account, already disabled 409
+    R->>S: one transaction, refusals asked again
+    S->>S: disabled_at and disabled_by written
+    S->>S: endAccountAccess with apiKeys true
+    S->>S: request links deleted, an administrator's settings removed
+    S-->>R: counts, sole-owner teams, settings removed
+    R->>M: account-disabled notice, unless the mail settings went
+    R-->>A: counts and noticeSent
+```
+
+### Who May Disable, Enable and Delete
+
+| Route | Refused | Then |
+|-------|---------|------|
+| `POST /api/users/:id/disable` | The caller's own account, 403 `You cannot disable your own account`; not an administrator, 403; the superadmin's, 403 `Cannot disable superadmin account`; an administrator's by an administrator, 403 `Only superadmin can disable admin users`; already disabled, 409 `This account is already disabled` | The password and a code (`confirmStepUp`), then the refusals again and `disableAccount` in one transaction (`whilePasswordHolds`, `writeAs`) |
+| `POST /api/users/:id/enable` | The caller's own, 403 `You cannot enable your own account`; whose account, as disable; not disabled, 409 `This account is not disabled`; one the superadmin disabled, by an administrator, 403 `Only the superadmin can enable an account the superadmin disabled` | The same, then `enableAccount` |
+| `DELETE /api/users/:id` | As before, and an account not disabled, 409 `Disable the account first`; one the superadmin disabled, by an administrator, 403 `Only the superadmin can delete an account the superadmin disabled` | The same, then `deleteUser`, which refuses an enabled account itself |
+
+Every refusal is asked before the password, so a refused request asks for none.
+`requireMayUndoDisable` holds the superadmin's rule (S14, S14b): whoever disabled an account is
+recorded in `disabled_by`, and an account the superadmin disabled stays out of reach of an
+administrator. The three account resets (`PUT /api/users/:id/password`,
+`POST /api/users/:id/invite`, `POST /api/users/:id/mfa/reset`) refuse a disabled account,
+409 `This account is disabled: enable it first`, and so does the host's
+`scripts/mfa-reset.mjs` (S15).
+
+### What Disabling Ends
+
+In the one transaction (`disableAccount` in `src/lib/server/account-disable.ts`):
+
+| What | How |
+|------|-----|
+| Sessions, invites, pending sign-ins, enrolment links | `endAccountAccess(id, { apiKeys: true })`, as a reset ends them |
+| API keys | Deleted, with that call |
+| The webhooks it set | Switched off for good, held `'setter access ended'`: "had its password reset, used an invite, was disabled, or was deleted" |
+| Its report schedules | Paused |
+| The links of the task requests it raised | Deleted (`request_links`); the request is mailed nothing more (`requesterMailAddress`), and the team still sees the address (S3) |
+| An administrator's mail settings, App URL and backup destinations | Removed where it set them (`removeSettingsSetBy`, why `'disabled'`) |
+| The account's address in the backup failure address | Taken out, whatever the account's role (S7, the code review's CS2: `removeFailureAddress`, one rule with the admin page's, CR9); the start's sweep and Import Backup take a disabled account's out again where a restore or a host edit put it back |
+
+One `[WARN] [AUTH]` line after the commit names who disabled whom and what ended, filed with the
+address the administrator did it from; neither notice names that address (the code review's CS1:
+it is the administrator's, and the account's holder, or whoever reads its mail, has no need of
+it). The answer
+counts each (`sessionsEnded`, `invitesEnded`, `apiKeysEnded`, `webhooksSwitchedOff`,
+`reportSchedulesPaused`, `requestLinksEnded`), names the teams the account is the only owner of
+(`soleOwnerOf`), lists `settingsRemoved` where something was, and says whether the notice went
+(`noticeSent`): the account's address is mailed "account disabled", naming who, unless the
+disable removed the mail settings (S8). Enable clears the two columns, writes one `WARN`, and
+mails "account enabled". Nothing that disabling ended comes back.
+
+### Where a Disabled Account Is Refused
+
+| Gate | What it answers |
+|------|-----------------|
+| Sign-in (`/login`) | The right password at a disabled account is answered as a wrong one, the same words, counted as one, with one `WARN` `Sign-in refused at "<name>" (user N) from IP <ip>: the account is disabled` |
+| `createSession` | Throws `AccountDisabled`: no way of finishing a sign-in (password, second step, set-up confirm) can make a session (S5) |
+| `findSession`, `validateSession` | A session of a disabled account is refused and deleted, with a `WARN` |
+| The API key holder | `401 Invalid or expired API key` |
+| The second step and its release mail | The pending sign-in is gone: the code page and the code answer that the sign-in has expired; no release mail is sent (S16) |
+| Invites | `usableInvite` refuses one |
+| Board access | `roleOnBoard` and `getBoardRole` answer no role, from `disabledAt` carried on the session, the `Actor` or the row already read; it is read by id only when the caller does not carry it (`isDisabledActor`, S12); `editorsOf` and the set helpers leave it out |
+| Goals and decisions | `canViewMilestone`, `canEditMilestone`, the goal lists and names, and `decisionAccess` ask it before the administrator's shortcut, so a disabled administrator, or a disabled maker of a goal with no card, reaches none (the code review's CS6) |
+| Assignee, Product Owner, decider | Refused in the words an account without the board gets |
+| Decisions | Not reached (`reachOf`, skip `account_disabled`: "<name>'s account is disabled: they cannot be mailed about this decision"), not attached, not included (409 `<name> cannot be included: their account is disabled`) |
+| Share and team | 400 `That account is disabled` for an addition or a raised role; lowering and removal stay open (S11) |
+| People | 400 `userId N is a disabled account` for a link |
+| Pickers | Left out of `listUsersFor`, the request targets, the inbox, the People directory's accounts, the assignee, Share and Teams pickers; naming lists keep it with `disabled: true` |
+| Mail | `shouldNotifyUser` answers false; `webhookRecipients` leaves it out of both branches (S4) |
+| A restore | `carryDisabled` disables again each restored account disabled here (same id and `created_at`), never a superadmin (S6) |
+| The superadmin count | `superadminsOf`, the start-up check and the import's check count only an enabled superadmin (S13) |
+
 ## Passwords, Sessions and Invites Change Together
 
 Every request that changes who can sign in makes its writes in one transaction (see [Architecture](architecture.md#writes-one-transaction-then-the-effects)). The cookie is set, and the redirect made, after the commit.
@@ -4488,6 +4591,8 @@ Every request that changes who can sign in makes its writes in one transaction (
 | An administrator changes an account's email or role (`PUT /api/users/:id`) | The change, the end of the account's invites when its email or role is changed, and the end of the account's sessions when its role is changed (card 2775) | All end, when the email or role written differs from the one stored | Kept |
 | Change your own email (`PUT /api/account/email`) | The new address and the end of the account's invites | All end, when the address differs from the one stored | Kept |
 | Use an invite (`/invite/:token`) | The password, the invite marked used, the end of every session, pending sign-in and enrolment link the account had, and one set-up challenge (card 2769). No session: the set-up's confirm makes it | All others end | All end |
+| An administrator disables an account (`POST /api/users/:id/disable`, card 2671) | `disabled_at` and `disabled_by`, the end of every session, pending sign-in and enrolment link, the webhooks it set switched off (`setter access ended`), its report schedules paused, the links of its requests deleted, and for an administrator the settings it set and the failure address removed. The notice mail is sent after the commit, and waited for | All end | All end |
+| An administrator enables an account (`POST /api/users/:id/enable`, card 2671) | The two columns cleared, and nothing else: the password and authenticators were kept, and nothing that disabling ended comes back | None to end | None to end |
 | First-run set-up (`/setup`) | The superadmin, made with `mfa_password_enrol = 0`, and one set-up challenge (card 2769). No session | | |
 | Confirm a set-up (`/login/enrol?/confirm`, card 2769) | The challenge and its link taken, the factor and recovery codes, the end of every other pending sign-in, enrolment link and unused invite, `mfa_password_enrol` set to 0, the last sign-in, and the session | All end | Kept |
 
@@ -4827,6 +4932,13 @@ account included: that is reset only from the host (see
 [A Lost Authenticator](#a-lost-authenticator-the-reset-the-hosts-command-and-a-change-of-key-card-2773)),
 and the caller's own is refused on it, an administrator's and the superadmin's alike.
 
+A sixth and a seventh, `POST /api/users/:id/disable` and `POST /api/users/:id/enable` (card
+2671), ask the same guard with words of their own, and refuse the caller's own account, 403.
+Since that card `DELETE /api/users/:id` deletes only an account already disabled (409 `Disable
+the account first`), and an account the superadmin disabled is enabled or deleted by the
+superadmin alone (403), whatever the columns below say. See
+[Disabled Accounts](#disabled-accounts-card-2671).
+
 | The account is | An ordinary user | An administrator | The superadmin |
 |----------------|------------------|------------------|----------------|
 | An ordinary user's | ❌ | ✅ | ✅ |
@@ -4837,6 +4949,7 @@ and the caller's own is refused on it, an administrator's and the superadmin's a
 | The caller's own, on the invite route | ❌ | ❌ | ❌ |
 | The caller's own, on the two-step sign-in reset route (card 2773) | ❌ | ❌ | ❌ |
 | The caller's own, on the delete route | ❌ | ❌ | ❌ |
+| The caller's own, on the disable and enable routes (card 2671) | ❌ | ❌ | ❌ |
 | The caller's own, on the change route: `email` | ❌ | ❌ | ❌ |
 | The caller's own, on the change route: `role` | ❌ | ❌ | ❌ |
 | The caller's own, on the change route: `emoji`, `username` | ❌ | ✅ | ✅ |
@@ -9747,7 +9860,7 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 |------|---------|
 | `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentProof()` (`checkCurrentPassword()` until card 2771), the count of current-password and code guesses on the session's row, one check in flight per session, the account's factor checked before the password (step 2b), the code verified and spent with the count cleared in one transaction, and the sign-out at the third (cards 2701 and 2771), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `httpsOnlyCookie()`, the one `Secure` rule of every cookie the server sets (an `https:` request always; otherwise `COOKIE_SECURE` when set, else `NODE_ENV=production`), with `secureCookies()`, its environment half, private since card 2850; `openSessionUser()`, which each open live stream asks at each heartbeat; and, since card 2775, `sessionTokenHash()`, `SESSION_LIMITS`, the one deadline, `slidesSession()` (which requests move the expiry), `openSession()` (the session's user and deadline, for the streams) and `sessionEndTimer()` (a stream's timer to that deadline), `readSessionCookie()`, `httpsOnlyCookie()` and the cookie helpers, `endSessionsSent()` (sign-out), `endSessionsOf()` (a role change) and `replacementStart()` (a password change); since card 2772 `endOtherSessions()` (every session of the account but one, for the removal of an authenticator), `deadlinePassed()` and `keyEnded()`, the one rule of a key's end that `keyHolder()` and `keysAndWebhooksOf()` ask, and `checkCurrentProof()`'s weight, every authenticator tried at 2b and again in the transaction (`matchFactors()`) |
 | `src/lib/server/cookie-header.ts` | `cookieValues()`, every value of a cookie name in the raw header; `onlyCookieValue()`, exactly one value in the shape given, and `sendsCookie()`, whether the name is sent at all, both built on it; used by the session cookie and the sign-in challenge cookie (card 2775) |
-| `src/lib/server/step-up.ts` | The current password and a code asked again before a destructive action (cards 2701 and 2771): `STEP_UP_ACTIONS` (forty, card 2772's five and card 2751's three among them), `confirmStepUp()`, `readStepUpCode()` (the code's form), the INFO, recovery WARN and the two notices after the check, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) and [The Code Beside the Password](#the-code-beside-the-password-card-2771) |
+| `src/lib/server/step-up.ts` | The current password and a code asked again before a destructive action (cards 2701 and 2771): `STEP_UP_ACTIONS` (forty-two, card 2772's five, card 2751's three and card 2671's disable and enable among them), `confirmStepUp()`, `readStepUpCode()` (the code's form), the INFO, recovery WARN and the two notices after the check, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) and [The Code Beside the Password](#the-code-beside-the-password-card-2771) |
 | `src/lib/step-up-words.ts` | The step-up's words and codes, which the server answers with and the pages read: `STEP_UP_FIELD`, the refusals, `PASSWORD_CHANGED_MEANWHILE`, `CONFIRMATION_HEADER`, `StepUpCode`, `STEP_UP_CODE_FIELD` (`currentCode`), the `StepUpProof` type and `NO_PROOF` (card 2770), `STEP_UP_CODE_MALFORMED`, `STEP_UP_CODE_SPENT`, `STEP_UP_NO_FACTOR`, `STEP_UP_FACTOR_UNUSABLE` and `passwordKeptAfter()` (card 2771), and `stepUpRefusal()`, `refusalWatch()` and `isStepUpSignOut()`, which tell a refusal of the password from any other by its `stepUp` code |
 | `src/lib/components/CurrentPasswordField.svelte` | The one field for the caller's own password, asked again (card 2701's code review, F7): label, `autocomplete="current-password"`, the refusal in an alert, `aria-invalid` and `aria-describedby`, the focus on a refusal, and no field to type in once the session is signed out; since card 2770 also the code field under it, with its recovery-code switch and a required bindable `code`; since card 2771 the focus goes to the code field on the refusals that keep the password (`code-spent`, `code-malformed`, `factor-unusable`); since card 2772 the line under the code field that says what a wrong answer costs with two or three authenticators (the layout's `authenticators`) |
 | `src/lib/server/account-two-step.ts` | The Account page's Two-step sign-in section and the warning at its top (card 2772): `authenticatorLabel()`, `newPhoneCode()`, `mayStartAdding()`, `startAdding()`, `finishAdding()`, `removable()`, `removeFactor()`, `regenerateRecoveryCodes()`, `dismissable()`, `dismissBanner()`, `twoStepView()`, and the words of every refusal. See [Managing Two-Step Sign-In on the Account Page](#managing-two-step-sign-in-on-the-account-page-card-2772) |

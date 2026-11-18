@@ -16,8 +16,8 @@
 import { db } from './db';
 import { inTransaction } from './db/transaction';
 import { milestones, cards, columns, boards } from './db/schema';
-import { eq, and, or, asc, isNull, inArray, notInArray, exists, notExists, ne, type SQL } from 'drizzle-orm';
-import { canViewBoard, canEditBoard, editableBoardIds, type Actor } from './board-access';
+import { eq, and, or, asc, isNull, inArray, notInArray, exists, notExists, ne, sql, type SQL } from 'drizzle-orm';
+import { canViewBoard, canEditBoard, editableBoardIds, isDisabledActor, type Actor } from './board-access';
 import { resolveAccessible } from './list-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { isUpstreamColumn } from '$lib/column-role';
@@ -72,6 +72,9 @@ function isAdmin(user: Pick<SessionUser, 'role'>): boolean {
  * to the others.
  */
 export function canViewMilestone(user: Actor, milestone: MilestoneRow): boolean {
+	// A disabled account opens no goal, an administrator's or its own included
+	// (card 2671's code review, CS6): before the administrator's shortcut.
+	if (isDisabledActor(user)) return false;
 	if (isAdmin(user)) return true;
 	if (milestone.boardId !== null) return canViewBoard(user, milestone.boardId);
 
@@ -96,6 +99,7 @@ export function canViewMilestone(user: Actor, milestone: MilestoneRow): boolean 
  * a null for anyone else opens no board.
  */
 function milestonesOpenAmong(user: Actor, rows: MilestoneRow[], open: number[] | null): MilestoneRow[] {
+	if (isDisabledActor(user)) return []; // Card 2671's code review, CS6.
 	if (isAdmin(user)) return rows;
 	const opens = new Set(open ?? []);
 	const touched = getMilestonesBoardIds(rows.filter((m) => m.boardId === null).map((m) => m.id));
@@ -118,6 +122,7 @@ function milestonesOpenAmong(user: Actor, rows: MilestoneRow[], open: number[] |
  * who opens every goal; `open` null for anyone else opens no board.
  */
 function goalsShownTo(user: Actor, open: number[] | null): SQL | undefined {
+	if (isDisabledActor(user)) return sql`0`; // Card 2671's code review, CS6: no goal.
 	if (isAdmin(user)) return undefined;
 	const opens = open ?? [];
 	const cardOf = (where: SQL | undefined) =>
@@ -145,6 +150,7 @@ function goalsShownTo(user: Actor, open: number[] | null): SQL | undefined {
  * rename their own milestone.
  */
 export function canEditMilestone(user: SessionUser, milestone: MilestoneRow): boolean {
+	if (isDisabledActor(user)) return false; // Card 2671's code review, CS6.
 	if (isAdmin(user)) return true;
 	if (milestone.boardId !== null) return canEditBoard(user, milestone.boardId);
 	return milestone.createdBy === user.id;

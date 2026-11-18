@@ -44,7 +44,7 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from './db';
 import { decisionParticipants, type Decision } from './db/schema';
-import { getBoardRole, isAdmin, type Actor } from './board-access';
+import { getBoardRole, isAdmin, isDisabledActor, type Actor } from './board-access';
 import { eventsOfKind } from './decision-record';
 import type { DecisionAction } from './decision-status';
 import { createLogger } from './logger';
@@ -121,6 +121,10 @@ const NEED_BOARD_EDIT: readonly DecisionRole[] = ['author', 'decider', 'boardOwn
  */
 export function decisionAccess(user: Actor, decision: Pick<Decision, 'id' | 'boardId' | 'authorUserId' | 'deciderUserId'>): DecisionAccess {
 	const roles = new Set<DecisionRole>();
+	// A disabled account has no role on any decision, an administrator's
+	// included (card 2671's code review, CS6): asked before the administrator's
+	// shortcut, with no read where the caller carries `disabledAt`.
+	if (isDisabledActor(user)) return { roles, participantId: null, canEditBoard: false };
 	if (isAdmin(user)) roles.add('admin');
 	if (decision.authorUserId !== null && decision.authorUserId === user.id) roles.add('author');
 	if (decision.deciderUserId !== null && decision.deciderUserId === user.id) roles.add('decider');

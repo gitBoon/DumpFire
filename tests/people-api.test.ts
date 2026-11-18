@@ -35,7 +35,7 @@ import { addFromAccounts, createGroup, createPerson, deleteGroup, deletePerson, 
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
 import { api, type ApiResult } from './helpers/api';
-import { FIXTURE_PASSWORD_HASH, makeApiKey, makeSession, makeUser, resetDb, sessionCredential } from './helpers/fixtures';
+import { FIXTURE_PASSWORD_HASH, makeApiKey, makeSession, makeUser, resetDb, sessionCredential, stepUp } from './helpers/fixtures';
 import { gate, gateApiRoutes } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
@@ -674,5 +674,24 @@ describe('the v1 routes call no People-page-only write', () => {
 
 		expect(named).toEqual([]);
 		expect(files.length).toBeGreaterThan(40);
+	});
+});
+
+// ─── Card 2671 (case 26, S2): a disabled account is no one to link or add ────
+
+describe('a disabled account, on the People page (card 2671)', () => {
+	it.each([
+		{ route: 'POST /api/people, linked to it', path: '/api/people', body: (id: number) => ({ fullName: 'Gone Away', email: 'gone.away@example.test', userId: id }) },
+		{ route: 'POST /api/people/from-accounts, naming it', path: '/api/people/from-accounts', body: (id: number) => ({ userIds: [id] }) }
+	])('case 26: $route is refused 400, and nothing is written', async ({ path, body }) => {
+		const gone = makeUser({ username: 'gone', disabled: true });
+		const sending = stepUp(admin, body(gone.id));
+		const before = snapshotDb();
+
+		const res = await api('POST', path, sending);
+
+		expect({ status: res.status, body: res.body }).toEqual({ status: 400, body: { message: `userId ${gone.id} is a disabled account` } });
+		expectUnchanged({ ...before, sessions: snapshotDb().sessions, mfa_factors: snapshotDb().mfa_factors });
+		expect(countOf('people')).toBe(0);
 	});
 });

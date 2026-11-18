@@ -95,6 +95,9 @@ const SHARE_TYPE_SAYS = 'type must be "user" or "team"';
  */
 const SHARE_ROLES = ['viewer', 'editor'] as const;
 
+/** A member role's rank, for whether a change raises it (card 2671): viewer, then editor, then owner; anything else the least. */
+const shareRank = (role: string): number => ['viewer', 'editor', 'owner'].indexOf(role);
+
 /** POST — Share board with a user or team. */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
 	requireUser(locals.user);
@@ -126,6 +129,12 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 			// Check user exists
 			const target = db.select().from(users).where(eq(users.id, targetId)).get();
 			if (!target) throw error(404, 'User not found');
+			// A disabled account is given no board (card 2671, S11): not added,
+			// and not raised. Lowering its role, or sending back the one it has,
+			// passes, as removing it does.
+			if (target.disabledAt !== null && (!stored || shareRank(shareRole) > shareRank(stored.role))) {
+				throw error(400, 'That account is disabled');
+			}
 
 			if (stored) {
 				db.update(boardMembers)
@@ -168,9 +177,10 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 					if (members.length > 0) {
 						const allMemberUsers: { email: string; username: string }[] = [];
 						for (const m of members) {
-							const u = db.select({ email: users.email, username: users.username })
+							const u = db.select({ email: users.email, username: users.username, disabledAt: users.disabledAt })
 								.from(users).where(eq(users.id, m.userId)).get();
-							if (u) allMemberUsers.push(u);
+							// A disabled member is mailed nothing (card 2671, D16).
+							if (u && u.disabledAt === null) allMemberUsers.push(u);
 						}
 						for (const u of allMemberUsers) {
 							notifyBoardShared(boardId, board.name, u.email, u.username, user.username, shareRole, baseUrl);

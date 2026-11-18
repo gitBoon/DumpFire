@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { users, teams, boards } from '$lib/server/db/schema';
-import { asc, inArray } from 'drizzle-orm';
+import { asc, inArray, isNull } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { checkRateLimit } from '$lib/server/rate-limit';
 import { verifyFormToken } from '$lib/server/request-tokens';
@@ -43,8 +43,10 @@ export const GET: RequestHandler = async ({ request, locals, getClientAddress })
 		}
 	}
 
+	// A disabled account is sent no requests (card 2671): not offered.
 	const allUsers = db.select({ id: users.id, username: users.username, emoji: users.emoji })
 		.from(users)
+		.where(isNull(users.disabledAt))
 		.all();
 
 	const allTeams = db.select({ id: teams.id, name: teams.name, emoji: teams.emoji })

@@ -325,6 +325,20 @@ async function checkSignIn(
 		return fail(400, { error: 'Invalid username/email or password', identity });
 	}
 
+	// A disabled account (card 2671, D9): answered exactly as a wrong password
+	// is, and counted as one, so that the answer does not say the password was
+	// right or that the account is disabled; only the line says so. Checked
+	// after the password, in this one place, before anything is issued.
+	if (user.disabledAt !== null) {
+		wrong(user.username);
+		log.warn(
+			`Sign-in refused at "${user.username.slice(0, 100)}" (user ${user.id}) from IP ${fromIp}: the account is disabled`,
+			undefined,
+			{ userId: user.id, ip: address }
+		);
+		return fail(400, { error: 'Invalid username/email or password', identity });
+	}
+
 	// The hash checked is the one read before the check: a password set while
 	// it was awaited is found by the issue, which compares it (decision 26).
 	return afterPassword(

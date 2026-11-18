@@ -834,6 +834,8 @@ describe('mail to a requester who made the request signed in', () => {
 		await recording(async (sent) => {
 			const id = await ask(s, s.requester, 'Please add a report');
 			await changeEmail(s, NEW);
+			// Disabled first, as an account is before it is deleted (card 2671): written as the disable writes it.
+			sqlite.prepare("UPDATE users SET disabled_at = '2099-01-01 09:00:00', disabled_by = ? WHERE id = ?").run(s.root.id, s.requester.id);
 			ok(await api('DELETE', `/api/users/${s.requester.id}`, stepUp(s.root)));
 
 			// The key forgets the account; the address it had stays with the request.

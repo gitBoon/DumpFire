@@ -1,0 +1,57 @@
+-- When an account was disabled, and by whom (card 2671, 2026-11-18).
+--
+-- users.disabled_at is the moment an administrator disabled the account, in
+-- the stored form; NULL for an account that is enabled. users.disabled_by is
+-- the account that disabled it, ON DELETE SET NULL. Both are written by
+-- disableAccount and cleared together by enableAccount, in
+-- src/lib/server/account-disable.ts, each in the transaction of its route
+-- (POST /api/users/{id}/disable and /enable). Disabling ends, in the same
+-- transaction, everything a password reset ends, the links of the account's
+-- requests, for an administrator the settings they saved, and whatever the
+-- role the account's address in the backup failure address.
+--
+-- Read by every gate: findSession, keyHolder and createSession in
+-- src/lib/server/auth.ts, the sign-in, its second step and release mail, and
+-- usableInvite. An account with disabled_at set has no session, no key, no
+-- invite and no sign-in, and its holder's password and authenticators are
+-- kept for the day it is enabled again. A restore keeps this server's
+-- disabled accounts disabled, matched by id and created_at (carryDisabled in
+-- src/lib/server/db/restore.ts).
+--
+-- The index is card 2106's rule, that every foreign key column leads an
+-- index, named idx_<table>_<column> and declared in
+-- src/lib/server/db/schema.ts under the same name. SQLite takes ADD COLUMN
+-- with a foreign key when the column's default is NULL. Changes no row:
+-- every account already stored is enabled, both columns NULL, so nothing is
+-- declared in tests/rehearsal/one-offs.ts.
+--
+-- No IF NOT EXISTS, as 0063: a column or an index of these names already in
+-- a database would be one this file did not make, and the file fails rather
+-- than record itself over it.
+--
+-- Runs once. The runner records this file by name and never runs it again,
+-- and it would not survive a second run: "duplicate column" is tolerated only
+-- in a fixed list of older files, and this is not one of them.
+--
+-- A backup made before this file has neither column: its accounts are
+-- restored enabled, except those this server has disabled, which the restore
+-- carries over by id and created_at.
+--
+-- Going back to an older image: the older image does not read disabled_at,
+-- so every disabled account can sign in there with its own password and
+-- authenticator (its sessions and API keys are already gone). Before going
+-- back, run the two commands in docs/deployment.md ("The Release That
+-- Disables Accounts, and Deletes Only a Disabled One"): the first lists the
+-- disabled accounts, the second makes their passwords unusable. Keep the
+-- columns, and do not drop them: the older image's schema check reports them
+-- as columns it does not know, and leaves them. Coming forward again, 0072 is
+-- already recorded and is not run, and each such account, once enabled,
+-- needs a password reset before it can sign in: by an administrator, with 🔑
+-- on its row (PUT /api/users/{id}/password). An invite sets a password only
+-- for an account with no authenticator: one that has one is refused it.
+
+ALTER TABLE `users` ADD COLUMN `disabled_at` text;
+--> statement-breakpoint
+ALTER TABLE `users` ADD COLUMN `disabled_by` integer REFERENCES `users`(`id`) ON DELETE SET NULL;
+--> statement-breakpoint
+CREATE INDEX `idx_users_disabled_by` ON `users` (`disabled_by`);

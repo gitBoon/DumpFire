@@ -303,10 +303,17 @@ function openDatabase(path) {
 function reset(database, username) {
 	return database
 		.transaction(() => {
-			const account = /** @type {{ id: number, username: string } | undefined} */ (
-				database.prepare('SELECT id, username FROM users WHERE username = ?').get(username)
+			// Every column, so that a database from before 0072, with no disabled_at, is read too.
+			const account = /** @type {{ id: number, username: string, disabled_at?: string | null } | undefined} */ (
+				database.prepare('SELECT * FROM users WHERE username = ?').get(username)
 			);
 			if (!account) throw new Refused(`Refused: there is no account with the username "${printable(username)}". Nothing was changed.`);
+			// A disabled account is not reset (card 2671, S15): an administrator enables it first.
+			if (account.disabled_at !== undefined && account.disabled_at !== null) {
+				throw new Refused(
+					`Refused: the account "${printable(username)}" is disabled. An administrator enables it on the admin page first. Nothing was changed.`
+				);
+			}
 			const id = account.id;
 
 			const factors = database.prepare('DELETE FROM mfa_factors WHERE user_id = ?').run(id).changes;

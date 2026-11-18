@@ -27,7 +27,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { db } from './db';
-import { decisionParticipants, decisions, people, type Decision, type DecisionParticipant, type Person } from './db/schema';
+import { decisionParticipants, decisions, people, users, type Decision, type DecisionParticipant, type Person } from './db/schema';
 import { accountHistory, appendEvent, deliveryOf, type RecordActor } from './decision-record';
 import { linkUsable } from './decision-status';
 import { stamp, type Stamp } from '$lib/timestamps';
@@ -45,7 +45,13 @@ export type RevokeReason =
 	| 'restore';
 
 /** Why a participant was not mailed (decision 16), the first that applies in this order. */
-export type SkipReason = 'deleted' | 'left' | 'account_not_attached' | 'account_removed' | 'address_changed';
+export type SkipReason = 'deleted' | 'left' | 'account_not_attached' | 'account_disabled' | 'account_removed' | 'address_changed';
+
+/** Whether the account `userId` is disabled (card 2671): a disabled account is mailed nothing about a decision. */
+function accountDisabled(userId: number): boolean {
+	const row = db.select({ disabledAt: users.disabledAt }).from(users).where(eq(users.id, userId)).get();
+	return row !== undefined && row.disabledAt !== null;
+}
 
 /** How a participant is reached: through their account, through a link, or not, with why. */
 export type Reach = { via: 'account' } | { via: 'link' } | { skip: SkipReason };
@@ -62,6 +68,8 @@ export const SKIP_WORDS: Readonly<Record<SkipReason, (name: string) => string>> 
 	left: (name) => `${name} has left: they cannot be mailed about this decision`,
 	account_not_attached: (name) =>
 		`${name}'s account on this decision is not the one the people directory holds for them: an administrator attaches it before they can be mailed`,
+	// Card 2671 (S2): until an administrator enables the account again.
+	account_disabled: (name) => `${name}'s account is disabled: they cannot be mailed about this decision`,
 	account_removed: (name) =>
 		`${name}'s account on this decision has been deleted: an administrator clears it before they can be mailed a personal link`,
 	address_changed: (name) =>
@@ -116,13 +124,16 @@ export function mayHoldLink(p: DecisionParticipant, person: Person | null, hadAc
  * code review's S2: the mail goes to the snapshot address). Then either the
  * row's account is the person's account still (`account`, the mail links to
  * the page behind a sign-in), or `mayHoldLink` passes (`link`). Anyone else
- * is skipped, with the first reason that applies.
+ * is skipped, with the first reason that applies. An account that is disabled
+ * is skipped on the account's route (card 2671, S2: `account_disabled`, read
+ * by its id, one read), and holds no link, as the person has an account.
  */
 export function reachOf(p: DecisionParticipant, person: Person | null, hadAccount: boolean): Reach {
 	if (person === null) return { skip: 'deleted' };
 	if (person.status !== 'active') return { skip: 'left' };
 	if (p.userId !== null) {
 		if (person.userId !== p.userId) return { skip: 'account_not_attached' };
+		if (accountDisabled(p.userId)) return { skip: 'account_disabled' };
 		return p.email === person.email ? { via: 'account' } : { skip: 'address_changed' };
 	}
 	if (person.userId !== null) return { skip: 'account_not_attached' };
@@ -165,13 +176,16 @@ export function mailedLinkOf(
 /**
  * Why Attach account cannot be done for the participant now, in the 409's
  * words, or the account it would copy: their person is no longer in the
- * directory or has no account, the row already holds that account, or
- * another live row of the decision (`rows`) holds it (decision 29).
+ * directory or has no account, the account is disabled (card 2671), the row
+ * already holds that account, or another live row of the decision (`rows`)
+ * holds it (decision 29).
  */
 export function attachRefusal(participant: DecisionParticipant, person: Person | undefined, rows: readonly DecisionParticipant[]): { refusal: string } | { accountId: number } {
 	if (!person) return { refusal: `${participant.name} is no longer in the people directory: there is no account to attach` };
 	if (person.userId === null) return { refusal: `${person.fullName} has no account in the people directory: there is no account to attach` };
 	const accountId = person.userId;
+	// Card 2671 (S2): a disabled account is not attached; an administrator enables it first.
+	if (accountDisabled(accountId)) return { refusal: `${person.fullName}'s account is disabled: it cannot be attached until it is enabled again` };
 	// The code review's part B (F2): as the address's rule refuses a copy that changes nothing.
 	if (participant.userId === accountId) {
 		return { refusal: `${participant.name} already holds the account the people directory holds for them on this decision: there is nothing to attach` };

@@ -238,7 +238,8 @@ describe('stillAuthenticated', () => {
 
 		const now = inTransaction(() => stillAuthenticated(locals));
 
-		expect(now).toEqual({ id: user.id, username: 'ada-now', email: user.email, emoji: '🦊', role: 'user' });
+		// `disabledAt` null: past the gate the account is enabled (card 2671).
+		expect(now).toEqual({ id: user.id, username: 'ada-now', email: user.email, emoji: '🦊', role: 'user', disabledAt: null });
 		expect(locals.user).toEqual(now);
 	});
 
@@ -303,6 +304,20 @@ describe('stillAuthenticated', () => {
 		const orphaned = sessionLocals(other, makeSession(other));
 		deleteAccountLeavingItsRows(other.id);
 		expect(outcome(() => inTransaction(() => stillAuthenticated(orphaned)))).toEqual(NOT);
+	});
+
+	// Card 2671 (case 17): the session and the key left in place, as a restore or a host edit can leave them.
+	it("refuses 401, in the gate's words, a session or a key whose account was disabled between the gate and the write, which is not made", () => {
+		const user = makeUser();
+		const bySession = sessionLocals(user, makeSession(user));
+		const byKey = keyLocals(user, makeApiKey(user));
+		db.update(users).set({ disabledAt: stamp() }).where(eq(users.id, user.id)).run();
+		const before = snapshotDb();
+		const write = (caller: SessionUser | null) => db.update(users).set({ emoji: '🦊' }).where(eq(users.id, caller!.id)).run();
+
+		expect(outcome(() => writeAs(bySession, write))).toEqual({ status: 401, message: 'Not authenticated' });
+		expect(outcome(() => writeAs(byKey, write))).toEqual({ status: 401, message: 'Invalid or expired API key' });
+		expectUnchanged(before);
 	});
 
 	it('leaves locals.user as the gate set it when it refuses', () => {
@@ -1263,13 +1278,16 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 
 	/**
 	 * The requests with no body, by whom, in an order each can run in: the
-	 * member's account last. The invite and the account's delete carry nothing
-	 * but the caller's current password since card 2701, from their session.
+	 * member's account last, disabled before it is deleted (card 2671). The
+	 * invite, the disable and the account's delete carry nothing but the
+	 * caller's current password since card 2701, from their session.
 	 */
 	const UNHELD = (s: Scene): [Method, string, Who, boolean?][] => [
 		['DELETE', `/api/account/api-keys/${keyRow(s.key).id}`, 'owner'],
 		['POST', `/api/users/${s.member.id}/invite`, 'admin', true],
 		['DELETE', `/api/requests/${s.request.id}`, 'admin'],
+		// Card 2671: an account is disabled before it is deleted.
+		['POST', `/api/users/${s.member.id}/disable`, 'admin', true],
 		['DELETE', `/api/users/${s.member.id}`, 'admin', true]
 	];
 	const asWho = (s: Scene, who: Who) => ({ user: s[who], credential: sessionCredential(s.sessions[who]) });
@@ -1311,8 +1329,8 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			expect({ path, status: res.status }).toEqual({ path, status: 200 });
 		}
 		await sent.settle();
-		// The invite's.
-		expect(sent.emails).toHaveLength(1);
+		// The invite's, and the notice of the disable (card 2671).
+		expect(sent.emails.map((mail) => mail.subject)).toEqual([expect.any(String), 'Your DumpFire account was disabled']);
 	});
 
 	it('lets the password change through: its writes ask before the session it came by ends, and nothing in it asks after', { timeout: 30_000 }, async () => {
@@ -1433,6 +1451,9 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			// A body since card 2701: the current password, which the refusal comes before.
 			[wasAdmin, 'POST', `/api/users/${s.member.id}/invite`, { currentPassword: FIXTURE_PASSWORD }, 'Forbidden'],
 			[wasAdmin, 'DELETE', `/api/users/${s.member.id}`, { currentPassword: FIXTURE_PASSWORD }, 'Forbidden'],
+			// Card 2671: an account disabled, and enabled again.
+			[wasAdmin, 'POST', `/api/users/${s.member.id}/disable`, { currentPassword: FIXTURE_PASSWORD }, 'Forbidden'],
+			[wasAdmin, 'POST', `/api/users/${s.member.id}/enable`, { currentPassword: FIXTURE_PASSWORD }, 'Forbidden'],
 			[wasAdmin, 'DELETE', `/api/requests/${s.request.id}`, undefined, 'Admin only'],
 			[wasAdmin, 'POST', '/api/reports', { scope: 'all', ...PERIOD }, ALL],
 			[wasAdmin, 'POST', '/api/reports/email', { scope: 'all', ...PERIOD, recipients: ['a@example.test'] }, ALL],
@@ -1440,7 +1461,9 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			[wasChief, 'PUT', `/api/users/${s.colleague.id}`, { emoji: '🦊' }, 'Only superadmin can modify admin users'],
 			[wasChief, 'PUT', `/api/users/${s.colleague.id}/password`, { password: NEW_PASSWORD }, "Only superadmin can reset an admin's password"],
 			[wasChief, 'POST', `/api/users/${s.colleague.id}/invite`, { currentPassword: FIXTURE_PASSWORD }, "Only superadmin can reset an admin's password, which an invite does"],
-			[wasChief, 'DELETE', `/api/users/${s.colleague.id}`, { currentPassword: FIXTURE_PASSWORD }, 'Only superadmin can delete admin users']
+			[wasChief, 'DELETE', `/api/users/${s.colleague.id}`, { currentPassword: FIXTURE_PASSWORD }, 'Only superadmin can delete admin users'],
+			[wasChief, 'POST', `/api/users/${s.colleague.id}/disable`, { currentPassword: FIXTURE_PASSWORD }, 'Only superadmin can disable admin users'],
+			[wasChief, 'POST', `/api/users/${s.colleague.id}/enable`, { currentPassword: FIXTURE_PASSWORD }, 'Only superadmin can enable admin users']
 		];
 		for (const [who, method, path, body, message] of refusals) {
 			const res = await api(method, path, { ...who, ...(body === undefined ? {} : { body }) });

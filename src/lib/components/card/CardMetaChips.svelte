@@ -38,7 +38,9 @@
 	}: {
 		card: CardType | null;
 		boardId: number;
-		boardUsers: { id: number; username: string; email?: string; emoji: string }[];
+		// `disabled` marks an account that is disabled (card 2671): its chip
+		// still names it, and the assignee picker leaves it out.
+		boardUsers: { id: number; username: string; email?: string; emoji: string; disabled?: true }[];
 		localCategories: CategoryType[];
 		priority: string;
 		categoryId: number | null;
@@ -123,7 +125,7 @@
 	}
 
 	let availableAssignees = $derived(
-		boardUsers.filter(u => !cardAssignees.some(a => a.id === u.id))
+		boardUsers.filter(u => !u.disabled && !cardAssignees.some(a => a.id === u.id))
 	);
 </script>
 

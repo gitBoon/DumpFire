@@ -66,8 +66,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		// owner a member). Someone not yet in the team is added as a member.
 		const role = readChoice(body, 'role', { from: TEAM_ROLES, keep: existing?.role }) ?? existing?.role ?? 'member';
 
-		const member = db.select({ id: users.id }).from(users).where(eq(users.id, userId)).get();
+		const member = db.select({ id: users.id, disabledAt: users.disabledAt }).from(users).where(eq(users.id, userId)).get();
 		if (!member) throw error(404, 'User not found');
+		// A disabled account joins no team and is made no owner (card 2671,
+		// S11). Lowering an owner to member, or the role it has sent back,
+		// passes, as removing it does: an administrator can mend a team whose
+		// only owner is disabled (D20).
+		if (member.disabledAt !== null && (!existing || (role === 'owner' && existing.role !== 'owner'))) {
+			throw error(400, 'That account is disabled');
+		}
 		keepAnOwner(teamId, existing, role);
 
 		if (existing) {

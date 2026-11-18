@@ -109,6 +109,8 @@ export type ListedUser = {
 	email?: string;
 	role?: string;
 	createdAt?: string;
+	/** Only where the list names people too (`naming`): the account is disabled (card 2671). */
+	disabled?: true;
 };
 
 /**
@@ -120,15 +122,22 @@ export type ListedUser = {
  * public request form already names every user. An address and a role are
  * not needed to pick someone, and every signed-in account read every
  * colleague's.
+ *
+ * A disabled account is no one to pick (card 2671, D12): left out, unless
+ * `naming`, for a list that also names the people already shown (the Teams
+ * page names a team's members from it), where it is kept with `disabled:
+ * true`, for the picker to leave out and the names to keep.
  */
-export function listUsersFor(user: Actor): ListedUser[] {
-	if (isAdmin(user)) {
-		return db
-			.select({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt })
-			.from(users)
-			.all();
-	}
-	return db.select({ id: users.id, username: users.username, emoji: users.emoji }).from(users).all();
+export function listUsersFor(user: Actor, opts: { naming?: boolean } = {}): ListedUser[] {
+	const rows = isAdmin(user)
+		? db
+				.select({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt, disabledAt: users.disabledAt })
+				.from(users)
+				.all()
+		: db.select({ id: users.id, username: users.username, emoji: users.emoji, disabledAt: users.disabledAt }).from(users).all();
+	return rows.flatMap(({ disabledAt, ...listed }) =>
+		disabledAt === null ? [listed] : opts.naming ? [{ ...listed, disabled: true as const }] : []
+	);
 }
 
 /** A member of a team, as the team list gives one. */

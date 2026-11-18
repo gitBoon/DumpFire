@@ -85,6 +85,7 @@ import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { resetMailStatus } from '$lib/server/email';
 import { forgetConnects } from '$lib/server/gdrive-connect';
 import { forgetDeliveries, forgetWebhookWarnings } from '$lib/server/webhooks';
+import { stamp } from '$lib/timestamps';
 
 let seq = 0;
 const next = () => ++seq;
@@ -179,8 +180,15 @@ export const FIXTURE_PASSWORD = 'the fixture password';
  */
 export const FIXTURE_PASSWORD_HASH = '$2b$04$CoE84DzftN3VpDu24jdcXOhbB.z0eq1mRNo34GFDHvQlfr18dC7bu';
 
-/** A user row, returned in the shape `locals.user` carries. */
-export function makeUser(opts: { role?: Role; username?: string } = {}): SessionUser {
+/**
+ * A user row, returned in the shape `locals.user` carries: `disabledAt: null`,
+ * as every gate gives an account it lets in (card 2671). `disabled` makes it
+ * an account disabled now, by `disabled.by` where one is given, as the
+ * superadmin's or an administrator's disable writes it, and the shape is
+ * returned without `disabledAt`, so that whatever is handed it reads the
+ * account as it is.
+ */
+export function makeUser(opts: { role?: Role; username?: string; disabled?: true | { by: Pick<SessionUser, 'id'> } } = {}): SessionUser {
 	const n = next();
 	const username = opts.username ?? `user${n}`;
 	const row = db
@@ -189,17 +197,21 @@ export function makeUser(opts: { role?: Role; username?: string } = {}): Session
 			username,
 			email: `${username}@example.test`,
 			passwordHash: FIXTURE_PASSWORD_HASH,
-			role: opts.role ?? 'user'
+			role: opts.role ?? 'user',
+			...(opts.disabled === undefined
+				? {}
+				: { disabledAt: stamp(), disabledBy: opts.disabled === true ? null : opts.disabled.by.id })
 		})
 		.returning()
 		.get();
-	return {
+	const user = {
 		id: row.id,
 		username: row.username,
 		email: row.email,
 		emoji: row.emoji || '👤',
 		role: row.role
 	};
+	return opts.disabled === undefined ? { ...user, disabledAt: null } : user;
 }
 
 /**

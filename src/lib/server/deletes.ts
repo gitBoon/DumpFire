@@ -65,6 +65,7 @@ import { createLogger } from './logger';
 import { logCardLeftGoal } from './milestones';
 import { moveToTrash, type UploadFile } from './uploads';
 import { removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
+import { requireDisabledAccount } from './account-disable';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DELETE');
@@ -901,7 +902,12 @@ export type UserRemoved = {
 };
 
 /**
- * Delete a user. Returns null if there is no such user.
+ * Delete a user. Returns null if there is no such user, and refuses 409 one
+ * that is not disabled (card 2671, D14: `requireDisabledAccount`), in its own
+ * transaction, with nothing written. Disabling has already ended the account's
+ * sessions, keys and invites, switched off the webhooks it set and removed the
+ * settings it saved (`disableAccount`), so what this switches off and removes
+ * below is normally nothing: it stays for what a restore or a host edit left.
  *
  * What they uploaded, the templates and milestones they made and the
  * dependencies they recorded stay, with nobody named as having made them. A
@@ -944,16 +950,19 @@ export type UserRemoved = {
  */
 export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | null {
 	return inTransaction(() => {
-		const user = sqlite
+		const row = sqlite
 			.prepare(
-				`SELECT username,
+				`SELECT username, disabled_at AS disabledAt,
 					(SELECT COUNT(*) FROM api_keys WHERE user_id = users.id) AS apiKeys,
 					(SELECT COUNT(*) FROM report_schedules WHERE user_id = users.id) AS reportSchedules,
 					(SELECT COUNT(*) FROM card_comments WHERE user_id = users.id) AS comments
 				FROM users WHERE id = ?`
 			)
-			.get(userId) as Omit<UserRemoved, 'referencesCleared' | 'webhooksSwitchedOff' | 'settingsRemoved'> | undefined;
-		if (!user) return null;
+			.get(userId) as (Omit<UserRemoved, 'referencesCleared' | 'webhooksSwitchedOff' | 'settingsRemoved'> & { disabledAt: string | null }) | undefined;
+		if (!row) return null;
+		// Only a disabled account is deleted (card 2671, D14): 409, nothing written.
+		requireDisabledAccount(row);
+		const { disabledAt: _disabledAt, ...user } = row;
 
 		let referencesCleared = 0;
 		for (const { table, column } of USER_REFERENCES) {

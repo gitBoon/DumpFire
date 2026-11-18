@@ -72,7 +72,11 @@ export function createDecision(caller: SessionUser | null, at: { boardId: number
 	const owner =
 		board.productOwnerUserId === null
 			? undefined
-			: db.select({ id: users.id, username: users.username, role: users.role }).from(users).where(eq(users.id, board.productOwnerUserId)).get();
+			: db
+					.select({ id: users.id, username: users.username, role: users.role, disabledAt: users.disabledAt })
+					.from(users)
+					.where(eq(users.id, board.productOwnerUserId))
+					.get();
 	const productOwner = owner && canEditBoard(owner, board.id) ? owner : null;
 
 	const now = stamp();
@@ -121,7 +125,11 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
 	const deciderUserId = readId(body, 'deciderUserId', { required: true });
 	const revision = readText(body, 'revision', { required: true });
 	if (decision.status !== 'draft' && deciderUserId === user.id) error(403, 'You cannot make yourself the decider of a decision that is open');
-	const account = db.select({ id: users.id, username: users.username, role: users.role }).from(users).where(eq(users.id, deciderUserId)).get();
+	const account = db
+		.select({ id: users.id, username: users.username, role: users.role, disabledAt: users.disabledAt })
+		.from(users)
+		.where(eq(users.id, deciderUserId))
+		.get();
 	// The code review's C5: only an administrator is told that an id is no account; anyone else is told it cannot be the decider, at the same step.
 	if (!account && isAdmin(user)) error(400, `deciderUserId ${deciderUserId} is not an account`);
 

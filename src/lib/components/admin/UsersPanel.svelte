@@ -24,12 +24,28 @@
   An account that may still set up two-step sign-in on its password alone, in
   the 14 days after the release that turned it on, says until when (card
   2769, decision 25: `passwordSetUpUntil`).
+
+  ⛔ disables an account (card 2671), asked through the same confirm with the
+  caller's password, naming what ends, what stays, the teams it alone owns,
+  and the settings that go. A disabled account's row is greyed, says when and
+  by whom, and offers ✅ Enable and 🗑️ Delete alone, neither to an
+  administrator for an account the superadmin disabled; 🔑, 📧 and 🛡️ are not
+  offered there. 🗑️ is offered on a disabled row only: an account is
+  disabled before it is deleted.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
 	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
-	import { answerBody, failureMessage, userDeleteWarning } from '$lib/api';
+	import {
+		answerBody,
+		failureMessage,
+		settingsGoneWords,
+		userDeleteWarning,
+		userDisableWarning,
+		userEnableWarning,
+		type SettingsGone
+	} from '$lib/api';
 	import { mayManageAccount } from '$lib/account-rule';
 	import { NO_ANSWER, sentAsking, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
@@ -37,9 +53,6 @@
 	import { toasts } from '$lib/stores/toast';
 	import { ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import ResetPasswordDialog from './ResetPasswordDialog.svelte';
-
-	/** The settings an account had set that a role change or a delete removes, or would (card 2397): `SettingsRemoved` on the server. */
-	type SettingsGone = { mail: boolean; appUrl: boolean; destinations: string[] };
 
 	let {
 		data,
@@ -306,23 +319,8 @@
 		return named.mail || named.appUrl || named.destinations.length > 0 ? named : null;
 	}
 
-	/**
-	 * Those settings in words (card 2397's review): what going does to
-	 * invites, password resets and the links in mail, and each destination by
-	 * name. Said before a change is sent and after it is done.
-	 */
-	function settingsWords(named: SettingsGone): string {
-		const { destinations } = named;
-		return [
-			...(named.mail
-				? ['the mail settings, so no mail is sent, invites and password resets included, until an administrator sets them again in Email / SMTP']
-				: []),
-			...(named.appUrl ? ["the App URL, so the links in mail point to the server's APP_URL, or else its ORIGIN"] : []),
-			...(destinations.length > 0
-				? [`the backup destination${destinations.length === 1 ? '' : 's'} ${destinations.map((d) => `"${d}"`).join(', ')}`]
-				: [])
-		].join('; ');
-	}
+	/** Those settings in words (card 2397's review), as `$lib/api` says them for the disable's confirm too (card 2671). */
+	const settingsWords = settingsGoneWords;
 
 	/** What an answer says was removed with the account's role or the account, in words, or null where it says nothing was. */
 	function settingsRemovedWords(username: string, removed: SettingsGone | null): string | null {
@@ -512,6 +510,92 @@
 		confirm('Delete User', deleteWarning(userId, username, held), (proof: StepUpProof) => deleteUser(userId, proof), { askPassword: true });
 	}
 
+	/** A count in words: `1 session`, `2 sessions`. */
+	const counted = (n: unknown, noun: string) => `${typeof n === 'number' ? n : 0} ${noun}${n === 1 ? '' : 's'}`;
+
+	/**
+	 * ⛔ pressed (card 2671): what the account holds is read first, as for a
+	 * delete, then the page's confirm names what ends, what stays, the teams it
+	 * alone owns, and for an administrator the mail settings, App URL,
+	 * destinations and failure address that go, and asks for the caller's
+	 * password; Confirm disables.
+	 */
+	async function askDisableUser(userId: number, username: string) {
+		if (askingAbout.has(userId)) return;
+		markAsking(userId, true);
+		let held: SettingsGone | null | 'unread';
+		try {
+			held = await settingsHeldNow(userId);
+		} finally {
+			markAsking(userId, false);
+		}
+		const failureAddress = data.users.find((u) => u.id === userId)?.failureAddress === true;
+		confirm(
+			'Disable User',
+			`${userDisableWarning(username, soleOwnerOf(userId), held, failureAddress)} ${ASKS_FOR_PASSWORD}`,
+			(proof: StepUpProof) => disableUser(userId, username, proof),
+			{ askPassword: true }
+		);
+	}
+
+	/**
+	 * ⛔, confirmed: the disable, with the caller's password. The toast gives
+	 * what it ended, what of the settings went, and says when the notice to the
+	 * account could not be sent; a refusal of the password is given back to the
+	 * confirm.
+	 */
+	async function disableUser(userId: number, username: string, proof: StepUpProof): Promise<string | void> {
+		const started = toasts.navigation();
+		const res = await sentAsking(
+			() => fetch(`/api/users/${userId}/disable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode }) }),
+			'Failed to disable user'
+		);
+		if (typeof res === 'string') return res;
+		if (!res) return;
+		const result = await answerBody(res);
+		const gone = settingsNamed(result?.settingsRemoved);
+		const failureAddress = (result?.settingsRemoved as { failureAddress?: unknown } | undefined)?.failureAddress === true;
+		await invalidateAll();
+		const ended =
+			`${username} was disabled: ended ${counted(result?.sessionsEnded, 'session')}, ${counted(result?.apiKeysEnded, 'API key')} ` +
+			`and ${counted(result?.requestLinksEnded, 'request link')}, switched off ${counted(result?.webhooksSwitchedOff, 'webhook')} ` +
+			`and paused ${counted(result?.reportSchedulesPaused, 'report schedule')}.`;
+		const removed = [settingsRemovedWords(username, gone), failureAddress ? `Their address was taken out of the backup failure address.` : null]
+			.filter((part) => part !== null)
+			.join(' ');
+		const notice =
+			result?.noticeSent === true
+				? ''
+				: gone?.mail
+					? ` The notice to ${username} could not be sent: the mail settings were removed with them.`
+					: ` The notice to ${username} could not be sent.`;
+		const said = `${ended}${removed === '' ? '' : ` ${removed}`}${notice}`;
+		if (gone !== null) settingsRemoved(gone);
+		showToast(said, removed === '' && notice === '' ? 'success' : 'warning', started);
+	}
+
+	/** ✅ pressed (card 2671): the page's confirm lists what comes back and what does not, and asks for the caller's password; Confirm enables. */
+	function askEnableUser(userId: number, username: string) {
+		confirm('Enable User', `${userEnableWarning(username)} ${ASKS_FOR_PASSWORD}`, (proof: StepUpProof) => enableUser(userId, username, proof), {
+			askPassword: true
+		});
+	}
+
+	/** ✅, confirmed: the enable, with the caller's password; the toast says when the notice to the account could not be sent. */
+	async function enableUser(userId: number, username: string, proof: StepUpProof): Promise<string | void> {
+		const started = toasts.navigation();
+		const res = await sentAsking(
+			() => fetch(`/api/users/${userId}/enable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode }) }),
+			'Failed to enable user'
+		);
+		if (typeof res === 'string') return res;
+		if (!res) return;
+		const result = await answerBody(res);
+		await invalidateAll();
+		if (result?.noticeSent === true) showToast(`${username} was enabled again.`);
+		else showToast(`${username} was enabled again. The notice to ${username} could not be sent.`, 'warning', started);
+	}
+
 	/**
 	 * 📧 pressed: the page's confirm asks first, for the caller's own password
 	 * too (card 2701: an invite is a password reset by another way), and
@@ -670,11 +754,16 @@
 	{:else}
 		<div class="user-list">
 			{#each data.users as u (u.id)}
-				<div class="user-row">
+				<!-- Card 2671: a disabled account's row is greyed, says when and by whom, and offers only Enable and Delete. -->
+				{@const disabled = !!u.disabledAt}
+				<div class="user-row" class:disabled-row={disabled}>
 					<span class="user-row-emoji">{u.emoji}</span>
 					<div class="user-row-info">
 						<span class="user-row-name">{u.username}</span>
 						<span class="user-row-email">{u.email}</span>
+						{#if disabled}
+							<span class="user-row-disabled">Disabled {u.disabledAt?.slice(0, 10)}{u.disabledByName ? ` by ${u.disabledByName}` : ''}</span>
+						{/if}
 						<!-- Card 2769 (decision 25): leave to set up two-step sign-in on the password alone, in the 14 days after the release. -->
 						{#if u.passwordSetUpUntil}
 							<span class="user-row-setup">may set up on password until {u.passwordSetUpUntil} UTC</span>
@@ -705,18 +794,31 @@
 								>Change</button>
 							{/if}
 						{/if}
-						<button class="btn-ghost btn-sm" onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>
+						<!-- Card 2671: a disabled account's password, invite and two-step sign-in are not reset (D18). -->
+						{#if !disabled}
+							<button class="btn-ghost btn-sm" onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>
+						{/if}
 						{#if u.id !== data.currentUser.id}
-							<!-- Card 2773: refused for an account that uses two-step sign-in, aria-disabled so its title says why. -->
-							<button
-								class="btn-ghost btn-sm invite-resend"
-								onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)}
-								disabled={inviteInFlight !== null || inviteLink !== null}
-								aria-disabled={u.twoStep === true ? 'true' : undefined}
-								title={u.twoStep === true ? INVITE_REFUSED : 'Resend invite email'}
-							>{inviteInFlight === u.id && twoStepInFlight === null ? '…' : '📧'}</button>
-							<button class="btn-ghost btn-sm" onclick={(e) => askResetTwoStep(u.id, u.username, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Reset two-step sign-in">{twoStepInFlight === u.id ? '…' : '🛡️'}</button>
-							<button class="btn-ghost btn-sm danger" onclick={() => askDeleteUser(u.id, u.username)} title="Delete user">🗑️</button>
+							{#if !disabled}
+								<!-- Card 2773: refused for an account that uses two-step sign-in, aria-disabled so its title says why. -->
+								<button
+									class="btn-ghost btn-sm invite-resend"
+									onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)}
+									disabled={inviteInFlight !== null || inviteLink !== null}
+									aria-disabled={u.twoStep === true ? 'true' : undefined}
+									title={u.twoStep === true ? INVITE_REFUSED : 'Resend invite email'}
+								>{inviteInFlight === u.id && twoStepInFlight === null ? '…' : '📧'}</button>
+								<button class="btn-ghost btn-sm" onclick={(e) => askResetTwoStep(u.id, u.username, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Reset two-step sign-in">{twoStepInFlight === u.id ? '…' : '🛡️'}</button>
+								<!-- Card 2671: an account is disabled before it is deleted, and keeps its name on what it did. -->
+								<button class="btn-ghost btn-sm danger" onclick={() => askDisableUser(u.id, u.username)} title="Disable user">⛔</button>
+							{:else if isSuperadmin || !u.disabledBySuperadmin}
+								<!-- Enable, not offered to an administrator for an account the superadmin disabled (S14). -->
+								<button class="btn-ghost btn-sm" onclick={() => askEnableUser(u.id, u.username)} title="Enable user">✅</button>
+							{/if}
+							<!-- Delete, for a disabled account alone (D14), and not to an administrator for one the superadmin disabled (S14b). -->
+							{#if disabled && (isSuperadmin || !u.disabledBySuperadmin)}
+								<button class="btn-ghost btn-sm danger" onclick={() => askDeleteUser(u.id, u.username)} title="Delete user">🗑️</button>
+							{/if}
 						{/if}
 					{:else}
 						<span class="superadmin-lock" title={u.role === 'superadmin' ? "The superadmin's account is theirs alone" : "Only the superadmin can change an administrator's account"}>🔒</span>
@@ -745,6 +847,9 @@
 	.user-row-name { font-weight: 600; font-size: 0.85rem; }
 	.user-row-email { font-size: 0.72rem; color: var(--text-tertiary); }
 	.user-row-setup { font-size: 0.72rem; color: var(--accent-amber); }
+	/* Card 2671: a disabled account, greyed, with when and by whom. */
+	.disabled-row { opacity: 0.6; }
+	.user-row-disabled { font-size: 0.72rem; color: var(--text-tertiary); }
 
 	.role-badge {
 		font-size: 0.65rem; font-weight: 700; text-transform: uppercase;

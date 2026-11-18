@@ -311,7 +311,8 @@
 					<div class="add-member-row">
 						<select class="form-input" onchange={(e) => { addMemberRole = 'member'; addMemberTeamId = team.id; addMemberUserId = Number((e.target as HTMLSelectElement).value); }}>
 							<option value="">Add member...</option>
-							{#each data.users.filter(u => !team.members.some(m => m.userId === u.id)) as u}
+							<!-- A disabled account is named on the panel, and cannot be added (card 2671). -->
+							{#each data.users.filter(u => !u.disabledAt && !team.members.some(m => m.userId === u.id)) as u}
 								<option value={u.id}>{u.emoji} {u.username}</option>
 							{/each}
 						</select>

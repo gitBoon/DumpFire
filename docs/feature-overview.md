@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.89
+version: 1.90
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2671
+  - account-disable
   - card-2894
   - card-2752
   - card-2761
@@ -730,6 +732,8 @@ On the day it was turned on everyone was signed out once and set it up at their 
 - **Roles**: Superadmin, Admin, and User
 - **Invite via email** — send password-set links to new users, who then set up two-step sign-in
 - **Reset two-step sign-in** — for someone who has lost their phone and has no recovery code left: a set-up link, shown once, to hand over in person. With a recovery code they can replace the phone themselves on My Account
+- **Disable and enable** (card 2671) — a disabled account cannot sign in, its sessions, API keys and request links end, its webhooks are switched off and its report schedules paused, and nobody can assign, share with, include or mail it; its name stays on everything it did. Enabling gives back its sign-in alone. An account the superadmin disabled is enabled or deleted by the superadmin only
+- **Delete** — only an account already disabled, for when the person and their comments must go
 - **Emoji avatars** — each user chooses their own emoji identity
 
 ### People Directory

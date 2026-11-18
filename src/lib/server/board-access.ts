@@ -19,8 +19,25 @@ const BOARD_ROLES: readonly BoardRole[] = ['owner', 'editor', 'viewer'];
  * All an access decision needs to know about the caller. Narrower than
  * `SessionUser` so a plain user row can be checked too — when deciding whether
  * someone else may be assigned a card, say.
+ *
+ * `disabledAt` (card 2671): an account that is disabled has no access to any
+ * board, whatever its role, memberships and teams. The session and API key
+ * carry null (every gate refuses a disabled account), and a caller that has
+ * read the account's row hands its `disabled_at` on; left out, it is read by
+ * id (`isDisabledActor`), one read, so that a check is never wrong for want of it.
  */
-export type Actor = Pick<SessionUser, 'id' | 'role'>;
+export type Actor = Pick<SessionUser, 'id' | 'role'> & { disabledAt?: string | null };
+
+/**
+ * Whether `user` is a disabled account (card 2671): from `disabledAt` where
+ * the caller has it, or read by id where it is left out. An id that is no
+ * account is not disabled: what follows refuses it on its own terms.
+ */
+export function isDisabledActor(user: Actor): boolean {
+	if (user.disabledAt !== undefined) return user.disabledAt !== null;
+	const row = db.select({ disabledAt: users.disabledAt }).from(users).where(eq(users.id, user.id)).get();
+	return row !== undefined && row.disabledAt !== null;
+}
 
 /**
  * True for both administrator roles.
@@ -36,9 +53,11 @@ export function isAdmin(user: Pick<SessionUser, 'role'> | null | undefined): boo
 /**
  * Get the effective role a user has on a board.
  * Returns null if no access.
- * Priority: admin/superadmin → direct member → team member → public (viewer)
+ * Priority: a disabled account (none, card 2671) → admin/superadmin → direct
+ * member → team member → public (viewer)
  */
 export function getBoardRole(user: Actor, boardId: number): BoardRole | 'admin' | null {
+	if (isDisabledActor(user)) return null;
 	// Admins/superadmins always have full access
 	if (user.role === 'admin' || user.role === 'superadmin') {
 		return 'admin';
@@ -47,7 +66,8 @@ export function getBoardRole(user: Actor, boardId: number): BoardRole | 'admin' 
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) return null;
 
-	return roleOnBoard(user, board);
+	// Known to be enabled now: not read again.
+	return roleOnBoard({ id: user.id, role: user.role, disabledAt: null }, board);
 }
 
 /**
@@ -71,6 +91,8 @@ export function roleOnBoard(
 	board: Pick<Board, 'id' | 'createdBy' | 'isPublic'>,
 	without?: ShareLeftOut
 ): BoardRole | 'admin' | null {
+	// A disabled account has no board (card 2671), an administrator's included.
+	if (isDisabledActor(user)) return null;
 	if (user.role === 'admin' || user.role === 'superadmin') {
 		return 'admin';
 	}
@@ -144,6 +166,8 @@ export function getAccessibleBoardIds(user: Actor): number[] | null {
  * neither is read.
  */
 export function getAccessibleBoardsAndTeams(user: Actor): { boardIds: number[] | null; teamIds: number[] | null } {
+	// A disabled account opens no board and is counted in no team (card 2671).
+	if (isDisabledActor(user)) return { boardIds: [], teamIds: [] };
 	if (user.role === 'admin' || user.role === 'superadmin') {
 		return { boardIds: null, teamIds: null }; // No filter — sees everything
 	}
@@ -200,6 +224,8 @@ export function getAccessibleBoardsAndTeams(user: Actor): { boardIds: number[] |
  * `canEditBoard` of each board in turn read three or four rows a board.
  */
 export function editableBoardIds(user: Actor): Set<number> | null {
+	// A disabled account edits no board (card 2671).
+	if (isDisabledActor(user)) return new Set();
 	if (isAdmin(user)) return null;
 	const ids = new Set(db.select({ id: boards.id }).from(boards).where(eq(boards.createdBy, user.id)).all().map((b) => b.id));
 	const direct = new Map(
@@ -222,6 +248,8 @@ export function editableBoardIds(user: Actor): Set<number> | null {
  * `boardOwner` asks of a draft, for every board at once.
  */
 export function ownedBoardIds(user: Actor): Set<number> | null {
+	// A disabled account owns no board (card 2671).
+	if (isDisabledActor(user)) return new Set();
 	if (isAdmin(user)) return null;
 	const ids = new Set(db.select({ id: boards.id }).from(boards).where(eq(boards.createdBy, user.id)).all().map((b) => b.id));
 	const owned = db
@@ -261,7 +289,8 @@ export function editorsOf(board: Board): { id: number; username: string; emoji: 
 	if (possible.size === 0) return [];
 
 	return db
-		.select({ id: users.id, username: users.username, emoji: users.emoji, role: users.role })
+		// With `disabledAt` (card 2671): a disabled account edits nothing, read in these rows.
+		.select({ id: users.id, username: users.username, emoji: users.emoji, role: users.role, disabledAt: users.disabledAt })
 		.from(users)
 		.where(inArray(users.id, [...possible]))
 		.orderBy(asc(users.username))

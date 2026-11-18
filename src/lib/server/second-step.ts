@@ -43,7 +43,7 @@ import { db, sqlite } from './db';
 import { apiKeys, boards, mfaRecoveryCodes, users, webhooks, type User } from './db/schema';
 import { afterCommit, inTransaction } from './db/transaction';
 import { registerStampFunctions } from './db/timestamps';
-import { createSession, keyEnded, setSessionCookie, type NewSession } from './auth';
+import { AccountDisabled, createSession, keyEnded, setSessionCookie, type NewSession } from './auth';
 import { rememberBrowser } from './known-browsers';
 import { accountKey, countSignInAttempt, forgetWrongSignIns, refundSignInAttempts } from './rate-limit';
 import { currentMfaKey } from './mfa-key';
@@ -254,7 +254,7 @@ export async function afterPassword(accepted: PasswordAccepted, cookies: Cookies
 		return fail(409, { error: PASSWORD_CHANGED_DURING_SIGN_IN, identity });
 	};
 	const gone = (): LoginFailure => {
-		noSecondStep('the account was deleted while its password was checked', 'warn');
+		noSecondStep('the account was deleted or disabled while its password was checked', 'warn');
 		return fail(400, { error: SIGN_IN_EXPIRED, identity });
 	};
 	const needsLink = (): LoginFailure => {
@@ -280,8 +280,10 @@ export async function afterPassword(accepted: PasswordAccepted, cookies: Cookies
 			return { kind: 'issued', purpose, token: issued.token, shortId: issued.shortId, fromLink: enrolmentLinkHash !== null };
 		};
 
-		// An account deleted while its password was checked has no way in at all.
-		if (db.select({ id: users.id }).from(users).where(eq(users.id, user.id)).get() === undefined) return { kind: 'gone' };
+		// An account deleted while its password was checked has no way in at all,
+		// nor one disabled meanwhile (card 2671).
+		const still = db.select({ disabledAt: users.disabledAt }).from(users).where(eq(users.id, user.id)).get();
+		if (still === undefined || still.disabledAt !== null) return { kind: 'gone' };
 
 		if (holdsFactor(user.id)) return issue('verify', null, null);
 
@@ -389,11 +391,12 @@ async function releaseMail(
 			| { kind: 'mailed earlier'; at: Date }
 			| { kind: 'issued'; token: string; email: string; username: string } => {
 			const account = db
-				.select({ passwordHash: users.passwordHash, email: users.email, username: users.username })
+				.select({ passwordHash: users.passwordHash, email: users.email, username: users.username, disabledAt: users.disabledAt })
 				.from(users)
 				.where(eq(users.id, user.id))
 				.get();
-			if (!account) return { kind: 'gone' };
+			// Deleted, or disabled (card 2671, S16), since its password was checked: no link.
+			if (!account || account.disabledAt !== null) return { kind: 'gone' };
 			if (account.passwordHash !== checkedHash) return { kind: 'changed' };
 			if (!mayStillEnrolOnPassword(user.id, now)) return { kind: 'needs link' };
 			registerStampFunctions(sqlite);
@@ -615,7 +618,7 @@ export function finishSignIn(
 /**
  * The live challenge of `purpose` this browser holds, and its account, read
  * in the caller's transaction (`verifyStep`, `enrolCode`): none, or its
- * account gone, is `expired`; an account whose password hash is not the one
+ * account gone or disabled (card 2671), is `expired`; an account whose password hash is not the one
  * the challenge was issued against has the challenge deleted, a WARN said
  * after the commit, and is `password changed`.
  */
@@ -628,7 +631,8 @@ function openChallenge(
 	const challenge = liveChallenge(token, purpose, now);
 	if (!challenge) return { kind: 'expired' };
 	const user = db.select().from(users).where(eq(users.id, challenge.user_id)).get();
-	if (!user) return { kind: 'expired' };
+	// Gone, or disabled since the challenge was issued (card 2671): expired.
+	if (!user || user.disabledAt !== null) return { kind: 'expired' };
 	if (user.passwordHash !== challenge.password_hash) {
 		deleteChallenge(challenge.token_hash);
 		const what = purpose === 'verify' ? 'sign-in' : 'set-up';
@@ -696,6 +700,27 @@ type Outcome =
 	| { kind: 'signed in'; session: NewSession; user: User; report: SignInReport | null; lane: Lane; by: 'authenticator' | 'recovery code' };
 
 /**
+ * `run`, a sign-in completion's transaction, with the `AccountDisabled` that
+ * `createSession` throws for a disabled account (card 2671, S5) answered as
+ * an expired sign-in: the transaction it was thrown in is rolled back, so the
+ * challenge is left untaken and nothing it counted or spent stands; `undo`
+ * forgets what the caller gathered to tell after it; one WARN says why.
+ */
+function expiredIfDisabled<T>(run: () => T, address: string | null, undo: () => void = () => {}): T | { kind: 'expired' } {
+	try {
+		return run();
+	} catch (err) {
+		if (!(err instanceof AccountDisabled)) throw err;
+		undo();
+		log.warn(`A sign-in of user ${err.userId} was refused at its last step: the account is disabled`, undefined, {
+			userId: err.userId,
+			ip: address
+		});
+		return { kind: 'expired' };
+	}
+}
+
+/**
  * Check a code against the challenge this browser holds (4.5), in one
  * synchronous transaction, in this order: a live verify challenge; the
  * account's password hash unchanged since it was issued; for an
@@ -722,7 +747,7 @@ export function verifyStep(input: VerifyInput, cookies: Cookies, url: URL): Veri
 	const at = new Date(now);
 	const fromIp = input.address ?? 'unknown';
 
-	const outcome = inTransaction((): Outcome => {
+	const outcome = expiredIfDisabled(() => inTransaction((): Outcome => {
 		// 1. A live challenge of purpose verify; 2. the password hash it was
 		// issued against still the account's.
 		const opened = openChallenge(input.token, 'verify', now, input.address);
@@ -889,6 +914,9 @@ export function verifyStep(input: VerifyInput, cookies: Cookies, url: URL): Veri
 			return { kind: 'too many' };
 		}
 		return { kind: 'wrong', recovery: false };
+	}), input.address, () => {
+		// Rolled back: nothing it would have told of happened.
+		notices.length = 0;
 	});
 
 	for (const [userId, notice, detail] of notices) sendSecurityNotice(userId, notice, detail);
@@ -1075,7 +1103,7 @@ export function enrolConfirm(input: EnrolInput, cookies: Cookies, url: URL): Enr
 	const now = Date.now();
 
 	type Confirmed = { kind: 'enrolled'; session: NewSession; user: User; report: SignInReport | null; grant: string; lane: Lane };
-	const outcome = inTransaction((): { kind: 'refused'; why: string; userId: number | null } | { kind: 'not ready' | 'unavailable' } | Confirmed => {
+	const outcome = expiredIfDisabled(() => inTransaction((): { kind: 'refused'; why: string; userId: number | null } | { kind: 'not ready' | 'unavailable' } | Confirmed => {
 		const challenge = liveChallenge(input.token, 'enrol', now);
 		if (!challenge) return { kind: 'refused', why: 'no live set-up', userId: null };
 		if (challenge.stage !== 'codes_shown') return { kind: 'not ready' };
@@ -1128,9 +1156,12 @@ export function enrolConfirm(input: EnrolInput, cookies: Cookies, url: URL): Enr
 			grant: challenge.enrol_grant ?? 'unknown',
 			lane: laneOf(challenge)
 		};
-	});
+	}), input.address);
 
 	switch (outcome.kind) {
+		// A disabled account's set-up (card 2671): its session refused, everything rolled back.
+		case 'expired':
+			return refuse(cookies, url, 400, SIGN_IN_EXPIRED, true);
 		case 'not ready':
 			return refuse(cookies, url, 409, ENROL_NOT_READY);
 		case 'unavailable':

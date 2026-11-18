@@ -354,6 +354,86 @@ function carryHolds(live: Database.Database, holds: readonly HoldHere[]): number
 	return carried;
 }
 
+/**
+ * An account of this server's that is disabled (migration 0072, card 2671), as
+ * `disabledHere` reads it: with the account that disabled it, by id,
+ * `created_at` and role, or nulls where that account is gone.
+ */
+type DisabledHere = {
+	id: number;
+	createdAt: string;
+	disabledAt: string;
+	disabledBy: number | null;
+	disablerCreatedAt: string | null;
+	disablerRole: string | null;
+};
+
+/**
+ * This server's disabled accounts, read before a restore clears `users` (card
+ * 2671, S6): by id and `created_at`, which name one account for its whole
+ * life (schema.ts), with when, and by whom by the same two (the code review's
+ * CS3). None where the database has no such columns, asked of its columns
+ * (CS4); any other failure throws, and the restore is rolled back.
+ */
+function disabledHere(live: Database.Database): DisabledHere[] {
+	const columns = columnNamesOf(live, 'users');
+	if (!columns.includes('disabled_at') || !columns.includes('disabled_by')) return [];
+	return live
+		.prepare(
+			`SELECT u.id, u.created_at AS createdAt, u.disabled_at AS disabledAt, u.disabled_by AS disabledBy,
+				d.created_at AS disablerCreatedAt, d.role AS disablerRole
+			 FROM users u LEFT JOIN users d ON d.id = u.disabled_by
+			 WHERE u.disabled_at IS NOT NULL`
+		)
+		.all() as DisabledHere[];
+}
+
+/**
+ * Carry this server's disabled accounts onto the same accounts restored (card
+ * 2671, S6, D17): a restored account with the same id and `created_at` as one
+ * disabled here is disabled again, whatever the backup had, so that a restore
+ * never lets a disabled account back in, from a backup made before it was
+ * disabled or before migration 0072 alike. Never onto a restored superadmin,
+ * whom nobody may disable, and who must stay able to sign in.
+ *
+ * `disabled_by` is kept only where the account that disabled it is restored
+ * too, by id and `created_at` (the code review's CS3): an id alone may name
+ * someone else in the backup. Where it is not, and that account was the
+ * superadmin here, it is the restored superadmin, so that only the
+ * superadmin may undo it there too (S14); else NULL. What disabling ended is
+ * ended again for each: their restored API keys deleted and their restored
+ * report schedules paused. Their webhooks are switched off by the restore's
+ * sweep, which runs after this. Returns the ids carried.
+ */
+function carryDisabled(live: Database.Database, disabled: readonly DisabledHere[]): number[] {
+	if (disabled.length === 0) return [];
+	const restored = live.prepare('SELECT id FROM users WHERE id = ? AND created_at = ? AND role <> ?');
+	const sameAccount = live.prepare('SELECT 1 FROM users WHERE id = ? AND created_at = ?');
+	const superadmin = live.prepare("SELECT id FROM users WHERE role = 'superadmin' AND disabled_at IS NULL ORDER BY id LIMIT 1");
+	const disable = live.prepare('UPDATE users SET disabled_at = ?, disabled_by = ? WHERE id = ?');
+	const keys = live.prepare('DELETE FROM api_keys WHERE user_id = ?');
+	const schedules = live.prepare('UPDATE report_schedules SET enabled = 0, updated_at = ? WHERE user_id = ? AND enabled = 1');
+	const carried: number[] = [];
+	for (const account of disabled) {
+		if (restored.get(account.id, account.createdAt, 'superadmin') === undefined) continue;
+		const disabler =
+			account.disabledBy !== null && account.disablerCreatedAt !== null && sameAccount.get(account.disabledBy, account.disablerCreatedAt) !== undefined
+				? account.disabledBy
+				: null;
+		const by =
+			disabler !== null
+				? disabler
+				: account.disablerRole === 'superadmin'
+					? ((superadmin.get() as { id: number } | undefined)?.id ?? null)
+					: null;
+		disable.run(account.disabledAt, by, account.id);
+		keys.run(account.id);
+		schedules.run(stamp(), account.id);
+		carried.push(account.id);
+	}
+	return carried;
+}
+
 /** This server's 0071 setting as stored, read before a restore clears `settings`; null where it has none. */
 function webhookKeysRecordedHere(live: Database.Database): string | null {
 	if (!columnNamesOf(live, 'settings').includes('value')) return null;
@@ -568,7 +648,8 @@ export function backupLacksSuperadmin(backup: Database.Database): boolean {
 }
 
 /**
- * Whether `database` has user accounts and none of them is the superadmin:
+ * Whether `database` has user accounts and none of them is the superadmin, a
+ * disabled superadmin counting as none (card 2671, D4):
  * `backupLacksSuperadmin`, asked of any database. `restoreFromBackup` asks it
  * of the restored rows before it commits. Both counts read the table's own
  * rows, never an index (`NOT INDEXED`), as the restore copies them: in a
@@ -580,11 +661,13 @@ export function lacksSuperadmin(database: Database.Database): boolean {
 	const users = (database.prepare('SELECT COUNT(*) AS n FROM users NOT INDEXED').get() as { n: number }).n;
 	if (users === 0) return false;
 
-	const hasRole = (database.prepare('PRAGMA table_info("users")').all() as { name: string }[]).some(
-		(column) => column.name === 'role'
-	);
-	if (!hasRole) return true;
-	const superadmins = (database.prepare("SELECT COUNT(*) AS n FROM users NOT INDEXED WHERE role = 'superadmin'").get() as { n: number }).n;
+	const columns = (database.prepare('PRAGMA table_info("users")').all() as { name: string }[]).map((column) => column.name);
+	if (!columns.includes('role')) return true;
+	// A disabled superadmin (a host edit, a crafted backup) is none (card 2671,
+	// D4): nobody could sign in as them. A database from before 0072 has no
+	// disabled one.
+	const enabled = columns.includes('disabled_at') ? ' AND disabled_at IS NULL' : '';
+	const superadmins = (database.prepare(`SELECT COUNT(*) AS n FROM users NOT INDEXED WHERE role = 'superadmin'${enabled}`).get() as { n: number }).n;
 	return superadmins === 0;
 }
 
@@ -594,11 +677,19 @@ export function lacksSuperadmin(database: Database.Database): boolean {
  * can sign in to undo it. Empty where there are no users, or no `role`.
  */
 export function superadminsOf(database: Database.Database): string[] {
-	try {
-		return database.prepare("SELECT username FROM users WHERE role = 'superadmin' ORDER BY id").pluck().all() as string[];
-	} catch {
-		return [];
+	// A disabled superadmin cannot sign in to undo it, so is not named (card
+	// 2671, E15); a database from before 0072 has the column not at all.
+	for (const sql of [
+		"SELECT username FROM users WHERE role = 'superadmin' AND disabled_at IS NULL ORDER BY id",
+		"SELECT username FROM users WHERE role = 'superadmin' ORDER BY id"
+	]) {
+		try {
+			return database.prepare(sql).pluck().all() as string[];
+		} catch {
+			// No such column, or no such table: the next, then none.
+		}
 	}
+	return [];
 }
 
 /** What the import answers for a backup that `backupLacksSuperadmin`. */
@@ -1185,6 +1276,8 @@ function restoreInOneSnapshot(
 			const keysRecordedHere = webhookKeysRecordedHere(live);
 			// And its webhooks switched off for good, whatever their secret (card 2752's code review, CS5): see above.
 			const holdsHere = webhookHoldsHere(live);
+			// And its disabled accounts (card 2671, S6): see `carryDisabled`.
+			const disabledAccountsHere = disabledHere(live);
 			// The sign-ins left at their second step, which the clear below
 			// ends (card 2769, CS1): said once the restore is committed. No
 			// notice is mailed, since the accounts are the backup's from here.
@@ -1399,6 +1492,13 @@ function restoreInOneSnapshot(
 							: `; ${group.table} is not a table a restore replaces, and its rows are the ones it had before`)
 				);
 			}
+
+			// This server's disabled accounts disabled again on the same accounts
+			// restored (card 2671, S6): before the superadmin is asked about,
+			// so that the answer is of the accounts as they will be, and before
+			// the sweep below, which then switches off the webhooks they set. Not
+			// caught: a restore that could not carry them is rolled back.
+			if (tables.includes('users')) carryDisabled(live, disabledAccountsHere);
 
 			// Nothing is committed that leaves user accounts and no superadmin
 			// among them: nobody could export, import or reset again, and

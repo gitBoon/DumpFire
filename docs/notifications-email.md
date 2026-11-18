@@ -1,10 +1,12 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.82
+version: 1.83
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2671
+  - account-disable
   - card-2894
   - card-2893
   - card-2752
@@ -30,7 +32,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Complete guide to DumpFire's notification pipeline: the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
+description: "Complete guide to DumpFire's notification pipeline: the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -855,6 +857,17 @@ says what to do if it was not the owner. **None holds a code, a secret, a token 
 | `codes-regenerated` (card 2772) | `New recovery codes were made for your DumpFire account` | A new set of recovery codes made on the Account page. "A new set of ten recovery codes was made for your DumpFire account on *time* from *address*. The old codes no longer work." | None |
 | `report-schedule-set` (card 2751) | `A report schedule was made on your DumpFire account`; for a change, `A report schedule of yours was changed on DumpFire` | A report schedule made, given an address, turned on or widened, each confirmed with the password and a code. Names what was done, when and from where, the schedule's name, what it covers and every address it is sent to. See [Report Schedule Notices](#report-schedule-notices-card-2751) | None |
 | `report-schedules-running` (card 2751) | `Your DumpFire report schedules` | Once, at the first start after card 2751's release, to each owner of a report schedule that is on, listing each of theirs that is on. See [Report Schedule Notices](#report-schedule-notices-card-2751) | Once |
+| `account-disabled` (card 2671) | `Your DumpFire account was disabled` | An administrator disables the account. Names who (`SecurityNoticeDetail.by`) and when, and never the address it was done from, which is the administrator's and kept on the `AUTH` line alone (the code review's CS1), and that every session and API key ended, the webhooks were switched off and the report schedules paused, and "Nothing else will be mailed to you as an account holder." Sent after the commit and awaited by the disable route; not sent where the disable removed the mail settings, and the answer's `noticeSent` is then false | None |
+| `account-enabled` (card 2671) | `Your DumpFire account was enabled again` | An administrator enables it. Names who and when, never the address (CS1), and that the API keys, webhooks and report schedules were not given back | None |
+
+**Nothing else is mailed to a disabled account as an account holder** (card 2671, S7, S16).
+`shouldNotifyUser` answers false for it, read with its preferences in one row, so no assignment,
+mention, request or report mail reaches it; `getUserNotifPrefs(userId, { refuseDisabled })`
+refuses it for the senders that read the preferences first; the release's set-up link is not
+mailed; a decision reaches it neither by its account nor by a personal link (`reachOf` skips it
+with `account_disabled`); the requester's progress mail of a request it raised is not sent
+(`requesterMailAddress`), the team still seeing the address. The two notices above are the only
+mail it is sent.
 
 Card 2772's three are each confirmed with the password and a code (a step-up), and sent after
 the commit of the write they report. An authenticator's name is its holder's own text: it is
@@ -1037,8 +1050,9 @@ no account is mailed a **personal link**,
 `/decision-link/[token]`, while the person has no account, the row never held one on this
 decision, and the snapshot address is still the person's. Everyone else gets no mail, and the
 record says why in `mail_skipped { mail, reason }`, the reason the first of `deleted`, `left`,
-`account_not_attached`, `account_removed` and `address_changed`. A re-send to such a participant
-is refused 409 in that reason's words.
+`account_not_attached`, `account_disabled` (card 2671: the row's account is disabled, "<name>'s
+account is disabled: they cannot be mailed about this decision"), `account_removed` and
+`address_changed`. A re-send to such a participant is refused 409 in that reason's words.
 
 **A fresh link in every mail.** Only a link's hash is stored, so a later mail cannot carry the
 link an earlier one did. Each mail to a link holder issues a new link, which replaces the last
@@ -2831,7 +2845,9 @@ retries and no queue.
 
 **The owners' mails** (`notifyWebhooksSwitchedOff` and `notifyWebhookCreated` in
 `notifications.ts`). The board's creator and every account with a member row `owner`, or, where
-the board has neither, every administrator and the superadmin, are mailed once per write,
+the board has neither, every administrator and the superadmin, are mailed once per write, a
+disabled account never among them (`webhookRecipients`, card 2671, S4: a board whose owners are
+all disabled is told through its enabled administrators),
 grouped across its webhooks and boards: "A webhook on your board was switched off" (or "*N*
 webhooks on your boards were switched off"), naming each board, each webhook's id and host
 (never the path, the query or the secret), why, and the cause ("Sam was taken off the board by

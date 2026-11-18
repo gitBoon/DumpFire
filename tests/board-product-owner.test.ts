@@ -124,4 +124,15 @@ describe('PUT /api/v1/boards/{boardId} with productOwnerUserId', () => {
 			await expectRefused(() => update({ productOwnerUserId: value }), 400, 'productOwnerUserId must be an id');
 		}
 	});
+
+	// Card 2671 (case 23): a disabled account can edit no board, so is no Product Owner (F4).
+	it('refuses, 400, an editor of the board whose account is disabled, in the words for one who cannot edit it', async () => {
+		sqlite.prepare("UPDATE users SET disabled_at = '2099-01-01 09:00:00' WHERE id = ?").run(editor.id);
+
+		await expectRefused(
+			() => update({ productOwnerUserId: editor.id }),
+			400,
+			`productOwnerUserId ${editor.id} cannot edit this board: a board's Product Owner must be an account that can edit it`
+		);
+	});
 });

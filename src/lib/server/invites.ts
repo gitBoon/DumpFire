@@ -156,7 +156,7 @@ export function endUnusedInvites(userId: number): number {
 export function usableInvite(token: string) {
 	// The stored form, as `issueInvite` writes the expiry (card 2095).
 	const now = stamp();
-	const found = db.select({ invite: inviteTokens, role: users.role })
+	const found = db.select({ invite: inviteTokens, role: users.role, disabledAt: users.disabledAt })
 		.from(inviteTokens)
 		.innerJoin(users, eq(users.id, inviteTokens.userId))
 		.where(and(
@@ -169,7 +169,9 @@ export function usableInvite(token: string) {
 			sql`NOT EXISTS (SELECT 1 FROM "mfa_factors" WHERE "mfa_factors"."user_id" = "invite_tokens"."user_id")`
 		))
 		.get();
-	if (!found || found.role === 'superadmin') return undefined;
+	// Nor for a disabled account (card 2671): disabling ended its invites, and
+	// one a restore or a host edit left would set its password all the same.
+	if (!found || found.role === 'superadmin' || found.disabledAt !== null) return undefined;
 	// The query compares text, which lets through an expiry that names no
 	// moment (`zzz` sorts after every stamp) and ISO with its `T` on the day
 	// itself; so the expiry is read as the moment it names as well, and one

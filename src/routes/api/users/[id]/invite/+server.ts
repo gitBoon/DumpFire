@@ -6,6 +6,7 @@ import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smt
 import { sendInviteEmail } from '$lib/server/notifications';
 import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { requireAdmin, requireManagedAccount } from '$lib/server/route-guards';
+import { requireEnabledAccount } from '$lib/server/account-disable';
 import { pathId, readBody } from '$lib/server/request-body';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
@@ -67,6 +68,8 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 			superadmin: 'Only superadmin can reset superadmin password, which an invite does',
 			admin: 'Only superadmin can reset an admin\'s password, which an invite does'
 		});
+		// A disabled account is not invited (card 2671, D18): enable it first.
+		requireEnabledAccount(target);
 
 		// An account that holds a second factor is not invited (card 2773,
 		// decision 9): the invite would not work (`usableInvite`), and its holder

@@ -38,10 +38,10 @@ import {
 import { db } from './db';
 import { afterCommit } from './db/transaction';
 import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams, taskRequests } from './db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, isNull } from 'drizzle-orm';
 import { createLogger } from './logger';
 import { issueRequestLinkNow, requestReplyUrl } from './request-tokens';
-import { requesterAddress } from './request-access';
+import { requesterMailAddress } from './request-access';
 import { canViewBoard, type Actor } from './board-access';
 import { WITHHELD_CARD_TITLE, WITHHELD_SUBTASK_TITLE } from './withheld';
 
@@ -130,9 +130,11 @@ export function forgetUnreadablePrefsWarnings(): void {
  * here too: unreadable ones are shown with every switch off, as they are
  * applied, and saving any switch replaces them.
  */
-export function getUserNotifPrefs(userId: number): NotifPrefs | null {
-	const user = db.select({ notificationPrefs: users.notificationPrefs })
+export function getUserNotifPrefs(userId: number, opts: { refuseDisabled?: boolean } = {}): NotifPrefs | null {
+	const user = db.select({ notificationPrefs: users.notificationPrefs, disabledAt: users.disabledAt })
 		.from(users).where(eq(users.id, userId)).get();
+	// `refuseDisabled` (card 2671): a disabled account's are read as off, every switch, and nothing is said.
+	if (opts.refuseDisabled && user !== undefined && user.disabledAt !== null) return null;
 	if (!user?.notificationPrefs) return {};
 	try {
 		const stored: unknown = JSON.parse(user.notificationPrefs);
@@ -153,7 +155,8 @@ export function getUserNotifPrefs(userId: number): NotifPrefs | null {
 
 /**
  * Check if a user should receive a specific notification type.
- * Returns false if the user has disabled that type or disabled all emails.
+ * Returns false if the user has disabled that type or disabled all emails,
+ * or if their account is disabled (card 2671).
  *
  * `type` is a key of the one list in `$lib/notification-prefs`, which the
  * account page draws and its route saves (card 2146): a mail cannot read a
@@ -163,7 +166,9 @@ export function getUserNotifPrefs(userId: number): NotifPrefs | null {
  * `prefs_off` on the record when it says no, inside the write.
  */
 export function shouldNotifyUser(userId: number, type: NotificationPref): boolean {
-	const prefs = getUserNotifPrefs(userId);
+	// A disabled account is mailed nothing as an account holder (card 2671,
+	// D16): read with its preferences, in the one row.
+	const prefs = getUserNotifPrefs(userId, { refuseDisabled: true });
 	// Unreadable: off (card 2724).
 	if (prefs === null) return false;
 	// Master toggle
@@ -234,7 +239,8 @@ function getAssigneeEmails(cardId: number, boardId: number, excludeUserId?: numb
 	const userIds = assignees.map(a => a.userId).filter(id => id !== excludeUserId);
 	if (userIds.length === 0) return [];
 
-	const rows = db.select({ id: users.id, email: users.email, username: users.username, role: users.role })
+	// With `disabledAt` (card 2671): a disabled assignee can open no board, read in these rows.
+	const rows = db.select({ id: users.id, email: users.email, username: users.username, role: users.role, disabledAt: users.disabledAt })
 		.from(users)
 		.where(inArray(users.id, userIds))
 		.all();
@@ -472,7 +478,10 @@ export type SecurityNotice =
 	| 'codes-regenerated'
 	// Card 2751 (D13, D14): a report schedule made or widened, and the schedules running at the release.
 	| 'report-schedule-set'
-	| 'report-schedules-running';
+	| 'report-schedules-running'
+	// Card 2671 (D16): the account disabled, or enabled again, by an administrator (`by`).
+	| 'account-disabled'
+	| 'account-enabled';
 
 /** A report schedule as a notice names it (card 2751): its name, what it covers, and every address it is sent to. */
 export type NoticeSchedule = { name: string; covers: string; addresses: string[] };
@@ -540,6 +549,8 @@ export type SecurityNoticeDetail = {
 	 * `wrong-code` say so.
 	 */
 	confirming?: true;
+	/** The administrator who disabled or enabled the account, by username (card 2671). */
+	by?: string;
 };
 
 /**
@@ -729,6 +740,26 @@ export function securityNoticeSent(userId: number, notice: SecurityNotice, detai
 				'From this release, making a schedule, adding an address to one, turning one on or widening what it reports asks for ' +
 				'your password and a code from your authenticator app. Delete any schedule here you do not recognise, on the Reports page.',
 			after: 'If you do not recognise one of these, delete it, change your password, and tell an administrator.'
+		},
+		// Card 2671 (D16): the one mail a disabled account is sent, and its pair; the administrator's name is text, escaped.
+		// Never the address it was done from (the code review's CS1): that is the administrator's, kept in the AUTH line alone.
+		'account-disabled': {
+			subject: 'Your DumpFire account was disabled',
+			title: 'Your account was disabled',
+			body:
+				`Your DumpFire account was disabled by ${escapeHtml(detail.by ?? 'an administrator')} on ${escapeHtml(when)}. ` +
+				'You can no longer sign in, every session and API key of yours has ended, the webhooks you set up were switched off ' +
+				'and your report schedules paused. Nothing else will be mailed to you as an account holder.',
+			after: 'If you did not expect this, ask an administrator.'
+		},
+		'account-enabled': {
+			subject: 'Your DumpFire account was enabled again',
+			title: 'Your account was enabled again',
+			body:
+				`Your DumpFire account was enabled again by ${escapeHtml(detail.by ?? 'an administrator')} on ${escapeHtml(when)}. ` +
+				'You can sign in with your own password and authenticator. Your API keys, webhooks and report schedules were not ' +
+				'given back: make or turn on again those you need.',
+			after: 'If you did not expect this, tell an administrator straight away.'
 		}
 	};
 	const { subject, title, body, after } = words[notice];
@@ -826,6 +857,10 @@ export function notifyBoardShared(boardId: number, boardName: string, userEmail:
  * Who is told of a board's webhooks (D4): its creator and every account with
  * a member row `owner` on it, or, where it has none, every administrator and
  * the superadmin. By id, with the address and name each is mailed by.
+ *
+ * A disabled account is mailed nothing as an account holder (card 2671, S4):
+ * it is left out of the owners and of the administrators alike, so a board
+ * whose owners are all disabled is told through its enabled administrators.
  */
 function webhookRecipients(boardId: number): { id: number; email: string; username: string }[] {
 	const board = db.select({ createdBy: boards.createdBy }).from(boards).where(eq(boards.id, boardId)).get();
@@ -838,10 +873,12 @@ function webhookRecipients(boardId: number): { id: number; email: string; userna
 	if (board?.createdBy != null) ownerIds.add(board.createdBy);
 	const owners = ownerIds.size === 0
 		? []
-		: db.select({ id: users.id, email: users.email, username: users.username }).from(users).where(inArray(users.id, [...ownerIds])).all();
+		: db.select({ id: users.id, email: users.email, username: users.username }).from(users)
+			.where(and(inArray(users.id, [...ownerIds]), isNull(users.disabledAt)))
+			.all();
 	if (owners.length > 0) return owners;
 	return db.select({ id: users.id, email: users.email, username: users.username }).from(users)
-		.where(inArray(users.role, ['admin', 'superadmin']))
+		.where(and(inArray(users.role, ['admin', 'superadmin']), isNull(users.disabledAt)))
 		.all();
 }
 
@@ -884,7 +921,8 @@ export function notifyWebhooksSwitchedOff(items: readonly WebhookInMail[], cause
 	const bySetter = new Map<number, { email: string; items: WebhookInMail[] }>();
 	for (const item of items) {
 		if (item.setter === undefined || toldOf.get(item.boardId)?.has(item.setter)) continue;
-		const setter = db.select({ id: users.id, email: users.email, role: users.role }).from(users).where(eq(users.id, item.setter)).get();
+		// With `disabledAt` (card 2671): a disabled setter can open no board, so is told nothing.
+		const setter = db.select({ id: users.id, email: users.email, role: users.role, disabledAt: users.disabledAt }).from(users).where(eq(users.id, item.setter)).get();
 		if (!setter || !canViewBoard(setter, item.boardId)) continue;
 		const entry = bySetter.get(setter.id) ?? { email: setter.email, items: [] };
 		entry.items.push(item);
@@ -1392,8 +1430,9 @@ export function notifyRequesterProgress(event: RequesterProgressEvent): void {
 
 	if (!request) return;
 	// The requester's address as it is now: the account's email for a request
-	// made signed in (card 2171). None, and nothing is sent.
-	const address = requesterAddress(request);
+	// made signed in (card 2171). None, and nothing is sent; none either for a
+	// requester whose account is disabled (card 2671).
+	const address = requesterMailAddress(request);
 	if (address === null) return;
 
 	// Skip self-notifications — don't email the requester about their own actions
@@ -1700,7 +1739,7 @@ export function notifyPlanCreated(
 	if (assigneeIds.size === 0) return;
 
 	const recipients = db
-		.select({ id: users.id, email: users.email, username: users.username, role: users.role })
+		.select({ id: users.id, email: users.email, username: users.username, role: users.role, disabledAt: users.disabledAt })
 		.from(users)
 		.where(inArray(users.id, [...assigneeIds]))
 		.all();

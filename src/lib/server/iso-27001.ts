@@ -227,18 +227,21 @@ export const CHECKLIST: readonly IsoItem[] = [
 		title: 'Identity management',
 		theme: 'organisational',
 		applicability: 'app',
-		status: 'partly-met',
+		status: 'met',
 		how:
 			'Accounts are unique and made by administrators, by invite or with a chosen password. ' +
-			'An account can only be deleted, not disabled.',
+			'An account is disabled before it can be deleted: it keeps its name on everything it did and cannot sign in, and an administrator can enable it again (card 2671).',
 		evidence: [
 			{ path: 'src/routes/api/users/+server.ts' },
 			{ path: 'src/lib/server/invites.ts' },
+			{ path: 'src/routes/api/users/[id]/disable/+server.ts', symbol: 'POST' },
+			{ path: 'src/lib/server/account-disable.ts', symbol: 'disableAccount' },
+			{ path: 'tests/account-disable.test.ts' },
 			{ path: 'src/routes/api/users/[id]/+server.ts', symbol: 'DELETE' },
 			{ path: 'tests/user-delete.test.ts' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2671]
+		gapCards: []
 	},
 	{
 		ref: 'A.5.17',
@@ -275,16 +278,17 @@ export const CHECKLIST: readonly IsoItem[] = [
 		title: 'Access rights',
 		theme: 'organisational',
 		applicability: 'supports',
-		status: 'partly-met',
+		status: 'met',
 		how:
-			'A role change, a delete and a password reset end what the account held: its sessions and keys end, the webhooks it set are switched off and its report schedules paused, and each is logged. ' +
+			'A role change, disabling and a password reset end what the account held: its sessions and keys end, the webhooks it set are switched off and its report schedules paused, and each is logged. ' +
 			'Removing an authenticator ends the account\'s other sessions and pending sign-ins (card 2772). ' +
 			'A change that takes an account\'s board access away switches off, for good, the webhooks it set on that board; giving the access back does not switch them on (card 2752). ' +
 			'Revoking an API key switches off, in the same change, the webhooks it set up, and one whose key expires or passes its deadline is switched off at the next start, restore or event (card 2893). ' +
 			'Every way of setting a password, the holder\'s own change included, and a reset of an account\'s two-step sign-in, from the admin page or the host, pause the account\'s report schedules; the reset says how many API keys and webhooks the account still has, and its mail names them, and removing an authenticator lists its schedules that are on (card 2894). ' +
-			'Still open: an account cannot be disabled.',
+			'Disabling an account ends all of this at once and refuses it at every gate, on every board and on every decision; a restore keeps it disabled (card 2671).',
 		evidence: [
 			{ path: 'src/lib/server/auth.ts', symbol: 'endAccountAccess' },
+			{ path: 'src/lib/server/account-disable.ts', symbol: 'disableAccount' },
 			{ path: 'src/routes/api/account/password/+server.ts', symbol: 'endAccountAccess' },
 			{ path: 'scripts/mfa-reset.mjs', symbol: 'report_schedules' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'switchOffHeld' },
@@ -295,7 +299,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: AUTH_DOC, anchor: 'passwords-sessions-and-invites-change-together' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2671],
+		gapCards: [],
 		organisationalPart: 'Review regularly who holds which role.'
 	},
 	organisational('A.5.19', 'annex-a', 'Information security in supplier relationships'),
@@ -342,7 +346,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 		applicability: 'supports',
 		status: 'partly-met',
 		how:
-			'People, accounts and task requests can be deleted. A backup holds no session, unused invite or requester link, and requester links are held only as hashes (card 2870) ' +
+			'People, accounts once disabled, and task requests can be deleted. A backup holds no session, unused invite or requester link, and requester links are held only as hashes (card 2870) ' +
 			'and end 90 days after their request is settled (card 2902). ' +
 			'A requester\'s address is never written to the system log: a mail to them that fails names the request (card 2896). ' +
 			'Still open: what DumpFire holds about one person cannot be exported or erased in one step.',
@@ -565,7 +569,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 		applicability: 'app',
 		status: 'met',
 		how:
-			'Accounts, people, cards, archived cards, decisions and task requests are deleted by route. The attachment trash empties after 30 days, and the images of long-closed cards retire. ' +
+			'Accounts once disabled, people, cards, archived cards, decisions and task requests are deleted by route. The attachment trash empties after 30 days, and the images of long-closed cards retire. ' +
 			'The system log is pruned after LOG_RETENTION_DAYS, and backup copies are pruned to Keep Last.',
 		evidence: [
 			{ path: 'src/routes/api/users/[id]/+server.ts', symbol: 'DELETE' },

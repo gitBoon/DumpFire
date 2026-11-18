@@ -217,7 +217,9 @@ export function clearCardsWarning(boardName: string): string {
 }
 
 /**
- * What goes with a deleted user, and what is left (`deleteUser`).
+ * What goes with a deleted user, and what is left (`deleteUser`). Only a
+ * disabled account is deleted (card 2671, D14), so the confirmation says the
+ * account is disabled already and what the delete still takes, for good.
  *
  * A template can be deleted by whoever made it or an administrator, and a
  * milestone that belongs to no board can be changed by the same two. A request
@@ -245,7 +247,72 @@ export function userDeleteWarning(username: string, soleOwnerOf: string[] = []):
 		soleOwnerOf.length === 0
 			? ''
 			: ` They are the only owner of: ${soleOwnerOf.join(', ')}, so the delete will be refused: make someone else an owner or delete ${soleOwnerOf.length === 1 ? 'that team' : 'those teams'} first.`;
-	return `Delete user "${username}"?${refused} Their comments, API keys and report schedules are deleted, and so are their team and board memberships and their card assignments. Webhooks they set up are switched off; the board's owner or an administrator can switch one on again through the API. Files they uploaded and the milestones, templates and dependencies they created are kept. Boards they created are kept, and each board's other members and teams keep their access. A board with no other owner then has no owner, and only an administrator can change who it is shared with, put it under a card or delete it. Templates they created, and milestones of theirs that belong to no board, can then be managed by administrators only. Requests addressed to them are kept, and only an administrator can then accept, reject or reply to them. Their XP stays on the leaderboard.`;
+	return `Delete user "${username}" for good?${refused} The account is disabled already, and its sessions, API keys and webhooks ended with that; deleting it also takes their comments, report schedules, team and board memberships and card assignments, and cannot be undone. Files they uploaded and the milestones, templates and dependencies they created are kept. Boards they created are kept, and each board's other members and teams keep their access. A board with no other owner then has no owner, and only an administrator can change who it is shared with, put it under a card or delete it. Templates they created, and milestones of theirs that belong to no board, can then be managed by administrators only. Requests addressed to them are kept, and only an administrator can then accept, reject or reply to them. Their XP stays on the leaderboard.`;
+}
+
+/** The settings an account had set that a role change, a delete or a disable removes, or would (card 2397): `SettingsRemoved` on the server. */
+export type SettingsGone = { mail: boolean; appUrl: boolean; destinations: string[] };
+
+/**
+ * Those settings in words (card 2397's review): what going does to invites,
+ * password resets and the links in mail, and each destination by name. Said
+ * before a change is sent and after it is done.
+ */
+export function settingsGoneWords(named: SettingsGone): string {
+	const { destinations } = named;
+	return [
+		...(named.mail
+			? ['the mail settings, so no mail is sent, invites and password resets included, until an administrator sets them again in Email / SMTP']
+			: []),
+		...(named.appUrl ? ["the App URL, so the links in mail point to the server's APP_URL, or else its ORIGIN"] : []),
+		...(destinations.length > 0 ? [`the backup destination${destinations.length === 1 ? '' : 's'} ${destinations.map((d) => `"${d}"`).join(', ')}`] : [])
+	].join('; ');
+}
+
+/**
+ * What disabling an account ends, and what stays (card 2671, `disableAccount`):
+ * named before it is pressed. `soleOwnerOf` the teams it is the only owner of,
+ * which keep it as owner (D20); `held` the settings it saved that go with it,
+ * as read just now, or `'unread'`; `failureAddress` whether its address is
+ * the backup failure address, which it is taken out of (S7).
+ */
+export function userDisableWarning(
+	username: string,
+	soleOwnerOf: string[] = [],
+	held: SettingsGone | null | 'unread' = null,
+	failureAddress = false
+): string {
+	const owner =
+		soleOwnerOf.length === 0
+			? ''
+			: ` They are the only owner of: ${soleOwnerOf.join(', ')}. ${soleOwnerOf.length === 1 ? 'That team keeps' : 'Those teams keep'} them as owner until you make someone else one.`;
+	const settingsGo = [
+		...(held === 'unread'
+			? ['whatever of the mail settings, the App URL and the backup destinations they set is still theirs (it could not be read just now)']
+			: held === null || settingsGoneWords(held) === ''
+				? []
+				: [settingsGoneWords(held)]),
+		...(failureAddress ? ['their address from the backup failure address, so backup failures are not mailed to them'] : [])
+	];
+	const removed = settingsGo.length === 0 ? '' : ` This also removes what they set: ${settingsGo.join('; ')}.`;
+	return (
+		`Disable user "${username}"? They can no longer sign in. At once their sessions, invites, pending sign-ins, API keys and the links to the requests they made end, the webhooks they set up are switched off and their report schedules paused; none of this comes back if the account is enabled again.` +
+		` Nobody can assign them, share a board with them, include them in a decision or send them a request, and nothing is mailed to them but a notice that the account was disabled.` +
+		` Their name stays wherever it is shown, and their comments, password and authenticators are kept.${owner}${removed}`
+	);
+}
+
+/**
+ * What enabling a disabled account gives back, and what it does not (card
+ * 2671, D8, S10): named before it is pressed, with advice for an account that
+ * may have been taken.
+ */
+export function userEnableWarning(username: string): string {
+	return (
+		`Enable user "${username}" again? They can sign in with their own password and authenticator, and so have back their access to the boards and teams they are on, the boards they own, being a board's Product Owner or a decision's decider, being sent requests, and their mail.` +
+		' Their API keys, webhooks, report schedules and request links stay ended: they make or turn on again the ones they need.' +
+		' If the account may have been used by someone else, reset its password and its two-step sign-in once it is enabled.'
+	);
 }
 
 /** What a reset clears and what it keeps (`api/admin/reset`). */

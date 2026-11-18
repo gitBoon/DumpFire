@@ -2,7 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { boards, columns, users } from '$lib/server/db/schema';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
-import { asc, inArray } from 'drizzle-orm';
+import { asc, inArray, isNull } from 'drizzle-orm';
 import { COLUMN_ORDER } from '$lib/server/card-order';
 import type { PageServerLoad } from './$types';
 
@@ -40,9 +40,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 	}
 	const boardsWithColumns = userBoards.map(b => ({ ...b, columns: columnsOf.get(b.id) ?? [] }));
 
-	// Get all users for assignee picker
+	// Get all users for assignee picker: a disabled account is assigned
+	// nothing, so is not offered (card 2671). The picker names nobody else.
 	const allUsers = db.select({ id: users.id, username: users.username, emoji: users.emoji })
-		.from(users).orderBy(asc(users.username)).all();
+		.from(users).where(isNull(users.disabledAt)).orderBy(asc(users.username)).all();
 
 	return { boards: boardsWithColumns, users: allUsers };
 };

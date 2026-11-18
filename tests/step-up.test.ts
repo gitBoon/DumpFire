@@ -344,7 +344,7 @@ const linkRevokedReasons = (participantId: number) =>
 // ─── 1 and 2. The list, and the routes that ask ──────────────────────────────
 
 describe('the list of what asks, pinned against the routes (cases 1 and 2)', () => {
-	it("is the forty actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two, card 2773's one, card 2771's three, card 2772's five and card 2751's three, each with why it asks", () => {
+	it("is the forty-two actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two, card 2773's one, card 2771's three, card 2772's five, card 2751's three and card 2671's two, each with why it asks", () => {
 		expect(Object.keys(STEP_UP_ACTIONS).sort()).toEqual(
 			[
 				'POST /api/admin/reset',
@@ -395,10 +395,13 @@ describe('the list of what asks, pinned against the routes (cases 1 and 2)', () 
 				// Card 2751 (D1, D2): a report schedule made, one given an address, turned on or widened, and the report mail.
 				'POST /api/report-schedules',
 				'PUT /api/report-schedules/[id]',
-				'POST /api/reports/email'
+				'POST /api/reports/email',
+				// Card 2671: an account disabled, and enabled again.
+				'POST /api/users/[id]/disable',
+				'POST /api/users/[id]/enable'
 			].sort()
 		);
-		expect(Object.keys(STEP_UP_ACTIONS)).toHaveLength(40);
+		expect(Object.keys(STEP_UP_ACTIONS)).toHaveLength(42);
 		for (const [action, why] of Object.entries(STEP_UP_ACTIONS)) expect(why.trim().length, action).toBeGreaterThan(20);
 		expect(Object.isFrozen(STEP_UP_ACTIONS)).toBe(true);
 	});
@@ -608,6 +611,8 @@ describe('each admin action asks for the current password (case 3)', () => {
 			who: 'admin',
 			method: 'DELETE',
 			path: (s) => `/api/users/${s.member.id}`,
+			// Card 2671: only a disabled account is deleted.
+			setup: (s) => void db.update(users).set({ disabledAt: '2099-01-01 09:00:00', disabledBy: s.admin.id }).where(eq(users.id, s.member.id)).run(),
 			done: (res, s) => {
 				expect(res.body).toEqual({ success: true });
 				expect(db.select().from(users).where(eq(users.id, s.member.id)).get()).toBeUndefined();

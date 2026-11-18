@@ -1,10 +1,11 @@
 ---
 title: "Upstream Kanban: Options, the Commitment Point and Ideas Boards"
 category: Workflow
-version: 1.1
+version: 1.2
 status: As-Built
-date: 2026-10-27
+date: 2026-11-18
 tags:
+  - card-2671
   - upstream
   - downstream
   - kanban-method
@@ -239,7 +240,7 @@ erDiagram
 |---|---|
 | `columns.role` | `NULL`, an ordinary column whose title decides what it is, or `'options'`, the board's Options column: exactly one on every delivery board, titled Options, at its lowest position (card 2527) |
 | `boards.kind` | `'delivery'` (every board before 0060, and the default) or `'ideas'`; any other value would count as delivery everywhere |
-| `cards.committed_at`, `committed_by` | When and by whom the card crossed the commitment point; `NULL` while it is an option. `committed_by` is `SET NULL` when the account is deleted, as `created_by` is |
+| `cards.committed_at`, `committed_by` | When and by whom the card crossed the commitment point; `NULL` while it is an option. `committed_by` is `SET NULL` when the account is deleted, as `created_by` is; since card 2671 only a disabled account is deleted, and a disabled one keeps its name here |
 | `cards.discarded_at`, `discarded_by` | Set when an option is archived, in the same `UPDATE` as `archived_at`; cleared by a restore |
 | `idx_cards_committed_by`, `idx_cards_discarded_by` | The indexes every foreign key column leads (card 2106) |
 

@@ -402,7 +402,8 @@ src/
 │   │   │   └── transaction.ts      # inTransaction / afterCommit: all-or-nothing writes
 │   │   ├── auth.ts                 # Session and password management
 │   │   ├── board-access.ts         # Role-based board access control
-│   │   ├── deletes.ts              # What goes with a deleted card, column, board or user
+│   │   ├── deletes.ts              # What goes with a deleted card, column, board or user (a user once disabled)
+│   │   ├── account-disable.ts      # Disabling and enabling an account, and who may undo a disable
 │   │   ├── uploads.ts              # Attachment files, the 30-day trash, how files are served
 │   │   ├── backup.ts               # Scheduled backup orchestrator
 │   │   ├── backup-destinations.ts  # SFTP, S3, Google Drive, OneDrive providers

@@ -40,8 +40,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	// All users for the "add member" dropdown (available to team owners / admins),
 	// as GET /api/users lists them: no address or role but to an administrator
-	// (card 2128). Every user's went to every signed-in caller.
-	const allUsers = listUsersFor(user);
+	// (card 2128). Every user's went to every signed-in caller. The page names
+	// a team's members from it too, so a disabled account is kept, marked
+	// `disabled`, for the picker to leave out (card 2671).
+	const allUsers = listUsersFor(user, { naming: true });
 
 	return {
 		teams: teamsWithMembers,

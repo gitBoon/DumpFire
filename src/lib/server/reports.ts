@@ -1980,6 +1980,26 @@ function switchOffOverCap(schedule: ReportScheduleRow, nowStr: Stamp): boolean {
 }
 
 /**
+ * Pause a schedule whose owner's account is disabled (card 2671): switched
+ * off, as disabling switches off every schedule of the account, and said once
+ * at WARN naming the owner, the line's user. The write is conditional, so that
+ * of two runs that meet it only the one that paused it says so.
+ */
+function pauseForDisabledOwner(schedule: ReportScheduleRow, nowStr: Stamp): void {
+	const paused = db.update(reportSchedules)
+		.set({ enabled: false, updatedAt: nowStr })
+		.where(and(eq(reportSchedules.id, schedule.id), eq(reportSchedules.enabled, true)))
+		.run();
+	if (paused.changes === 1) {
+		log.warn(
+			`Report schedule ${schedule.id} "${schedule.name}", ${ownerWords(schedule)}, was paused: its owner's account is disabled. Nothing was sent.`,
+			undefined,
+			{ userId: schedule.userId }
+		);
+	}
+}
+
+/**
  * The days a scheduled report run at `now` covers: up to `now`, from the same
  * time by the schedule's clock `periodDays` dates earlier, in the stored form
  * (card 2159, the review's O-S4). Seven days from Monday 09:00 in London,
@@ -2069,13 +2089,21 @@ export async function runDueReportSchedules(now: Date): Promise<void> {
 
 			const owner = db.select().from(users).where(eq(users.id, schedule.userId)).get();
 			if (!owner) continue;
+			// A disabled owner (card 2671): disabling paused every schedule of
+			// theirs; one a restore or a host edit left on is paused here, said
+			// once at WARN, and nothing is sent.
+			if (owner.disabledAt !== null) {
+				pauseForDisabledOwner(schedule, nowStr);
+				continue;
+			}
 
 			const sessionUser: SessionUser = {
 				id: owner.id,
 				username: owner.username,
 				email: owner.email,
 				emoji: owner.emoji || '',
-				role: owner.role
+				role: owner.role,
+				disabledAt: null
 			};
 
 			const { start, end } = getPeriodForSchedule(schedule, now);

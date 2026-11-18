@@ -105,11 +105,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	}
 	const boardUsers = userIds.size
 		? db
-				.select({ id: users.id, username: users.username, emoji: users.emoji })
+				// A disabled account kept for its name, marked for the pickers to leave out (card 2671).
+				.select({ id: users.id, username: users.username, emoji: users.emoji, disabledAt: users.disabledAt })
 				.from(users)
 				.where(inArray(users.id, [...userIds]))
 				.all()
-				.map((u) => ({ ...u, emoji: u.emoji || '👤' }))
+				.map(({ disabledAt, ...u }) => ({ ...u, emoji: u.emoji || '👤', ...(disabledAt === null ? {} : { disabled: true as const }) }))
 		: [];
 
 	return json({

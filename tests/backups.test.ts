@@ -94,10 +94,13 @@ import {
 	backupLacksSuperadmin,
 	restorableTables,
 	restoreFromBackup,
-	rowsToRestore
+	rowsToRestore,
+	superadminsOf
 } from '$lib/server/db/restore';
-import { inviteTokens, taskRequests } from '$lib/server/db/schema';
+import { inviteTokens, taskRequests, users } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
+import { disableAccount } from '$lib/server/account-disable';
+import { removeSettingsOfFormerAdministrators } from '$lib/server/setting-setters';
 import { issueInvite } from '$lib/server/invites';
 import { KNOWN_BROWSER_SECRET_KEY } from '$lib/server/known-browsers';
 import {
@@ -1592,9 +1595,20 @@ describe('the line in the system log when there are users and no superadmin', ()
 
 		expect(lines()).toHaveLength(1);
 		expect(lines()[0].level).toBe('CRITICAL');
-		expect(lines()[0].message).toContain('There are 3 user account(s) and none of them is the superadmin');
+		expect(lines()[0].message).toContain('There are 3 user account(s) and none of them is an enabled superadmin');
 		expect(lines()[0].message).toContain('docs/deployment.md');
 		expect(lines()[0].message).toContain('If nobody can sign in as the superadmin');
+	});
+
+	// Card 2671 (case 42, S13, E15): a disabled superadmin cannot sign in, so counts as none.
+	it('is said for a database whose only superadmin is disabled, and superadminsOf names that one no more', () => {
+		expect(superadminsOf(sqlite)).toHaveLength(1);
+		sqlite.prepare("UPDATE users SET disabled_at = '2099-01-01 09:00:00' WHERE role = 'superadmin'").run();
+
+		expect(reportNoSuperadmin()).toBe(true);
+
+		expect(lines().map((line) => line.message)).toEqual([expect.stringContaining('none of them is an enabled superadmin')]);
+		expect(superadminsOf(sqlite)).toEqual([]);
 	});
 
 	it('is not said when there is a superadmin', () => {
@@ -5164,5 +5178,187 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 		expect(scriptOf(panel)).toContain("import { NO_ANSWER, sent, sentAsking, showToast } from '$lib/admin/send';");
 		expect(scriptOf(panel)).toContain("refused = await failureMessage(res, 'Failed to save backup settings');");
 		expect(scriptOf(connectBox)).toContain("showToast(said || 'Failed to connect', 'error', started);");
+	});
+});
+
+// ─── Card 2671: a restore keeps this server's disabled accounts disabled ─────
+
+describe('a restore and the accounts disabled here (card 2671, S6)', () => {
+	const DISABLED_AT = '2099-01-02 09:00:00';
+	let chief: SessionUser;
+	let admin: SessionUser;
+	let bob: SessionUser;
+	let hook: number;
+
+	beforeEach(() => {
+		resetDb();
+		chief = makeUser({ username: 'chief', role: 'superadmin' });
+		admin = makeUser({ username: 'admin', role: 'admin' });
+		bob = makeUser({ username: 'bob' });
+		makeApiKeyRow(bob);
+		sqlite.prepare("INSERT INTO report_schedules (user_id, name, scope, enabled) VALUES (?, 'Weekly', 'all', 1)").run(bob.id);
+		const board = makeBoard({ owner: bob, name: 'Bob board' }).board;
+		hook = makeWebhook(board, { setBy: bob, secret: 's3cret' }).id;
+	});
+
+	/** The running database as it is now, as a backup of it. */
+	const backupNow = () => opening(Buffer.from(sqlite.serialize()));
+	/** Bob disabled here, by `by`, as `disableAccount` writes it. */
+	const disableBob = (by: number | null = admin.id) =>
+		sqlite.prepare('UPDATE users SET disabled_at = ?, disabled_by = ? WHERE id = ?').run(DISABLED_AT, by, bob.id);
+	const bobNow = () => sqlite.prepare('SELECT disabled_at AS disabledAt, disabled_by AS disabledBy FROM users WHERE id = ?').get(bob.id);
+	const keysOfBob = () => (sqlite.prepare('SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ?').get(bob.id) as { n: number }).n;
+	const schedulesOfBob = () => sqlite.prepare('SELECT enabled FROM report_schedules WHERE user_id = ?').pluck().all(bob.id);
+
+	it('case 39: keeps an account disabled here disabled, though the backup was made before, its restored keys ended and its schedules paused', () => {
+		const backup = backupNow();
+		disableBob();
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(bobNow()).toEqual({ disabledAt: DISABLED_AT, disabledBy: admin.id });
+		expect(keysOfBob()).toBe(0);
+		expect(schedulesOfBob()).toEqual([0]);
+	});
+
+	it('case 39: does the same from a backup made before migration 0072, which has neither column', () => {
+		const backup = backupNow();
+		backup.pragma('foreign_keys = OFF');
+		backup.exec(`
+			CREATE TABLE users_before_0072 AS SELECT id, username, email, password_hash, emoji, role, notification_prefs, created_at,
+				mfa_known_wrong, mfa_other_wrong, mfa_known_resumes_at, mfa_other_resumes_at, mfa_recovery_wrong, mfa_recovery_resumes_at,
+				last_sign_in_at, last_sign_in_from, failed_codes_since_sign_in, security_banner, security_banner_at, mfa_password_enrol,
+				security_signal_last_at FROM users;
+			DROP TABLE users;
+			ALTER TABLE users_before_0072 RENAME TO users;
+		`);
+		expect((backup.pragma('table_info(users)') as { name: string }[]).map((c) => c.name)).not.toContain('disabled_at');
+		disableBob();
+
+		restoreFromBackup(sqlite, backup);
+
+		expect(bobNow()).toEqual({ disabledAt: DISABLED_AT, disabledBy: admin.id });
+		expect(keysOfBob()).toBe(0);
+	});
+
+	it('case 39: empties disabled_by where the account that disabled it is not among those restored', () => {
+		const backup = backupNow();
+		// Made after the backup, so the backup has no account of its id.
+		const later = makeUser({ username: 'later', role: 'admin' });
+		disableBob(later.id);
+
+		restoreFromBackup(sqlite, backup);
+
+		expect(bobNow()).toEqual({ disabledAt: DISABLED_AT, disabledBy: null });
+	});
+
+	// The code review's CS3: an id alone may name another account in the backup.
+	it('CS3: empties disabled_by where the backup holds an account of that id that is not the one that disabled it', () => {
+		const backup = backupNow();
+		backup.prepare("UPDATE users SET created_at = '2099-03-04 05:06:07' WHERE id = ?").run(admin.id);
+		disableBob(admin.id);
+
+		restoreFromBackup(sqlite, backup);
+
+		expect(bobNow()).toEqual({ disabledAt: DISABLED_AT, disabledBy: null });
+	});
+
+	it('CS3: names the restored superadmin where the superadmin here disabled it and is not restored as itself', () => {
+		const backup = backupNow();
+		// In the backup, the superadmin is the account of admin's id, and chief's id is another account, an administrator.
+		backup.prepare("UPDATE users SET role = 'admin', created_at = '2099-03-04 05:06:07' WHERE id = ?").run(chief.id);
+		backup.prepare("UPDATE users SET role = 'superadmin' WHERE id = ?").run(admin.id);
+		disableBob(chief.id);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(bobNow()).toEqual({ disabledAt: DISABLED_AT, disabledBy: admin.id });
+	});
+
+	it('CS3: keeps disabled_by where the account that disabled it is restored as itself', () => {
+		const backup = backupNow();
+		disableBob(chief.id);
+
+		restoreFromBackup(sqlite, backup);
+
+		expect(bobNow()).toEqual({ disabledAt: DISABLED_AT, disabledBy: chief.id });
+	});
+
+	// The code review's CS4: only a database without the columns is read as having no disabled accounts.
+	it('CS4: a failure reading the disabled accounts here is not taken for none: the restore throws and changes nothing', () => {
+		const backup = backupNow();
+		disableBob();
+		const before = snapshotDb();
+		const prepare = sqlite.prepare.bind(sqlite);
+		vi.spyOn(sqlite, 'prepare').mockImplementation(((source: string) => {
+			if (source.includes('AS disablerRole')) throw new Error('disk I/O error');
+			return prepare(source);
+		}) as typeof sqlite.prepare);
+
+		expect(() => restoreFromBackup(sqlite, backup)).toThrow();
+
+		vi.restoreAllMocks();
+		expectUnchanged(before);
+		expect(bobNow()).toEqual({ disabledAt: DISABLED_AT, disabledBy: admin.id });
+	});
+
+	it("case 40: never carries onto a restored superadmin, and the restore is accepted", () => {
+		const backup = backupNow();
+		backup.prepare("UPDATE users SET role = 'superadmin' WHERE id = ?").run(bob.id);
+		disableBob();
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(bobNow()).toEqual({ disabledAt: null, disabledBy: null });
+		expect(superadminsOf(sqlite)).toEqual(['chief', 'bob']);
+	});
+
+	it('case 40: refuses a backup whose only superadmin is disabled, and changes nothing', () => {
+		const backup = backupNow();
+		backup.prepare('UPDATE users SET disabled_at = ? WHERE id = ?').run(DISABLED_AT, chief.id);
+		const before = snapshotDb();
+
+		expect(backupLacksSuperadmin(backup)).toBe(true);
+		expect(() => restoreFromBackup(sqlite, backup)).toThrow(RestoreError);
+
+		expectUnchanged(before);
+	});
+
+	// The code review's CS2: the disable took bob's address out of the failure address; a backup from before puts it
+	// back, and the restore's sweep, which Import Backup runs once the restore is committed, takes it out again.
+	it('CS2: export, disable, import: the account stays disabled and its address stays out of the backup failure address', () => {
+		const failureTo = (notifyEmail: string) =>
+			sqlite.prepare("INSERT INTO settings (key, value) VALUES ('backup_config', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(
+				JSON.stringify({ schedule: 'daily', retention: 7, notifyOnFailure: true, notifyEmail })
+			);
+		const failureAddressNow = () =>
+			JSON.parse((sqlite.prepare("SELECT value FROM settings WHERE key = 'backup_config'").get() as { value: string }).value).notifyEmail;
+		failureTo(`ops@example.test, ${bob.email}`);
+		const backup = backupNow();
+		inTransaction(() => disableAccount(db.select().from(users).all().find((u) => u.id === bob.id)!, { id: admin.id, username: 'admin', role: 'admin' }));
+		expect(failureAddressNow()).toBe('ops@example.test');
+
+		restoreFromBackup(sqlite, backup);
+		expect(failureAddressNow()).toBe(`ops@example.test, ${bob.email}`);
+		removeSettingsOfFormerAdministrators('restore');
+
+		expect((bobNow() as { disabledAt: string | null }).disabledAt).not.toBeNull();
+		expect(failureAddressNow()).toBe('ops@example.test');
+	});
+
+	it("case 41: the carried account's webhook is switched off by the same restore's sweep, which runs after the carry", () => {
+		const backup = backupNow();
+		disableBob();
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.webhooksSwitchedOff).toBe(1);
+		expect(sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(hook)).toEqual({
+			active: 0,
+			heldBecause: 'setter cannot open'
+		});
 	});
 });

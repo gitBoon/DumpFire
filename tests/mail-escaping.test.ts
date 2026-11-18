@@ -381,7 +381,10 @@ describe('every mail in notifications.ts', () => {
 			// schedule's name, what it covers and its addresses text typed. Card 2894 (E24): factor-removed lists the
 			// schedules too, from the same detail.
 			'report-schedule-set',
-			'report-schedules-running'
+			'report-schedules-running',
+			// Card 2671 (case 36): the account disabled, and enabled again, each naming the administrator by name, text typed.
+			'account-disabled',
+			'account-enabled'
 		] as const).map(
 			(notice) => ({
 				name: `sendSecurityNotice (${notice})`,
@@ -398,7 +401,8 @@ describe('every mail in notifications.ts', () => {
 						webhooks: [{ board: MARKER, host: MARKER, createdAt: MARKER }],
 						authenticator: { label: MARKER, createdAt: MARKER },
 						schedules: [{ name: MARKER, covers: MARKER, addresses: [MARKER, MARKER] }],
-						change: { added: [MARKER], turnedOn: true, widenedTo: MARKER }
+						change: { added: [MARKER], turnedOn: true, widenedTo: MARKER },
+						by: MARKER
 					});
 				}
 			})
@@ -598,6 +602,16 @@ describe('every mail in notifications.ts', () => {
 
 		// A mail added to notifications.ts is added here, with markup in what it carries.
 		expect(covered).toEqual(exported);
+	});
+
+	// Card 2671's code review (CS1, E14 re-ruled): the disable and enable notices never name the address it was done
+	// from, which is the administrator's, given or not; the AUTH line keeps it.
+	it.each(['account-disabled', 'account-enabled'] as const)('sendSecurityNotice (%s) names no address, even one it is given', async (notice) => {
+		notifications.sendSecurityNotice(recipient.id, notice, { at: new Date(), address: '198.51.100.23', by: 'chief' });
+		await vi.waitFor(() => expect(sent.emails.length).toBe(1));
+
+		expect(sent.emails[0].html).toContain('by chief on');
+		expect(sent.emails[0].html).not.toContain('198.51.100.23');
 	});
 
 	it.each(MAILS)('$name escapes every text it carries, and its link', { timeout: 30_000 }, async ({ send, link }) => {

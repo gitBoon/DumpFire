@@ -59,6 +59,7 @@ import { toasts } from '$lib/stores/toast';
 import Toast from '$lib/components/Toast.svelte';
 import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, STEP_UP_CODE_SPENT, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, type StepUpProof } from '$lib/step-up-words';
 import { CODE, codeFieldIn, proofOf } from './helpers/step-up-code';
+import { userEnableWarning } from '$lib/api';
 
 // The page's data is read again after a write; here it is only counted. The
 // page's Toast listens for navigations, which there are none of here.
@@ -1488,6 +1489,11 @@ const pageData = {
 	dbSizeBytes: 0
 };
 
+/** `user` as the admin load gives a disabled account's row, disabled by the superadmin (card 2671). */
+const disabledRow = <T extends object>(user: T) => ({ ...user, disabledAt: '2099-01-02 09:00:00', disabledByName: 'chief', disabledBySuperadmin: true });
+/** The page's data with bob disabled: only a disabled account is offered 🗑️ (card 2671, D14). */
+const withBobDisabled = <T extends { users: { id: number }[] }>(data: T): T => ({ ...data, users: data.users.map((u) => (u.id === bob.id ? disabledRow(u) : u)) });
+
 /**
  * `props` with a prop the page binds, as the compiled `bind:` hands it over:
  * a getter and a setter, so that what the component sets it to is kept in
@@ -1621,7 +1627,9 @@ describe('the users panel, mounted', () => {
 
 	it('asks the page’s confirm before a delete, whose action sends it', async () => {
 		const confirm = vi.fn();
-		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		// Card 2671: 🗑️ is offered on a disabled row alone, and on no enabled one.
+		const target = draw(UsersPanel, { data: withBobDisabled(pageData), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		expect(target.querySelectorAll('button[title="Delete user"]')).toHaveLength(1);
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
@@ -1645,11 +1653,15 @@ describe('the users panel, mounted', () => {
 		toasts.subscribe((list) => (before = list))();
 		for (const toast of before) toasts.dismiss(toast.id);
 		const confirm = vi.fn();
-		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		// Card 2671: the delete of bob once disabled, and 📧 for bob as he is, each on a page of its own.
+		const disabledPage = draw(UsersPanel, { data: withBobDisabled(pageData), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 
-		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		disabledPage.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
 		expect(await confirm.mock.calls[0][2](proofOf('a-wrong-one'))).toBe('Password is incorrect. Nothing was changed.');
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 		// 📧 asks first too, and its refusal comes back the same way.
 		target.querySelector<HTMLButtonElement>('button[title="Resend invite email"]')!.click();
 		expect(confirm.mock.calls[1][0]).toBe('Send Invite');
@@ -1677,7 +1689,7 @@ describe('the users panel, mounted', () => {
 			{ id: 15, name: 'Ownerless', emoji: '🏢', members: [member(2, 'member')] }
 		];
 		const confirm = vi.fn();
-		const target = draw(UsersPanel, { data: { ...pageData, teams }, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		const target = draw(UsersPanel, { data: withBobDisabled({ ...pageData, teams }), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
@@ -1685,7 +1697,7 @@ describe('the users panel, mounted', () => {
 		const [title, message] = confirm.mock.calls[0];
 		expect(title).toBe('Delete User');
 		expect(message).toMatch(
-			/^Delete user "bob"\? They are the only owner of: Alpha, Zeta, so the delete will be refused: make someone else an owner or delete those teams first\. Their comments, /
+			/^Delete user "bob" for good\? They are the only owner of: Alpha, Zeta, so the delete will be refused: make someone else an owner or delete those teams first\. The account is disabled already, /
 		);
 		await confirm.mock.calls[0][2](proofOf(MINE));
 		await settle();
@@ -1694,11 +1706,11 @@ describe('the users panel, mounted', () => {
 
 	it('says nothing of teams in the confirmation for an account that alone owns none (card 2380)', async () => {
 		const confirm = vi.fn();
-		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		const target = draw(UsersPanel, { data: withBobDisabled(pageData), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
-		expect(confirm.mock.calls[0][1]).toMatch(/^Delete user "bob"\? Their comments, /);
+		expect(confirm.mock.calls[0][1]).toMatch(/^Delete user "bob" for good\? The account is disabled already, /);
 		expect(confirm.mock.calls[0][1]).not.toContain('only owner');
 	});
 
@@ -1748,6 +1760,108 @@ describe('the users panel, mounted', () => {
 		expect(document.activeElement).toBe(mine);
 		// The new password typed is kept, to send again with the right one.
 		expect(target.querySelector<HTMLInputElement>('input[placeholder="New password (min 8 chars)"]')!.value).toBe('a-new-password');
+	});
+});
+
+// Card 2671 (case 45): ⛔ disables an account, and a disabled account's row offers ✅ and 🗑️ alone.
+describe('disabling and enabling on the users panel, mounted (card 2671)', () => {
+	const ada = { id: 3, username: 'ada', email: 'ada@example.com', emoji: '🛠️', role: 'admin' };
+	/** The page's data with bob disabled by `by`, as the admin load gives a disabled row. */
+	const bobDisabled = (currentUser: typeof chief | typeof ada, by: { name: string; superadmin: boolean }) => ({
+		...pageData,
+		currentUser,
+		users: [
+			{ ...chief, apiKeys: null, webhooks: null, reportSchedules: null },
+			{ ...bob, disabledAt: '2099-01-02 09:00:00', disabledByName: by.name, disabledBySuperadmin: by.superadmin },
+			{ ...ada, apiKeys: null, webhooks: null, reportSchedules: null }
+		]
+	});
+	const rowOf = (target: HTMLElement, name: string) =>
+		[...target.querySelectorAll<HTMLElement>('.user-row')].find((row) => row.querySelector('.user-row-name')?.textContent === name)!;
+	const titlesIn = (row: HTMLElement) => [...row.querySelectorAll('button')].map((button) => button.title).filter((title) => title !== '');
+
+	it('shows a disabled row greyed, with when and by whom, offering Enable and Delete and not 🔑, 📧 or 🛡️; and neither to an administrator for one the superadmin disabled', () => {
+		const target = draw(UsersPanel, { data: bobDisabled(chief, { name: 'chief', superadmin: true }), isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+		const row = rowOf(target, 'bob');
+
+		expect(row.classList.contains('disabled-row')).toBe(true);
+		expect(row.querySelector('.user-row-disabled')?.textContent).toBe('Disabled 2099-01-02 by chief');
+		expect(titlesIn(row)).toEqual(['Enable user', 'Delete user']);
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		drawn = null;
+
+		// An administrator, for an account the superadmin disabled (S14, S14b): nothing but the row.
+		const asAdmin = draw(UsersPanel, { data: bobDisabled(ada, { name: 'chief', superadmin: true }), isSuperadmin: false, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+		expect(titlesIn(rowOf(asAdmin, 'bob'))).toEqual([]);
+		expect(rowOf(asAdmin, 'bob').querySelector('.user-row-disabled')?.textContent).toBe('Disabled 2099-01-02 by chief');
+	});
+
+	it('asks before a disable, naming the settings that go with an administrator, then sends it with the password and says what it ended and that the notice could not go', async () => {
+		answer = (what) =>
+			what === 'GET /api/users/3'
+				? Response.json({ id: 3, settingsSet: { mail: true, appUrl: false, destinations: ['NAS'] } })
+				: what === 'POST /api/users/3/disable'
+					? Response.json({
+							disabled: true,
+							sessionsEnded: 1,
+							apiKeysEnded: 0,
+							webhooksSwitchedOff: 0,
+							reportSchedulesPaused: 0,
+							requestLinksEnded: 0,
+							soleOwnerOf: [],
+							noticeSent: false,
+							settingsRemoved: { mail: true, appUrl: false, destinations: ['NAS'], failureAddress: true }
+						})
+					: undefined;
+		const confirm = vi.fn();
+		const settingsRemoved = vi.fn();
+		const data = { ...pageData, users: [...pageData.users, { ...ada, apiKeys: 0, webhooks: 0, reportSchedules: 0, failureAddress: true }] };
+		const target = draw(UsersPanel, { data, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), settingsRemoved, inviteLink: null });
+
+		rowOf(target, 'ada').querySelector<HTMLButtonElement>('button[title="Disable user"]')!.click();
+		await settle();
+		expect(confirm).toHaveBeenCalledTimes(1);
+		const [title, message, send, options] = confirm.mock.calls[0];
+		expect(title).toBe('Disable User');
+		expect(options).toEqual({ askPassword: true });
+		expect(message).toMatch(/^Disable user "ada"\? They can no longer sign in\./);
+		expect(message).toContain(
+			'This also removes what they set: the mail settings, so no mail is sent, invites and password resets included, until an administrator sets them again in Email / SMTP; ' +
+				'the backup destination "NAS"; their address from the backup failure address, so backup failures are not mailed to them.'
+		);
+		expect(message.endsWith(ASKS_FOR_PASSWORD)).toBe(true);
+
+		await send(proofOf(MINE));
+		await settle();
+		expect(asked('POST /api/users/3/disable').map((request) => request.body)).toEqual([{ currentPassword: MINE, currentCode: CODE }]);
+		expect(settingsRemoved).toHaveBeenCalledWith({ mail: true, appUrl: false, destinations: ['NAS'] });
+		let shown: { message: string }[] = [];
+		toasts.subscribe((list) => (shown = list as { message: string }[]))();
+		expect(shown.map((toast) => toast.message)).toContainEqual(
+			expect.stringMatching(/^ada was disabled: ended 1 session, 0 API keys and 0 request links, .* The notice to ada could not be sent: the mail settings were removed with them\.$/)
+		);
+	});
+
+	it("asks before an enable, listing what comes back and what does not, then sends it with the password", async () => {
+		answer = (what) => (what === 'POST /api/users/2/enable' ? Response.json({ enabled: true, noticeSent: true }) : undefined);
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: bobDisabled(chief, { name: 'ada', superadmin: false }), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+
+		rowOf(target, 'bob').querySelector<HTMLButtonElement>('button[title="Enable user"]')!.click();
+		expect(confirm).toHaveBeenCalledTimes(1);
+		const [title, message, send, options] = confirm.mock.calls[0];
+		expect(title).toBe('Enable User');
+		expect(options).toEqual({ askPassword: true });
+		expect(message).toBe(`${userEnableWarning('bob')} ${ASKS_FOR_PASSWORD}`);
+		for (const said of ['the boards and teams they are on', "a board's Product Owner or a decision's decider", 'being sent requests', 'and their mail', 'Their API keys, webhooks, report schedules and request links stay ended']) {
+			expect(message).toContain(said);
+		}
+
+		await send(proofOf(MINE));
+		await settle();
+		expect(asked('POST /api/users/2/enable').map((request) => request.body)).toEqual([{ currentPassword: MINE, currentCode: CODE }]);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -1921,7 +2035,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		answer = (what) => (what === 'DELETE /api/users/2' ? Response.json({ success: true, settingsRemoved: went }) : undefined);
 		const confirm = vi.fn();
 		const settingsRemoved = vi.fn();
-		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), settingsRemoved, inviteLink: null });
+		const target = draw(UsersPanel, { data: withBobDisabled(pageData), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), settingsRemoved, inviteLink: null });
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
@@ -1990,12 +2104,12 @@ describe('the users panel says what a role change or a delete removed (card 2397
 	it('names in the delete’s confirmation what would go with bob’s account', async () => {
 		answer = holding;
 		const confirm = vi.fn();
-		const target = draw(UsersPanel, { data: holdingData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		const target = draw(UsersPanel, { data: withBobDisabled(holdingData), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
 
-		expect(confirm.mock.calls[0][1]).toMatch(/^Delete user "bob"\? Their comments, /);
+		expect(confirm.mock.calls[0][1]).toMatch(/^Delete user "bob" for good\? The account is disabled already, /);
 		expect(confirm.mock.calls[0][1]).toMatch(
 			new RegExp(` Their XP stays on the leaderboard\\. What they set goes too: ${NAMED.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\. You will be asked for your password and a code from your authenticator app\\.$`)
 		);
@@ -2007,7 +2121,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		answer = holding;
 		const confirm = vi.fn();
 		const stale = { ...pageData, users: [pageData.users[0], { ...bob, role: 'admin', settingsSet: null }] };
-		const target = draw(UsersPanel, { data: stale, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		const target = draw(UsersPanel, { data: withBobDisabled(stale), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 		choose(target, 'user');
 
 		changeButton(target).click();
@@ -2023,7 +2137,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 
 	it('names nothing in the role change’s or the delete’s confirmation where the server says he no longer holds what the page’s data names', async () => {
 		const confirm = vi.fn();
-		const target = draw(UsersPanel, { data: holdingData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		const target = draw(UsersPanel, { data: withBobDisabled(holdingData), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
 		expect(confirm.mock.calls[0][1]).not.toContain('What they set');
@@ -2046,7 +2160,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		answer = (what) => (what === 'GET /api/users/2' ? (fails() as Response | Promise<Response>) : undefined);
 		const confirm = vi.fn();
 		const plain = { ...pageData, users: [pageData.users[0], { ...bob, role: 'admin', settingsSet: null }] };
-		const target = draw(UsersPanel, { data: plain, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		const target = draw(UsersPanel, { data: withBobDisabled(plain), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 		choose(target, 'user');
 		const UNREAD =
 			'What they set of the mail settings, the App URL and the backup destinations could not be read just now: whatever of it is still theirs goes too.';
@@ -2058,7 +2172,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 
 		expect(asked('PUT /api/users/2')).toEqual([]);
 		expect(confirm.mock.calls[0].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${UNREAD} ${ASKS_FOR_PASSWORD}`]);
-		expect(confirm.mock.calls[1][1]).toMatch(/^Delete user "bob"\? Their comments, /);
+		expect(confirm.mock.calls[1][1]).toMatch(/^Delete user "bob" for good\? The account is disabled already, /);
 		expect(confirm.mock.calls[1][1].endsWith(` ${UNREAD} ${ASKS_FOR_PASSWORD}`)).toBe(true);
 		await confirm.mock.calls[0][2](proofOf(MINE));
 		await settle();
@@ -2069,7 +2183,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		answer = (what) => (what === 'DELETE /api/users/2' ? Response.json({ success: true }) : undefined);
 		const confirm = vi.fn();
 		const settingsRemoved = vi.fn();
-		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), settingsRemoved, inviteLink: null });
+		const target = draw(UsersPanel, { data: withBobDisabled(pageData), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), settingsRemoved, inviteLink: null });
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
@@ -2875,19 +2989,21 @@ describe('an account’s role on the users panel, saved with Change (card 2376)'
 
 	// The card 2376 review: a role chosen and not saved outlived the account's row, as on the team pages.
 	it('drops a role chosen and not saved once a re-read finds the account gone, or already holding it, and once the panel deletes it', async () => {
-		const { target, props } = drawLive(pageData);
+		// Bob disabled, so that the panel can delete him (card 2671); his role is still chosen and changed.
+		const live = withBobDisabled(pageData);
+		const { target, props } = drawLive(live);
 		choose(rolePicker(target)!, 'admin');
-		props.data = { ...pageData, users: [pageData.users[0]] };
+		props.data = { ...live, users: [live.users[0]] };
 		flushSync();
-		props.data = pageData;
+		props.data = live;
 		flushSync();
 		expect(rolePicker(target)!.value).toBe('user');
 		expect(changeButton(target).getAttribute('aria-disabled')).toBe('true');
 
 		choose(rolePicker(target)!, 'admin');
-		props.data = { ...pageData, users: [pageData.users[0], { ...bob, role: 'admin' }] };
+		props.data = { ...live, users: [live.users[0], { ...live.users[1], role: 'admin' }] };
 		flushSync();
-		props.data = pageData;
+		props.data = live;
 		flushSync();
 		expect(rolePicker(target)!.value).toBe('user');
 		expect(changeButton(target).getAttribute('aria-disabled')).toBe('true');
@@ -2901,7 +3017,7 @@ describe('an account’s role on the users panel, saved with Change (card 2376)'
 		await confirm.mock.calls[0][2](proofOf(MINE));
 		await settle();
 		expect(asked('DELETE /api/users/2')).toHaveLength(1);
-		props.data = { ...pageData };
+		props.data = { ...live };
 		flushSync();
 		expect(rolePicker(target)!.value).toBe('user');
 		expect(asked('PUT /api/users/2')).toHaveLength(0);
@@ -2922,9 +3038,10 @@ describe('an account’s role on the users panel, saved with Change (card 2376)'
 		expect(bobsRow.querySelector('select')).toBeNull();
 		expect(bobsRow.querySelector('button[aria-label="Change bob\'s role"]')).toBeNull();
 		expect(bobsRow.querySelector('.role-badge')!.textContent).toBe('user');
-		// What they may do to bob's account is still there.
+		// What they may do to bob's account is still there: since card 2671, Disable, and Delete only once he is disabled.
 		expect(bobsRow.querySelector('button[title="Reset password"]')).not.toBeNull();
-		expect(bobsRow.querySelector('button[title="Delete user"]')).not.toBeNull();
+		expect(bobsRow.querySelector('button[title="Disable user"]')).not.toBeNull();
+		expect(bobsRow.querySelector('button[title="Delete user"]')).toBeNull();
 		expect(target.querySelector('[role="status"]')).not.toBeNull();
 	});
 });
@@ -3447,7 +3564,8 @@ describe('the admin page, mounted with its panels', () => {
 		{ went: 'all three', removed: { mail: true, appUrl: true, destinations: ['NAS'] }, mail: 4, backup: 2 }
 	])('draws again only the panels that show what a delete removed: $went (card 2397)', async ({ removed, mail, backup }) => {
 		answer = (what) => (what === 'DELETE /api/users/2' ? Response.json({ success: true, settingsRemoved: removed }) : undefined);
-		const target = draw(AdminPage, { data: asSuperadmin });
+		// Bob disabled: only a disabled account is offered 🗑️ (card 2671).
+		const target = draw(AdminPage, { data: withBobDisabled(asSuperadmin) });
 		await settle();
 		expect(mailReads()).toBe(2);
 		expect(asked('GET /api/admin/backup')).toHaveLength(1);

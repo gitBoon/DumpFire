@@ -1237,3 +1237,34 @@ describe('asking for a new link', () => {
 		});
 	});
 });
+
+// Card 2671 (case 35, E12): a requester whose account is disabled is mailed nothing, and the team still sees who asked.
+describe('a request whose requester is disabled (card 2671)', () => {
+	/** A request `other` made signed in, to `staff`; then `other` disabled. */
+	const madeThenDisabled = async () => {
+		const made = await api('POST', '/api/requests', { user: other, body: submission({ desiredBoardId: null }) });
+		expect(made.status, JSON.stringify(made.body)).toBe(201);
+		sqlite.prepare("UPDATE users SET disabled_at = '2099-01-01 09:00:00' WHERE id = ?").run(other.id);
+		mail.sent.length = 0;
+		return made.body.id as number;
+	};
+
+	it('case 35: is not mailed when the request is accepted', async () => {
+		const id = await madeThenDisabled();
+
+		const accept = await api('PATCH', `/api/requests/${id}`, { user: staff, body: { action: 'accept', boardId: A.board.id, columnId: A.cols['To Do'].id } });
+
+		expect(accept.status, JSON.stringify(accept.body)).toBe(200);
+		expect(mailTo(other.email)).toEqual([]);
+	});
+
+	it("case 35: still shows the team the requester's address, in the read and in the answer to the accept", async () => {
+		const id = await madeThenDisabled();
+
+		const read = await api('GET', `/api/requests/${id}`, { user: staff });
+		const accept = await api('PATCH', `/api/requests/${id}`, { user: staff, body: { action: 'accept', boardId: A.board.id, columnId: A.cols['To Do'].id } });
+
+		expect(read.body.requesterEmail).toBe(other.email);
+		expect(accept.body.requesterEmail).toBe(other.email);
+	});
+});

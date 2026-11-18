@@ -36,7 +36,8 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { effects } from './helpers/effects';
 import { eq } from 'drizzle-orm';
 import Database from 'better-sqlite3';
 import { generateBackupData } from '$lib/server/backup';
@@ -557,7 +558,7 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 	const SMTP_ROWS = () => sqlite.prepare("SELECT key FROM settings WHERE key LIKE 'smtp%' ORDER BY key").pluck().all();
 
 	/** What the removal leaves, whichever way ann goes. */
-	function expectAnnsGone(by: 'made a user' | 'deleted', linesBefore: number): void {
+	function expectAnnsGone(by: 'made a user' | 'disabled' | 'deleted', linesBefore: number): void {
 		expect(SMTP_ROWS()).toEqual([]);
 		expect(setting('app_url')).toBeNull();
 		expect(names()).toEqual(['Old', "Bob's"]);
@@ -565,8 +566,8 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		expect(setting('backup_config')).not.toContain('secret-ann-bucket');
 		expect(setters()).toEqual([{ setting: "backup_destination:Bob's", userId: bob.id }]);
 
-		const because = by === 'made a user' ? 'who was made a user by "chief"' : 'whose account was deleted by "chief"';
-		const reason = by === 'made a user' ? 'demoted' : 'deleted';
+		const because = by === 'made a user' ? 'who was made a user by "chief"' : `whose account was ${by} by "chief"`;
+		const reason = by === 'made a user' ? 'demoted' : by;
 		expect(lines().slice(linesBefore)).toEqual([
 			{
 				level: 'WARN',
@@ -602,8 +603,27 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		expect(mail.body.configured).toBe(false);
 	});
 
-	it('does the same when the account is deleted', async () => {
+	// Card 2671: an account is disabled before it is deleted, and the settings go at the disable.
+	it('does the same when the account is disabled', async () => {
 		await annsSettings();
+		const linesBefore = lines().length;
+
+		const res = await api('POST', `/api/users/${ann.id}/disable`, confirmedAs(chief));
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toMatchObject({ disabled: true, settingsRemoved: { mail: true, appUrl: true, destinations: ["Ann's"], failureAddress: false } });
+		expect(roleOf(ann)).toBe('admin');
+		expectAnnsGone('disabled', linesBefore);
+	});
+
+	/** Ann disabled by chief with the columns written directly, as a restore or a host edit can leave her: her settings still in force. */
+	const disabledLeavingHerSettings = () =>
+		sqlite.prepare("UPDATE users SET disabled_at = '2099-01-02 09:00:00', disabled_by = ? WHERE id = ?").run(chief.id, ann.id);
+
+	// Card 2671's code review, CR1: the delete still removes what a disabled account set, reason deleted.
+	it('does the same when a disabled account that still has its settings in force is deleted', async () => {
+		await annsSettings();
+		disabledLeavingHerSettings();
 		const linesBefore = lines().length;
 
 		const res = await api('DELETE', `/api/users/${ann.id}`, confirmedAs(chief));
@@ -614,7 +634,7 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		expectAnnsGone('deleted', linesBefore);
 	});
 
-	it('leaves settings someone else set, and settings nobody is recorded for, when an administrator who set none is demoted or deleted: no field in the answer, no line', async () => {
+	it('leaves settings someone else set, and settings nobody is recorded for, when an administrator who set none is demoted or disabled: no field in the answer, no line', async () => {
 		await annsSettings();
 		// A mail setting written before 0059 would be nobody's: here, bob's account set nothing of the mail.
 		const before = { smtp: SMTP_ROWS(), app: setting('app_url'), dests: names(), setters: setters() };
@@ -631,8 +651,13 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		const plainDemotion = await api('PUT', `/api/users/${carol.id}`, confirmedAs(chief, { role: 'user' }));
 		expect(plainDemotion.status).toBe(200);
 		expect(plainDemotion.body).not.toHaveProperty('settingsRemoved');
-		const deleted = await api('DELETE', `/api/users/${carol.id}`, confirmedAs(chief));
-		expect(deleted.body).toEqual({ success: true });
+		// Card 2671: disabled, as an account is before it is deleted, which removes what an administrator set.
+		// The notice of it is recorded, not sent: the mail settings are still in force.
+		const mail = effects();
+		onTestFinished(() => mail.restore());
+		const disabled = await api('POST', `/api/users/${carol.id}/disable`, confirmedAs(chief));
+		expect(disabled.status, JSON.stringify(disabled.body)).toBe(200);
+		expect(disabled.body).not.toHaveProperty('settingsRemoved');
 		expect(lines().slice(linesBefore).map((l) => l.context)).toEqual(['BACKUP']);
 	});
 
@@ -1021,6 +1046,24 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 			expectUnchanged(before);
 		});
 
+		// Card 2671 (case 43): disabling removes what an administrator set; one a restore or a host edit left is removed at the start.
+		it('removes what a disabled administrator set, reason disabled, logged at WARN under nobody', async () => {
+			await annsSettings();
+			const linesBefore = lines().length;
+			sqlite.prepare("UPDATE users SET disabled_at = '2099-01-01 09:00:00' WHERE id = ?").run(ann.id);
+
+			expect(removeSettingsOfNonAdministrators()).toBe(1);
+
+			expect(SMTP_ROWS()).toEqual([]);
+			expect(setting('app_url')).toBeNull();
+			expect(names()).toEqual(['Old', "Bob's"]);
+			expect(lines().slice(linesBefore).map((line) => [line.context, JSON.parse(line.meta!).reason, line.message.split(', who')[0], line.userId])).toEqual([
+				['SMTP', 'disabled', 'The mail settings and the App URL removed: saved by "ann"', null],
+				['BACKUP', 'disabled', `Backup destination "Ann's" (s3) removed: saved by "ann"`, null]
+			]);
+			expect(lines().slice(linesBefore).every((line) => line.message.includes('whose account is disabled (found at start-up)'))).toBe(true);
+		});
+
 		it('leaves what administrators set, the superadmin made an administrator from the host included', async () => {
 			await annsSettings();
 			// From the host the superadmin is made `admin`, which is still an administrator.
@@ -1338,8 +1381,28 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 			expect(lines().slice(linesBefore).filter((l) => l.level === 'WARN')).toEqual([]);
 		});
 
+		// Card 2671: the settings go at the disable, before any delete, so it is the disable that is all or nothing.
+		it('rolls every removal back with the disable when the disable fails', async () => {
+			await annsSettings();
+			// A write of the removal after the mail settings and the App URL have gone: her destination taken out.
+			sqlite.exec(
+				"CREATE TEMP TRIGGER refuse_2397 BEFORE UPDATE ON settings WHEN NEW.key = 'backup_config' BEGIN SELECT RAISE(ABORT, 'refused for the test'); END"
+			);
+			const who = confirmedAs(chief);
+			const before = snapshotDb();
+			const linesBefore = lines().length;
+
+			await expect(api('POST', `/api/users/${ann.id}/disable`, who)).rejects.toThrow('refused for the test');
+
+			// The code is left spent, apart from the write (card 2771, S4).
+			expect(diffSnapshots(before, snapshotDb())).toEqual(SPENT_ALONE);
+			expect(lines().slice(linesBefore).filter((l) => l.level === 'WARN')).toEqual([]);
+		});
+
+		// Card 2671's code review, CR1: and the delete of a disabled account that still has its settings in force.
 		it('rolls every removal back with the delete when the delete fails', async () => {
 			await annsSettings();
+			sqlite.prepare("UPDATE users SET disabled_at = '2099-01-02 09:00:00', disabled_by = ? WHERE id = ?").run(chief.id, ann.id);
 			sqlite.exec("CREATE TEMP TRIGGER refuse_2397 BEFORE DELETE ON users BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
 			const who = confirmedAs(chief);
 			const before = snapshotDb();

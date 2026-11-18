@@ -477,13 +477,17 @@ export function fromAccountsGuard(
 	const actor = requireAdmin(caller);
 
 	const userIds = unique(readIds(body, 'userIds', { required: true, min: 1, max: 500 }));
-	const accounts = db
-		.select({ id: users.id, username: users.username, email: users.email })
+	const rows = db
+		.select({ id: users.id, username: users.username, email: users.email, disabledAt: users.disabledAt })
 		.from(users)
 		.where(inArray(users.id, userIds))
 		.all();
-	const missing = userIds.find((id) => !accounts.some((account) => account.id === id));
+	const missing = userIds.find((id) => !rows.some((account) => account.id === id));
 	if (missing !== undefined) error(400, `userId ${missing} is not an account`);
+	// A person is not added for a disabled account (card 2671, S2): it could neither be mailed nor answer.
+	const disabled = userIds.find((id) => rows.some((account) => account.id === id && account.disabledAt !== null));
+	if (disabled !== undefined) error(400, `userId ${disabled} is a disabled account`);
+	const accounts = rows.map(({ id, username, email }) => ({ id, username, email }));
 	return { actor, userIds, accounts };
 }
 
@@ -863,13 +867,15 @@ function requireUnusedEmail(email: string, except?: number): void {
 }
 
 /**
- * The account a person is to be linked to: a 400 for no such account, and a
- * 409 for one linked to another person already. `except` is the person being
- * changed.
+ * The account a person is to be linked to: a 400 for no such account, and
+ * for one that is disabled (card 2671, S2); a 409 for one linked to another
+ * person already. `except` is the person being changed.
  */
 function requireLinkable(userId: number, except?: number): { id: number; username: string } {
-	const account = db.select({ id: users.id, username: users.username }).from(users).where(eq(users.id, userId)).get();
-	if (!account) error(400, `userId ${userId} is not an account`);
+	const row = db.select({ id: users.id, username: users.username, disabledAt: users.disabledAt }).from(users).where(eq(users.id, userId)).get();
+	if (!row) error(400, `userId ${userId} is not an account`);
+	if (row.disabledAt !== null) error(400, `userId ${userId} is a disabled account`);
+	const account = { id: row.id, username: row.username };
 	const holder = db.select({ id: people.id, fullName: people.fullName }).from(people).where(eq(people.userId, userId)).get();
 	if (holder && holder.id !== except) error(409, `That account is already linked to ${holder.fullName}`);
 	return account;

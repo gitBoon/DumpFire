@@ -160,13 +160,14 @@ const requestsLog = createLogger('REQUESTS');
  * completes it is the superadmin.
  */
 export function reportNoSuperadmin(): boolean {
+	// A disabled superadmin cannot sign in, so counts as none (card 2671, S13).
 	const found = sqlite
-		.prepare("SELECT COUNT(*) AS users, COALESCE(SUM(role = 'superadmin'), 0) AS superadmins FROM users")
+		.prepare("SELECT COUNT(*) AS users, COALESCE(SUM(role = 'superadmin' AND disabled_at IS NULL), 0) AS superadmins FROM users")
 		.get() as { users: number; superadmins: number };
 	if (found.users === 0 || found.superadmins > 0) return false;
 
 	log.critical(
-		`There are ${found.users} user account(s) and none of them is the superadmin. Nobody can export, import ` +
+		`There are ${found.users} user account(s) and none of them is an enabled superadmin. Nobody can export, import ` +
 			'or reset the database. Make one account the superadmin from the ' +
 			'host: the command is in docs/deployment.md, under "If nobody can sign in as the superadmin".'
 	);

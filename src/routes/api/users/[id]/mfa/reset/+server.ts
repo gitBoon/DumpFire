@@ -7,6 +7,7 @@ import { sha256Hex } from '$lib/server/mfa-crypto';
 import { ENROLMENT_LINK_PATH, resetTwoStep, twoStepResetMeta } from '$lib/server/mfa-store';
 import { sendMfaResetNotice, type NoticeKey, type NoticeWebhook } from '$lib/server/notifications';
 import { refuseOwnAccount, requireAdmin, requireManagedAccount, requireUser } from '$lib/server/route-guards';
+import { requireEnabledAccount } from '$lib/server/account-disable';
 import { keysAndWebhooksOf } from '$lib/server/second-step';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
@@ -118,6 +119,8 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 			superadmin: "Only the server's host can reset the superadmin's two-step sign-in, with scripts/mfa-reset.mjs",
 			admin: "Only superadmin can reset an admin's two-step sign-in"
 		});
+		// A disabled account's two-step sign-in is not reset (card 2671, D18): enable it first.
+		requireEnabledAccount(target);
 
 		// The address the link begins with is this server's configuration and
 		// never what the request says: see linkBaseUrl. With none there is no

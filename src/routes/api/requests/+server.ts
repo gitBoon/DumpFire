@@ -196,8 +196,9 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 			const team = db.select({ id: teams.id }).from(teams).where(eq(teams.id, targetId)).get();
 			if (!team) throw error(404, 'Team not found');
 		} else {
-			const user = db.select({ id: users.id }).from(users).where(eq(users.id, targetId)).get();
-			if (!user) throw error(404, 'User not found');
+			// A disabled account is sent no requests (card 2671): answered as one that is not there.
+			const user = db.select({ id: users.id, disabledAt: users.disabledAt }).from(users).where(eq(users.id, targetId)).get();
+			if (!user || user.disabledAt !== null) throw error(404, 'User not found');
 		}
 
 		// A board the caller names is one they can open: 404 for none, and for one

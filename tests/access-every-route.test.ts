@@ -1913,7 +1913,10 @@ const TABLE: Record<string, Case | Case[]> = {
 	// An email, which asks for the caller's own password again (card 2701), as
 	// a role does: `call` adds it. An emoji alone asks for none.
 	'PUT /api/users/[id]': admin((w) => json(`/api/users/${w.viewer.id}`, { emoji: '🦊', email: 'viewer.moved@example.test' })),
-	'DELETE /api/users/[id]': admin((w) => `/api/users/${w.viewer.id}`),
+	// Card 2671: an account disabled before the call, as only a disabled account is deleted.
+	'DELETE /api/users/[id]': admin((w) => `/api/users/${w.viewer.id}`, {
+		setup: (w) => void db.update(users).set({ disabledAt: stamp(), disabledBy: null }).where(eq(users.id, w.viewer.id)).run()
+	}),
 	'POST /api/users/[id]/invite': admin((w) => `/api/users/${w.viewer.id}/invite`, { setup: makeSmtp }),
 	// The path names `owner`. Their own password is changed at /api/account/password,
 	// which asks for the one they have: here they are refused, as anyone is
@@ -1922,6 +1925,11 @@ const TABLE: Record<string, Case | Case[]> = {
 	// Another account's two-step sign-in reset (card 2773): its link is made on
 	// the server's own address, as an invite's is.
 	'POST /api/users/[id]/mfa/reset': admin((w) => `/api/users/${w.viewer.id}/mfa/reset`),
+	// Card 2671: an account disabled, and one disabled before the call enabled again.
+	'POST /api/users/[id]/disable': admin((w) => `/api/users/${w.viewer.id}/disable`),
+	'POST /api/users/[id]/enable': admin((w) => `/api/users/${w.viewer.id}/enable`, {
+		setup: (w) => void db.update(users).set({ disabledAt: stamp(), disabledBy: null }).where(eq(users.id, w.viewer.id)).run()
+	}),
 
 	// ── The people directory (card 2674) ──────────────────────────────────
 	// An administrator's alone: it holds names and addresses of people with no account.
@@ -3728,7 +3736,12 @@ describe('who may manage which account', () => {
 		headers: (sessionOf.has(by.id) ? { cookie: `${SESSION_COOKIE_NAME}=${sessionOf.get(by.id)}` } : {}) as Record<string, string>
 	});
 
-	const MANAGES: { route: string; send: (by: SessionUser, account: SessionUser) => Promise<ApiResult> }[] = [
+	const MANAGES: {
+		route: string;
+		send: (by: SessionUser, account: SessionUser) => Promise<ApiResult>;
+		/** What the account needs before the route lets it through, where it needs anything (card 2671). */
+		prepare?: (account: SessionUser) => void;
+	}[] = [
 		{
 			route: 'PUT /api/users/[id]/password',
 			send: (by, account) => api('PUT', `/api/users/${account.id}/password`, confirmed(by, { password: 'a long password' }))
@@ -3739,7 +3752,9 @@ describe('who may manage which account', () => {
 		},
 		{
 			route: 'DELETE /api/users/[id]',
-			send: (by, account) => api('DELETE', `/api/users/${account.id}`, confirmed(by))
+			send: (by, account) => api('DELETE', `/api/users/${account.id}`, confirmed(by)),
+			// Card 2671: only a disabled account is deleted; who may delete it is asked first all the same.
+			prepare: (account) => void db.update(users).set({ disabledAt: stamp(), disabledBy: null }).where(eq(users.id, account.id)).run()
 		},
 		// Whoever holds the invite sets the account's password with it.
 		{
@@ -3770,7 +3785,7 @@ describe('who may manage which account', () => {
 
 	const roleOf = (account: SessionUser) => db.select().from(users).where(eq(users.id, account.id)).get()!.role;
 
-	for (const { route, send } of MANAGES) {
+	for (const { route, send, prepare } of MANAGES) {
 		describe(route, () => {
 			it('refuses an administrator who names another administrator', async () => {
 				expect(await refused(() => send(w.admin, admin2))).toMatch(/Only superadmin/);
@@ -3781,11 +3796,13 @@ describe('who may manage which account', () => {
 				// The step-up checks the caller's code (card 2771): `admin2` is given a factor here only, as the
 				// other tests here invite them, which an account that holds one is refused.
 				stepUpFactor(admin2);
+				prepare?.(w.viewer);
 				const res = await send(admin2, w.viewer);
 				expect(res.status, JSON.stringify(res.body)).toBe(200);
 			});
 
 			it('lets the superadmin manage an administrator', async () => {
+				prepare?.(admin2);
 				const res = await send(chief, admin2);
 				expect(res.status, JSON.stringify(res.body)).toBe(200);
 			});

@@ -1,10 +1,13 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.131
+version: 1.132
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2671
+  - migration-0072
+  - account-disable
   - card-2899
   - system-log
   - card-2914
@@ -67,7 +70,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Docker deployment, the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Docker deployment, the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -1186,16 +1189,16 @@ flowchart TD
 
 ### If Nobody Can Sign In as the Superadmin
 
-The superadmin's password is lost, or its account was deleted from the database by hand, or the database came from somewhere that had none. No page puts that right: only the superadmin could, and set-up is closed while there is any user. The server says so in the log at every start:
+The superadmin's password is lost, or its account was deleted or disabled from the database by hand, or the database came from somewhere that had none. No page puts that right: only the superadmin could, and set-up is closed while there is any user. A disabled superadmin cannot sign in, so it counts as none (card 2671). The server says so in the log at every start:
 
 ```
-[CRITICAL] [STARTUP] There are 4 user account(s) and none of them is the superadmin. ...
+[CRITICAL] [STARTUP] There are 4 user account(s) and none of them is an enabled superadmin. ...
 ```
 
-The way back is from the host, with the application's own database driver. The image has no `sqlite3` command. Give the username of an existing account in place of `<username>`, exactly as it is written on the admin page:
+The way back is from the host, with the application's own database driver. The image has no `sqlite3` command. Give the username of an existing account in place of `<username>`, exactly as it is written on the admin page. The command makes it the superadmin and, since card 2671, enables it if it was disabled (`disabled_at` and `disabled_by` cleared):
 
 ```bash
-docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { fileMustExist: true }); const name = process.argv[1] || ''; const user = db.prepare('SELECT id, username, role FROM users WHERE username = ?').get(name); if (user === undefined) { console.log('No user is named [' + name + ']. Nothing was changed. The users are: ' + db.prepare('SELECT username, role FROM users ORDER BY id').all().map((u) => u.username + ' (' + u.role + ')').join(', ')); } else { db.prepare('UPDATE users SET role = ? WHERE id = ?').run('superadmin', user.id); console.log(user.username + ' was ' + user.role + ' and is now superadmin.'); } db.close();" <username>
+docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { fileMustExist: true }); const name = process.argv[1] || ''; const user = db.prepare('SELECT id, username, role, disabled_at FROM users WHERE username = ?').get(name); if (user === undefined) { console.log('No user is named [' + name + ']. Nothing was changed. The users are: ' + db.prepare('SELECT username, role, disabled_at FROM users ORDER BY id').all().map((u) => u.username + ' (' + u.role + (u.disabled_at === null ? '' : ', disabled') + ')').join(', ')); } else { db.prepare('UPDATE users SET role = ?, disabled_at = NULL, disabled_by = NULL WHERE id = ?').run('superadmin', user.id); console.log(user.username + ' was ' + user.role + (user.disabled_at === null ? '' : ', disabled,') + ' and is now superadmin' + (user.disabled_at === null ? '' : ' and enabled') + '.'); } db.close();" <username>
 ```
 
 It prints what it did:
@@ -1203,7 +1206,8 @@ It prints what it did:
 | It prints | What happened |
 |-----------|---------------|
 | `greg was admin and is now superadmin.` | That one account's role was changed. Nothing else was |
-| `No user is named [gerg]. Nothing was changed. The users are: greg (admin), ann (user)` | The name matched nobody, so nothing was written. It lists who there is |
+| `greg was superadmin, disabled, and is now superadmin and enabled.` | That one account was enabled again, its role kept or changed. Its sessions, keys and webhooks ended at the disable, and stay ended |
+| `No user is named [gerg]. Nothing was changed. The users are: greg (admin), ann (user, disabled)` | The name matched nobody, so nothing was written. It lists who there is, and which are disabled |
 | `SqliteError: unable to open database file` | `DB_PATH` in the container does not name a database. Nothing was written, and no file was created |
 
 It runs while the server is running and takes effect at the next request: no restart. It changes no password, so name an account whose password is known. If none is, an administrator can set the password of an ordinary user on the admin page, and that user can then be named here; nobody but the superadmin can set an administrator's.
@@ -1211,14 +1215,14 @@ It runs while the server is running and takes effect at the next request: no res
 To check it:
 
 ```bash
-docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true }); db.prepare('SELECT username, role FROM users ORDER BY id').all().forEach((u) => console.log(u.username + ': ' + u.role)); db.close();"
+docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true }); db.prepare('SELECT username, role, disabled_at FROM users ORDER BY id').all().forEach((u) => console.log(u.username + ': ' + u.role + (u.disabled_at === null ? '' : ' (disabled)'))); db.close();"
 ```
 
-At least one line should end `superadmin`. Then sign in as that user: the admin page has Backup & Restore and Reset Everything on it again (Application Settings, Scheduled Backups and Email / SMTP are every administrator's since card 2395), and the `[CRITICAL] [STARTUP]` line is not written at the next start.
+At least one line should end `superadmin`, not `superadmin (disabled)`. Then sign in as that user: the admin page has Backup & Restore and Reset Everything on it again (Application Settings, Scheduled Backups and Email / SMTP are every administrator's since card 2395), and the `[CRITICAL] [STARTUP]` line is not written at the next start.
 
-If the old superadmin's account is still there, there are now two, and neither can manage the other's account. Make the old one an administrator with the same command, with `'admin'` in place of `'superadmin'` in the `UPDATE`, or delete it as the new superadmin once its role is changed.
+If the old superadmin's account is still there, there are now two, and neither can manage the other's account. Make the old one an administrator with the same command, with `'admin'` in place of `'superadmin'` in the `UPDATE`, or disable it as the new superadmin once its role is changed (card 2671: an account is disabled before it can be deleted).
 
-An import cannot bring this about: a backup that has users and no superadmin among them is refused before anything is written. See [Restoring from Backup](admin-guide.md#restoring-from-backup).
+An import cannot bring this about: a backup that has users and no enabled superadmin among them is refused before anything is written. See [Restoring from Backup](admin-guide.md#restoring-from-backup).
 
 ### If the Superadmin Loses Their Authenticator
 
@@ -1253,6 +1257,7 @@ The link's address is the host's own configuration first, and the App URL settin
 | The counts and the link, as above | `0` | The account was reset |
 | `Usage: node scripts/mfa-reset.mjs <username>` … | `2` | No username, an empty one, or more than one argument. Nothing was opened |
 | `Refused: there is no account with the username "gerg". Nothing was changed.` | `1` | The name matched nobody, exactly. Names are case-sensitive, as at sign-in |
+| `Refused: the account "bob" is disabled. An administrator enables it on the admin page first. Nothing was changed.` | `1` | The account is disabled (card 2671). Nothing was written. Enable it on the admin page (✅) first, then run the reset |
 | `Refused: this is running as root. Run it as the user the server runs as, …: docker exec -u node <container> node scripts/mfa-reset.mjs <username>` | `1` | Run as root. Nothing was opened |
 | `Refused: there is no database at <path> (…). Set DB_PATH to the server's database file.` | `1` | `DB_PATH` names no file. No file was made |
 | `Refused: this database has no two-step sign-in tables; start the server once to migrate it (<path>).` | `1` | A database from before migration 0065 |
@@ -4606,7 +4611,7 @@ Nothing is done to the database: a role saved under the new image stays as it wa
 - **2377.** Deleting an account that was the only owner of a team left that team with no owner, run by administrators alone. Now it is refused, nothing changed: "This account is the only owner of: *the teams*. Make someone else an owner or delete those teams first." ("… that team first" for one).
 - **2378.** `POST /api/teams/{id}/members/{userId}` with no `role` set someone already in the team to Member, quietly demoting an owner (the pages always send a role, so only a script could). Now a role left out keeps theirs; someone new is still added as Member.
 
-**Owner to know.** **An account that alone owns a team cannot be deleted** until another member is made an owner of each such team (**Admin → Team Management**, their row's picker, **Change**) or the team is deleted; the toast after **Confirm** names the teams. See [Admin Operations Guide](admin-guide.md#deleting-a-user). **On a plan page**, closing a card window you only looked at no longer reloads the plan.
+**Owner to know.** **An account that alone owns a team cannot be deleted** until another member is made an owner of each such team (**Admin → Team Management**, their row's picker, **Change**) or the team is deleted; the toast after **Confirm** names the teams. See [Admin Operations Guide](admin-guide.md#disabling-enabling-and-deleting-an-account). **On a plan page**, closing a card window you only looked at no longer reloads the plan.
 
 #### After the deploy
 
@@ -6941,7 +6946,7 @@ O2, and a receiver allowed by `WEBHOOK_ALLOW_INSIDE` or a public one):
 | D7 | Back up (E still on the board), take E off (switched off), restore the older backup with `keep`, move a card | Off after the restore with its hold kept, though E can open the board in the backup; nothing delivered | On again, or delivered |
 | D10 | Reset E's password as an administrator; then the owner `PUT {"active": true}` on one of E's webhooks | Off with "This was switched off because the account that set it up had its password reset …"; the switch-on answers a new `secret` | The old secret |
 | D8 | `GET /api/v1/openapi.json` | `info.version` `1.11.0`; its note first, "breaking" | 1.10.x |
-| D9 | Admin → ISO 27001 checklist, A.5.14 and A.5.18 | 2752 and 2893 no longer listed (they ship together); A.5.14 met; A.5.18 gap card 2671 (and 2894 on an image without card 2894) | 2752 or 2893 still listed |
+| D9 | Admin → ISO 27001 checklist, A.5.14 and A.5.18 | 2752 and 2893 no longer listed (they ship together); A.5.14 met; A.5.18 gap card 2671 on an image without card 2671 (and 2894 on one without card 2894), met with none from card 2671's release | 2752 or 2893 still listed |
 
 ### The Release That Switches Off a Webhook Whose API Key Ends (Card 2893)
 
@@ -7215,6 +7220,109 @@ a scratch copy of a database, never the repository's `dumpfire.db`, as the super
 | H1 | Save `GET /api/logs?limit=50`. Export a backup. Make a wrong-password attempt from a private window. Import the backup, "Restore everything as it is", sign in again, and read `GET /api/logs?limit=80` | Every saved line, with the same id and text, and the wrong-password line; one `[CRITICAL] [IMPORT] The database was replaced from an uploaded backup by <you> ...` whose SHA-256 is the file's (`Get-FileHash -Algorithm SHA256 <file>`), saying "a backup this server made that nobody has changed"; the result's last line says the log was kept | A saved line missing or changed, the wrong-password line gone, or another hash |
 | H2 | Copy the backup; in the copy, `sqlite3 <copy> "UPDATE system_logs SET message = 'nothing happened' WHERE id = (SELECT MAX(id) FROM system_logs);"`; import it "as a working copy" | The log as it was plus the new lines; `GET /api/logs?q=nothing%20happened` finds nothing; the CRITICAL line says "a backup whose seal does not check out" and "restored as a working copy" | The edited text in the log, or the line calling it this server's own |
 | H3 | Reset Everything on the scratch copy | The log kept, the import's CRITICAL line and the reset's both there | Either line gone |
+
+### The Release That Disables Accounts, and Deletes Only a Disabled One (Card 2671)
+
+**Card 2671, built 2026-11-18.** Until this release the only way to take an account away was to
+delete it, and a delete also took every comment the person wrote. From this release an
+administrator **disables** an account first (⛔ on the Users list, with their password and code):
+from that moment it cannot sign in, every session, invite, pending sign-in and API key it had
+ends, the webhooks it set are switched off for good (`setter access ended`), its report
+schedules are paused and the links mailed for its task requests stop working. An administrator's
+mail settings, App URL and backup destinations go with it, and any account's address in the
+backup failure address. Nobody can
+assign it, share a board or a team with it, include it in a decision, link a person to it or
+choose it for anything new, and nothing is mailed to it as an account holder except the notice
+that it was disabled. Its name stays wherever it already appears. **Enable** (✅) gives back its
+sign-in alone, with its own password and authenticator: nothing that disabling ended comes back
+by itself. **Delete** (🗑️) stays, for an account already disabled only. An account the
+superadmin disabled is enabled or deleted by the superadmin alone. How it works is in
+[Disabled Accounts](authentication-security.md#disabled-accounts-card-2671); the plan is
+`docs/planning/card-2671-disable-accounts.md`.
+
+**This is a breaking change for API keys** (OpenAPI document `1.13.0`, a dated note marked
+breaking at the top of its description): a key of a disabled account is answered `401`; a
+disabled account named as an assignee, a Product Owner or a decider is refused `400` in the words
+an account without the board gets; a person whose account is disabled cannot be included in a
+decision (`409`). **And for scripts calling the internal API:** `DELETE /api/users/{id}` answers
+`409 {"message": "Disable the account first"}` for an account that is not disabled, where it
+deleted it. The changelog entry is in
+[the API reference](api-reference.md#changes-on-2026-11-18).
+
+**Migration 0072** adds `users.disabled_at` (when, or NULL for an enabled account),
+`users.disabled_by` (who, set NULL if that account is deleted) and the index
+`idx_users_disabled_by` (see
+[Data Model](data-model.md#a-disabled-account-migration-0072)). It disables no account, and runs
+once. A backup made before it restores with every account enabled, except those disabled here
+(below).
+
+**At the first start, and after every restore,** the settings an administrator set are removed
+where that account is disabled, as they are for one made a user or deleted (card 2397):
+`whose account is disabled (found at start-up)`. The start-up line for a missing superadmin now
+counts only an enabled one: `There are N user account(s) and none of them is an enabled
+superadmin.` See [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin),
+whose host command now enables the account it makes the superadmin.
+
+**A restore keeps this server's disabled accounts disabled.** Before an import clears `users` it
+reads the accounts disabled here, and afterwards disables again each restored account with the
+same id and creation time, whatever the backup held, deleting its restored API keys and pausing
+its restored report schedules; the restore's webhook sweep then switches off the webhooks it set.
+`disabled_by` is kept only where that account is restored as itself, by id and creation time;
+where the superadmin disabled it and is not, it names the restored superadmin, so that only the
+superadmin may undo it there too; else it is emptied. It is never carried onto a
+restored superadmin. A backup with user accounts and no enabled superadmin among them is refused
+before anything is written.
+
+**What people notice.** The Users list shows `Disabled <date> by <name>` on a disabled row,
+offers ✅ and 🗑️ there, and no 🔑, 📧 or 🛡️; an enabled row offers ⛔ and no 🗑️. The disable
+confirm names the teams the account is the only owner of, and, for an administrator, the mail
+settings, App URL, destinations and failure address to be removed. The toast counts what ended,
+and says when the notice could not be mailed because the disable removed the mail settings. The
+assignee, Share, Teams and inbox pickers leave a disabled account out; its chip, comments and
+team membership still name it.
+
+**Before going back to an older image.** The older image does not read `disabled_at`: every
+disabled account can sign in there with its own password and authenticator (its sessions and keys
+are already gone). List them, read only:
+
+```bash
+docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true }); db.prepare('SELECT id, username, role, disabled_at FROM users WHERE disabled_at IS NOT NULL ORDER BY id').all().forEach((u) => console.log(u.id + ' ' + u.username + ' (' + u.role + ') disabled ' + u.disabled_at)); db.close();"
+```
+
+Then make their passwords unusable, since bcrypt never matches a value that is not a hash:
+
+```bash
+docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { fileMustExist: true }); const r = db.prepare(\"UPDATE users SET password_hash = 'disabled-before-going-back' WHERE disabled_at IS NOT NULL\").run(); console.log(r.changes + ' disabled account(s) can no longer sign in with a password'); db.close();"
+```
+
+It prints `2 disabled account(s) can no longer sign in with a password`. Its schema check
+reports the two columns and the index as ones it does not know and leaves them. Coming forward
+again, 0072 is already recorded, and each such account, once enabled, needs a password reset
+before it can sign in: by an administrator, with 🔑 on its row (`PUT /api/users/{id}/password`). An
+invite (📧) sets a password only for an account with no authenticator; one that has one is
+refused it (card 2773).
+
+**Hands-on checks** (the plan's section 6; on the development server with `DB_PATH` pointing at a
+scratch copy of a database, never the repository's `dumpfire.db`, with mail configured: the
+superadmin `chief`, an administrator `ann` who saved the mail settings and is the backup failure
+address, a user `bob` with an API key, a webhook on a board he edits, a report schedule on, a
+request he raised, assigned to a card, sole owner of team `Ops`, linked to a person in People who
+is a participant of an open decision):
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| D1 | As `chief`, Users, ⛔ on `bob` | The confirm names `Ops`; the toast gives 1 key, 1 webhook, 1 schedule, 1 request link; `Disabled <today> by chief` | A count is 0, or 🔑 offered |
+| D2 | In `bob`'s browser, reload | The sign-in page | Any page of the board |
+| D3 | Sign in as `bob` with the right password, then a wrong one | The same words both times | Different words, or signed in |
+| D4 | `curl -H "Authorization: Bearer <bob's key>" …/api/v1/boards` | `401` | Any board |
+| D5 | Open `bob`'s card | His chip still says `bob`; the assignee, Share, Teams and inbox pickers do not list him | His name gone, or listed |
+| D6 | Resend on the decision for `bob`'s person | The disabled words | Mailed |
+| D7 | 🗑️ on `bob`; then look at another enabled user | Offered only now; confirm; gone. No 🗑️ on the enabled user | 🗑️ on an enabled account |
+| D8 | ⛔ on `ann` as `chief` | The confirm names the mail settings and the failure address; the toast says the notice could not be sent | Either not named |
+| D9 | Export a backup, disable a user, import the backup | Still disabled | Enabled |
+| D10 | As `ann` (re-enabled by `chief`), look at an account `chief` disabled | No 🗑️ and no ✅ | Either offered |
+| D11 | Run the two commands above, then sign in on the older image as one of the accounts listed with their old password | The wrong-password answer | Signed in |
+| D12 | `GET /api/v1/openapi.json`; Admin → ISO 27001 checklist, A.5.16 and A.5.18 | `info.version` `1.13.0`, its note first, "breaking"; A.5.16 and A.5.18 met, 2671 no longer listed | 1.12.x, or 2671 still listed |
 
 ## Changing the Schema
 

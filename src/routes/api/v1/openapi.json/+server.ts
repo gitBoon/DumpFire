@@ -34,7 +34,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.12.0',
+		version: '1.13.0',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -42,6 +42,14 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-18 (version 1.13.0), breaking.** An administrator can disable an account, on the admin page and not through a key, and a disabled account has no access to anything (card 2671): ' +
+			'(1) its API keys end when it is disabled, and a key of a disabled account is answered `401 {"message": "Invalid or expired API key"}` by every operation, as an ended key is; ' +
+			'(2) it can open and edit no board, so it is refused as an account without the board: named as userId on POST /cards/{cardId}/assignees it is `400 {"message": "User does not have access to this board"}`, ' +
+			'as productOwnerUserId on PUT /boards/{boardId} `400 productOwnerUserId N cannot edit this board: …`, and as deciderUserId on PUT /decisions/{decisionId}/decider `400 deciderUserId N cannot edit this board: …`, ' +
+			'and it is not among a decision\'s deciderCandidates; ' +
+			'(3) PUT /decisions/{decisionId}/participants refuses a person whose account is disabled, `409 {"message": "<name> cannot be included: their account is disabled"}`, and writes nothing; ' +
+			'(4) the webhooks it set are switched off for good (setter access ended), and pausedBecause says of them "This was switched off because the account that set it up had its password reset, used an invite, was disabled, or was deleted."; ' +
+			'(5) nothing else changed: no operation, field or schema. Enabling the account again gives back its sign-in alone: none of its keys, and none of its webhooks switched back on.\n\n' +
 			'**Changed on 2026-11-18 (version 1.12.0), breaking.** A milestone the key\'s user cannot see is answered as one that is not there (card 2911): ' +
 			'(1) every operation that names a milestone by its id, under /milestones/{milestoneId}, as milestoneId on PUT /cards/{cardId}, and as milestoneId on GET /burndown, ' +
 			'answers a milestone the user cannot see (of a board they cannot open, or across boards with a card on a board they cannot open, their own included) ' +
@@ -979,7 +987,7 @@ const spec = {
 					'at the change that takes the access away, at every start of the server, after every restore, and at its next event where none of those saw it, and pausedBecause says why. ' +
 					'It stays off when the setter is given the board back. Only the board owner or an administrator switches it on again, with active true, which makes them its setter; ' +
 					'one switched off because its setter lost the board is given a new secret in that answer, to give its receiver. ' +
-					'A password reset, an invite used and a deleted account record theirs too (setter access ended). ' +
+					'A password reset, an invite used, a disabled account (since 1.13.0) and a deleted account record theirs too (setter access ended). ' +
 					'It is switched off for good too when the API key that created it, last set its url or secret, or switched it on ends (since 1.11.0, card 2893): revoked, expired, past its deadline, deleted, or not its setter\'s; ' +
 					'one set with no API key is switched off at its next event, and one made before 1.11.0, which records no key, once its setter has no working API key made before then. ' +
 					'Switched on again, it is given a new secret in that answer, and records the caller\'s key. While one is switched off this way, a webhook to its receiver (scheme, host and port) on the board is made, and it is deleted, only by the board owner or an administrator. ' +
@@ -1041,7 +1049,7 @@ const spec = {
 							'Why nothing is sent to the webhook (since 2026-10-20). Present only when the caller is the board owner or an administrator, as the address is, and in the response to the request that created the webhook, where it is null: its creator is its setter and can open the board. ' +
 							'Since 1.11.0, history: for a webhook switched off for good because its setter can no longer open the board, nobody is recorded as having set it up, or the API key that set it up ended, it says why, word for word, the reason kept as it was recorded. ' +
 							'Switched off because the account that set it up lost the board: "This was switched off because the account that set it up could no longer open this board. It stays off if that account is given the board back. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
-							'Switched off by a password reset, an invite used or a delete of its setter (since 1.11.0, the code review\'s CS4): "This was switched off because the account that set it up had its password reset, used an invite, or was deleted. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
+							'Switched off by a password reset, an invite used, a disable (since 1.13.0, card 2671) or a delete of its setter (since 1.11.0, the code review\'s CS4): "This was switched off because the account that set it up had its password reset, used an invite, was disabled, or was deleted. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
 							'Switched off because the API key that set it up ended (since 1.11.0, card 2893): "This was switched off because the API key that set it up ended: it expired, passed its deadline, was deleted or is not the setter\'s; or, for a webhook set up before keys were recorded, the account that set it up has no working key from then. To keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
 							'Switched off because nobody was recorded as its setter: "This was switched off because nobody is recorded as having set it up. Delete it unless you recognise the address; to keep it, switch it on with your own key, which makes you its setter, and set a new secret." ' +
 							'For one that is still on and held now, which only a change made outside DumpFire\'s own writes can leave until its next event, it begins "Nothing is sent: ". ' +
@@ -1749,7 +1757,7 @@ const spec = {
 					deciderCandidates: {
 						type: 'array',
 						items: { $ref: '#/components/schemas/DecisionCandidate' },
-						description: 'The accounts that can edit the board, to name in PUT …/decider; empty unless actions.setDecider'
+						description: 'The accounts that can edit the board, to name in PUT …/decider, a disabled one never among them (since 1.13.0); empty unless actions.setDecider'
 					},
 					untrusted: { type: 'boolean', const: true }
 				},
@@ -3349,7 +3357,7 @@ const spec = {
 				}
 			},
 			Unauthorized: {
-				description: 'No Authorization header, one that is not "Bearer <key>", or a key that is unknown, revoked, expired or past its deadline (a key made before version 1.8.0 and not kept)',
+				description: 'No Authorization header, one that is not "Bearer <key>", or a key that is unknown, revoked, expired or past its deadline (a key made before version 1.8.0 and not kept), or one of an account that is disabled (since 1.13.0)',
 				content: {
 					'application/json': {
 						schema: { $ref: '#/components/schemas/Error' },
@@ -3697,7 +3705,7 @@ const spec = {
 										minimum: 1,
 										description:
 											'The board\'s Product Owner, the default decider of its decisions: the id of a user who can edit the board, or null for none. Left out, or sent as the board holds it, it is kept, even when that user can no longer edit the board. ' +
-											'A change is the board\'s owner\'s or an administrator\'s (403 otherwise). A user that does not exist (`productOwnerUserId 99 is not an account`), or one who cannot edit the board, a reader of a public board included (`productOwnerUserId 7 cannot edit this board: …`), is 400, and so is a value that is not an id (`productOwnerUserId must be an id`).'
+											'A change is the board\'s owner\'s or an administrator\'s (403 otherwise). A user that does not exist (`productOwnerUserId 99 is not an account`), or one who cannot edit the board, a reader of a public board and a disabled account (since 1.13.0) included (`productOwnerUserId 7 cannot edit this board: …`), is 400, and so is a value that is not an id (`productOwnerUserId must be an id`).'
 									}
 								}
 							},
@@ -4834,7 +4842,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'No userId, one that is not an id (`userId must be an id`), a user who has no access to the card\'s board, cardId is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'No userId, one that is not an id (`userId must be an id`), a user who has no access to the card\'s board (a disabled account has none, since 1.13.0), cardId is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'User does not have access to this board' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -8869,6 +8877,7 @@ const spec = {
 				summary: 'Name the decider of a decision never opened',
 				description:
 					'Names who rules a decision that was never opened: deciderUserId, an account that can edit its board, and revision (card 2682). ' +
+					'A disabled account can edit no board, and is refused 400 in the same words (`deciderUserId 7 cannot edit this board: …`, since 1.13.0). ' +
 					'Choosing the decider chooses who rules: once the decision has been opened it is changed on the decision\'s page, and a key is refused 403 whatever its status now. ' +
 					'A decision that supersedes a ruled one keeps the decider it was made with (409).',
 				operationId: 'setDecisionDecider',
@@ -8990,7 +8999,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Decision not found' } } }
 					},
 					'409': {
-						description: 'The revision is stale; the status does not allow it; or two participants would hold one account. Nothing was written.',
+						description:
+							'The revision is stale; the status does not allow it; two participants would hold one account; or a participant would hold an account that is disabled (`<name> cannot be included: their account is disabled`, since 1.13.0). Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This decision is withdrawn: it cannot be edited' } } }
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },

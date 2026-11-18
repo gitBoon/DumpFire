@@ -246,6 +246,13 @@ describe('a request to /api/v1/ with no key the gate accepts', () => {
 		expectJson(res, 401, { message: 'Invalid or expired API key' });
 	});
 
+	// Card 2671 (case 18): a key a disabled account still holds, as a restore or a host edit can leave one.
+	it("is answered 401, in the gate's words, for a key of an account that is disabled", async () => {
+		sqlite.prepare('UPDATE users SET disabled_at = ? WHERE id = ?').run(stamp(), user.id);
+
+		expectJson(await send('GET', '/api/v1/me', { headers: withKey }), 401, { message: 'Invalid or expired API key' });
+	});
+
 	it('is answered in JSON whatever it asked for', async () => {
 		expectJson(await send('GET', '/api/v1/me', { headers: { accept: 'text/html' } }), 401, NO_HEADER);
 	});
@@ -2973,6 +2980,30 @@ describe('an internal route asked with no session', () => {
 		// no route, and an internal path to the gate, key or no key.
 		expectJson(await send('GET', '/api/v1', { headers: withKey }), 401, NOT_SIGNED_IN);
 		expect((await send('GET', '/api/v1', { headers: { accept: 'text/html' } })).headers.get('location')).toBe('/login');
+	});
+
+	// Card 2671 (case 15): a session a disabled account still holds, as a restore or a host edit can leave one.
+	it('is what a session of a disabled account is: answered as none, its row deleted, and one WARN that says why', async () => {
+		sqlite.prepare('UPDATE users SET disabled_at = ? WHERE id = ?').run(stamp(), user.id);
+		const lines: LogEntry[] = [];
+		const level = process.env.LOG_LEVEL;
+		const unsubscribe = subscribeToLogs((entry) => {
+			if (entry.context === 'AUTH') lines.push(entry);
+		});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		process.env.LOG_LEVEL = 'WARN';
+		try {
+			expectJson(await send('GET', '/api/boards', { headers: { ...asUser, accept: '*/*' } }), 401, NOT_SIGNED_IN);
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+			unsubscribe();
+		}
+
+		expect(sqlite.prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ?').get(user.id)).toEqual({ n: 0 });
+		expect(lines.map(({ level, message, userId }) => ({ level, message, userId }))).toEqual([
+			{ level: 'WARN', message: 'Session of a disabled account — refused and deleted', userId: user.id }
+		]);
 	});
 
 	it('still sends a browser that goes to its address to sign in: an attachment opened in a tab, the milestone PDF', async () => {

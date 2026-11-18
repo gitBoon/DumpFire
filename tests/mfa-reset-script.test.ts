@@ -319,10 +319,20 @@ describe('scripts/mfa-reset.mjs', () => {
 			database: 'no schedules',
 			status: 1,
 			says: 'this database has no report schedules table; start the server once to migrate it'
+		},
+		// Card 2671 (case 9, S15): a disabled account is enabled on the admin page first.
+		{
+			case: 'T32',
+			refusal: 'a disabled account',
+			args: ['holder'],
+			database: 'disabled',
+			status: 1,
+			says: 'the account "holder" is disabled. An administrator enables it on the admin page first. Nothing was changed.'
 		}
 	])('$case: refuses $refusal with exit $status, saying so, and changes nothing', ({ args, database, status, says }) => {
-		if (database === 'seeded' || database === 'no schedules') {
-			seedAccount('holder');
+		if (database === 'seeded' || database === 'no schedules' || database === 'disabled') {
+			const holder = seedAccount('holder');
+			if (database === 'disabled') db.update(users).set({ disabledAt: stamp(), disabledBy: null }).where(eq(users.id, holder.id)).run();
 			writeCopy();
 			if (database === 'no schedules') {
 				const old = new Database(file);

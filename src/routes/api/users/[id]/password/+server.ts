@@ -4,6 +4,7 @@ import { afterCommit } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { endAccountAccess, namingIds, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
+import { requireEnabledAccount } from '$lib/server/account-disable';
 import { LONGEST_PASSWORD, PASSWORD_TOO_LONG, makePasswordHash } from '$lib/server/passwords';
 import { refuseOwnAccount, requireAdmin, requireManagedAccount, requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -47,6 +48,8 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 			superadmin: 'Only superadmin can reset superadmin password',
 			admin: 'Only superadmin can reset an admin\'s password'
 		});
+		// A disabled account's password is not set (card 2671, D18): enable it first.
+		requireEnabledAccount(target);
 		return { actor, target };
 	};
 

@@ -126,6 +126,14 @@ export type SessionUser = {
 	email: string;
 	emoji: string;
 	role: string;
+	/**
+	 * Null past every gate (card 2671): a disabled account has no session and
+	 * no key, so `sessionUserOf` always writes null, and it reaches page data
+	 * as null. Carried so that a board check of the caller (`roleOnBoard`)
+	 * knows the account is enabled without reading it again; left out, as an
+	 * account built by hand is, it is read by id.
+	 */
+	disabledAt?: null;
 };
 
 // ─── Checking a Current Password and Its Code ───────────────────────────────
@@ -565,6 +573,18 @@ export function requirePasswordHeld(userId: number): void {
 export type NewSession = { token: string; createdAt: Stamp; role: string };
 
 /**
+ * What `createSession` throws for an account that is disabled (card 2671,
+ * S5): no session is made, and the caller's transaction is rolled back. The
+ * sign-in completions answer it as an expired sign-in.
+ */
+export class AccountDisabled extends Error {
+	constructor(readonly userId: number) {
+		super(`A session cannot be made for user ${userId}, whose account is disabled.`);
+		this.name = 'AccountDisabled';
+	}
+}
+
+/**
  * Create a new session for a user: a fresh code (a v4 UUID), kept only as
  * its SHA-256 (card 2775), with the expiry the account's role gives it now.
  * Returns the code, which only the cookie holds, with the session's start and
@@ -576,7 +596,9 @@ export type NewSession = { token: string; createdAt: Stamp; role: string };
  * is written. So does one whose total limit has already passed: the cookie
  * would have no lifetime (the code review's CM15), and a throw inside the
  * caller's transaction rolls it back. It throws too when the account is not
- * there, as the insert's foreign key would.
+ * there, as the insert's foreign key would, and `AccountDisabled` when the
+ * account is disabled (card 2671): its caller answers that as an expired
+ * sign-in, the transaction rolled back.
  *
  * The session is marked as made after a second factor (`two_step` 1, card
  * 2769): call this only once the second factor has been checked, or with the
@@ -591,8 +613,12 @@ export function createSession(userId: number, opts: { startedAt?: Stamp } = {}):
 		if (given === null) throw new Error('A session cannot be started at a moment that names none.');
 		createdAt = given;
 	}
-	const account = db.select({ role: users.role }).from(users).where(eq(users.id, userId)).get();
+	const account = db.select({ role: users.role, disabledAt: users.disabledAt }).from(users).where(eq(users.id, userId)).get();
 	if (!account) throw new Error(`A session cannot be made for user ${userId}, who is not there.`);
+	// Every sign-in completion, the verify, the enrol confirm and the own
+	// password change, makes its session here (card 2671, S5): a disabled
+	// account gets none, whichever way it got this far.
+	if (account.disabledAt !== null) throw new AccountDisabled(userId);
 	const started = parseStamp(createdAt)!.getTime();
 	const now = Date.now();
 	if (started + sessionLimitsFor(account.role).totalMs <= now) {
@@ -620,11 +646,12 @@ export function createSession(userId: number, opts: { startedAt?: Stamp } = {}):
 type FoundSession =
 	| { open: true; session: Session; user: User; deadline: number }
 	| { open: false; why: 'missing' }
-	| { open: false; why: 'expired' | 'orphaned' | 'one-step'; session: Session };
+	| { open: false; why: 'expired' | 'orphaned' | 'one-step' | 'disabled'; session: Session };
 
 /**
  * Whether the session with this hash is open: it is there, it was made after
- * a second factor, its account still exists, and its deadline has not passed.
+ * a second factor, its account still exists and is not disabled (card 2671),
+ * and its deadline has not passed.
  * If not, which of those it failed.
  *
  * The deadline (card 2775) is the earlier of `expires_at` and `created_at`
@@ -654,6 +681,11 @@ function findSession(hash: Buffer): FoundSession {
 		.where(eq(users.id, session.userId))
 		.get();
 	if (!user) return { open: false, why: 'orphaned', session };
+
+	// Disabled (card 2671): disabling ends every session in its own write, so
+	// this is one that write did not reach, as a restore or a host edit can
+	// leave. Refused whatever its expiry; the gate deletes it.
+	if (user.disabledAt !== null) return { open: false, why: 'disabled', session };
 
 	// Read as the moments they name, and closed when they name none (the P6
 	// review, S2): compared as text, `zzz` or 30 February 2099 sorted after
@@ -709,6 +741,14 @@ export function validateSession(token: string, { slide = true }: { slide?: boole
 		return null;
 	}
 
+	if (!found.open && found.why === 'disabled') {
+		// Of an account that is disabled (card 2671): signed out, deleted here
+		// so that it is said once.
+		log.warn('Session of a disabled account — refused and deleted', { sessionRef }, { userId: found.session.userId });
+		db.delete(sessions).where(eq(sessions.tokenHash, hash)).run();
+		return null;
+	}
+
 	if (!found.open) {
 		// Orphaned session — clean up
 		log.warn('Orphaned session (user no longer exists) — deleting', { sessionRef, userId: found.session.userId });
@@ -735,7 +775,9 @@ function sessionUserOf(user: User): SessionUser {
 		username: user.username,
 		email: user.email,
 		emoji: user.emoji || '👤',
-		role: user.role
+		role: user.role,
+		// Every gate refuses a disabled account, so past one it is enabled (card 2671).
+		disabledAt: null
 	};
 }
 
@@ -904,7 +946,9 @@ export const namingIds = (ids: number[]): string =>
  * Every way of setting a password ends the sessions and the waiting invites:
  * a waiting invite would let whoever holds it set the password again. The keys
  * end on an administrator's reset and when an invite is used, which are how an
- * account is taken back from someone who has its password or a session. On
+ * account is taken back from someone who has its password or a session, and
+ * when an administrator disables the account (`disableAccount`, card 2671),
+ * which ends all of this with the keys and the webhooks. On
  * the holder's own change, made with their current password, they end only
  * when the holder asks: a routine change is not about an intruder, and ending
  * keys stops every script that uses them.
@@ -1279,17 +1323,21 @@ export function keyEnded(key: { expiresAt: string | null; deadlineAt: string | n
 
 /**
  * The account an API key's row acts as, if the key is open: it has not ended
- * (`keyEnded`: its expiry and its deadline), and its account still exists.
+ * (`keyEnded`: its expiry and its deadline), and its account still exists and
+ * is not disabled (card 2671).
  * Null if not. `findApiKey` and `stillAuthenticated` both ask it, so that what
  * counts as an open key is decided in one place.
  */
 function keyHolder(apiKey: typeof apiKeys.$inferSelect): User | null {
 	if (keyEnded(apiKey, stamp())) return null;
 
-	return db.select()
+	const holder = db.select()
 		.from(users)
 		.where(eq(users.id, apiKey.userId))
-		.get() ?? null;
+		.get();
+	// A disabled account's keys ended at the disable (card 2671, D6): one left
+	// by a restore or a host edit is refused here all the same.
+	return holder === undefined || holder.disabledAt !== null ? null : holder;
 }
 
 /**

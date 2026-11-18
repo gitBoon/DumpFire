@@ -235,6 +235,64 @@ export function anyRemoved(removed: SettingsRemoved): boolean {
 	return removed.mail || removed.appUrl || removed.destinations.length > 0;
 }
 
+// ─── The backup failure address (card 2671) ──────────────────────────────────
+//
+// One rule for reading it (the code review's CR9), asked by the admin page,
+// which says whether an account's address is there, and by the removal below,
+// which a disable and the start's sweep run.
+
+/** The addresses of a failure address text, as the backup route reads them: separated by commas, semicolons or lines. */
+function addressesIn(text: string): string[] {
+	return text
+		.split(/[,;\r\n]/)
+		.map((each) => each.trim())
+		.filter((each) => each !== '');
+}
+
+/** An address with its ASCII capitals lower-cased, as the backup route compares them (not a full lower-casing: look-alikes). */
+const folded = (address: string) => address.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+/**
+ * `backup_config` as stored, read as the failure address is: the object and
+ * the addresses of its `notifyEmail`, or null for a value that is missing or
+ * not a JSON object, which is left alone.
+ */
+function failureConfigOf(stored: unknown): { config: Record<string, unknown>; addresses: string[] } | null {
+	if (typeof stored !== 'string') return null;
+	let config: unknown;
+	try {
+		config = JSON.parse(stored);
+	} catch {
+		return null;
+	}
+	if (config === null || typeof config !== 'object' || Array.isArray(config)) return null;
+	const was = config as Record<string, unknown>;
+	return { config: was, addresses: typeof was.notifyEmail === 'string' ? addressesIn(was.notifyEmail) : [] };
+}
+
+/** Whether `address` is one of the backup failure addresses in `stored`, `backup_config`'s value as stored. */
+export function isFailureAddress(stored: unknown, address: string): boolean {
+	const read = failureConfigOf(stored);
+	return read !== null && read.addresses.some((each) => folded(each) === folded(address));
+}
+
+/**
+ * Take `address` out of the backup failure address (`backup_config`'s
+ * `notifyEmail`), where it is one of the addresses there (card 2671, S7): the
+ * mail is sent outside the account, to whoever holds that address. True when
+ * it was there. A `backup_config` that is not a JSON object is left alone.
+ * Writes in the caller's transaction.
+ */
+export function removeFailureAddress(address: string): boolean {
+	const stored = sqlite.prepare("SELECT value FROM settings WHERE key = 'backup_config'").get() as { value: unknown } | undefined;
+	const read = failureConfigOf(stored?.value);
+	if (read === null) return false;
+	const kept = read.addresses.filter((each) => folded(each) !== folded(address));
+	if (kept.length === read.addresses.length) return false;
+	sqlite.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(JSON.stringify({ ...read.config, notifyEmail: kept.join(', ') }));
+	return true;
+}
+
 /** Who an account is, for the lines. */
 type Named = { id: number; username: string };
 
@@ -329,11 +387,12 @@ export function settingsHeldBy(userId?: number): Map<number, SettingsRemoved> {
 
 /**
  * Remove what `setter` set (card 2397), inside the caller's transaction:
- * the account was made a user (`demoted`) or is about to be deleted
- * (`deleted`), by `actor`; or, found at start-up with no `actor` (card 2406),
- * it is no longer an administrator (`not-an-administrator`) or no longer
- * exists (`gone`). `found` says where those two were found: at start-up, or
- * after a restore (card 2411), which the line then says.
+ * the account was made a user (`demoted`), is about to be deleted
+ * (`deleted`) or is being disabled (`disabled`, card 2671), by `actor`; or,
+ * found at start-up with no `actor` (card 2406), it is no longer an
+ * administrator (`not-an-administrator`), no longer exists (`gone`) or is
+ * disabled (`disabled`). `found` says where those were found: at start-up,
+ * or after a restore (card 2411), which the line then says.
  *
  * Each setting is the account's only where it is still at a place the
  * account's rows record (the second code review): one moved since to a place
@@ -357,7 +416,7 @@ export function settingsHeldBy(userId?: number): Map<number, SettingsRemoved> {
  */
 export function removeSettingsSetBy(
 	setter: Named,
-	why: 'demoted' | 'deleted' | 'not-an-administrator' | 'gone',
+	why: 'demoted' | 'deleted' | 'disabled' | 'not-an-administrator' | 'gone',
 	actor: Named | null,
 	found: 'start-up' | 'restore' = 'start-up'
 ): SettingsRemoved {
@@ -394,6 +453,11 @@ export function removeSettingsSetBy(
 	const because = {
 		demoted: `who was made a user by ${by}`,
 		deleted: `whose account was deleted by ${by}`,
+		// Card 2671: by `actor` at the disable, or found at start-up or after a restore with none.
+		disabled:
+			actor !== null
+				? `whose account was disabled by ${by}`
+				: `whose account is disabled (found ${found === 'restore' ? 'after a restore' : 'at start-up'})`,
 		'not-an-administrator':
 			found === 'restore'
 				? 'who is not an administrator in the restored data (found after a restore)'
@@ -454,20 +518,41 @@ export function removeSettingsOfFormerAdministrators(
 ): { setter: number; removed: SettingsRemoved }[] {
 	return inTransaction(() => {
 		// An administrator is `admin` or `superadmin`, as `isAdmin` (board-access.ts) has it.
+		// A disabled account is treated the same (card 2671): disabling removes
+		// what it set, and this finds what a restore or a host edit left.
 		const found = sqlite
 			.prepare(
-				`SELECT DISTINCT s.user_id AS id, u.username AS username
+				`SELECT DISTINCT s.user_id AS id, u.username AS username, u.disabled_at IS NOT NULL AS disabled
 				 FROM setting_setters s LEFT JOIN users u ON u.id = s.user_id
-				 WHERE s.user_id IS NOT NULL AND (u.id IS NULL OR u.role NOT IN ('admin', 'superadmin'))
+				 WHERE s.user_id IS NOT NULL AND (u.id IS NULL OR u.role NOT IN ('admin', 'superadmin') OR u.disabled_at IS NOT NULL)
 				 ORDER BY s.user_id`
 			)
-			.all() as { id: number; username: string | null }[];
-		return found.map(({ id, username }) => ({
+			.all() as { id: number; username: string | null; disabled: number | null }[];
+		const removed = found.map(({ id, username, disabled }) => ({
 			setter: id,
 			removed:
 				username === null
 					? removeSettingsSetBy({ id, username: '' }, 'gone', null, when)
-					: removeSettingsSetBy({ id, username }, 'not-an-administrator', null, when)
+					: removeSettingsSetBy({ id, username }, disabled === 1 ? 'disabled' : 'not-an-administrator', null, when)
 		}));
+		// And every disabled account's address out of the backup failure address,
+		// whatever its role (the code review's CS2): a restore, or a host edit,
+		// can bring it back after the disable took it out. One WARN each, naming
+		// the account and not the address.
+		const disabledAccounts = sqlite
+			.prepare('SELECT id, username, email FROM users WHERE disabled_at IS NOT NULL ORDER BY id')
+			.all() as { id: number; username: string; email: string }[];
+		for (const account of disabledAccounts) {
+			if (!removeFailureAddress(account.email)) continue;
+			afterCommit(() =>
+				backupLog.warn(
+					`The address of user ${account.id} ("${account.username}"), whose account is disabled, was taken out of the backup ` +
+						`failure address (found ${when === 'restore' ? 'after a restore' : 'at start-up'}): backup failures are not mailed to it.`,
+					{ userId: account.id, why: 'disabled', found: when },
+					{ userId: null }
+				)
+			);
+		}
+		return removed;
 	});
 }

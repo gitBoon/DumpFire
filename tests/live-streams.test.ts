@@ -179,6 +179,12 @@ const ENDINGS: { what: string; end: (user: SessionUser, token: string) => void }
 		// before it was there can keep the row, which is what this is.
 		what: 'the account is gone and its session row is left behind',
 		end: (user) => withoutForeignKeys(() => db.delete(users).where(eq(users.id, user.id)).run())
+	},
+	{
+		// Card 2671 (case 16): disabling ends every session in its own write; a
+		// restore or a host edit can leave one, which is what this is.
+		what: 'the account is disabled and its session row is left behind',
+		end: (user) => db.update(users).set({ disabledAt: '2099-01-01 09:00:00' }).where(eq(users.id, user.id)).run()
 	}
 ];
 

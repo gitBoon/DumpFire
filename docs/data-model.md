@@ -1,10 +1,13 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.86
+version: 1.87
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2671
+  - migration-0072
+  - account-disable
   - card-2752
   - card-2893
   - migration-0071
@@ -50,7 +53,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), and how migrations and schema reconciliation bring every database to the model"
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -73,6 +76,8 @@ erDiagram
         int mfa_known_wrong "0065, and ten more two-step sign-in columns: see below"
         int mfa_password_enrol "0066: NOT NULL DEFAULT 0; 1 may set up on the password"
         text security_signal_last_at "0069: the latest stolen-password signal (card 2772, CS1)"
+        text disabled_at "0072: when it was disabled, NULL while enabled (card 2671)"
+        int disabled_by FK "0072: who disabled it, SET NULL"
     }
 
     sessions {
@@ -422,6 +427,7 @@ erDiagram
     }
 
     users ||--o{ setting_setters : "put it there"
+    users |o--o{ users : "disabled_by (0072)"
     users ||--o{ sessions : "has"
     users ||--o{ invite_tokens : "invited by (hash only)"
     users ||--o{ mfa_factors : "second factors (0065)"
@@ -1616,6 +1622,46 @@ NULL and `active` as the backup had it, and the restore's sweep then switches of
 setter cannot open its board in the restored data. Going back to an older image keeps the
 columns unread: a webhook switched off here stays off there until an owner switches it on.
 
+### A disabled account (migration 0072)
+
+Migration `0072_add_account_disabled.sql` (card 2671) adds two nullable columns to `users` and
+an index. No IF NOT EXISTS, as 0063: a column or index of these names already there would be
+one this file did not make. It disables no account.
+
+| Column | Type | Written by | Meaning |
+|---|---|---|---|
+| `disabled_at` | text, NULL | `disableAccount` (`account-disable.ts`, from `POST /api/users/{id}/disable`), cleared by `enableAccount` (`POST /api/users/{id}/enable`) and by the host's superadmin command; carried by a restore (`carryDisabled`) | When the account was disabled, in the stored form (`YYYY-MM-DD HH:MM:SS`, UTC). NULL for an enabled account. Every gate refuses an account with a value: `createSession`, `findSession`, the API key holder, sign-in, the second step, invites and the host's two-step reset |
+| `disabled_by` | integer, NULL, `REFERENCES users(id) ON DELETE SET NULL`, `idx_users_disabled_by` | with `disabled_at` | Who disabled it. An account the superadmin disabled is enabled or deleted by the superadmin alone (`requireMayUndoDisable`). NULL once that account is deleted. After a restore, kept only where that account is restored as itself, by id and `created_at`; where it was the superadmin and is not, the restored superadmin; else NULL (the code review's CS3) |
+
+`disabled_at` is read with the rows callers already select (the session, the `Actor` of a board
+check, `editorsOf`, the assignee, Product Owner and decider checks), so a disabled account has no
+role on any board (`roleOnBoard`, `getBoardRole`), and it is read by id only when the caller does
+not carry it (`isDisabledActor`). A disable writes, in
+one transaction with the two columns: everything `endAccountAccess` ends (sessions, invites,
+pending sign-ins, enrolment links, API keys, the webhooks it set switched off with
+`'setter access ended'`, its report schedules paused), the `request_links` of the task requests it
+raised, and for an administrator the settings it set (`removeSettingsSetBy`, why `'disabled'`) and
+the backup failure address (`backup_config.notifyEmail`) where it is that account's address.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Enabled: disabled_at NULL
+    Enabled --> Disabled: POST disable (disabled_at, disabled_by, access ended)
+    Disabled --> Enabled: POST enable (both cleared, nothing given back)
+    Disabled --> Disabled: a restore (carryDisabled)
+    Disabled --> [*]: DELETE (deleteUser)
+    Enabled --> Enabled: DELETE refused 409
+```
+
+**A restore.** `disabledHere` reads this server's disabled accounts (id, `created_at`,
+`disabled_at`, `disabled_by`) before `users` is cleared; `carryDisabled` then disables again each
+restored account with the same id and `created_at` that is not a superadmin, keeping
+`disabled_by` only where that account is restored as itself (by id and `created_at`; else the
+restored superadmin where the superadmin disabled it, else NULL), deletes its restored API keys and pauses
+its restored report schedules. It runs before the superadmin check and the webhook sweep, which
+then switches off its webhooks. A backup made before 0072 has neither column: its accounts come in
+enabled, except those carried.
+
 ### Requester links (`request_links`, migration 0070)
 
 A requester without an account reaches their request through a link mailed to them. **Since
@@ -1729,6 +1775,7 @@ erDiagram
 | `milestones` | `cards.milestoneId` | SET NULL — **in code, not SQL** |
 | `categories` | `cards.categoryId` | SET NULL |
 | `users` | `boards.createdBy` | SET NULL |
+| `users` | `users.disabled_by` (migration 0072, card 2671) | SET NULL: the account stays disabled, and who disabled it reads as not recorded |
 | `users` | `webhooks.set_by` (migration 0056, card 2168) | SET NULL. `deleteUser()` switches the user's webhooks off first, while they still name the user, with the hold `'setter access ended'` (card 2752's code review, CS4) |
 | `api_keys` | `webhooks.set_by_key` (migration 0071, card 2893) | SET NULL, with `set_with_key` left as it is: NULL with 1 reads "its key was deleted" |
 | `users` | `setting_setters.user_id` (migration 0059, card 2397) | CASCADE. `deleteUser()` removes first the mail settings, App URL and destinations still at a place the rows record (`removeSettingsSetBy`), and a demotion to user does the same; the key then takes only the rows |
@@ -1959,7 +2006,13 @@ told only its own board.
 
 ### Deleting a user
 
-`deleteUser()` first clears the five columns that name a user through a foreign key with no
+Since card 2671 only an account that is disabled is deleted: `deleteUser()` reads `disabled_at`
+first and refuses an enabled account, `409 Disable the account first`, and `DELETE
+/api/users/{id}` says so before it asks the password. Disabling has already ended its sessions,
+invites, API keys and request links, switched off its webhooks and paused its schedules; what the
+delete still takes is below.
+
+`deleteUser()` then clears the five columns that name a user through a foreign key with no
 `ON DELETE` action, then writes the user's email onto every task request they made, then
 deletes the user, in one transaction. While any of the five named a user, the delete used to
 be refused by the key. The email is written (card 2171) because a request made signed in is
@@ -3600,6 +3653,20 @@ board was held at each delivery and sent again once the setter could open the bo
   columns, the key and the index as ones it does not know, and leaves them. See
   [A webhook switched off for good](#a-webhook-switched-off-for-good-migration-0071) and
   [Deployment](deployment.md#the-release-that-switches-off-a-webhook-whose-setter-loses-the-board-card-2752).
+
+**Migration 0072 records that an account is disabled, and by whom** (card 2671, built
+2026-11-18). Until this release an account could only be deleted.
+
+- **`0072_add_account_disabled.sql`**, three statements: `ALTER TABLE users ADD COLUMN` for
+  `disabled_at` text and `disabled_by` integer `REFERENCES users(id) ON DELETE SET NULL`, and
+  `CREATE INDEX idx_users_disabled_by`. No `IF NOT EXISTS`, as 0063.
+- **Disables no account.** Every account already stored has both columns NULL. It takes and
+  rewrites no row, so it declares nothing to the rehearsal.
+- It runs once. Going back to an older image: its schema check reports the columns and the
+  index as ones it does not know, and leaves them, and it does not read `disabled_at`, so every
+  disabled account could sign in there; the step to take first is in
+  [Deployment](deployment.md#the-release-that-disables-accounts-and-deletes-only-a-disabled-one-card-2671).
+  See [A disabled account](#a-disabled-account-migration-0072).
 
 ### Two Lineages Share 0001 to 0005
 
