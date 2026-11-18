@@ -26,12 +26,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const stub = vi.hoisted(() => ({
-	/** Passwords compared since the test began. */
+	/** Password compares begun since the test began. */
 	compared: 0,
 	/**
+	 * Compares finished and now waiting on `hold`: what a test waits for before
+	 * it lets held checks go together (card 2916). `compared` counts a compare
+	 * when it begins, so it can reach 2 while the second is still to be made.
+	 */
+	parked: 0,
+	/**
 	 * While set, each compare, once made, waits for it to answer: a check held
-	 * in flight. Made first, so that checks released together answer in one
-	 * turn, as two requests whose compares end together do (T26).
+	 * in flight. Made first, so that checks released together once all are
+	 * parked answer in one turn, as two requests whose compares end together
+	 * do (T26).
 	 */
 	hold: undefined as Promise<void> | undefined
 }));
@@ -43,6 +50,7 @@ vi.mock('$lib/server/passwords', async (importOriginal) => {
 		checkPassword: async (...args: Parameters<typeof real.checkPassword>) => {
 			stub.compared++;
 			const checked = await real.checkPassword(...args);
+			stub.parked++;
 			await stub.hold;
 			return checked;
 		}
@@ -104,6 +112,7 @@ beforeEach(() => {
 	resetDb();
 	resetAllRateLimits();
 	stub.compared = 0;
+	stub.parked = 0;
 	stub.hold = undefined;
 	keyStub.none = false;
 });
@@ -393,12 +402,15 @@ describe('the Two-step sign-in section (card 2772, S3)', () => {
 		const { token, pendingId, secret } = await started(user, 'Spare <b>phone</b>');
 		sent.clear();
 
-		const { result: res, lines } = await logged(() => confirm(user, token, pendingId, codeFor(secret)));
+		// The step spent is the code's own: compared with the moment it was made, not the end of the test (card 2916).
+		const at = Date.now();
+
+		const { result: res, lines } = await logged(() => confirm(user, token, pendingId, codeFor(secret, at)));
 
 		expect(res.status, JSON.stringify(res.body)).toBe(201);
 		const added = factorsOf(user)[1];
 		expect(res.body).toEqual({ id: added.id, label: 'Spare <b>phone</b>', createdAt: added.createdAt });
-		expect(added).toMatchObject({ label: 'Spare <b>phone</b>', kind: 'totp', lastStep: stepAt(Date.now()) });
+		expect(added).toMatchObject({ label: 'Spare <b>phone</b>', kind: 'totp', lastStep: stepAt(at) });
 		expect(pendingAddOf(user.id)).toBeUndefined();
 		expect(authLines(lines, 'Authenticator')).toEqual([{ level: 'INFO', message: `Authenticator ${added.id} added by user ${user.id}` }]);
 		const notices = await mails();
@@ -603,14 +615,16 @@ describe('the Two-step sign-in section (card 2772, S3)', () => {
 		const user = makeUser();
 		const a = giveFactor(user);
 		const b = giveAuthenticator(user, 'Spare phone');
-		// Each session sends the code of the authenticator it removes.
-		const byA = stepUp(user, {}, FIXTURE_PASSWORD, codeFor(a.secret));
-		const byB = stepUp(user, {}, FIXTURE_PASSWORD, codeFor(b.secret));
+		// Each session sends the code of the authenticator it removes, both made at one moment (card 2916).
+		const at = Date.now();
+		const byA = stepUp(user, {}, FIXTURE_PASSWORD, codeFor(a.secret, at));
+		const byB = stepUp(user, {}, FIXTURE_PASSWORD, codeFor(b.secret, at));
 		const release = holdChecks();
 
 		const removingA = remove(a.factorId, byA);
 		const removingB = remove(b.factorId, byB);
-		await vi.waitFor(() => expect(stub.compared).toBe(2));
+		// Both compares made and held, not merely begun: neither can then write before the other's check ends (card 2916).
+		await vi.waitFor(() => expect(stub.parked).toBe(2));
 		const before = snapshotDb();
 		release();
 		const [resA, resB] = await Promise.all([removingA, removingB]);
@@ -635,7 +649,7 @@ describe('the Two-step sign-in section (card 2772, S3)', () => {
 			...(gone === a ? [removed, ...SPENT_ALONE] : [...SPENT_ALONE, removed]),
 			...(winner === byA ? [cleared, ended] : [ended, cleared])
 		]);
-		expect(factorsOf(user)[0].lastStep).toBe(stepAt(Date.now()));
+		expect(factorsOf(user)[0].lastStep).toBe(stepAt(at));
 	});
 
 	it('T27. a new set of recovery codes: 200, ten in XXXX-XXXX-XXXX-XXXX, no-store; an old one refused at sign-in; ten unused rows; an INFO line; one codes-regenerated notice', async () => {
