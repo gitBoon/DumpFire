@@ -24,7 +24,16 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { endingScope, mayHaveRead, readableBy, readableNowScope, tellSwitchedOff, type SwitchedOff } from '$lib/server/webhooks';
+import {
+	REVEALED_TO_ACCOUNT_SQL,
+	SEED_REVEALS_SELECT,
+	endingScope,
+	mayHaveRead,
+	readableBy,
+	readableNowScope,
+	tellSwitchedOff,
+	type SwitchedOff
+} from '$lib/server/webhooks';
 // The script's own copy of the server's Webhooks lines (card 2923's code review, E8): importing it runs nothing.
 // And of the readable rule and its scopes (card 2935; its code review, C7).
 import {
@@ -33,6 +42,8 @@ import {
 	mayHaveRead as scriptMayHaveRead,
 	placeKey as scriptPlaceKey,
 	readableBy as scriptReadableBy,
+	REVEALED_TO_ACCOUNT_SQL as scriptRevealedToAccount,
+	SEED_REVEALS_SELECT as scriptSeedReveals,
 	resetScope,
 	webhookLines
 } from '../scripts/mfa-reset.mjs';
@@ -100,7 +111,8 @@ type Row = Record<string, unknown>;
  * they are masked; the link itself, its account and `issued_by` are not. So
  * is the moment each reset stamps on the report schedules it paused (card
  * 2894, E23), and on the webhooks it switched off (card 2915): of the ids in
- * `paused` and `held` only, each checked to be a stamp.
+ * `paused` and `held` only, each checked to be a stamp. And the moment of the
+ * once-only seed's flag (card 2947's code review, FP2), which each reset writes.
  */
 function dumpOf(database: Database.Database, { logs = false, paused = [] as number[], held = [] as number[] } = {}): Record<string, Row[]> {
 	const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[])
@@ -123,6 +135,14 @@ function dumpOf(database: Database.Database, { logs = false, paused = [] as numb
 				if (!held.includes(row.id as number)) return row;
 				expect(isStamp(row.held_at), `webhook ${row.id}`).toBe(true);
 				return { ...row, held_at: '(masked)' };
+			});
+		}
+		// When the once-only seed ran (card 2947's code review, FP2): the moment of the reset, in the stored form.
+		if (table === 'settings') {
+			rows = rows.map((row) => {
+				if (row.key !== 'webhook_reveals_seeded') return row;
+				expect(isStamp(row.value), 'the seed’s flag').toBe(true);
+				return { ...row, value: '(masked)' };
 			});
 		}
 		// When each setting was held for review (card 2922): the moment of the reset, in the stored form.
@@ -665,9 +685,25 @@ describe('scripts/mfa-reset.mjs', () => {
 			database: 'no setting holds',
 			status: 1,
 			says: 'this database has no table of the settings held for review; start the server once to migrate it'
+		},
+		// Card 2947 (R10): the record of which keys were given which secret, read before the keys go, or nothing at all.
+		{
+			case: 'T41',
+			refusal: 'a database without webhook_reveals',
+			args: ['holder'],
+			database: 'no reveals',
+			status: 1,
+			says: 'this database has no table of the API keys given webhook secrets; start the server once to migrate it'
 		}
 	])('$case: refuses $refusal with exit $status, saying so, and changes nothing', ({ args, database, status, says }) => {
-		if (database === 'seeded' || database === 'no schedules' || database === 'disabled' || database === 'no holds' || database === 'no setting holds') {
+		if (
+			database === 'seeded' ||
+			database === 'no schedules' ||
+			database === 'disabled' ||
+			database === 'no holds' ||
+			database === 'no setting holds' ||
+			database === 'no reveals'
+		) {
 			const holder = seedAccount('holder');
 			if (database === 'disabled') db.update(users).set({ disabledAt: stamp(), disabledBy: null }).where(eq(users.id, holder.id)).run();
 			if (database === 'no holds') makeWebhook(makeBoard({ owner: holder, name: 'Ops board' }).board, { setBy: holder });
@@ -688,6 +724,12 @@ describe('scripts/mfa-reset.mjs', () => {
 				// As a database from before migration 0074.
 				const old = new Database(file);
 				old.exec('DROP TABLE setting_holds');
+				old.close();
+			}
+			if (database === 'no reveals') {
+				// As a database from before migration 0075.
+				const old = new Database(file);
+				old.exec('DROP TABLE webhook_reveals');
 				old.close();
 			}
 		} else if (database === 'unmigrated') {
@@ -822,6 +864,34 @@ describe('scripts/mfa-reset.mjs', () => {
 		expect(scriptMayHaveRead('@id', '@except')).toBe(mayHaveRead('@id', '@except'));
 		expect(resetScope()).toBe(endingScope());
 		expect(holdReadableScope()).toBe(readableNowScope());
+		// Card 2947's code review (FP2, FP11): the seed's rows and the webhooks an account's keys were given.
+		expect(scriptSeedReveals).toBe(SEED_REVEALS_SELECT);
+		expect(scriptRevealedToAccount).toBe(REVEALED_TO_ACCOUNT_SQL);
+	});
+
+	it('T43 (card 2947’s code review, FP2): on a database no sweep has seeded, the host reset seeds first, as resetTwoStep does, and holds what the used key may have read', () => {
+		const holder = makeUser({ username: 'keyed' });
+		const { board } = makeBoard({ owner: holder, name: 'Own board' });
+		const other = makeUser({ username: 'other' });
+		const hook = makeWebhook(board, { url: 'https://seeded.example.test/in', secret: 's1', setBy: other });
+		sqlite.prepare("UPDATE webhooks SET created_at = '2026-10-01 09:00:00' WHERE id = ?").run(hook.id);
+		const key = makeApiKeyRow(holder);
+		sqlite.prepare("UPDATE api_keys SET last_used_at = '2026-11-01 09:00:00' WHERE id = ?").run(key.id);
+		writeCopy();
+		inTransaction(() => resetTwoStep(holder.id, 'host-reset', { cause: { log: 'a test', mail: 'a test' } }));
+		const expected = dumpOf(sqlite, { held: [hook.id] });
+
+		const ran = run(['keyed']);
+
+		expect(ran.status, ran.stderr).toBe(0);
+		expect(fileDump({ held: [hook.id] })).toEqual(expected);
+		const copied = new Database(file, { readonly: true, fileMustExist: true });
+		try {
+			expect(copied.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(hook.id)).toEqual({ active: 0, heldBecause: 'setter access ended' });
+			expect(copied.prepare("SELECT COUNT(*) AS n FROM settings WHERE key = 'webhook_reveals_seeded'").get()).toEqual({ n: 1 });
+		} finally {
+			copied.close();
+		}
 	});
 
 	it('T38 (card 2935): the superadmin reset on the host holds every webhook with a secret, whoever set it, as resetTwoStep does; one with no secret and one held stay; the others are listed on stdout', () => {
@@ -859,6 +929,49 @@ describe('scripts/mfa-reset.mjs', () => {
 		expect(ran.stdout).toContain("Those boards' owners were not mailed: tell them.");
 		const logged = (fileDump({ logs: true }).system_logs as Row[]).filter((line) => line.context === 'Webhooks').map((line) => line.message);
 		expect(logged[0]).toContain(`an account that could read its secret as an owner of the board or an administrator (user ${boss.id}) lost that access`);
+	});
+
+	it.each([
+		{ row: 'a reset: the webhook its key was given held, as resetTwoStep holds it, and the key’s rows gone; another key’s kept', keep: false },
+		{ row: 'with --keep-api-keys: nothing held, every row kept', keep: true }
+	])('T42 (card 2947, R10): $row', ({ keep }) => {
+		const holder = makeUser({ username: 'keyed' });
+		const other = makeUser({ username: 'other' });
+		const { board } = makeBoard({ owner: other, name: 'Their board' });
+		// Not one it can read: an ordinary account given the secret by its key, as the record says.
+		const given = makeWebhook(board, { url: 'https://given.example.test/in', secret: 's1', setBy: other });
+		const notGiven = makeWebhook(board, { url: 'https://kept.example.test/in', secret: 's2', setBy: other });
+		const key = makeApiKeyRow(holder);
+		const theirs = makeApiKeyRow(other);
+		sqlite
+			.prepare('INSERT INTO webhook_reveals (webhook_id, key_id, revealed_at) VALUES (?, ?, ?), (?, ?, ?)')
+			.run(given.id, key.id, stamp(), notGiven.id, theirs.id, stamp());
+		writeCopy();
+		if (!keep) inTransaction(() => resetTwoStep(holder.id, 'host-reset', { cause: { log: 'a test', mail: 'a test' } }));
+		const expected = keep ? null : dumpOf(sqlite, { held: [given.id] });
+
+		const ran = run(keep ? ['--keep-api-keys', 'keyed'] : ['keyed']);
+
+		expect(ran.status, ran.stderr).toBe(0);
+		if (expected !== null) expect(fileDump({ held: [given.id] })).toEqual(expected);
+		const copied = new Database(file, { readonly: true, fileMustExist: true });
+		try {
+			const row = (id: number) => copied.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(id);
+			expect([row(given.id), row(notGiven.id)]).toEqual([
+				keep ? { active: 1, heldBecause: null } : { active: 0, heldBecause: 'setter access ended' },
+				{ active: 1, heldBecause: null }
+			]);
+			expect(copied.prepare('SELECT webhook_id AS w, key_id AS k FROM webhook_reveals ORDER BY webhook_id').all()).toEqual(
+				keep
+					? [
+							{ w: given.id, k: key.id },
+							{ w: notGiven.id, k: theirs.id }
+						]
+					: [{ w: notGiven.id, k: theirs.id }]
+			);
+		} finally {
+			copied.close();
+		}
 	});
 
 	it('T38b (card 2935, P1): a superadmin who provably read nothing (made after the release, never signed in, no key, no invite) holds nothing of others', () => {

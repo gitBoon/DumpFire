@@ -54,7 +54,7 @@ import { boardTeams, teamMembers, webhooks, type Board } from './db/schema';
 import { eq, and, asc, inArray, isNull } from 'drizzle-orm';
 import { createHash, createHmac } from 'crypto';
 import { createLogger } from './logger';
-import { keyEnded } from './auth';
+import { deadlinePassed, keyEnded } from './auth';
 import { canViewBoard, getBoardRole, roleOnBoard, type Actor } from './board-access';
 import { notifyWebhooksSwitchedOff } from './notifications';
 import { onTheWire } from './v1-json';
@@ -114,8 +114,13 @@ export function canSeeWebhookSecret(user: Actor, boardId: number): boolean {
  * R1): a column added to the table is in no answer until it is named here.
  * `receiver` (card 2928) is in none. The address is given opened, '' for one
  * a backup left out or that does not open, never as it is stored.
+ *
+ * With `secret` false (card 2947, R9), a caller shown the address is not given
+ * the secret: a `PUT` that did not set or replace it. Every route answers
+ * through `answerWebhooks`, which records the key a secret was given to; this
+ * builds the answer alone, and writes nothing.
  */
-export function presentWebhook(hook: Webhook, reveal: boolean) {
+function presentWebhook(hook: Webhook, reveal: boolean, { secret = true }: { secret?: boolean } = {}) {
 	// Opened once for the answer (card 2928's code review, C12), only for a caller shown it; never kept.
 	const address = reveal ? openedUrl(hook) : null;
 	return {
@@ -130,12 +135,78 @@ export function presentWebhook(hook: Webhook, reveal: boolean) {
 		...(address !== null
 			? {
 					url: address.value,
-					secret: openedSecret(hook, address).value,
+					...(secret ? { secret: openedSecret(hook, address).value } : {}),
 					lastDelivery: deliveryResultFor(hook, address),
 					pausedBecause: pausedBecause(hook)
 				}
 			: {})
 	};
+}
+
+/** A webhook as an answer gives it (`presentWebhook`). */
+export type WebhookAnswer = ReturnType<typeof presentWebhook>;
+
+/** Said by `answerWebhooks` to a secret that would go to anything but an API key (card 2947, R5): a fault, a 500. */
+const SECRET_ONLY_TO_A_KEY =
+	"A webhook's secret is given only to an API key, which is recorded as given it (card 2947), and this request came in with none: nothing was given.";
+
+/**
+ * The webhooks as an answer gives them (`presentWebhook`), recording, in the caller's transaction, the API key every
+ * non-empty secret in them is given to (card 2947): one `INSERT … SELECT … FROM json_each(?) … ON CONFLICT DO NOTHING`
+ * for the answer (R14), so a key given the same secret again keeps the first time. Every route that answers a webhook
+ * answers through here. It throws outside a transaction, and for a secret that would go to a credential that is not an
+ * API key (a session), or to none at all (R5); the tests' own requests, which carry no credential (`undefined`, which
+ * `stillAuthenticated` lets through only under the tests), are answered and record nothing. A secret is given only
+ * under /api/v1/, which only a key enters, so neither is reached in the running server. An answer with no secret in it
+ * records nothing, whoever asked.
+ */
+export function answerWebhooks(
+	hooks: readonly Webhook[],
+	reveal: boolean,
+	credential: App.Locals['credential'],
+	{ secret = true }: { secret?: boolean } = {}
+): WebhookAnswer[] {
+	if (!sqlite.inTransaction) throw new Error('answerWebhooks records the key a secret is given to inside the transaction that gives it, and none is open');
+	const answers = hooks.map((hook) => presentWebhook(hook, reveal, { secret }));
+	const given = hooks.filter((_, i) => typeof answers[i].secret === 'string' && answers[i].secret !== '').map((hook) => hook.id);
+	if (given.length === 0) return answers;
+	if (credential === undefined) {
+		if (process.env.VITEST) return answers;
+		throw new Error(SECRET_ONLY_TO_A_KEY);
+	}
+	if (credential === null || credential.kind !== 'api key') throw new Error(SECRET_ONLY_TO_A_KEY);
+	recordRevealOn(sqlite).run(credential.id, stamp(), JSON.stringify(given));
+	return answers;
+}
+
+/** The reveal's one statement (card 2947, R14), prepared once per connection when first needed (its code review, FP11). */
+const RECORD_REVEAL = 'INSERT INTO webhook_reveals (webhook_id, key_id, revealed_at) SELECT value, ?, ? FROM json_each(?) WHERE true ON CONFLICT DO NOTHING';
+type RecordReveal = { run(keyId: number, at: string, ids: string): unknown };
+const recordReveals = new WeakMap<typeof sqlite, RecordReveal>();
+/** `RECORD_REVEAL` prepared on `database`, once. */
+function recordRevealOn(database: typeof sqlite): RecordReveal {
+	let statement = recordReveals.get(database);
+	if (statement === undefined) {
+		statement = database.prepare(RECORD_REVEAL);
+		recordReveals.set(database, statement);
+	}
+	return statement;
+}
+
+/** `answerWebhooks` for one webhook. */
+export function answerWebhook(hook: Webhook, reveal: boolean, credential: App.Locals['credential'], options: { secret?: boolean } = {}): WebhookAnswer {
+	return answerWebhooks([hook], reveal, credential, options)[0];
+}
+
+/**
+ * Forget who was given a webhook's secret (card 2947), in the transaction of the `PUT` that writes a new one (a
+ * secret sent, '' to clear it, or a switch-on's new one): every row says "was given the secret it has now", so a
+ * change of secret leaves none of them true. The `PUT`'s own answer then records its caller's key. Throws outside a
+ * transaction.
+ */
+export function forgetReveals(webhookId: number): void {
+	if (!sqlite.inTransaction) throw new Error('forgetReveals runs inside the transaction of the change of secret, and none is open');
+	sqlite.prepare('DELETE FROM webhook_reveals WHERE webhook_id = ?').run(webhookId);
 }
 
 /**
@@ -246,27 +317,28 @@ export function keysBeforeRecorded(setBy: number): KeyRow[] {
  * record it, and, for the account's last working key made before keys were
  * recorded, also every webhook the account set before then (`set_with_key`
  * NULL) that is on and sent now, which loses its last key with it. For the
- * Account page's key list, which says it before the revoke.
+ * Account page's key list, which says it before the revoke. By id since card
+ * 2947's code review (FP8), so that `webhooksRevealedTo` leaves exactly these out.
  */
-export function webhooksStoppedByRevoke(userId: number): Map<number, number> {
-	const counts = new Map<number, number>();
+export function webhooksStoppedByRevoke(userId: number): Map<number, Set<number>> {
+	const stopped = new Map<number, Set<number>>();
+	const add = (keyId: number, hookId: number) => stopped.set(keyId, (stopped.get(keyId) ?? new Set<number>()).add(hookId));
 	const recorded = sqlite
-		.prepare('SELECT set_by_key AS keyId, COUNT(*) AS n FROM webhooks WHERE active = 1 AND set_by_key IS NOT NULL AND set_by = ? GROUP BY set_by_key')
-		.all(userId) as { keyId: number; n: number }[];
-	for (const { keyId, n } of recorded) counts.set(keyId, n);
+		.prepare('SELECT set_by_key AS keyId, id FROM webhooks WHERE active = 1 AND set_by_key IS NOT NULL AND set_by = ? ORDER BY id')
+		.all(userId) as { keyId: number; id: number }[];
+	for (const { keyId, id } of recorded) add(keyId, id);
 	const now = stamp();
 	const live = keysBeforeRecorded(userId).filter((key) => !keyEnded(key, now));
 	if (live.length === 1) {
 		const cache = new Map<string, boolean>();
-		const before = db
-			.select()
+		db.select()
 			.from(webhooks)
 			.where(and(eq(webhooks.active, true), eq(webhooks.setBy, userId), isNull(webhooks.setWithKey)))
 			.all()
-			.filter((hook) => holdOf(hook, cache) === null).length;
-		if (before > 0) counts.set(live[0].id, (counts.get(live[0].id) ?? 0) + before);
+			.filter((hook) => holdOf(hook, cache) === null)
+			.forEach((hook) => add(live[0].id, hook.id));
 	}
-	return counts;
+	return stopped;
 }
 
 /**
@@ -320,12 +392,15 @@ export const SWITCHED_OFF_BECAUSE: Record<HeldBecause, string> = {
 	'no setter':
 		'This was switched off because nobody is recorded as having set it up. Delete it unless you recognise the address; to keep ' +
 		"it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, and update the receiver.",
-	// Card 2935: an account that could read its secret, as the board's owner or an administrator, too.
+	// Card 2935: an account that could read its secret, as the board's owner or an administrator, too. Card 2947: an
+	// API key that was given it, and the old secret treated as exposed now (R6).
 	'setter access ended':
 		'This was switched off because the account that set it up, or an account that could read its secret as the board\'s owner or an ' +
 		'administrator, had its password or its two-step sign-in reset, ended its API keys when changing its own password, used an ' +
-		'invite, was disabled, or was deleted, or, for one that could read it, lost that role; one already switched off then, or found ' +
-		'switched off with its setter disabled or not recorded, is held the same way. Delete the webhook unless you recognise its ' +
+		'invite, was disabled, or was deleted, or, for one that could read it, lost that role; or because an API key that was given its ' +
+		'secret was revoked, expired or passed its deadline; one already switched off then, or found ' +
+		'switched off with its setter disabled or not recorded, is held the same way. Treat its old secret as exposed: change it at the ' +
+		'receiver now, whether or not the webhook is switched on again, since until then the receiver trusts anything signed with it. Delete the webhook unless you recognise its ' +
 		'address; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer ' +
 		"and readable by the board's owner or an administrator, and update the receiver.",
 	'key ended':
@@ -406,7 +481,23 @@ export type SwitchedOff = {
 	 * disabled, or made before setters were recorded (P3, P4). Absent for the setter's own.
 	 */
 	reader?: number | 'found';
+	/**
+	 * Held because an API key that was given its secret ended (card 2947): the key's id, its account's (null where the
+	 * key is gone), and `before` for a row the once-only seed wrote (a key used before reads were recorded).
+	 */
+	revealedBy?: RevealedBy;
+	/**
+	 * Its secret was given to an API key (card 2947's code review, FP4), whichever hold took it: the owners' mail says
+	 * to treat the old secret as exposed and change it at the receiver now.
+	 */
+	exposed?: boolean;
 };
+
+/** The API key a hold names as given a webhook's secret (card 2947). */
+export type RevealedBy = { key: number; user: number | null; before: boolean };
+
+/** The words for a key a hold names (card 2947): its id, and its account's where known. */
+const keyNamed = (by: RevealedBy) => (by.user === null ? `key ${by.key}` : `key ${by.key}, user ${by.user}`);
 
 /** A webhook row and its hold, as `SwitchedOff` names them. */
 function switchedOff(hook: Webhook, hold: Hold): SwitchedOff {
@@ -517,9 +608,13 @@ const HOLD_IN_WORDS: Record<HeldBecause, (hook: SwitchedOff) => string> = {
 	'setter cannot open': (hook) => `the account that set it up (user ${hook.setBy}) can no longer open the board`,
 	'no setter': () => 'nobody is recorded as having set it up',
 	// Card 2923: ending an account's access, the start-up pass and a restore; `set_by` NULL for one found with no setter.
-	// Card 2935 (P13, L2): a reader's hold first, then no setter, then one found.
+	// Card 2935 (P13, L2): a reader's hold first, then no setter, then one found. Card 2947: a key it was given, first.
 	'setter access ended': (hook) =>
-		typeof hook.reader === 'number'
+		hook.revealedBy !== undefined
+			? hook.revealedBy.before
+				? `an API key that may have been given its secret before such reads were recorded (${keyNamed(hook.revealedBy)}) ended`
+				: `an API key that was given its secret (${keyNamed(hook.revealedBy)}) ended`
+			: typeof hook.reader === 'number'
 			? `an account that could read its secret as an owner of the board or an administrator (user ${hook.reader}) lost that access`
 			: hook.reader === 'found'
 				? READER_FOUND
@@ -539,7 +634,11 @@ const HOLD_IN_MAIL: Record<HeldBecause, (hook: SwitchedOff) => string> = {
 	'setter cannot open': () => 'the account that set it up can no longer open the board',
 	'no setter': () => 'nobody is recorded as having set it up',
 	'setter access ended': (hook) =>
-		typeof hook.reader === 'number'
+		hook.revealedBy !== undefined
+			? hook.revealedBy.before
+				? 'an API key that may have been given its secret before such reads were recorded ended'
+				: 'an API key that was given its secret ended'
+			: typeof hook.reader === 'number'
 			? 'an owner of the board or an administrator who could read its secret lost that access'
 			: hook.reader === 'found'
 				? READER_FOUND
@@ -633,11 +732,19 @@ export function tellSwitchedOff(
 				host: hostOfHook(hook),
 				why: HOLD_IN_MAIL[hook.hold](hook),
 				...(hook.hold === 'setter cannot open' ? { boardBack: true } : {}),
-				...(hook.hold === 'key ended' && hook.setBy !== null ? { setter: hook.setBy } : {})
+				...(hook.hold === 'key ended' && hook.setBy !== null ? { setter: hook.setBy } : {}),
+				// Card 2947 (R6; its code review, FP4): a secret an API key was given, to be treated as exposed now.
+				...(hook.exposed ? { exposed: true } : {})
 			})),
 			mailCause,
 			// Never a setter's mail for a held one (S1).
-			held.map((hook) => ({ boardId: hook.boardId, id: hook.id, host: hostOfHook(hook), why: HOLD_IN_MAIL[hook.hold](hook) })),
+			held.map((hook) => ({
+				boardId: hook.boardId,
+				id: hook.id,
+				host: hostOfHook(hook),
+				why: HOLD_IN_MAIL[hook.hold](hook),
+				...(hook.exposed ? { exposed: true } : {})
+			})),
 			notMailed
 		);
 	} else {
@@ -754,12 +861,13 @@ export function readableCountSql(id: string, role: string): string {
 const ROLE_OF_ID = '(SELECT role FROM users WHERE id = @id)';
 
 /**
- * The scope of an ending's hold (card 2935; the code review's C7), over a `webhooks` row, for `@id` and
- * `@readable`: what the account set, and, with `@readable` 1, every webhook with a secret it could read.
+ * The scope of an ending's hold (card 2935; the code review's C7), over a `webhooks` row, for `@id`, `@readable` and
+ * `@revealed`: what the account set, and, with `@readable` 1, every webhook with a secret it could read; and every
+ * webhook with a secret its keys were given (card 2947, R10), `@revealed` a JSON list of ids read before the keys go.
  * scripts/mfa-reset.mjs builds the same text, which tests/mfa-reset-script.test.ts compares.
  */
 export function endingScope(): string {
-	return `(set_by = @id OR (@readable = 1 AND secret <> '' AND ${readableBy('@id', ROLE_OF_ID)}))`;
+	return `(set_by = @id OR (@readable = 1 AND secret <> '' AND ${readableBy('@id', ROLE_OF_ID)}) OR (secret <> '' AND id IN (SELECT value FROM json_each(@revealed))))`;
 }
 
 /**
@@ -792,13 +900,14 @@ export function webhooksReadableBy(userId: number): number {
  * The one statement that holds for an ending, a lowered role and the start pass (card 2935; card 2923's code review,
  * E4): a read of the webhooks in `scope` already off with no hold, then one `UPDATE` of those on or off with no hold
  * in `scope`, `'setter access ended'`, `held_at` now; told apart by the read. `scope` is SQL over the `webhooks` row
- * with the named `params`; `mark` gives each row its reader. Neither opens a transaction nor tells.
+ * with the named `params`; `mark` gives each row its marker: its reader (card 2935), or the API key that was given its
+ * secret (card 2947), or none. Neither opens a transaction nor tells.
  */
 function holdInScope(
 	database: typeof sqlite,
 	scope: string,
 	params: Record<string, unknown>,
-	mark: (row: SwitchedOff) => SwitchedOff['reader']
+	mark: (row: SwitchedOff) => Pick<SwitchedOff, 'reader' | 'revealedBy' | 'exposed'>
 ): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
 	registerStampFunctions(database);
 	// Read in the scope, then written by id in a statement of literals alone, so that the writer inventory reads it
@@ -818,8 +927,7 @@ function holdInScope(
 	const switchedOff: SwitchedOff[] = [];
 	const held: SwitchedOff[] = [];
 	for (const hook of heldAsSwitchedOff(rows, false)) {
-		const reader = mark(hook);
-		const told = reader === undefined ? hook : { ...hook, reader };
+		const told = { ...hook, ...mark(hook) };
 		(alreadyOff.has(hook.id) ? held : switchedOff).push(told);
 	}
 	return { switchedOff, held };
@@ -843,16 +951,26 @@ function holdInScope(
  * ending with the keys, of an account that may have read (`accountMayHaveRead`, P1), asked before the keys go.
  * `readable` counts those, not set by the account. The account itself is never mailed through the administrators'
  * fallback (P14).
+ *
+ * With `revealed` (card 2947, R10): every webhook with a secret the account's keys were given, read by the caller
+ * before the keys are deleted (`revealedToAccount`), whoever set it and whatever the account can read now; marked
+ * `reader` as the readable ones are, and counted with them.
  */
 export function holdWebhooksOfSetter(
 	userId: number,
 	cause: EndingCause,
-	{ readable }: { readable: boolean }
+	{ readable, revealed = [] }: { readable: boolean; revealed?: readonly number[] }
 ): { switchedOff: SwitchedOff[]; held: SwitchedOff[]; readable: number } {
 	if (!sqlite.inTransaction) throw new Error('holdWebhooksOfSetter holds inside the transaction that ends the access, and none is open');
 	const scope = endingScope();
 	// Bound as 1 or 0 (P13, L6).
-	const { switchedOff, held } = holdInScope(sqlite, scope, { id: userId, readable: readable ? 1 : 0 }, (hook) => (hook.setBy === userId ? undefined : userId));
+	const params = { id: userId, readable: readable ? 1 : 0, revealed: JSON.stringify(revealed) };
+	// Every one its keys were given marked exposed (card 2947's code review, FP4), the setter's own and a reader's alike.
+	const given = new Set(revealed);
+	const { switchedOff, held } = holdInScope(sqlite, scope, params, (hook) => ({
+		...(hook.setBy === userId ? {} : { reader: userId }),
+		...(given.has(hook.id) ? { exposed: true } : {})
+	}));
 	if (switchedOff.length + held.length > 0) {
 		afterCommit(() => tellSwitchedOff(switchedOff, cause.log, { mail: true }, held, cause.mail, userId));
 	}
@@ -877,7 +995,7 @@ export function holdNoLongerReadable(userId: number, boardIds: readonly number[]
 		`set_by IS NOT @id AND secret <> '' AND ${boards} ` +
 		`AND NOT ${readableBy('@id', '(SELECT role FROM users WHERE id = @id)')} AND ${mayHaveRead('@id')}`;
 	const params: Record<string, unknown> = { id: userId, ...(boardIds === 'all' ? {} : { boards: JSON.stringify(boardIds) }) };
-	const { switchedOff, held } = holdInScope(sqlite, scope, params, () => userId);
+	const { switchedOff, held } = holdInScope(sqlite, scope, params, () => ({ reader: userId }));
 	if (switchedOff.length + held.length > 0) {
 		afterCommit(() => tellSwitchedOff(switchedOff, cause.log, { mail: true }, held, cause.mail, userId));
 	}
@@ -988,7 +1106,7 @@ export function coverReadable(database: typeof sqlite, { since, listed = [] }: {
 		'AND (stamp_of(webhooks.created_at) IS NULL OR stamp_of(d.disabled_at) IS NULL OR stamp_of(webhooks.created_at) <= stamp_of(d.disabled_at)) ' +
 		`AND ${readableBy('d.id', 'd.role', 'webhooks.board_id')} AND ${mayHaveRead('d.id')}) ` +
 		'OR (@since IS NULL AND (@before IS NULL OR stamp_of(webhooks.created_at) IS NULL OR stamp_of(webhooks.created_at) < @before)))';
-	const found = holdInScope(database, scope, { since, before: since === null ? setterRecordedSince(database) : null, listed: JSON.stringify(listed) }, () => 'found');
+	const found = holdInScope(database, scope, { since, before: since === null ? setterRecordedSince(database) : null, listed: JSON.stringify(listed) }, () => ({ reader: 'found' }));
 	database
 		.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value')
 		.run(WEBHOOKS_READABLE_COVERED, stamp());
@@ -1018,6 +1136,209 @@ export function holdUnheldOfGoneSetters(database: typeof sqlite = sqlite, { ever
 		)
 		.all(stamp(), every ? 1 : 0) as HeldRow[];
 	return heldAsSwitchedOff(rows, true);
+}
+
+// ─── Which API key was given which secret (card 2947) ─────────────────────
+
+/**
+ * A row of `webhook_reveals` (migration 0075) as the holds read it: the webhook, the key, the key's account (null
+ * where the key's row is gone) and whether the once-only seed wrote it (`revealed_at` NULL).
+ */
+export type Reveal = { webhookId: number; keyId: number; userId: number | null; before: boolean };
+
+/**
+ * What these keys were given (card 2947): every row of theirs, by webhook then key. Read before a key is deleted,
+ * since the foreign key takes its rows with it (R3).
+ */
+export function revealsOfKeys(keyIds: readonly number[], database: typeof sqlite = sqlite): Reveal[] {
+	const rows = database
+		.prepare(
+			'SELECT r.webhook_id AS webhookId, r.key_id AS keyId, k.user_id AS userId, r.revealed_at IS NULL AS before ' +
+				'FROM webhook_reveals AS r LEFT JOIN api_keys AS k ON k.id = r.key_id ' +
+				'WHERE r.key_id IN (SELECT value FROM json_each(?)) ORDER BY r.webhook_id, r.key_id'
+		)
+		.all(JSON.stringify(keyIds)) as { webhookId: number; keyId: number; userId: number | null; before: number }[];
+	return rows.map((row) => ({ ...row, before: row.before === 1 }));
+}
+
+/**
+ * Hold, `'setter access ended'`, every webhook with a secret that these reveals name and that is not already held
+ * (card 2947, R3): one on is switched off, one off with no hold is held, left off; one held for any reason keeps it,
+ * a webhook the setters' sweep has just switched off among them. Each marked with the key that was given it (the
+ * lowest key id where several were). Inside the caller's transaction (it throws outside one); tells nobody: the
+ * caller tells once, after its commit, with everything else its action switched off (R4).
+ */
+export function holdRevealed(reveals: readonly Reveal[]): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
+	if (!sqlite.inTransaction) throw new Error('holdRevealed holds inside the transaction of the write that ended the key, and none is open');
+	return holdRevealedRows(sqlite, reveals);
+}
+
+/**
+ * `holdRevealed` on any connection (card 2947's code review, FP1): the restore's, a working copy's included, whose
+ * webhooks it holds before switching every one off, telling nobody. Opens no transaction; throws outside one.
+ */
+export function holdRevealedIn(live: typeof sqlite, reveals: readonly Reveal[]): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
+	if (!live.inTransaction) throw new Error("holdRevealedIn holds inside the restore's transaction, and none is open");
+	return holdRevealedRows(live, reveals);
+}
+
+/** The one statement of `holdRevealed`, `holdRevealedIn` and the sweep (card 2947). Neither opens a transaction nor tells. */
+function holdRevealedRows(database: typeof sqlite, reveals: readonly Reveal[]): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
+	const first = new Map<number, Reveal>();
+	for (const reveal of reveals) if (!first.has(reveal.webhookId)) first.set(reveal.webhookId, reveal);
+	return holdInScope(database, "secret <> '' AND id IN (SELECT value FROM json_each(@ids))", { ids: JSON.stringify([...first.keys()]) }, (hook) => {
+		const by = first.get(hook.id)!;
+		return { revealedBy: { key: by.keyId, user: by.userId, before: by.before }, exposed: true };
+	});
+}
+
+/**
+ * Mark as exposed every item whose webhook was given to a key (card 2947's code review, FP4), whichever hold took it
+ * (`key ended` by the setters' sweep, a reader's at an ending), so that the owners' mail says to change its secret at
+ * the receiver now. Returns new items; the others are kept as they are.
+ */
+export function markExposed(items: readonly SwitchedOff[], revealed: Iterable<number>): SwitchedOff[] {
+	const ids = new Set(revealed);
+	return items.map((item) => (ids.has(item.id) ? { ...item, exposed: true } : item));
+}
+
+/** An API key with rows that has ended (card 2947), and how: its row gone, its account gone or disabled, its expiry or its deadline passed. */
+export type EndedKey = { id: number; userId: number | null; how: 'gone' | 'disabled' | 'expired' | 'deadline' };
+
+/**
+ * The keys with rows in `webhook_reveals` that have ended at `now` (card 2947), by the gate's own rule (`keyHolder` in
+ * auth.ts): one whose row is gone (only a write with the foreign keys off can leave that), one whose account is gone
+ * or disabled (its code review, FP3), one whose expiry is at or before now or names no moment, one whose deadline has
+ * passed or names no moment. In key order.
+ */
+export function endedKeysWithReveals(database: typeof sqlite = sqlite, now: string = stamp()): EndedKey[] {
+	const rows = database
+		.prepare(
+			'SELECT DISTINCT r.key_id AS id, k.id IS NULL AS gone, k.user_id AS userId, k.expires_at AS expiresAt, k.deadline_at AS deadlineAt, ' +
+				'(u.id IS NULL OR u.disabled_at IS NOT NULL) AS accountEnded ' +
+				'FROM webhook_reveals AS r LEFT JOIN api_keys AS k ON k.id = r.key_id LEFT JOIN users AS u ON u.id = k.user_id ORDER BY r.key_id'
+		)
+		.all() as { id: number; gone: number; userId: number | null; expiresAt: string | null; deadlineAt: string | null; accountEnded: number }[];
+	const ended: EndedKey[] = [];
+	for (const row of rows) {
+		if (row.gone === 1) ended.push({ id: row.id, userId: null, how: 'gone' });
+		else if (row.accountEnded === 1) ended.push({ id: row.id, userId: row.userId, how: 'disabled' });
+		else if (keyEnded({ expiresAt: row.expiresAt, deadlineAt: null }, now)) ended.push({ id: row.id, userId: row.userId, how: 'expired' });
+		else if (deadlinePassed(row, now)) ended.push({ id: row.id, userId: row.userId, how: 'deadline' });
+	}
+	return ended;
+}
+
+/** What the sweep says caused it (card 2947): the keys by id in the log, which administrators read; none in the mail. */
+export function endedKeysCause(ended: readonly EndedKey[]): EndingCause {
+	const said = ended.map((key) => {
+		const whose = key.userId === null ? '' : ` of user ${key.userId}`;
+		return key.how === 'gone'
+			? `API key #${key.id} is gone`
+			: key.how === 'disabled'
+				? `API key #${key.id}${whose} belongs to an account that is disabled or gone`
+				: key.how === 'expired'
+					? `API key #${key.id}${whose} expired`
+					: `API key #${key.id}${whose} passed its deadline`;
+	});
+	return { log: said.join('; '), mail: 'an API key that had been given webhook secrets expired, passed its deadline or was removed' };
+}
+
+/**
+ * The sweep of ended keys (card 2947), at every start and every five minutes (startup-checks.ts), and in the server's
+ * own restore (R1): for every key with rows that has ended (`endedKeysWithReveals`), first its account's webhooks
+ * swept as a revoke sweeps them (`switchOffLostWebhooks`, `'key ended'` for those the key set), then every webhook
+ * with a secret the key was given held (`holdRevealed`), then the key's rows deleted, so that each key's hold is made
+ * once (an ended key is never revived). Inside the caller's transaction, on the server's connection, which the
+ * setters' sweep reads; tells nobody: the caller tells once after its commit, with `endedKeysCause(ended)`.
+ */
+export function holdRevealsOfEndedKeys(): { switchedOff: SwitchedOff[]; held: SwitchedOff[]; ended: EndedKey[]; seeded: number | null } {
+	if (!sqlite.inTransaction) throw new Error('holdRevealsOfEndedKeys holds inside a transaction, and none is open');
+	// The once-only seed first, in the same transaction (R7): a failure of either rolls both back, and no flag is written.
+	const seeded = seedRevealsOnce(sqlite);
+	const ended = endedKeysWithReveals(sqlite);
+	if (ended.length === 0) return { switchedOff: [], held: [], ended, seeded };
+	const keyIds = ended.map((key) => key.id);
+	const reveals = revealsOfKeys(keyIds);
+	const setters = [...new Set(ended.map((key) => key.userId).filter((id): id is number => id !== null))];
+	const swept = setters.length > 0 ? switchOffLostWebhooks({ setters }, '', { told: 'by the caller' }) : [];
+	const fromReveals = holdRevealedRows(sqlite, reveals);
+	sqlite.prepare('DELETE FROM webhook_reveals WHERE key_id IN (SELECT value FROM json_each(?))').run(JSON.stringify(keyIds));
+	// What a key set and was given, switched off as its key ended, is exposed too (FP4).
+	const given = reveals.map((reveal) => reveal.webhookId);
+	return { switchedOff: markExposed([...swept, ...fromReveals.switchedOff], given), held: markExposed(fromReveals.held, given), ended, seeded };
+}
+
+/** The `settings` key that says the reads before reads were recorded were seeded (card 2947, R7): the moment it ran. */
+export const WEBHOOK_REVEALS_SEEDED = 'webhook_reveals_seeded';
+
+/**
+ * The SQL of the once-only seed (card 2947, decision 11, R7): every API key ever used through the API
+ * (`last_used_at`, which only the v1 gate writes) counts as given the secret of every webhook with a secret, not
+ * held, that its account can read now (`readableBy`) or set, made at or before the key's last use; a moment that
+ * cannot be read counts (fail closed). `revealed_at` NULL marks a seeded row. Exported for the release notes'
+ * preview query, which counts the same rows.
+ */
+export const SEED_REVEALS_SELECT =
+	'SELECT w.id AS webhookId, k.id AS keyId FROM api_keys AS k JOIN users AS u ON u.id = k.user_id JOIN webhooks AS w ' +
+	"ON w.secret <> '' AND (w.active = 1 OR w.held_because IS NULL) " +
+	`AND (w.set_by = k.user_id OR ${readableBy('k.user_id', 'u.role', 'w.board_id')}) ` +
+	'WHERE k.last_used_at IS NOT NULL ' +
+	'AND (stamp_of(w.created_at) IS NULL OR stamp_of(k.last_used_at) IS NULL OR stamp_of(w.created_at) <= stamp_of(k.last_used_at))';
+
+/**
+ * Seed the reads made before they were recorded, once (card 2947, R7): while `webhook_reveals_seeded` is absent, the
+ * rows of `SEED_REVEALS_SELECT` written with `revealed_at` NULL (`INSERT OR IGNORE`: a row recorded since is kept)
+ * and the flag written as now. Returns how many it wrote, or null where the flag was there. Opens no transaction:
+ * the sweep's, or the restore's, holds it, so a failure leaves no flag.
+ */
+export function seedRevealsOnce(database: typeof sqlite = sqlite): number | null {
+	if (database.prepare('SELECT 1 FROM settings WHERE key = ?').get(WEBHOOK_REVEALS_SEEDED)) return null;
+	registerStampFunctions(database);
+	const seeded = database
+		.prepare(`INSERT OR IGNORE INTO webhook_reveals (webhook_id, key_id, revealed_at) SELECT webhookId, keyId, NULL FROM (${SEED_REVEALS_SELECT})`)
+		.run().changes;
+	database.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_REVEALS_SEEDED, stamp());
+	return seeded;
+}
+
+/**
+ * How many webhooks revoking each of the account's keys would hold for what the key was given (card 2947), by key
+ * id, for the Account page's key list beside `webhooksStoppedByRevoke`: those with a secret, not held, that the key
+ * was given, less exactly the ids `stopped` names for that key (its code review, FP8), which the revoke's setters'
+ * sweep switches off first, so the confirm says what the revoke's answer will. A key that ends by its expiry or its
+ * deadline holds the same.
+ */
+export function webhooksRevealedTo(userId: number, stopped: ReadonlyMap<number, ReadonlySet<number>>): Map<number, number> {
+	const rows = sqlite
+		.prepare(
+			'SELECT DISTINCT r.key_id AS keyId, w.id AS id FROM webhook_reveals AS r JOIN api_keys AS k ON k.id = r.key_id JOIN webhooks AS w ON w.id = r.webhook_id ' +
+				"WHERE k.user_id = ? AND w.secret <> '' AND (w.active = 1 OR w.held_because IS NULL)"
+		)
+		.all(userId) as { keyId: number; id: number }[];
+	const counts = new Map<number, number>();
+	for (const { keyId, id } of rows) {
+		if (stopped.get(keyId)?.has(id)) continue;
+		counts.set(keyId, (counts.get(keyId) ?? 0) + 1);
+	}
+	return counts;
+}
+
+/**
+ * The SQL of the webhooks an account's keys were given (card 2947, R10), `@id` the account: `revealedToAccount`'s,
+ * and scripts/mfa-reset.mjs's copy word for word (its code review, FP11; tests/mfa-reset-script.test.ts compares them).
+ */
+export const REVEALED_TO_ACCOUNT_SQL =
+	'SELECT DISTINCT r.webhook_id FROM webhook_reveals AS r JOIN api_keys AS k ON k.id = r.key_id WHERE k.user_id = @id ORDER BY r.webhook_id';
+
+/**
+ * The webhooks the account's keys were given (card 2947, R10), read before its keys are deleted, for an ending's
+ * hold (`endingScope`'s `@revealed`). The once-only seed first (its code review, FP2), so that an ending never acts on
+ * reads not yet recorded: one read of its flag once it has run.
+ */
+export function revealedToAccount(userId: number): number[] {
+	seedRevealsOnce(sqlite);
+	return sqlite.prepare(REVEALED_TO_ACCOUNT_SQL).pluck().all({ id: userId }) as number[];
 }
 
 /** What the Share window says of a board's webhooks (card 2329). */

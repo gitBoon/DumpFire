@@ -1041,10 +1041,15 @@ describe('through the route', () => {
 		// The settings as the backup has them, beside the form signing key the restore makes (card 2750), and the flag
 		// the check of the stored images writes once the import has committed, the backup holding no image and no flag
 		// (card 2761, the code review's CS3).
-		const made = (rows: string[]) => withoutFormKey(rows).filter((row) => !row.includes('"key":"stored_images_rechecked"'));
+		// And the flag of the once-only seed of reads made before they were recorded, which the restore runs for a backup
+		// holding none (card 2947, R7).
+		const made = (rows: string[]) =>
+			withoutFormKey(rows).filter((row) => !row.includes('"key":"stored_images_rechecked"') && !row.includes('"key":"webhook_reveals_seeded"'));
 		for (const table of OUTSIDE_TABLES) expect(made(contentsOf(sqlite)[table])).toEqual(made(contentsOf(backup)[table]));
 		expect(contentsOf(backup).settings.filter((row) => row.includes('"key":"stored_images_rechecked"'))).toEqual([]);
 		expect(contentsOf(sqlite).settings.filter((row) => row.includes('"key":"stored_images_rechecked"'))).toHaveLength(1);
+		expect(contentsOf(backup).settings.filter((row) => row.includes('"key":"webhook_reveals_seeded"'))).toEqual([]);
+		expect(contentsOf(sqlite).settings.filter((row) => row.includes('"key":"webhook_reveals_seeded"'))).toHaveLength(1);
 	});
 
 	// Card 2899 (case 6): the seal's other answer, and the working copy's words.

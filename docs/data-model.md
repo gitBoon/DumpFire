@@ -1,10 +1,13 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.94
+version: 1.95
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2947
+  - migration-0075
+  - webhook-reveals
   - card-2928
   - migration-0073
   - card-2898
@@ -1689,6 +1692,50 @@ A backup made before 0071 has none of the four columns: its webhooks come in wit
 NULL and `active` as the backup had it, and the restore's sweep then switches off each whose
 setter cannot open its board in the restored data. Going back to an older image keeps the
 columns unread: a webhook switched off here stays off there until an owner switches it on.
+
+### Which API key was given which secret (`webhook_reveals`, migration 0075)
+
+Card 2947. One row for each API key given a webhook's signing secret as it is now, so that the
+key's revoke, expiry or deadline, or its account's ending, holds the webhook as `'setter access
+ended'`.
+
+```mermaid
+erDiagram
+    api_keys ||--o{ webhook_reveals : "was given (cascade)"
+    webhooks ||--o{ webhook_reveals : "secret given (cascade)"
+    users ||--o{ api_keys : "cascade"
+    boards ||--o{ webhooks : "cascade"
+    webhook_reveals {
+        integer webhook_id PK "FK webhooks.id, ON DELETE CASCADE"
+        integer key_id PK "FK api_keys.id, ON DELETE CASCADE, indexed"
+        text revealed_at "first since the secret changed; NULL = seeded"
+    }
+```
+
+| Column | Type | Meaning |
+|---|---|---|
+| `webhook_id` | integer, part of the primary key | The webhook (`REFERENCES webhooks(id) ON DELETE CASCADE`) |
+| `key_id` | integer, part of the primary key | The key given its secret (`REFERENCES api_keys(id) ON DELETE CASCADE`, `idx_webhook_reveals_key_id`) |
+| `revealed_at` | text, nullable | The first time since the secret last changed, in the stored form; NULL for a row the once-only seed wrote |
+
+**Writers.** `answerWebhooks` (every v1 answer that carries a non-empty secret, `ON CONFLICT DO
+NOTHING`); `forgetReveals` (a `PUT` that writes a new secret deletes the webhook's rows);
+`holdRevealsOfEndedKeys` (deletes the rows of each ended key once it has held what they name);
+`seedRevealsOnce` (once, flag `settings.webhook_reveals_seeded`, run first by the sweep, a
+revoke, every ending through `revealedToAccount`, the restore and the host's
+`scripts/mfa-reset.mjs`); the restore's `carryRevealsHere` (puts back this server's rows for every
+restored webhook on the same id and board that has a secret, where the same key came back by id
+and hash) and `carryDisabled` (deletes the rows of the keys it deletes,
+the foreign keys being off during a restore). The cascade takes a key's rows with the key (a
+revoke, an ending, a user delete, the host's reset) and a webhook's with the webhook or its board.
+
+**Readers.** The revoke, the ended-key sweep, `endAccountAccess` and `deleteUser`
+(`revealedToAccount`, read before the keys go), `scripts/mfa-reset.mjs`, and the key list's
+`webhooksRevealed` count (`webhooksRevealedTo`).
+
+A backup carries the table like any other: it is not secret. A backup made before 0075 has none,
+and the restore seeds where the restored settings lack the flag. Going back to an older image
+leaves the table unread and unwritten.
 
 ### A disabled account (migration 0072)
 

@@ -1,10 +1,12 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.282
+version: 1.283
 status: Living
 date: 2026-11-19
 tags:
+  - card-2947
+  - webhook-reveals
   - card-2941
   - onedrive-app-only
   - retention-reported
@@ -98,8 +100,8 @@ run exits 1. `npm test` leaves the choice to vitest, which allows `.only` unless
 environment variable `CI` is set: at a desk it can be used, and nothing in the image
 build sets `CI`, which is why the build's command carries the flag.
 
-The suite is 160 test files and 13,463 tests (card 2943's fix pass, 2026-11-19), and takes
-about three to four minutes. A run that passes on Windows reports `13458 passed | 5 skipped`:
+The suite is 161 test files and 13,519 tests (card 2947's code review, 2026-11-19), and takes
+about three to four minutes. A run that passes on Windows reports `13514 passed | 5 skipped`:
 the five are the POSIX-only cases below; on Linux, with three or more CPUs, none is skipped (card
 2860's Linux run reported `12354 passed`; card 2772's 137 more tests, card 2751's 29, card 2870's 11, card 2670's 17, the 55 of the cards since, to card 2891, card 2761's 17, card 2719's 81, card 2762's 7, card 2752's 45, card 2893's 29, card 2894's 14, card 2911's 10 more passing, card 2914's 6, card 2899's 12, card 2671's 127, card 2910's 56, card 2915's 26, card 2925's 6, card 2923's 19, card 2938's 19, the cards since to card 2935, card 2922's 57, card 2920's 20, card 2941's 50 and card 2943's 23 were run on Windows only). Card 2911 took out card 2719's 44 `it.fails` tests and the meta case M2, and added 11 cases. The figures move with every card: the one rule is that nothing fails
 and nothing is skipped but the cases below.
@@ -2886,6 +2888,47 @@ comment naming the card), migration 0065 and the account changes move these:
 - `tests/page-failures.test.ts` (plan case T61): the admin page's `accountOf` passes
   `mfaWithoutFactor` through and leaves it undefined when absent, and the report shows it on a
   line of its own after the secrets' lines.
+
+#### Card 2947: an API key given a webhook's secret holds it when it ends
+
+- `tests/webhook-reveals.test.ts` (new, 32 tests): the revoke (R3: rows read before the delete,
+  the setters' sweep first, already-held kept, no secret left; a failed revoke changes nothing);
+  told once (R4), the WARN naming the key, the mail naming no account (R12) and the exposed-secret
+  sentence (R6) only where a revealed webhook is named; the sweep of ended keys (an expiry, a
+  deadline, an unreadable expiry, a gone key, the key's own webhook as `key ended`, the scheduler
+  gate, a failed hold and the five-minute timer, the guard outside a transaction); every answer that
+  records (GET one and the list in one write, the `PUT` answers of R9, a new secret forgetting the
+  rows, a switch-on, a `POST`, a failed record giving nothing, an ended key, `answerWebhook`'s
+  guards of R5 and no route building an answer itself) and `Cache-Control: no-store` (R11); the
+  endings of R10 (an ordinary account's key, an owner's counted once, a two-step reset, an ending
+  that keeps the keys, a delete with a key left); the key list's `webhooksRevealed` (R15); the
+  restore's telling (R1); the seed (R7: who counts, the first start's hold of ended keys, a failed
+  seed rolling back with the hold).
+- `tests/backups.test.ts`: seven restore cases (R1: carried where the same key came back, held
+  where it did not or its hash differs, an ended key held inside the restore, a working copy holding
+  nothing; R2: a disabled account's keys' rows deleted and held; R7: the seed inside the restore),
+  and the start-order pin; `tests/database-location.test.ts` the same pin.
+- `tests/mfa-reset-script.test.ts`: T41 (a database without the table refused), T42 (the reset
+  holding what the keys were given, as `resetTwoStep`, every table; `--keep-api-keys` holding
+  nothing); T38a's word-for-word scope now carries `@revealed`.
+- `tests/migrations.test.ts`: 0075's two cases and the applied lists; `tests/timestamps.test.ts`
+  83 columns; `tests/admin-reset.test.ts` a row of the new table; `tests/harness.test.ts` the new
+  file; `tests/check-at-the-write.test.ts` the callers of `holdRevealed` and
+  `holdRevealsOfEndedKeys`; `tests/readable-webhooks.test.ts` `revealAs` in place of `readAs`;
+  `tests/access-control.test.ts`, `tests/webhooks.test.ts`, `tests/openapi-document.test.ts`,
+  `tests/page-failures.test.ts`, `tests/import-working-copy.test.ts` the pins that moved.
+- **The code review's fix pass (FP1 to FP14):** `tests/webhook-reveals.test.ts` now 42 tests:
+  case 10 failing at the reveal hold after the delete and the sweep (FP7), 11b a real `POST` reveal
+  told as exposed (FP4), 13c an expiry where the key set and was given W (FP10 c), 13d a key of a
+  disabled or gone account (FP3), 14b the flag rolled back and one timer, 14d the timer `unref`'d
+  (FP14), 8b every route passing `locals.credential` (FP13), 15e an ending's exposed sentence, 22b the
+  exact count (FP8), S1 and S2 the seed run by a revoke and an ending (FP2), 17d a failed hold with
+  seed rows pending, and R1e the restore's mail naming nobody (FP5); `tests/backups.test.ts` R1d (a
+  working copy holds, FP1) and FP6 (a backup carrying its secrets); `tests/mfa-reset-script.test.ts`
+  T38a's two new pins, T43 (the host seeds) and the seed flag masked in the parity dump;
+  `tests/atomic-accounts.test.ts` the seed's two writes in seven pinned sequences;
+  `tests/check-at-the-write.test.ts` the callers of `holdRevealedIn`. 161 files, 13,519 tests in
+  all (`13514 passed | 5 skipped`).
 
 #### Card 2935: the webhooks whose secret an owner or administrator could read
 

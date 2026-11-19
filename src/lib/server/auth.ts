@@ -26,7 +26,7 @@ import { endUnusedInvites } from './invites';
 import { endPendingSignIns, holdsFactor, matchFactors, spendRecoveryCode, spendStep, type FactorMatch } from './mfa-store';
 import { raiseSignal } from './sign-in-challenges';
 // A cycle of functions only (webhooks.ts imports `keyEnded`): neither uses the other at module load (card 2923, decision 13).
-import { accountMayHaveRead, holdWebhooksOfSetter, type EndingCause } from './webhooks';
+import { accountMayHaveRead, holdWebhooksOfSetter, revealedToAccount, type EndingCause } from './webhooks';
 import { holdSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
@@ -1052,6 +1052,8 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause
 	}
 	// Asked before anything ends (card 2935, P1): the keys deleted below are part of the answer.
 	const readable = opts.apiKeys && accountMayHaveRead(userId, opts.exceptInvite ?? null);
+	// And what its keys were given (card 2947, R10), read before the keys are deleted below, whose rows go with them.
+	const revealed = opts.apiKeys ? revealedToAccount(userId) : [];
 	const sessionsEnded = db.delete(sessions).where(eq(sessions.userId, userId)).run().changes;
 	const invitesEnded = endUnusedInvites(userId);
 	const pending = endPendingSignIns(userId);
@@ -1064,7 +1066,7 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause
 	// its receiver is the owner's to send to. Those already off with no hold are
 	// held too, and both are told once committed (card 2923; `holdWebhooksOfSetter`).
 	// With those whose secret it could read (card 2935); the ids are those it set (P9).
-	const hold = opts.apiKeys ? holdWebhooksOfSetter(userId, opts.cause, { readable }) : null;
+	const hold = opts.apiKeys ? holdWebhooksOfSetter(userId, opts.cause, { readable, revealed }) : null;
 	const webhookIds = hold ? hold.switchedOff.filter((hook) => hook.reader === undefined).map((hook) => hook.id) : [];
 	// With its keys (card 2922): the mail settings, App URL and backup destinations it set held for the superadmin's
 	// review, its lines told once committed; and every link of the requests it made ended, as a disable ends them

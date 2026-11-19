@@ -50,11 +50,14 @@ import { createLogger } from '../logger';
 import { REPLACE_PLAIN_USED_INVITES, inHashForm } from '../invites';
 import {
 	coverReadable,
+	holdRevealedIn,
+	holdRevealsOfEndedKeys,
 	holdUnheldOfGoneSetters,
 	readableCoveredAt,
 	switchOffLostWebhooks,
 	tellSwitchedOff,
 	WEBHOOKS_ALREADY_OFF_HELD,
+	type Reveal,
 	type SwitchedOff
 } from '../webhooks';
 import { sqlite } from './index';
@@ -530,12 +533,22 @@ function hasSettingsTable(live: Database.Database): boolean {
  * report schedules paused. Their webhooks are switched off by the restore's
  * sweep, which runs after this. Returns the ids carried.
  */
-function carryDisabled(live: Database.Database, disabled: readonly DisabledHere[]): number[] {
+function carryDisabled(live: Database.Database, disabled: readonly DisabledHere[], reveals: Reveal[] = []): number[] {
 	if (disabled.length === 0) return [];
 	const restored = live.prepare('SELECT id FROM users WHERE id = ? AND created_at = ? AND role <> ?');
 	const sameAccount = live.prepare('SELECT 1 FROM users WHERE id = ? AND created_at = ?');
 	const superadmin = live.prepare("SELECT id FROM users WHERE role = 'superadmin' AND disabled_at IS NULL ORDER BY id LIMIT 1");
 	const disable = live.prepare('UPDATE users SET disabled_at = ?, disabled_by = ? WHERE id = ?');
+	// The rows of the keys deleted below, deleted explicitly with them (card 2947, R2): the foreign keys are off during a
+	// restore, so no cascade takes them. Collected into `reveals` first, for the restore to hold what those keys were given.
+	const hasReveals = !!live.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'webhook_reveals'").get();
+	const revealsOf = hasReveals
+		? live.prepare(
+				'SELECT r.webhook_id AS webhookId, r.key_id AS keyId, k.user_id AS userId, r.revealed_at IS NULL AS before ' +
+					'FROM webhook_reveals AS r JOIN api_keys AS k ON k.id = r.key_id WHERE k.user_id = ? ORDER BY r.webhook_id, r.key_id'
+			)
+		: null;
+	const forgetReveals = hasReveals ? live.prepare('DELETE FROM webhook_reveals WHERE key_id IN (SELECT id FROM api_keys WHERE user_id = ?)') : null;
 	const keys = live.prepare('DELETE FROM api_keys WHERE user_id = ?');
 	const schedules = live.prepare('UPDATE report_schedules SET enabled = 0, updated_at = ? WHERE user_id = ? AND enabled = 1');
 	const carried: number[] = [];
@@ -552,12 +565,58 @@ function carryDisabled(live: Database.Database, disabled: readonly DisabledHere[
 					? ((superadmin.get() as { id: number } | undefined)?.id ?? null)
 					: null;
 		disable.run(account.disabledAt, by, account.id);
+		if (revealsOf && forgetReveals) {
+			for (const row of revealsOf.all(account.id) as (Omit<Reveal, 'before'> & { before: number })[]) reveals.push({ ...row, before: row.before === 1 });
+			forgetReveals.run(account.id);
+		}
 		keys.run(account.id);
 		schedules.run(stamp(), account.id);
 		carried.push(account.id);
 	}
 	return carried;
 }
+
+/** A row of this server's `webhook_reveals`, read before a restore clears it, with what its carry is matched on (card 2947). */
+type RevealHere = { webhookId: number; boardId: number; keyId: number; keyHash: string; userId: number; revealedAt: string | null };
+
+/** This server's record of which key was given which webhook's secret, read before the clear (card 2947, R1); none where it has no table. */
+function revealsHere(live: Database.Database): RevealHere[] {
+	if (!live.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'webhook_reveals'").get()) return [];
+	return live
+		.prepare(
+			'SELECT r.webhook_id AS webhookId, w.board_id AS boardId, r.key_id AS keyId, k.key_hash AS keyHash, k.user_id AS userId, r.revealed_at AS revealedAt ' +
+				'FROM webhook_reveals AS r JOIN api_keys AS k ON k.id = r.key_id JOIN webhooks AS w ON w.id = r.webhook_id ORDER BY r.webhook_id, r.key_id'
+		)
+		.all() as RevealHere[];
+}
+
+/**
+ * Carry this server's record of which key was given which secret onto the restored data (card 2947, R1), inside the
+ * restore's transaction, after the secrets are filled: for every restored webhook on the same id and board as one
+ * here that has a secret now, whether filled from here (`fillSecretGaps`) or brought in with the backup's own (its
+ * code review, FP6: a backup that still carries secrets, as a whole database copy does), since that secret may be the
+ * one the record speaks of; holding one whose secret differs only over-holds, the accepted direction. A row is put back
+ * (`INSERT OR IGNORE`, the backup's own kept) where the restore brought back a key with the same id and hash; every
+ * other row of such a webhook names a key the restore did not bring back, which may have been given the secret the
+ * webhook still has, and is returned for the restore to hold (never failing open). Rows of a webhook with no secret now
+ * are dropped: it has none until one is entered, which forgets every row anyway.
+ */
+function carryRevealsHere(live: Database.Database, here: readonly RevealHere[]): Reveal[] {
+	if (here.length === 0 || !live.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'webhook_reveals'").get()) return [];
+	const sameKey = live.prepare('SELECT 1 FROM api_keys WHERE id = ? AND key_hash = ?');
+	const sameHook = live.prepare("SELECT 1 FROM webhooks WHERE id = ? AND board_id = ? AND secret IS NOT NULL AND secret <> ''");
+	const put = live.prepare('INSERT OR IGNORE INTO webhook_reveals (webhook_id, key_id, revealed_at) VALUES (?, ?, ?)');
+	const lost: Reveal[] = [];
+	for (const row of here) {
+		if (!sameHook.get(row.webhookId, row.boardId)) continue;
+		if (sameKey.get(row.keyId, row.keyHash)) put.run(row.webhookId, row.keyId, row.revealedAt);
+		else lost.push({ webhookId: row.webhookId, keyId: row.keyId, userId: row.userId, before: row.revealedAt === null });
+	}
+	return lost;
+}
+
+/** What the owners' mail says caused a restore's switch-offs (card 2947's code review, FP5): the log names who restored, the mail nobody. */
+const SWEPT_IN_MAIL = 'found after a restore';
 
 /** This server's 0071 setting as stored, read before a restore clears `settings`; null where it has none. */
 function webhookKeysRecordedHere(live: Database.Database): string | null {
@@ -1348,6 +1407,8 @@ function restoreInOneSnapshot(
 	let held: SwitchedOff[] = [];
 	// And those a disabled owner or administrator could read (card 2935, P12), told with them.
 	let readable: { switchedOff: SwitchedOff[]; held: SwitchedOff[] } = { switchedOff: [], held: [] };
+	// And those a key the restore did not bring back, or an ended key, was given the secret of (card 2947, R1), told with them.
+	let revealed: { switchedOff: SwitchedOff[]; held: SwitchedOff[] } = { switchedOff: [], held: [] };
 	const sweptBecause = `found after a restore${options.by ? ` by ${options.by}` : ''}`;
 	let secrets: SecretsAccount = {
 		kept: { mailPassword: false, destinations: [], webhooks: [] },
@@ -1461,6 +1522,10 @@ function restoreInOneSnapshot(
 			const mailEverHere = mailEverConfiguredHere(live);
 			// And its disabled accounts (card 2671, S6): see `carryDisabled`.
 			const disabledAccountsHere = disabledHere(live);
+			// And which of its keys were given which webhook's secret (card 2947, R1): see `carryRevealsHere`.
+			const revealsNow = revealsHere(live);
+			// The rows of the keys `carryDisabled` deletes, for the hold below (R2).
+			const disabledReveals: Reveal[] = [];
 			// The sign-ins left at their second step, which the clear below
 			// ends (card 2769, CS1): said once the restore is committed. No
 			// notice is mailed, since the accounts are the backup's from here.
@@ -1696,7 +1761,7 @@ function restoreInOneSnapshot(
 			// so that the answer is of the accounts as they will be, and before
 			// the sweep below, which then switches off the webhooks they set. Not
 			// caught: a restore that could not carry them is rolled back.
-			if (tables.includes('users')) carryDisabled(live, disabledAccountsHere);
+			if (tables.includes('users')) carryDisabled(live, disabledAccountsHere, disabledReveals);
 
 			// Nothing is committed that leaves user accounts and no superadmin
 			// among them: nobody could export, import or reset again, and
@@ -1759,6 +1824,9 @@ function restoreInOneSnapshot(
 			// The addresses kept and to enter beside the secrets' (card 2928), each only where there is one.
 			if (addressesFilled.kept.length > 0) filled.kept.webhookAddresses = addressesFilled.kept;
 			if (addressesFilled.unfilled.length > 0) filled.unfilled.webhookAddresses = addressesFilled.unfilled;
+			// This server's record of who was given each secret it filled, carried where the same key came back, and
+			// the rest returned to be held below (card 2947, R1). Not caught.
+			const lostReveals = carryRevealsHere(live, revealsNow);
 
 			// Every restored webhook that is on and held switched off for good
 			// (card 2752, S1): see above. On the server's own connection alone,
@@ -1772,13 +1840,25 @@ function restoreInOneSnapshot(
 				// hold held for good (card 2923, S3; its code review, S2): see `holdRestoredAlreadyOff`. Not caught.
 				held = holdRestoredAlreadyOff(live);
 			}
+			// Held as the server's own restore holds them, before every webhook is switched off below, so that
+			// only those the backup had off are held, and told to nobody (card 2923's code review, S3).
+			if (working) holdRestoredAlreadyOff(live);
+
+			// Never failing open (card 2947, R1, R2; its code review, FP1, a working copy included): every webhook whose
+			// secret may be one a key the restore did not bring back was given, and every one the keys of an account
+			// disabled again were given, held, before a working copy switches every webhook off, so that switching one
+			// on gives it a new secret. The server's own restore tells them with its sweep; a working copy nobody.
+			const fromLost = live === sqlite || working ? holdRevealedIn(live, [...lostReveals, ...disabledReveals]) : { switchedOff: [], held: [] };
+			if (live === sqlite && !working) {
+				// Then what every ended key was given, as the sweep does, the once-only seed first where the restored
+				// settings lack its flag, so nothing waits for the five-minute sweep. Told with the sweep. Not caught.
+				const fromEnded = holdRevealsOfEndedKeys();
+				revealed = { switchedOff: [...fromLost.switchedOff, ...fromEnded.switchedOff], held: [...fromLost.held, ...fromEnded.held] };
+			}
 
 			// A working copy: see above. Not caught, so that a failure here rolls
 			// the restore back like any other.
 			if (working) {
-				// Held as the server's own restore holds them, before every webhook is switched off below, so that
-				// only those the backup had off are held, and told to nobody (card 2923's code review, S3).
-				holdRestoredAlreadyOff(live);
 				const done = switchOffOutside(live);
 				// What the backup had on, as before card 2169: a webhook that
 				// had a secret is off in a backup made since, and is counted
@@ -1856,18 +1936,21 @@ function restoreInOneSnapshot(
 	// Those already off that it held with them, listed apart (card 2923).
 	// With those a disabled owner or administrator could read (card 2935, P12), on the server's own restore alone.
 	const readableTold = options.outside === 'off' ? { switchedOff: [], held: [] } : readable;
-	if (swept.length > 0 || held.length > 0 || readableTold.switchedOff.length + readableTold.held.length > 0) {
+	// With those a lost or ended key was given the secret of (card 2947, R1), on the server's own restore alone.
+	if (swept.length > 0 || held.length > 0 || readableTold.switchedOff.length + readableTold.held.length + revealed.switchedOff.length + revealed.held.length > 0) {
 		try {
 			const setting = schedulerSetting(process.env.SCHEDULERS, dev);
 			tellSwitchedOff(
-				[...swept, ...readableTold.switchedOff],
+				[...swept, ...readableTold.switchedOff, ...revealed.switchedOff],
 				sweptBecause,
 				setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` },
-				[...held, ...readableTold.held]
+				[...held, ...readableTold.held, ...revealed.held],
+				// The owners' mail names no account (card 2947's code review, FP5): who restored is in the log alone.
+				SWEPT_IN_MAIL
 			);
 		} catch (e) {
-			// The readable ones counted too (card 2935's code review, C12).
-			const all = swept.length + held.length + readableTold.switchedOff.length + readableTold.held.length;
+			// The readable ones counted too (card 2935's code review, C12), and the revealed ones (card 2947).
+			const all = swept.length + held.length + readableTold.switchedOff.length + readableTold.held.length + revealed.switchedOff.length + revealed.held.length;
 			errors.push(`The ${all} webhook(s) the restore switched off or held could not all be said: ${messageOf(e)}`);
 		}
 	}

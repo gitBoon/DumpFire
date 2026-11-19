@@ -607,6 +607,8 @@ describe('a database with no users while another is beside it', () => {
 			'switchOffHeldWebhooksAtStart();',
 			'holdAlreadyOffWebhooksAtStart();',
 			'holdReadableWebhooksAtStart();',
+			'sweepEndedKeyReveals();',
+			'startEndedKeyRevealSweep();',
 			'startSchedulers();',
 			'reportInstallation();'
 		]) {
@@ -638,6 +640,11 @@ describe('a database with no users while another is beside it', () => {
 		// The webhooks a disabled owner or administrator could read held after those, before the schedulers (card 2935).
 		expect(at('holdReadableWebhooksAtStart();')).toBeGreaterThan(at('holdAlreadyOffWebhooksAtStart();'));
 		expect(at('startSchedulers();')).toBeGreaterThan(at('holdReadableWebhooksAtStart();'));
+		// What every ended API key was given held after those, its timer armed straight after, both before the
+		// schedulers (card 2947).
+		expect(at('sweepEndedKeyReveals();')).toBeGreaterThan(at('holdReadableWebhooksAtStart();'));
+		expect(at('startEndedKeyRevealSweep();')).toBeGreaterThan(at('sweepEndedKeyReveals();'));
+		expect(at('startSchedulers();')).toBeGreaterThan(at('startEndedKeyRevealSweep();'));
 	});
 });
 

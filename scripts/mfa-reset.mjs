@@ -82,6 +82,11 @@
  * held App URL. A database without `setting_holds` (migration 0074) is
  * refused, not reset in part (its plan's R14).
  *
+ * Card 2947 (R10): unless `--keep-api-keys`, the webhooks the account's keys
+ * were given the secret of (`webhook_reveals`, migration 0075), read before the
+ * keys are deleted, are held with the rest, whoever set them, as the server's
+ * `endAccountAccess` holds them; the keys' rows go with the keys.
+ *
  * `--hold-readable` (card 2935, P7) resets nothing: it holds only the webhooks
  * whose secret the named account can read now (`holdReadableScope`, which is
  * `readableNowScope` in webhooks.ts), writes the Webhooks lines and one AUTH WARN, and
@@ -110,10 +115,12 @@ const PLACEHOLDER_ORIGIN = 'http://localhost:3000';
 /**
  * The tables migration 0065 makes, the oldest table this writes to (the
  * system log, 0039), the report schedules it pauses (card 2894, S15), and the
- * settings it holds for review (card 2922, migration 0074, its plan's R14): a
- * database without them is refused, not reset in part.
+ * settings it holds for review (card 2922, migration 0074, its plan's R14),
+ * and which keys were given which webhook's secret, which the reset reads
+ * before it deletes the keys (card 2947, migration 0075): a database without
+ * them is refused, not reset in part.
  */
-const NEEDED_TABLES = ['mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges', 'enrolment_links', 'system_logs', 'report_schedules', 'setting_holds'];
+const NEEDED_TABLES = ['mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges', 'enrolment_links', 'system_logs', 'report_schedules', 'setting_holds', 'webhook_reveals'];
 
 /** What `held_because` records for a webhook whose setter's access ended: `'setter access ended'` in src/lib/server/webhooks.ts. */
 const SETTER_ACCESS_ENDED = 'setter access ended';
@@ -150,10 +157,44 @@ const ROLE_OF_ID = '(SELECT role FROM users WHERE id = @id)';
 
 /**
  * The reset's hold scope, `endingScope` in src/lib/server/webhooks.ts word for word (card 2935's code review, C7):
- * what the account set, and, with `@readable` 1, every webhook with a secret it could read.
+ * what the account set, and, with `@readable` 1, every webhook with a secret it could read; and every webhook with a
+ * secret its keys were given (card 2947, R10), `@revealed` read before the keys are deleted.
  */
 export function resetScope() {
-	return `(set_by = @id OR (@readable = 1 AND secret <> '' AND ${readableBy('@id', ROLE_OF_ID)}))`;
+	return `(set_by = @id OR (@readable = 1 AND secret <> '' AND ${readableBy('@id', ROLE_OF_ID)}) OR (secret <> '' AND id IN (SELECT value FROM json_each(@revealed))))`;
+}
+
+/**
+ * The webhooks an account's keys were given, `REVEALED_TO_ACCOUNT_SQL` in src/lib/server/webhooks.ts word for word
+ * (card 2947's code review, FP11; tests/mfa-reset-script.test.ts compares them), `@id` the account.
+ */
+export const REVEALED_TO_ACCOUNT_SQL =
+	'SELECT DISTINCT r.webhook_id FROM webhook_reveals AS r JOIN api_keys AS k ON k.id = r.key_id WHERE k.user_id = @id ORDER BY r.webhook_id';
+
+/**
+ * The once-only seed's rows, `SEED_REVEALS_SELECT` in src/lib/server/webhooks.ts word for word (card 2947's code
+ * review, FP2): every key ever used counts as given the secret of each webhook with a secret, not held, its account
+ * can read or set, made at or before the key's last use. Needs `stamp_of`, which `openDatabase` gives the connection.
+ */
+export const SEED_REVEALS_SELECT =
+	'SELECT w.id AS webhookId, k.id AS keyId FROM api_keys AS k JOIN users AS u ON u.id = k.user_id JOIN webhooks AS w ' +
+	"ON w.secret <> '' AND (w.active = 1 OR w.held_because IS NULL) " +
+	`AND (w.set_by = k.user_id OR ${readableBy('k.user_id', 'u.role', 'w.board_id')}) ` +
+	'WHERE k.last_used_at IS NOT NULL ' +
+	'AND (stamp_of(w.created_at) IS NULL OR stamp_of(k.last_used_at) IS NULL OR stamp_of(w.created_at) <= stamp_of(k.last_used_at))';
+
+/** The `settings` key of the seed's flag: `WEBHOOK_REVEALS_SEEDED` in src/lib/server/webhooks.ts. */
+const WEBHOOK_REVEALS_SEEDED = 'webhook_reveals_seeded';
+
+/**
+ * `seedRevealsOnce` in src/lib/server/webhooks.ts (card 2947's code review, FP2): while the flag is absent, the seed's
+ * rows written with `revealed_at` NULL and the flag written as `at`, in the caller's transaction.
+ * @param {import('better-sqlite3').Database} database @param {string} at
+ */
+function seedRevealsOnce(database, at) {
+	if (database.prepare('SELECT 1 FROM settings WHERE key = ?').get(WEBHOOK_REVEALS_SEEDED)) return;
+	database.prepare(`INSERT OR IGNORE INTO webhook_reveals (webhook_id, key_id, revealed_at) SELECT webhookId, keyId, NULL FROM (${SEED_REVEALS_SELECT})`).run();
+	database.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_REVEALS_SEEDED, at);
 }
 
 /**
@@ -527,7 +568,9 @@ function openDatabase(path) {
 				? 'no report schedules table'
 				: missing.length === 1 && missing[0] === 'setting_holds'
 					? 'no table of the settings held for review'
-					: 'no two-step sign-in tables';
+					: missing.length === 1 && missing[0] === 'webhook_reveals'
+						? 'no table of the API keys given webhook secrets'
+						: 'no two-step sign-in tables';
 		throw new Refused(`Refused: this database has ${what}; start the server once to migrate it (${path}).`);
 	}
 	// The webhook holds (migration 0071, card 2752) the switch-off records (card 2915, E16): a database
@@ -652,6 +695,11 @@ function reset(database, username, keep) {
 			// unless it provably read nothing (P1), asked before its keys are deleted.
 			const readable =
 				!keep && /** @type {{ v: number }} */ (database.prepare(`SELECT ${mayHaveRead('@id')} AS v`).get({ id })).v === 1;
+			// And the webhooks its keys were given (card 2947, R10, `revealedToAccount` in webhooks.ts), read before the
+			// keys are deleted, whose rows go with them; the reads made before they were recorded seeded first where the
+			// server never seeded them (its code review, FP2), so the host reset never acts on unseeded data.
+			if (!keep) seedRevealsOnce(database, stamp(now));
+			const revealed = keep ? [] : /** @type {number[]} */ (database.prepare(REVEALED_TO_ACCOUNT_SQL).pluck().all({ id }));
 
 			// Read before anything ends (card 2915): the live keys, `liveApiKeysOf` in second-step.ts, which the
 			// end statements below delete; for stdout alone, never the log. The host may read these names.
@@ -714,7 +762,7 @@ function reset(database, username, keep) {
 				// without a hold is held too, left off (card 2923), read first so that the two groups are told apart.
 				// With every webhook whose secret it could read, that has one (card 2935, `holdWebhooksOfSetter`'s scope).
 				const scope = resetScope();
-				const params = { id, readable: readable ? 1 : 0 };
+				const params = { id, readable: readable ? 1 : 0, revealed: JSON.stringify(revealed) };
 				const alreadyOff = new Set(
 					/** @type {{ id: number }[]} */ (
 						database.prepare(`SELECT id FROM webhooks WHERE active = 0 AND held_because IS NULL AND ${scope}`).all(params)

@@ -265,6 +265,8 @@ const TEST_FILES = [
 	'user-delete.test.ts',
 	// Card 2754, slice S2b: a card's files listed and downloaded, and an image uploaded, through /api/v1 with a key.
 	'v1-attachments.test.ts',
+	// Card 2947: revoking or expiring an API key holds the webhooks whose secret that key was given.
+	'webhook-reveals.test.ts',
 	'webhooks.test.ts',
 	'write-as.test.ts',
 	'xp-leaderboard.svelte.test.ts'

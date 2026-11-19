@@ -256,6 +256,8 @@ A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retr
 
 ### Changes on 2026-11-19
 
+**Breaking: an API key given a webhook's secret holds that webhook when it is revoked, expires or passes its deadline** (card 2947; within the unreleased 1.15.0, point 9 of its note, "nothing else changed" now point 10). Every answer that gives a webhook's `secret` (`GET /api/v1/webhooks/{webhookId}`, `GET /api/v1/boards/{boardId}/webhooks`, `POST /api/v1/boards/{boardId}/webhooks` with a secret, `PUT /api/v1/webhooks/{webhookId}`) records the key it was given to, and is answered with `Cache-Control: no-store`. `PUT /api/v1/webhooks/{webhookId}` now gives `secret` only where that request set or replaced it (a `secret` sent, or a switch-on's new one); read it back with `GET` otherwise. When the key is revoked, expires or passes its deadline, every webhook with a secret it was given since the secret last changed, and not already held, is switched off (or held) as `setter access ended`, whoever set it, within five minutes of an expiry or a deadline and in the same change as a revoke; so is every webhook an account's keys were given when its access ends with its keys. Switch it on with `PUT` and `{"active": true}` for a new secret, and give the new secret to the receiver: the old one is exposed, and the receiver trusts it until it is changed there. Once, at the first start of 1.15.0, every key used before it counts as given the secret of each webhook its account can read or set that was made before the key's last use. A key that lists webhooks therefore gives each of them a new secret when it is rotated.
+
 **Uploads refused when the uploads volume is nearly full** (card 2920; within the unreleased 1.15.0, point 8 of its note, "nothing else changed" now point 9). `POST /api/v1/cards/{cardId}/attachments` is answered `507` `{ "message": "Uploads are paused: the server has too little free disk space, or cannot read how much it has. Nothing was written. An administrator can see which on the admin page." }` when the server's uploads volume has too little free space (less than 1 GB plus twice the database's size would be left after a 25 MB upload), or its free space cannot be read: before the body is read, after the `Content-Type` and before the place and the hour, so nothing is read or counted and the connection is closed (`Connection: close`); and at the write, should the disk fill while the body arrives, when the upload has been counted. The web application's own upload answers the same `507` in the same words.
 
 ### Changes on 2026-11-18
@@ -3037,9 +3039,12 @@ know, or have already deleted, as harmless.
   "This was switched off because the account that set it up, or an account that could read its
   secret as the board's owner or an administrator, had its password or its two-step sign-in reset,
   ended its API keys when changing its own password, used an invite, was disabled, or was deleted,
-  or, for one that could read it, lost that role; one already switched off then, or found switched
-  off with its setter disabled or not recorded, is held the same way. Delete the webhook unless you
-  recognise its address; …" (the same advice; since 1.15.0) or "This was switched off because nobody is
+  or, for one that could read it, lost that role; or because an API key that was given its secret
+  was revoked, expired or passed its deadline; one already switched off then, or found switched
+  off with its setter disabled or not recorded, is held the same way. Treat its old secret as
+  exposed: change it at the receiver now, whether or not the webhook is switched on again, since
+  until then the receiver trusts anything signed with it. Delete the webhook unless you
+  recognise its address; …" (the same advice; since 1.15.0, the key's clause card 2947's) or "This was switched off because nobody is
   recorded as having set it up. Delete it unless you recognise the address; to keep it, switch
   it on with your own key, which makes you its setter and gives it a new secret, given in that
   answer and readable by the board's owner or an administrator, and update the receiver." (since

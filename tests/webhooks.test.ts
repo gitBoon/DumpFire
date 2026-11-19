@@ -2271,13 +2271,16 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 	 * `pausedBecause` for a webhook switched off by a password or two-step reset (card 2915), an invite used, a disable
 	 * (card 2671) or a delete of its setter (the code review's CS4); reworded by card 2923 (E12, S3) to name the holder's
 	 * own change that ends keys and one held when already off; by card 2935 to name an account that could read its secret
-	 * as the board's owner or an administrator, and one that lost that role.
+	 * as the board's owner or an administrator, and one that lost that role; by card 2947 to name an API key that was given
+	 * its secret, and to say the old secret is exposed now (R6).
 	 */
 	const ACCESS_ENDED =
 		"This was switched off because the account that set it up, or an account that could read its secret as the board's owner or an " +
 		'administrator, had its password or its two-step sign-in reset, ended its API keys when changing its own password, used an ' +
-		'invite, was disabled, or was deleted, or, for one that could read it, lost that role; one already switched off then, or found ' +
-		'switched off with its setter disabled or not recorded, is held the same way. Delete the webhook unless you recognise its ' +
+		'invite, was disabled, or was deleted, or, for one that could read it, lost that role; or because an API key that was given its ' +
+		'secret was revoked, expired or passed its deadline; one already switched off then, or found ' +
+		'switched off with its setter disabled or not recorded, is held the same way. Treat its old secret as exposed: change it at the ' +
+		'receiver now, whether or not the webhook is switched on again, since until then the receiver trusts anything signed with it. Delete the webhook unless you recognise its ' +
 		'address; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer ' +
 		"and readable by the board's owner or an administrator, and update the receiver.";
 	/**
@@ -3557,7 +3560,7 @@ describe('a webhook whose API key ended is switched off for good (card 2893)', (
 		await sent.settle();
 
 		expect(res.status).toBe(200);
-		expect(res.body).toEqual({ success: true, webhooksSwitchedOff: 1 });
+		expect(res.body).toEqual({ success: true, webhooksSwitchedOff: 1, revealedWebhooksHeld: 0 });
 		expect(rowOf(theirs.id)).toMatchObject({ active: 0, heldBecause: 'key ended', setByKey: null, setWithKey: 1 });
 		expectOn(kept.id);
 		expect(lines('WARN')).toEqual([keyLine(theirs.id, s.board.id, null, s.editor, cause)]);
@@ -3570,7 +3573,9 @@ describe('a webhook whose API key ended is switched off for good (card 2893)', (
 		);
 		expect(setterMails()[0].html).toContain("ask the board's owner");
 		for (const mail of offMails()) {
-			expect(mail.html).toContain(cause);
+			// The mail names no account (card 2947, R12): the key and its account are in the WARN alone.
+			expect(mail.html).toContain('What caused it: an API key was revoked by its holder.');
+			expect(mail.html).not.toContain(cause);
 			expect(mail.html).toContain(`webhook ${theirs.id} to <strong>hooks.example.test</strong>`);
 			expect(mail.html).not.toContain('k-secret-path');
 		}
@@ -3624,7 +3629,7 @@ describe('a webhook whose API key ended is switched off for good (card 2893)', (
 		expect(counts).toEqual({ [k0.id]: second ? 1 : 2, ...(k1 ? { [k1.id]: 0 } : {}), [kNew.id]: 0 });
 
 		const revoked = await revoke(s.editor, k0.id);
-		expect(revoked.body).toEqual({ success: true, webhooksSwitchedOff: second ? 1 : 2 });
+		expect(revoked.body).toEqual({ success: true, webhooksSwitchedOff: second ? 1 : 2, revealedWebhooksHeld: 0 });
 		expectKeyEnded(recorded.id);
 		if (second) expectOn(before.id);
 		else expectKeyEnded(before.id);
@@ -3711,7 +3716,7 @@ describe('a webhook whose API key ended is switched off for good (card 2893)', (
 		expect(await event(s)).toEqual([hook.url]);
 
 		const revoked = await revoke(s.owner, m.id);
-		expect(revoked.body).toEqual({ success: true, webhooksSwitchedOff: 1 });
+		expect(revoked.body).toEqual({ success: true, webhooksSwitchedOff: 1, revealedWebhooksHeld: 0 });
 		expectKeyEnded(hook.id);
 		expect(await event(s)).toEqual([]);
 	});

@@ -3241,7 +3241,9 @@ const WRITES: Record<string, Write[]> = {
 			reads: 'failureMessage',
 			done: [
 				'apiKeys = apiKeys.filter(k => k.id !== id)',
-				"apiKeyMessage = hooksOff > 0 ? `Key revoked. ${webhooksInWords(hooksOff)} ${hooksOff === 1 ? 'was' : 'were'} switched off.` : 'Key revoked.'",
+				// Card 2947 (R15): and those it was given the secret of, held.
+				"apiKeyMessage = hooksOff > 0 || givenHeld > 0 ? `Key revoked. ${webhooksInWords(hooksOff)} ${hooksOff === 1 ? 'was' : 'were'} switched off` + " +
+					"(givenHeld > 0 ? `, and ${givenHeld} whose secret it was given ${givenHeld === 1 ? 'was' : 'were'} held.` : '.') : 'Key revoked.'",
 				'await invalidateAll()'
 			]
 		},
@@ -6238,9 +6240,20 @@ describe('the share and subtask windows, the dashboard and the account page say 
 		expect(said('revokeKey')).toEqual(['apiKeyError']);
 		// Card 2893 (case 5, S13, E18): the revoke's confirm says first how many webhooks the key switches off, from the
 		// list's count; what it did is said after, on its own line in the key panel, beside the refusal's.
-		expect(account.markup).toContain('<span class="apikey-confirm-text">{revokeQuestion(key.webhooks ?? 0)}</span>');
+		// Card 2947 (R15): and how many it holds of those it was given the secret of, from the list's second count.
+		expect(account.markup).toContain('<span class="apikey-confirm-text">{revokeQuestion(key.webhooks ?? 0, key.webhooksRevealed ?? 0)}</span>');
 		// Its code review's CS4: the count may include webhooks set up before keys were recorded, so not "it set".
-		expect(account.source).toContain("hooks > 0 ? `Revoke? It switches off ${webhooksInWords(hooks)}.` : 'Revoke?'");
+		expect(account.source).toContain(
+			"hooks > 0 || given > 0 ? `Revoke? It switches off ${webhooksInWords(hooks)}${heldGivenWords(given)}.` : 'Revoke?'"
+		);
+		expect(account.source).toContain("given > 0 ? ` and holds ${given} whose secret it was given` : ''");
+		expect(account.markup).toContain('Revoking it switches off {webhooksInWords(key.webhooks ?? 0)}{heldGivenWords(key.webhooksRevealed ?? 0)}');
+		// The after-message names what was held, and the page is read again when anything was (R15).
+		expect(account.source).toContain('if (hooksOff > 0 || givenHeld > 0) await invalidateAll();');
+		expect(account.around('When it ends, the {webhooksInWords(key.webhooksRevealed ?? 0)} whose secret it was given').at(-1)).toEqual({
+			condition: '(key.webhooksRevealed ?? 0) > 0 && (key.expiresAt !== null || key.deadlineAt !== null)',
+			inElse: false
+		});
 		expect(account.around('{apiKeyMessage}')).toEqual([{ condition: 'apiKeyMessage', inElse: false }]);
 		expect(account.markup.indexOf('{apiKeyMessage}')).toBeGreaterThan(account.markup.indexOf('{apiKeyError}'));
 		// Its code review's CR7: every action of the key panel clears the last revoke's line as it clears the refusal's.

@@ -66,7 +66,7 @@ import { logCardLeftGoal } from './milestones';
 import { moveToTrash, type UploadFile } from './uploads';
 import { removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { requireDisabledAccount } from './account-disable';
-import { accountMayHaveRead, disableCovered, ENDING_IN_MAIL, holdWebhooksOfSetter } from './webhooks';
+import { accountMayHaveRead, disableCovered, ENDING_IN_MAIL, holdWebhooksOfSetter, revealedToAccount } from './webhooks';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DELETE');
@@ -993,10 +993,11 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 		// be read). Otherwise its disable held them, and a disabled account reads nothing. Not for one that provably
 		// read nothing (P1). The ids are those it set (P9).
 		const readable = (user.apiKeys > 0 || !disableCovered(userId)) && accountMayHaveRead(userId);
+		// And what any key it still holds was given (card 2947, R10), read while the keys are there.
 		const webhookIds = holdWebhooksOfSetter(
 			userId,
 			{ log: `${user.username}'s account was deleted by ${actor.username}`, mail: ENDING_IN_MAIL.deleted },
-			{ readable }
+			{ readable, revealed: revealedToAccount(userId) }
 		)
 			.switchedOff.filter((hook) => hook.reader === undefined)
 			.map((hook) => hook.id);

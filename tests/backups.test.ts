@@ -150,7 +150,7 @@ import {
 	verifyFormToken
 } from '$lib/server/request-tokens';
 import { maskLiveLog, reportInstallation, reportNoSuperadmin, sealStoredSecretsAtStart } from '$lib/server/startup-checks';
-import { dispatchWebhook } from '$lib/server/webhooks';
+import { NEW_SECRET_REASONS, dispatchWebhook } from '$lib/server/webhooks';
 import { api, routeMethods } from './helpers/api';
 import { effects } from './helpers/effects';
 import {
@@ -2021,6 +2021,10 @@ describe('the running database’s system log, at start', () => {
 		// And those a disabled owner or administrator could read, after those, before the schedulers (card 2935).
 		expect(hooks.indexOf('\nholdReadableWebhooksAtStart();')).toBeGreaterThan(hooks.indexOf('\nholdAlreadyOffWebhooksAtStart();'));
 		expect(hooks.indexOf('\nstartSchedulers();')).toBeGreaterThan(hooks.indexOf('\nholdReadableWebhooksAtStart();'));
+		// And what every ended API key was given, after those, its timer armed straight after, before the schedulers (card 2947).
+		expect(hooks.indexOf('\nsweepEndedKeyReveals();')).toBeGreaterThan(hooks.indexOf('\nholdReadableWebhooksAtStart();'));
+		expect(hooks.indexOf('\nstartEndedKeyRevealSweep();')).toBeGreaterThan(hooks.indexOf('\nsweepEndedKeyReveals();'));
+		expect(hooks.indexOf('\nstartSchedulers();')).toBeGreaterThan(hooks.indexOf('\nstartEndedKeyRevealSweep();'));
 	});
 
 	it('cannot keep the server from starting: a failure is said at WARN, and nothing is thrown', () => {
@@ -6979,6 +6983,133 @@ describe("the restore's own run of the readable pass (card 2935, P12)", () => {
 
 		expect(result.errors).toEqual([]);
 		expect(rowOf(hook)).toEqual(held ? { active: 0, heldBecause: 'setter access ended' } : { active: 1, heldBecause: null });
+	});
+});
+
+describe('a restore never fails open on which key was given which secret (card 2947, R1, R2)', () => {
+	const HELD = { active: 0, heldBecause: 'setter access ended' };
+	const ON = { active: 1, heldBecause: null };
+	const rowOf = (id: number) => sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(id);
+	const reveals = () =>
+		(sqlite.prepare('SELECT webhook_id AS w, key_id AS k FROM webhook_reveals ORDER BY webhook_id, key_id').all() as { w: number; k: number }[]).map((row) => [row.w, row.k]);
+	const reveal = (hookId: number, keyId: number) =>
+		sqlite.prepare('INSERT INTO webhook_reveals (webhook_id, key_id, revealed_at) VALUES (?, ?, ?)').run(hookId, keyId, '2026-11-19 09:00:00');
+	let owner: SessionUser;
+	let hook: number;
+
+	beforeEach(() => {
+		resetDb();
+		startedSinceAlreadyOffHeld();
+		makeUser({ username: 'chief', role: 'superadmin' });
+		owner = makeUser({ username: 'olga' });
+		const eve = makeUser({ username: 'eve' });
+		const board = makeBoard({ owner }).board;
+		addBoardMember(board, eve, 'editor');
+		hook = makeWebhook(board, { setBy: eve, secret: 'whsec-2947' }).id;
+		sealPlainSecrets(sqlite);
+	});
+
+	it('R1a: the backup made before the read: this server’s row carried where the same key came back, and the webhook stays on', () => {
+		const k = makeApiKeyRow(owner);
+		const backup = opening(generateBackupData());
+		reveal(hook, k.id);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.secrets.kept.webhooks).toEqual([hook]);
+		expect(reveals()).toEqual([[hook, k.id]]);
+		expect(rowOf(hook)).toEqual(ON);
+	});
+
+	it.each([
+		{ row: 'a key made after the backup, which the restore does not bring back', change: 'later' },
+		{ row: 'the same id with another hash: another key', change: 'hash' }
+	])('R1b: a row of $row: the webhook whose secret was filled from here is held, inside the restore', ({ change }) => {
+		const early = change === 'hash' ? makeApiKeyRow(owner) : null;
+		const backup = opening(generateBackupData());
+		const k = early ?? makeApiKeyRow(owner);
+		if (change === 'hash') sqlite.prepare("UPDATE api_keys SET key_hash = 'another-hash' WHERE id = ?").run(k.id);
+		reveal(hook, k.id);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.secrets.kept.webhooks).toEqual([hook]);
+		expect(rowOf(hook)).toEqual(HELD);
+		expect(reveals()).toEqual([]);
+	});
+
+	it('R1c: a key of the backup that has ended, with its row: what it was given held inside the restore, not at the next sweep', () => {
+		const k = makeApiKeyRow(owner, { expiresAt: '2026-01-01 00:00:00' });
+		reveal(hook, k.id);
+		const backup = opening(generateBackupData());
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(rowOf(hook)).toEqual(HELD);
+		expect(reveals()).toEqual([]);
+	});
+
+	it('R1d: a working copy holds what a lost key was given too, before switching every webhook off, telling nobody (FP1)', () => {
+		const backup = opening(generateBackupData());
+		const k = makeApiKeyRow(owner);
+		reveal(hook, k.id);
+
+		const result = restoreFromBackup(sqlite, backup, { outside: 'off' });
+
+		expect(result.errors).toEqual([]);
+		// Held, a reason whose switch-on gives a new secret, not merely switched off.
+		expect(rowOf(hook)).toEqual(HELD);
+		expect(NEW_SECRET_REASONS).toContain('setter access ended');
+		expect(reveals()).toEqual([]);
+	});
+
+	it('FP6: a backup that still carries its secrets (a whole database copy): a key it did not bring back holds the webhook; one it did is carried', () => {
+		const kept = makeApiKeyRow(owner);
+		// The backup holds the secret itself, as a serialized database does, and the kept key.
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		const later = makeApiKeyRow(owner);
+		reveal(hook, later.id);
+		reveal(hook, kept.id);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.secrets.kept.webhooks).toEqual([]);
+		expect(rowOf(hook)).toEqual(HELD);
+		expect(reveals()).toEqual([[hook, kept.id]]);
+	});
+
+	it('R2: an account disabled here since the backup: its restored keys’ rows deleted with them, and what they were given held; no row left naming a key that is gone', () => {
+		const eveKey = makeApiKeyRow(makeUser({ username: 'kim' }));
+		reveal(hook, eveKey.id);
+		const backup = opening(generateBackupData());
+		const kim = sqlite.prepare("SELECT id FROM users WHERE username = 'kim'").pluck().get() as number;
+		const chief = sqlite.prepare("SELECT id, username, role FROM users WHERE username = 'chief'").get() as SessionUser;
+		inTransaction(() => disableAccount(db.select().from(users).all().find((u) => u.id === kim)!, chief));
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(sqlite.prepare('SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ?').get(kim)).toEqual({ n: 0 });
+		expect(reveals()).toEqual([]);
+		expect(rowOf(hook)).toEqual(HELD);
+	});
+
+	it('R7: a backup without the seed’s flag is seeded inside the restore, after the secrets are filled, and the flag written', () => {
+		const k = makeApiKeyRow(owner);
+		sqlite.prepare("UPDATE webhooks SET created_at = '2026-10-01 09:00:00' WHERE id = ?").run(hook);
+		sqlite.prepare("UPDATE api_keys SET last_used_at = '2026-11-01 09:00:00' WHERE id = ?").run(k.id);
+		const backup = opening(generateBackupData());
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(sqlite.prepare('SELECT webhook_id AS w, key_id AS k, revealed_at AS at FROM webhook_reveals').all()).toEqual([{ w: hook, k: k.id, at: null }]);
+		expect(sqlite.prepare("SELECT COUNT(*) AS n FROM settings WHERE key = 'webhook_reveals_seeded'").get()).toEqual({ n: 1 });
+		expect(rowOf(hook)).toEqual(ON);
 	});
 });
 

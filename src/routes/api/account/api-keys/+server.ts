@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
 import { apiKeys } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { webhooksStoppedByRevoke } from '$lib/server/webhooks';
+import { webhooksRevealedTo, webhooksStoppedByRevoke } from '$lib/server/webhooks';
 import { generateApiKey, whilePasswordHolds } from '$lib/server/auth';
 import { createLogger } from '$lib/server/logger';
 import { readBody, readText, readTimestamp } from '$lib/server/request-body';
@@ -23,7 +23,10 @@ const log = createLogger('AUTH');
  * are on and record it, and, for the account's last working key made before
  * keys were recorded, the account's webhooks from before then that are still
  * sent. The Account page says so before the revoke. A count, never which: the
- * boards may be ones the holder can no longer open.
+ * boards may be ones the holder can no longer open. `webhooksRevealed` (card
+ * 2947, R15): how many more the revoke, the key's expiry or its deadline would
+ * hold because the key was given their secret (`webhooksRevealedTo`), none of
+ * them counted in `webhooks`.
  */
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
@@ -41,8 +44,10 @@ export const GET: RequestHandler = async ({ locals }) => {
 		.where(eq(apiKeys.userId, locals.user.id))
 		.all();
 	const stopped = webhooksStoppedByRevoke(locals.user.id);
+	// Less exactly the ones the revoke's setters' sweep takes first (card 2947's code review, FP8).
+	const revealed = webhooksRevealedTo(locals.user.id, stopped);
 
-	return json(keys.map((key) => ({ ...key, webhooks: stopped.get(key.id) ?? 0 })));
+	return json(keys.map((key) => ({ ...key, webhooks: stopped.get(key.id)?.size ?? 0, webhooksRevealed: revealed.get(key.id) ?? 0 })));
 };
 
 /**

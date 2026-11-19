@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.58
+version: 1.59
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2947
+  - webhook-reveals
   - card-2941
   - retention-reported
   - onedrive-app-only
@@ -140,6 +142,31 @@ flowchart LR
     Carry["carryDisabled, carryHolds"] --> Cover["coverReadable from the restored moment: hold, write the moment"]
     Cover --> Fill["fillSecretGaps"]
     Fill --> Sweep["switchOffLostWebhooks('all'), told with the held ones"]
+```
+
+A restore never fails open on which API key was given which webhook's secret (card 2947, R1,
+R2). The backup carries `webhook_reveals` like any table. This server's rows are read before the
+clear, and after the secrets are filled each is put back for every restored webhook on the same id
+and board that has a secret, whether filled from here or brought in with the backup's own (a whole
+database copy carries its secrets; code review FP6), and only where the restore brought back the
+same key, by id and hash (`carryRevealsHere`); every other row of such a webhook names a key the
+restore did not bring back, and that webhook is held as `setter access ended` (holding one whose
+secret differs only over-holds). The keys of an account disabled again (`carryDisabled`) have their
+rows deleted with them, the foreign keys being off during a restore, and what they were given is
+held too. A working copy holds the same, before it switches every webhook off, and tells nobody
+(FP1). On the server's own restore the sweep of ended keys then runs inside the restore, the
+once-only seed first where the restored settings lack `webhook_reveals_seeded`, and all of it is
+told with the restore's sweep; the owners' mail says "found after a restore" and names nobody, the
+log naming who restored (FP5).
+
+```mermaid
+flowchart LR
+    Here["read this server's rows<br/>(key hash, webhook board)"] --> Clear["clear and copy the backup"]
+    Clear --> Disabled["carryDisabled: rows of its keys deleted, kept to hold"]
+    Disabled --> Fill2["fillSecretGaps"]
+    Fill2 --> CarryR["carryRevealsHere: put back where the same key came back"]
+    CarryR --> HoldR["holdRevealedIn: the rest, and the disabled keys',<br/>a working copy too"]
+    HoldR --> Ended["own restore: holdRevealsOfEndedKeys,<br/>the seed once, then ended keys"]
 ```
 
 ### Image Retention

@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.146
+version: 1.147
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2947
+  - migration-0075
   - card-2941
   - onedrive-app-only
   - retention-reported
@@ -8203,6 +8205,64 @@ API:** none; OpenAPI stays `1.15.0` with notes 1 to 8.
 | H13 | On an S3 destination whose prefix has a folder below it and a sibling prefix (`dumpfire/old/` and `dumpfire-old/`), each holding a copy-named file, set Keep Last 1 and Run Now twice | Only the newest `…-manual.db` directly under `dumpfire/` is kept beside the run's; the two files below and beside are untouched | Either removed |
 | H11 | App with Application `Sites.Selected` only (admin consented); an administrator also grants it `write` on a dedicated SharePoint site (`POST /sites/{site-id}/permissions`); give the library's drive ID, Test, Run Now | Test names the library's owner; the copy lands in that library | `403`, or the copy elsewhere |
 | H12 | Hold a destination (end its setter's access), then change its folder and save | `409` "where it sends its copies cannot be changed by a save" | Saved |
+
+### The Release That Holds What an Ended API Key Was Given (Card 2947)
+
+**Migration 0075** adds `webhook_reveals` and changes no row. From this release every answer
+that gives a webhook's signing secret records the API key it went to; revoking that key holds,
+in the same change, every webhook with a secret it was given, and a key that expires or passes its
+deadline does within five minutes (a sweep at every start, then every five minutes, whatever
+`SCHEDULERS` says; the owners are mailed only where the schedulers run). Each is held as `setter
+access ended`: the board's owner switches it on (`PUT /api/v1/webhooks/{id}` with
+`{"active": true}`) for a new secret, and gives it to the receiver.
+
+**The first start.** Every API key ever used through the API counts as given the secret of each
+webhook with a secret its account can read or set (an administrator's: every board) that was made
+before the key's last use. Where such a key has already expired or passed its deadline, those
+webhooks are held at that first start, one Webhooks WARN naming them, and an INFO line counts the
+rows seeded. To see beforehand which keys that is, on a read-only copy of the database:
+
+```sql
+SELECT u.username, u.role, u.disabled_at, k.id AS key_id, k.name, k.last_used_at, k.expires_at, k.deadline_at
+FROM api_keys k JOIN users u ON u.id = k.user_id
+WHERE k.last_used_at IS NOT NULL
+  AND ((k.expires_at IS NOT NULL AND (datetime(k.expires_at) IS NULL OR datetime(k.expires_at) <= datetime('now')))
+    OR (k.deadline_at IS NOT NULL AND (datetime(k.deadline_at) IS NULL OR datetime(k.deadline_at) <= datetime('now')))
+    OR u.disabled_at IS NOT NULL)
+ORDER BY u.username, k.id;
+```
+
+Each row's account's webhooks with a secret (on every board, for an administrator) made before its
+`last_used_at` are held at the first start. An expiry or a deadline that names no moment counts as
+passed, and a key of a disabled account as ended, as the seed and the sweep read them (fail closed).
+Keep or rotate those integrations' receivers ready.
+
+**Keys revoked before this release.** A key revoked before this release left no row, so nothing
+holds what it read. Where a key may have leaked and was revoked before upgrading, rotate the
+secret of every webhook it could read: send a new `secret` with `PUT /api/v1/webhooks/{id}` (a
+switch-off and switch-on by `PUT` keeps the old secret), and give the receiver the new one.
+
+**The cost of rotating a key.** Routine expiry holds too: a key that lists webhooks is given their
+secrets, so its expiry, deadline or revoke gives each of them a new secret, which each receiver
+needs. Prefer a key with no expiry for a script that reads webhooks, and rotate deliberately; the
+Account page says beside each key how many webhooks its end would hold.
+
+**The `PUT` answer.** `PUT /api/v1/webhooks/{id}` now gives `secret` only where it set or replaced
+it. A script that read the secret back from an `events`-only change reads it with `GET` instead.
+
+**Going back to an older image.** The table is left unread and unwritten: a revoke or an expiry
+there holds nothing it revealed, and reveals there are not recorded. Holds already made stay
+`setter access ended`, which the older image answers with a new secret at the switch-on. The host
+command (`scripts/mfa-reset.mjs`) of this release refuses a database without the table.
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | Owner lists a board's webhooks with key K | The secrets given; `Cache-Control: no-store` | No header |
+| H2 | Account page | K's line: "and holds N whose secret it was given" | No count |
+| H3 | Revoke K | Each listed webhook off; one mail per owner naming no account, saying to change the secret at the receiver now | Still on, or a name in the mail |
+| H4 | Owner switches one on with key M | A new secret | The old one |
+| H5 | Give a key an expiry five minutes out, list with it, wait | Within five minutes of the expiry each listed webhook is off, one WARN naming the key | Still on |
+| H6 | `PUT` changing only `events` | Answer without `secret` | The secret given |
 
 ## Changing the Schema
 

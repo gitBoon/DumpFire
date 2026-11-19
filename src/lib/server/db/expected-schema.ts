@@ -895,6 +895,17 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	"CREATE UNIQUE INDEX `users_email_unique` ON `users` (`email`);",
 	"CREATE INDEX `idx_users_disabled_by` ON `users` (`disabled_by`);",
 	[
+		"CREATE TABLE `webhook_reveals` (",
+		"\t`webhook_id` integer NOT NULL,",
+		"\t`key_id` integer NOT NULL,",
+		"\t`revealed_at` text,",
+		"\tPRIMARY KEY(`webhook_id`, `key_id`),",
+		"\tFOREIGN KEY (`webhook_id`) REFERENCES `webhooks`(`id`) ON UPDATE no action ON DELETE cascade,",
+		"\tFOREIGN KEY (`key_id`) REFERENCES `api_keys`(`id`) ON UPDATE no action ON DELETE cascade",
+		");"
+	].join('\n'),
+	"CREATE INDEX `idx_webhook_reveals_key_id` ON `webhook_reveals` (`key_id`);",
+	[
 		"CREATE TABLE `webhooks` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
 		"\t`board_id` integer NOT NULL,",

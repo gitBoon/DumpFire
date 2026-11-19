@@ -36,6 +36,8 @@ import {
 	removeSettingsOfNonAdministrators,
 	reportInstallation,
 	sealStoredSecretsAtStart,
+	startEndedKeyRevealSweep,
+	sweepEndedKeyReveals,
 	switchOffHeldWebhooksAtStart
 } from '$lib/server/startup-checks';
 import { recheckStoredImages } from '$lib/server/image-recheck';
@@ -206,6 +208,16 @@ holdAlreadyOffWebhooksAtStart();
 // the moment stored, which only an older image leaves. Told as the sweep above
 // tells. It cannot throw. See $lib/server/startup-checks.ts.
 holdReadableWebhooksAtStart();
+
+// Hold what every ended API key was given (card 2947): each key with rows in
+// webhook_reveals that has expired, passed its deadline or gone has its
+// account's webhooks swept as a revoke sweeps them, and every webhook with a
+// secret it was given held as setter access ended, so that switching it on
+// gives it a new secret; then its rows go. Told as the sweeps above tell. Then
+// every five minutes, whatever SCHEDULERS says: a server with its schedulers
+// off still delivers. It cannot throw. See $lib/server/startup-checks.ts.
+sweepEndedKeyReveals();
+startEndedKeyRevealSweep();
 
 // Start the backup, report and snapshot schedulers, the decision reminder and
 // the attachment file sweep, or leave all five off. SCHEDULERS=on or =off

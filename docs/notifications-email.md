@@ -1,10 +1,12 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.89
+version: 1.90
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2947
+  - webhook-reveals
   - card-2928
   - card-2898
   - secrets-at-rest
@@ -3211,6 +3213,49 @@ sequenceDiagram
     R->>DB: COMMIT
     W->>M: one WARN each, the owners' mail, the setter's own mail
     R-->>H: { success: true, webhooksSwitchedOff: n }
+```
+
+Since card 2947 (below) the revoke also holds what the key was given, and the whole revoke is told
+once: the diagram's sweep runs with `told: 'by the caller'`, and the owners' mail names no account
+("What caused it: an API key was revoked by its holder."), the key and its user being in the WARN.
+
+### When an API Key That Was Given Its Secret Ends (card 2947)
+
+Every answer that gives a webhook's secret records the API key it went to (`webhook_reveals`). When
+that key is revoked, expires or passes its deadline, every webhook with a secret it was given is held
+as `'setter access ended'`, and told once after the commit, with whatever else the same action
+switched off:
+
+- **The WARN** names the key and its user by id: `Webhook 7 on board 3 switched off: an API key that
+  was given its secret (key 12, user 4) ended (API key #12 was revoked by sam).`; a row the
+  once-only seed wrote reads "an API key that may have been given its secret before such reads were
+  recorded". The sweep's cause names each key: `API key #12 of user 4 expired`, `… passed its
+  deadline`, `API key #12 is gone`.
+- **The owners' mail** names no account. Its cause is "an API key was revoked by its holder" for a
+  revoke and "an API key that had been given webhook secrets expired, passed its deadline or was
+  removed" for the sweep; each line says "switched off because an API key that was given its secret
+  ended". A mail that names any webhook a key was given, whichever hold took it (one the key set and
+  was given, switched off as `key ended`, and one an ending held as a reader's included; code review
+  FP4), adds: "Treat the old secret of each webhook an API key was given as exposed: change it at the
+  receiver now, whether or not the webhook is switched on again here, since until then the receiver
+  trusts anything signed with it." (`EXPOSED_SECRET_SENTENCE`).
+- **A restore's mail** names nobody: its cause is "found after a restore", while the WARN keeps "by
+  <username>" (code review FP5).
+- **The sweep** (`sweepEndedKeyReveals`, at every start and every five minutes) mails only where the
+  schedulers run; elsewhere one WARN says the owners were not mailed. A restore tells what it held
+  with its own sweep, and an ending of access with its own mail.
+
+```mermaid
+sequenceDiagram
+    participant T as Timer or start
+    participant S as sweepEndedKeyReveals
+    participant DB as SQLite (one transaction)
+    participant M as Mail and log
+    T->>S: every five minutes
+    S->>DB: the seed, once, and the keys with rows that have ended
+    S->>DB: setters' sweep, then holdRevealed, then the keys' rows deleted
+    S->>DB: COMMIT
+    S->>M: one WARN per group, the owners mailed where the schedulers run
 ```
 
 ### Events and Payload

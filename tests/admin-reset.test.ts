@@ -143,7 +143,7 @@ function everything(): Everything {
 	const A = makeBoard({ owner, name: 'A' });
 	addBoardMember(A.board, member, 'editor');
 	shareBoardWithTeam(A.board, team, 'viewer');
-	makeWebhook(A.board);
+	const hook = makeWebhook(A.board, { secret: 's' });
 	makeSmtp();
 	// Who set the mail (card 2397, migration 0059): cleared with the rest.
 	sqlite.prepare("INSERT INTO setting_setters (setting, place, user_id) VALUES ('mail', 'p', ?)").run(admin.id);
@@ -176,7 +176,9 @@ function everything(): Everything {
 		.values({ tokenHash: sessionHashOf('session-of-admin'), userId: admin.id, expiresAt: stamp(new Date(Date.now() + 60 * 60 * 1000)), twoStep: 1 })
 		.run();
 	db.insert(inviteTokens).values({ tokenHash: inviteHashOf('invite'), userId: member.id, expiresAt: '2099-01-01 00:00:00' }).run();
-	db.insert(apiKeys).values({ keyHash: 'hash', keyPrefix: 'df_', name: 'Key', userId: owner.id }).run();
+	const key = db.insert(apiKeys).values({ keyHash: 'hash', keyPrefix: 'df_', name: 'Key', userId: owner.id }).returning().get();
+	// Which key was given which webhook's secret (card 2947, migration 0075): cleared with both.
+	sqlite.prepare("INSERT INTO webhook_reveals (webhook_id, key_id, revealed_at) VALUES (?, ?, '2026-11-19 09:00:00')").run(hook.id, key.id);
 	db.insert(boardFavourites).values({ userId: owner.id, boardId: A.board.id }).run();
 	db.insert(reportSchedules).values({ userId: owner.id, name: 'Weekly', scope: 'board', scopeId: A.board.id }).run();
 	db.insert(tokenUsage).values({ cardId: first.id, tokens: 1200, reportedByUserId: owner.id }).run();

@@ -946,7 +946,7 @@ describe('webhook secrets and addresses', () => {
 		}
 	});
 
-	it('returns both to the board owner and to an administrator, on both reads and an update', async () => {
+	it('returns both to the board owner and to an administrator on both reads, and the address on an update that sets no secret', async () => {
 		const hook = makeHook();
 
 		for (const user of [owner, admin]) {
@@ -954,10 +954,10 @@ describe('webhook secrets and addresses', () => {
 			const one = await api('GET', `/api/v1/webhooks/${hook.id}`, { user });
 			const changed = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user, body: { active: true } });
 
-			for (const answer of [list.body[0], one.body, changed.body]) {
-				expect(answer.url).toBe(ADDRESS);
-				expect(answer.secret).toBe('s3cret');
-			}
+			for (const answer of [list.body[0], one.body, changed.body]) expect(answer.url).toBe(ADDRESS);
+			for (const answer of [list.body[0], one.body]) expect(answer.secret).toBe('s3cret');
+			// Card 2947 (R9): an update gives the secret only where it set or replaced it.
+			expect(changed.body).not.toHaveProperty('secret');
 		}
 	});
 

@@ -53,7 +53,7 @@
  */
 import type { SessionUser } from './auth';
 import { stillAuthenticated } from './auth';
-import { inReadTransaction, inTransaction } from './db/transaction';
+import { inTransaction } from './db/transaction';
 import type { ActivitySource } from './logActivity';
 
 /**
@@ -163,15 +163,19 @@ export function inWrite(): void {
 }
 
 /**
- * Run `read` in one transaction, handed the caller as their account is now,
- * asked first as `writeAs` asks (card 2935, P5): for a read that gives what
- * only an account still let in may have, a webhook's secret, so that a key
- * ended or a role lowered after the gate is met as it is now, and the rows read
- * are read under the same answer. It writes nothing of its own.
+ * Run `reveal` in one transaction, handed the caller as their account is now,
+ * asked first as `writeAs` asks (card 2935, P5): for a read that gives a
+ * webhook's secret, so that a key ended or a role lowered after the gate is met
+ * as it is now. The answer that gives a secret records, in the same transaction,
+ * the API key it was given to (card 2947, `answerWebhooks`), so this takes the
+ * write lock (`BEGIN IMMEDIATE`, as `inTransaction` does) where card 2935's
+ * code review (C6) had a deferred read. That a revoke and a reveal never
+ * interleave comes from the one synchronous connection the server writes on:
+ * the key is asked for and the reveal recorded with nothing between them (R14).
+ * Not a `writeAs`: no service write runs inside it (`inWrite` refuses one).
  */
-export function readAs<T>(locals: App.Locals, read: (caller: SessionUser | null) => NotAPromise<T>): T {
-	// A deferred read transaction (card 2935's code review, C6): no write lock for a read.
-	return inReadTransaction<T>(() => read(stillAuthenticated(locals)));
+export function revealAs<T>(locals: App.Locals, reveal: (caller: SessionUser | null) => NotAPromise<T>): T {
+	return inTransaction<T>(() => reveal(stillAuthenticated(locals)));
 }
 
 /**

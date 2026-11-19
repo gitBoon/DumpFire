@@ -126,7 +126,9 @@ import {
 	activeWebhooksRefused,
 	boardsOverWebhookCap,
 	coverReadable,
+	endedKeysCause,
 	holdOf,
+	holdRevealsOfEndedKeys,
 	markReadablePassDone,
 	readableCoveredAt,
 	tellSwitchedOff,
@@ -1420,6 +1422,77 @@ export function holdReadableWebhooksAtStart(value: string | undefined = process.
 		}
 	}
 	return switchedOff.length + held.length;
+}
+
+/** How often the sweep of ended keys runs after the start (card 2947): every five minutes, as the session sweep. */
+export const REVEAL_SWEEP_EVERY_MS = 5 * 60 * 1000;
+
+/**
+ * Hold what every ended API key was given (card 2947): in one transaction, `holdRevealsOfEndedKeys` (each key that has
+ * expired, passed its deadline or gone, with rows: its account's webhooks swept, every webhook with a secret it was
+ * given held as setter access ended, its rows deleted). Told once after the commit (R4), as the start sweep tells:
+ * one WARN per group naming the keys by id, and the boards' owners mailed only where the schedulers run, else one WARN
+ * that they were not. Called from hooks.server.ts after `holdReadableWebhooksAtStart`, before the schedulers, and then
+ * every five minutes (`startEndedKeyRevealSweep`), whatever SCHEDULERS says: the hold is a write here, and a server
+ * with its schedulers off still delivers. Returns how many it switched off or held, or null when it could not: one
+ * WARN, nothing committed, and the next run tries again. It never throws.
+ */
+export function sweepEndedKeyReveals(value: string | undefined = process.env.SCHEDULERS, isDev: boolean = dev): number | null {
+	let found: ReturnType<typeof holdRevealsOfEndedKeys>;
+	try {
+		found = inTransaction(() => holdRevealsOfEndedKeys());
+	} catch (err) {
+		try {
+			webhooksLog.warn(
+				`The webhooks whose secret an ended API key was given could not be held: ${(err as Error)?.message ?? err}. The next sweep, within five minutes, tries again.`
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+	const { switchedOff, held, ended, seeded } = found;
+	if (seeded !== null) {
+		try {
+			webhooksLog.info(
+				`${seeded} webhook secret(s) recorded as given to API keys used before such reads were recorded (once, card 2947): ` +
+					'each is held when its key is revoked, expires or passes its deadline.'
+			);
+		} catch {
+			// The seed is committed; only its line was lost.
+		}
+	}
+	if (switchedOff.length + held.length > 0) {
+		try {
+			const setting = schedulerSetting(value, isDev);
+			const cause = endedKeysCause(ended);
+			tellSwitchedOff(switchedOff, cause.log, setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` }, held, cause.mail);
+		} catch {
+			// The hold is committed; only its telling was lost.
+		}
+	}
+	return switchedOff.length + held.length;
+}
+
+let revealSweepTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Run `sweepEndedKeyReveals` every five minutes (card 2947), so that a key that expires or passes its deadline holds
+ * what it was given within five minutes, not at the next restart. Only arms the timer: the start's own run is the
+ * bare call before it in hooks.server.ts. A second call starts no second timer, and returns null. The timer does not
+ * keep the process alive (`unref`); it is returned, so that a test can ask it (`hasRef`, card 2947's code review, FP14).
+ */
+export function startEndedKeyRevealSweep(value: string | undefined = process.env.SCHEDULERS, isDev: boolean = dev): ReturnType<typeof setInterval> | null {
+	if (revealSweepTimer !== null) return null;
+	revealSweepTimer = setInterval(() => sweepEndedKeyReveals(value, isDev), REVEAL_SWEEP_EVERY_MS);
+	revealSweepTimer.unref?.();
+	return revealSweepTimer;
+}
+
+/** Stop the timer `startEndedKeyRevealSweep` started (for tests). */
+export function stopEndedKeyRevealSweep(): void {
+	if (revealSweepTimer !== null) clearInterval(revealSweepTimer);
+	revealSweepTimer = null;
 }
 
 /** The `settings` key that says the webhooks set up before keys were recorded were announced (card 2893, D6). */

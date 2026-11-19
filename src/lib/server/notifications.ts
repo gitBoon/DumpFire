@@ -907,7 +907,16 @@ export type WebhookInMail = {
 	setter?: number;
 	/** Switched off because its setter lost the board (card 2935, P13 L3): only then does the mail say it stays off if they are given it back. */
 	boardBack?: boolean;
+	/** Held because an API key that was given its secret ended (card 2947, R6): the mail says to treat that secret as exposed now. */
+	exposed?: boolean;
 };
+
+/**
+ * Said in an owners' mail that names a webhook an API key was given the secret of (card 2947, R6): the old secret is
+ * exposed, and the receiver trusts it until it is changed there, whatever happens to the webhook here.
+ */
+export const EXPOSED_SECRET_SENTENCE =
+	"Treat the old secret of each webhook an API key was given as exposed: change it at the receiver now, whether or not the webhook is switched on again here, since until then the receiver trusts anything signed with it.";
 
 /**
  * The switched-off list's closing sentence (card 2935, P13 L3): that they stay off until an owner or an
@@ -1021,6 +1030,7 @@ export function notifyWebhooksSwitchedOff(
 			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">What caused it: ${escapeHtml(cause)}.</p>
 			${switchedOff}
 			${heldList}
+			${[...theirs, ...theirsHeld].some((item) => item.exposed) ? `<p style="margin: 0 0 8px; font-size: 13px; color: #334155;">${EXPOSED_SECRET_SENTENCE}</p>` : ''}
 			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">What to do: delete each you do not recognise. To keep one, switch it on with your own API key (PUT /api/v1/webhooks/{id} with active true), which makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, to give its receiver.</p>
 			<p style="margin: 0; font-size: 13px; color: #475569;">${ADDRESS_TOKEN_SENTENCE}</p>
 		</div>

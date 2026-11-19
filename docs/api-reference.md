@@ -1,11 +1,13 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.153
+version: 1.154
 status: As-Built
 date: 2026-11-19
 tags:
   - api
+  - card-2947
+  - webhook-reveals
   - card-2941
   - card-2920
   - uploads-disk-floor
@@ -416,6 +418,35 @@ and its access; and at the write). Not marked Breaking. The admin page's load
 `null` when unreadable, `freeInodes` `null` where the volume counts none. The 507 is given too when
 fewer than 1,000 inodes are free, when the free space is not read within 2 seconds, and for 5
 minutes after a write found the disk full unless the free space has grown since.
+
+### Changes on 2026-11-19: an API key given a webhook's secret holds it when it ends (card 2947)
+
+**Breaking (security), within the unreleased 1.15.0, point (9) of its note; "nothing else
+changed" is now (10).** No operation or schema changes.
+
+- Every answer that gives a webhook's `secret` records the API key it was given to:
+  `GET /api/v1/webhooks/{webhookId}`, `GET /api/v1/boards/{boardId}/webhooks`, `POST
+  /api/v1/boards/{boardId}/webhooks` with a secret, and `PUT /api/v1/webhooks/{webhookId}`. All four
+  answer with `Cache-Control: no-store`.
+- `PUT /api/v1/webhooks/{webhookId}` now gives `secret` only where that request set or replaced it
+  (a `secret` sent, or the new one a switch-on out of a hold gives); any other change is answered
+  with `url`, `lastDelivery` and `pausedBecause` but no `secret`. A script that read the secret
+  back from an `events`-only `PUT` reads it with `GET` instead.
+- When that key is revoked, expires or passes its deadline, every webhook with a secret it was given
+  since the secret last changed, and not already held, is switched off (or held, where already off)
+  as `setter access ended`, whoever set it: in the same change as a revoke, within five minutes of an
+  expiry or a deadline, at every start and in a restore. So is every webhook an account's keys were
+  given when its access ends with its keys. Switching it on gives it a new secret, as point (1) says.
+- Once, at the first start of 1.15.0, every key used before it counts as given the secret of each
+  webhook with a secret its account can read or set, made before the key's last use; the webhooks
+  of keys already ended are held then.
+- `pausedBecause`'s `setter access ended` sentence names the key and says to treat the old secret as
+  exposed and change it at the receiver now. The owners' mail says the same.
+
+Internal (`/api`, additive): `GET /api/account/api-keys` gives each key `webhooksRevealed` (how many
+more a revoke or the key's end would hold); `DELETE /api/account/api-keys/{id}` answers
+`revealedWebhooksHeld` beside `webhooksSwitchedOff`, and its mail to the boards' owners names no
+account.
 
 ### Changes on 2026-11-19: settings held for review (card 2922)
 

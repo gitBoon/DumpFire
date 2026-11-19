@@ -551,6 +551,10 @@ describe('PUT /api/account/password', () => {
 		expect(shape(run.writes)).toEqual([
 			...STEP_UP_WRITES,
 			'update users set',
+			// The once-only seed of the reads made before they were recorded, before the keys go (card 2947's code
+			// review, FP2): written here because no sweep has run on this database.
+			'insert or ignore',
+			'insert into settings',
 			'delete from sessions',
 			'delete from invite_tokens',
 			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
@@ -826,6 +830,10 @@ describe('PUT /api/users/:id/password', () => {
 		expect(shape(run.writes)).toEqual([
 			...STEP_UP_WRITES,
 			'update users set',
+			// The once-only seed of the reads made before they were recorded, before the keys go (card 2947's code
+			// review, FP2): written here because no sweep has run on this database.
+			'insert or ignore',
+			'insert into settings',
 			'delete from sessions',
 			'delete from invite_tokens',
 			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
@@ -1012,6 +1020,9 @@ describe('POST /api/users/:id/disable', () => {
 		expect(shape(run.writes)).toEqual([
 			...STEP_UP_WRITES,
 			'update users set',
+			// The once-only seed, before the keys go (card 2947's code review, FP2).
+			'insert or ignore',
+			'insert into settings',
 			'delete from sessions',
 			'delete from invite_tokens',
 			'delete from sign_in_challenges',
@@ -1489,6 +1500,10 @@ describe('the invite page', () => {
 		expect(shape(run.writes)).toEqual([
 			'update users set',
 			'update invite_tokens set',
+			// The once-only seed of the reads made before they were recorded, before the keys go (card 2947's code
+			// review, FP2): written here because no sweep has run on this database.
+			'insert or ignore',
+			'insert into settings',
 			'delete from sessions',
 			'delete from invite_tokens',
 			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
@@ -1840,6 +1855,10 @@ describe('what taking an account back switches off (card 2168)', () => {
 		expect(shape(run.writes)).toEqual([
 			...STEP_UP_WRITES,
 			'update users set',
+			// The once-only seed of the reads made before they were recorded, before the keys go (card 2947's code
+			// review, FP2): written here because no sweep has run on this database.
+			'insert or ignore',
+			'insert into settings',
 			'delete from sessions',
 			'delete from invite_tokens',
 			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
@@ -1890,6 +1909,9 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'delete from mfa_factors',
 			'delete from mfa_recovery_codes',
 			'update users set',
+			// The once-only seed, before the keys go (card 2947's code review, FP2).
+			'insert or ignore',
+			'insert into settings',
 			'delete from sessions',
 			'delete from invite_tokens',
 			'delete from sign_in_challenges',
@@ -1984,6 +2006,10 @@ describe('what taking an account back switches off (card 2168)', () => {
 		expect(shape(run.writes)).toEqual([
 			'update users set',
 			'update invite_tokens set',
+			// The once-only seed of the reads made before they were recorded, before the keys go (card 2947's code
+			// review, FP2): written here because no sweep has run on this database.
+			'insert or ignore',
+			'insert into settings',
 			'delete from sessions',
 			'delete from invite_tokens',
 			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.

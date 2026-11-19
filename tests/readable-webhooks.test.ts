@@ -714,9 +714,16 @@ describe('the code review’s fix pass (card 2935, C1 to C11)', () => {
 			writer.close();
 			rmSync(folder, { recursive: true, force: true });
 		}
-		// readAs, which gives a webhook's secret, is that read transaction.
+		// Card 2947 (R14): `revealAs`, which gives a webhook's secret, records the key it was given in the same
+		// transaction, so takes the write lock (`inTransaction`, BEGIN IMMEDIATE), the key asked for first; `readAs` went.
 		const writeAs = readFileSync(join(process.cwd(), 'src/lib/server/write-as.ts'), 'utf8');
-		expect(writeAs).toContain('return inReadTransaction<T>(() => read(stillAuthenticated(locals)));');
+		expect(writeAs).toContain('return inTransaction<T>(() => reveal(stillAuthenticated(locals)));');
+		expect(writeAs).not.toContain('export function readAs');
+		for (const route of ['src/routes/api/v1/webhooks/[webhookId]/+server.ts', 'src/routes/api/v1/boards/[boardId]/webhooks/+server.ts']) {
+			const source = readFileSync(join(process.cwd(), route), 'utf8');
+			expect(source, route).toContain('revealAs(locals, ');
+			expect(source, route).not.toContain('readAs(');
+		}
 	});
 
 	it('C8. a second registration of the stamp functions on a connection defines nothing again', () => {

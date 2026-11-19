@@ -340,6 +340,12 @@
 		 * revoke's confirm says it first.
 		 */
 		webhooks: number;
+		/**
+		 * How many more webhooks the revoke, or the key's expiry or deadline, would
+		 * hold because the key was given their secret (card 2947, R15); none of
+		 * them counted in `webhooks`.
+		 */
+		webhooksRevealed?: number;
 	};
 
 	let apiKeys = $state<ApiKeyInfo[]>([]);
@@ -466,8 +472,14 @@
 	 * webhooks it switches off, which may include ones set up before keys were
 	 * recorded (the code review's CS4), so not "it set".
 	 */
-	const revokeQuestion = (hooks: number) =>
-		hooks > 0 ? `Revoke? It switches off ${webhooksInWords(hooks)}.` : 'Revoke?';
+	const revokeQuestion = (hooks: number, given = 0) =>
+		hooks > 0 || given > 0 ? `Revoke? It switches off ${webhooksInWords(hooks)}${heldGivenWords(given)}.` : 'Revoke?';
+
+	/**
+	 * What a revoke, an expiry or a deadline holds beside what the key set (card 2947, R15): the webhooks whose secret
+	 * the key was given, each given a new secret when switched on; '' for none.
+	 */
+	const heldGivenWords = (given: number) => (given > 0 ? ` and holds ${given} whose secret it was given` : '');
 
 	/**
 	 * A refusal is said in the key panel's line, and the key stays in the list
@@ -486,12 +498,15 @@
 			if (res.ok) {
 				const answer = await res.json().catch(() => null);
 				const hooksOff = typeof answer?.webhooksSwitchedOff === 'number' ? answer.webhooksSwitchedOff : 0;
+				// Card 2947 (R15): and those it was given the secret of, held.
+				const givenHeld = typeof answer?.revealedWebhooksHeld === 'number' ? answer.revealedWebhooksHeld : 0;
 				apiKeys = apiKeys.filter(k => k.id !== id);
 				apiKeyMessage =
-					hooksOff > 0
-						? `Key revoked. ${webhooksInWords(hooksOff)} ${hooksOff === 1 ? 'was' : 'were'} switched off.`
+					hooksOff > 0 || givenHeld > 0
+						? `Key revoked. ${webhooksInWords(hooksOff)} ${hooksOff === 1 ? 'was' : 'were'} switched off` +
+							(givenHeld > 0 ? `, and ${givenHeld} whose secret it was given ${givenHeld === 1 ? 'was' : 'were'} held.` : '.')
 						: 'Key revoked.';
-				if (hooksOff > 0) await invalidateAll();
+				if (hooksOff > 0 || givenHeld > 0) await invalidateAll();
 			} else {
 				apiKeyError = await failureMessage(res, 'The key was not revoked.');
 			}
@@ -1007,8 +1022,12 @@
 									Created {formatDate(key.createdAt)}
 									 · Last used: {formatDate(key.lastUsedAt)}
 									 · {key.expiresAt ? `Expires ${formatMoment(key.expiresAt)}` : 'No expiry'}
-									 · Revoking it switches off {webhooksInWords(key.webhooks ?? 0)}
+									 · Revoking it switches off {webhooksInWords(key.webhooks ?? 0)}{heldGivenWords(key.webhooksRevealed ?? 0)}
 								</span>
+								<!-- Card 2947 (R15): an expiry or a deadline holds what the key was given, as a revoke does. -->
+								{#if (key.webhooksRevealed ?? 0) > 0 && (key.expiresAt !== null || key.deadlineAt !== null)}
+									<span class="apikey-deadline">When it ends, the {webhooksInWords(key.webhooksRevealed ?? 0)} whose secret it was given {(key.webhooksRevealed ?? 0) === 1 ? 'is' : 'are'} switched off, and each needs a new secret at its receiver.</span>
+								{/if}
 								<!-- A key made before two-step sign-in (card 2772): its deadline, and Keep while it has not passed. -->
 								{#if key.deadlineAt !== null && pastDeadline(key.deadlineAt)}
 									<span class="apikey-deadline passed">Stopped working on {formatMoment(key.deadlineAt)}. Generate a new key.</span>
@@ -1019,7 +1038,7 @@
 							</div>
 							{#if confirmDeleteId === key.id}
 								<div class="apikey-confirm-delete">
-									<span class="apikey-confirm-text">{revokeQuestion(key.webhooks ?? 0)}</span>
+									<span class="apikey-confirm-text">{revokeQuestion(key.webhooks ?? 0, key.webhooksRevealed ?? 0)}</span>
 									<button
 										class="btn-danger-sm"
 										onclick={() => revokeKey(key.id)}

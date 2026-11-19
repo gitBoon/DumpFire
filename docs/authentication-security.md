@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.158
+version: 1.159
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2947
+  - webhook-reveals
   - card-2941
   - held-destination-not-moved
   - onedrive-app-only
@@ -10003,10 +10005,10 @@ administrator kept working secrets for every webhook it could read. Now:
   the pass, already held what it could read, and what owners switched on since has a secret it
   never saw.
 - **The two `GET` routes that give a secret** read the caller through `stillAuthenticated` in the
-  transaction that reads (`readAs`), as a write does: a key ended or a role lowered after the gate
-  is met as it is now.
-- **Not covered here:** a revoked or expired key's reads (a record of which key revealed each
-  secret is a card of its own), and a setter replaced while its secret is kept (card 2932).
+  transaction that reads (`revealAs` since card 2947, which records the key given the secret), as a
+  write does: a key ended or a role lowered after the gate is met as it is now.
+- **Not covered here:** a setter replaced while its secret is kept (card 2932). A revoked or
+  expired key's reads are card 2947's, below.
 
 The blast radius is accepted: ending an administrator's access stops every webhook on the server
 that has a secret; each is switched on again with one `PUT`, which gives it a new secret.
@@ -10201,6 +10203,92 @@ before card 2893 leaves the columns unread there, so a webhook whose key ended s
 image; one already switched off stays off.
 
 Covered by `tests/webhooks.test.ts` (card 2893's cases 1 to 13) and `tests/page-failures.test.ts`.
+
+**Since card 2947, below,** a rotation that keeps the secret works only for a key that was never
+given the secret: an old key that listed or read the webhook (or was used before reads were
+recorded) holds it when it is revoked or ends, and the board's owner then switches it on for a new
+secret, which the receiver needs.
+
+### Which API Key Was Given Which Secret (card 2947)
+
+A webhook's signing secret leaves the server only in an answer to an API key under `/api/v1/`.
+Until card 2947 nothing recorded which key was given it, so revoking a leaked key, or its expiry,
+left every secret it had read valid at its receiver. Now every answer that gives a secret records
+the key, and the key's end holds the webhook as `'setter access ended'`, so switching it on gives
+it a new secret.
+
+```mermaid
+flowchart TD
+    subgraph Given["Answers that give a secret (v1, an API key only)"]
+        G1["GET /api/v1/webhooks/{id}"]
+        G2["GET /api/v1/boards/{boardId}/webhooks"]
+        P1["PUT that set or replaced the secret"]
+        P2["POST with a secret"]
+    end
+    Given --> AW["answerWebhooks: one INSERT per answer<br/>Cache-Control: no-store"]
+    AW --> T[("webhook_reveals<br/>webhook_id, key_id, revealed_at")]
+    PS["PUT writing a new secret"] -->|forgetReveals| T
+    SEED["Once: the seed (webhook_reveals_seeded)"] --> T
+    T --> RV["Revoke: read rows, delete key,<br/>setters' sweep, holdRevealed"]
+    T --> SW["Sweep of ended keys:<br/>at start, every 5 minutes, in a restore"]
+    T --> EN["Ending of access: endingScope's @revealed"]
+    RV --> TELL["tellSwitchedOff once after commit"]
+    SW --> TELL
+    EN --> TELL
+```
+
+**What is recorded** (migration 0075). `webhook_reveals(webhook_id, key_id, revealed_at)`, primary
+key the pair, both foreign keys `ON DELETE CASCADE`, an index on `key_id`. A row means "this key was
+given this webhook's secret as it is now"; `revealed_at` is the first time since the secret last
+changed, NULL for a row the once-only seed wrote. Written by `answerWebhooks` in `webhooks.ts`, in the
+transaction that gives the secret, one `INSERT … SELECT value FROM json_each(?) … ON CONFLICT DO
+NOTHING` per answer. The two `GET`s run under `revealAs` (`write-as.ts`, `BEGIN IMMEDIATE`, the key
+asked for first), which replaced card 2935's deferred `readAs`; on the one synchronous connection a
+revoke and a reveal never interleave. A secret that would go to anything but an API key throws
+(a fault, never a reveal). All four answers carry `Cache-Control: no-store`.
+
+**The `PUT` answer** gives `secret` only where that request set or replaced it (a secret sent, or a
+switch-on's new one); any other change is answered without it. A new secret (`''` included) first
+deletes every row of the webhook (`forgetReveals`), then records the caller's key.
+
+**What holds** (each as `'setter access ended'`, already-held webhooks keeping their reason):
+
+| When | What | Where |
+|---|---|---|
+| A key revoked on the Account page | the rows read, the key deleted, the account's webhooks swept as card 2893 sweeps them, then every webhook with a secret the key was given | `api-keys/[id]/+server.ts`, `holdRevealed` |
+| A key expired, past its deadline, its row gone, or its account gone or disabled (the gate's own rule, code review FP3) | the same, then the key's rows deleted (the key row stays, as an ended key's does) | `holdRevealsOfEndedKeys`; `sweepEndedKeyReveals` at every start and every five minutes (`startEndedKeyRevealSweep`), whatever `SCHEDULERS` says; mail only where the schedulers run |
+| An account's access ended with its keys | every webhook its keys were given, read before the keys are deleted, beside card 2935's readable hold | `endAccountAccess`, `deleteUser`, `endingScope`'s `@revealed`; `scripts/mfa-reset.mjs` `resetScope` word for word |
+| A restore | rows carried for every restored webhook on the same id and board that has a secret, whether filled from here or brought in with the backup's own (code review FP6), matched on key id and hash; every other such row held; the keys of accounts disabled again have their rows deleted and held; a working copy holds the same before switching every webhook off, telling nobody (FP1); then, on the server's own restore, the ended-key sweep and the seed | `carryRevealsHere`, `carryDisabled`, `holdRevealedIn`, `restoreInOneSnapshot` |
+
+**Told once** after the commit (`tellSwitchedOff`): a WARN per group naming the key and its user by
+id, and one mail to each owner of the boards, which names no account and says to treat the old
+secret as exposed and change it at the receiver now (`EXPOSED_SECRET_SENTENCE`) for every webhook
+a key was given, whichever hold took it: one a key set and was given, switched off as `key ended`,
+and one an ending held as a reader's, included (code review FP4). A restore's mail names nobody
+either ("found after a restore"; the log names who restored, FP5). `pausedBecause`'s sentence says
+so too.
+
+**The once-only seed.** Reads before the release were not recorded. While
+`webhook_reveals_seeded` is absent, the sweep first writes a row (`revealed_at` NULL) for every key
+ever used through the API (`last_used_at`) and every webhook with a secret, not held, that its
+account can read now or set, made at or before the key's last use; a moment that cannot be read
+counts. The seed and the hold are one transaction: a failure leaves no row and no flag. Keys already
+ended are seeded too, so the first start holds what they may have read. The seed never waits for
+the sweep (code review FP2): a revoke, every ending that reads its account's rows
+(`revealedToAccount`) and the host's `scripts/mfa-reset.mjs` (its `SEED_REVEALS_SELECT` pinned to
+the server's word for word) each run it first, in their own transaction, where the flag is absent.
+
+**The Account page's count** (code review FP8) leaves out exactly the webhooks the revoke's setters'
+sweep takes first (`webhooksStoppedByRevoke` returns them by id), so the confirm says what the
+revoke answers.
+
+**What is left (accepted).** The seed uses today's roles, not history; keys revoked before the
+release left no row, so their secrets are for the host to rotate (release notes). A routine expiry
+holds what the key read, so every key rotation of a script that lists webhooks gives each of them a
+new secret. Going back to an older image leaves the table unread.
+
+Covered by `tests/webhook-reveals.test.ts`, `tests/backups.test.ts` (card 2947's restore cases),
+`tests/mfa-reset-script.test.ts` (T41, T42) and `tests/migrations.test.ts` (0075).
 
 ## Security Headers
 

@@ -4225,7 +4225,8 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 		writes: 1,
 		why:
 			"An administrator's password set, an invite used, a holder's own change that ends their keys, a disable (card 2671), a reset of the two-step sign-in (card 2915) and a delete switch off the webhooks the account set (card 2168), recording the hold 'setter access ended' (card 2752's code review, CS4); " +
-			"those already switched off without a hold are held in the same statement, active left off (card 2923); with them every webhook whose secret the account could read as an owner or administrator, and the same for a lowered role and the start pass (card 2935). The one statement of all of them (card 2923's code review, E4)."
+			"those already switched off without a hold are held in the same statement, active left off (card 2923); with them every webhook whose secret the account could read as an owner or administrator, and the same for a lowered role and the start pass (card 2935); " +
+				'and every webhook with a secret an API key was given, when that key is revoked, expires or passes its deadline (card 2947). The one statement of all of them (card 2923\'s code review, E4).'
 	},
 	'src/lib/server/webhooks.ts#holdUnheldOfGoneSetters': {
 		does: 'switches off only',
@@ -4319,6 +4320,13 @@ const WEBHOOK_WRITER_CALLERS: Record<string, readonly string[]> = {
 	'src/lib/server/webhooks.ts#holdNoLongerReadable': ['src/routes/api/users/[id]/+server.ts#PUT', 'src/routes/api/boards/[id]/share/+server.ts#POST', 'src/routes/api/boards/[id]/share/+server.ts#DELETE'],
 	// Card 2935 (P4, P12): the start pass and the restore.
 	'src/lib/server/webhooks.ts#coverReadable': ['src/lib/server/startup-checks.ts#holdReadableWebhooksAtStart', 'src/lib/server/db/restore.ts#holdRestoredReadable'],
+	// Card 2947 (R3): what an API key was given, held by its revoke and by the sweep of ended keys, which the start
+	// and its five-minute timer run.
+	// And by the server's own restore (R1, R2), never failing open.
+	'src/lib/server/webhooks.ts#holdRevealed': ['src/routes/api/account/api-keys/[id]/+server.ts#DELETE'],
+	// Its code review (FP1): the restore holds on its own connection, a working copy's included.
+	'src/lib/server/webhooks.ts#holdRevealedIn': ['src/lib/server/db/restore.ts#restoreInOneSnapshot'],
+	'src/lib/server/webhooks.ts#holdRevealsOfEndedKeys': ['src/lib/server/startup-checks.ts#sweepEndedKeyReveals', 'src/lib/server/db/restore.ts#restoreInOneSnapshot'],
 	// Card 2898 (E15): the start alone seals, seals again and forgets the stored secrets.
 	'src/lib/server/stored-secrets.ts#sealPlainSecrets': ['src/lib/server/startup-checks.ts#sealStoredSecretsAtStart'],
 	'src/lib/server/stored-secrets.ts#resealStoredSecrets': ['src/lib/server/startup-checks.ts#startWithMfaKey'],

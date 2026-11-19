@@ -184,13 +184,16 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Report schedules and report mail ask for the password and a code before board data goes to an address (card 2751). ' +
 			'A webhook whose setter loses the board is switched off for good, and only the board\'s owner or an administrator switches it on again, with an API key, which gives it a new secret; ' +
 			'the board\'s owners are told (card 2752). So is a webhook whose API key ends: each records the key that set it up, and is switched off when that key is revoked, expires, passes its deadline or is deleted; ' +
-			'one set up before keys were recorded stops once its setter has no working key from then, and its owners were told the date (card 2893).',
+			'one set up before keys were recorded stops once its setter has no working key from then, and its owners were told the date (card 2893). ' +
+			'Every answer that gives a webhook\'s secret records the API key it was given to, and that key\'s revoke, expiry or deadline holds the webhook, so that switching it on gives it a new secret (card 2947).',
 		evidence: [
 			{ path: 'src/lib/server/email.ts', symbol: 'requireTLS' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'createHmac' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'switchOffLostWebhooks' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'keyOfWrite' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'keysBeforeRecorded' },
+			{ path: 'src/lib/server/webhooks.ts', symbol: 'answerWebhooks' },
+			{ path: 'src/lib/server/webhooks.ts', symbol: 'holdRevealsOfEndedKeys' },
 			{ path: 'src/routes/api/account/api-keys/[id]/+server.ts', symbol: 'switchOffLostWebhooks' },
 			{ path: 'src/lib/server/startup-checks.ts', symbol: 'announceWebhooksBeforeKeys' },
 			{ path: 'src/lib/server/ssh-host-key.ts' },
@@ -287,6 +290,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Removing an authenticator ends the account\'s other sessions and pending sign-ins (card 2772). ' +
 			'A change that takes an account\'s board access away switches off, for good, the webhooks it set on that board; giving the access back does not switch them on (card 2752). ' +
 			'Revoking an API key switches off, in the same change, the webhooks it set up, and one whose key expires or passes its deadline is switched off at the next start, restore or event (card 2893). ' +
+			'The same revoke holds every webhook whose secret the key was given, and a key that expires or passes its deadline does within five minutes, at every start and in a restore (card 2947). ' +
 			'Every way of setting a password, the holder\'s own change included, and a reset of an account\'s two-step sign-in, from the admin page or the host, pause the account\'s report schedules, and removing an authenticator lists its schedules that are on (card 2894). ' +
 			'The reset also ends the account\'s API keys and switches off the webhooks it set, as an administrator\'s password reset does; the reset\'s mail names them, and the host keeps them only when told to (card 2915). ' +
 			'Disabling an account ends all of this at once and refuses it at every gate, on every board and on every decision; a restore keeps it disabled (card 2671). ' +
@@ -299,6 +303,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: 'scripts/mfa-reset.mjs', symbol: 'report_schedules' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'switchOffHeld' },
 			{ path: 'src/routes/api/account/api-keys/[id]/+server.ts', symbol: 'switchOffLostWebhooks' },
+			{ path: 'src/routes/api/account/api-keys/[id]/+server.ts', symbol: 'holdRevealed' },
+			{ path: 'src/lib/server/startup-checks.ts', symbol: 'sweepEndedKeyReveals' },
 			{ path: 'src/lib/server/mfa-store.ts', symbol: 'resetTwoStep' },
 			{ path: 'src/lib/server/account-two-step.ts' },
 			{ path: 'src/lib/server/audit-log.ts' },

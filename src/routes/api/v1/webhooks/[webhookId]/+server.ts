@@ -5,12 +5,13 @@ import { webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireBoard, requireUser, type Need } from '$lib/server/route-guards';
 import {
+	answerWebhook,
 	canSeeWebhookSecret,
 	forgetDelivery,
+	forgetReveals,
 	keyOfWrite,
 	NEW_SECRET_REASONS,
 	openedSecret,
-	presentWebhook,
 	receiverOf,
 	storedEvents,
 	WEBHOOK_EVENTS,
@@ -19,7 +20,7 @@ import {
 import { pathId, readBody, readBoolean, readChoices, readText } from '$lib/server/request-body';
 import { readWebhookUrl } from '$lib/server/webhook-address';
 import type { SessionUser } from '$lib/server/auth';
-import { readAs, writeAs } from '$lib/server/write-as';
+import { revealAs, writeAs } from '$lib/server/write-as';
 import { randomBytes } from 'node:crypto';
 import { TYPED_SECRET_LOOKS_SEALED, looksSealed, openedUrl, sealStored, webhookSecretAad, webhookUrlAad } from '$lib/server/stored-secrets';
 import type { RequestHandler } from './$types';
@@ -66,15 +67,22 @@ function requireWebhook(user: SessionUser | null, webhookId: number, need: Need)
  * webhook, before anything is revealed (card 2935, P5): a key ended, or a role
  * lowered, after the gate let the request in is answered as it is now, as a
  * write is (`writeAs`). Never a secret to an account whose access has ended.
+ *
+ * The API key it was given to is recorded in the same transaction (card 2947,
+ * `answerWebhook`), so that the key's revoke, expiry or deadline holds the
+ * webhook. Answered with `Cache-Control: no-store` (R11): it may carry a secret.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	const webhookId = pathId(params.webhookId, 'webhook');
-	const answer = readAs(locals, (caller) => {
+	const answer = revealAs(locals, (caller) => {
 		const { hook, reveal } = requireWebhook(caller, webhookId, 'view');
-		return presentWebhook(hook, reveal);
+		return answerWebhook(hook, reveal, locals.credential);
 	});
-	return json(answer);
+	return json(answer, { headers: NO_STORE });
 };
+
+/** What every answer that may carry a webhook's secret is sent with (card 2947, R11): kept in no cache on the way. */
+const NO_STORE = { 'Cache-Control': 'no-store' };
 
 /**
  * PUT /api/v1/webhooks/:webhookId — Update a webhook.
@@ -112,6 +120,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * Whoever becomes its setter has the API key they came in with recorded too
  * (`keyOfWrite`, card 2893), so that it is switched off when that key ends;
  * a change of `events` alone keeps the key it had.
+ *
+ * Card 2947 (R9): the answer gives the secret only where this `PUT` set or
+ * replaced it (a secret sent, or a switch-on's new one), and then records the
+ * caller's key as given it; any other change is answered without `secret`. A
+ * new secret forgets every key given the old one (`forgetReveals`) first.
+ * Answered with `Cache-Control: no-store` (R11).
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -124,7 +138,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	// lowered meanwhile is refused as they now are (card 2253). A webhook
 	// deleted meanwhile is 404: the update found nothing, and the answer was
 	// a 500.
-	const { updated, reveal } = writeAs(locals, (caller) => {
+	const answer = writeAs(locals, (caller) => {
 		const user = requireUser(caller);
 		const { hook: found, reveal } = requireWebhook(user, webhookId, 'edit');
 		// One on and held now is switched off for good first, and judged so
@@ -210,15 +224,18 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 
 		if (Object.keys(updates).length === 0) throw error(400, 'No fields to update');
 
+		// A new secret: no key given the old one is given this one (card 2947).
+		if (secretChanged) forgetReveals(webhookId);
 		const row = db.update(webhooks)
 			.set(updates)
 			.where(eq(webhooks.id, webhookId))
 			.returning()
 			.get();
-		return { updated: row, reveal };
+		// The secret only where this request set or replaced it, recorded as given to the caller's key (R9).
+		return answerWebhook(row, reveal, locals.credential, { secret: secretChanged });
 	});
 
-	return json(presentWebhook(updated, reveal));
+	return json(answer, { headers: NO_STORE });
 };
 
 /**

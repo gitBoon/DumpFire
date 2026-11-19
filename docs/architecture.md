@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.138
+version: 1.139
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2947
   - card-2898
   - secrets-at-rest
   - card-2923
@@ -260,14 +261,21 @@ and writes the setting; at every start, those whose setter is disabled or not re
 `WARN` when it held any, nobody mailed; it cannot throw), `holdReadableWebhooksAtStart()` (card
 2935: it holds the webhooks whose secret a disabled owner or administrator could read, the first
 time with every webhook made before setters were recorded, keeping the moment it covered in
-`webhooks_readable_by_disabled_held`; told as the sweep is; it cannot throw) and
-`startSchedulers()`, in that order for the last four.
+`webhooks_readable_by_disabled_held`; told as the sweep is; it cannot throw),
+`sweepEndedKeyReveals()` (card 2947: once, while `webhook_reveals_seeded` is absent, it seeds the
+reads made before they were recorded; then every API key with rows in `webhook_reveals` that has
+expired, passed its deadline or gone has its account's webhooks swept and every webhook with a
+secret it was given held, and its rows deleted; told as the sweep is; it cannot throw),
+`startEndedKeyRevealSweep()` (the same every five minutes, whatever `SCHEDULERS` says; a second
+call starts no second timer) and `startSchedulers()`, in that order for the last six.
 
 ```mermaid
 flowchart LR
     Sweep["switchOffHeldWebhooksAtStart()<br/>webhooks on and held: switched off"] --> Hold["holdAlreadyOffWebhooksAtStart()<br/>off and unheld: every one once,<br/>then setter disabled or none"]
     Hold --> Readable["holdReadableWebhooksAtStart()<br/>readable by an owner or administrator<br/>disabled since the moment stored"]
-    Readable --> Sched["startSchedulers()"]
+    Readable --> Reveals["sweepEndedKeyReveals()<br/>the seed once; what ended keys were given"]
+    Reveals --> Timer["startEndedKeyRevealSweep()<br/>the same every five minutes"]
+    Timer --> Sched["startSchedulers()"]
 ```
 
 ```mermaid

@@ -485,6 +485,27 @@ export const webhooks = sqliteTable('webhooks', {
 	index('idx_webhooks_set_by_key').on(table.setByKey)
 ]);
 
+// Which API key was given which webhook's signing secret (card 2947, migration
+// 0075): written in the transaction of every answer that gives it
+// (`answerWebhook`, webhooks.ts); a webhook's rows deleted when a PUT writes a
+// new secret; a key's rows held and consumed when it is revoked, expires or
+// passes its deadline (`holdRevealed`, `holdRevealsOfEndedKeys`), and by an
+// ending of its account's access. `revealedAt` is the first time since the
+// secret last changed; NULL for a row the once-only seed wrote. Both foreign
+// keys cascade.
+export const webhookReveals = sqliteTable('webhook_reveals', {
+	webhookId: integer('webhook_id')
+		.notNull()
+		.references(() => webhooks.id, { onDelete: 'cascade' }),
+	keyId: integer('key_id')
+		.notNull()
+		.references(() => apiKeys.id, { onDelete: 'cascade' }),
+	revealedAt: text('revealed_at')
+}, (table) => [
+	primaryKey({ columns: [table.webhookId, table.keyId] }),
+	index('idx_webhook_reveals_key_id').on(table.keyId)
+]);
+
 // ─── Card Dependencies ──────────────────────────────────────────────────────
 // `cardId` is the card that is BLOCKED; `dependsOnCardId` is its BLOCKER.
 // A unique index on the pair (migration 0042) enforces one row per direction.

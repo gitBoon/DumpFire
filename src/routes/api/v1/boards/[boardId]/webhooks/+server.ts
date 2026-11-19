@@ -5,8 +5,8 @@ import { webhooks } from '$lib/server/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { pathId, readBody, readChoices, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
-import { readAs, writeAs } from '$lib/server/write-as';
-import { canSeeWebhookSecret, hostOfHook, keyOfWrite, presentWebhook, receiverOf, refuseWebhookOverCap, WEBHOOK_EVENTS } from '$lib/server/webhooks';
+import { revealAs, writeAs } from '$lib/server/write-as';
+import { answerWebhook, answerWebhooks, canSeeWebhookSecret, hostOfHook, keyOfWrite, receiverOf, refuseWebhookOverCap, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import { readWebhookUrl } from '$lib/server/webhook-address';
 import { notifyWebhookCreated } from '$lib/server/notifications';
 import { TYPED_SECRET_LOOKS_SEALED, looksSealed, sealStored, webhookSecretAad, webhookUrlAad } from '$lib/server/stored-secrets';
@@ -26,21 +26,25 @@ const HELD_OFF_RECEIVER =
  *
  * The key and its account are asked again, in the transaction that reads the
  * webhooks, before anything is revealed (card 2935, P5), as a write asks them.
+ *
+ * The API key given each secret is recorded in the same transaction, in one
+ * statement for the list (card 2947, `answerWebhooks`, R14). Answered with
+ * `Cache-Control: no-store` (R11).
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	const requested = pathId(params.boardId, 'board');
-	const hooks = readAs(locals, (asked) => {
+	const hooks = revealAs(locals, (asked) => {
 		const caller = requireUser(asked);
 		const boardId = requireBoard(caller, requested, 'view').id;
 		const reveal = canSeeWebhookSecret(caller, boardId);
-		return db.select().from(webhooks)
-			.where(eq(webhooks.boardId, boardId))
-			.all()
-			.map((h) => presentWebhook(h, reveal));
+		return answerWebhooks(db.select().from(webhooks).where(eq(webhooks.boardId, boardId)).all(), reveal, locals.credential);
 	});
 
-	return json(hooks);
+	return json(hooks, { headers: NO_STORE });
 };
+
+/** What every answer that may carry a webhook's secret is sent with (card 2947, R11): kept in no cache on the way. */
+const NO_STORE = { 'Cache-Control': 'no-store' };
 
 /**
  * POST /api/v1/boards/:boardId/webhooks — Create a webhook.
@@ -65,7 +69,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  *
  * The API key the caller came in with is recorded beside them (`set_by_key`,
  * `set_with_key`, card 2893, `keyOfWrite`), so that the webhook is switched
- * off when that key ends; never in an answer.
+ * off when that key ends; never in an answer. And, where it sent a secret, as
+ * given it (card 2947). Answered with `Cache-Control: no-store` (R11).
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
@@ -126,9 +131,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		// The board's owners are told of a webhook someone else made (card 2752, S3), once it is committed.
 		if (!owns) notifyWebhookCreated(boardId, user.username, { id: hook.id, host: hostOfHook(hook) });
 		// Made here, in the transaction that saved it: `pausedBecause` (card
-		// 2325) reads whether its setter, the caller, can open the board.
-		return presentWebhook(hook, true);
+		// 2325) reads whether its setter, the caller, can open the board. The
+		// secret it was sent goes back to the caller's key, recorded as given it
+		// (card 2947).
+		return answerWebhook(hook, true, locals.credential);
 	});
 
-	return json(answer, { status: 201 });
+	return json(answer, { status: 201, headers: NO_STORE });
 };
