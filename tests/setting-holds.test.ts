@@ -288,7 +288,9 @@ describe('a held destination is not reached (slice 1)', () => {
 	});
 
 	it('case C7a: a destination held while its own upload runs is not cleaned by retention, and the WARN names it quoted', async () => {
-		saveDestinations([A]);
+		// With failure mail on, so that "no mail" is asked of a run that could send one (card 2941, C7).
+		makeSmtp();
+		saveBackupConfig({ ...CONFIG, notifyOnFailure: true, notifyEmail: 'chief@example.test', destinations: [A] } as never);
 		reached.duringUpload = (name) => {
 			if (name === 'A') hold('backup_destination:A', placeOf('A'));
 		};
@@ -299,6 +301,11 @@ describe('a held destination is not reached (slice 1)', () => {
 		// Made once, for the upload: retention would make it again.
 		expect(reached.made).toEqual(['A']);
 		expect(lines('BACKUP').map((line) => line.message)).toContain(`Retention not run at "A": ${DESTINATION_HELD}`);
+		// Card 2941 (C7): on the row and the answer, and in no mail: the hold is the superadmin's to review already.
+		const held = `Keep Last was not applied: ${DESTINATION_HELD}`;
+		expect(results[0].note).toBe(held);
+		expect(getBackupHistory().map((row) => ({ status: row.status, error: row.error }))).toEqual([{ status: 'success', error: held }]);
+		expect(sent.emails).toEqual([]);
 	});
 
 	describe('the second half of a Google Drive Connect (C7b)', () => {
@@ -827,6 +834,48 @@ describe('a restore carries the holds of this server (slice 1)', () => {
 });
 
 // ─── The code review's C1 and C15: saves and invites through held or own settings ─
+
+describe('a held destination cannot be pointed elsewhere by a save (card 2941, ruling R1)', () => {
+	let chief: SessionUser;
+	const O = { type: 'onedrive', name: 'O', tenantId: 'tenant-o', clientId: 'client-o', clientSecret: 'secret-o', folderPath: '/DumpFire Backups', drive: 'alice@contoso.example' };
+	/** One saved before card 2941: no drive. */
+	const { drive: _drive, ...L } = { ...O, name: 'L' };
+	const configNow = () => sqlite.prepare("SELECT value FROM settings WHERE key = 'backup_config'").get();
+
+	beforeEach(() => {
+		chief = makeUser({ username: 'chief', role: 'superadmin' });
+		saveDestinations([O, L]);
+	});
+
+	it('case T26: a held OneDrive given another folder, and a held one saved without a drive given one, are refused 409; nothing is saved', async () => {
+		hold('backup_destination:O', placeOf('O'));
+		hold('backup_destination:L', placeOf('L'));
+		const before = configNow();
+
+		for (const [sent, name] of [
+			[[{ ...O, folderPath: '/Elsewhere' }, L], 'O'],
+			[[O, { ...L, drive: 'mallory@contoso.example' }], 'L']
+		] as const) {
+			const res = await api('PUT', '/api/admin/backup', stepUp(chief, { destinations: sent }));
+
+			expect(res.status, JSON.stringify(res.body)).toBe(409);
+			expect(res.body.message).toBe(
+				`Backup destination "${name}" is held for the superadmin's review: where it sends its copies cannot be changed by a save. ` +
+					'Keep it or remove it under Settings held for review first. Nothing was saved.'
+			);
+		}
+		expect(configNow()).toEqual(before);
+	});
+
+	it('case T27: the same saves with nothing held go through, and each new place is recorded as the saver’s', async () => {
+		const res = await api('PUT', '/api/admin/backup', stepUp(chief, { destinations: [{ ...O, folderPath: '/Elsewhere' }, { ...L, drive: 'mallory@contoso.example' }] }));
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		const rows = sqlite.prepare('SELECT setting, place, user_id AS userId FROM setting_setters ORDER BY setting').all();
+		expect(rows).toContainEqual({ setting: 'backup_destination:L', place: placeOf('L'), userId: chief.id });
+		expect(rows).toContainEqual({ setting: 'backup_destination:O', place: placeOf('O'), userId: chief.id });
+	});
+});
 
 describe('a held setting cannot be saved over, nor an invite sent through the account’s own settings (C1, C15)', () => {
 	let chief: SessionUser;

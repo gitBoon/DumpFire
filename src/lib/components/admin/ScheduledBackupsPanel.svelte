@@ -77,6 +77,8 @@
 	interface DestinationUI {
 		type: DestType;
 		name: string;
+		/** A OneDrive destination's user or drive ID (card 2941); none for one saved before. */
+		drive?: string;
 		[key: string]: unknown;
 	}
 
@@ -179,6 +181,7 @@
 	let destClientId = $state('');
 	let destClientSecret = $state('');
 	let destFolderPath = $state('/DumpFire Backups');
+	let destDrive = $state('');
 
 	/** Google Drive's Connect box, whose Connect each Drive destination's button starts. */
 	let gdriveConnect = $state<ReturnType<typeof GDriveConnectModal>>();
@@ -196,7 +199,7 @@
 		destEndpoint = ''; destServiceAccountJson = ''; destFolderId = '';
 		destGdriveAuthMethod = 'oauth'; destGdriveClientId = ''; destGdriveClientSecret = ''; destGdriveRefreshToken = '';
 		destTenantId = ''; destClientId = ''; destClientSecret = '';
-		destFolderPath = '/DumpFire Backups';
+		destFolderPath = '/DumpFire Backups'; destDrive = '';
 	}
 
 	function populateDestForm(dest: DestinationUI) {
@@ -221,6 +224,7 @@
 			destTenantId = (dest.tenantId as string) || ''; destClientId = (dest.clientId as string) || '';
 			destClientSecret = (dest.clientSecret as string) || '';
 			destFolderPath = (dest.folderPath as string) || '/DumpFire Backups';
+			destDrive = dest.drive || '';
 		}
 	}
 
@@ -241,7 +245,7 @@
 				refreshToken: destGdriveAuthMethod === 'oauth' ? destGdriveRefreshToken : undefined
 			};
 		} else {
-			return { type: 'onedrive', name: destName, tenantId: destTenantId, clientId: destClientId, clientSecret: destClientSecret, folderPath: destFolderPath };
+			return { type: 'onedrive', name: destName, tenantId: destTenantId, clientId: destClientId, clientSecret: destClientSecret, folderPath: destFolderPath, drive: destDrive };
 		}
 	}
 
@@ -691,7 +695,7 @@
 			const result = await answerBody(res);
 			const results = Array.isArray(result?.results) ? result.results : [];
 			const failed = results.filter((r: any) => r.status === 'failed');
-			// An upload that succeeded but that Backup History could not record (card 2417).
+			// An upload that succeeded but that Backup History could not record (card 2417), or whose older copies Keep Last could not remove (card 2941).
 			const noted = results.filter((r: any) => r.status === 'success' && typeof r.note === 'string' && r.note);
 			const notes = noted.length > 0 ? ` ${sentence(eachSaid(noted, (r) => r.note))}` : '';
 			if (failed.length === 0) {
@@ -830,7 +834,8 @@
 					{:else if dest.type === 'gdrive'}
 						<span>{dest.authMethod === 'oauth' ? '🔑 OAuth' : '🏢 Service Account'} · Folder: {dest.folderId}</span>
 					{:else if dest.type === 'onedrive'}
-						<span>{dest.folderPath}</span>
+						<!-- Whose OneDrive (card 2941): one saved before has none, and is not backed up to until it is given. -->
+						<span>{dest.folderPath} · Drive: {dest.drive || 'not set'}</span>
 					{/if}
 				</div>
 				{#if dest.type === 'gdrive' && dest.authMethod === 'oauth' && dest.refreshToken && !driveScopeIsNarrow(dest.grantedScope)}
@@ -866,7 +871,7 @@
 						bind:destName bind:destHost bind:destPort bind:destUsername bind:destPassword bind:destPrivateKey bind:destHostKey bind:destRemotePath
 						bind:destRegion bind:destBucket bind:destAccessKey bind:destSecretKey bind:destPrefix bind:destEndpoint
 						bind:destServiceAccountJson bind:destFolderId bind:destGdriveAuthMethod bind:destGdriveClientId bind:destGdriveClientSecret {destGdriveRefreshToken}
-						bind:destTenantId bind:destClientId bind:destClientSecret bind:destFolderPath bind:newDestType
+						bind:destTenantId bind:destClientId bind:destClientSecret bind:destFolderPath bind:destDrive bind:newDestType
 						{isSuperadmin}
 						onSave={askUpdateDestination}
 						onCancel={() => { editingDest = null; resetDestForm(); }}
@@ -882,7 +887,7 @@
 				bind:destName bind:destHost bind:destPort bind:destUsername bind:destPassword bind:destPrivateKey bind:destHostKey bind:destRemotePath
 				bind:destRegion bind:destBucket bind:destAccessKey bind:destSecretKey bind:destPrefix bind:destEndpoint
 				bind:destServiceAccountJson bind:destFolderId bind:destGdriveAuthMethod bind:destGdriveClientId bind:destGdriveClientSecret {destGdriveRefreshToken}
-				bind:destTenantId bind:destClientId bind:destClientSecret bind:destFolderPath bind:newDestType
+				bind:destTenantId bind:destClientId bind:destClientSecret bind:destFolderPath bind:destDrive bind:newDestType
 				onSave={askAddDestination}
 				onCancel={() => { showAddDestination = false; resetDestForm(); }}
 			/>

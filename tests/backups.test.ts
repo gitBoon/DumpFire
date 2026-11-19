@@ -57,7 +57,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { google } from 'googleapis';
-import { generateBackupData, getBackupConfig, saveBackupConfig, withoutSecrets } from '$lib/server/backup';
+import { generateBackupData, getBackupConfig, runBackup, saveBackupConfig, withoutSecrets } from '$lib/server/backup';
+import { DRIVE_REFUSAL, FOLDER_PATH_REFUSAL, ONEDRIVE_DRIVE_NOT_SET } from '$lib/server/onedrive-address';
 import {
 	DESTINATION_SECRET_FIELDS,
 	TYPED_SECRET_LOOKS_SEALED,
@@ -77,6 +78,7 @@ import {
 import { currentMfaKey, keyFromBytes } from '$lib/server/mfa-key';
 import {
 	GDriveDestination,
+	ONEDRIVE_DRIVE_REQUIRED,
 	SERVICE_ACCOUNT_REFUSALS,
 	SERVICE_ACCOUNT_UNDER_OAUTH,
 	dumpfireFolderName,
@@ -2106,7 +2108,8 @@ const DESTINATIONS: Record<string, unknown>[] = [
 	{ type: 's3', name: 'Bucket', region: 'eu-west-2', bucket: 'dumpfire-backups', accessKeyId: 'AKIA2169NOTSECRET', secretAccessKey: SECRETS.s3Secret, prefix: 'dumpfire/' },
 	{ type: 'gdrive', name: 'Drive', authMethod: 'oauth', clientId: 'client-id.apps.example.test', clientSecret: SECRETS.gdriveClientSecret, refreshToken: SECRETS.gdriveRefreshToken, folderId: 'folder-1' },
 	{ type: 'gdrive', name: 'Robot', authMethod: 'service_account', serviceAccountJson: serviceAccountJson(SECRETS.serviceAccountKey), folderId: 'folder-2' },
-	{ type: 'onedrive', name: 'OneDrive', tenantId: 'tenant-1', clientId: 'onedrive-client', clientSecret: SECRETS.onedriveSecret, folderPath: '/DumpFire Backups' }
+	// With whose OneDrive (card 2941): one without is not tried, and is saved only as it was stored.
+	{ type: 'onedrive', name: 'OneDrive', tenantId: 'tenant-1', clientId: 'onedrive-client', clientSecret: SECRETS.onedriveSecret, folderPath: '/DumpFire Backups', drive: 'backups@example.test' }
 ];
 const [NAS, BUCKET, DRIVE, ROBOT, ONEDRIVE] = DESTINATIONS;
 
@@ -3244,6 +3247,23 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 			expect(result.secrets.toEnter.destinations).toEqual(NEEDS);
 			expect(result.secrets.toEnter.webhooks).toEqual(hooksToEnter());
 			expect(holdsOwn(live)).toBe(false);
+		});
+
+		// Card 2941 (T24): a drive appended to the place makes another place.
+		it('fills no OneDrive destination of a backup made without a drive from the one here with a drive, and lists it', () => {
+			const backup = resealed(backupNow(), (made) => {
+				const config = JSON.parse(made.prepare("SELECT value FROM settings WHERE key = 'backup_config'").pluck().get() as string);
+				config.destinations = config.destinations.map(({ drive: _drive, ...entry }: Record<string, unknown>) => entry);
+				made.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(JSON.stringify(config));
+			});
+			const live = serverWith({ destinations: [{ ...ONEDRIVE, clientSecret: `${HERE}-onedrive` }] });
+
+			const result = restoreFromBackup(live, backup);
+
+			expect(result.errors).toEqual([]);
+			expect(result.secrets.kept.destinations).not.toContain('OneDrive');
+			expect(result.secrets.toEnter.destinations).toContainEqual(NEEDS[4]);
+			expect(JSON.parse(settingsOf(live)['backup_config']).destinations[4]).toEqual({ ...ONEDRIVE, clientSecret: '', drive: undefined });
 		});
 
 		it.each([
@@ -6807,5 +6827,96 @@ describe("the restore's own run of the readable pass (card 2935, P12)", () => {
 
 		expect(result.errors).toEqual([]);
 		expect(rowOf(hook)).toEqual(held ? { active: 0, heldBecause: 'setter access ended' } : { active: 1, heldBecause: null });
+	});
+});
+
+describe('a OneDrive destination says whose OneDrive, and its folder path is one OneDrive takes (card 2941)', () => {
+	const store = (destinations: unknown[]) =>
+		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('backup_config', configWith(destinations));
+	const storedDestinations = () => JSON.parse(settingsOf(sqlite)['backup_config']).destinations as Record<string, unknown>[];
+	const shown = async () => (await api('GET', '/api/admin/backup', { user: chief })).body.destinations as Record<string, unknown>[];
+	const put = (destinations: unknown[]) => api('PUT', '/api/admin/backup', confirmedByChief({ destinations }));
+	/** A OneDrive destination as saved before card 2941: no drive. */
+	const { drive: _drive, ...LEGACY } = ONEDRIVE;
+
+	it.each([
+		{ sent: 'alice@contoso.example', saved: 'alice@contoso.example' },
+		{ sent: '  3F2504E0-4F89-11D3-9A0C-0305E82C3301 ', saved: '3f2504e0-4f89-11d3-9a0c-0305e82c3301' },
+		{ sent: 'b!AbC_123-x', saved: 'b!AbC_123-x' },
+		{ sent: 'alice', saved: null },
+		{ sent: 'a/b@x.example', saved: null },
+		{ sent: 'd!AbC_123-x', saved: null }
+	])('T19: a drive of $sent is saved as $saved (null: refused 400)', async ({ sent, saved }) => {
+		const res = await put([{ ...ONEDRIVE, name: 'New', drive: sent }]);
+
+		if (saved === null) {
+			expect({ status: res.status, message: res.body.message }).toEqual({ status: 400, message: `destinations[0].drive ${DRIVE_REFUSAL}` });
+		} else {
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(storedDestinations()[0].drive).toBe(saved);
+		}
+	});
+
+	it.each(['a/../b', 'Backups\u0001', 'https://x'])('T20: a folder path of %j is refused 400, and nothing is saved', async (folderPath) => {
+		const before = snapshotDb();
+
+		const res = await put([{ ...ONEDRIVE, name: 'New', folderPath }]);
+
+		expect({ status: res.status, message: res.body.message }).toEqual({ status: 400, message: `destinations[0].folderPath ${FOLDER_PATH_REFUSAL}` });
+		expectUnchanged(before);
+	});
+
+	it('T21: a new one with no drive is refused; one stored without, sent back as shown, saves; the same pointed elsewhere is refused', async () => {
+		const fresh = await put([{ ...LEGACY, name: 'New' }]);
+		expect({ status: fresh.status, message: fresh.body.message }).toEqual({ status: 400, message: `destinations[0].drive ${ONEDRIVE_DRIVE_REQUIRED}` });
+
+		store([LEGACY]);
+		const page = await shown();
+		const unchanged = await put(page);
+		expect(unchanged.status, JSON.stringify(unchanged.body)).toBe(200);
+		expect(storedDestinations()).toEqual([LEGACY]);
+
+		const moved = await put([{ ...page[0], clientSecret: 'typed-again-2941', folderPath: '/Elsewhere' }]);
+		expect({ status: moved.status, message: moved.body.message }).toEqual({ status: 400, message: `destinations[0].drive ${ONEDRIVE_DRIVE_REQUIRED}` });
+		expect(storedDestinations()).toEqual([LEGACY]);
+	});
+
+	it('C5: a drive a restore stored as an upper-case object ID, sent back as shown, is kept byte for byte', async () => {
+		const upper = '3F2504E0-4F89-11D3-9A0C-0305E82C3301';
+		store([{ ...ONEDRIVE, drive: upper }]);
+
+		const res = await put(await shown());
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(storedDestinations()[0].drive).toBe(upper);
+	});
+
+	it('T22: another drive with the client secret masked is refused, saved and tested alike', async () => {
+		store([ONEDRIVE]);
+		const page = await shown();
+		const elsewhere = { ...page[0], drive: 'someone-else@example.test' };
+
+		const saved = await put([elsewhere]);
+		const tested = await api('POST', '/api/admin/backup/test', { user: chief, body: elsewhere });
+
+		expect({ status: saved.status, message: saved.body.message }).toEqual({
+			status: 400,
+			message:
+				'Backup destination "OneDrive": type its client secret again. A saved secret is used only with the settings it was saved with, and this changes its user or drive ID.'
+		});
+		expect(tested.status).toBe(400);
+		expect(handed).toEqual([]);
+		expect(storedDestinations()).toEqual([ONEDRIVE]);
+	});
+
+	it('T23: a run does not try one with no drive: its row says why, and nothing is made for it', async () => {
+		store([LEGACY]);
+		handed.length = 0;
+
+		const results = await runBackup();
+
+		expect(results).toEqual([expect.objectContaining({ destination: 'OneDrive', status: 'failed', message: ONEDRIVE_DRIVE_NOT_SET })]);
+		expect(handed).toEqual([]);
+		expect(sqlite.prepare('SELECT status, error FROM backup_log').all()).toEqual([{ status: 'failed', error: ONEDRIVE_DRIVE_NOT_SET }]);
 	});
 });

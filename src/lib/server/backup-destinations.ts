@@ -12,11 +12,11 @@ import { error } from '@sveltejs/kit';
 import SftpClient from 'ssh2-sftp-client';
 import { S3Client, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { google, type drive_v3 } from 'googleapis';
-import { Client as GraphClient } from '@microsoft/microsoft-graph-client';
+import { Client as GraphClient, RedirectHandlerOptions } from '@microsoft/microsoft-graph-client';
 import { ClientSecretCredential } from '@azure/identity';
 import { Readable } from 'node:stream';
 import { readChoice, readNumber, readText, type RequestBody } from './request-body';
-import { serviceAccountJsonMasked, serviceAccountMissing, trimHost } from './backup-secrets';
+import { destinationPlace, serviceAccountJsonMasked, serviceAccountMissing, trimHost } from './backup-secrets';
 import { readServiceAccountJson, serviceAccountKey, type ServiceAccountRefusal } from './service-account-json';
 import {
 	HOST_KEY_NOT_CONFIRMED,
@@ -32,8 +32,42 @@ import {
 	type HostKey
 } from './ssh-host-key';
 import { DRIVE_FILE_SCOPE, dumpfireFolderName } from '$lib/drive-scope';
+import {
+	DRIVE_REFUSAL,
+	FOLDER_PATH_REFUSAL,
+	ONEDRIVE_MAX_PAGES,
+	driveBase,
+	driveForm,
+	driveSet,
+	folderSegments,
+	itemPath,
+	nextPageUrl,
+	savedDrive,
+	shownFolder
+} from './onedrive-address';
 
 // ─── Common Interface ────────────────────────────────────────────────────────
+
+/**
+ * The name of a copy DumpFire makes (`copyName` in backup.ts): its time in UTC
+ * to the millisecond (to the second before card 2415), `-manual` for ▶ Run Now,
+ * `.db`. Every destination's listing keeps only names this matches (card 2941,
+ * ruling R5), so retention never counts or removes a file DumpFire did not
+ * make, and no other name reaches a delete.
+ */
+export const COPY_NAME = /^dumpfire-backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d{3})?(?:-manual)?\.db$/;
+
+/** Whether `name` is a copy DumpFire makes (`COPY_NAME`). */
+export const isCopyName = (name: unknown): name is string => typeof name === 'string' && COPY_NAME.test(name);
+
+/** The most of a far end's message the history, the mail and the toast carry (card 2941, ruling R10). */
+export const MESSAGE_MAX = 300;
+
+/** `text`, a far end's message, as Backup History, the mail and the toast carry it: at most `MESSAGE_MAX` characters. */
+export function cappedMessage(text: unknown): string {
+	const said = String(text ?? '');
+	return said.length > MESSAGE_MAX ? `${said.slice(0, MESSAGE_MAX - 1)}…` : said;
+}
 
 export interface BackupDestination {
 	type: string;
@@ -115,6 +149,12 @@ export interface OneDriveDestinationConfig {
 	clientId: string;
 	clientSecret: string;
 	folderPath: string; // e.g. '/DumpFire Backups'
+	/**
+	 * Whose OneDrive (card 2941): a user's sign-in name or object ID, or a
+	 * drive ID (`b!…`), by onedrive-address.ts's rule; none, or '', for an
+	 * entry saved before, which is not tried until it is set.
+	 */
+	drive?: string;
 }
 
 export type DestinationConfig =
@@ -301,9 +341,11 @@ export class SftpDestination implements BackupDestination {
 			await this.connect(sftp);
 			const files = await sftp.list(this.config.remotePath);
 			await sftp.end();
+			// Regular files alone (the fix pass's C2): a folder or a link of a copy's name is never one.
 			return files
-				.filter(f => f.name.startsWith('dumpfire-backup-') && f.name.endsWith('.db'))
+				.filter(f => f.type === '-')
 				.map(f => f.name)
+				.filter(isCopyName)
 				.sort();
 		} catch (err) {
 			try { await sftp.end(); } catch {}
@@ -455,24 +497,64 @@ export class S3Destination implements BackupDestination {
 		}));
 	}
 
+	/** The keys the last listing found, which alone `delete` removes (card 2941, C1). */
+	private listed = new Set<string>();
+
+	/**
+	 * The copies directly under the prefix, oldest first (card 2941, C1, which
+	 * took in card 2991): listed under the prefix and a `/`, one level only
+	 * (`Delimiter`), so that a sibling prefix (`dumpfire-old/` beside
+	 * `dumpfire`) and a key in a folder below are not counted, every page
+	 * (`ContinuationToken`) up to `S3_MAX_PAGES`, and only a key that is
+	 * exactly where an upload of its name puts it. It read one page of 1,000
+	 * keys, any of them under the prefix's text, by the last part of its key.
+	 */
 	async list(): Promise<string[]> {
-		const result = await this.client.send(new ListObjectsV2Command({
-			Bucket: this.config.bucket,
-			Prefix: this.config.prefix || ''
-		}));
-		return (result.Contents || [])
-			.map(obj => obj.Key?.split('/').pop() || '')
-			.filter(name => name.startsWith('dumpfire-backup-') && name.endsWith('.db'))
-			.sort();
+		const trimmed = this.config.prefix?.replace(/\/+$/, '') ?? '';
+		const prefix = trimmed ? `${trimmed}/` : '';
+		const names: string[] = [];
+		const keys = new Set<string>();
+		let token: string | undefined;
+		let pages = 0;
+		do {
+			if (++pages > S3_MAX_PAGES) throw new Error(`S3 listing of the backup prefix went on for more than ${S3_MAX_PAGES} pages`);
+			const result = await this.client.send(new ListObjectsV2Command({
+				Bucket: this.config.bucket,
+				Prefix: prefix,
+				Delimiter: '/',
+				ContinuationToken: token
+			}));
+			for (const obj of result.Contents || []) {
+				const key = obj.Key ?? '';
+				const name = key.startsWith(prefix) ? key.slice(prefix.length) : '';
+				if (isCopyName(name) && key === this.getKey(name)) {
+					names.push(name);
+					keys.add(key);
+				}
+			}
+			token = result.IsTruncated ? result.NextContinuationToken : undefined;
+		} while (token);
+		this.listed = keys;
+		return names.sort();
 	}
 
+	/** Remove a copy the last listing found, by its key; any other is refused (card 2941, C1). */
 	async delete(filename: string): Promise<void> {
+		const key = this.getKey(filename);
+		if (!this.listed.has(key)) throw new Error(S3_NOT_LISTED);
 		await this.client.send(new DeleteObjectCommand({
 			Bucket: this.config.bucket,
-			Key: this.getKey(filename)
+			Key: key
 		}));
+		this.listed.delete(key);
 	}
 }
+
+/** The most pages of 1,000 keys an S3 listing reads before it gives up, as OneDrive's (card 2941, C1). */
+export const S3_MAX_PAGES = 100;
+
+/** What an S3 delete of a copy the last listing did not find throws (card 2941, C1). */
+export const S3_NOT_LISTED = 'S3 removes only a backup it has just listed for retention';
 
 // ─── Google Drive Provider ───────────────────────────────────────────────────
 
@@ -595,7 +677,8 @@ export class GDriveDestination implements BackupDestination {
 				includeItemsFromAllDrives: true
 			});
 			for (const f of res.data.files || []) {
-				if (!f.id || !f.name) continue;
+				// Only a copy DumpFire makes (card 2941, R5): `contains` matches any name holding the text.
+				if (!f.id || !isCopyName(f.name)) continue;
 				files.push({
 					id: f.id,
 					name: f.name,
@@ -613,10 +696,11 @@ export class GDriveDestination implements BackupDestination {
 	}
 
 	/**
-	 * The files listed for retention, by name, so that `delete` removes the
-	 * file that was listed, by its id, in the way the account may remove it.
+	 * The files listed for retention, by name, every one of a name in the order
+	 * listed, so that `delete` removes a file that was listed, by its id, in the
+	 * way the account may remove it. Nothing else is removed (card 2941, R5).
 	 */
-	private listed = new Map<string, GDriveBackupFile>();
+	private listed = new Map<string, GDriveBackupFile[]>();
 
 	/**
 	 * A file the account can see but may neither delete nor trash (one another
@@ -627,40 +711,43 @@ export class GDriveDestination implements BackupDestination {
 	async listForRetention(): Promise<{ removable: string[]; setAside: string[] }> {
 		const files = await this.listBackups();
 		// Only removable files are kept by name, so that a set-aside file of the
-		// same name as a removable one is never the one tried.
-		this.listed = new Map(files.filter(f => f.canDelete || f.canTrash).map(f => [f.name, f]));
+		// same name as a removable one is never the one tried; every one of a name.
+		this.listed = new Map();
+		for (const f of files) {
+			if (!(f.canDelete || f.canTrash)) continue;
+			const same = this.listed.get(f.name);
+			if (same) same.push(f);
+			else this.listed.set(f.name, [f]);
+		}
 		const removable: string[] = [];
 		const setAside: string[] = [];
 		for (const f of files) (f.canDelete || f.canTrash ? removable : setAside).push(f.name);
 		return { removable, setAside };
 	}
 
+	/**
+	 * Remove the next file listed for retention under `filename`, by its id.
+	 * A name not listed is refused: the lookup by name it made instead put the
+	 * name into a query (card 2941, R5).
+	 */
 	async delete(filename: string): Promise<void | 'trashed'> {
+		const same = this.listed.get(filename);
+		const file = same?.shift();
+		if (!file) throw new Error(GDRIVE_NOT_LISTED);
+		if (same && same.length === 0) this.listed.delete(filename);
 		const drive = await this.getDrive();
-		let file = this.listed.get(filename);
-		if (!file) {
-			// Not from a listing for retention: find it by name, as before.
-			const res = await drive.files.list({
-				q: `'${this.config.folderId}' in parents and name = '${filename}' and trashed = false`,
-				fields: 'files(id)',
-				supportsAllDrives: true,
-				includeItemsFromAllDrives: true
-			});
-			const id = res.data.files?.[0]?.id;
-			if (!id) return;
-			file = { id, name: filename, canDelete: true, canTrash: false };
-		}
 		if (file.canDelete) {
 			await drive.files.delete({ fileId: file.id, supportsAllDrives: true });
-			this.listed.delete(filename);
 			return;
 		}
 		// Only to the trash, where Drive keeps it for 30 days.
 		await drive.files.update({ fileId: file.id, requestBody: { trashed: true }, supportsAllDrives: true });
-		this.listed.delete(filename);
 		return 'trashed';
 	}
 }
+
+/** What a Google Drive delete of a name not listed for retention throws (card 2941, R5). */
+export const GDRIVE_NOT_LISTED = 'Google Drive removes only a backup it has just listed for retention';
 
 /** The most pages of 1,000 files a Google Drive listing reads before it gives up. */
 const GDRIVE_MAX_PAGES = 100;
@@ -711,12 +798,39 @@ interface GDriveBackupFile {
 
 // ─── OneDrive Provider ───────────────────────────────────────────────────────
 
+/**
+ * A OneDrive destination through Microsoft Graph, signed in as the app
+ * (`ClientSecretCredential`), at the drive its `drive` names (card 2941,
+ * onedrive-address.ts). Every address is made before a token is asked for, so
+ * a destination with no drive, or a drive or folder path refused, asks Graph
+ * nothing. No request follows a redirect, a listing follows only Graph's own
+ * next pages, and Graph's words are capped (`cappedMessage`).
+ */
 export class OneDriveDestination implements BackupDestination {
 	type = 'onedrive';
 	name: string;
 
 	constructor(private config: OneDriveDestinationConfig) {
 		this.name = config.name;
+	}
+
+	/** The item at the folder path, and `names` within it: thrown words where it cannot be addressed. */
+	private item(...names: string[]): string {
+		return itemPath(this.config.drive, this.config.folderPath, ...names);
+	}
+
+	/** `path` asked of `client`, never following a redirect (ruling R4). */
+	private request(client: GraphClient, path: string) {
+		return client.api(path).middlewareOptions([new RedirectHandlerOptions(0, () => false)]);
+	}
+
+	/** `call`'s answer, or a throw with Graph's words capped (ruling R10). */
+	private async graph<T>(call: () => Promise<T>): Promise<T> {
+		try {
+			return await call();
+		} catch (err: any) {
+			throw new Error(cappedMessage(err?.message || 'OneDrive request failed'));
+		}
 	}
 
 	private async getClient(): Promise<GraphClient> {
@@ -734,48 +848,77 @@ export class OneDriveDestination implements BackupDestination {
 		});
 	}
 
-	private getFolderPath(): string {
-		return this.config.folderPath?.replace(/^\/+/, '').replace(/\/+$/, '') || 'DumpFire Backups';
-	}
-
+	/**
+	 * The drive, which names its owner, then the folder: found, or not there
+	 * yet (the first backup makes it), or a file. Makes nothing.
+	 */
 	async test(): Promise<{ success: boolean; message: string }> {
+		let base: string;
+		let folder: string;
+		try {
+			base = driveBase(this.config.drive);
+			folder = this.item();
+		} catch (err: any) {
+			return { success: false, message: err.message };
+		}
+		const shown = shownFolder(this.config.folderPath);
 		try {
 			const client = await this.getClient();
-			// Try listing the root to verify credentials
-			await client.api('/drives').get();
-			return { success: true, message: 'Connected to OneDrive' };
+			const drive = await this.request(client, `${base}?$select=id,driveType,owner`).get();
+			const owner = drive?.owner?.user?.displayName ?? drive?.owner?.group?.displayName ?? 'its owner';
+			const where = `Connected to ${cappedMessage(owner)}'s OneDrive (drive ${cappedMessage(drive?.driveType ?? 'of unknown type')})`;
+			let item: any;
+			try {
+				item = await this.request(client, `${folder}?$select=id,folder`).get();
+			} catch (err: any) {
+				if (err?.statusCode === 404 || err?.code === 'itemNotFound') {
+					return { success: true, message: `${where}; folder "${shown}" will be made by the first backup` };
+				}
+				throw err;
+			}
+			if (!item?.folder) return { success: false, message: `"${shown}" in that OneDrive is a file, not a folder` };
+			return { success: true, message: `${where}; folder "${shown}" found` };
 		} catch (err: any) {
-			return { success: false, message: err.message || 'OneDrive connection failed' };
+			return { success: false, message: cappedMessage(err?.message || 'OneDrive connection failed') };
 		}
 	}
 
+	/** One PUT, which Graph takes up to 250 MB (card 2990 for larger). */
 	async upload(data: Buffer, filename: string): Promise<void> {
-		const client = await this.getClient();
-		const folderPath = this.getFolderPath();
-		// For files < 4MB, use simple upload; backup files are typically small JSON
-		await client
-			.api(`/drives/root:/${folderPath}/${filename}:/content`)
-			.put(data);
+		const path = `${this.item(filename)}:/content`;
+		const client = await this.graph(() => this.getClient());
+		await this.graph(() => this.request(client, path).put(data));
 	}
 
+	/**
+	 * Every copy in the folder, oldest first: every page Graph answers, up to
+	 * `ONEDRIVE_MAX_PAGES`. Any failure throws (card 2941): it answered an empty
+	 * folder, and retention said nothing. Files alone (`file` facet, the fix
+	 * pass's C2): a folder of a copy's name is never one.
+	 */
 	async list(): Promise<string[]> {
-		const client = await this.getClient();
-		const folderPath = this.getFolderPath();
-		try {
-			const result = await client.api(`/drives/root:/${folderPath}:/children`).get();
-			return (result.value || [])
-				.map((f: any) => f.name as string)
-				.filter((name: string) => name.startsWith('dumpfire-backup-') && name.endsWith('.db'))
-				.sort();
-		} catch {
-			return [];
+		let path = `${this.item()}:/children?$select=name,file&$top=200`;
+		const client = await this.graph(() => this.getClient());
+		const names: string[] = [];
+		for (let pages = 1; ; pages++) {
+			if (pages > ONEDRIVE_MAX_PAGES) {
+				throw new Error(`OneDrive listing of the backup folder went on for more than ${ONEDRIVE_MAX_PAGES} pages`);
+			}
+			const page: any = await this.graph(() => this.request(client, path).get());
+			for (const f of page?.value ?? []) if (f?.file && isCopyName(f?.name)) names.push(f.name);
+			const link = page?.['@odata.nextLink'];
+			if (link === undefined || link === null) break;
+			const next = nextPageUrl(link);
+			if (next === null) throw new Error('OneDrive answered a next page outside https://graph.microsoft.com/v1.0/, so the listing was stopped');
+			path = next;
 		}
+		return names.sort();
 	}
 
 	async delete(filename: string): Promise<void> {
-		const client = await this.getClient();
-		const folderPath = this.getFolderPath();
-		await client.api(`/drives/root:/${folderPath}/${filename}`).delete();
+		const path = this.item(filename);
+		const client = await this.graph(() => this.getClient());
+		await this.graph(() => this.request(client, path).delete());
 	}
 }
 
@@ -789,7 +932,7 @@ const DESTINATION_FIELDS: Record<DestinationConfig['type'], readonly string[]> =
 	sftp: ['host', 'port', 'username', 'password', 'privateKey', 'remotePath', 'hostKey'],
 	s3: ['region', 'bucket', 'accessKeyId', 'secretAccessKey', 'prefix', 'endpoint'],
 	gdrive: ['authMethod', 'serviceAccountJson', 'clientId', 'clientSecret', 'refreshToken', 'folderId'],
-	onedrive: ['tenantId', 'clientId', 'clientSecret', 'folderPath']
+	onedrive: ['tenantId', 'clientId', 'clientSecret', 'folderPath', 'drive']
 };
 
 /** The most a destination's text may hold, its name among them. */
@@ -814,6 +957,11 @@ const PASTED_FILES: Record<string, number> = { privateKey: 20000, serviceAccount
  * type, saved as `<type> SHA256:<43>`, or empty for none (card 2250, R5).
  * A service account's JSON is read by the one rule and saved rebuilt, and
  * none but '' is taken with OAuth (card 2939, `readServiceAccountField`).
+ * A OneDrive `drive` is a sign-in name, an object ID (saved in lower case) or
+ * a drive ID, its `folderPath` folders none of them empty, `.`, `..` or
+ * holding a character OneDrive refuses, and a OneDrive destination with no
+ * drive is refused unless it is one stored with none at the same place (card
+ * 2941, `legacyUnmoved`).
  *
  * `at` names the destination in a refusal (`destinations[2].port must be a
  * whole number from 1 to 65535`); none for a body that is one destination.
@@ -893,11 +1041,43 @@ export function readDestination(
 			if (field === 'serviceAccountJson' && typeof value === 'string') {
 				value = readServiceAccountField(value, prefix, destination.authMethod === 'oauth');
 			}
+			// A OneDrive destination's user or drive ID, and its folder path, by
+			// onedrive-address.ts's rules, asked again at use (card 2941, R3).
+			// One sent back as stored is kept byte for byte, as a host is, and only
+			// checked (the fix pass's C5): trimming or lower-casing it would move its
+			// place, and the secret bound to it.
+			if (type === 'onedrive' && field === 'drive' && typeof value === 'string') {
+				const drive = value === keep ? (value === '' || driveForm(value) !== null ? value : null) : savedDrive(value);
+				if (drive === null) throw error(400, `${prefix}drive ${DRIVE_REFUSAL}`);
+				value = drive;
+			}
+			if (type === 'onedrive' && field === 'folderPath' && typeof value === 'string' && folderSegments(value) === null) {
+				throw error(400, `${prefix}folderPath ${FOLDER_PATH_REFUSAL}`);
+			}
 		}
 		if (value === undefined) continue;
 		destination[field] = value;
 	}
+	if (type === 'onedrive' && !driveSet(destination.drive) && !legacyUnmoved(destination, saved)) {
+		throw error(400, `${prefix}drive ${ONEDRIVE_DRIVE_REQUIRED}`);
+	}
 	return destination as unknown as DestinationConfig;
+}
+
+/** What follows `drive` in the refusal of a OneDrive destination saved with none (card 2941). */
+export const ONEDRIVE_DRIVE_REQUIRED =
+	'is required for OneDrive: give the sign-in name or object ID of the user whose OneDrive holds the backups, or a drive ID beginning b!';
+
+/**
+ * Whether `sent`, a OneDrive destination with no drive, is the one stored
+ * under its name, saved before card 2941 with none, at the same place (ruling
+ * R9): it is let through, so that other settings can be saved while it waits,
+ * and it is not tried until its drive is set. Any change of its place needs
+ * the drive.
+ */
+function legacyUnmoved(sent: Record<string, unknown>, saved: Record<string, unknown> | undefined): boolean {
+	if (saved === undefined || saved.type !== 'onedrive' || driveSet(saved.drive)) return false;
+	return JSON.stringify(destinationPlace(sent)) === JSON.stringify(destinationPlace(saved));
 }
 
 /** What `readDestination` answers, with 400, to a service account's JSON the rule refuses (card 2939, decision 8), after the field's name. */

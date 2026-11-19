@@ -5,7 +5,11 @@
 
   Whether all are shown is the panel's, bound here, so that it is kept while
   the panel reads its settings again (after Run Now) and this is drawn anew.
+
+  A success with an error is an upload whose older copies retention could not
+  remove (card 2941): ✅ then ⚠️ and the reason, in amber.
 -->
+
 <script lang="ts">
 	import { formatBytes, formatDuration, formatRelativeTime, type BackupHistoryEntry } from '$lib/admin/format';
 
@@ -48,6 +52,10 @@
 							<td>
 								{#if entry.status === 'success'}
 									<span class="status-success">✅</span>
+									<!-- Uploaded, but its older copies were not removed (card 2941): what retention could not do. -->
+									{#if entry.error}
+										<span class="status-warning" title={entry.error}>⚠️ {entry.error.slice(0, 40)}{entry.error.length > 40 ? '...' : ''}</span>
+									{/if}
 								{:else}
 									<span class="status-failed" title={entry.error || ''}>❌ {entry.error?.slice(0, 40)}{(entry.error?.length ?? 0) > 40 ? '...' : ''}</span>
 								{/if}
@@ -98,4 +106,5 @@
 
 	.status-success { color: var(--accent-emerald); }
 	.status-failed { color: var(--accent-rose); font-size: 0.68rem; }
+	.status-warning { color: var(--accent-amber); font-size: 0.68rem; }
 </style>

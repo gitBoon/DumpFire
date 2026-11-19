@@ -1,10 +1,13 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.280
+version: 1.281
 status: Living
 date: 2026-11-19
 tags:
+  - card-2941
+  - onedrive-app-only
+  - retention-reported
   - card-2920
   - uploads-disk-floor
   - card-2928
@@ -95,10 +98,10 @@ run exits 1. `npm test` leaves the choice to vitest, which allows `.only` unless
 environment variable `CI` is set: at a desk it can be used, and nothing in the image
 build sets `CI`, which is why the build's command carries the flag.
 
-The suite is 159 test files and 13,390 tests (card 2920's review pass, 2026-11-19), and takes
-about three to four minutes. A run that passes on Windows reports `13385 passed | 5 skipped`:
+The suite is 160 test files and 13,440 tests (card 2941's fix pass, 2026-11-19), and takes
+about three to four minutes. A run that passes on Windows reports `13435 passed | 5 skipped`:
 the five are the POSIX-only cases below; on Linux, with three or more CPUs, none is skipped (card
-2860's Linux run reported `12354 passed`; card 2772's 137 more tests, card 2751's 29, card 2870's 11, card 2670's 17, the 55 of the cards since, to card 2891, card 2761's 17, card 2719's 81, card 2762's 7, card 2752's 45, card 2893's 29, card 2894's 14, card 2911's 10 more passing, card 2914's 6, card 2899's 12, card 2671's 127, card 2910's 56, card 2915's 26, card 2925's 6, card 2923's 19, card 2938's 19, the cards since to card 2935, card 2922's 57 and card 2920's 20 were run on Windows only). Card 2911 took out card 2719's 44 `it.fails` tests and the meta case M2, and added 11 cases. The figures move with every card: the one rule is that nothing fails
+2860's Linux run reported `12354 passed`; card 2772's 137 more tests, card 2751's 29, card 2870's 11, card 2670's 17, the 55 of the cards since, to card 2891, card 2761's 17, card 2719's 81, card 2762's 7, card 2752's 45, card 2893's 29, card 2894's 14, card 2911's 10 more passing, card 2914's 6, card 2899's 12, card 2671's 127, card 2910's 56, card 2915's 26, card 2925's 6, card 2923's 19, card 2938's 19, the cards since to card 2935, card 2922's 57, card 2920's 20 and card 2941's 50 were run on Windows only). Card 2911 took out card 2719's 44 `it.fails` tests and the meta case M2, and added 11 cases. The figures move with every card: the one rule is that nothing fails
 and nothing is skipped but the cases below.
 
 - **None is expected to fail.** A test of a fault that is known and not yet fixed states
@@ -2986,6 +2989,73 @@ comment naming the card), migration 0065 and the account changes move these:
   timeout's length, single flight, the inode mapping, the new fields, `removeUploadFile`'s folder
   removal, and each new arm of the overview. 159 files, 13,390 tests in all
   (`13385 passed | 5 skipped`).
+
+#### Card 2941: retention problems reported, and OneDrive with app-only sign-in
+
+```mermaid
+flowchart LR
+    S1["S1: tests/gdrive-retention.test.ts<br/>(SFTP stand-in, googleapis mocked)"] --> R["cleanupRetention's problem:<br/>row, note, mail, 60 s"]
+    S1 --> N["COPY_NAME and Google Drive<br/>delete by listed ID"]
+    S2["S2: tests/onedrive-destination.test.ts<br/>(Graph client and @azure/identity mocked)"] --> O["addresses, next pages,<br/>redirects, Test"]
+    S2b["tests/backups.test.ts,<br/>stored-secrets, setting-holds"] --> P["drive at save, place and AAD,<br/>run, restore, held moves"]
+```
+
+- **S1, `tests/gdrive-retention.test.ts`.** The SFTP stand-in gains a listing that throws and one
+  that never answers. New: T1 (a listing that fails: success, the problem on the row and the
+  note, the ERROR line kept, nothing removed), T4 (retention alone: one "Needs Attention" mail,
+  "Problem:", the name and reason escaped, the scheduled run not tried again), T5 (a failure and a
+  retention problem: "Failed", both paragraphs), T6 (card 2417's history note and the problem
+  joined), T7 (a listing that hangs: a problem at 60 seconds, under fake `setTimeout`), and T8
+  (Google Drive: a crafted name and `notes-dumpfire-backup-x.docx` never candidates, two files of
+  one name each removed by its ID, `copyName`'s names match `COPY_NAME`, a name not listed refused
+  with no query). Changed: the delete-failure case and the 100-page case assert the row's error;
+  the first Drive case asserts a clean run's row has none. 159 files, 13,396 tests
+  (`13391 passed | 5 skipped`).
+- **S2, a new file, `tests/onedrive-destination.test.ts`** (19 tests; Graph's client is replaced
+  by a recorder, `@azure/identity`'s credential counts tokens, nothing reaches the network): upload
+  and delete addresses, encoded, with redirects off (T9); a stored `..` folder, `https://x` folder
+  or invalid drive refused at use with no token (T18, 3 rows); a drive ID's listing, filtered and
+  sorted (T10); next pages followed (T11) and six refused (T12: user information, a look-alike
+  host, `http:`, a port, a backslash, `/beta/`); the 100-page cap (T13); a 404 thrown, where `[]`
+  was answered (T14); Test with no drive and no token (T15), found / not there / a file (T16, 3
+  rows), and Graph's words capped at 300 (T17). Listed in `tests/harness.test.ts`.
+- **`tests/backups.test.ts`:** the fixture's OneDrive destination gains a drive. New: T19 (6 rows:
+  a sign-in name, an upper-case GUID saved lower, a drive ID; `alice`, `a/b@x.example`, a drive ID
+  not beginning `b!` refused), T20 (3 folder paths refused), T21 (no drive: new refused, stored and
+  unchanged saved, stored and moved refused), T22 (another drive with the secret masked: save and
+  Test refused), T23 (a run does not try one with no drive), T24 (a backup's OneDrive without a
+  drive fills no entry here with one).
+- **`tests/stored-secrets.test.ts`:** case 7b's places gain eight OneDrive drives (absent, `''`,
+  `null`, ` a@x.example`, `   `, `5`, two addresses), and a pin of the version 1 additional data
+  for the four that are not set (T25).
+- **`tests/setting-holds.test.ts`:** T26 (a held OneDrive moved to another folder, and a held one
+  without a drive given one: `409`, nothing saved) and T27 (the same saves with nothing held go
+  through, each new place recorded as the saver's).
+- Shown failing (each TEMP-PROOF, removed): S1 by the listing problem returned as null, a clean
+  run made to answer a problem and a delete failure none, and Drive's name filter; S2 in two
+  rounds: the redirect option, the name filter, the next-page loop, Graph's errors swallowed, Test's
+  words, its 404 and file arms, its cap, the save's drive and folder rules, the no-drive exception,
+  `driveMissing` in `notTried`, the held-move check, then `drive` out of `SAME_IN` and out of the
+  place. 160 files, 13,430 tests in all (`13425 passed | 5 skipped`).
+- **The code reviews' fix pass (C1 to C14).** `tests/gdrive-retention.test.ts`: C3a (a hold
+  written during the first delete stops the second, with the held sentence), C3b (the first delete
+  that does not answer stops the rest, all four counted, under fake `setTimeout`), C8 (the row's
+  UPDATE refused by a `BEFORE UPDATE` trigger that raises: an ERROR line, a success, the note with
+  both sentences), and a describe for S3 and SFTP (C1a: a key in a folder below the prefix, under a
+  sibling prefix and a non-copy are not counted, `Prefix` and `Delimiter` sent, a key not listed
+  refused, a listed one deleted by its key; C1b: a second page read; C1c: 100 pages, then an error;
+  C2a: SFTP counts regular files only), `S3Client.prototype.send` and `ssh2-sftp-client`'s
+  `connect`, `list` and `end` replaced, nothing reached. T1, T6 and T7 now expect each note part
+  to end with a full stop, and T7 the words "did not answer in time; it may still complete".
+  `tests/onedrive-destination.test.ts`: C2b (a folder of a copy's name is not one) and C4 (an
+  `AADSTS…` sign-in failure capped at 300 for an upload, a listing and a delete); T10 and T11 ask
+  for `$select=name,file` and answer files. `tests/backups.test.ts`: C5 (a restore's upper-case
+  object ID saved back unchanged). `tests/setting-holds.test.ts`: case C7a asserts the held
+  reason on the row and the note, with failure mail on and none sent. Shown failing (each
+  TEMP-PROOF, removed), all 16 in one run: the note's full stops, the no-answer words, the hold
+  before each delete, the update's words, the held reason on the row, S3's key match and delimiter,
+  its pages, SFTP's file type, OneDrive's `file` facet and `$select`, the sign-in unwrapped, and the
+  stored drive normalised. 160 files, 13,440 tests in all (`13435 passed | 5 skipped`).
 
 ### Writing an access-control test
 

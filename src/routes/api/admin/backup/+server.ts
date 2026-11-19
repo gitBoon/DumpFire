@@ -39,6 +39,7 @@ import {
 import { readDestination } from '$lib/server/backup-destinations';
 import {
 	SECRET_MASK,
+	destinationPlace,
 	hostKeyChanges,
 	keepMaskedSecrets,
 	maskDestination,
@@ -50,6 +51,7 @@ import {
 } from '$lib/server/backup-secrets';
 import { TYPED_SECRET_LOOKS_SEALED, destinationLooksSealed, withUnopenableMasked, withoutUnopenable } from '$lib/server/stored-secrets';
 import { afterCommit } from '$lib/server/db/transaction';
+import { placeKey } from '$lib/server/setting-holds';
 import { createLogger } from '$lib/server/logger';
 import {
 	readBody,
@@ -135,6 +137,17 @@ function heldDestinationSaveRefusal(name: string): string {
 	return (
 		`Backup destination ${quoted(name)} is held for the superadmin's review: it cannot be renamed, saved as another type or ` +
 		'removed by a save. Keep it or remove it under Settings held for review first. Nothing was saved.'
+	);
+}
+
+/**
+ * What a save that changes where a held destination sends its copies is
+ * refused with (card 2941, ruling R1, as card 2922's C1 refuses held mail).
+ */
+function heldDestinationMoveRefusal(name: string): string {
+	return (
+		`Backup destination ${quoted(name)} is held for the superadmin's review: where it sends its copies cannot be changed by a ` +
+		'save. Keep it or remove it under Settings held for review first. Nothing was saved.'
 	);
 }
 
@@ -249,6 +262,9 @@ export const GET: RequestHandler = async ({ locals }) => {
  * but the superadmin (card 2398), and so is one that switches the failure
  * mail off or changes its recipients in any way (card 2408), asked at the
  * write, in words that name what it would do; nothing is written or logged.
+ * A save that renames, retypes or removes a destination held for the
+ * superadmin's review (card 2922), or changes where it sends its copies (card
+ * 2941, ruling R1), is `409`, asked again in the transaction.
  *
  * A save that changes anything is one line under BACKUP, filed under the
  * account that saved it, naming what changed (card 2270): a WARN where it
@@ -337,6 +353,18 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 			existing.destinations.some((d) => d.name === name && String(d.type) === type && destinationHeldNow(d))
 		);
 		if (heldGoing !== undefined) throw error(409, heldDestinationSaveRefusal(heldGoing.name));
+		// Nor pointed elsewhere under its own name and type (card 2941, ruling R1): a hold is by place, so a
+		// change of any place field (a OneDrive drive added, changed or removed included) would slip it.
+		const heldMoved = after.destinations.find((sent) =>
+			existing.destinations.some(
+				(d) =>
+					d.name === sent.name &&
+					String(d.type) === String(sent.type) &&
+					destinationHeldNow(d) &&
+					placeKey(destinationPlace(d)) !== placeKey(destinationPlace(sent))
+			)
+		);
+		if (heldMoved !== undefined) throw error(409, heldDestinationMoveRefusal(heldMoved.name));
 		const refusal = user.role === 'superadmin' ? null : superadminOnly(before, after, changed);
 		if (refusal !== null) throw error(403, refusal);
 

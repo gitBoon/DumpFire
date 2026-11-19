@@ -1,11 +1,12 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.152
+version: 1.153
 status: As-Built
 date: 2026-11-19
 tags:
   - api
+  - card-2941
   - card-2920
   - uploads-disk-floor
   - card-2928
@@ -2958,7 +2959,18 @@ API:
     `oauth`), named by their place (`destinations[0].port must be a whole number`). Text,
     the `name` included, is at most 2,048 characters, but an SFTP `privateKey` and Google
     Drive's `serviceAccountJson`, which hold a file pasted in, at most 20,000. Any other
-    field of a destination is not kept, where each was stored as sent.
+    field of a destination is not kept, where each was stored as sent. Since card 2941 a
+    `onedrive` destination also holds `drive`, whose OneDrive: a user's sign-in name, a
+    user's object ID (a GUID, saved in lower case) or a drive ID (`b!` and up to 200 of
+    `A-Za-z0-9_-`), trimmed; any other is `400` `destinations[0].drive must be the sign-in
+    name or object ID of the user whose OneDrive holds the backups, or a drive ID beginning
+    b!`. One with no `drive` is `400` `destinations[0].drive is required for OneDrive: …`,
+    unless it is stored under that name with none and sent at the same place. Its
+    `folderPath` is folders separated by `/`, none empty, `.` or `..`, none holding a
+    control character or any of `" * : < > ? \ |`, else `400` `destinations[0].folderPath
+    must be folder names separated by /, …`. A save that changes where a destination held
+    for the superadmin's review sends its copies, under the same name and type, is `409`
+    (card 2941, as card 2922 refuses a rename, a type change or a removal of one).
     `POST /api/admin/backup/test` reads its destination the same way, and
     `POST /api/admin/backup/gdrive/auth` its `code` and `destName` as text. Card 2251 adds
     `state`, read as text the same way (`state must be text`): the state of the consent

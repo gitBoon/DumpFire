@@ -196,6 +196,8 @@ const TEST_FILES = [
 	'new-badge.svelte.test.ts',
 	// Card 2719: an id on a board the caller cannot open is answered exactly as one that is not there.
 	'not-found-not-forbidden.test.ts',
+	// Card 2941: a OneDrive destination's Graph addresses, listing and Test, Graph mocked.
+	'onedrive-destination.test.ts',
 	'openapi-document.test.ts',
 	// Milestone 22, slice S1b: the Options column's rules and its strip.
 	'options-column.test.ts',

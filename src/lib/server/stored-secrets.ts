@@ -242,7 +242,13 @@ export function recordKeyCheck(database: Database.Database, key: MfaKey): void {
 
 // ─── The additional data, frozen (S8, decision 25) ──────────────────────────
 
-/** The additional data's form. A change to any list below is a new version, and every value sealed again at start. */
+/**
+ * The additional data's form. A change to any list below is a new version, and
+ * every value sealed again at start. One exception, which changes no value
+ * stored (card 2941, ruling R2): a field appended only when it is a non-empty
+ * text, as OneDrive's `drive` (`ONEDRIVE_DRIVE_FIELD`), leaves the additional
+ * data of every value stored without it as it was, byte for byte.
+ */
 export const AAD_VERSION = 1;
 
 /**
@@ -263,6 +269,16 @@ export const DESTINATION_PLACE_FIELDS = {
 	gdriveServiceAccount: ['authMethod', 'folderId'],
 	onedrive: ['tenantId', 'clientId', 'folderPath']
 } as const;
+
+/**
+ * A OneDrive destination's user or drive ID (card 2941): appended to its place,
+ * as stored, only when it is a non-empty text, by its own frozen copy of
+ * `driveSet`'s test (onedrive-address.ts, which `destinationPlace` in
+ * backup-secrets.ts asks; ruling R2). Frozen with the lists above, so that a
+ * later change to `driveSet` cannot change the additional data: an entry
+ * without it keeps its version 1 additional data.
+ */
+export const ONEDRIVE_DRIVE_FIELD = 'drive';
 
 /** A webhook's secret is bound to these (S10): `url` as opened, never as stored (card 2928). */
 export const WEBHOOK_FIELDS = ['id', 'boardId', 'url'] as const;
@@ -374,12 +390,16 @@ function placeFields(destination: Entry): readonly string[] {
  * destination's type and place (`destinationPlace`'s rule: never its name),
  * a service account's `client_email` and `private_key_id`, and for SFTP its
  * confirmed host key's fingerprint ('' for none). A service account's key is
- * the field `serviceAccountJson.private_key`.
+ * the field `serviceAccountJson.private_key`. A OneDrive destination's `drive`
+ * is the place's last field where it is set (card 2941).
  */
 export function destinationSecretAad(destination: unknown, field: string): string {
 	const entry = isEntry(destination) ? destination : {};
 	const type = entry.type === undefined ? null : entry.type;
 	const place = placeFields(entry).map((name) => placeValue(entry, name));
+	// Only when set, as stored (`ONEDRIVE_DRIVE_FIELD`, card 2941, ruling R2).
+	const drive = entry[ONEDRIVE_DRIVE_FIELD];
+	if (entry.type === 'onedrive' && typeof drive === 'string' && drive !== '') place.push(drive);
 	let account: unknown = null;
 	if (entry.type === 'gdrive' && entry.authMethod !== 'oauth') {
 		const parsed = serviceAccountOf(entry.serviceAccountJson);

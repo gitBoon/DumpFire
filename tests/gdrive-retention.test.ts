@@ -53,8 +53,23 @@
  * success with a note: retention runs, no failure mail, no try again.
  */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { getBackupConfig, initBackupScheduler, lastScheduledBackupAt, runBackup, saveBackupConfig } from '$lib/server/backup';
-import { GDriveDestination, type DestinationConfig } from '$lib/server/backup-destinations';
+import { RETENTION_CALL_MS, getBackupConfig, initBackupScheduler, lastScheduledBackupAt, runBackup, saveBackupConfig } from '$lib/server/backup';
+import {
+	COPY_NAME,
+	GDRIVE_NOT_LISTED,
+	GDriveDestination,
+	S3Destination,
+	S3_MAX_PAGES,
+	S3_NOT_LISTED,
+	SftpDestination,
+	type DestinationConfig,
+	type S3DestinationConfig,
+	type SftpDestinationConfig
+} from '$lib/server/backup-destinations';
+import { DeleteObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
+import SftpClient from 'ssh2-sftp-client';
+import { destinationPlace } from '$lib/server/backup-secrets';
+import { DESTINATION_HELD, SETTER_ACCESS_ENDED, placeKey } from '$lib/server/setting-holds';
 import { CREDENTIALS_NOT_ENTERED } from '$lib/server/backup-secrets';
 import { sealedForRestore } from '$lib/server/stored-secrets';
 import { sqlite } from '$lib/server/db';
@@ -94,7 +109,19 @@ const { folder, files, sftp } = vi.hoisted(() => {
 	 * uploads fail (card 2415), and a promise the next upload waits for, failing
 	 * if it comes true (the card 2415 review).
 	 */
-	const sftp = { names: [] as string[], deleted: [] as string[], failing: false, hold: null as Promise<boolean> | null };
+	const sftp = {
+		names: [] as string[],
+		deleted: [] as string[],
+		failing: false,
+		hold: null as Promise<boolean> | null,
+		// What its listing throws, or whether it never answers (card 2941).
+		listFails: null as string | null,
+		listHangs: false,
+		// Each delete asked for, whether one never answers, and a hook run as one begins (the fix pass's C3).
+		deleteCalls: [] as string[],
+		deleteHangs: false,
+		onDelete: null as null | ((filename: string) => void)
+	};
 	return { folder, files, sftp };
 });
 
@@ -129,8 +156,15 @@ vi.mock('$lib/server/backup-destinations', async (importOriginal) => {
 							if (sftp.failing) throw new Error('Connection refused');
 							sftp.names.push(filename);
 						},
-						list: async () => [...sftp.names].sort(),
+						list: async () => {
+							if (sftp.listFails !== null) throw new Error(sftp.listFails);
+							if (sftp.listHangs) return new Promise<string[]>(() => {});
+							return [...sftp.names].sort();
+						},
 						delete: async (filename: string) => {
+							sftp.deleteCalls.push(filename);
+							sftp.onDelete?.(filename);
+							if (sftp.deleteHangs) return new Promise<void>(() => {});
 							sftp.deleted.push(filename);
 							sftp.names = sftp.names.filter((n) => n !== filename);
 						}
@@ -192,6 +226,11 @@ beforeEach(() => {
 	sftp.deleted = [];
 	sftp.failing = false;
 	sftp.hold = null;
+	sftp.listFails = null;
+	sftp.listHangs = false;
+	sftp.deleteCalls = [];
+	sftp.deleteHangs = false;
+	sftp.onDelete = null;
 	// The tests run at LOG_LEVEL=ERROR; the warning is what is looked for.
 	logLevel = process.env.LOG_LEVEL;
 	process.env.LOG_LEVEL = 'WARN';
@@ -257,6 +296,8 @@ describe('Google Drive retention', () => {
 		expect(files.list.mock.calls[0][0].fields).toContain('capabilities(canDelete, canTrash)');
 		expect(backupLines().filter((l) => l.level === 'ERROR')).toEqual([]);
 		expect(backupLines().map((l) => l.message)).toContainEqual('Retention cleanup: deleted dumpfire-backup-2026-04-01T00-00-00.db from GoogleDriveTest');
+		// A clean run is as before (card 2941): no problem on its row.
+		expect(sqlite.prepare('SELECT status, error FROM backup_log').all()).toEqual([{ status: 'success', error: null }]);
 		// Without these Drive answers for the account's own drive only, and a
 		// folder in a Shared drive reads as empty or not found.
 		for (const [params] of files.list.mock.calls) {
@@ -335,6 +376,11 @@ describe('Google Drive retention', () => {
 		expect(sqlite.prepare("SELECT meta FROM system_logs WHERE level = 'ERROR'").get()).toMatchObject({
 			meta: expect.stringContaining('more than 100 pages')
 		});
+		// And on the run's row, a success (card 2941).
+		expect(sqlite.prepare('SELECT status, error FROM backup_log').get()).toEqual({
+			status: 'success',
+			error: 'Keep Last was not applied: the backups at this destination could not be listed: Google Drive listing of the backup folder went on for more than 100 pages'
+		});
 	});
 
 	it('reads every page of a folder of more than 100 files', async () => {
@@ -363,6 +409,39 @@ describe('Google Drive retention', () => {
 		expect(errors).toHaveLength(1);
 		expect(errors[0].message).toContain(failing.name);
 		expect(folder.map((f) => f.id)).toContain(failing.id);
+		// And on the run's row, a success (card 2941).
+		expect(sqlite.prepare('SELECT status, error FROM backup_log').get()).toEqual({
+			status: 'success',
+			error: `Keep Last was not fully applied: 1 of 3 older copies could not be removed (first: ${failing.name}: Internal Error)`
+		});
+	});
+
+	// Card 2941, ruling R5 (T8).
+	it('removes only copies DumpFire names, each by the id it listed, and never puts a name into a query', async () => {
+		const crafted = "dumpfire-backup-x' or trashed = true or name = 'y.db";
+		const twin = 'dumpfire-backup-2026-03-01T00-00-00.db';
+		folder.push({ id: 'id-crafted', name: crafted, canDelete: true, canTrash: true });
+		folder.push({ id: 'id-notes', name: 'notes-dumpfire-backup-x.docx', canDelete: true, canTrash: true });
+		folder.push({ id: 'id-twin-1', name: twin, canDelete: true, canTrash: true });
+		folder.push({ id: 'id-twin-2', name: twin, canDelete: true, canTrash: true });
+		addBackups(6);
+		await backUp(GDRIVE);
+
+		// Nine copies with the upload, seven kept: the twins are the oldest two, each removed by its own id.
+		expect(deletedIds()).toEqual(['id-twin-1', 'id-twin-2']);
+		expect(folder.map((f) => f.id)).toEqual(expect.arrayContaining(['id-crafted', 'id-notes']));
+		// No name reached a query: only the folder's listing was asked.
+		expect(files.list).toHaveBeenCalledTimes(1);
+		// copyName's names are what COPY_NAME matches, a Run Now's too.
+		await runBackup(undefined, 'manual');
+		const made = files.create.mock.calls.map((c) => c[0].requestBody.name as string);
+		expect(made).toHaveLength(2);
+		for (const name of made) expect(name).toMatch(COPY_NAME);
+
+		// A name not listed for retention is refused, before anything is asked of Drive.
+		files.list.mockClear();
+		await expect(new GDriveDestination(GDRIVE).delete(crafted)).rejects.toThrow(GDRIVE_NOT_LISTED);
+		expect(files.list).not.toHaveBeenCalled();
 	});
 });
 
@@ -1171,6 +1250,216 @@ describe('An upload whose Backup History row cannot be written is a success, wit
 		expect(backupLines().filter((l) => l.level === 'WARN' && l.message.startsWith('Scheduled backup failed at every destination'))).toEqual([]);
 		expect(sent.emails).toEqual([]);
 		expect(errors('Backup History row for Offsite could not be written, though')).toHaveLength(1);
+	});
+
+	// Card 2941 (T6).
+	it('a row that cannot be written and a listing that fails: the note says both', async () => {
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 2, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+		sftp.listFails = 'Permission denied';
+		rowsCannotBeWritten();
+
+		const results = await runBackup(undefined, 'manual');
+
+		expect(results).toEqual([expect.objectContaining({ status: 'success', note: expect.stringMatching(NOTE) })]);
+		// Each part a sentence, ending with a full stop (C9).
+		expect(results[0].note).toMatch(/full\. Keep Last was not applied: the backups at this destination could not be listed: Permission denied\.$/);
+		expect(backupRows()).toBe(0);
+	});
+});
+
+describe('What retention could not do is in Backup History, the answer and the mail (card 2941)', { timeout: 60_000 }, () => {
+	const LISTING = 'Keep Last was not applied: the backups at this destination could not be listed: ';
+	const rowsNow = () => sqlite.prepare('SELECT destination_name AS destination, status, error FROM backup_log ORDER BY id').all();
+	let sent: Effects;
+
+	beforeEach(() => {
+		makeSmtp();
+		sent = effects();
+	});
+	afterEach(() => {
+		sent.restore();
+		vi.useRealTimers();
+	});
+
+	it('T1: a listing that fails after a good upload: a success with the problem on its row and its answer, an ERROR line, nothing removed', async () => {
+		sftp.names = Array.from({ length: 8 }, (_, i) => `dumpfire-backup-2026-04-0${i + 1}T00-00-00.db`);
+		sftp.listFails = 'Permission denied';
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 2, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+
+		const results = await runBackup();
+
+		expect(results).toEqual([expect.objectContaining({ destination: 'Offsite', status: 'success', note: `${LISTING}Permission denied.` })]);
+		expect(rowsNow()).toEqual([{ destination: 'Offsite', status: 'success', error: `${LISTING}Permission denied` }]);
+		expect(sftp.deleted).toEqual([]);
+		expect(backupLines().filter((l) => l.level === 'ERROR').map((l) => l.message)).toEqual(['Retention cleanup failed for Offsite']);
+		expect(sent.emails).toEqual([]);
+	});
+
+	it('T4: only older copies not removed: one mail "Needs Attention", the problem escaped and labelled; the scheduled run is not tried again', async () => {
+		vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now: new Date('2026-04-17T10:00:00Z') });
+		const named = { ...OFFSITE, name: 'Off<site>' };
+		saveBackupConfig({ schedule: 'hourly', scheduleTime: '02:00', scheduleDay: 0, retention: 50, destinations: [named], notifyOnFailure: true, notifyEmail: 'chief@example.test' });
+		logged('dumpfire-backup-2026-04-17T08-00-00-000.db', new Date('2026-04-17T08:00:00Z'), 'success', 'Off<site>');
+		sftp.listFails = 'Permission <denied>';
+
+		initBackupScheduler();
+		await vi.advanceTimersByTimeAsync(MINUTE); // 10:01: uploaded, its older copies not listed
+		await vi.waitFor(() => expect(sent.emails).toHaveLength(1));
+		await vi.advanceTimersByTimeAsync(20 * MINUTE); // past 10:16, when a failed run is tried again
+
+		expect(sftp.names).toHaveLength(1);
+		expect(sent.emails).toHaveLength(1);
+		const [mail] = sent.emails;
+		expect(mail.subject).toBe('⚠️ DumpFire Backup Needs Attention');
+		expect(mail.html).toContain('Scheduled Backup Needs Attention');
+		expect(mail.html).toContain('<strong>Off&lt;site&gt;</strong> (sftp) was uploaded, but older copies were not removed.');
+		expect(mail.html).toContain('Problem:');
+		expect(mail.html).toContain(`${LISTING}Permission &lt;denied&gt;`);
+		expect(mail.html).not.toContain('Error:');
+		expect(backupLines().filter((l) => l.message.startsWith('Scheduled backup failed at every destination'))).toEqual([]);
+	});
+
+	it('T5: a failure and older copies not removed in one run: "Failed", with both paragraphs', async () => {
+		const unconfirmed = { ...OFFSITE, name: 'Unconfirmed', hostKey: '' };
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 2, destinations: [OFFSITE, unconfirmed], notifyOnFailure: true, notifyEmail: 'chief@example.test' });
+		sftp.listFails = 'Permission denied';
+
+		await runBackup(undefined, 'manual');
+
+		expect(sent.emails).toHaveLength(1);
+		const [mail] = sent.emails;
+		expect(mail.subject).toBe('⚠️ DumpFire Backup Failed');
+		expect(mail.html).toContain('Run Now Backup Failed');
+		expect(mail.html).toContain('<strong>Unconfirmed</strong> (sftp) failed.');
+		expect(mail.html).toContain('Error:');
+		expect(mail.html).toContain('<strong>Offsite</strong> (sftp) was uploaded, but older copies were not removed.');
+		expect(mail.html).toContain('Problem:');
+		expect(mail.html.indexOf('Error:')).toBeLessThan(mail.html.indexOf('Problem:'));
+	});
+
+	it('T7: a listing that does not answer within 60 seconds is a problem, not a run that never ends', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 2, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+		sftp.listHangs = true;
+
+		const running = runBackup();
+		await vi.advanceTimersByTimeAsync(RETENTION_CALL_MS);
+		const results = await running;
+
+		const late = `${LISTING}The listing did not answer in time; it may still complete`;
+		expect(results).toEqual([expect.objectContaining({ status: 'success', note: `${late}.` })]);
+		expect(rowsNow()).toEqual([{ destination: 'Offsite', status: 'success', error: late }]);
+	});
+
+	/** Five scheduled copies before the run's own: Keep Last 2 removes the oldest four. */
+	const FIVE = Array.from({ length: 5 }, (_, i) => `dumpfire-backup-2026-04-0${i + 1}T00-00-00.db`);
+
+	it('C3a: a hold written while older copies are removed stops the next delete, with the held reason', async () => {
+		sftp.names = [...FIVE];
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 2, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+		const place = placeKey(destinationPlace(getBackupConfig().destinations[0]));
+		sftp.onDelete = () =>
+			sqlite
+				.prepare("INSERT OR IGNORE INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) VALUES (?, ?, ?, datetime('now'), 7, 'ann')")
+				.run('backup_destination:Offsite', place, SETTER_ACCESS_ENDED);
+
+		const results = await runBackup();
+
+		const problem = `Keep Last was not fully applied: 3 of 4 older copies were not removed. ${DESTINATION_HELD}`;
+		expect(sftp.deleteCalls).toEqual([FIVE[0]]);
+		expect(results).toEqual([expect.objectContaining({ status: 'success', note: problem })]);
+		expect(rowsNow()).toEqual([{ destination: 'Offsite', status: 'success', error: problem }]);
+	});
+
+	it('C3b: the first delete that does not answer stops the rest, each counted as not removed', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		sftp.names = [...FIVE];
+		sftp.deleteHangs = true;
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 2, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+
+		const running = runBackup();
+		await vi.advanceTimersByTimeAsync(RETENTION_CALL_MS);
+		const results = await running;
+
+		const problem = `Keep Last was not fully applied: 4 of 4 older copies could not be removed (first: ${FIVE[0]}: The delete did not answer in time; it may still complete)`;
+		expect(sftp.deleteCalls).toEqual([FIVE[0]]);
+		expect(results).toEqual([expect.objectContaining({ status: 'success', note: `${problem}.` })]);
+		expect(rowsNow()).toEqual([{ destination: 'Offsite', status: 'success', error: problem }]);
+	});
+
+	it('C8: an update of the row that fails: one ERROR line, still a success, and the note says both', async () => {
+		sqlite.exec("CREATE TEMP TRIGGER refuse_update_2941 BEFORE UPDATE ON backup_log BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END");
+		onTestFinished(() => {
+			sqlite.exec('DROP TRIGGER IF EXISTS temp.refuse_update_2941');
+		});
+		sftp.listFails = 'Permission denied';
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 2, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+
+		const results = await runBackup();
+
+		expect(results).toEqual([expect.objectContaining({ status: 'success' })]);
+		expect(results[0].note).toMatch(
+			new RegExp(`^${LISTING}Permission denied\\. Backup History could not record that either: .*database or disk is full.*\\.$`)
+		);
+		expect(rowsNow()).toEqual([{ destination: 'Offsite', status: 'success', error: null }]);
+		expect(backupLines().filter((l) => l.level === 'ERROR').map((l) => l.message)).toContain(
+			'Backup History row for Offsite could not be given what retention could not do'
+		);
+	});
+});
+
+describe('S3 and SFTP list only their own copies (card 2941, C1 and C2)', () => {
+	const S3: S3DestinationConfig = { type: 's3', name: 'Bucket', region: 'eu-west-2', bucket: 'b', accessKeyId: 'AKIA-2941', secretAccessKey: 's', prefix: 'dumpfire/' };
+	const copy = (day: number) => `dumpfire-backup-2026-04-${String(day).padStart(2, '0')}T00-00-00.db`;
+	/** What the S3 client was sent, and `pages` as its answer to a listing, by continuation token ('' for the first). */
+	const answering = (pages: Record<string, { keys: string[]; next?: string }>) => {
+		const sent: { input: Record<string, unknown> }[] = [];
+		vi.spyOn(S3Client.prototype, 'send').mockImplementation((async (command: { input: Record<string, unknown> }) => {
+			sent.push(command);
+			if (command instanceof ListObjectsV2Command) {
+				const page = pages[String(command.input.ContinuationToken ?? '')];
+				return { Contents: page.keys.map((Key) => ({ Key })), IsTruncated: page.next !== undefined, NextContinuationToken: page.next };
+			}
+			return {};
+		}) as never);
+		return sent;
+	};
+
+	it('C1a: S3 counts only a copy directly under its prefix, not one in a folder below or under a sibling prefix, and deletes only a key it listed', async () => {
+		const sent = answering({ '': { keys: [`dumpfire/${copy(1)}`, `dumpfire/nested/${copy(2)}`, `dumpfire-old/${copy(3)}`, 'dumpfire/notes.txt'] } });
+		const s3 = new S3Destination(S3);
+
+		expect(await s3.list()).toEqual([copy(1)]);
+		expect(sent[0].input).toMatchObject({ Bucket: 'b', Prefix: 'dumpfire/', Delimiter: '/' });
+		await expect(s3.delete(copy(2))).rejects.toThrow(S3_NOT_LISTED);
+		await s3.delete(copy(1));
+		expect(sent.filter((command) => command instanceof DeleteObjectCommand).map((command) => command.input.Key)).toEqual([`dumpfire/${copy(1)}`]);
+	});
+
+	it('C1b: S3 lists every page', async () => {
+		const sent = answering({ '': { keys: [`dumpfire/${copy(2)}`], next: 'page-2' }, 'page-2': { keys: [`dumpfire/${copy(1)}`] } });
+
+		expect(await new S3Destination(S3).list()).toEqual([copy(1), copy(2)]);
+		expect(sent.map((command) => command.input.ContinuationToken)).toEqual([undefined, 'page-2']);
+	});
+
+	it('C1c: S3 stops with an error after 100 pages, not for ever', async () => {
+		const sent = answering({ '': { keys: [], next: 'again' }, again: { keys: [], next: 'again' } });
+
+		await expect(new S3Destination(S3).list()).rejects.toThrow(`S3 listing of the backup prefix went on for more than ${S3_MAX_PAGES} pages`);
+		expect(sent).toHaveLength(S3_MAX_PAGES);
+	});
+
+	it('C2a: SFTP counts only regular files, not a folder or a link of a copy’s name', async () => {
+		vi.spyOn(SftpClient.prototype, 'connect').mockResolvedValue(undefined as never);
+		vi.spyOn(SftpClient.prototype, 'end').mockResolvedValue(true as never);
+		vi.spyOn(SftpClient.prototype, 'list').mockResolvedValue([
+			{ name: copy(1), type: '-' },
+			{ name: copy(2), type: 'd' },
+			{ name: copy(3), type: 'l' }
+		] as never);
+
+		expect(await new SftpDestination(OFFSITE as SftpDestinationConfig).list()).toEqual([copy(1)]);
 	});
 });
 

@@ -1,10 +1,13 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.144
+version: 1.145
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2941
+  - onedrive-app-only
+  - retention-reported
   - card-2920
   - uploads-disk-floor
   - card-2928
@@ -8016,6 +8019,64 @@ away; nothing is stored. **Published API:** OpenAPI stays `1.15.0` (unreleased),
 | H3 | Free the space and upload again | Accepted; one `[INFO] [UPLOADS] Uploads are accepted again: …` | Still refused |
 | H4 | With an API key, send an image while below the line | 507, the same words | Any other status or words |
 
+### The Release That Reports Retention Problems and Addresses OneDrive App-Only (Card 2941)
+
+**Retention problems are reported.** After a good upload, a listing or delete that fails at any
+destination, or one that does not answer within 60 seconds, leaves the run a success but puts the
+reason on its Backup History row (✅ ⚠️), in the Run Now answer, and in the failure mail ("DumpFire
+Backup Needs Attention", or "Failed" where a destination also failed). The mail repeats every run
+until the cause is put right. Keep Last removes only files named as DumpFire names its copies; on
+Google Drive and S3 only one it has just listed. The first call that does not answer stops the
+removals, and one destination's retention stops after five minutes.
+
+**S3 counts only its own copies** (card 2991, taken into card 2941): the listing reads every page
+(it read the first 1,000 keys), one level under the prefix and a `/`, so a copy in a folder below
+the prefix, or under a prefix that only begins the same (`dumpfire-old/` beside `dumpfire/`), is no
+longer counted or removed. A bucket that held more than 1,000 keys under the prefix will have its
+older copies removed down to Keep Last at the first run after the deploy.
+
+**OneDrive needs whose OneDrive.** DumpFire signs in to Microsoft Graph as the app, with no user;
+the addresses it used before were not valid for that sign-in. Each OneDrive destination now holds a
+user's sign-in name or object ID, or a drive ID (`b!…`). One saved before the release is kept but
+not tried until it is edited, given its user or drive, and its client secret typed again; Backup
+History, the mail and Test say so. For least privilege, give the app Microsoft Graph Application
+permission `Sites.Selected` (admin consent, like any Application permission) and, as a separate
+step, `write` granted on one site, and give that library's drive ID;
+`Files.ReadWrite.All` reads and writes every user's files in the tenant.
+
+**A held destination cannot be moved by a save**: a change of any field of its place (host, port,
+user name, remote path, region, bucket, prefix, endpoint, access key ID, folder ID, client ID,
+tenant ID, folder path, or a OneDrive drive added, changed or removed) is refused `409` until the
+superadmin keeps or removes it.
+
+**Before the deploy (read-only)**, to word the release note (ruling R8):
+
+```sql
+SELECT status, substr(error, 1, 120) AS error, created_at FROM backup_log WHERE destination_type = 'onedrive' ORDER BY id DESC LIMIT 10;
+```
+
+Only `failed` rows, or none, confirms that no OneDrive backup ever succeeded with the old addresses.
+
+Nothing to migrate: no schema change, and nothing already sealed, held or recorded changes. **Going
+back to an older image** ignores `drive` and uses the old addresses again, which fail. **Published
+API:** none; OpenAPI stays `1.15.0` with notes 1 to 8.
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | Add a OneDrive destination with the user/drive box empty | Add stays disabled; sent from the network panel, `400` "drive is required for OneDrive" | It saves |
+| H2 | App with Application `Files.ReadWrite.All` and admin consent; give the test user's sign-in name, save, Test | "Connected to <user>'s OneDrive (drive business); folder "DumpFire Backups" will be made by the first backup" | `/drives/root:`, "Invalid request", or a token error |
+| H3 | ▶ Run Now | ✅; the folder and the `…-manual.db` copy are in the user's OneDrive | A failed row |
+| H4 | Keep Last 1, Run Now twice | The older copy gone; ✅ with no ⚠️ | It is kept |
+| H5 | Give the user's object ID instead, type the client secret again, save, Test | As H2 | Refused |
+| H6 | Set the box to `not-a-drive`, or the folder to `a/../b`, and save | `400` naming the field | Saved |
+| H7 | On a scratch SFTP destination, `chmod 333` its remote folder; Run Now with failure mail on; then `chmod 755` | ✅ ⚠️ "Keep Last was not applied: …", a warning toast, one "DumpFire Backup Needs Attention" mail with "Problem:" | No ⚠️, or no mail |
+| H8 | Remove the app's admin consent, then Test | A failure in Graph's words | Success |
+| H9 | Change the user box without typing the client secret, save | Refused: type the client secret again | Saved |
+| H10 | The read-only query above, before the deploy | Only `failed` rows, or none | A `success` row: word the release note conditionally |
+| H13 | On an S3 destination whose prefix has a folder below it and a sibling prefix (`dumpfire/old/` and `dumpfire-old/`), each holding a copy-named file, set Keep Last 1 and Run Now twice | Only the newest `…-manual.db` directly under `dumpfire/` is kept beside the run's; the two files below and beside are untouched | Either removed |
+| H11 | App with Application `Sites.Selected` only (admin consented); an administrator also grants it `write` on a dedicated SharePoint site (`POST /sites/{site-id}/permissions`); give the library's drive ID, Test, Run Now | Test names the library's owner; the copy lands in that library | `403`, or the copy elsewhere |
+| H12 | Hold a destination (end its setter's access), then change its folder and save | `409` "where it sends its copies cannot be changed by a save" | Saved |
+
 ## Changing the Schema
 
 The structure of the database is changed in one way only:
@@ -8287,7 +8348,9 @@ The scheduler checks once a minute whether a backup is due. Each backup:
 1. Writes a complete copy of the database to a temporary file beside it with `VACUUM INTO`, which includes changes still in the write-ahead log. It then opens the copy with no journal, deletes every session, every unused invite, the key remembered browsers are signed with and the key the request form signs with from it, deletes every request's link (`request_links`) and keeps the retired `access_token` `NULL`, masks every invite's token, any request link's token and the name typed at an old failed sign-in in its system log, deletes the mail password and the key backups are sealed with, empties every destination's secret fields and every webhook's secret, switching each such webhook off (card 2169), seals it (an HMAC of every row, written into it as `backup_seal`), and writes it out again with a second `VACUUM INTO` to a second temporary file, so that nothing of what was deleted is left in the file. It reads that second file and deletes both. The running database is not touched: nobody is signed out by a backup, and its own log is as it was; the first backup writes the seal's key into it (`backup_seal_key`), and none after. Every step of this is synchronous, so **the server answers no request from the start of the first `VACUUM INTO` until the second file has been read**: both copies, the masking, the deletes and the read, and not only the first copy. "Export Backup" stops it the same way. See "How long the server stops answering", below. Both temporary files are beside the database, on the volume, so it needs room for two copies while a backup is made, and none for a journal.
 2. Uploads the copy as it is, not compressed, to each configured destination as `dumpfire-backup-<UTC date and time>.db` (`…-manual.db` for a **▶ Run Now**, card 2405)
 3. Records the result for each destination in the `backup_log` table, which keeps every row of the last 30 runs and the last successful scheduled run's row (card 2413; the last 10 rows before)
-4. After a successful upload, deletes the oldest backups of the run's own kind at that destination beyond the retention count (a retention of 0 keeps them all): the scheduled copies after a scheduled run, the `…-manual.db` copies after a Run Now, each counted on its own (card 2405). On Google Drive only the files the connected account may delete or trash are counted, and one it may not is left with one `WARN` line a run: see [Configuring Backups](admin-guide.md#configuring-backups)
+4. After a successful upload, deletes the oldest backups of the run's own kind at that destination beyond the retention count (a retention of 0 keeps them all): the scheduled copies after a scheduled run, the `…-manual.db` copies after a Run Now, each counted on its own (card 2405). On Google Drive only the files the connected account may delete or trash are counted, and one it may not is left with one `WARN` line a run: see [Configuring Backups](admin-guide.md#configuring-backups). Only files named as DumpFire names its copies are counted or removed; a listing or delete that fails, or takes over 60 seconds, leaves the run a success with the reason on its row, in its answer and in the failure mail ("Needs Attention"), every run until it is put right (card 2941)
+
+**A OneDrive destination needs whose OneDrive** (card 2941): a user's sign-in name or object ID, or a drive ID. DumpFire signs in to Microsoft Graph as the app, with no user, and addresses `/users/{id}/drive` or `/drives/{id}`. One saved before card 2941 has none and is not tried, with "This OneDrive destination does not say whose OneDrive to use…". See [Destination Types](backup-reporting.md#destination-types).
 
 A failed upload is not retried. It is logged at `ERROR`, recorded in `backup_log` with the error, and emailed to the alert address if failure alerts are switched on and SMTP is configured. The destination is tried again at the next scheduled backup.
 

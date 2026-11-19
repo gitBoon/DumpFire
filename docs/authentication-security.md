@@ -1,10 +1,13 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.156
+version: 1.157
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2941
+  - held-destination-not-moved
+  - onedrive-app-only
   - card-2920
   - uploads-disk-floor
   - card-2928
@@ -3184,6 +3187,15 @@ at `SAME_IN`, `destinationPlace` and `mailConnection` say to change both togethe
 version and a re-seal at start: otherwise every value moved by a changed rule would stop
 opening.
 
+**One exception, which changes no stored value** (card 2941, ruling R2): a OneDrive
+destination's `drive` (whose OneDrive: a user's sign-in name or object ID, or a drive ID) is
+appended last to its place, as stored, **only when it is a non-empty text**, by the one rule in
+both places (`driveSet` in `destinationPlace`, the same test in `destinationSecretAad`). Every
+entry without one (absent, `''`, `null`, anything not text) has its version 1 place, additional
+data and place key byte for byte, so nothing was sealed again and no hold or setter row moved;
+the known-answer test pins the version 1 string for those four, and the equivalence test holds
+"same additional data exactly when same place" with drives among the cases.
+
 A secret typed into any route that begins `dfsealed:` is refused `400` ("A secret cannot begin
 "dfsealed:", which is how this server marks the secrets it has sealed: type the secret
 itself."): the mail settings, a backup destination's save and Test, a service account JSON's
@@ -6038,12 +6050,41 @@ just read, with nothing kept in memory:
 |---|---|---|
 | Mail | `deliverMail`, after `getSmtpConfig()`, with nothing awaited before the transport | `{ sent: false, problem: 'held' }`, not counted; every place that asks first whether a mail can go asks `mailCannotSend()` (`smtpPasswordMissing() \|\| mailHeld()`); `isSmtpConfigured()` still says yes, so the password-alone set-up leave does not open |
 | App URL | `getAppUrl()`, and so `linkBaseUrl()` | the row is not used: `APP_URL`, else `ORIGIN` |
-| Destination | `notTried()` and again immediately before each upload and its retention (`destinationHeldNow`, by the place of the entry in use, under any name: the code review's C12) | not tried, named in Backup History; Test, Google Drive Connect and a save that renames, retypes or removes it are refused `409`. An upload already on the wire finishes |
+| Destination | `notTried()` and again immediately before each upload and its retention (`destinationHeldNow`, by the place of the entry in use, under any name: the code review's C12) | not tried, named in Backup History; Test, Google Drive Connect and a save that renames, retypes, removes or moves it (card 2941) are refused `409`. An upload already on the wire finishes |
 
 **Saves of held mail or a held App URL are refused** (the code review's C1): while the mail
 settings are held, any save of them (`PUT /api/admin/smtp`), a port or a host's case alone
 included, is `409` "keep or remove it first", and so is a save of the App URL while it is held;
 asked before the password and again in the transaction. Only Keep or Remove releases either.
+
+**Nor can a save move a held destination** (card 2941, ruling R1, which supersedes card 2922's B4
+"leave"). A hold is by place, so a save that kept a held destination's name and type but changed
+any field of its place (a host, bucket, prefix, folder, folder path, or a OneDrive `drive` added,
+changed or removed) put it at a place no hold named, and the next run sent to it. `readSave` in
+`PUT /api/admin/backup` now refuses such a save `409` ("Backup destination "X" is held for the
+superadmin's review: where it sends its copies cannot be changed by a save. Keep it or remove it
+under Settings held for review first. Nothing was saved."), comparing `placeKey(destinationPlace())`
+of the stored entry and of the one sent, before the password and again in the transaction.
+
+```mermaid
+flowchart TD
+    Save["PUT /api/admin/backup (readSave)"] --> Gone{"a held destination renamed,<br/>retyped or removed?"}
+    Gone -->|yes| R409a["409 heldDestinationSaveRefusal"]
+    Gone -->|no| Moved{"a held destination, same name and type,<br/>at another place?"}
+    Moved -->|yes| R409b["409 heldDestinationMoveRefusal (card 2941)"]
+    Moved -->|no| Next["superadmin rules, then the save"]
+```
+
+**OneDrive's Graph requests** (card 2941). A OneDrive destination signs in as the app
+(`ClientSecretCredential`) and addresses `/users/{id}/drive` or `/drives/{id}` by its `drive`.
+Every address is built, and refused, before a token is asked for; every folder and file name is
+encoded; no request follows a redirect (`RedirectHandlerOptions(0, () => false)`); a listing
+follows `@odata.nextLink` only where `new URL()` reads it as `https:` on `graph.microsoft.com`
+with no port, no user information, a path under `/v1.0/` and no backslash in its text, up to 100
+pages. The Graph client's own check that decides whether to attach the bearer token reads the host
+as the text before the first `:` or `/`, so `https://graph.microsoft.com:x@elsewhere/` would be
+given the token. Graph's words are capped at 300 characters wherever they are shown. See
+[Destination Types](backup-reporting.md#destination-types).
 
 **An invite through the account's own settings is refused** (C15): `POST /api/users/[id]/invite`
 answers `409` where the mail settings or the App URL in force were set by the account invited, and
@@ -6522,7 +6563,8 @@ flowchart TD
   host, port, user name and remote path; S3 name, region, bucket, prefix, endpoint and access
   key id; Drive name, method, folder and client id, a service account also by its JSON's
   `client_email` and `private_key_id`, its JSON then taken whole; OneDrive name, tenant,
-  client id and folder path). None, or more than one, and nothing is filled: every field
+  client id, folder path and, since card 2941, its user or drive ID as stored, so a backup's
+  entry with none fills no entry here with one). None, or more than one, and nothing is filled: every field
   beside a secret is the backup's word, and a destination matched on its connection alone
   would upload this server's database, with this server's credentials, to a bucket or folder
   the backup chose, and have retention delete backups there. A Drive OAuth destination is

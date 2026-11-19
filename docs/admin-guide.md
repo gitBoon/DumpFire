@@ -1,10 +1,13 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.132
+version: 1.133
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2941
+  - onedrive-app-only
+  - retention-reported
   - card-2920
   - uploads-disk-floor
   - card-2928
@@ -558,7 +561,10 @@ a one-line pointer to the list.
 
 Links already mailed through held mail settings stay usable until they are removed, so decide
 quickly. While the mail settings are held, the mail panel's Save is refused ("keep or remove it
-first"); so is the App URL's while it is held. Sending an invite to an account whose own mail
+first"); so is the App URL's while it is held. A held backup destination cannot be renamed, saved as
+another type or removed by a save, nor (card 2941) pointed elsewhere: a save that changes its host,
+bucket, folder, folder path or OneDrive user or drive ID is refused ("where it sends its copies
+cannot be changed by a save … keep or remove it first"). Sending an invite to an account whose own mail
 settings or App URL are in force is refused: reset its two-step sign-in first.
 
 While mail is held, nothing is mailed: invites, resets and notices are refused or say the mail is
@@ -972,11 +978,22 @@ Each setting is checked when it is saved, and one the server cannot use is refus
 
 **A Google Drive service account takes only the key file Google gives for it** (card 2939). In Google Cloud Console, on the service account's **Keys**, choose Add key, Create new key, JSON, and paste the whole file. The save refuses anything else, naming the field and quoting none of what was pasted: text that is not JSON ("… is not JSON. Paste the whole JSON key file Google gives for the service account."), JSON that is not a service account's key file, such as another kind of Google credential ("… must be the JSON key file Google gives for a service account: type service_account, with its client_email and private_key as text."), and a key for another Google universe ("… names a universe_domain other than googleapis.com …"). A Drive destination that signs in with OAuth takes no JSON at all. Only the fields DumpFire signs in with are kept (`type`, `project_id`, `client_email`, `private_key_id`, `client_id` and the key); the rest of the file is dropped. A destination saved before this change is brought to the same form at the next start, with one `[WARN] [STARTUP]` line naming it; one whose JSON is not a key file loses it and is listed to enter, as after a restore.
 
+**A OneDrive destination says whose OneDrive** (card 2941). DumpFire signs in to Microsoft Graph as the app itself, with no user, so it must be told which drive to use, in the box **User (sign-in name or object ID) or drive ID (b!…)**:
+
+- **Best (least privilege):** in Microsoft Entra ID, register an app with Microsoft Graph **Application** permission **Sites.Selected**, which like any Application permission needs admin consent, and create a client secret. An administrator then also grants the app `write` on the one site that holds the drive (a separate step, for example `POST /sites/{site-id}/permissions` with Microsoft Graph PowerShell), and you give that drive's ID, which begins `b!`. Use a SharePoint document library kept for backups rather than a person's OneDrive.
+- **Broader:** Application permission **Files.ReadWrite.All** with admin consent, which lets the app read and write every user's files in the tenant. Then give the user's sign-in name, or better their object ID (Entra ID, Users, the user, Object ID), which stays the same if they are renamed.
+- Personal Microsoft accounts are not supported.
+- The folder path is folders separated by `/`, none of them empty, `.` or `..`, and none holding a control character or any of `" * : < > ? \ |`; anything else is refused when saved.
+- **🧪 Test** names the drive's owner and says whether the folder is there ("… found") or will be made by the first backup. It makes nothing.
+- A OneDrive destination saved before this change has no drive. It is kept, and another setting can still be saved beside it, but it is not backed up to: Backup History, the failure mail and Test say "This OneDrive destination does not say whose OneDrive to use…". Edit it, give the user or drive, and type its client secret again, since a changed drive needs the secret typed again as any other change of place does. The addresses DumpFire used before this change were not valid for its sign-in.
+
+**When older copies could not be removed** (card 2941). After a good upload, Keep Last lists the destination and removes the oldest copies beyond it. If the listing or a removal fails, or the destination does not answer within 60 seconds, the run is still a success, since the new copy is safe, but Backup History shows **✅ ⚠️** and the reason in amber (hover for all of it), ▶ Run Now warns with it, and the failure mail (when on) is sent as **"DumpFire Backup Needs Attention"** with the reason under **Problem:** ("Failed" when a destination also failed in the same run). It is sent on every run until the cause is put right, for example a permission taken away at the far end. Before, only System Logs said so, and the destination filled without anyone noticing. Keep Last removes only files named as DumpFire names its copies (`dumpfire-backup-<time>[-manual].db`), and only files, never a folder or link of such a name; on Google Drive and S3, only one it has just listed. On S3 it counts only copies directly under the prefix: not one in a folder below it, nor one under a prefix that only begins the same (`dumpfire-old/` beside `dumpfire/`), and it reads every page of the listing. A call that does not answer within a minute stops the removals (it may still complete at the far end), Keep Last stops after five minutes at one destination, and a destination held for review meanwhile stops before its next removal; the copies not removed are counted in the reason.
+
 **Test runs only a saved destination, exactly as it is saved** (card 2939). Save a new or changed destination first, then press 🧪 Test: a Test sent with a secret typed, or with any setting changed from the saved one, is refused and nothing is connected to: with its secret left masked, in the save's own words ("Backup destination "…": type its … again …"); otherwise "Save the destination first, then Test it.". The page's Test button always sends the saved destination, so it works as before.
 
 **Every secret is shown masked** (card 2187). Every saved password, private key, secret access key and client secret, a service account's private key, and a Google Drive connection's refresh token reads `••••••••`, and the answer the page loads (`GET /api/admin/backup`) holds none of them. Until this change it held the refresh token as stored, a standing credential for the Google account that connected. A connected Google Drive destination still says it is connected.
 
-**A saved secret stays with the destination it was saved for** (card 2190). Saving or testing a destination with a secret left masked keeps the saved secret only from the one saved destination that is the same in type, name and every setting that is not secret: an SFTP host (spaces and tabs at either end, and capitals A to Z, aside, as for the mail host; it is saved without them, and as it was saved while a secret is kept), port, user name and remote path; an S3 region, bucket, prefix, endpoint and access key ID; a Google Drive sign-in method, folder ID and client ID, or a service account's email and key ID; a OneDrive tenant ID, client ID and folder path. A value the edit form fills in where none was saved counts as the same: an S3 region of `us-east-1`, a OneDrive folder of `/DumpFire Backups`, an SFTP port of 22, an endpoint or prefix left empty. Change any of them, the name included, and the save or test is refused with nothing saved; the edit form stays open as typed, and the toast says what to type and why:
+**A saved secret stays with the destination it was saved for** (card 2190). Saving or testing a destination with a secret left masked keeps the saved secret only from the one saved destination that is the same in type, name and every setting that is not secret: an SFTP host (spaces and tabs at either end, and capitals A to Z, aside, as for the mail host; it is saved without them, and as it was saved while a secret is kept), port, user name and remote path; an S3 region, bucket, prefix, endpoint and access key ID; a Google Drive sign-in method, folder ID and client ID, or a service account's email and key ID; a OneDrive tenant ID, client ID, folder path and user or drive ID (card 2941). A value the edit form fills in where none was saved counts as the same: an S3 region of `us-east-1`, a OneDrive folder of `/DumpFire Backups`, an SFTP port of 22, an endpoint or prefix left empty. Change any of them, the name included, and the save or test is refused with nothing saved; the edit form stays open as typed, and the toast says what to type and why:
 
 > Backup destination "NAS": type its password again. A saved secret is used only with the settings it was saved with, and this changes its host and port.
 

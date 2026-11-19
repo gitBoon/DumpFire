@@ -301,6 +301,15 @@ describe('the additional data (S8)', () => {
 			{ type: 'onedrive', name: 'O', tenantId: 't', clientId: 'c', folderPath: '/DumpFire Backups/', ...key },
 			{ type: 'onedrive', name: 'O', tenantId: 't', clientId: 'c', ...key },
 			{ type: 'onedrive', name: 'O', tenantId: 't', clientId: 'c', folderPath: 'Elsewhere', ...key },
+			// Card 2941 (ruling R2): a drive joins the place only when it is a non-empty text, as stored.
+			...[undefined, '', null, ' a@x.example', '   ', 5, 'a@x.example', 'b@x.example'].map((drive) => ({
+				type: 'onedrive',
+				name: 'O',
+				tenantId: 't',
+				clientId: 'c',
+				drive,
+				...key
+			})),
 			{ type: 'tape', name: 'T', ...key }
 		];
 		for (const a of places) {
@@ -309,6 +318,14 @@ describe('the additional data (S8)', () => {
 				expect(destinationSecretAad(a, 'password') === destinationSecretAad(b, 'password'), `${JSON.stringify(a)} ~ ${JSON.stringify(b)}`).toBe(samePlace);
 			}
 		}
+		// An entry with no drive keeps its version 1 additional data, byte for byte (card 2941).
+		const v1 = JSON.stringify([1, 'destination-secret', 'clientSecret', 'onedrive', ['t', 'c', 'DumpFire Backups'], null, null]);
+		for (const drive of [undefined, '', null, 5]) {
+			expect(destinationSecretAad({ type: 'onedrive', name: 'O', tenantId: 't', clientId: 'c', drive }, 'clientSecret'), String(drive)).toBe(v1);
+		}
+		expect(destinationSecretAad({ type: 'onedrive', name: 'O', tenantId: 't', clientId: 'c', drive: 'a@x.example' }, 'clientSecret')).toBe(
+			JSON.stringify([1, 'destination-secret', 'clientSecret', 'onedrive', ['t', 'c', 'DumpFire Backups', 'a@x.example'], null, null])
+		);
 	});
 
 	it("10: a webhook's secret opens only with the same id, board and address", () => {

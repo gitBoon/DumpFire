@@ -8,7 +8,7 @@
 import { db, sqlite, getDbPath } from './db';
 import { settings, backupLog } from './db/schema';
 import { eq, desc, inArray } from 'drizzle-orm';
-import { createDestination, type DestinationConfig } from './backup-destinations';
+import { cappedMessage, createDestination, type DestinationConfig } from './backup-destinations';
 import { escapeHtml } from '$lib/escape-html';
 import { parseStamp } from '$lib/timestamps';
 import { sendEmail, isSmtpConfigured } from './email';
@@ -20,7 +20,7 @@ import { createLogger } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { KNOWN_BROWSER_SECRET_KEY } from './known-browsers';
 import { REQUEST_FORM_SECRET_KEY } from './request-tokens';
-import { CREDENTIALS_NOT_ENTERED, backupSealKey, clearSecrets, credentialsMissing, destinationPlace, hostKeyMissing, sealCopy, webhookAddressMacKey } from './backup-secrets';
+import { CREDENTIALS_NOT_ENTERED, backupSealKey, clearSecrets, credentialsMissing, destinationPlace, driveMissing, hostKeyMissing, sealCopy, webhookAddressMacKey } from './backup-secrets';
 import { DESTINATION_HELD, destinationHeldAt, placeKey } from './setting-holds';
 import { openDestinationSecrets, sealDestinationSecrets, unopenableFields } from './stored-secrets';
 import { inTransaction } from './db/transaction';
@@ -113,13 +113,15 @@ export function saveBackupConfig(config: BackupConfig): void {
 /**
  * Why `runBackup` does not try `destination`, or null: a secret stored for it
  * that does not open (card 2898, S3), an SFTP one included, then the
- * credentials not entered and the host key not confirmed (cards 2169, 2250).
+ * credentials not entered and the host key not confirmed (cards 2169, 2250),
+ * then a OneDrive destination with no user or drive ID (card 2941).
  */
 function notTried(destination: DestinationConfig): string | null {
 	// Held for the superadmin's review first (card 2922): nothing else about it matters until it is kept.
 	if (destinationHeldNow(destination)) return DESTINATION_HELD;
 	if (unopenableFields(destination).length > 0) return CREDENTIALS_NOT_ENTERED;
-	return credentialsMissing(destination) ?? hostKeyMissing(destination);
+	// A OneDrive destination with no drive (card 2941) last: asked before the copy, so no token is asked for.
+	return credentialsMissing(destination) ?? hostKeyMissing(destination) ?? driveMissing(destination);
 }
 
 /**
@@ -377,8 +379,8 @@ function logBackup(entry: {
 	status: 'success' | 'failed';
 	error?: string;
 	durationMs: number;
-}) {
-	db.insert(backupLog).values({
+}): number {
+	const id = Number(db.insert(backupLog).values({
 		destinationType: entry.destinationType,
 		destinationName: entry.destinationName,
 		filename: entry.filename,
@@ -386,7 +388,7 @@ function logBackup(entry: {
 		status: entry.status,
 		error: entry.error || null,
 		durationMs: entry.durationMs
-	}).run();
+	}).run().lastInsertRowid);
 
 	// Prune old history — keep the rows of the newest BACKUP_HISTORY_RUNS runs
 	// (card 2413), and the newest successful scheduled row stamped no later
@@ -401,6 +403,7 @@ function logBackup(entry: {
 		WHERE filename NOT IN (${NEWEST_RUNS})
 		AND id IS NOT (SELECT id FROM backup_log WHERE ${SCHEDULED_SUCCESS} AND created_at <= ? ORDER BY created_at DESC, id DESC LIMIT 1)
 	`).run(BACKUP_HISTORY_RUNS, logStamp(Date.now()));
+	return id;
 }
 
 // ─── Retention Cleanup ───────────────────────────────────────────────────────
@@ -425,17 +428,34 @@ export const MANUAL_COPY = /-manual\.db$/;
  * older Run Now copies and a scheduled run only older scheduled ones, and a
  * destination holds at most twice Keep Last (the code review: Run Now copies
  * kept until removed by hand grew without limit).
+ *
+ * Answers what went wrong, or null (card 2941): a listing that failed, and
+ * deletes that failed, were each one ERROR line alone, so Backup History said
+ * ✅, no mail was sent, and the destination filled unnoticed. Each listing and
+ * each delete is given `RETENTION_CALL_MS`, and the whole of it
+ * `RETENTION_DEADLINE_MS`; the first call that does not answer in time, or the
+ * deadline, stops it, the rest counted as not removed (the fix pass's C3).
+ * The destination is asked again before each delete whether it is held, and
+ * a hold stops it with the held reason. The far end's words are capped
+ * (`cappedMessage`, ruling R10).
  */
-async function cleanupRetention(config: DestinationConfig, retention: number, kind: 'scheduled' | 'manual'): Promise<void> {
-	if (retention <= 0) return;
+async function cleanupRetention(config: DestinationConfig, retention: number, kind: 'scheduled' | 'manual'): Promise<string | null> {
+	if (retention <= 0) return null;
+	const deadline = Date.now() + RETENTION_DEADLINE_MS;
+	let dest: ReturnType<typeof createDestination>;
 	try {
-		const dest = createDestination(config);
+		dest = createDestination(config);
+	} catch (err) {
+		log.error(`Retention cleanup failed for ${config.name}`, err);
+		return `Keep Last was not applied: this destination could not be reached: ${cappedMessage(messageOf(err))}`;
+	}
+	let files: string[];
+	try {
 		// Only the files retention may remove are counted: one the account may
 		// not remove is left, with one warning a run, and not tried every run
 		// (card 2238). A destination that cannot tell removes all it lists.
-		let files: string[];
 		if (dest.listForRetention) {
-			const { removable, setAside } = await dest.listForRetention();
+			const { removable, setAside } = await inTime(dest.listForRetention(), 'The listing', deadline);
 			files = removable;
 			if (setAside.length > 0) {
 				log.warn(
@@ -443,25 +463,87 @@ async function cleanupRetention(config: DestinationConfig, retention: number, ki
 				);
 			}
 		} else {
-			files = await dest.list();
-		}
-		files = files.filter((filename) => MANUAL_COPY.test(filename) === (kind === 'manual'));
-		if (files.length > retention) {
-			// Files are sorted oldest-first; delete the oldest
-			const toDelete = files.slice(0, files.length - retention);
-			for (const filename of toDelete) {
-				try {
-					const how = (await dest.delete(filename)) === 'trashed' ? 'moved to the trash' : 'deleted';
-					log.warn(`Retention cleanup: ${how} ${filename} from ${config.name}`);
-				} catch (err) {
-					log.error(`Retention cleanup: failed to delete ${filename}`, err);
-				}
-			}
+			files = await inTime(dest.list(), 'The listing', deadline);
 		}
 	} catch (err) {
 		log.error(`Retention cleanup failed for ${config.name}`, err);
+		return `Keep Last was not applied: the backups at this destination could not be listed: ${cappedMessage(messageOf(err))}`;
+	}
+	files = files.filter((filename) => MANUAL_COPY.test(filename) === (kind === 'manual'));
+	if (files.length <= retention) return null;
+	// Files are sorted oldest-first; delete the oldest
+	const toDelete = files.slice(0, files.length - retention);
+	let notRemoved = 0;
+	let first = '';
+	const notRemovedBecause = (filename: string, why: string) => {
+		if (notRemoved++ === 0) first = `${filename}: ${why}`;
+	};
+	for (let i = 0; i < toDelete.length; i++) {
+		const filename = toDelete[i];
+		// Asked again before each delete (C3): a hold written meanwhile stops it, nothing awaited between.
+		if (destinationHeldNow(config)) {
+			log.warn(`Retention stopped at "${config.name}": ${DESTINATION_HELD}`);
+			return `Keep Last was not fully applied: ${notRemoved + toDelete.length - i} of ${toDelete.length} older copies were not removed. ${DESTINATION_HELD}`;
+		}
+		if (Date.now() >= deadline) {
+			for (const rest of toDelete.slice(i)) notRemovedBecause(rest, `Keep Last stops after ${RETENTION_DEADLINE_MS / 60_000} minutes`);
+			break;
+		}
+		try {
+			const how = (await inTime(dest.delete(filename), 'The delete', deadline)) === 'trashed' ? 'moved to the trash' : 'deleted';
+			log.warn(`Retention cleanup: ${how} ${filename} from ${config.name}`);
+		} catch (err) {
+			log.error(`Retention cleanup: failed to delete ${filename}`, err);
+			notRemovedBecause(filename, cappedMessage(messageOf(err)));
+			// A call that did not answer stops the rest (C3): the destination is not answering.
+			if (err instanceof NoAnswer) {
+				for (const rest of toDelete.slice(i + 1)) notRemovedBecause(rest, err.message);
+				break;
+			}
+		}
+	}
+	if (notRemoved === 0) return null;
+	return `Keep Last was not fully applied: ${notRemoved} of ${toDelete.length} older copies could not be removed (first: ${first})`;
+}
+
+/**
+ * How long retention waits for one listing or one delete (card 2941, ruling
+ * R6): far past any one Graph, Drive or S3 call, and three times the SFTP
+ * handshake's own 20 seconds, so that a connection that hangs cannot hold the
+ * run. The call is not cancelled; the run stops waiting for it.
+ */
+export const RETENTION_CALL_MS = 60_000;
+
+/**
+ * How long one destination's retention may take in all (the fix pass's C3):
+ * five minutes. A destination that answers each call just inside a minute
+ * could otherwise hold the run for Keep Last minutes and more (100 is Keep
+ * Last's most), and the next destination's upload, and an hourly schedule's
+ * next run, wait behind it. A listing of 100 pages and a run's few deletes
+ * take seconds where the far end answers.
+ */
+export const RETENTION_DEADLINE_MS = 5 * 60_000;
+
+/** What a retention call that did not answer within its time throws: it may still complete at the far end. */
+class NoAnswer extends Error {
+	constructor(what: string) {
+		super(`${what} did not answer in time; it may still complete`);
+		this.name = 'NoAnswer';
 	}
 }
+
+/** `work`, or a `NoAnswer` once `RETENTION_CALL_MS`, or what is left before `deadline` if less, has passed. */
+function inTime<T>(work: Promise<T>, what: string, deadline: number): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const wait = Math.max(0, Math.min(RETENTION_CALL_MS, deadline - Date.now()));
+	const late = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new NoAnswer(what)), wait);
+	});
+	return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
+/** An error's message, or what was thrown, as text. */
+const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err ?? '')) || 'Unknown error';
 
 // ─── Run Backup ──────────────────────────────────────────────────────────────
 
@@ -496,7 +578,9 @@ function copyName(manual: boolean): string {
  * (card 2405, `cleanupRetention`).
  *
  * A destination's result is a success once its upload succeeds, and carries
- * a `note` where its Backup History row could not be written (card 2417).
+ * a `note` where its Backup History row could not be written (card 2417),
+ * or retention could not remove its older copies (card 2941), which its row's
+ * `error` holds too.
  */
 export async function runBackup(targetDestinationName?: string, how: 'scheduled' | 'manual' = 'scheduled'): Promise<Array<{
 	destination: string;
@@ -521,13 +605,15 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	const manual = how === 'manual';
 	const filename = copyName(manual);
 
-	/** `note`: an upload that succeeded but whose Backup History row could not be written (card 2417). */
+	/** `note`: an upload that succeeded but whose Backup History row could not be written (card 2417), or whose older copies were not removed (card 2941). */
 	type Result = { destination: string; status: 'success' | 'failed'; message: string; durationMs: number; note?: string };
 	/** Each destination's result, given in the order the destinations are. */
 	const outcome = new Map<DestinationConfig, Result>();
 
 	/** Each destination that failed, and its error, for the run's one failure mail (`mailFailures`). */
 	const failures: Array<{ destConfig: DestinationConfig; errMsg: string }> = [];
+	/** Each destination uploaded to whose older copies were not removed, and why, for the same mail (card 2941). */
+	const retentionProblems: Array<{ destConfig: DestinationConfig; problem: string }> = [];
 
 	/**
 	 * A destination that failed: its `backup_log` row, its result and the
@@ -570,23 +656,39 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	 * type are escaped where they are put in the mail (card 2149). The mail
 	 * says which kind of run failed: it said "scheduled" for a Run Now too
 	 * (card 2413).
+	 *
+	 * A destination uploaded to whose older copies were not removed is in it
+	 * too (card 2941, ruling R7), with its problem labelled "Problem:"; a run
+	 * with only such problems "Needs Attention", one with failures as well
+	 * "Failed", with both kinds. It is sent each run until the problem is put right.
+	 * A retention problem's box, and a "Needs Attention" heading, are amber, the
+	 * amber the other mails use (`#f59e0b`, notifications.ts); a failure stays red
+	 * (the fix pass's C13).
 	 */
 	const mailFailures = async () => {
-		if (failures.length === 0 || !(config.notifyOnFailure && config.notifyEmail && isSmtpConfigured())) return;
-		const each = failures.map(({ destConfig, errMsg }) => `
+		if ((failures.length === 0 && retentionProblems.length === 0) || !(config.notifyOnFailure && config.notifyEmail && isSmtpConfigured())) return;
+		const run = manual ? 'A backup made by ▶ Run Now to' : 'A scheduled backup to';
+		const RED = { box: 'background: #fef2f2; border: 1px solid #fecaca;', text: '#991b1b' };
+		const AMBER = { box: 'background: #fffbeb; border: 1px solid #fde68a;', text: '#92400e' };
+		const paragraph = (destConfig: DestinationConfig, what: string, label: string, said: string, look: typeof RED) => `
 						<p style="color: #64748b; line-height: 1.6;">
-							${manual ? 'A backup made by ▶ Run Now to' : 'A scheduled backup to'} <strong>${escapeHtml(String(destConfig.name))}</strong> (${escapeHtml(String(destConfig.type))}) failed.
+							${run} <strong>${escapeHtml(String(destConfig.name))}</strong> (${escapeHtml(String(destConfig.type))}) ${what}
 						</p>
-						<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 16px 0;">
-							<strong style="color: #991b1b;">Error:</strong>
-							<p style="color: #991b1b; margin: 4px 0 0;">${escapeHtml(String(errMsg))}</p>
-						</div>`).join('');
+						<div style="${look.box} border-radius: 8px; padding: 16px; margin: 16px 0;">
+							<strong style="color: ${look.text};">${label}</strong>
+							<p style="color: ${look.text}; margin: 4px 0 0;">${escapeHtml(String(said))}</p>
+						</div>`;
+		const each =
+			failures.map(({ destConfig, errMsg }) => paragraph(destConfig, 'failed.', 'Error:', errMsg, RED)).join('') +
+			retentionProblems.map(({ destConfig, problem }) => paragraph(destConfig, 'was uploaded, but older copies were not removed.', 'Problem:', problem, AMBER)).join('');
+		const outcomeWord = failures.length > 0 ? 'Failed' : 'Needs Attention';
+		const heading = failures.length > 0 ? '#f43f5e' : '#f59e0b';
 		try {
 			await sendEmail(
 				config.notifyEmail,
-				'⚠️ DumpFire Backup Failed',
+				`⚠️ DumpFire Backup ${outcomeWord}`,
 				`<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
-						<h2 style="color: #f43f5e;">${manual ? 'Run Now Backup Failed' : 'Scheduled Backup Failed'}</h2>${each}
+						<h2 style="color: ${heading};">${manual ? 'Run Now' : 'Scheduled'} Backup ${outcomeWord}</h2>${each}
 						<p style="color: #94a3b8; font-size: 12px;">Check your Admin Panel → Scheduled Backups for details.</p>
 					</div>`
 			);
@@ -661,9 +763,11 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 		// answered and mailed as failed with the database's error, retention was
 		// not run for it, and a scheduled run of one destination was tried again.
 		// Now it is one ERROR line and a note on the result; retention runs.
-		let note: string | undefined;
+		const notes: string[] = [];
+		// Inserted here, before retention (card 2941, ruling R6): the scheduler counts from its stamp.
+		let rowId: number | null = null;
 		try {
-			logBackup({
+			rowId = logBackup({
 				destinationType: destConfig.type,
 				destinationName: destConfig.name,
 				filename,
@@ -673,15 +777,31 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 			});
 		} catch (err: any) {
 			log.error(`Backup History row for ${destConfig.name} could not be written, though ${filename} was uploaded to it`, err);
-			note = `Uploaded, but Backup History could not record it: ${err?.message || 'Unknown error'}`;
+			notes.push(`Uploaded, but Backup History could not record it: ${err?.message || 'Unknown error'}`);
 		}
 
 		// Run retention cleanup over this run's own kind of copy (card 2405). Not at a destination held while its
 		// upload ran (card 2922, R3): asked again here, with nothing awaited before the cleanup reaches it.
+		let problem: string | null;
 		if (destinationHeldNow(destConfig)) {
 			log.warn(`Retention not run at "${destConfig.name}": ${DESTINATION_HELD}`);
+			// On the row and the answer, not the mail: the hold is the superadmin's to review already (card 2941, R6).
+			problem = `Keep Last was not applied: ${DESTINATION_HELD}`;
 		} else {
-			await cleanupRetention(destConfig, config.retention, how);
+			problem = await cleanupRetention(destConfig, config.retention, how);
+			if (problem !== null) retentionProblems.push({ destConfig, problem });
+		}
+		// What retention could not do, on the success row, the answer and the mail (card 2941).
+		if (problem !== null) {
+			notes.push(problem);
+			if (rowId !== null) {
+				try {
+					db.update(backupLog).set({ error: problem }).where(eq(backupLog.id, rowId)).run();
+				} catch (err: any) {
+					log.error(`Backup History row for ${destConfig.name} could not be given what retention could not do`, err);
+					notes.push(`Backup History could not record that either: ${err?.message || 'Unknown error'}`);
+				}
+			}
 		}
 
 		outcome.set(destConfig, {
@@ -689,7 +809,8 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 			status: 'success',
 			message: `Uploaded ${filename} (${(buffer.length / 1024).toFixed(1)} KB)`,
 			durationMs,
-			...(note === undefined ? {} : { note })
+			// Each part a sentence of its own, ending with a full stop (the fix pass's C9).
+			...(notes.length === 0 ? {} : { note: notes.map((part) => (/[.!?…]$/.test(part) ? part : `${part}.`)).join(' ') })
 		});
 
 		log.warn(
@@ -953,7 +1074,7 @@ function afterScheduledRun(run: number, results: Array<{ destination: string; st
 	if (run < lastSucceededRun) return;
 	if (results && results.every((result) => unfixable.has(result.destination))) {
 		log.warn(
-			'Scheduled backup failed at every destination before anything was sent (credentials not entered, or an SFTP host key not confirmed): not tried again, as trying cannot put it right. Enter them in Admin, Scheduled Backups.'
+			'Scheduled backup failed at every destination before anything was sent (credentials not entered, an SFTP host key not confirmed, or a OneDrive destination with no user or drive ID): not tried again, as trying cannot put it right. Enter them in Admin, Scheduled Backups.'
 		);
 		return;
 	}

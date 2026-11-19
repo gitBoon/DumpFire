@@ -103,6 +103,7 @@ import { createLogger, printable } from './logger';
 import { HOST_KEY_NOT_CONFIRMED, confirmedHostKey, hostKeyText } from './ssh-host-key';
 import { NEW_SECRET_REASONS } from './webhooks';
 import { SERVICE_ACCOUNT_SHOWN, readServiceAccountJson, serviceAccountKey } from './service-account-json';
+import { driveProblem, driveSet } from './onedrive-address';
 import {
 	WEBHOOK_ADDRESSES_LEFT_OUT,
 	WEBHOOK_ADDRESS_KEY_WORDS,
@@ -179,13 +180,18 @@ const ANY_SECRET_FIELD = [...new Set(Object.values(SECRET_FIELDS).flat())];
  * changes which secrets a restore moves, not what they open with: change the
  * two together, with a new `AAD_VERSION` and a re-seal at start, or a secret
  * moved by the new rule will not open.
+ *
+ * OneDrive's `drive` (card 2941) is compared here as stored, and joins the
+ * place and the additional data only when it is a non-empty text (`driveSet`,
+ * the one rule, ruling R2): a field appended only when set leaves every value
+ * stored without it unchanged, so it needed no new version and no re-seal.
  */
 const SAME_IN = {
 	sftp: ['name', 'host', 'port', 'username', 'remotePath'],
 	s3: ['name', 'region', 'bucket', 'prefix', 'endpoint', 'accessKeyId'],
 	gdriveOauth: ['name', 'authMethod', 'folderId', 'clientId'],
 	gdriveServiceAccount: ['name', 'authMethod', 'folderId'],
-	onedrive: ['name', 'tenantId', 'clientId', 'folderPath']
+	onedrive: ['name', 'tenantId', 'clientId', 'folderPath', 'drive']
 } as const;
 
 /**
@@ -219,6 +225,8 @@ const FIELD_WORDS: Record<string, string> = {
 	clientId: 'client ID',
 	tenantId: 'tenant ID',
 	folderPath: 'folder path',
+	// A OneDrive destination's user or drive ID (card 2941).
+	drive: 'user or drive ID',
 	// A service account's JSON naming another `client_email` or `private_key_id`.
 	serviceAccount: 'service account',
 	// An SFTP destination's confirmed host key changed or removed (card 2250, decision 8).
@@ -458,6 +466,17 @@ const lacksHostKey = (destination: unknown): boolean =>
  */
 export function hostKeyMissing(destination: unknown): string | null {
 	return lacksHostKey(destination) ? HOST_KEY_NOT_CONFIRMED : null;
+}
+
+/**
+ * Why `runBackup` does not try `destination`, beside those above, or null: a
+ * OneDrive destination with no drive (one saved before card 2941), or one
+ * whose drive is none of the three forms (a restore or the settings JSON can
+ * leave one). Asked before the copy is made, so no token is asked for.
+ */
+export function driveMissing(destination: unknown): string | null {
+	if (!isEntry(destination) || destination.type !== 'onedrive') return null;
+	return driveProblem(destination.drive);
 }
 
 /**
@@ -1572,15 +1591,20 @@ export function settingsChanges(before: object, after: object): BackupSettingsCh
  * `destinationSecretAad` in stored-secrets.ts reads the same place, by its
  * own copy of this rule at version 1. Change the two together, with a new
  * `AAD_VERSION` and a re-seal at start.
+ *
+ * A OneDrive `drive` is appended last, as stored, only when it is a non-empty
+ * text (`driveSet`, card 2941, ruling R2): an entry without one has the place
+ * it had before, and `destinationSecretAad` appends it by the same rule.
  */
 export function destinationPlace(destination: unknown): unknown[] {
 	if (!isEntry(destination)) return [];
-	const fields = sameInFields(destination).filter((field) => field !== 'name');
+	const fields = sameInFields(destination).filter((field) => field !== 'name' && field !== 'drive');
 	const place: unknown[] = [asStored(destination.type), ...fields.map((field) => inUse(destination, field))];
 	if (destination.type === 'gdrive' && !isOauth(destination)) {
 		const account = serviceAccount(destination.serviceAccountJson);
 		place.push(account === null ? null : [asStored(account.client_email), asStored(account.private_key_id)]);
 	}
+	if (destination.type === 'onedrive' && driveSet(destination.drive)) place.push(destination.drive);
 	return place;
 }
 

@@ -1,10 +1,13 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.56
+version: 1.57
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2941
+  - retention-reported
+  - onedrive-app-only
   - card-2928
   - webhook-addresses-at-rest
   - card-2939
@@ -37,7 +40,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "Scheduled backup system with multi-destination support, retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -69,6 +72,8 @@ flowchart TD
 
     LogResult --> Retention["Retention cleanup\nDelete oldest files of this run's kind\n(scheduled, or Run Now)"]
     LogResult -->|"Failed"| NotifyEmail["Send failure email\nif configured"]
+    Retention -->|"not reached, listing or delete failed,\na call past 60 s, 5 min in all, or held\n(card 2941)"| Problem["Problem on the success row,\nthe answer's note, and the mail\n(Needs Attention)"]
+    Problem --> NotifyEmail
 ```
 
 ### What a Backup Holds
@@ -520,7 +525,7 @@ flowchart LR
   the same in type, name and every field that is not secret (`sameEntry`, compared as the
   destination would use them: missing, `null` and `''` alike; the host trimmed of ASCII spaces
   and tabs, ASCII letters in any case, any other difference a change; an SFTP port 22, an S3 region `us-east-1` and a OneDrive folder path `DumpFire
-  Backups`, slashes trimmed, when not set; a service account by its JSON's `client_email` and
+  Backups`, slashes trimmed, when not set; a OneDrive `drive` as stored, card 2941; a service account by its JSON's `client_email` and
   `private_key_id`, its JSON then taken whole), and an SFTP host is then written as that entry
   has it, so the secret goes to the host it was saved with byte for byte (S1). None, and it is
   refused with decision 3's words, naming every field still masked and what changed; more than
@@ -811,8 +816,78 @@ flowchart LR
 
 Each destination implements three operations:
 - **upload** — Push a backup buffer with a timestamped filename
-- **list** — List existing backups for retention cleanup
-- **delete** — Remove old backups beyond retention limit
+- **list** — List existing backups for retention cleanup: every provider keeps only names
+  `COPY_NAME` matches, `dumpfire-backup-<time to the second or millisecond>[-manual].db`, the
+  names `copyName` gives (card 2941, R5); a listing that fails throws, never an empty folder.
+  Files alone: SFTP keeps only regular files (`type` `-`), OneDrive only items with a `file`
+  facet (`$select=name,file`), so a folder or link of a copy's name is never one (the fix pass's
+  C2). **S3** (card 2941's C1, which took in card 2991) lists under the prefix and a `/`
+  (`Prefix: 'dumpfire/'`, or `''` with none) one level deep (`Delimiter: '/'`), every page
+  (`ContinuationToken`, at most 100 pages of 1,000 keys, then an error), and keeps a key only
+  where it is exactly where an upload of its name puts it (`Key === getKey(name)`): a key in a
+  folder below the prefix, or under a sibling prefix such as `dumpfire-old/`, is not counted. It
+  read one page of 1,000 keys of any key whose text began with the prefix, by the last part of
+  its key
+- **delete** — Remove old backups beyond retention limit. Google Drive removes only a file it
+  has just listed for retention, by that file's ID, every file of one name in turn; a name not
+  listed is refused (`GDRIVE_NOT_LISTED`), and no name is ever put into a query (card 2941, R5).
+  S3 likewise deletes only a key its last listing found (`S3_NOT_LISTED`, C1)
+
+**OneDrive with Microsoft's app-only sign-in** (card 2941). DumpFire signs in to Microsoft Graph
+as the app itself (`ClientSecretCredential`: tenant, client ID, client secret), with no user, so
+`/me` and `/drive` name nothing. The addresses used before card 2941, `/drives/root:/…`, were
+valid for no sign-in. A OneDrive destination now holds **`drive`**, whose OneDrive, by
+`src/lib/server/onedrive-address.ts`:
+
+| `drive` | Address base |
+|---|---|
+| A user's sign-in name (one `@`, no control character, space or any of `/ \ ? # % : " * < > \|`) | `/users/{encoded}/drive` |
+| A user's object ID (a GUID, saved in lower case) | `/users/{guid}/drive` |
+| A drive ID, `b!` and up to 200 of `A-Z a-z 0-9 _ -` (a OneDrive for Business or a SharePoint library) | `/drives/{encoded}` |
+
+```mermaid
+flowchart TD
+    Call["upload / list / delete / Test"] --> Addr{"itemPath(drive, folderPath)\n(at use: a restore or the\nsettings JSON skip the save)"}
+    Addr -->|"no drive"| NotSet["ONEDRIVE_DRIVE_NOT_SET\n(no token asked)"]
+    Addr -->|"drive or folder refused"| Refused["the refusal words\n(no token asked)"]
+    Addr -->|"ok"| Token["ClientSecretCredential.getToken"]
+    Token --> Graph["Graph request\nRedirectHandlerOptions(0, never)"]
+    Graph -->|"list: @odata.nextLink"| Pin{"https, graph.microsoft.com,\nno port, no user info,\n/v1.0/, no backslash?"}
+    Pin -->|"yes, page ≤ 100"| Graph
+    Pin -->|"no"| Stop["throw: listing stopped"]
+```
+
+- **The folder path** is folders separated by `/` (slashes at either end trimmed; empty is
+  `DumpFire Backups`), none of them empty, `.` or `..`, none holding a control character or any
+  of `" * : < > ? \ |`. It is read by this rule at save and again at use, and every folder and
+  the file name are `encodeURIComponent`-encoded: the Graph client encodes nothing and reads
+  everything after a `?` as a query.
+- **Addresses:** upload `PUT {base}/root:/{folders}/{file}:/content` (one request, which Graph
+  takes up to 250 MB; card 2990 for larger), list `GET {base}/root:/{folders}:/children?$select=name&$top=200`
+  and every next page, delete `DELETE {base}/root:/{folders}/{file}`.
+- **A listing** follows `@odata.nextLink` only where `new URL()` reads it as `https:` on
+  `graph.microsoft.com`, no port, no user name or password, a path under `/v1.0/`, and its text
+  holds no `\`; up to 100 pages. The client's own host check reads the host as the text before
+  the first `:` or `/`, so `https://graph.microsoft.com:x@elsewhere/` would be given its bearer
+  token. No request follows a redirect. Any failure throws: it answered an empty folder, and
+  retention removed nothing with nothing said. The sign-in's own failure (an `AADSTS…` error
+  from `ClientSecretCredential`) is capped at 300 characters as Graph's words are (C4).
+- **Test** reads the drive (`GET {base}?$select=id,driveType,owner`), then the folder: found
+  ("Connected to <owner>'s OneDrive (drive business); folder "…" found"), not there yet ("… will be
+  made by the first backup"), or a file (a failure). It makes nothing. Graph's words are capped at
+  300 characters.
+- **Save:** a `drive` of none of the three forms, or a folder path the rule refuses, is a `400`
+  naming the field. A typed drive is trimmed and an object ID lower-cased; one sent back as stored
+  is kept byte for byte, as a host is, and only checked (C5), so a restore's upper-case object ID
+  keeps its place and its secret. A change of case is a change of place. A OneDrive destination with no drive is a `400` (`drive is required for
+  OneDrive: …`), but for one stored without a drive under the same name and sent back at the same
+  place, so that other settings can be saved while it waits (ruling R9).
+- **Run:** one with no drive is not tried (`driveMissing`, after the credentials and the host
+  key): its row, the ERROR line and the mail say "This OneDrive destination does not say whose
+  OneDrive to use…", nothing is asked of Graph, and a scheduled run of it alone is not tried again.
+- **Its place** (`destinationPlace`, and the seal's additional data) gains `drive` last, as
+  stored, only when it is a non-empty text: an entry without one keeps the place, the seal and
+  the holds it had. A changed drive needs the client secret typed again.
 
 **Google Drive's service account: its key file alone** (card 2939). A Google Drive destination
 that signs in with a service account holds the JSON key file Google gives for it
@@ -1211,13 +1286,73 @@ flowchart LR
 
 On Google Drive the listing reads every page of the folder (up to 100 pages of 1,000 files; past that it stops with an error rather than follow a page token for ever) and each file's `capabilities.canDelete` and `canTrash` (card 2238), through the destination's optional `listForRetention()`. A file the account may delete is deleted by the id it was listed under; one it may only trash is moved to the trash, and logged `Retention cleanup: moved to the trash <name>` rather than `deleted` (its `delete()` answers `'trashed'`); one it may do neither to is set aside, not counted towards the retention number and not tried, and each run that finds any writes one `WARN` line saying how many and naming the oldest. The other destinations have no `listForRetention()` and are counted from `list()` as before. See [Configuring Backups](admin-guide.md#configuring-backups) for what to do about files set aside.
 
+**What retention could not do is reported** (card 2941). `cleanupRetention()` answers what went
+wrong, or null. It caught every failure into one ERROR line, so a destination whose listing or
+deletes failed after a good upload showed ✅, sent no mail and filled unnoticed.
+
+- **A destination that could not be made** (`createDestination` threw): `Keep Last was not
+  applied: this destination could not be reached: <message>`.
+- **A listing that failed** (`list()` or `listForRetention()` threw, Google Drive's, OneDrive's
+  and S3's 100-page caps included): `Keep Last was not applied: the backups at this destination could not be listed: <message>`.
+- **Deletes that failed:** `Keep Last was not fully applied: <n> of <m> older copies could not be removed (first: <file>: <message>)`.
+  Each failed delete keeps its own ERROR line, and the rest are still tried, but for a call that
+  did not answer (below).
+- **Each listing and each delete is given 60 seconds** (`RETENTION_CALL_MS`): far past one Graph,
+  Drive or S3 call and three times the SFTP handshake's 20, so a connection that hangs cannot hold
+  the run. A call past it is a problem worded `The listing did not answer in time; it may still
+  complete` (or `The delete …`): it is not cancelled, the run stops waiting for it, and it may
+  still finish at the far end. **The first that does not answer stops the deletes**: the rest are
+  counted as not removed (the fix pass's C3).
+- **One destination's retention may take five minutes in all** (`RETENTION_DEADLINE_MS`): a
+  destination answering each call just inside a minute could otherwise hold the run, the next
+  destination's upload and an hourly schedule's next run for Keep Last minutes and more. Each
+  call's time is cut to what is left; past it, the rest are counted as not removed ("Keep Last
+  stops after 5 minutes").
+- **Held while older copies are removed:** the destination is asked again before each delete
+  (`destinationHeldNow`), and a hold written meanwhile stops it: `Keep Last was not fully applied:
+  <n> of <m> older copies were not removed. <the held sentence>` (C3).
+- **The far end's message is capped at 300 characters** (`cappedMessage`), and escaped where it
+  is put in the mail.
+- **The run's success row is inserted where it always was**, before retention, since the
+  scheduler counts from its `created_at`; a problem then sets its `error`
+  (`UPDATE … SET error = ? WHERE id = ?`, by `logBackup`'s `lastInsertRowid`). The status stays
+  `success` and the run is not tried again. An update that fails writes an ERROR line, and the
+  answer's note says so ("Backup History could not record that either: …").
+- **The answer's `note`** carries it, after card 2417's history note where both apply, each part
+  a sentence ending with a full stop (C9); the Run
+  Now toast shows it as a warning. **Backup History** shows `✅ ⚠️ <first 40 characters>` in
+  amber, with the whole text as its title.
+- **A destination held while its upload ran** gets `Keep Last was not applied: <the held
+  sentence>` on its row and note, and no paragraph in the mail: the hold is the superadmin's to
+  review already.
+- **The mail** (when failure mail is on) carries a paragraph for each: "… to **X** (type) was
+  uploaded, but older copies were not removed.", the problem labelled `Problem:`. A run with only
+  such problems is `⚠️ DumpFire Backup Needs Attention`, headed "Scheduled (or Run Now) Backup
+  Needs Attention" in amber (`#f59e0b`, the amber the other mails use), each problem in an amber
+  box; a run with a failure as well is `⚠️ DumpFire Backup Failed`, its heading red, with both kinds
+  of paragraph, each failure in a red box (C13). It is sent every run until the problem is put right.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Inserted: upload succeeded, row inserted (success, error null)
+    Inserted --> Held: held now (card 2922)
+    Inserted --> Cleaned: cleanupRetention
+    Cleaned --> Clean: null
+    Cleaned --> Problem: not reached, listing or deletes failed, a call past 60 s, the 5-minute deadline, or held before a delete
+    Held --> Noted: error = Keep Last was not applied (held), note
+    Problem --> Noted: error = problem, note, mail paragraph
+    Clean --> [*]
+    Noted --> [*]
+```
+
 ### A Destination Without Its Credentials
 
 `runBackup()` asks `credentialsMissing()` (in `src/lib/server/backup-secrets.ts`) of each
 destination before it makes the copy (card 2169). One that lacks its credentials is not
 handed to `createDestination()`: an S3 destination with no secret access key, a Google Drive
 one with no client secret or no refresh token (OAuth) or whose service account JSON holds no
-private key, a OneDrive one with no client secret. Its result and its `backup_log` row are
+private key, a OneDrive one with no client secret (or, after the host key, with no user or drive
+ID: `driveMissing()`, card 2941). Its result and its `backup_log` row are
 `failed`, with the `ERROR` line and the failure mail any failure has, and the error is
 "This destination's credentials are not entered: a backup does not hold them, so they are
 entered again after a restore. Enter them in Admin, Scheduled Backups." (Google Drive OAuth:
@@ -1250,7 +1385,13 @@ superadmin's review: the account that set it up had its access ended. Nothing is
 the superadmin keeps or removes it under Settings held for review on the admin page.", the failure
 mail naming it where mail is not held, and it is not tried again as fixable. A save of the backup
 settings that renames, retypes or removes a held destination is refused `409`: keep or remove it
-under Settings held for review first. Keep puts it back in use exactly as it is; Remove takes it out
+under Settings held for review first. **Nor can a save move it** (card 2941, ruling R1): one that
+keeps its name and type but changes where it sends its copies (any field of its place: a host,
+bucket, folder or folder path, a OneDrive `drive` added, changed or removed) is refused `409`,
+"Backup destination "X" is held for the superadmin's review: where it sends its copies cannot be
+changed by a save. Keep it or remove it under Settings held for review first. Nothing was saved.",
+asked before the password and again in the transaction. Before card 2941 such a save went through,
+and the destination at its new place was no longer held. Keep puts it back in use exactly as it is; Remove takes it out
 of `backup_config` with its stored secrets and leaves the hold, so the same destination saved again
 is held again.
 
@@ -1924,7 +2065,8 @@ Individual card reports can be generated for completion notifications. These inc
 | `src/lib/server/backup.ts` | ~570 | Backup scheduling, data generation (`withoutSecrets()`: no session, no unused invite, no key remembered browsers are signed with, no request link or form key, no secret, and sealed), upload orchestration (`runBackup()`, which does not try a destination without its credentials) |
 | `src/lib/server/backup-secrets.ts` | ~1,400 | What a backup leaves out because it is a secret (card 2169), and what the admin routes mask and keep (cards 2187 and 2190: `SECRET_MASK`, `maskDestination()`, `keepMaskedSecrets()`, `keepMailPassword()`): `clearSecrets()`, `readSecretsHere()` and `fillSecretGaps()` for a restore, `credentialsMissing()`, `secretsToEnter()` for the start-up line, and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
 | `src/lib/server/image-retention.ts` | ~230 | Image retention (card 2754): `retentionDays()` reads `IMAGE_RETENTION_DAYS`, `expireClosedCardImages()` moves at most `MOST_EXPIRED_A_RUN` (200) images of closed cards to the trash with an `attachment_expired` entry by `RETENTION_ACTOR` (DumpFire), `isExpiredCard()` for the v1 upload's `409`; called first by `sweepUploads()` in `uploads-sweep.ts` |
-| `src/lib/server/backup-destinations.ts` | ~870 | SFTP, S3, Google Drive, OneDrive destination implementations; `readDestination()`; `reachFolder()` and `makeDumpfireFolder()` for Google Drive (card 2188); the SFTP host key's verifier and pin, the first look, and `HostKeyNotConfirmed`, `HostKeyMismatch`, `HostKeyTypeNotOffered` and `HostKeySignatureFailed` (card 2250) |
+| `src/lib/server/backup-destinations.ts` | ~1,100 | SFTP, S3, Google Drive, OneDrive destination implementations; `readDestination()`; `reachFolder()` and `makeDumpfireFolder()` for Google Drive (card 2188); the SFTP host key's verifier and pin, the first look, and `HostKeyNotConfirmed`, `HostKeyMismatch`, `HostKeyTypeNotOffered` and `HostKeySignatureFailed` (card 2250); `COPY_NAME`, `cappedMessage`, Google Drive's delete by listed ID, OneDrive by Graph's app-only addresses and `legacyUnmoved` (card 2941) |
+| `src/lib/server/onedrive-address.ts` | ~150 | A leaf (card 2941): a OneDrive `drive`'s three forms (`driveForm`, `savedDrive`, `driveSet`), the folder path rule (`folderSegments`), the Graph addresses (`driveBase`, `itemPath`), and the next-page pin (`nextPageUrl`), asked at save and at use |
 | `src/lib/server/ssh-host-key.ts` | ~160 | An SFTP destination's host key, read, stored and checked (card 2250): `readHostKey()`, `confirmedHostKey()`, `fingerprintOf()`, `typeOf()`, `pinFor()`, `serverKeyFile()`, `HOST_KEY_NOT_CONFIRMED` and `HOST_KEY_REFUSAL`; it connects to nothing |
 | `src/lib/drive-scope.ts` | ~40 | `DRIVE_FILE_SCOPE`, `driveScopeIsNarrow()` and `dumpfireFolderName()`, read by the server and the admin page (card 2188) |
 | `src/lib/server/gdrive-connect.ts` | ~120 | The Google Drive Connects under way, in memory: `startConnect()` (state and PKCE challenge), `takeConnect()` (once, bound to the session, account and destination, ten minutes), `forgetConnects()` for the tests (card 2251) |

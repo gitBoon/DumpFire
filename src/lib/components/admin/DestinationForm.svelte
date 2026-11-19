@@ -42,6 +42,7 @@
 		destClientId = $bindable(),
 		destClientSecret = $bindable(),
 		destFolderPath = $bindable(),
+		destDrive = $bindable(),
 		newDestType = $bindable(),
 		isSuperadmin = false,
 		onSave,
@@ -72,6 +73,8 @@
 		destClientId: string;
 		destClientSecret: string;
 		destFolderPath: string;
+		/** Whose OneDrive (card 2941): a user's sign-in name or object ID, or a drive ID (`b!…`). */
+		destDrive: string;
 		newDestType: DestType;
 		/**
 		 * The panel's: whether the reader is the superadmin, who alone removes a
@@ -84,6 +87,9 @@
 		/** The panel's: the form closed, and its fields emptied. */
 		onCancel: () => void;
 	} = $props();
+
+	/** A OneDrive destination needs whose OneDrive (card 2941): Save waits for it, and the server refuses one without. */
+	const lacksDrive = $derived(newDestType === 'onedrive' && !(destDrive ?? '').trim());
 </script>
 
 {#if mode === 'edit'}
@@ -164,6 +170,12 @@
 				<input type="password" placeholder="Client Secret" bind:value={destClientSecret} class="form-input" />
 				<input type="text" placeholder="Folder path" bind:value={destFolderPath} class="form-input" />
 			</div>
+			<div class="form-row">
+				<input type="text" placeholder="User (sign-in name or object ID) or drive ID (b!…)" bind:value={destDrive} class="form-input" />
+			</div>
+			{#if lacksDrive}
+				<p style="font-size: 0.68rem; color: var(--accent-amber); margin: 0">Give whose OneDrive to use: the user's sign-in name or object ID, or a drive ID. Until then this destination is not backed up to.</p>
+			{/if}
 		{/if}
 		<!-- A refused save leaves this form open as typed, with the server's reason in the toast (card 2190). -->
 		<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
@@ -171,7 +183,7 @@
 		</p>
 		<div class="form-row" style="justify-content: flex-end">
 			<button class="btn-ghost btn-sm" onclick={onCancel}>Cancel</button>
-			<button class="btn-primary btn-sm" onclick={onSave} disabled={!destName.trim()}>Save</button>
+			<button class="btn-primary btn-sm" onclick={onSave} disabled={!destName.trim() || lacksDrive}>Save</button>
 		</div>
 	</div>
 {:else}
@@ -258,14 +270,20 @@
 				<input type="password" placeholder="Client Secret" bind:value={destClientSecret} class="form-input" />
 				<input type="text" placeholder="Folder path (e.g. /DumpFire Backups)" bind:value={destFolderPath} class="form-input" />
 			</div>
+			<div class="form-row">
+				<input type="text" placeholder="User (sign-in name or object ID) or drive ID (b!…)" bind:value={destDrive} class="form-input" />
+			</div>
+			<!-- DumpFire signs in as the app itself, with no user (card 2941): least privilege first (ruling R8). -->
 			<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
-				Register an app in Azure AD → Add Files.ReadWrite.All permission → Create a client secret.
+				<strong>Best:</strong> in Microsoft Entra ID, register an app with Microsoft Graph <strong>Application</strong> permission <strong>Sites.Selected</strong>, which needs admin consent like any Application permission, and create a client secret. An administrator then also grants the app write on the one site that holds the drive (a separate step, for example with Microsoft Graph PowerShell), and you give that drive's ID (b!…). Use a SharePoint document library kept for backups rather than a person's OneDrive.<br/>
+				<strong>Broader:</strong> Application permission <strong>Files.ReadWrite.All</strong> with admin consent lets the app read and write every user's files in the tenant; then give the user's sign-in name or object ID (the object ID stays the same if they are renamed).<br/>
+				Personal Microsoft accounts are not supported. Test checks the drive and the folder; the first backup makes the folder.
 			</p>
 		{/if}
 
 		<div class="form-row" style="justify-content: flex-end; margin-top: var(--space-sm)">
 			<button class="btn-ghost btn-sm" onclick={onCancel}>Cancel</button>
-			<button class="btn-primary btn-sm" onclick={onSave} disabled={!destName.trim()}>Add Destination</button>
+			<button class="btn-primary btn-sm" onclick={onSave} disabled={!destName.trim() || lacksDrive}>Add Destination</button>
 		</div>
 	</div>
 {/if}
