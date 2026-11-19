@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.138
+version: 1.139
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2938
   - card-2898
   - secrets-at-rest
   - card-2923
@@ -2568,7 +2569,7 @@ const has = (v) => Boolean(v && String(v).length > 0);
 console.log('mail: host set', has(get('smtp_host')), '| port', get('smtp_port'), '| secure', get('smtp_secure'), '| user set', has(get('smtp_user')), '| password set', has(get('smtp_pass')));
 let c = {};
 try { c = JSON.parse(get('backup_config') || '{}'); } catch (e) { console.log('backup_config is not JSON'); }
-for (const d of (c.destinations || [])) { let sa = {}; try { sa = JSON.parse(d.serviceAccountJson || '{}'); } catch (e) {} console.log('destination', d.type, JSON.stringify(d.name), '| password', has(d.password), '| private key', has(d.privateKey), '| S3 secret', has(d.secretAccessKey), '| client secret', has(d.clientSecret), '| refresh token', has(d.refreshToken), '| service account key', has(sa.private_key)); }
+for (const d of (c.destinations || [])) { let sa = {}; try { sa = JSON.parse(d.serviceAccountJson || '{}'); } catch (e) {} console.log('destination', d.type, JSON.stringify(d.name), '| password', has(d.password), '| private key', has(d.privateKey), '| S3 secret', has(d.secretAccessKey), '| client secret', has(d.clientSecret), '| refresh token', has(d.refreshToken), '| service account key', has(sa.private_key), '| service account privateKey', has(sa.privateKey)); }
 console.table(db.prepare('SELECT active, length(secret) > 0 AS signed, COUNT(*) AS webhooks FROM webhooks GROUP BY 1, 2 ORDER BY 1, 2').all());
 console.table(db.prepare('SELECT destination_type, status, COUNT(*) AS runs, MIN(created_at) AS first, MAX(created_at) AS last FROM backup_log GROUP BY destination_type, status').all());
 db.close();
@@ -2645,7 +2646,7 @@ const has = (v) => Boolean(v && String(v).length > 0);
 console.log('mail: host set', has(get('smtp_host')), '| port', get('smtp_port'), '| secure', get('smtp_secure'), '| user set', has(get('smtp_user')), '| password set', has(get('smtp_pass')));
 let c = {};
 try { c = JSON.parse(get('backup_config') || '{}'); } catch (e) { console.log('backup_config is not JSON'); }
-for (const d of (c.destinations || [])) { let sa = {}; try { sa = JSON.parse(d.serviceAccountJson || '{}'); } catch (e) {} console.log('destination', d.type, JSON.stringify(d.name), '| password', has(d.password), '| private key', has(d.privateKey), '| S3 secret', has(d.secretAccessKey), '| client secret', has(d.clientSecret), '| refresh token', has(d.refreshToken), '| service account key', has(sa.private_key)); }
+for (const d of (c.destinations || [])) { let sa = {}; try { sa = JSON.parse(d.serviceAccountJson || '{}'); } catch (e) {} console.log('destination', d.type, JSON.stringify(d.name), '| password', has(d.password), '| private key', has(d.privateKey), '| S3 secret', has(d.secretAccessKey), '| client secret', has(d.clientSecret), '| refresh token', has(d.refreshToken), '| service account key', has(sa.private_key), '| service account privateKey', has(sa.privateKey)); }
 console.table(db.prepare('SELECT active, length(secret) > 0 AS signed, COUNT(*) AS webhooks FROM webhooks GROUP BY 1, 2 ORDER BY 1, 2').all());
 console.log('left out:', get('webhook_secrets_left_out'));
 console.log('sealed:', has(get('backup_seal')), '| seal key in it:', has(get('backup_seal_key')));
@@ -4937,7 +4938,7 @@ On production. **Scratch things**: as S, in **Admin → 👥 User Management**, 
 | # | Card | Do | Expect | A fault if |
 |---|---|---|---|---|
 | 434 | 2395 | In A, open **Admin** | The headings `🌐 Application Settings`, `☁️ Scheduled Backups` and `📧 Email / SMTP` are on the page, each showing the values S noted before the deploy; `🔒 The superadmin's` reads `Exporting, importing and resetting the database belong to the superadmin, <S's username>, and are on this page for that account only.`; there is no `💾 Backup & Restore` and, under `⚠️ Danger Zone`, no `Reset Everything` | One of the three panels missing, a value differing from the note, or Backup & Restore or Reset Everything shown. The older image shows A none of the three panels |
-| 435 | 2395 | In A, open `/api/admin/smtp` in the address bar; then `/api/admin/backup` | The first answer holds the host, port, user, from address and name noted, `"appUrl"` as noted, and `"pass":"••••••••"` (or `"pass":""` where no mail password is stored); in the second, every destination's password, SFTP private key, secret key, client secret and refresh token that is stored reads `"••••••••"`, and a service account's `serviceAccountJson` shows its `private_key` as `••••••••` inside it | Any password, key, secret or token in readable form; or either answer a 403 error page saying `Forbidden` (opened in the browser, `/api/admin/*` answers a refusal with SvelteKit's error page, not JSON) |
+| 435 | 2395 | In A, open `/api/admin/smtp` in the address bar; then `/api/admin/backup` | The first answer holds the host, port, user, from address and name noted, `"appUrl"` as noted, and `"pass":"••••••••"` (or `"pass":""` where no mail password is stored); in the second, every destination's password, SFTP private key, secret key, client secret and refresh token that is stored reads `"••••••••"`, and a service account's `serviceAccountJson` shows its `private_key` (and a `privateKey`, where it holds one) as `••••••••` inside it, every field but `type`, `project_id`, `client_email`, `private_key_id` and `client_id` masked the same way (card 2938) | Any password, key, secret or token in readable form; or either answer a 403 error page saying `Forbidden` (opened in the browser, `/api/admin/*` answers a refusal with SvelteKit's error page, not JSON) |
 | 436 | 2395 | In A, under 📧 Email / SMTP, leave the test recipient empty and press **🧪 Send Test** | The panel says `Test email sent to <A's email>`, and the mail arrives at that address | `Forbidden`, or no mail with nothing else said |
 | 437 | 2395 | In A, under ☁️ Scheduled Backups, press **🧪 Test** on the destination tested before the deploy; then raise or lower **Keep Last** by one (raise it, or lower it where it is 100, its most) and press Tab; then put it back to the number noted and press Tab | The Test shows what it showed S before the deploy. Each change shows the toast `Backup settings saved`; the Audit page's System Logs, filtered to `BACKUP`, show `[INFO] [BACKUP] Backup settings changed: retention from <n> to <n+1>` and then `[WARN] [BACKUP] Backup settings changed: retention from <n+1> to <n>` (lowered from 100: `[WARN] … retention from 100 to 99`, then `[INFO] … retention from 99 to 100`), each with `test2395`'s chip | `Forbidden`, a line filed under anyone else, or Keep Last not back at the number noted |
 | 438 | 2395 | In A, open `/api/admin/export` in the address bar | A 403 error page saying `This belongs to the superadmin. Exporting, importing and resetting the database can be used by the superadmin account only`, and nothing downloads | A file downloads |

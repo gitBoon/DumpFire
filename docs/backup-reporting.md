@@ -1,10 +1,11 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.51
+version: 1.52
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2938
   - card-2898
   - secrets-at-rest
   - card-2671
@@ -479,8 +480,13 @@ flowchart LR
 - **`maskDestination()`** answers every secret field of any type that holds anything as
   `••••••••` (`SECRET_MASK`), whatever the destination's type: SFTP `password` and
   `privateKey`, S3 `secretAccessKey`, `clientSecret`, Google Drive `refreshToken` (which the
-  answer carried as stored until card 2187), and a service account's `private_key` inside
-  `serviceAccountJson` where the JSON reads as an object, and a `privateKey` beside it; such JSON is
+  answer carried as stored until card 2187), and, inside `serviceAccountJson` where the JSON
+  reads as an object, every field but the allowlist `type`, `project_id`, `client_email`,
+  `private_key_id` and `client_id` (each shown only where it is text): `private_key`, a
+  `privateKey`, and JSON of another shape's secrets (an `authorized_user`'s `client_secret` and
+  `refresh_token`, an impersonated account's `source_credentials`) alike
+  (`SERVICE_ACCOUNT_SHOWN`, the list the copy keeps too, card 2938 and its code review); an
+  empty field shows empty. Such JSON is
   always written out again from what was read, never shown as stored, so text that names
   `private_key` twice (which reads as its last) cannot carry the first to the browser (S3).
   JSON that cannot be read, or reads as anything else (a string, a list), is masked whole. Every other field is as stored,
@@ -665,7 +671,7 @@ flowchart TD
 - **No secret** (card 2169): `clearSecrets()` in `src/lib/server/backup-secrets.ts` deletes the
   `smtp_pass` row, sets each destination's secret fields in `backup_config` to `''` (SFTP
   `password` and `privateKey`, S3 `secretAccessKey`, Google Drive `clientSecret` and
-  `refreshToken`, a service account's `private_key` inside `serviceAccountJson`, OneDrive
+  `refreshToken`, a service account's key inside `serviceAccountJson`, OneDrive
   `clientSecret`; every one of them on every destination, whatever its type), deletes the
   `backup_seal_key` row, leaves out a destination of a type this version does not know and a
   `backup_config` that is not JSON, and sets each webhook's secret to `''` with the webhook
@@ -681,6 +687,22 @@ flowchart TD
   again rather than filled under the backup's setter, where that account's password reset
   would not reach it. See
   [The Secrets a Backup Does Not Hold](authentication-security.md#the-secrets-a-backup-does-not-hold-card-2169).
+  A service account's JSON keeps only an allowlist in the copy, `type`, `project_id`,
+  `client_email`, `private_key_id` and `client_id`, each only where it is text
+  (`SERVICE_ACCOUNT_SHOWN`, the list the settings' `GET` shows too); every other field is set
+  to `''` whatever it holds, and none is added (card 2938 and its code review, R1). Until card
+  2938 the copy emptied `private_key` alone, so a JSON holding a `privateKey`, or JSON of
+  another shape (an `authorized_user`'s `client_secret` and `refresh_token`), carried it into
+  every copy and export, a `privateKey` sealed since card 2898. A restore still knows the same
+  account by `client_email` and `private_key_id` and fills this server's JSON whole.
+  A service account JSON has its key only where it is an object whose `type` is
+  `service_account` with text in `private_key` (R2): Google's library picks its way to sign in
+  by `type`, and only the `service_account` way needs `private_key`. An entry here whose JSON is
+  not such a key (one holding only a `privateKey`, another type, no type) is never used to fill,
+  so the restored entry is listed to enter (R3); `runBackup` does not try one, and says "This
+  destination's JSON is not a service account key with a private_key …"
+  (`SERVICE_ACCOUNT_NOT_A_KEY`) where JSON was entered that way, and that its credentials are
+  not entered where the JSON is empty or as a copy leaves it.
 - **The live file holds those secrets sealed** (card 2898): the mail password, each
   destination's secret fields and each webhook's secret are stored under a key derived from the
   MFA key file, bound to where each is used, and so are `backup_seal_key`, the request-form key

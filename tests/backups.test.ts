@@ -59,6 +59,7 @@ import { join } from 'node:path';
 import { google } from 'googleapis';
 import { generateBackupData, getBackupConfig, saveBackupConfig, withoutSecrets } from '$lib/server/backup';
 import {
+	DESTINATION_SECRET_FIELDS,
 	TYPED_SECRET_LOOKS_SEALED,
 	destinationSecretAad,
 	isSealed,
@@ -79,9 +80,11 @@ import {
 	NO_SEAL_HERE,
 	SECRET_FIELDS,
 	SECRET_MASK,
+	SERVICE_ACCOUNT_NOT_A_KEY,
 	WEBHOOK_SECRETS_LEFT_OUT_KEY,
 	backupSealKey,
 	clearSecrets,
+	credentialsMissing,
 	failedCheckSentence,
 	hostKeyChanges,
 	sealCopy,
@@ -2043,6 +2046,36 @@ const MAIL: Record<string, string> = {
 const serviceAccountJson = (key: string, keyId = 'key-id-1') =>
 	JSON.stringify({ type: 'service_account', client_email: 'robot@project.iam.example.test', private_key_id: keyId, private_key: key });
 
+/**
+ * JSON of two other shapes put where a service account's goes (card 2938's
+ * code review, R1), each with what it holds beside the allowlisted fields
+ * (`type`, `client_id`) and what a copy and the GET make of it. Every value
+ * outside the allowlist holds `r1-2938`.
+ */
+const OTHER_SHAPES = [
+	{
+		shape: 'an authorized_user’s',
+		json: { type: 'authorized_user', client_id: 'user-client.apps.example.test', client_secret: 'user-secret-r1-2938', refresh_token: 'user-token-r1-2938', quota_project_id: 'quota-r1-2938' },
+		kept: { type: 'authorized_user', client_id: 'user-client.apps.example.test' },
+		others: ['client_secret', 'refresh_token', 'quota_project_id']
+	},
+	{
+		shape: 'an impersonated_service_account’s',
+		json: {
+			type: 'impersonated_service_account',
+			service_account_impersonation_url: 'https://iam.example.test/token-r1-2938',
+			source_credentials: { type: 'authorized_user', client_secret: 'source-secret-r1-2938', refresh_token: 'source-token-r1-2938' },
+			delegates: ['delegate-r1-2938']
+		},
+		kept: { type: 'impersonated_service_account' },
+		others: ['service_account_impersonation_url', 'source_credentials', 'delegates']
+	}
+];
+
+/** `shape`'s JSON with every field outside the allowlist set to `value`, in its order. */
+const withOthers = ({ json, kept }: (typeof OTHER_SHAPES)[number], value: string) =>
+	Object.fromEntries(Object.keys(json).map((field) => [field, field in kept ? kept[field as keyof typeof kept] : value]));
+
 /** One destination of each type, every secret field set. */
 const DESTINATIONS: Record<string, unknown>[] = [
 	{ type: 'sftp', name: 'NAS', host: 'nas.example.test', port: 22, username: 'backup', password: SECRETS.sftpPassword, privateKey: SECRETS.sftpKey, remotePath: '/backups' },
@@ -2445,6 +2478,50 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 				for (const field of ['password', 'privateKey', 'secretAccessKey', 'clientSecret', 'refreshToken']) expect(destination[field], field).toBe('');
 				expect(JSON.parse(destination.serviceAccountJson).private_key).toBe('');
 			}
+		});
+
+		// Card 2938 and its code review (R1): the copy keeps a service account JSON's allowlist, each field only where it
+		// is text (type, project_id, client_email, private_key_id, client_id), and sets every other field to '', a
+		// camelCase `privateKey` and JSON of another shape among them.
+		const ACCOUNT = { type: 'service_account', client_email: 'robot@project.iam.example.test', private_key_id: 'key-id-1' };
+		const shapes: [string, Record<string, unknown>, Record<string, unknown>][] = [
+			['only a privateKey', { ...ACCOUNT, privateKey: 'camel-key-2938-a' }, { ...ACCOUNT, privateKey: '' }],
+			['both keys', { ...ACCOUNT, private_key: 'snake-key-2938-b', privateKey: 'camel-key-2938-b' }, { ...ACCOUNT, private_key: '', privateKey: '' }],
+			[
+				'a privateKey and a project_id that are not text, and a token_uri',
+				{ ...ACCOUNT, project_id: { nested: 'nested-id-2938-c' }, privateKey: { pem: 'nested-key-2938-c' }, token_uri: 'https://token.example.test/2938-c' },
+				{ ...ACCOUNT, project_id: '', privateKey: '', token_uri: '' }
+			],
+			...OTHER_SHAPES.map((other): [string, Record<string, unknown>, Record<string, unknown>] => [other.shape, other.json, withOthers(other, '')])
+		];
+		it.each(shapes)('keeps only the allowlisted fields of a service account JSON holding %s, every other one emptied and none added (card 2938)', (_shape, account, cleared) => {
+			const copy = copyOf(SETTINGS);
+			copy.prepare("INSERT INTO settings VALUES ('backup_config', ?)").run(configWith([{ ...ROBOT, serviceAccountJson: JSON.stringify(account) }]));
+
+			clearSecrets(copy);
+
+			const held = settingsOf(copy)['backup_config'];
+			expect(held).not.toContain('2938');
+			expect(JSON.parse(JSON.parse(held).destinations[0].serviceAccountJson)).toEqual(cleared);
+		});
+
+		it('clears the same fields the seal seals: DESTINATION_SECRET_FIELDS is every type’s SECRET_FIELDS (card 2938)', () => {
+			expect([...DESTINATION_SECRET_FIELDS].sort()).toEqual([...new Set(Object.values(SECRET_FIELDS).flat())].sort());
+		});
+
+		// Card 2938's code review, R2: a service account JSON has its key only as an object of type service_account with
+		// text in private_key; one entered otherwise says so, one as a copy leaves it says its credentials are not entered.
+		it.each([
+			['a service_account with a private_key', JSON.stringify({ ...ACCOUNT, private_key: 'snake-key-2938-d' }), null],
+			['only a privateKey', JSON.stringify({ ...ACCOUNT, privateKey: 'camel-key-2938-d' }), SERVICE_ACCOUNT_NOT_A_KEY],
+			['a private_key and no type', JSON.stringify({ client_email: ACCOUNT.client_email, private_key: 'untyped-key-2938-d' }), SERVICE_ACCOUNT_NOT_A_KEY],
+			['a private_key that is not text', JSON.stringify({ ...ACCOUNT, private_key: { pem: 'nested-key-2938-d' } }), SERVICE_ACCOUNT_NOT_A_KEY],
+			['an authorized_user’s fields and a private_key', JSON.stringify({ ...OTHER_SHAPES[0].json, private_key: 'user-key-2938-d' }), SERVICE_ACCOUNT_NOT_A_KEY],
+			['text that is not a JSON object', '"just-a-key-2938-d"', SERVICE_ACCOUNT_NOT_A_KEY],
+			['what a copy leaves of a key', serviceAccountJson(''), CREDENTIALS_NOT_ENTERED],
+			['nothing', '', CREDENTIALS_NOT_ENTERED]
+		])('says of a service account JSON holding %s what runBackup says (card 2938’s code review, R2)', (_shape, json, says) => {
+			expect(credentialsMissing({ ...ROBOT, serviceAccountJson: json })).toBe(says);
 		});
 
 		it('clears a copy that has no settings table, or no webhooks table, all the same', () => {
@@ -3111,6 +3188,27 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 			expect(result.secrets.toEnter.webhooks).toEqual(hooksToEnter());
 			expect(holdsOwn(live)).toBe(false);
 		});
+
+		it.each([
+			['only a privateKey', { type: 'service_account', privateKey: `${HERE}-camel` }],
+			['an authorized_user’s fields and a private_key', { type: 'authorized_user', private_key: `${HERE}-user`, client_secret: `${HERE}-secret` }],
+			['a private_key and no type', { private_key: `${HERE}-untyped` }]
+		])(
+			'fills no service account from the same account here whose JSON holds %s, not a service account key, and lists it (card 2938’s code review, R2, R3)',
+			(_shape, json) => {
+				const live = serverWith({
+					destinations: [{ ...ROBOT, serviceAccountJson: JSON.stringify({ client_email: 'robot@project.iam.example.test', private_key_id: 'key-id-1', ...json }) }]
+				});
+
+				const result = restoreFromBackup(live, backupNow());
+
+				expect(result.errors).toEqual([]);
+				expect(result.secrets.kept.destinations).not.toContain('Robot');
+				expect(result.secrets.toEnter.destinations).toContainEqual(NEEDS[3]);
+				expect(JSON.parse(settingsOf(live)['backup_config']).destinations[3]).toEqual(DESTINATIONS_CLEARED[3]);
+				expect(holdsOwn(live)).toBe(false);
+			}
+		);
 
 		it('fills no webhook whose secret here was set by another account than the backup\'s row names, and one whose setter is the same (card 2168)', () => {
 			const here = { id: hooks.on, url: 'https://hooks.example.test/on', secret: `${HERE}-hook-on` };
@@ -3821,6 +3919,17 @@ describe('the backup settings’ secrets: masked in every answer, kept only for 
 			JSON.stringify({ client_email: email, privateKey: MASK }),
 			JSON.stringify({ client_email: email })
 		]);
+	});
+
+	it('shows a service account JSON’s allowlisted fields alone and masks every other, JSON of another shape included (card 2938’s code review, R1)', async () => {
+		store(OTHER_SHAPES.map((other, i) => ({ ...ROBOT, name: `Shape ${i}`, serviceAccountJson: JSON.stringify(other.json) })));
+
+		const res = await api('GET', '/api/admin/backup', { user: chief });
+
+		expect(JSON.stringify(res.body)).not.toContain('r1-2938');
+		expect((res.body.destinations as { serviceAccountJson: string }[]).map((d) => JSON.parse(d.serviceAccountJson))).toEqual(
+			OTHER_SHAPES.map((other) => withOthers(other, MASK))
+		);
 	});
 
 	describe('a save with a masked secret and anything else changed is refused, naming what changed (test 4)', () => {
@@ -5894,6 +6003,26 @@ describe('the secrets the server keeps, sealed at rest (card 2898)', () => {
 		const bytes = generateBackupData();
 
 		expect(bytes.includes(Buffer.from('dfsealed:'))).toBe(false);
+	});
+
+	it('31b: a service account JSON whose key is a camelCase privateKey, sealed in the live file, goes into no copy, sealed or plain (card 2938)', () => {
+		const camel = 'camel-service-account-key-2938-e';
+		armSecrets(sqlite);
+		const camelRobot = {
+			...ROBOT,
+			name: 'Camel',
+			serviceAccountJson: JSON.stringify({ type: 'service_account', client_email: 'camel@project.iam.example.test', private_key_id: 'key-id-2', privateKey: camel })
+		};
+		sqlite.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(configWith([...DESTINATIONS, camelRobot]));
+		sealPlainSecrets(sqlite);
+		const named = (text: string) => (JSON.parse(text).destinations as { name: string; serviceAccountJson: string }[]).find((d) => d.name === 'Camel')!;
+		expect(isSealed(JSON.parse(named(settingsStored(sqlite)['backup_config']).serviceAccountJson).privateKey)).toBe(true);
+
+		const bytes = generateBackupData();
+
+		expect(bytes.includes(Buffer.from('dfsealed:'))).toBe(false);
+		expect(bytes.includes(Buffer.from(camel))).toBe(false);
+		expect(JSON.parse(named(settingsStored(opening(bytes))['backup_config']).serviceAccountJson)).toEqual({ type: 'service_account', client_email: 'camel@project.iam.example.test', private_key_id: 'key-id-2', privateKey: '' });
 	});
 
 	it("32: a restore of this server's own sealed backup keeps the mail password, a destination's secret and a webhook's secret, each sealed and opening", () => {

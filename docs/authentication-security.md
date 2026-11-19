@@ -1,10 +1,11 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.150
+version: 1.151
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2938
   - card-2898
   - secrets-at-rest
   - card-2923
@@ -3128,7 +3129,7 @@ Beside the authenticator secrets, the database holds seven things the server mus
 use, each of which used to be stored in plain: the mail password (`settings.smtp_pass`), every
 backup destination's credentials (the secret fields of `settings.backup_config`: SFTP `password`
 and `privateKey`, S3 `secretAccessKey`, Google Drive `clientSecret` and `refreshToken`, a
-service account's `private_key` inside its JSON, OneDrive `clientSecret`), every webhook's
+service account's `private_key` or `privateKey` inside its JSON, OneDrive `clientSecret`), every webhook's
 signing secret (`webhooks.secret`), and three signing keys: the remembered-browser key
 (`known_browser_secret`), the request-form key (`request_form_secret`) and the backup seal key
 (`backup_seal_key`). Since card 2898 each is stored **sealed**, in place, in the column or JSON
@@ -6175,7 +6176,7 @@ flowchart TD
   `src/lib/server/backup-secrets.ts`, called by `withoutSecrets()` before the second
   `VACUUM INTO`, deletes the `smtp_pass` row; sets each destination's secret fields to `''`
   (SFTP `password` and `privateKey`, S3 `secretAccessKey`, Google Drive `clientSecret` and
-  `refreshToken`, a Drive service account's `private_key` inside `serviceAccountJson`, OneDrive
+  `refreshToken`, a Drive service account's key inside `serviceAccountJson`, OneDrive
   `clientSecret`; every one of these on every destination, whatever its type, so that a field
   left over from a change of type is cleared too), keeping its name, host, bucket, folder,
   user names and ids; deletes the key this server seals its backups with (`backup_seal_key`)
@@ -6188,7 +6189,21 @@ flowchart TD
   lists each such webhook as `{"id":3,"active":true}`, which is how a restore tells it from a
   webhook made without a secret; an entry already in the copy whose webhook still has no
   secret is kept. `clearSecrets()` throws before it writes anything when handed the running
-  database.
+  database. A service account's JSON keeps only an allowlist in the copy (`type`,
+  `project_id`, `client_email`, `private_key_id`, `client_id`, each only where it is text:
+  `SERVICE_ACCOUNT_SHOWN`), and the settings' `GET` shows the same and masks the rest. Every
+  other field is set to `''` whatever its value, and none is added (card 2938 and its code
+  review, R1), so neither a `privateKey`, which went into every copy and export before card 2938
+  (sealed since card 2898), nor JSON of another shape (an `authorized_user`'s `client_secret`
+  and `refresh_token`, an impersonated account's `source_credentials`) reaches a copy or the
+  browser. The seal's own list (`ACCOUNT_KEY_FIELDS`, `private_key` and `privateKey`) is
+  unchanged. A service account JSON has its key only where it is an object whose `type` is
+  `service_account` with text in `private_key` (R2): Google's library picks its way to sign in
+  by `type`, and only the `service_account` way, a JWT signed with the key, needs `private_key`.
+  An entry here whose JSON is not such a key is never used to fill, so the restored entry is
+  listed to enter (R3), and `runBackup` does not try one (`SERVICE_ACCOUNT_NOT_A_KEY` where it
+  was entered so). A test pins the secret fields the seal knows (`DESTINATION_SECRET_FIELDS`) to
+  those the copy clears.
 - **Every backup is sealed, and only a backup this server made, unchanged since, has anything
   filled** (the review's S1). Matching the fields beside a secret is not enough on its own: a
   backup that is this server's own in every field but one added superadmin would have every
