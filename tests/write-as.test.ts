@@ -1588,7 +1588,8 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			body: (s, who = 'chief') => ({ destination: 'Bucket', currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s[who]) }),
 			out: { uploads: 1, made: 2 }
 		},
-		{ shape: "a destination tested, its secret leaving with it (POST /api/admin/backup/test)", method: 'POST', path: '/api/admin/backup/test', body: () => BUCKET, out: { made: 1 } },
+		// Sent as the page sends a saved destination, its secret masked: a Test runs only a saved destination (card 2939, P3).
+		{ shape: "a destination tested, its secret leaving with it (POST /api/admin/backup/test)", method: 'POST', path: '/api/admin/backup/test', body: () => ({ ...BUCKET, secretAccessKey: SECRET_MASK }), out: { made: 1 } },
 		{
 			shape: 'a Google Drive Connect, its code sent to Google (POST /api/admin/backup/gdrive/auth)',
 			method: 'POST',

@@ -1,10 +1,13 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.151
+version: 1.152
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2939
+  - service-account-key
+  - external-account
   - card-2938
   - card-2898
   - secrets-at-rest
@@ -114,7 +117,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, the service secrets kept in the database sealed at rest (card 2898: the mail password, backup destination credentials, webhook secrets and three signing keys sealed with AES-256-GCM under a key derived from the MFA key file, each bound to where it is used, the key check recorded with the first sealed value, plain values sealed at every start and the file scrubbed, and what a value that does not open does), a two-step reset that ends the account's API keys and switches off its webhooks (card 2915: always from the admin page, on the host unless --keep-api-keys, its options read strictly, the message saying what ended and what settings the account set), disabled accounts (card 2671: who may disable, enable and delete, what disabling ends, every gate that refuses a disabled account, and a restore that keeps them disabled), a restore that keeps the running system log and brings none of the backup's lines in, with the import's CRITICAL line naming who imported which file (card 2899), what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), a milestone the caller cannot see answered 404 Milestone not found, the goal a card is in refused in words of its own, and the id counter accepted as R6 (card 2911), a task request a signed-in caller cannot read answered 404 Request not found, the accept and reject on requireRequest (card 2914), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), every upload's limits whatever the file (card 2910: 30 an hour counted before the body, 100 MB a day charged what was read, 3 at once for an account and 6 for the server with each place given back in a finally and lapsing after 10 minutes, Connection: close on every refusal before the body, 120 seconds for the body to arrive, a failed read charged what was read, one part to a form, 20 other files a card, names cleaned, types normalised and the disk name the server's), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty-two actions that ask for the current password and a code from the authenticator app again (card 2671's disable and enable among them) (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
+description: "Deep-dive into DumpFire's authentication system, a Google Drive destination that takes only a service account's key file and signs in with a JWT built from it, never GoogleAuth, and a Test that runs only a saved destination (card 2939), the service secrets kept in the database sealed at rest (card 2898: the mail password, backup destination credentials, webhook secrets and three signing keys sealed with AES-256-GCM under a key derived from the MFA key file, each bound to where it is used, the key check recorded with the first sealed value, plain values sealed at every start and the file scrubbed, and what a value that does not open does), a two-step reset that ends the account's API keys and switches off its webhooks (card 2915: always from the admin page, on the host unless --keep-api-keys, its options read strictly, the message saying what ended and what settings the account set), disabled accounts (card 2671: who may disable, enable and delete, what disabling ends, every gate that refuses a disabled account, and a restore that keeps them disabled), a restore that keeps the running system log and brings none of the backup's lines in, with the import's CRITICAL line naming who imported which file (card 2899), what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), a milestone the caller cannot see answered 404 Milestone not found, the goal a card is in refused in words of its own, and the id counter accepted as R6 (card 2911), a task request a signed-in caller cannot read answered 404 Request not found, the accept and reject on requireRequest (card 2914), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), every upload's limits whatever the file (card 2910: 30 an hour counted before the body, 100 MB a day charged what was read, 3 at once for an account and 6 for the server with each place given back in a finally and lapsing after 10 minutes, Connection: close on every refusal before the body, 120 seconds for the body to arrive, a failed read charged what was read, one part to a form, 20 other files a card, names cleaned, types normalised and the disk name the server's), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty-two actions that ask for the current password and a code from the authenticator app again (card 2671's disable and enable among them) (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
 ---
 
 # Authentication & Security
@@ -3221,7 +3224,15 @@ forgotten. A change of key (`MFA_KEY_FILE_PREVIOUS`) seals the stored secrets ag
 factors, in the same transaction, factors or none, and marks the scrub pending, so the old key's
 ciphertexts leave the file too (S4).
 
-After `ensureFormSecret`, `sealStoredSecretsAtStart()` records this key's check, then seals, in
+After `ensureFormSecret`, `sealStoredSecretsAtStart()` records this key's check, then brings
+every destination's service account JSON to the one rule of card 2939
+(`normaliseServiceAccounts`: a key rebuilt to the fields DumpFire uses, its sealed `private_key`
+carried byte for byte and never opened, its additional data's `client_email` and
+`private_key_id` kept; a `service_account` JSON that is not a key emptied of its key; anything
+else, and any JSON on an OAuth or non-Drive destination, `''`), setting `secrets_scrub_pending`
+when it changed any but never `stored_secrets_first_sealed`, with one `[WARN] [STARTUP]` line
+after the commit naming each destination and how it changed, never a value, and that older copies
+may still hold what was removed (a second start writes and says nothing); then seals, in
 one `BEGIN IMMEDIATE`, every stored secret still held in plain (an older image's writes come
 forward sealed), replaces a signing key that does not open, and sets `secrets_scrub_pending`
 when it changed anything. A sealing that fails stops the server, nothing changed. Then one
@@ -5639,6 +5650,68 @@ user and team routes.
 Covered by the `superadmin` kind in `tests/access-every-route.test.ts`, which has an entry
 for every one of these routes, and by `tests/backups.test.ts`.
 
+### A Google Drive Destination Takes Only a Service Account's Key File (Card 2939)
+
+**The path closed.** Any administrator (card 2395) could, with a session alone, press Test on a
+Google Drive destination whose "Service Account JSON" was an `external_account` JSON naming
+`credential_source.file` (the MFA key file, the database, `.env`) and a `token_url` of their
+choosing. The JSON went unchecked to `new google.auth.GoogleAuth({ credentials })`, which picks
+its way to sign in by `type`; the external-account client read the file and posted its contents to
+that address before anything reached Google (`google-auth-library` 10.6.2 checks neither). With the
+MFA key, every sealed secret (card 2898) and every second-factor secret opens. The same JSON could
+ask the server to fetch any address with chosen headers (`credential_source.url`), sign with the
+process's AWS credentials (`environment_id`), or, reading as `null`, use the host's own Google
+identity (Application Default Credentials). Card 2938 had already kept such JSON out of the run;
+the Test, the save and `getDrive` itself still took it.
+
+**Now:**
+
+- One rule reads a service account's JSON (`src/lib/server/service-account-json.ts`, a leaf
+  module): an object, `type` `service_account`, each field the rule reads (`type`,
+  `client_email`, `private_key`, `private_key_id`, `universe_domain`) text where present; a key
+  has `private_key` and `client_email` as text and `universe_domain` absent, `''` or
+  `googleapis.com`. The save refuses anything else in fixed words that never quote the text ("…
+  is not JSON …", "… must be the JSON key file Google gives for a service account …", "… names
+  a universe_domain other than googleapis.com …"), and stores what it accepts rebuilt to the
+  fields DumpFire uses (`type`, `project_id`, `client_email`, `private_key_id`, `client_id`,
+  `private_key`), every other field dropped. A Drive destination that signs in with OAuth takes
+  no JSON at all. Whatever the settings' `GET` shows, the save accepts back.
+- `getDrive` builds `new google.auth.JWT({ email, key, keyId, scopes })` from the key's fields, a
+  literal of those four and never a spread (the constructor chain reads `universe_domain`,
+  `quota_project_id`, `credentials`, endpoints and more from its options), and never constructs
+  `GoogleAuth`: the library cannot be led to another way to sign in, a file or another address.
+  JSON that is not a key throws the run's own sentence.
+- Every start brings each stored destination's JSON to the rule in its sealing transaction
+  (below), and so does a restore, so no JSON that is not a key can stay stored.
+- **A Test runs only a saved destination, exactly as stored** (every type): a Test with a secret
+  typed, or with any setting that is not secret changed, is refused and nothing is connected to
+  (with its secret masked, in the save's own words, "type its … again"; otherwise "Save the
+  destination first, then Test it."), and it is the stored entry that is tested. No address, endpoint, folder, key or
+  credential typed into a Test is connected to: a Test reaches only where a save, with its
+  step-up, has already pointed.
+
+```mermaid
+sequenceDiagram
+    participant Ad as An administrator
+    participant T as POST /api/admin/backup/test
+    participant D as destinationToTest
+    participant G as getDrive
+    participant L as google-auth-library
+    Ad->>T: a destination with a typed external_account JSON
+    T->>T: readDestination: the rule refuses it, 400, nothing quoted
+    Ad->>T: a saved destination, its JSON masked
+    T->>D: no secret typed, the same as the one stored entry?
+    D-->>T: the stored entry
+    T->>G: test()
+    G->>G: serviceAccountKey(stored JSON)
+    alt not a key (any other type, null, not JSON)
+        G-->>Ad: the run's own sentence, nothing read, nothing sent
+    else a key
+        G->>L: new JWT({ email, key, keyId, scopes })
+        L->>L: signs, Google's fixed token address
+    end
+```
+
 ### Fewer Copies Are the Superadmin's (Card 2398)
 
 Since card 2398 (2026-10-22, the owner's ruling), a save of the backup settings that leaves
@@ -6197,9 +6270,10 @@ flowchart TD
   (sealed since card 2898), nor JSON of another shape (an `authorized_user`'s `client_secret`
   and `refresh_token`, an impersonated account's `source_credentials`) reaches a copy or the
   browser. The seal's own list (`ACCOUNT_KEY_FIELDS`, `private_key` and `privateKey`) is
-  unchanged. A service account JSON has its key only where it is an object whose `type` is
-  `service_account` with text in `private_key` (R2): Google's library picks its way to sign in
-  by `type`, and only the `service_account` way, a JWT signed with the key, needs `private_key`.
+  unchanged. A service account JSON has its key only where the one rule finds one (R2, and card
+  2939's `serviceAccountKey`): an object whose `type` is `service_account`, with text
+  `private_key` and `client_email`, each field the rule reads text, and Google's own universe;
+  DumpFire signs in with a JWT built from those fields alone (card 2939, above).
   An entry here whose JSON is not such a key is never used to fill, so the restored entry is
   listed to enter (R3), and `runBackup` does not try one (`SERVICE_ACCOUNT_NOT_A_KEY` where it
   was entered so). A test pins the secret fields the seal knows (`DESTINATION_SECRET_FIELDS`) to

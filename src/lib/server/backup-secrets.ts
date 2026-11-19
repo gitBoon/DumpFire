@@ -102,6 +102,7 @@ import { getDbPath, sqlite } from './db';
 import { printable } from './logger';
 import { HOST_KEY_NOT_CONFIRMED, confirmedHostKey, hostKeyText } from './ssh-host-key';
 import { NEW_SECRET_REASONS } from './webhooks';
+import { SERVICE_ACCOUNT_SHOWN, readServiceAccountJson, serviceAccountKey } from './service-account-json';
 import {
 	looksSealed,
 	mailPasswordAad,
@@ -225,11 +226,11 @@ export const GDRIVE_NOT_CONNECTED =
 
 /**
  * The same, for a Google Drive destination whose service account JSON was
- * entered but is not a service account key (card 2938's code review, R2):
- * Google's library would take another way to sign in, or refuse it.
+ * entered but is not a service account key (card 2938's code review, R2),
+ * worded for any way it fails the rule (card 2939, ruling P7).
  */
 export const SERVICE_ACCOUNT_NOT_A_KEY =
-	"This destination's JSON is not a service account key with a private_key, so it is not tried. In Admin, Scheduled " +
+	"This destination's JSON is not a service account key file from Google, so it is not tried. In Admin, Scheduled " +
 	'Backups, enter the JSON key file Google gives for the service account.';
 
 type Entry = Record<string, unknown>;
@@ -292,47 +293,45 @@ function serviceAccount(json: unknown): Entry | null {
 }
 
 /**
- * The fields of a service account's JSON that a backup's copy keeps and the
- * GET shows, each only where it is text: an allowlist (card 2938's code
- * review, R1). Every other field is '' in a copy and masked by the GET,
+ * Whether a service account JSON's `field` is kept and shown as it is:
+ * allowlisted, and text. The allowlist, `SERVICE_ACCOUNT_SHOWN`
+ * (service-account-json.ts, card 2939), is what a backup's copy keeps and the
+ * GET shows (card 2938's code review, R1), and what a save stores beside
+ * `private_key`. Every other field is '' in a copy and masked by the GET,
  * whatever its name, so that JSON of another shape (an `authorized_user`'s
  * `client_secret` and `refresh_token`, an impersonated account's
  * `source_credentials`, a key under any name) reaches neither. A restore
- * knows the same account by `client_email` and `private_key_id` (`differences`)
- * and fills this server's JSON whole (`withSecretsOf`).
+ * knows the same account by `client_email` and `private_key_id`
+ * (`differences`) and fills this server's JSON whole (`withSecretsOf`).
  */
-const SERVICE_ACCOUNT_SHOWN: readonly string[] = ['type', 'project_id', 'client_email', 'private_key_id', 'client_id'];
-
-/** Whether a service account JSON's `field` is kept and shown as it is: allowlisted, and text. */
 const shownAsIs = (field: string, value: unknown): boolean => SERVICE_ACCOUNT_SHOWN.includes(field) && typeof value === 'string';
 
 /**
- * Whether a service account's JSON is a key Google's library signs in with
- * (card 2938's code review, R2): an object whose `type` is
- * `service_account`, with text in `private_key`. The library picks its way to
- * sign in by `type` (`authorized_user`, `impersonated_service_account`,
- * `external_account` each go another way); only the `service_account` way,
- * a JWT signed with the key, needs `private_key`, and refuses JSON without it.
+ * Whether a service account's JSON is a key DumpFire signs in with, by the
+ * one rule (`serviceAccountKey`, service-account-json.ts, card 2939): an
+ * object whose `type` is `service_account`, with text `client_email` and
+ * `private_key`, each field the rule reads text, and Google's own universe.
+ * Google's library would pick another way to sign in for another `type`
+ * (card 2938's code review, R2); DumpFire builds a JWT from these fields alone
+ * (`getDrive`), so nothing else is a key.
  */
 function isServiceAccountKey(json: unknown): boolean {
-	const account = serviceAccount(json);
-	return account !== null && account.type === 'service_account' && typeof account.private_key === 'string' && account.private_key !== '';
+	return serviceAccountKey(json) !== null;
 }
 
 /**
- * Whether a service account's JSON is as a backup's copy leaves one: empty,
- * or a `service_account` object holding nothing outside the allowlist. Such
- * JSON lacks its key because a backup does not hold it; any other that is not
- * a key was entered so (`credentialsMissing`).
+ * Why a Google Drive destination that signs in with a service account has no
+ * key to sign in with, as `runBackup` and a Test say it (card 2939, ruling
+ * P5), by the one rule (`readServiceAccountJson`, the code review's F3): its
+ * credentials not entered where its JSON is none, '' or the key-less shape a
+ * backup's copy leaves (the rule accepts it, with no key), otherwise not a
+ * service account key file. `getDrive` throws it for JSON `serviceAccountKey`
+ * gives no key for, and `credentialsMissing` answers it.
  */
-function clearedServiceAccount(json: unknown): boolean {
-	if (!has(json)) return true;
-	const account = serviceAccount(json);
-	return (
-		account !== null &&
-		account.type === 'service_account' &&
-		Object.entries(account).every(([field, value]) => SERVICE_ACCOUNT_SHOWN.includes(field) || !has(value))
-	);
+export function serviceAccountMissing(json: unknown): string {
+	if (!has(json)) return CREDENTIALS_NOT_ENTERED;
+	const reading = readServiceAccountJson(json);
+	return 'stored' in reading && reading.key === null ? CREDENTIALS_NOT_ENTERED : SERVICE_ACCOUNT_NOT_A_KEY;
 }
 
 const emptyKept = (): SecretsKept => ({ mailPassword: false, destinations: [], webhooks: [] });
@@ -347,9 +346,9 @@ const emptyToEnter = (): SecretsToEnter => ({ mailPassword: false, destinations:
  * client secret; and, only where `sftp` is asked, SFTP with neither password
  * nor key.
  *
- * A service account's JSON has its key only where it is an object whose
- * `type` is `service_account` with text in `private_key`
- * (`isServiceAccountKey`, card 2938's code review, R2). Google's library picks
+ * A service account's JSON has its key only where the one rule finds one
+ * (`isServiceAccountKey`: card 2938's code review, R2, and card 2939's
+ * `client_email`, read fields as text and Google's universe). Google's library picks
  * its way to sign in by `type`, and only that way needs `private_key`: JSON of
  * another type would sign in another way, and JSON with no `type`, or a key
  * only under another name (`privateKey`), is refused or not what this
@@ -404,7 +403,7 @@ function needs(destination: Entry): string {
 export function credentialsMissing(destination: unknown): string | null {
 	if (!isEntry(destination) || !lacks(destination, false)) return null;
 	if (destination.type === 'gdrive' && isOauth(destination)) return GDRIVE_NOT_CONNECTED;
-	if (destination.type === 'gdrive' && !clearedServiceAccount(destination.serviceAccountJson)) return SERVICE_ACCOUNT_NOT_A_KEY;
+	if (destination.type === 'gdrive') return serviceAccountMissing(destination.serviceAccountJson);
 	return CREDENTIALS_NOT_ENTERED;
 }
 
@@ -1820,21 +1819,36 @@ export function maskDestination<T>(destination: T): T {
 /**
  * Whether `destination`, as sent, has a secret typed into it: any type's
  * secret field holding text that is not the mask, or a service account's JSON
- * with no mask in it. Card 2397's third review: a move made with a secret
- * typed is the mover's, whoever was recorded for the place it moves to.
+ * with no mask in it that holds a key by the one rule (`serviceAccountKey`,
+ * card 2939's code review, F1). JSON with no key (the key-less shape the GET
+ * shows of a restored destination, or anything the rule refuses) carries no
+ * secret, so sending it back types none. Read by a move's setter (card 2397's
+ * third review: a move made with a secret typed is the mover's, whoever was
+ * recorded for the place it moves to) and by a Test (`destinationToTest`).
  */
 export function typedSecret(destination: unknown): boolean {
 	if (!isEntry(destination)) return false;
 	const typed = (value: unknown) => typeof value === 'string' && value !== '' && value !== SECRET_MASK;
 	if (ANY_SECRET_FIELD.some((field) => typed(destination[field]))) return true;
 	const json = destination.serviceAccountJson;
-	return typeof json === 'string' && json !== '' && !json.includes(SECRET_MASK);
+	return !serviceAccountJsonMasked(json) && serviceAccountKey(json) !== null;
+}
+
+/**
+ * Whether a service account's JSON, as sent, is sent masked: text holding the
+ * mask anywhere. The one predicate (card 2939, ruling P6) read by
+ * `maskedFields`, which `keepMaskedSecrets` replaces whole by the stored JSON,
+ * and by `readDestination`, which leaves such JSON unchecked for that reason:
+ * the two cannot differ, so no JSON skips the check that is not replaced.
+ */
+export function serviceAccountJsonMasked(json: unknown): boolean {
+	return typeof json === 'string' && json.includes(SECRET_MASK);
 }
 
 /** The fields of `destination` that are sent masked: any type's secret field holding the mask, and a service account's JSON holding it anywhere. */
 function maskedFields(destination: Entry): string[] {
 	const masked = ANY_SECRET_FIELD.filter((field) => destination[field] === SECRET_MASK);
-	if (typeof destination.serviceAccountJson === 'string' && destination.serviceAccountJson.includes(SECRET_MASK)) masked.push('serviceAccountJson');
+	if (serviceAccountJsonMasked(destination.serviceAccountJson)) masked.push('serviceAccountJson');
 	return masked;
 }
 
@@ -1982,6 +1996,34 @@ export function keepMaskedSecrets<T>(
 	// A masked field whose stored value does not open is kept as it is stored
 	// by the save, still to be typed again (card 2898's code review, E2).
 	return { destination: withUnopenableCarried(destination, match, masked) as T };
+}
+
+/** What the Test route answers, with 400, to anything but a saved destination as it is stored (card 2939, ruling P3). */
+export const SAVE_BEFORE_TEST = 'Save the destination first, then Test it.';
+
+/**
+ * The stored destination a Test of `sent` runs, or why it is refused (card
+ * 2939, ruling P3): a Test runs only a saved destination, exactly as it is
+ * stored, whatever its type. `sent` must have no secret typed
+ * (`typedSecret`), and its name exactly one stored entry the same in every
+ * field that is not secret, as a masked Test is held to (`differences`,
+ * 'test', the SFTP host key included); that entry is what is tested, never
+ * what was sent, so no endpoint, host, folder or key typed into a Test is
+ * ever connected to. A masked destination `keepMaskedSecrets` refuses keeps
+ * its own words, which say what to type and why, and so does one the same as
+ * more than one saved entry ("more than one saved destination matches it");
+ * anything else is `SAVE_BEFORE_TEST`.
+ */
+export function destinationToTest<T>(sent: unknown, stored: readonly T[]): { destination: T } | { refusal: string } {
+	if (!isEntry(sent) || typedSecret(sent)) return { refusal: SAVE_BEFORE_TEST };
+	const kept = keepMaskedSecrets(sent, stored, 'test');
+	if ('refusal' in kept) return kept;
+	const named = stored.filter((entry) => isEntry(entry) && entry.name === sent.name) as Entry[];
+	const matches = named.filter((entry) => sameEntry(sent, entry, 'test'));
+	// More than one saved entry it is the same as: the save's own words and way out (the code review's F4).
+	if (matches.length > 1) return { refusal: refusal(sent, [], named, matches, 'test') };
+	if (named.length !== 1 || matches.length !== 1) return { refusal: SAVE_BEFORE_TEST };
+	return { destination: { ...matches[0] } as T };
 }
 
 /** The mail settings as they decide where the password goes, and over what. */

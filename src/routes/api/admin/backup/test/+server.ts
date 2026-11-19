@@ -1,15 +1,19 @@
 /**
  * /api/admin/backup/test — Test a destination connection.
  *
- * Every administrator's: see `/api/admin/backup`. A test of a destination
- * whose secrets are masked connects with the stored ones only when it is the
- * stored destination they were saved with, the same in type, name and every
- * field that is not secret (card 2190, `keepMaskedSecrets`); otherwise it is
- * refused, as a save is. An SFTP destination's host key must then be the
- * stored one exactly, none where none is stored (the card 2250 review's M1):
- * only a save may add a key (Confirm saves, then tests), and a Test that could
- * would send the stored password to whatever key it named. The admin page tests
- * only saved destinations, so its Test button is unchanged.
+ * Every administrator's: see `/api/admin/backup`. A Test runs only a saved
+ * destination, exactly as it is stored (card 2939, ruling P3,
+ * `destinationToTest`): sent with no secret typed, the same in type, name and
+ * every field that is not secret as the one stored entry of its name, and it
+ * is that stored entry that is tested, never what was sent. Anything else is
+ * 400 "Save the destination first, then Test it."; a masked destination
+ * pointed elsewhere keeps the save's own refusal (card 2190,
+ * `keepMaskedSecrets`). An SFTP destination's host key must be the stored one
+ * exactly, none where none is stored (the card 2250 review's M1): only a save
+ * may add a key (Confirm saves, then tests). So no address, endpoint, folder,
+ * key or credential typed into a Test is ever connected to: a Test reaches
+ * only where a save, with its step-up, has already pointed. The admin page
+ * tests only saved destinations, so its Test button is unchanged.
  *
  * An SFTP Test answers, beside `success` and `message`, the host key the
  * server presented (`hostKey`) where none is confirmed or it did not match,
@@ -21,7 +25,7 @@
 import { error, json } from '@sveltejs/kit';
 import { HostKeySignatureFailed, createDestination, readDestination, type SftpTestResult } from '$lib/server/backup-destinations';
 import { getBackupConfig } from '$lib/server/backup';
-import { keepMaskedSecrets } from '$lib/server/backup-secrets';
+import { destinationToTest } from '$lib/server/backup-secrets';
 import { TYPED_SECRET_LOOKS_SEALED, destinationLooksSealed, unopenableFields } from '$lib/server/stored-secrets';
 import { readBody } from '$lib/server/request-body';
 import { requireAdmin } from '$lib/server/route-guards';
@@ -58,7 +62,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	);
 	// A secret typed that looks sealed is refused (card 2898, S9): it would be taken for one.
 	if (destinationLooksSealed(sent)) throw error(400, TYPED_SECRET_LOOKS_SEALED);
-	const kept = keepMaskedSecrets(sent, existing.destinations, 'test');
+	// Only a saved destination is tested, exactly as it is stored (card 2939, ruling P3).
+	const kept = destinationToTest(sent, existing.destinations);
 	if ('refusal' in kept) throw error(400, kept.refusal);
 	// A kept secret whose stored value does not open is no secret to test
 	// with, and an SFTP Test without it would try none (card 2898's code review, E2, S3).

@@ -50,7 +50,7 @@
  * first, because it writes its upload and a safety copy under the working
  * directory, and they empty the application's own database again afterwards.
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -67,10 +67,18 @@ import {
 	openStored,
 	sealPlainSecrets,
 	sealValue,
+	sealedForRestore,
 	webhookSecretAad
 } from '$lib/server/stored-secrets';
 import { keyFromBytes } from '$lib/server/mfa-key';
-import { GDriveDestination, dumpfireFolderName, type DestinationConfig, type GDriveDestinationConfig } from '$lib/server/backup-destinations';
+import {
+	GDriveDestination,
+	SERVICE_ACCOUNT_REFUSALS,
+	SERVICE_ACCOUNT_UNDER_OAUTH,
+	dumpfireFolderName,
+	type DestinationConfig,
+	type GDriveDestinationConfig
+} from '$lib/server/backup-destinations';
 import {
 	BACKUP_SEAL,
 	BACKUP_SEAL_KEY,
@@ -78,6 +86,7 @@ import {
 	GDRIVE_NOT_CONNECTED,
 	NOT_SEALED_HERE,
 	NO_SEAL_HERE,
+	SAVE_BEFORE_TEST,
 	SECRET_FIELDS,
 	SECRET_MASK,
 	SERVICE_ACCOUNT_NOT_A_KEY,
@@ -2513,7 +2522,12 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		// text in private_key; one entered otherwise says so, one as a copy leaves it says its credentials are not entered.
 		it.each([
 			['a service_account with a private_key', JSON.stringify({ ...ACCOUNT, private_key: 'snake-key-2938-d' }), null],
-			['only a privateKey', JSON.stringify({ ...ACCOUNT, privateKey: 'camel-key-2938-d' }), SERVICE_ACCOUNT_NOT_A_KEY],
+			// Card 2939, case 14: the run reads the one rule, which needs a client_email beside the key.
+			['a private_key and no client_email', JSON.stringify({ type: 'service_account', private_key_id: 'key-id-1', private_key: 'no-email-key-2939' }), SERVICE_ACCOUNT_NOT_A_KEY],
+			// Card 2939's code review, F3: a field the rule does not read is dropped, so this is the key-less shape: not entered.
+			['only a privateKey', JSON.stringify({ ...ACCOUNT, privateKey: 'camel-key-2938-d' }), CREDENTIALS_NOT_ENTERED],
+			// F3: the pre-sweep example, a key-less JSON holding a field outside the allowlist, is not entered either.
+			['a key-less JSON with a token_uri', '{"type":"service_account","client_email":"e","private_key":"","token_uri":"x"}', CREDENTIALS_NOT_ENTERED],
 			['a private_key and no type', JSON.stringify({ client_email: ACCOUNT.client_email, private_key: 'untyped-key-2938-d' }), SERVICE_ACCOUNT_NOT_A_KEY],
 			['a private_key that is not text', JSON.stringify({ ...ACCOUNT, private_key: { pem: 'nested-key-2938-d' } }), SERVICE_ACCOUNT_NOT_A_KEY],
 			['an authorized_user’s fields and a private_key', JSON.stringify({ ...OTHER_SHAPES[0].json, private_key: 'user-key-2938-d' }), SERVICE_ACCOUNT_NOT_A_KEY],
@@ -3875,8 +3889,10 @@ describe('the backup settings’ secrets: masked in every answer, kept only for 
 			const expected = type === 'gdrive' && field !== 'refreshToken' && 'refreshToken' in STORED[at] ? typedToken : STORED[at];
 			expect(storedDestinations(), `${type}.${field} kept`).toEqual(STORED.map((d, i) => (i === at ? expected : d)));
 
+			// Tested as the page sends a saved destination, every secret masked: a Test of a
+			// secret typed is refused (card 2939, P3).
 			handed.length = 0;
-			const test = await tested(sentBack);
+			const test = await tested(page[at]);
 			expect(test.status, `${type}.${field} tested: ${JSON.stringify(test.body)}`).toBe(200);
 			expect(handed.map((config) => config[field]), `${type}.${field} handed`).toEqual([STORED[at][field]]);
 		}
@@ -4724,6 +4740,196 @@ describe('the backup settings’ secrets: masked in every answer, kept only for 
 		expect(emptied.status, JSON.stringify(emptied.body)).toBe(200);
 		expect(storedDestinations()).toEqual([{ ...DRIVE, refreshToken: '' }]);
 	});
+
+	// ── Card 2939: a Google Drive destination takes only a service account's key file ──
+
+	describe('a service account JSON, read by the one rule at the save (card 2939)', () => {
+		/** In every JSON a case sends: no answer may hold it (case 17). */
+		const MARKER = 'zz-2939-marker';
+		const EMAIL = 'robot@project.iam.example.test';
+		/** A new service account destination holding `json`. */
+		const added = (json: string) => ({ type: 'gdrive', name: 'New', authMethod: 'service_account', folderId: 'folder-2939', serviceAccountJson: json });
+		const EXTERNAL = JSON.stringify({
+			type: 'external_account',
+			audience: `aud-${MARKER}`,
+			subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
+			token_url: `https://${MARKER}.invalid/token`,
+			credential_source: { file: '/etc/hostname' }
+		});
+		/** Google's whole key file, as it downloads. */
+		const GOOGLE_FILE = {
+			type: 'service_account',
+			project_id: 'project-2939',
+			private_key_id: 'key-id-2939',
+			private_key: `-----BEGIN PRIVATE KEY-----\n${MARKER}\n-----END PRIVATE KEY-----\n`,
+			client_email: EMAIL,
+			client_id: '1029384756',
+			auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+			token_uri: 'https://oauth2.googleapis.com/token',
+			auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+			client_x509_cert_url: 'https://www.googleapis.com/robot/v1/metadata/x509/robot',
+			universe_domain: 'googleapis.com'
+		};
+		/** A 400 naming the field and saying `words`, nothing written, and none of the JSON in the answer. */
+		const refusedWith = async (send: () => Promise<{ status: number; body: Record<string, unknown> }>, words: string) => {
+			const before = snapshotDb();
+			handed.length = 0;
+			const res = await send();
+			expect(res.status, JSON.stringify(res.body)).toBe(400);
+			expect(res.body.message).toBe(words);
+			expect(JSON.stringify(res.body)).not.toContain(MARKER);
+			expect(handed).toEqual([]);
+			expectUnchanged(before);
+		};
+		const saveRefusal = (refusal: keyof typeof SERVICE_ACCOUNT_REFUSALS) => `destinations[0].serviceAccountJson ${SERVICE_ACCOUNT_REFUSALS[refusal]}`;
+
+		it('refuses an external_account JSON, which would read a file and post it anywhere (case 1)', async () => {
+			await refusedWith(() => put([added(EXTERNAL)]), saveRefusal('not-key'));
+		});
+
+		it('refuses text that is not JSON in words that quote none of it (cases 2, 17)', async () => {
+			await refusedWith(() => put([added(`{"type":"service_account","private_key":"${MARKER}`)]), saveRefusal('not-json'));
+		});
+
+		it.each([['null'], ['0'], ['""'], ['[]'], [`"${MARKER}"`]])('refuses JSON that reads as %s, which is no object (case 15)', async (json) => {
+			await refusedWith(() => put([added(json)]), saveRefusal('not-key'));
+		});
+
+		it('refuses a key whose private_key_id, a field the rule reads, is not text (case 3)', async () => {
+			await refusedWith(() => put([added(JSON.stringify({ ...GOOGLE_FILE, private_key_id: 2939 }))]), saveRefusal('not-key'));
+		});
+
+		it('refuses a key with no client_email (case 4)', async () => {
+			const { client_email: _email, ...noEmail } = GOOGLE_FILE;
+			await refusedWith(() => put([added(JSON.stringify(noEmail))]), saveRefusal('not-key'));
+		});
+
+		it('refuses a key naming a universe_domain other than googleapis.com (case 5)', async () => {
+			await refusedWith(() => put([added(JSON.stringify({ ...GOOGLE_FILE, universe_domain: `${MARKER}.invalid` }))]), saveRefusal('other-universe'));
+		});
+
+		it('accepts the key-less shape with no private_key at all, stores it as it is, and lists it to enter (the code review, F6)', async () => {
+			const keyless = JSON.stringify({ type: 'service_account', client_email: EMAIL, private_key_id: 'key-id-2939' });
+
+			const saved = await put([added(keyless)]);
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(storedDestinations()[0].serviceAccountJson).toBe(keyless);
+			expect(credentialsMissing(storedDestinations()[0])).toBe(CREDENTIALS_NOT_ENTERED);
+		});
+
+		it("accepts a key whose universe_domain is '', the default (case 16)", async () => {
+			const saved = await put([added(JSON.stringify({ ...GOOGLE_FILE, universe_domain: '' }))]);
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+		});
+
+		it("stores Google's whole key file rebuilt to the fields DumpFire uses, in its order, the key sealed; a field the rule does not read is dropped whatever it holds (cases 6, 3)", async () => {
+			const pasted = { ...GOOGLE_FILE, privateKey: { pem: `camel-${MARKER}` }, quota_project_id: { nested: true } };
+
+			const saved = await put([added(JSON.stringify(pasted, null, 2))]);
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			const { type, project_id, private_key_id, private_key, client_email, client_id } = GOOGLE_FILE;
+			const stored = JSON.parse(settingsStored(sqlite)['backup_config']).destinations[0].serviceAccountJson as string;
+			expect(Object.keys(JSON.parse(stored))).toEqual(['type', 'project_id', 'private_key_id', 'private_key', 'client_email', 'client_id']);
+			expect(isSealed(JSON.parse(stored).private_key)).toBe(true);
+			expect(stored).not.toContain(MARKER);
+			expect(getBackupConfig().destinations[0]).toEqual(
+				added(JSON.stringify({ type, project_id, private_key_id, private_key, client_email, client_id }))
+			);
+		});
+
+		it.each([
+			['a valid key', JSON.stringify(GOOGLE_FILE)],
+			['an external_account JSON', EXTERNAL],
+			// The code review's F6: masked JSON is refused under OAuth before the mask skip.
+			['a JSON sent masked', serviceAccountJson(MASK)]
+		])('refuses %s with a destination that signs in with OAuth (case 8)', async (_json, json) => {
+			await refusedWith(
+				() => put([{ ...DRIVE, serviceAccountJson: json }]),
+				`destinations[0].serviceAccountJson ${SERVICE_ACCOUNT_UNDER_OAUTH}`
+			);
+		});
+
+		it('keeps the stored JSON whole for a JSON sent masked, whatever else it holds; one holding part of the mask is checked as typed (case 9)', async () => {
+			const crafted = (privateKey: string) =>
+				JSON.stringify({ type: 'external_account', client_email: EMAIL, private_key_id: 'key-id-1', token_url: `https://${MARKER}.invalid`, credential_source: { file: '/etc/hostname' }, private_key: privateKey });
+			const page = await shown();
+
+			await refusedWith(() => put(page.map((d, i) => (i === 3 ? { ...d, serviceAccountJson: crafted('•') } : d))), `destinations[3].serviceAccountJson ${SERVICE_ACCOUNT_REFUSALS['not-key']}`);
+
+			const saved = await put(page.map((d, i) => (i === 3 ? { ...d, serviceAccountJson: crafted(MASK) } : d)));
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(storedDestinations()[3].serviceAccountJson).toBe(STORED[3].serviceAccountJson);
+		});
+
+		it('saves back, unchanged and with no change line, what the GET shows of a restored copy of Google’s whole key file (case 7: whatever the GET shows, the save accepts)', async () => {
+			const shownFields = ['type', 'project_id', 'client_email', 'private_key_id', 'client_id'];
+			// As a backup's copy leaves it: every field but the allowlist '', the key among them.
+			const copy = Object.fromEntries(Object.entries(GOOGLE_FILE).map(([field, value]) => [field, shownFields.includes(field) ? value : '']));
+			const restored = sealedForRestore('settings', [{ key: 'backup_config', value: configWith([{ ...ROBOT, serviceAccountJson: JSON.stringify(copy) }]) }]);
+			sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('backup_config', restored.rows[0].value);
+			const before = storedDestinations();
+			const from = (sqlite.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM system_logs').get() as { n: number }).n;
+
+			const saved = await put(await shown());
+
+			expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+			expect(storedDestinations()).toEqual(before);
+			expect(credentialsMissing(before[0])).toBe(CREDENTIALS_NOT_ENTERED);
+			const changeLines = sqlite.prepare("SELECT message FROM system_logs WHERE id > ? AND message LIKE 'Backup settings changed%'").all(from);
+			expect(changeLines).toEqual([]);
+		});
+
+		it('refuses an external_account JSON at a Test too, before anything is made (case 10)', async () => {
+			await refusedWith(() => tested(added(EXTERNAL)), `serviceAccountJson ${SERVICE_ACCOUNT_REFUSALS['not-key']}`);
+		});
+
+		it.each([
+			['a saved S3 destination with its endpoint typed', () => ({ ...BUCKET, secretAccessKey: '', endpoint: `https://${MARKER}.invalid` })],
+			[
+				'the saved service account with a key typed, the same account',
+				() => ({ ...ROBOT, serviceAccountJson: JSON.stringify({ type: 'service_account', client_email: EMAIL, private_key_id: 'key-id-1', private_key: `typed-${MARKER}` }) })
+			],
+			['a destination never saved, with no secret', () => ({ type: 'sftp', name: 'Elsewhere', host: `${MARKER}.invalid`, port: 22, username: 'u', remotePath: '/' })]
+		])('runs no Test of %s: save it first (case 18, ruling P3)', async (_case, sent) => {
+			await refusedWith(() => tested(sent()), SAVE_BEFORE_TEST);
+		});
+
+		it('tests a masked secret beside an emptied one, at the same place, with the stored secrets (the code review, F6)', async () => {
+			const nas = (await shown())[0];
+			handed.length = 0;
+
+			const res = await tested({ ...nas, privateKey: '' });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(handed.map((config) => [config.password, config.privateKey])).toEqual([[SECRETS.sftpPassword, SECRETS.sftpKey]]);
+		});
+
+		it('answers a Test the same as two saved destinations with the save’s own words, not "save it first" (the code review, F4)', async () => {
+			store([
+				{ ...NAS, password: 'the-first-password' },
+				{ ...NAS, password: 'the-second-password' }
+			]);
+
+			await refusedWith(
+				() => tested({ ...NAS, password: '', privateKey: '' }),
+				'Backup destination "NAS": more than one saved destination matches it, so its saved secret cannot be told apart. ' +
+					'Remove the destinations named "NAS" (the page\'s Remove removes every one of that name, and removing a destination is the ' +
+					"superadmin's) and add it once with its secret typed."
+			);
+		});
+
+		it('tests the stored entry of a saved destination sent as the GET shows it, never what was sent (case 18, ruling P3)', async () => {
+			const nas = (await shown())[0];
+			handed.length = 0;
+
+			const res = await tested({ ...nas, host: 'NAS.Example.Test' });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(handed).toEqual([NAS]);
+		});
+	});
 });
 
 // ─── Google Drive asks for its own files (card 2188) ─────────────────────────
@@ -4954,6 +5160,83 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 		expect(await new GDriveDestination(config as GDriveDestinationConfig).test()).toEqual({
 			success: true,
 			message: 'Connected to Google Drive folder (0 existing files)'
+		});
+	});
+
+	describe('a service account signs in with a JWT built from its key alone (card 2939)', () => {
+		const MARKER = 'zz-2939-drive';
+		const KEY = {
+			type: 'service_account',
+			project_id: 'project-2939',
+			private_key_id: 'key-id-2939',
+			private_key: 'private-key-2939',
+			client_email: 'robot-2939@project.iam.example.test',
+			client_id: '2939'
+		};
+		const robot = (json: string): GDriveDestinationConfig => ({ type: 'gdrive', name: 'R', authMethod: 'service_account', serviceAccountJson: json, folderId: 'folder-2939' });
+		const driveCalls = () => vi.mocked(google.drive).mock.calls as unknown as [{ auth: unknown }][];
+
+		it('hands Drive a JWT of the email, key, key ID and drive.file alone; no GoogleAuth, no fromJSON, and token_uri and quota_project_id reach nothing (cases 11, 22)', async () => {
+			const spies = [
+				vi.spyOn(google.auth.GoogleAuth.prototype, 'getClient'),
+				vi.spyOn(google.auth.GoogleAuth.prototype, 'fromJSON'),
+				vi.spyOn(google.auth.JWT.prototype, 'fromJSON')
+			];
+			onTestFinished(() => spies.forEach((spy) => spy.mockRestore()));
+			files.get.mockResolvedValue(found('folder-2939'));
+			vi.mocked(google.drive).mockClear();
+
+			const result = await new GDriveDestination(
+				robot(JSON.stringify({ ...KEY, token_uri: `https://${MARKER}.invalid/token`, quota_project_id: `quota-${MARKER}`, universe_domain: 'googleapis.com' }))
+			).test();
+
+			expect(result.success, result.message).toBe(true);
+			const auth = driveCalls()[0][0].auth as InstanceType<typeof google.auth.JWT>;
+			expect(auth).toBeInstanceOf(google.auth.JWT);
+			expect({
+				email: auth.email,
+				key: auth.key,
+				keyId: auth.keyId,
+				scopes: auth.scopes,
+				keyFile: auth.keyFile,
+				subject: auth.subject,
+				additionalClaims: auth.additionalClaims,
+				quotaProjectId: auth.quotaProjectId,
+				apiKey: auth.apiKey,
+				universeDomain: auth.universeDomain
+			}).toEqual({
+				email: KEY.client_email,
+				key: KEY.private_key,
+				keyId: KEY.private_key_id,
+				scopes: [DRIVE_FILE_SCOPE],
+				keyFile: undefined,
+				subject: undefined,
+				additionalClaims: undefined,
+				quotaProjectId: undefined,
+				apiKey: undefined,
+				universeDomain: 'googleapis.com'
+			});
+			for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			['an external_account JSON (case 12)', JSON.stringify({ type: 'external_account', token_url: `https://${MARKER}.invalid`, credential_source: { file: '/etc/hostname' } }), SERVICE_ACCOUNT_NOT_A_KEY],
+			['null (case 19)', 'null', SERVICE_ACCOUNT_NOT_A_KEY],
+			['0 (case 19)', '0', SERVICE_ACCOUNT_NOT_A_KEY],
+			['"" (case 19)', '""', SERVICE_ACCOUNT_NOT_A_KEY],
+			['[] (case 19)', '[]', SERVICE_ACCOUNT_NOT_A_KEY],
+			['a quoted string (case 19)', `"${MARKER}"`, SERVICE_ACCOUNT_NOT_A_KEY],
+			['text that is not JSON, never quoted (case 20)', `{"private_key": "${MARKER}`, SERVICE_ACCOUNT_NOT_A_KEY],
+			['a key naming another universe (case 21)', JSON.stringify({ ...KEY, universe_domain: `${MARKER}.invalid` }), SERVICE_ACCOUNT_NOT_A_KEY],
+			['what a copy leaves of a key (case 13)', JSON.stringify({ ...KEY, private_key: '' }), CREDENTIALS_NOT_ENTERED]
+		])('answers a Test of a stored JSON holding %s in the run’s own words, and reaches nothing', async (_shape, json, says) => {
+			vi.mocked(google.drive).mockClear();
+
+			const result = await new GDriveDestination(robot(json)).test();
+
+			expect(result).toEqual({ success: false, message: says });
+			expect(JSON.stringify(result)).not.toContain(MARKER);
+			expect(google.drive).not.toHaveBeenCalled();
 		});
 	});
 

@@ -600,19 +600,24 @@
 		// The confirm closes on this return; the Test runs after it, not awaited
 		// inside it, so that the dialog does not wait on a Test that can take
 		// many seconds (the code review's F2).
-		void testSavedKey(name, updated[idx]);
+		void testSavedKey(name);
 	}
 
 	/**
 	 * Test a destination whose host key was just saved, as the server now holds
 	 * it, read again: its secret masked and its key as stored, which is all a
 	 * Test keeps a masked secret for (M1, M3). Where it could not be read back,
-	 * it is tested as it was sent.
+	 * it says so and tests nothing: a Test runs only a saved destination as it
+	 * is stored (card 2939), and the destination as sent may not be that (the
+	 * code review's F10).
 	 */
-	async function testSavedKey(name: string, sentAs: DestinationUI) {
+	async function testSavedKey(name: string) {
 		const started = toasts.navigation();
 		if (!(await loadBackupConfig(true))) showToast(SETTINGS_UNREAD, 'error', started);
-		await testDestination(backupDestinations.find(d => d.name === name) ?? sentAs);
+		else {
+			const saved = backupDestinations.find(d => d.name === name);
+			if (saved) await testDestination(saved);
+		}
 	}
 
 	/** ✅ Confirm this key: the page's confirm asks for the caller's own password (card 2701), and Confirm saves the key. */

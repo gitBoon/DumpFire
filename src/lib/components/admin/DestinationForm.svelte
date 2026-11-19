@@ -152,7 +152,7 @@
 				{/if}
 			{:else}
 				<div class="form-row">
-					<textarea placeholder="Service Account JSON" bind:value={destServiceAccountJson} class="form-input" rows="4" style="font-family: monospace; font-size: 0.72rem"></textarea>
+					<textarea placeholder="Paste the service account's JSON key file" bind:value={destServiceAccountJson} class="form-input" rows="4" style="font-family: monospace; font-size: 0.72rem"></textarea>
 				</div>
 			{/if}
 		{:else if newDestType === 'onedrive'}
@@ -243,10 +243,10 @@
 			</p>
 		{:else}
 			<div class="form-row">
-				<textarea placeholder="Paste Service Account JSON credentials" bind:value={destServiceAccountJson} class="form-input" rows="5" style="font-family: monospace; font-size: 0.72rem"></textarea>
+				<textarea placeholder="Paste the service account's JSON key file" bind:value={destServiceAccountJson} class="form-input" rows="5" style="font-family: monospace; font-size: 0.72rem"></textarea>
 			</div>
 			<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
-				Create a Service Account in Google Cloud Console → Enable Drive API → Share the folder with the service account email.
+				Create a Service Account in Google Cloud Console → Enable Drive API → on the service account's <strong>Keys</strong>, Add key → Create new key → JSON, and paste the whole file here. Only a service account's key file from Google is accepted. Share the folder with the service account email.
 			</p>
 		{/if}
 		{:else if newDestType === 'onedrive'}

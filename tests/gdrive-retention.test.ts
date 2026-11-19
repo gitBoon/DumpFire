@@ -52,9 +52,11 @@
  * An upload whose Backup History row cannot be written (card 2417) is a
  * success with a note: retention runs, no failure mail, no try again.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { initBackupScheduler, lastScheduledBackupAt, runBackup, saveBackupConfig } from '$lib/server/backup';
-import type { DestinationConfig } from '$lib/server/backup-destinations';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { getBackupConfig, initBackupScheduler, lastScheduledBackupAt, runBackup, saveBackupConfig } from '$lib/server/backup';
+import { GDriveDestination, type DestinationConfig } from '$lib/server/backup-destinations';
+import { CREDENTIALS_NOT_ENTERED } from '$lib/server/backup-secrets';
+import { sealedForRestore } from '$lib/server/stored-secrets';
 import { sqlite } from '$lib/server/db';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
@@ -1169,5 +1171,26 @@ describe('An upload whose Backup History row cannot be written is a success, wit
 		expect(backupLines().filter((l) => l.level === 'WARN' && l.message.startsWith('Scheduled backup failed at every destination'))).toEqual([]);
 		expect(sent.emails).toEqual([]);
 		expect(errors('Backup History row for Offsite could not be written, though')).toHaveLength(1);
+	});
+});
+
+describe('a restored service account, as the GET shows it, is tested as stored (card 2939’s code review, F1)', () => {
+	it('answers its Test 200 with "not entered", testing the stored entry: key-less JSON sent back types no secret', async () => {
+		// As a backup's copy leaves Google's key file, brought to the rule by the restore.
+		const copy = { type: 'service_account', project_id: 'p-2939', private_key_id: 'key-id-2939', private_key: '', client_email: 'robot@p-2939.iam.example.test', client_id: '2939', token_uri: '' };
+		const config = { schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 7, notifyOnFailure: false, notifyEmail: '' };
+		const robot = { type: 'gdrive', name: 'Robot', authMethod: 'service_account', folderId: 'folder-1', serviceAccountJson: JSON.stringify(copy) };
+		const restored = sealedForRestore('settings', [{ key: 'backup_config', value: JSON.stringify({ ...config, destinations: [robot] }) }]);
+		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('backup_config', restored.rows[0].value);
+		const admin = makeUser({ role: 'admin' });
+		const shown = (await api('GET', '/api/admin/backup', { user: admin, credential: sessionCredential(makeSession(admin)) })).body.destinations[0];
+		const test = vi.spyOn(GDriveDestination.prototype, 'test');
+		onTestFinished(() => test.mockRestore());
+
+		const res = await api('POST', '/api/admin/backup/test', { user: admin, body: shown });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toEqual({ success: false, message: CREDENTIALS_NOT_ENTERED });
+		expect(test.mock.contexts.map((destination) => (destination as unknown as { config: unknown }).config)).toEqual([getBackupConfig().destinations[0]]);
 	});
 });

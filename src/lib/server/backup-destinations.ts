@@ -16,7 +16,8 @@ import { Client as GraphClient } from '@microsoft/microsoft-graph-client';
 import { ClientSecretCredential } from '@azure/identity';
 import { Readable } from 'node:stream';
 import { readChoice, readNumber, readText, type RequestBody } from './request-body';
-import { trimHost } from './backup-secrets';
+import { serviceAccountJsonMasked, serviceAccountMissing, trimHost } from './backup-secrets';
+import { readServiceAccountJson, serviceAccountKey, type ServiceAccountRefusal } from './service-account-json';
 import {
 	HOST_KEY_NOT_CONFIRMED,
 	HOST_KEY_REFUSAL,
@@ -30,7 +31,7 @@ import {
 	typeOf,
 	type HostKey
 } from './ssh-host-key';
-import { dumpfireFolderName } from '$lib/drive-scope';
+import { DRIVE_FILE_SCOPE, dumpfireFolderName } from '$lib/drive-scope';
 
 // ─── Common Interface ────────────────────────────────────────────────────────
 
@@ -89,7 +90,12 @@ export interface GDriveDestinationConfig {
 	type: 'gdrive';
 	name: string;
 	authMethod: 'service_account' | 'oauth'; // 'service_account' for enterprise, 'oauth' for personal
-	serviceAccountJson?: string; // JSON string of service account credentials (service_account mode)
+	/**
+	 * The JSON key file Google gives for a service account (service_account
+	 * mode), as stored: rebuilt by the one rule to the fields DumpFire uses,
+	 * or '' (card 2939, service-account-json.ts). None, or '', under OAuth.
+	 */
+	serviceAccountJson?: string;
 	clientId?: string;           // Google OAuth Client ID (oauth mode)
 	clientSecret?: string;       // Google OAuth Client Secret (oauth mode)
 	refreshToken?: string;       // Stored after OAuth consent flow (oauth mode)
@@ -491,14 +497,25 @@ export class GDriveDestination implements BackupDestination {
 			oauth2Client.setCredentials({ refresh_token: this.config.refreshToken });
 			return google.drive({ version: 'v3', auth: oauth2Client });
 		} else {
-			// Service Account flow
-			if (!this.config.serviceAccountJson) {
-				throw new Error('Service Account JSON not configured');
-			}
-			const credentials = JSON.parse(this.config.serviceAccountJson);
-			const auth = new google.auth.GoogleAuth({
-				credentials,
-				scopes: ['https://www.googleapis.com/auth/drive.file']
+			// A service account (card 2939): its key read by the one rule, once,
+			// and a JWT built from that key's fields alone. The JSON never reaches
+			// the library: `GoogleAuth({ credentials })` would pick its way to sign
+			// in by the JSON's `type`, and an `external_account` JSON reads any
+			// file the server can read and posts it to an address of the sender's
+			// choosing. JSON that is not a key throws the run's own sentence, never
+			// a parse error, which would quote the text.
+			const account = serviceAccountKey(this.config.serviceAccountJson);
+			if (account === null) throw new Error(serviceAccountMissing(this.config.serviceAccountJson));
+			// A literal of exactly these four, never a spread (ruling P5): the
+			// constructor chain reads `universe_domain`, `quota_project_id`,
+			// `credentials`, `transporterOptions`, endpoints, `clientAuthentication`,
+			// `client_secret` and more from its options, and `keyFile` names a file
+			// it reads. None of them may come from the stored JSON.
+			const auth = new google.auth.JWT({
+				email: account.email,
+				key: account.key,
+				keyId: account.keyId,
+				scopes: [DRIVE_FILE_SCOPE]
 			});
 			return google.drive({ version: 'v3', auth });
 		}
@@ -795,6 +812,8 @@ const PASTED_FILES: Record<string, number> = { privateKey: 20000, serviceAccount
  * Text is at most 2,048 characters, but a private key and a service account's
  * JSON, at most 20,000. An SFTP `hostKey` is a host key fingerprint with its
  * type, saved as `<type> SHA256:<43>`, or empty for none (card 2250, R5).
+ * A service account's JSON is read by the one rule and saved rebuilt, and
+ * none but '' is taken with OAuth (card 2939, `readServiceAccountField`).
  *
  * `at` names the destination in a refusal (`destinations[2].port must be a
  * whole number from 1 to 65535`); none for a body that is one destination.
@@ -868,11 +887,46 @@ export function readDestination(
 			// either form an administrator copies, and empty for none (card
 			// 2250, R5); anything else is refused.
 			if (field === 'hostKey' && typeof value === 'string') value = readHostKeyField(value, prefix);
+			// A service account's JSON is read by the one rule and stored
+			// rebuilt (card 2939); refused, in words that never quote it, unless
+			// it is a key of Google's shape or the key-less shape a backup leaves.
+			if (field === 'serviceAccountJson' && typeof value === 'string') {
+				value = readServiceAccountField(value, prefix, destination.authMethod === 'oauth');
+			}
 		}
 		if (value === undefined) continue;
 		destination[field] = value;
 	}
 	return destination as unknown as DestinationConfig;
+}
+
+/** What `readDestination` answers, with 400, to a service account's JSON the rule refuses (card 2939, decision 8), after the field's name. */
+export const SERVICE_ACCOUNT_REFUSALS: Record<ServiceAccountRefusal, string> = {
+	'not-json': 'is not JSON. Paste the whole JSON key file Google gives for the service account.',
+	'not-key':
+		'must be the JSON key file Google gives for a service account: type service_account, with its client_email and private_key as text.',
+	'other-universe': 'names a universe_domain other than googleapis.com. DumpFire backs up to Google Drive at googleapis.com only.'
+};
+
+/** The same, for one sent with a Google Drive destination that signs in with OAuth (card 2939, ruling P4). */
+export const SERVICE_ACCOUNT_UNDER_OAUTH = 'must be empty for a Google Drive destination that signs in with OAuth.';
+
+/**
+ * A service account's JSON as `readDestination` saves it (card 2939): '' as
+ * it is; under OAuth anything else refused (ruling P4); JSON sent masked
+ * (`serviceAccountJsonMasked`, the predicate `keepMaskedSecrets` reads, ruling
+ * P6) as it is, since it is replaced whole by the stored JSON or refused;
+ * otherwise read by the rule (`readServiceAccountJson`) and stored rebuilt,
+ * or a 400 naming `<prefix>serviceAccountJson` in words that never hold any
+ * of the text.
+ */
+function readServiceAccountField(value: string, prefix: string, oauth: boolean): string {
+	if (value === '') return value;
+	if (oauth) throw error(400, `${prefix}serviceAccountJson ${SERVICE_ACCOUNT_UNDER_OAUTH}`);
+	if (serviceAccountJsonMasked(value)) return value;
+	const reading = readServiceAccountJson(value);
+	if ('refusal' in reading) throw error(400, `${prefix}serviceAccountJson ${SERVICE_ACCOUNT_REFUSALS[reading.refusal]}`);
+	return reading.stored;
 }
 
 /**

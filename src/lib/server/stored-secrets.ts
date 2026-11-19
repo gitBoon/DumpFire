@@ -42,7 +42,8 @@
  * transaction, and nothing here writes a log line: the callers do both.
  *
  * Imports nothing from backup-secrets.ts, email.ts or webhooks.ts, which all
- * import this: no cycle.
+ * import this: no cycle. The service account rule is service-account-json.ts,
+ * a leaf (card 2939).
  */
 import type Database from 'better-sqlite3';
 import { randomBytes } from 'node:crypto';
@@ -50,6 +51,7 @@ import { sqlite } from './db';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey, type StoredAtStart } from './mfa-key';
 import { openSealed, sealWith } from './mfa-crypto';
 import { confirmedHostKey } from './ssh-host-key';
+import { normalisedServiceAccount, type ServiceAccountChange } from './service-account-json';
 
 // ─── The envelope ────────────────────────────────────────────────────────────
 
@@ -658,6 +660,41 @@ export function storedSecretsAtStart(database: Database.Database = sqlite): Stor
 	return items;
 }
 
+/** A destination whose service account JSON `normaliseServiceAccounts` changed (card 2939): by name, and how. */
+export type ServiceAccountNormalised = { name: string; change: ServiceAccountChange };
+
+/**
+ * Bring every destination's `serviceAccountJson` in `database`'s
+ * `backup_config` to the one rule's form (`normalisedServiceAccount`,
+ * service-account-json.ts; card 2939, ruling P1), whatever the destination's
+ * type and sign-in method: a key rebuilt to the fields DumpFire uses, its
+ * sealed `private_key` carried byte for byte and never opened (its additional
+ * data binds `client_email` and `private_key_id`, both kept); a
+ * `service_account` object that is not a key, the key-less shape; anything
+ * else, and any JSON on an OAuth or non-Drive entry, ''. Writes only when
+ * something changed, and answers each change, by name. A configuration that
+ * cannot be read is left (`sealPlainSecrets` counts it). Opens no
+ * transaction: the start's is open. Brought once to this form, a second run
+ * changes nothing.
+ */
+export function normaliseServiceAccounts(database: Database.Database = sqlite): ServiceAccountNormalised[] {
+	if (!hasColumns(database, 'settings', 'key', 'value')) return [];
+	const config = configIn(database);
+	if (config === null || !Array.isArray(config.destinations)) return [];
+	const changed: ServiceAccountNormalised[] = [];
+	const destinations = config.destinations.map((destination: unknown) => {
+		if (!isEntry(destination)) return destination;
+		const { value, change } = normalisedServiceAccount(destination);
+		if (change === null) return destination;
+		changed.push({ name: String(destination.name ?? ''), change });
+		return { ...destination, serviceAccountJson: value };
+	});
+	if (changed.length > 0) {
+		database.prepare('UPDATE settings SET value = ? WHERE key = ?').run(JSON.stringify({ ...config, destinations }), BACKUP_CONFIG);
+	}
+	return changed;
+}
+
 /** What `sealPlainSecrets` sealed, by kind, and the backup configurations it could not read. */
 export type SealedCounts = { mail: number; destinationFields: number; webhooks: number; signingKeys: number; unreadableConfigs: number };
 
@@ -876,7 +913,9 @@ export class NoKeyToSeal extends Error {
  * each destination's secret fields in `backup_config`, on every entry, an
  * SFTP one bound to no host key (a restore never takes one from a backup, and
  * gives an entry with its secrets none); in `webhooks`, each secret, bound to
- * its row's id, board and address. Values already sealed are left. `key` is
+ * its row's id, board and address. Each destination's service account JSON is
+ * first brought to the one rule's form (`normalisedServiceAccount`, card
+ * 2939). Values already sealed are left. `key` is
  * asked only when there is something to seal, and none is a `NoKeyToSeal`.
  * Answers the rows and how many values were sealed.
  */
@@ -907,8 +946,13 @@ export function sealedForRestore(
 			}
 			if (!isEntry(config) || !Array.isArray(config.destinations)) return row;
 			let changed = 0;
-			const destinations = config.destinations.map((destination: unknown) => {
-				if (!isEntry(destination)) return destination;
+			const destinations = config.destinations.map((restored: unknown) => {
+				if (!isEntry(restored)) return restored;
+				// Its service account JSON brought to the one rule's form first (card
+				// 2939, ruling P1), so that nothing else reaches the live file.
+				const normalised = normalisedServiceAccount(restored);
+				const destination = normalised.change === null ? restored : { ...restored, serviceAccountJson: normalised.value };
+				if (normalised.change !== null) changed++;
 				const boundTo = destination.type === 'sftp' ? { ...destination, hostKey: undefined } : destination;
 				const result = sealedDestination(destination, seal, true, boundTo);
 				changed += result.count;

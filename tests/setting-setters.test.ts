@@ -899,6 +899,25 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 			expect(stored().destinations.find((d) => d.name === "Chief's")).toMatchObject({ bucket: 'ann-bucket', secretAccessKey: 'chief-real-secret' });
 		});
 
+		it('gives a key-less service account moved back to where the superadmin put it to him again: its JSON sent back as the GET shows it types no secret (card 2939’s code review, F1)', async () => {
+			const keyless = JSON.stringify({ type: 'service_account', client_email: 'robot@p-2939.iam.example.test', private_key_id: 'key-id-2939', private_key: '' });
+			const ROBOT = { type: 'gdrive', name: 'Robot', authMethod: 'service_account', folderId: 'chief-folder', serviceAccountJson: keyless };
+			expect((await api('PUT', '/api/admin/backup', confirmedAs(chief, { destinations: [...(await shown(as(chief))), ROBOT] }))).status).toBe(200);
+			const robotSetter = () => setters().filter((s) => s.setting === 'backup_destination:Robot');
+			const moveTo = async (folderId: string) => {
+				const dests = (await shown(as(ann))).map((d) => (d.name === 'Robot' ? { ...d, folderId } : d));
+				expect(dests.find((d) => d.name === 'Robot')!.serviceAccountJson).toBe(keyless);
+				const res = await api('PUT', '/api/admin/backup', confirmedAs(ann, { destinations: dests }));
+				expect(res.status, JSON.stringify(res.body)).toBe(200);
+			};
+			await moveTo('ann-folder');
+			expect(robotSetter()).toEqual([{ setting: 'backup_destination:Robot', userId: ann.id }]);
+
+			await moveTo('chief-folder');
+
+			expect(robotSetter()).toEqual([{ setting: 'backup_destination:Robot', userId: chief.id }]);
+		});
+
 		it('gives a place an administrator visited first to another administrator who moves there with the password typed, and to the superadmin who moves there with none', async () => {
 			expect((await smtp(chief, { host: 'smtp.chief.example', port: 587, pass: 'chief-secret', appUrl: 'https://chief.example' })).status).toBe(200);
 			// Ann's App URL moves as an administrator's were recorded before card 2847.

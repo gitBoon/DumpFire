@@ -41,7 +41,7 @@ import {
 	SftpDestination,
 	type SftpDestinationConfig
 } from '$lib/server/backup-destinations';
-import { SECRET_MASK } from '$lib/server/backup-secrets';
+import { SAVE_BEFORE_TEST, SECRET_MASK } from '$lib/server/backup-secrets';
 import { sqlite } from '$lib/server/db';
 import { escapeHtml } from '$lib/escape-html';
 import { api } from './helpers/api';
@@ -183,6 +183,16 @@ const NAS: SftpDestinationConfig = {
 const confirmed = (blob: Buffer, type: string, more: Partial<SftpDestinationConfig> = {}) =>
 	({ ...NAS, hostKey: `${type} ${fingerprint(blob)}`, ...more }) as SftpDestinationConfig;
 
+/**
+ * `destination` saved as the only one, and as the page sends it to a Test:
+ * its password masked. A Test runs only a saved destination, exactly as
+ * stored (card 2939, ruling P3).
+ */
+const savedForTest = (destination: SftpDestinationConfig) => {
+	saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 7, destinations: [destination], notifyOnFailure: false, notifyEmail: '' });
+	return { ...destination, password: SECRET_MASK };
+};
+
 // Each host key failure says what happened in its first 40 characters, which
 // is what Backup History shows of a message (the card 2250 review's S2).
 const NOT_CONFIRMED =
@@ -248,7 +258,7 @@ describe('a Test with no confirmed key (decision 2, R6)', () => {
 	it('answers the key the server presented, sends nothing and makes no directory', async () => {
 		const chief = makeUser({ username: 'chief', role: 'superadmin' });
 
-		const res = await api('POST', '/api/admin/backup/test', { user: chief, body: NAS });
+		const res = await api('POST', '/api/admin/backup/test', { user: chief, body: savedForTest(NAS) });
 
 		const shown = `ssh-ed25519 ${fingerprint(ED25519)}`;
 		expect(res.status).toBe(200);
@@ -329,7 +339,7 @@ describe('a key that does not match (decision 5)', () => {
 		const stored = `ssh-ed25519 ${fingerprint(ED25519)}`;
 		const presented = `ssh-ed25519 ${fingerprint(OTHER_ED25519)}`;
 
-		const res = await api('POST', '/api/admin/backup/test', { user: chief, body: confirmed(ED25519, 'ssh-ed25519') });
+		const res = await api('POST', '/api/admin/backup/test', { user: chief, body: savedForTest(confirmed(ED25519, 'ssh-ed25519')) });
 
 		expect(res.status).toBe(200);
 		expect(res.body).toEqual({
@@ -371,7 +381,7 @@ describe('a server that no longer offers a key of the confirmed type (R3)', () =
 		serve(RSA);
 		const stored = `ssh-ed25519 ${fingerprint(ED25519)}`;
 
-		const res = await api('POST', '/api/admin/backup/test', { user: chief, body: confirmed(ED25519, 'ssh-ed25519') });
+		const res = await api('POST', '/api/admin/backup/test', { user: chief, body: savedForTest(confirmed(ED25519, 'ssh-ed25519')) });
 
 		expect(res.status).toBe(200);
 		expect(res.body).toEqual({ success: false, message: typeNotOffered('ssh-ed25519'), confirmedHostKey: stored });
@@ -455,13 +465,21 @@ describe('a Test that keeps a masked secret (the card 2250 review’s M1)', () =
 		expect(server.authenticated).toEqual([]);
 	});
 
-	it('may still be given a key with the password typed: the typed password is the caller’s own', async () => {
+	// Card 2939, ruling P3: a Test runs only a saved destination as it is stored, so a password
+	// typed into one, with a key or without, is refused, and nothing connects (it was the
+	// caller's own to try, until then).
+	it('is refused when the password is typed, with a key or without, and nothing connects', async () => {
 		stored();
+		const user = chief();
 
-		const res = await api('POST', '/api/admin/backup/test', { user: chief(), body: { ...NAS, password: 'typed-for-this-test', hostKey: ED25519_KEY() } });
+		for (const hostKey of [ED25519_KEY(), '']) {
+			const res = await api('POST', '/api/admin/backup/test', { user, body: { ...NAS, password: 'typed-for-this-test', hostKey } });
 
-		expect(res.body).toEqual({ success: true, message: 'Connected to nas.example.test:22' });
-		expect(server.authenticated.map((config) => config.password)).toEqual(['typed-for-this-test']);
+			expect(res.status).toBe(400);
+			expect(res.body.message).toBe(SAVE_BEFORE_TEST);
+		}
+		expect(server.configs).toEqual([]);
+		expect(server.authenticated).toEqual([]);
 	});
 });
 
@@ -471,7 +489,7 @@ describe('a server that shows the confirmed key but cannot sign with it (the car
 		server.forged = true;
 		const stored = `ssh-ed25519 ${fingerprint(ED25519)}`;
 
-		const res = await api('POST', '/api/admin/backup/test', { user: chief, body: confirmed(ED25519, 'ssh-ed25519') });
+		const res = await api('POST', '/api/admin/backup/test', { user: chief, body: savedForTest(confirmed(ED25519, 'ssh-ed25519')) });
 
 		expect(res.status).toBe(200);
 		expect(res.body).toEqual({ success: false, message: signatureFailed(), confirmedHostKey: stored });

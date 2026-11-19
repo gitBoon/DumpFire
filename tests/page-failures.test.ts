@@ -3034,7 +3034,7 @@ const WRITES: Record<string, Write[]> = {
 		{
 			name: 'confirmHostKey',
 			via: 'saveBackupConfig',
-			done: ['void testSavedKey(name, updated[idx])']
+			done: ['void testSavedKey(name)']
 		},
 		{ name: 'runManualBackup', reads: 'sentAsking', done: ['await loadBackupConfig()'] }
 	],
@@ -7438,7 +7438,7 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 		// With the caller's own password (card 2701); once saved, the Test is
 		// started and not awaited, so the confirm closes first (its code review's F2).
 		expect(text.indexOf('saveBackupConfig(was, proof)')).toBeGreaterThan(-1);
-		expect(text.indexOf('void testSavedKey(name, updated[idx]);')).toBeGreaterThan(text.indexOf('saveBackupConfig(was, proof)'));
+		expect(text.indexOf('void testSavedKey(name);')).toBeGreaterThan(text.indexOf('saveBackupConfig(was, proof)'));
 		expect(callsOf(fn, 'testDestination')).toHaveLength(0);
 		// The Test is of the destination as the server now holds it, read again
 		// after the save (the review's M3): its secret masked, its key as stored.
@@ -7447,7 +7447,8 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 		expect(callsOf(testing, 'testDestination')).toHaveLength(1);
 		const reload = tested.indexOf('await loadBackupConfig(true)');
 		expect(reload).toBeGreaterThan(-1);
-		expect(tested.indexOf('await testDestination(backupDestinations.find(d => d.name === name) ?? sentAs)')).toBeGreaterThan(reload);
+		expect(tested.indexOf('const saved = backupDestinations.find(d => d.name === name);')).toBeGreaterThan(reload);
+		expect(tested.indexOf('if (saved) await testDestination(saved);')).toBeGreaterThan(tested.indexOf('const saved ='));
 	});
 
 	it('has a private key box in the SFTP part of the inline edit form, as the add form has, filled as the password is (the review’s M2)', () => {
@@ -7499,11 +7500,13 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 			const unread = said[0].parent;
 			expect(ts.isIfStatement(unread) && unread.expression.getText(), name).toBe('!(await loadBackupConfig(true))');
 		}
-		// Confirm still tests, with the key it saved where the list was not read back.
-		const confirming = functionNamed(tree, 'testSavedKey').getText().replace(/\s+/g, ' ');
-		expect(confirming.indexOf('await testDestination(backupDestinations.find(d => d.name === name) ?? sentAs)')).toBeGreaterThan(
-			confirming.indexOf("showToast(SETTINGS_UNREAD, 'error', started)")
-		);
+		// Confirm tests nothing where the list was not read back: a Test runs only a saved destination as
+		// stored (card 2939), and the destination as sent may not be that (card 2939's code review, F10).
+		const unreadConfirm = statementsOf(functionNamed(tree, 'testSavedKey'), "showToast(SETTINGS_UNREAD, 'error', started)")[0].parent;
+		expect(ts.isIfStatement(unreadConfirm)).toBe(true);
+		const branches = unreadConfirm as ts.IfStatement;
+		expect(callsOf(branches.thenStatement, 'testDestination')).toHaveLength(0);
+		expect(branches.elseStatement && callsOf(branches.elseStatement, 'testDestination')).toHaveLength(1);
 	});
 
 	it('marks an SFTP destination with no confirmed host key on its card, as Connected marks a Drive one (the review’s S1)', () => {

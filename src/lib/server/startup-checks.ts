@@ -118,7 +118,7 @@ import { END_PLAIN_REQUEST_LINKS } from './request-tokens';
 import { signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
-import { secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './backup-secrets';
+import { quotedName, secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './backup-secrets';
 import { parseAllowInside } from './webhook-address';
 import {
 	activeWebhooksRefused,
@@ -156,6 +156,7 @@ import {
 	checkpointTruncate,
 	markScrubPending,
 	forgetStoredSecrets,
+	normaliseServiceAccounts,
 	recordKeyCheck,
 	replaceUnopenableSigningKeys,
 	resealStoredSecrets,
@@ -163,6 +164,7 @@ import {
 	sealedTotal,
 	storedSecretsAtStart,
 	type SealedCounts,
+	type ServiceAccountNormalised,
 	type StoredSecret
 } from './stored-secrets';
 
@@ -822,6 +824,9 @@ function namedSecrets(secrets: readonly { where: string }[]): string {
  * one rule (S2; the code review's E1: before anything is sealed, so that a
  * stale check of another key while nothing is sealed is replaced, the T35
  * rule, and not refused once the sweep has sealed something), then every
+ * destination's service account JSON brought to the one rule's form
+ * (`normaliseServiceAccounts`, card 2939), the scrub marked when it changed
+ * any, with one WARN after the commit naming each, then every
  * plain value sealed (`sealPlainSecrets`: the mail password, each
  * destination's secret fields, each webhook's secret and the three signing
  * keys), each signing key that does not open replaced by a new one (S14),
@@ -851,11 +856,17 @@ export function sealStoredSecretsAtStart(
 	let counts: SealedCounts;
 	let replaced: string[];
 	let firstSealing = false;
+	let normalised: ServiceAccountNormalised[];
 	try {
 		if (key === null) throw new Error('no MFA key is loaded');
-		[counts, replaced, firstSealing] = database
-			.transaction((): [SealedCounts, string[], boolean] => {
+		[counts, replaced, firstSealing, normalised] = database
+			.transaction((): [SealedCounts, string[], boolean, ServiceAccountNormalised[]] => {
 				recordKeyCheck(database, key);
+				// Every service account JSON brought to the one rule's form (card
+				// 2939, ruling P1), before anything is sealed: what it drops leaves
+				// the file with this start's scrub, but it is no first sealing.
+				const normalisedNow = normaliseServiceAccounts(database);
+				if (normalisedNow.length > 0) markScrubPending(database);
 				const sealedNow = sealPlainSecrets(database, key);
 				const replacedNow = replaceUnopenableSigningKeys(database, key);
 				let first = false;
@@ -866,7 +877,7 @@ export function sealStoredSecretsAtStart(
 							.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING')
 							.run(STORED_SECRETS_FIRST_SEALED, new Date().toISOString()).changes === 1;
 				}
-				return [sealedNow, replacedNow, first];
+				return [sealedNow, replacedNow, first, normalisedNow];
 			})
 			.immediate();
 	} catch (err) {
@@ -905,6 +916,7 @@ export function sealStoredSecretsAtStart(
 				' Copies of the database made before today (volume snapshots, cold copies) hold them in plain: change them if any such copy may be out of your hands.'
 		);
 	}
+	if (normalised.length > 0) warnOnConsoleAlways(serviceAccountsNormalisedLine(normalised));
 	if (replaced.length > 0) {
 		warnOnConsoleAlways(
 			`Replaced ${replaced.join(', ')}, which could not be opened with this server's MFA key, by a new one. A new ` +
@@ -920,6 +932,28 @@ export function sealStoredSecretsAtStart(
 	const setByThisStart = marker.value >= PROCESS_STARTED_AT;
 	if (setByThisStart && scrubStoredSecrets(database)) return;
 	later(() => scrubStoredSecrets(database));
+}
+
+/** How each change of `normaliseServiceAccounts` is said (card 2939). */
+const SERVICE_ACCOUNT_CHANGE_WORDS: Record<ServiceAccountNormalised['change'], string> = {
+	rebuilt: 'kept its key, every other field dropped',
+	'key-cleared': 'its key removed, as the JSON is not a service account key file from Google: enter the key file again',
+	cleared: 'cleared, as it held JSON that is not a service account key file, or JSON on a destination that does not sign in with one'
+};
+
+/**
+ * The start's one WARN line for the service account JSON it brought to the
+ * one rule's form (card 2939, ruling P1): each destination by name, printed
+ * and quoted as card 2270's lines quote one (`quotedName`, a `"` in it
+ * escaped), and how it changed, never a value; and that what
+ * was removed may still be in older copies.
+ */
+function serviceAccountsNormalisedLine(normalised: readonly ServiceAccountNormalised[]): string {
+	const each = normalised.map(({ name, change }) => `destination ${quotedName(printable(name))} (${SERVICE_ACCOUNT_CHANGE_WORDS[change]})`).join('; ');
+	return (
+		`Rewrote the service account JSON of ${normalised.length} backup destination(s) to the fields DumpFire signs in with: ${each}. ` +
+		"What was removed may still be in older copies of the database: the import's safety copy, backups and volume snapshots."
+	);
 }
 
 /** How long after the start the first background scrub is tried, and how long between tries after a failure (E4). */

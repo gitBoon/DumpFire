@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.52
+version: 1.53
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2939
+  - service-account-key
   - card-2938
   - card-2898
   - secrets-at-rest
@@ -33,7 +35,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "Scheduled backup system with multi-destination support, a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -695,14 +697,16 @@ flowchart TD
   another shape (an `authorized_user`'s `client_secret` and `refresh_token`), carried it into
   every copy and export, a `privateKey` sealed since card 2898. A restore still knows the same
   account by `client_email` and `private_key_id` and fills this server's JSON whole.
-  A service account JSON has its key only where it is an object whose `type` is
-  `service_account` with text in `private_key` (R2): Google's library picks its way to sign in
-  by `type`, and only the `service_account` way needs `private_key`. An entry here whose JSON is
-  not such a key (one holding only a `privateKey`, another type, no type) is never used to fill,
-  so the restored entry is listed to enter (R3); `runBackup` does not try one, and says "This
-  destination's JSON is not a service account key with a private_key …"
-  (`SERVICE_ACCOUNT_NOT_A_KEY`) where JSON was entered that way, and that its credentials are
-  not entered where the JSON is empty or as a copy leaves it.
+  A service account JSON has its key only where the one rule finds one (R2, and card 2939's
+  `serviceAccountKey`): an object whose `type` is `service_account`, with text `private_key` and
+  `client_email`, each field the rule reads text, and Google's own universe. An entry here whose
+  JSON is not such a key (one holding only a `privateKey`, another type, no type, no
+  `client_email`) is never used to fill, so the restored entry is listed to enter (R3);
+  `runBackup` does not try one, and says "This destination's JSON is not a service account key
+  file from Google, so it is not tried …" (`SERVICE_ACCOUNT_NOT_A_KEY`) where JSON was entered
+  that way, and that its credentials are not entered where the JSON is empty or as a copy leaves
+  it. Since card 2939 a restore brings each destination's JSON to the rule before it reaches the
+  live file (`sealedForRestore`), and so does every start.
 - **The live file holds those secrets sealed** (card 2898): the mail password, each
   destination's secret fields and each webhook's secret are stored under a key derived from the
   MFA key file, bound to where each is used, and so are `backup_seal_key`, the request-form key
@@ -749,7 +753,7 @@ flowchart LR
     subgraph Destinations
         SFTP["SFTP\nssh2-sftp-client"]
         S3["Amazon S3\nAWS SDK v3"]
-        GDrive["Google Drive\ngoogleapis OAuth"]
+        GDrive["Google Drive\ngoogleapis: OAuth, or a\nservice account key (JWT)"]
         OneDrive["OneDrive\nMicrosoft Graph"]
     end
 
@@ -766,6 +770,67 @@ Each destination implements three operations:
 - **upload** — Push a backup buffer with a timestamped filename
 - **list** — List existing backups for retention cleanup
 - **delete** — Remove old backups beyond retention limit
+
+**Google Drive's service account: its key file alone** (card 2939). A Google Drive destination
+that signs in with a service account holds the JSON key file Google gives for it
+(`serviceAccountJson`). Until card 2939 it was handed as pasted to `GoogleAuth({ credentials })`,
+which picks its way to sign in by the JSON's `type`: an `external_account` JSON read any file the
+server could read (`credential_source.file`: the MFA key file, the database) and posted it to a
+`token_url` of the sender's choosing, before anything reached Google, and JSON that read as
+`null` fell back to the server's own Google identity. Now one rule reads it
+(`readServiceAccountJson`, `src/lib/server/service-account-json.ts`, a module that imports
+nothing): a JSON object whose `type` is `service_account`, each field the rule reads (`type`,
+`client_email`, `private_key`, `private_key_id`, `universe_domain`) text where present, and either
+a key (`private_key` and `client_email` text, `universe_domain` absent, `''` or `googleapis.com`)
+or the key-less shape a backup's copy leaves (`private_key` empty or absent). It is stored rebuilt to
+`type`, `project_id`, `client_email`, `private_key_id`, `client_id` and `private_key`, each only
+where it is text, in the order given; every other field is dropped, whatever it holds. `getDrive`
+builds `new google.auth.JWT({ email, key, keyId, scopes: [drive.file] })` from the key's fields
+alone, a literal of those four, and never `GoogleAuth`; JSON that is not a key throws the run's
+own sentence, never a parse error (which would quote the text). The same rule is applied to every
+stored destination at every start (`normaliseServiceAccounts`, with one `[WARN] [STARTUP]` line
+naming each destination it changed, never a value) and in a restore (`sealedForRestore`), so a
+JSON that is not a key cannot stay stored: another type, text that is not an object, and any JSON
+on an OAuth or a non-Drive destination become `''`; a `service_account` JSON that is not a key
+loses its key. A sealed `private_key` is carried byte for byte, never opened. **A Test runs only a
+saved destination**, exactly as it is stored, for every type: a Test with a secret typed, or with
+any setting that is not secret changed, is refused (`destinationToTest`): with its secret masked,
+in the save's own words ("type its … again"); otherwise "Save the destination first, then Test
+it.". Nothing typed into a Test is ever connected to.
+
+```mermaid
+sequenceDiagram
+    participant A as Admin page
+    participant S as PUT /api/admin/backup
+    participant T as POST /api/admin/backup/test
+    participant R as readDestination
+    participant K as keepMaskedSecrets / destinationToTest
+    participant B as runBackup, start, restore
+    participant G as getDrive
+    participant J as google.auth.JWT
+    A->>S: serviceAccountJson
+    S->>R: the rule (readServiceAccountJson)
+    alt not JSON, not a key file, or another universe
+        R-->>A: 400 in fixed words, nothing quoted, nothing saved
+    else with OAuth, anything but empty
+        R-->>A: 400, must be empty
+    else holds the mask
+        R->>K: replaced whole by the stored JSON, or refused
+    else a key, or the key-less shape
+        R-->>S: stored rebuilt to the fields DumpFire uses
+    end
+    A->>T: a saved destination, as the GET shows it
+    T->>K: no secret typed, the same as the one stored entry
+    K-->>T: the stored entry, or 400 "Save the destination first"
+    T->>G: test()
+    B->>G: upload, list, delete (after credentialsMissing)
+    G->>G: serviceAccountKey, once
+    alt no key
+        G-->>T: the run's own sentence, nothing reached
+    else a key
+        G->>J: { email, key, keyId, scopes }
+    end
+```
 
 **Google Drive's scope and folder** (card 2188). Connect (`POST
 /api/admin/backup/gdrive/auth`) asks for `https://www.googleapis.com/auth/drive.file`
@@ -986,7 +1051,9 @@ the destination as the server now holds it. The card 2250 review added:
   `confirmHostKey()` call `loadBackupConfig(true)` once saved, `quiet` leaving the section in
   place, so the list holds the secrets masked as the GET shows them. It held the password as
   typed, and a later save of the destination "with the password left masked" sent it typed and
-  was saved, not refused.
+  was saved, not refused. Since card 2939's code review (F10), Confirm's Test (`testSavedKey`)
+  runs only once the list is read back, on the destination as saved; where it could not be read,
+  the toast says so and nothing is tested, since a Test runs only a saved destination as stored.
 - **A mark on the card** (S1): an SFTP destination with no `hostKey` shows "⚠️ Host key not
   confirmed — press Test" beside its buttons.
 - **No stale box** (S3): `forgetHostKeyCheck(name)` clears a destination's box and moves on its

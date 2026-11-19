@@ -1,10 +1,12 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.275
+version: 1.276
 status: Living
 date: 2026-11-19
 tags:
+  - card-2939
+  - service-account-key
   - card-2938
   - card-2898
   - secrets-at-rest
@@ -67,7 +69,7 @@ tags:
   - attachments
   - two-step-sign-in
   - invites
-description: "How DumpFire's automated tests are built and run: card 2938's backup copy keeping only a service account JSON's allowlisted fields and its stricter service account key rule (tests/backups.test.ts, 19 tests added with its code review, 13,120 in all), card 2923's held already-off webhooks and the owners' mail at every ending of an account's access (9 tests added, 13,029 in all), card 2925's import that cannot write one of its files (tests/backups.test.ts, 6 cases), card 2915's two-step reset ending the keys (tests/mfa-reset.test.ts T17 to T19, tests/mfa-reset-script.test.ts T21, T23, T33 to T35, and a source scan that nothing under src keeps keys at a reset), card 2910's every upload's limits (tests/uploads.test.ts and tests/v1-attachments.test.ts, the places given back on every exit, the gate's count and Connection: close, and the new tests/attachment-names.test.ts), card 2671's disabled accounts (tests/account-disable.test.ts and the cases in each gate's, picker's and mail's own suite, the delete tests on a disabled account, the OpenAPI 1.13.0 note), card 2899's import that keeps the system log (restore, route, working copy and panel cases), card 2914's task request rows (Q1 to Q5) and the request rows of access-every-route naming who cannot read, card 2911's milestone rows of not-found-not-forbidden, access-every-route without its stillForbids marker and 44 expected fails, and unopenableSays by caller, card 2894's pins of the report schedules paused by a password change and a two-step reset, the in-memory database fixture, the route and form-action helpers, the harness that sends a request through the gate, the table that says who may call every API route and the tests made from it, the tests that read the source to keep every API failure one shape and the OpenAPI document true, the helpers that prove a request is all or nothing, the faults the suite records without hiding, the components mounted under jsdom, the board page's state, refresh and card window run without a page, the split admin, dashboard, All Tasks and plan pages mounted whole, the expected schema, what each suite covers, the MFA key the tests use and how the two-step sign-in storage is tested (card 2768), how two-step sign-in itself is tested (card 2769: the two new files, tests/helpers/two-step.ts, action()'s Cookie header, the frozen Date, the source scans and why the older sign-in tests give the account a factor), the tests of invite tokens stored as hashes and the start-up sweep (card 2849), the tests of session codes stored as hashes, limits by role and the __Host- cookie (card 2775), the tests of report schedules and report mail behind the password and a code (card 2751, T1 to T21), the tests of requester links kept as hashes and the sweep after an older image (card 2870, T1 to T9), the tests of the card window's image upload, a JPEG's kept orientation and the one-off check of the images stored before (card 2761, cases 1 to 13), and how to rehearse the migration runner against a copy of a real database"
+description: "How DumpFire's automated tests are built and run: card 2939's service account rule, start sweep and Test of saved destinations only (tests/backups.test.ts, tests/stored-secrets.test.ts, 13,166 in all with its code review), card 2938's backup copy keeping only a service account JSON's allowlisted fields and its stricter service account key rule (tests/backups.test.ts, 19 tests added with its code review, 13,120 in all), card 2923's held already-off webhooks and the owners' mail at every ending of an account's access (9 tests added, 13,029 in all), card 2925's import that cannot write one of its files (tests/backups.test.ts, 6 cases), card 2915's two-step reset ending the keys (tests/mfa-reset.test.ts T17 to T19, tests/mfa-reset-script.test.ts T21, T23, T33 to T35, and a source scan that nothing under src keeps keys at a reset), card 2910's every upload's limits (tests/uploads.test.ts and tests/v1-attachments.test.ts, the places given back on every exit, the gate's count and Connection: close, and the new tests/attachment-names.test.ts), card 2671's disabled accounts (tests/account-disable.test.ts and the cases in each gate's, picker's and mail's own suite, the delete tests on a disabled account, the OpenAPI 1.13.0 note), card 2899's import that keeps the system log (restore, route, working copy and panel cases), card 2914's task request rows (Q1 to Q5) and the request rows of access-every-route naming who cannot read, card 2911's milestone rows of not-found-not-forbidden, access-every-route without its stillForbids marker and 44 expected fails, and unopenableSays by caller, card 2894's pins of the report schedules paused by a password change and a two-step reset, the in-memory database fixture, the route and form-action helpers, the harness that sends a request through the gate, the table that says who may call every API route and the tests made from it, the tests that read the source to keep every API failure one shape and the OpenAPI document true, the helpers that prove a request is all or nothing, the faults the suite records without hiding, the components mounted under jsdom, the board page's state, refresh and card window run without a page, the split admin, dashboard, All Tasks and plan pages mounted whole, the expected schema, what each suite covers, the MFA key the tests use and how the two-step sign-in storage is tested (card 2768), how two-step sign-in itself is tested (card 2769: the two new files, tests/helpers/two-step.ts, action()'s Cookie header, the frozen Date, the source scans and why the older sign-in tests give the account a factor), the tests of invite tokens stored as hashes and the start-up sweep (card 2849), the tests of session codes stored as hashes, limits by role and the __Host- cookie (card 2775), the tests of report schedules and report mail behind the password and a code (card 2751, T1 to T21), the tests of requester links kept as hashes and the sweep after an older image (card 2870, T1 to T9), the tests of the card window's image upload, a JPEG's kept orientation and the one-off check of the images stored before (card 2761, cases 1 to 13), and how to rehearse the migration runner against a copy of a real database"
 ---
 
 # Testing
@@ -2537,6 +2539,56 @@ list left out of the mail (case 3) and not escaped (case 14), the start call mov
 (T21), the start's flag not written (case 15), the restore's hold taken out (case 17), a stray
 reference to the writer (case 19), `endAccountAccess` telling without mail (T17, T18), and each
 of the five dialog sentences.
+
+**Card 2939: a Google Drive destination takes only a service account's key file** (2026-11-19;
+37 tests added, 13,157 in all, 13,152 passing and 5 skipped), cases numbered as its plan's
+sections 5 and 5.1 (`docs/planning/card-2939-drive-service-account-only.md`). In
+`backups.test.ts`, "a service account JSON, read by the one rule at the save": an
+`external_account` JSON (1), text that is not JSON (2), `null`, `0`, `""`, `[]` and a quoted
+string (15, five rows), a non-text `private_key_id` (3), no `client_email` (4) and another
+universe (5) refused in fixed words, with nothing written and the case's marker in no answer
+(17); `universe_domain` `''` accepted (16); Google's whole file stored rebuilt in its order, the
+key sealed, a non-text `privateKey` and `quota_project_id` dropped (6); a restored copy's JSON,
+as the GET shows it, saved back with no change line (7); OAuth with a key or an
+`external_account` JSON refused (8, two rows); a masked JSON kept whole and one holding part of
+the mask checked (9); the Test refusing the same JSON (10); a Test only of a saved destination
+(18: an endpoint typed, the same account with a key typed, a destination never saved, and the
+stored entry tested, not what was sent). In "Google Drive asks only for the files DumpFire
+makes": the JWT's ten fields with no `GoogleAuth` or `fromJSON` called (11, 22); nine stored
+JSON a Test answers in the run's own words with Drive never reached (12, 13, 19 to 21). One
+`credentialsMissing` row (14). In `stored-secrets.test.ts`, "the start step: service account
+JSON brought to the one rule": the sweep rebuilding a key byte for byte, still opening, a second
+start silent (23); clearing another type, another universe's key, and JSON on an OAuth and an S3
+entry, each named, the service accounts listed to enter (24); no first-sealing mark (24b); a
+restore normalising (26); and, on a database file, the scrub marked (25). `sftp-host-key.test.ts`
+and `write-as.test.ts`: Tests of typed destinations now save first, and "may still be given a key
+with the password typed" became a refusal. Shown failing (each TEMP-PROOF, removed): the rule
+without its read-field, `client_email` and universe checks (3, 4, 5, 14, 21); `''` refused as a
+universe (16); the save storing as sent (6); no check at the save (1 to 6, 9, 10, 15); OAuth not
+checked (8); the mask skip widened to any `•` (9); `getDrive` reaching Drive without a key (12,
+13, 19 to 21); a parse before the rule (20); a spread into the JWT (11); `GoogleAuth` in place of
+the JWT (11); one sentence for every JSON (13); no sweep at start and none in the restore (7, 23
+to 26); no scrub mark (25); a value in the WARN (23); the sweep's change taken as a first sealing
+(24b); the key-less shape cleared whole (24); OAuth and S3 JSON left (24, 26); a change reported
+every start (23); `private_key_id` dropped by the rebuild (23); and in the Test, no typed-secret
+check (18, the SFTP refusal), no same-place check (18), what was sent tested (18) and no saved
+entry needed (18).
+
+**Card 2939's code review** (2026-11-19; 9 tests added, 13,166 in all, 13,161 passing). F1: a
+restored service account, as the GET shows it, tested as stored and answered "not entered"
+(`gdrive-retention.test.ts`), and a key-less service account moved back to the superadmin's
+folder his again (`setting-setters.test.ts`). F3: the pre-sweep key-less JSON with a `token_uri`
+not entered (a `credentialsMissing` row; the "only a privateKey" row now reads not entered too).
+F4: a Test the same as two saved destinations answered in the save's words. F6: a second start
+after a key removed and a JSON cleared silent (24c); a key-less JSON with no `private_key` saved;
+a masked JSON refused under OAuth (a case 8 row); a masked secret beside an emptied one tested
+with the stored secrets. F8: a `"` in a destination's name escaped in the start's WARN (24d). F10:
+`page-failures.test.ts` reads that Confirm's Test runs only in the `else` of the unread check.
+Shown failing (TEMP-PROOF, removed): the old `typedSecret` (both F1 cases); no many-match branch
+(F4); the name unquoted (24d); the panel test outside the `else` (F10); "not entered" only for JSON
+already rebuilt (both F3 rows); a missing `private_key` refused (F6); the mask skip before the
+OAuth check (F6); the Test handed what was sent (F6); a key-less JSON, and `''`, reported changed
+every start (24c, each half).
 
 **Card 2938: a backup copy clears a service account's `privateKey`** (2026-11-19; 6 tests added,
 13,107 in all), all in `backups.test.ts`. In "clearSecrets, on what a copy can hold": a JSON

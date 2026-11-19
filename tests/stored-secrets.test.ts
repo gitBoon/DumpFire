@@ -30,7 +30,7 @@ import { settings, systemLogs, webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { currentMfaKey, keyFromBytes, type MfaKey } from '$lib/server/mfa-key';
 import { sealWith } from '$lib/server/mfa-crypto';
-import { destinationPlace, mailChanges, mailConnection } from '$lib/server/backup-secrets';
+import { destinationPlace, mailChanges, mailConnection, secretsToEnter } from '$lib/server/backup-secrets';
 import { sealStoredSecretsAtStart } from '$lib/server/startup-checks';
 import {
 	SECRETS_SCRUB_PENDING,
@@ -44,6 +44,7 @@ import {
 	sealPlainSecrets,
 	sealStored,
 	sealValue,
+	sealedForRestore,
 	settingAad,
 	vacuumAndScrub,
 	webhookSecretAad
@@ -81,6 +82,32 @@ function linesOf(fn: () => void): string[] {
 beforeEach(() => {
 	resetDb();
 });
+
+/** Card 2939: Google's whole key file for a service account, and the fields DumpFire keeps of it, in its order. */
+const MARKER_2939 = 'zz-2939-sweep';
+const GOOGLE_FILE = {
+	type: 'service_account',
+	project_id: 'project-2939',
+	private_key_id: 'key-id-2939',
+	private_key: `-----BEGIN PRIVATE KEY-----\n${MARKER_2939}\n-----END PRIVATE KEY-----\n`,
+	client_email: 'robot@project-2939.iam.example.test',
+	client_id: '2939',
+	auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+	token_uri: `https://${MARKER_2939}.invalid/token`,
+	auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+	client_x509_cert_url: 'https://www.googleapis.com/robot/v1/metadata/x509/robot',
+	universe_domain: 'googleapis.com'
+};
+const KEPT_FIELDS = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email', 'client_id'];
+const keptOf = (account: Record<string, unknown>) => Object.fromEntries(Object.entries(account).filter(([field]) => KEPT_FIELDS.includes(field)));
+const robotWith = (account: unknown, name = 'Robot') => ({
+	type: 'gdrive',
+	name,
+	authMethod: 'service_account',
+	folderId: 'folder-2939',
+	serviceAccountJson: typeof account === 'string' ? account : JSON.stringify(account)
+});
+const destinationsIn = (text: string | undefined) => JSON.parse(text!).destinations as Record<string, string>[];
 
 describe('the envelope', () => {
 	it('2: sealStored writes the envelope, two seals differ and each opens to the value; an empty value is stored empty', () => {
@@ -359,6 +386,122 @@ describe('what is taken for sealed (the code review S2)', () => {
 	});
 });
 
+describe('the start step: service account JSON brought to the one rule (card 2939)', () => {
+	it('23: rebuilds a stored key to the fields DumpFire uses, its sealed private_key byte for byte and still opening, names it without a value, and a second start writes and says nothing', () => {
+		const sealed = sealDestinationSecrets({ destinations: [robotWith(GOOGLE_FILE)] }).destinations[0];
+		const envelope = JSON.parse(sealed.serviceAccountJson).private_key as string;
+		expect(isSealed(envelope)).toBe(true);
+		putSetting('backup_config', JSON.stringify({ destinations: [sealed] }));
+
+		const lines = linesOf(() => sealStoredSecretsAtStart(sqlite));
+
+		const [stored] = destinationsIn(setting('backup_config'));
+		const account = JSON.parse(stored.serviceAccountJson);
+		expect(Object.keys(account)).toEqual(KEPT_FIELDS);
+		expect(account).toEqual({ ...keptOf(GOOGLE_FILE), private_key: envelope });
+		expect(JSON.parse(openDestinationSecrets({ destinations: [stored] }).destinations[0].serviceAccountJson).private_key).toBe(GOOGLE_FILE.private_key);
+		const said = lines.filter((line) => line.includes('Rewrote the service account JSON'));
+		expect(said.length).toBeGreaterThan(0);
+		expect(said[0]).toContain('destination "Robot" (kept its key, every other field dropped)');
+		expect(lines.filter((line) => line.includes(MARKER_2939) || line.includes(envelope.slice(12)))).toEqual([]);
+
+		const before = setting('backup_config');
+		const again = linesOf(() => sealStoredSecretsAtStart(sqlite));
+		expect(setting('backup_config')).toBe(before);
+		expect(again.filter((line) => line.includes('service account JSON'))).toEqual([]);
+	});
+
+	it('24: clears what is not a key (another type, a key of another universe, JSON on an OAuth or an S3 entry), names each, lists the service accounts to enter, and is no first sealing', () => {
+		putSetting(
+			'backup_config',
+			JSON.stringify({
+				destinations: [
+					robotWith({ type: 'external_account', token_url: `https://${MARKER_2939}.invalid`, credential_source: { file: '/etc/hostname' } }, 'Outside'),
+					robotWith({ ...GOOGLE_FILE, universe_domain: `${MARKER_2939}.invalid` }, 'Elsewhere'),
+					{ type: 'gdrive', name: 'Connected', authMethod: 'oauth', clientId: 'c', clientSecret: 'oauth-secret', refreshToken: 'oauth-token', folderId: 'f', serviceAccountJson: JSON.stringify(GOOGLE_FILE) },
+					{ type: 's3', name: 'Bucket', bucket: 'b', accessKeyId: 'a', secretAccessKey: 's3-secret', serviceAccountJson: JSON.stringify(GOOGLE_FILE) }
+				]
+			})
+		);
+		const lines = linesOf(() => sealStoredSecretsAtStart(sqlite));
+
+		const [outside, elsewhere, connected, bucket] = destinationsIn(setting('backup_config'));
+		expect(outside.serviceAccountJson).toBe('');
+		expect(JSON.parse(elsewhere.serviceAccountJson)).toEqual({ ...keptOf(GOOGLE_FILE), private_key: '' });
+		expect(connected.serviceAccountJson).toBe('');
+		expect(bucket.serviceAccountJson).toBe('');
+		const said = lines.find((line) => line.includes('Rewrote the service account JSON of 4 backup destination(s)'))!;
+		expect(said).toContain('destination "Outside" (cleared,');
+		expect(said).toContain('destination "Elsewhere" (its key removed,');
+		expect(said).toContain('destination "Connected" (cleared,');
+		expect(said).toContain('destination "Bucket" (cleared,');
+		expect(lines.filter((line) => line.includes(MARKER_2939))).toEqual([]);
+		expect(secretsToEnter(sqlite).toEnter.destinations.map((d) => d.name)).toEqual(expect.arrayContaining(['Outside', 'Elsewhere']));
+	});
+
+	it('24c: a second start after a key was removed and a JSON cleared writes nothing and says nothing (the code review, F6)', () => {
+		putSetting(
+			'backup_config',
+			JSON.stringify({
+				destinations: [robotWith({ ...GOOGLE_FILE, universe_domain: `${MARKER_2939}.invalid` }, 'Elsewhere'), robotWith({ type: 'external_account' }, 'Outside')]
+			})
+		);
+		linesOf(() => sealStoredSecretsAtStart(sqlite));
+		const [elsewhere, outside] = destinationsIn(setting('backup_config'));
+		expect(JSON.parse(elsewhere.serviceAccountJson).private_key).toBe('');
+		expect(outside.serviceAccountJson).toBe('');
+		const before = setting('backup_config');
+
+		const again = linesOf(() => sealStoredSecretsAtStart(sqlite));
+
+		expect(setting('backup_config')).toBe(before);
+		expect(again.filter((line) => line.includes('service account JSON'))).toEqual([]);
+	});
+
+	it('24d: names a destination in the WARN quoted as card 2270’s lines quote one, a " in its name escaped (the code review, F8)', () => {
+		putSetting('backup_config', JSON.stringify({ destinations: [robotWith({ type: 'external_account' }, 'Say "hi"')] }));
+
+		const lines = linesOf(() => sealStoredSecretsAtStart(sqlite));
+
+		expect(lines.find((line) => line.includes('Rewrote the service account JSON'))).toContain('destination "Say \\"hi\\"" (cleared,');
+	});
+
+	it('24b: a start that only brings a JSON to the rule writes no first-sealing mark', () => {
+		putSetting('backup_config', JSON.stringify({ destinations: [robotWith({ type: 'external_account' }, 'Outside')] }));
+		// Anything else held in plain sealed first, so that this start seals nothing.
+		sealPlainSecrets(sqlite);
+		expect(setting('stored_secrets_first_sealed')).toBeUndefined();
+
+		const lines = linesOf(() => sealStoredSecretsAtStart(sqlite));
+
+		expect(destinationsIn(setting('backup_config'))[0].serviceAccountJson).toBe('');
+		expect(lines.some((line) => line.includes('Rewrote the service account JSON of 1'))).toBe(true);
+		expect(setting('stored_secrets_first_sealed')).toBeUndefined();
+	});
+
+	it('26: a restore brings each destination of the backup to the rule before it is sealed: another type and OAuth JSON cleared, a key rebuilt and sealed', () => {
+		const config = {
+			destinations: [
+				robotWith({ type: 'external_account', credential_source: { file: '/etc/hostname' } }, 'Outside'),
+				robotWith(GOOGLE_FILE),
+				{ type: 'gdrive', name: 'Connected', authMethod: 'oauth', clientId: 'c', folderId: 'f', serviceAccountJson: JSON.stringify(GOOGLE_FILE) }
+			]
+		};
+
+		const { rows, sealed } = sealedForRestore('settings', [{ key: 'backup_config', value: JSON.stringify(config) }]);
+
+		const [outside, robot, connected] = destinationsIn(rows[0].value as string);
+		expect(outside.serviceAccountJson).toBe('');
+		expect(connected.serviceAccountJson).toBe('');
+		const account = JSON.parse(robot.serviceAccountJson);
+		expect(Object.keys(account)).toEqual(KEPT_FIELDS);
+		expect(isSealed(account.private_key)).toBe(true);
+		expect(sealed).toBe(1);
+		expect(rows[0].value).not.toContain(MARKER_2939);
+		expect(JSON.parse(openDestinationSecrets({ destinations: [robot] }).destinations[0].serviceAccountJson)).toEqual(keptOf(GOOGLE_FILE));
+	});
+});
+
 describe('the start step: signing keys and the scrub', () => {
 	it('22: a signing key that does not open is replaced at the start step, the WARN saying what that breaks and holding no value', () => {
 		const theirs = sealValue('c'.repeat(64), settingAad('known_browser_secret'), otherKey());
@@ -481,6 +624,28 @@ describe('the start step: signing keys and the scrub', () => {
 			reader.prepare('BEGIN').run();
 			reader.prepare('SELECT COUNT(*) FROM settings').get();
 			expect(vacuumAndScrub(database)).toBe(false);
+			expect(settingIn(database, SECRETS_SCRUB_PENDING)).toBeDefined();
+			reader.prepare('COMMIT').run();
+		});
+
+		it('25: marks the scrub when the start only brought a service account JSON to the rule (card 2939), kept while a reader holds the log', () => {
+			const { database, path } = scratch();
+			sealPlainSecrets(database);
+			database
+				.prepare("INSERT INTO settings (key, value) VALUES ('backup_config', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+				.run(JSON.stringify({ destinations: [robotWith(GOOGLE_FILE)] }));
+			sealPlainSecrets(database);
+			database.prepare('DELETE FROM settings WHERE key = ?').run(SECRETS_SCRUB_PENDING);
+			database.pragma('wal_checkpoint(TRUNCATE)');
+			const reader = new Database(path);
+			opened.push(reader);
+			reader.prepare('BEGIN').run();
+			reader.prepare('SELECT COUNT(*) FROM settings').get();
+
+			const lines = linesOf(() => sealStoredSecretsAtStart(database, () => {}));
+
+			expect(lines.some((line) => line.includes('Rewrote the service account JSON of 1'))).toBe(true);
+			expect(lines.some((line) => line.startsWith('Sealed') || line.includes('] Sealed '))).toBe(false);
 			expect(settingIn(database, SECRETS_SCRUB_PENDING)).toBeDefined();
 			reader.prepare('COMMIT').run();
 		});
