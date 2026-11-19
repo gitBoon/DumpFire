@@ -11,6 +11,7 @@ import {
 	NEW_SECRET_REASONS,
 	openedSecret,
 	presentWebhook,
+	receiverOf,
 	storedEvents,
 	WEBHOOK_EVENTS,
 	withHoldRecorded
@@ -20,12 +21,23 @@ import { readWebhookUrl } from '$lib/server/webhook-address';
 import type { SessionUser } from '$lib/server/auth';
 import { writeAs } from '$lib/server/write-as';
 import { randomBytes } from 'node:crypto';
-import { TYPED_SECRET_LOOKS_SEALED, looksSealed, sealStored, webhookSecretAad } from '$lib/server/stored-secrets';
+import { TYPED_SECRET_LOOKS_SEALED, looksSealed, openedUrl, sealStored, webhookSecretAad, webhookUrlAad } from '$lib/server/stored-secrets';
 import type { RequestHandler } from './$types';
 
 /** Said to a `secret` sent with the switch-on that gives a webhook a new one (card 2752, D3). */
 const NEW_SECRET_ON_SWITCH_ON =
 	'A webhook switched off this way is given a new secret when it is switched on: send active true alone, and read the new secret from the answer.';
+
+/** Said to a switch-on of a webhook with no address it can send to and no url sent (card 2928, R7). */
+const NO_ADDRESS_ON_SWITCH_ON = 'This webhook has no address it can send to: send url with active true.';
+
+/** Said to a new secret for a webhook whose address is empty or cannot be opened, sent without url (card 2928, R5). */
+const SECRET_NEEDS_URL =
+	"This webhook's address is empty or cannot be opened, so a secret cannot be bound to it: send url with the secret.";
+
+/** Said to a new url for a webhook whose secret cannot be opened, sent without a secret (card 2928, R5). */
+const URL_NEEDS_SECRET =
+	"This webhook's secret cannot be opened, so it cannot be kept for a new address: send a new secret with the url, or '' for none.";
 
 /** Said to an editor deleting a webhook switched off for good (the code review's CS1). */
 const HELD_OFF_DELETE =
@@ -126,22 +138,45 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		}
 
 		const updates: Partial<typeof webhooks.$inferInsert> = {};
-		const url = readWebhookUrl(body, { keep: hook.url });
-		if (url !== undefined) updates.url = url;
+		// The address as it opens (card 2928): what one sent back unchanged is
+		// compared with. Kept only where it opens: '' or one that does not open is
+		// never handed back unchecked (N4).
+		const address = openedUrl(hook);
+		const usable = address.kind === 'opened' || address.kind === 'plain';
+		const url = readWebhookUrl(body, usable ? { keep: address.value } : {});
+		const urlChanged = url !== undefined && (!usable || url !== address.value);
+		// Never switched on with nowhere to send (card 2928, R7): only a switch-on, so a change of events alone stays allowed.
+		if (switchedOn && !usable && !urlChanged) throw error(400, NO_ADDRESS_ON_SWITCH_ON);
+		// Sealed, bound to its id, board and receiver (card 2928). Unchanged, it is
+		// written back as stored, byte for byte: never sealed again (R3).
+		if (url !== undefined) {
+			if (urlChanged) {
+				updates.receiver = receiverOf(url) ?? '';
+				updates.url = sealStored(url, webhookUrlAad(hook.id, hook.boardId, updates.receiver));
+			} else {
+				updates.url = hook.url;
+			}
+		}
 		// The secret as it opens (card 2898): what one sent back unchanged is compared with.
-		const stored = openedSecret(hook);
+		const stored = openedSecret(hook, address);
 		const sent = readText(body, 'secret', { max: 256, keep: stored.value });
 		// One that looks sealed is refused (card 2898, S9): it would be taken for one.
 		if (looksSealed(sent)) throw error(400, TYPED_SECRET_LOOKS_SEALED);
 		const secret = givenNewSecret ? randomBytes(32).toString('hex') : sent;
-		const urlChanged = url !== undefined && url !== hook.url;
 		// One sent for a secret that does not open is always a change (the code
 		// review's E6): '' clears it, unsigned, and a value replaces it.
 		const secretChanged = secret !== undefined && (secret !== stored.value || stored.kind === 'unopenable');
+		// No secret is ever sealed against an address that is '' or does not open
+		// (card 2928, R5), and none is orphaned: a new secret on such an address
+		// needs its url in the same request, and a new url beside a secret that
+		// does not open needs a new secret with it.
+		// A clear ('') seals nothing, and is taken (its code review, C5).
+		if (secretChanged && secret !== '' && !usable && !urlChanged) throw error(400, SECRET_NEEDS_URL);
+		if (urlChanged && stored.kind === 'unopenable' && !secretChanged) throw error(400, URL_NEEDS_SECRET);
 		// Written sealed, bound to the id, board and address it is left with: a
 		// new one; the one kept, sealed again when the address changes (S10), so
 		// that it still opens there; one sent back unchanged left as it is.
-		const sealedFor = (plain: string) => sealStored(plain, webhookSecretAad(hook.id, hook.boardId, url ?? hook.url));
+		const sealedFor = (plain: string) => sealStored(plain, webhookSecretAad(hook.id, hook.boardId, urlChanged && url !== undefined ? url : address.value));
 		if (secretChanged) updates.secret = sealedFor(secret);
 		else if (urlChanged && (stored.kind === 'opened' || stored.kind === 'plain')) updates.secret = sealedFor(stored.value);
 		else if (secret !== undefined) updates.secret = hook.secret;

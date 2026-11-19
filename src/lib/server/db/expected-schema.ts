@@ -897,6 +897,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\t`held_at` text,",
 		"\t`set_by_key` integer,",
 		"\t`set_with_key` integer,",
+		"\t`receiver` text DEFAULT '' NOT NULL,",
 		"\tFOREIGN KEY (`board_id`) REFERENCES `boards`(`id`) ON UPDATE no action ON DELETE cascade,",
 		"\tFOREIGN KEY (`set_by`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null,",
 		"\tFOREIGN KEY (`set_by_key`) REFERENCES `api_keys`(`id`) ON UPDATE no action ON DELETE set null",

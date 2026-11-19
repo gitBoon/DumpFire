@@ -20,7 +20,7 @@ import { createLogger } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { KNOWN_BROWSER_SECRET_KEY } from './known-browsers';
 import { REQUEST_FORM_SECRET_KEY } from './request-tokens';
-import { CREDENTIALS_NOT_ENTERED, backupSealKey, clearSecrets, credentialsMissing, hostKeyMissing, sealCopy } from './backup-secrets';
+import { CREDENTIALS_NOT_ENTERED, backupSealKey, clearSecrets, credentialsMissing, hostKeyMissing, sealCopy, webhookAddressMacKey } from './backup-secrets';
 import { openDestinationSecrets, sealDestinationSecrets, unopenableFields } from './stored-secrets';
 import { inTransaction } from './db/transaction';
 
@@ -198,7 +198,7 @@ function notTried(destination: DestinationConfig): string | null {
  * A table that is not there is skipped. Anything else that goes wrong is
  * thrown: a copy that could not be cleared is not one to hand on.
  */
-export function withoutSecrets(from: string, to: string, key: Buffer = backupSealKey()): void {
+export function withoutSecrets(from: string, to: string, key: Buffer = backupSealKey(), macKey: Buffer = webhookAddressMacKey()): void {
 	const copy = new Database(from);
 	try {
 		// better-sqlite3 opens every connection in SQLite's defensive mode,
@@ -230,8 +230,9 @@ export function withoutSecrets(from: string, to: string, key: Buffer = backupSea
 		if (has('request_links')) copy.prepare('DELETE FROM request_links').run();
 		if (has('settings')) copy.prepare('DELETE FROM settings WHERE key = ?').run(REQUEST_FORM_SECRET_KEY);
 		// The mail password, the destinations' credentials and the webhooks'
-		// secrets (card 2169): see above.
-		clearSecrets(copy);
+		// secrets (card 2169), and the webhooks' addresses, each with the match a
+		// restore fills it back by, made with `macKey` (card 2928): see above.
+		clearSecrets(copy, macKey);
 		// Sealed last, over the copy as it is written out: `VACUUM INTO` moves
 		// rows to other pages and changes none of them, and the seal is taken
 		// over the rows (see above).

@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.90
+version: 1.91
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2928
+  - migration-0073
   - card-2898
   - secrets-at-rest
   - card-2923
@@ -381,6 +383,7 @@ erDiagram
         text held_at "0071"
         int set_by_key FK "0071, card 2893"
         int set_with_key "0071, card 2893"
+        text receiver "0073, card 2928: plain origin beside the sealed url"
     }
 
     report_schedules {
@@ -1580,6 +1583,16 @@ itself over it.
 | `held_at` | text, NULL | with `held_because` | The moment, in the stored form (`YYYY-MM-DD HH:MM:SS`, UTC) |
 | `set_by_key` | integer, NULL, `REFERENCES api_keys(id) ON DELETE SET NULL`, `idx_webhooks_set_by_key` | both v1 writers, with `set_by` (`keyOfWrite`, card 2893): the create, and a `PUT` that changes the address or secret or switches it on; a change of events alone keeps it | The API key that last set the address or secret, or switched the webhook on. Read by `holdOf`: gone, ended (`keyEnded`) or another account's holds it, `'key ended'`; counted for each key by `GET /api/account/api-keys` (`webhooks`) |
 | `set_with_key` | integer, NULL (0/1) | with `set_by_key` | 1: written with a credential, a key's id in `set_by_key` or none (a session), which holds it; 0: written with no credential at all, only a test's call; NULL: set before keys were recorded, held once the setter has no working key made before `webhook_keys_recorded_at`. `set_with_key = 1 AND set_by_key IS NULL` reads "its key was deleted, or it was not set with a key" |
+| `url` (card 2928) | text, NOT NULL | both v1 writers (sealed), the start's sweep (`sealPlainSecrets`), a restore (`sealedForRestore`, `fillAddressGaps`) | The delivery address, sealed under the MFA key, bound to `id`, `board_id` and `receiver` (`webhookUrlAad`); read only through `openedUrl`. `''` for one a backup left out and a restore could not fill, to be entered again with `PUT` |
+| `receiver` | text, NOT NULL, DEFAULT `''` (migration 0073, card 2928) | with every address; recomputed from a plain one (the start's sweep, a restore), never taken from the row or the backup then; kept from a backup where its `url` is `''` or an envelope, whose seal binds it | The address's scheme, host and port (`receiverOf`); `''` for one that is no http or https URL. In no answer. Read by the held-off rule, the host a line, mail, two-step list or `scripts/mfa-reset.mjs` names, and a backup's copy |
+
+The setting `webhook_addresses_left_out` (card 2928) lists, in a backup's copy and in a database a
+restore left so, each webhook whose address was left out: `{"id": n, "active": true|false,
+"address": "<64 hex>"}`, `address` the HMAC a restore matches this server's address with. The
+setting `webhook_address_mac_key` is that HMAC's key, 32 random bytes, stored sealed, in no backup,
+export or import safety copy, and kept by a restore. `webhook_addresses_scrub_marked` is the ISO
+time the release's first start wrote once: that start marks the scrub and deletes the stale
+`.backup-temp` copies.
 
 The setting `webhook_keys_recorded_at` is the moment 0071 ran (card 2893's S9), read by
 `keysBeforeRecorded` in `webhooks.ts`: only a key made before it counts for a webhook from before
@@ -3709,6 +3722,12 @@ board was held at each delivery and sent again once the setter could open the bo
   columns, the key and the index as ones it does not know, and leaves them. See
   [A webhook switched off for good](#a-webhook-switched-off-for-good-migration-0071) and
   [Deployment](deployment.md#the-release-that-switches-off-a-webhook-whose-setter-loses-the-board-card-2752).
+
+- **`0073_add_webhook_receiver.sql`** (card 2928), one statement: `ALTER TABLE webhooks ADD COLUMN
+  receiver text DEFAULT '' NOT NULL`. No `IF NOT EXISTS`, as 0063. Changes no row's values but the
+  new column's default: the first start of the release fills `receiver` as it seals each address,
+  and a restore fills it as it seals a backup's plain address. Declares nothing to the rehearsal.
+  Going back: the older image's schema check reports the column and leaves it; keep it.
 
 **Migration 0072 records that an account is disabled, and by whom** (card 2671, built
 2026-11-18). Until this release an account could only be deleted.

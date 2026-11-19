@@ -1,11 +1,13 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.148
+version: 1.149
 status: As-Built
 date: 2026-11-19
 tags:
   - api
+  - card-2928
+  - webhook-addresses-at-rest
   - card-2923
   - ended-access-holds-webhooks
   - card-2915
@@ -430,7 +432,16 @@ Now:
    `pausedBecause` unchanged, and a read that gives the secret gives `''` with `hasSecret` `true`.
    A `PUT` that sends `secret` for such a webhook always replaces it, `''` clearing it to
    unsigned, and records the caller as its setter as any change of secret does.
-6. Nothing else changed: no operation, field or schema. The internal answers'
+6. Webhook urls are stored sealed too, bound to the webhook's id, board and receiver (card 2928),
+   and are given in answers as before, to the same callers. A backup holds no url: a restore onto
+   the server that made it puts each back, and any other gives `url` `''` until it is entered, the
+   webhook off and listed to enter. A webhook whose `url` is `''` or cannot be opened is never
+   delivered ("Not sent: it has no address", "Not sent: its address cannot be opened") and its
+   `url` is given as `''`, so `Webhook.url` is no longer `format: uri`. A `PUT` that switches such a
+   webhook on must send `url`, a `secret` other than `''` sent for it must come with `url`, a `url` sent beside a
+   secret that cannot be opened must come with a new `secret` (each `400` otherwise), and a `url`
+   that is not well-formed text is `400`. The same url sealed again keeps its `lastDelivery`.
+7. Nothing else changed: no operation, field or schema. The internal answers'
    `webhooksSwitchedOff` still counts only the webhooks that were on; an ending that keeps the keys
    (the holder's own change without ending them, or `--keep-api-keys` on the host) holds nothing,
    and `pausedBecause` stays `null` for one of its webhooks switched off by a `PUT`.

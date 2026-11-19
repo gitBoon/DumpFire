@@ -65,12 +65,16 @@ import {
 	isSealed,
 	mailPasswordAad,
 	openStored,
+	replacedSigningKeysLine,
 	sealPlainSecrets,
 	sealValue,
 	sealedForRestore,
-	webhookSecretAad
+	settingAad,
+	webhookSecretAad,
+	webhookUrlAad,
+	WEBHOOK_ADDRESS_MAC_KEY
 } from '$lib/server/stored-secrets';
-import { keyFromBytes } from '$lib/server/mfa-key';
+import { currentMfaKey, keyFromBytes } from '$lib/server/mfa-key';
 import {
 	GDriveDestination,
 	SERVICE_ACCOUNT_REFUSALS,
@@ -90,8 +94,10 @@ import {
 	SECRET_FIELDS,
 	SECRET_MASK,
 	SERVICE_ACCOUNT_NOT_A_KEY,
+	WEBHOOK_ADDRESSES_LEFT_OUT_KEY,
 	WEBHOOK_SECRETS_LEFT_OUT_KEY,
 	backupSealKey,
+	webhookAddressMacKey,
 	clearSecrets,
 	credentialsMissing,
 	failedCheckSentence,
@@ -168,7 +174,7 @@ import {
 import { FROM_THE_PAGE, gate, gateApiRoutes } from './helpers/gate';
 import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { afterEachTimestampCheck } from './helpers/timestamps';
-import { readOpened } from './helpers/reads';
+import { readOpened, readOpenedUrl } from './helpers/reads';
 
 /** What the stand-in destination was handed: the bytes, under the name and for the destination they were for. */
 const uploaded = vi.hoisted(() => [] as { destination: string; filename: string; bytes: Buffer }[]);
@@ -1249,6 +1255,8 @@ describe('a restore', () => {
 	it('writes a safety copy that leaves out the key remembered browsers are signed with, and keeps every other setting', async () => {
 		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(KNOWN_BROWSER_SECRET_KEY, 'the-key-that-was-here');
 		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('app_url', 'https://here.example.test');
+		// Nor the key webhook address matches are made with (card 2928, case 45, R14).
+		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_ADDRESS_MAC_KEY, 'the-address-key-that-was-here');
 
 		const res = await importDb(migratedDb());
 
@@ -1256,6 +1264,8 @@ describe('a restore', () => {
 		const safety = readFileSync(join(res.dir, '.pre-restore-safety.json'), 'utf8');
 		expect(safety).not.toContain(KNOWN_BROWSER_SECRET_KEY);
 		expect(safety).not.toContain('the-key-that-was-here');
+		expect(safety).not.toContain(WEBHOOK_ADDRESS_MAC_KEY);
+		expect(safety).not.toContain('the-address-key-that-was-here');
 		const settings = (JSON.parse(safety) as { settings: { key: string; value: string }[] }).settings;
 		expect(settings).toContainEqual(expect.objectContaining({ key: 'app_url', value: 'https://here.example.test' }));
 	});
@@ -2178,10 +2188,11 @@ const secretsOf = (database: Database.Database) => {
 		mail: Object.entries(settings).filter(([key]) => key.startsWith('smtp_')).sort(),
 		config: settings['backup_config'] ?? null,
 		marker: settings[WEBHOOK_SECRETS_LEFT_OUT_KEY] ?? null,
+		// Each address opened (card 2928): the backup's plain one is sealed as a restore reads it.
 		hooks: openedHooks(
 			database,
 			database.prepare('SELECT id, board_id, url, secret, active FROM webhooks ORDER BY id').all() as { id: number; secret: string; active: number }[]
-		)
+		).map((hook) => ({ ...hook, url: readOpenedUrl(hook.id, database) }))
 	};
 };
 
@@ -2220,6 +2231,19 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		{ id: hooks.off, boardId: hooks.boardId, board: 'Hooks' }
 	];
 
+	/** Every webhook's address, as the backup lists it, each with its match (card 2928). */
+	const listedAddresses = () => [
+		{ id: hooks.on, active: true, address: expect.stringMatching(/^[0-9a-f]{64}$/) },
+		{ id: hooks.off, active: false, address: expect.stringMatching(/^[0-9a-f]{64}$/) },
+		{ id: hooks.unsigned, active: true, address: expect.stringMatching(/^[0-9a-f]{64}$/) }
+	];
+
+	/** The three webhooks, as a restore that could not fill their addresses lists them (card 2928). */
+	const addressesToEnter = () => [...hooksToEnter(), { id: hooks.unsigned, boardId: hooks.boardId, board: 'Hooks' }];
+
+	/** The kept sentence's words for the three addresses filled (card 2928). */
+	const addressesKept = () => `; the address(es) of webhook(s) ${hooks.on}, ${hooks.off}, ${hooks.unsigned}`;
+
 	/** Decision 5's second sentence for a backup of this database restored where none of it is. */
 	const everythingToEnter = () =>
 		'To enter again, because a backup does not hold them: the mail password (Admin, 📧 Email / SMTP); backup ' +
@@ -2227,7 +2251,10 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		'(Google Drive: its client secret, then Connect), "Robot" (Google Drive: its service account JSON), "OneDrive" ' +
 		'(OneDrive: its client secret) (Admin, Scheduled Backups); the signing secret(s) of webhook(s) ' +
 		`${hooks.on} (board "Hooks"), ${hooks.off} (board "Hooks"), which stay switched off until the board's owner or ` +
-		'an administrator sets each one and switches it on with PUT /api/v1/webhooks/{id}.';
+		'an administrator sets each one and switches it on with PUT /api/v1/webhooks/{id}; ' +
+		// And the three addresses (card 2928).
+		`the address(es) of webhook(s) ${hooks.on} (board "Hooks"), ${hooks.off} (board "Hooks"), ${hooks.unsigned} (board "Hooks"), which stay ` +
+		"switched off until the board's owner or an administrator sends each one its url (and its secret) with active true in PUT /api/v1/webhooks/{id}.";
 
 	/** A backup of this database, made now. */
 	const backupNow = () => opening(generateBackupData());
@@ -2261,6 +2288,8 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		const set = live.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
 		const key = given.key === undefined ? backupSealKey(sqlite).toString('hex') : given.key;
 		if (key !== null) set.run(BACKUP_SEAL_KEY, key);
+		// This server's webhook address key too, where it is this server (card 2928, R14).
+		if (given.key === undefined) set.run(WEBHOOK_ADDRESS_MAC_KEY, webhookAddressMacKey(sqlite).toString('hex'));
 		for (const [key, value] of Object.entries(given.mail ?? {})) set.run(key, value);
 		if (given.destinations) set.run('backup_config', configWith(given.destinations));
 		const hook = live.prepare("INSERT INTO webhooks (id, board_id, url, secret, events, active, set_by) VALUES (?, ?, ?, ?, '[]', ?, ?)");
@@ -2341,13 +2370,16 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		for (const [key, value] of Object.entries(MAIL)) expect(settings[key], key).toBe(value);
 		// Every destination, with its other fields as they were.
 		expect(JSON.parse(settings['backup_config']).destinations).toEqual(cleared);
-		// The two signed webhooks off with no secret, and listed; the unsigned one as it was.
+		// The two signed webhooks off with no secret, and listed; and every one with no address, off and listed with
+		// its match (card 2928), the unsigned one among them.
 		expect(hooksIn(backup)).toEqual([
 			{ id: hooks.on, secret: '', active: 0 },
 			{ id: hooks.off, secret: '', active: 0 },
-			{ id: hooks.unsigned, secret: '', active: 1 }
+			{ id: hooks.unsigned, secret: '', active: 0 }
 		]);
 		expect(JSON.parse(settings[WEBHOOK_SECRETS_LEFT_OUT_KEY])).toEqual(listed());
+		expect(backup.prepare('SELECT url FROM webhooks').pluck().all()).toEqual(['', '', '']);
+		expect(JSON.parse(settings[WEBHOOK_ADDRESSES_LEFT_OUT_KEY])).toEqual(listedAddresses());
 	}
 
 	/** The running database still holds every secret, and its webhooks as they were. */
@@ -2603,12 +2635,17 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		expect(secretsOf(sqlite)).toEqual(withNoSetterSwitchedOff(before));
 		expect(result.webhooksSwitchedOff).toBe(2);
 		expect(result.secrets).toEqual({
-			kept: { mailPassword: true, destinations: ['NAS', 'Bucket', 'Drive', 'Robot', 'OneDrive'], webhooks: [hooks.on, hooks.off] },
+			kept: {
+				mailPassword: true,
+				destinations: ['NAS', 'Bucket', 'Drive', 'Robot', 'OneDrive'],
+				webhooks: [hooks.on, hooks.off],
+				webhookAddresses: [hooks.on, hooks.off, hooks.unsigned]
+			},
 			toEnter: NOTHING_TO_ENTER
 		});
 		expect(secretsKeptSentence(result.secrets.kept)).toBe(
 			'Kept from this server, because a backup does not hold them: the mail password; the credentials of backup ' +
-				`destination(s) "NAS", "Bucket", "Drive", "Robot", "OneDrive"; the signing secret(s) of webhook(s) ${hooks.on}, ${hooks.off}.`
+				`destination(s) "NAS", "Bucket", "Drive", "Robot", "OneDrive"; the signing secret(s) of webhook(s) ${hooks.on}, ${hooks.off}${addressesKept()}.`
 		);
 	});
 
@@ -2641,24 +2678,25 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		expect(result.sealVerified).toBe(false);
 		expect(result.secrets).toEqual({
 			kept: NOTHING_KEPT,
-			toEnter: { mailPassword: true, destinations: NEEDS, webhooks: hooksToEnter() }
+			toEnter: { mailPassword: true, destinations: NEEDS, webhooks: hooksToEnter(), webhookAddresses: addressesToEnter() }
 		});
 		expect(settingsOf(live)['smtp_pass']).toBeUndefined();
 		expect(JSON.parse(settingsOf(live)['backup_config']).destinations).toEqual(DESTINATIONS_CLEARED);
 		expect(hooksIn(live)).toEqual([
 			{ id: hooks.on, secret: '', active: 0 },
 			{ id: hooks.off, secret: '', active: 0 },
-			{ id: hooks.unsigned, secret: '', active: 1 }
+			{ id: hooks.unsigned, secret: '', active: 0 }
 		]);
-		// The list is written again, for every start to name them (R2).
+		// The list is written again, for every start to name them (R2); and the addresses' (card 2928).
 		expect(JSON.parse(settingsOf(live)[WEBHOOK_SECRETS_LEFT_OUT_KEY])).toEqual(listed());
+		expect(JSON.parse(settingsOf(live)[WEBHOOK_ADDRESSES_LEFT_OUT_KEY])).toEqual(listedAddresses());
 		expect(secretsToEnterSentence(result.secrets.toEnter)).toBe(everythingToEnter());
 	});
 
 	it('says what is to enter through the route, word for word, in its answer and in a WARN line of its own', async () => {
 		const backup = backupNow();
-		// This server has none of them now.
-		sqlite.exec("DELETE FROM settings WHERE key IN ('smtp_pass', 'backup_config'); UPDATE webhooks SET secret = ''");
+		// This server has none of them now, its webhooks' addresses included (card 2928).
+		sqlite.exec("DELETE FROM settings WHERE key IN ('smtp_pass', 'backup_config'); UPDATE webhooks SET secret = '', url = ''");
 
 		const res = await atWarn(() => importing(backup));
 
@@ -2676,7 +2714,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		expect(res.status).toBe(200);
 		expect(res.body.secretsKept).toBe(
 			'Kept from this server, because a backup does not hold them: the mail password; the credentials of backup ' +
-				`destination(s) "NAS", "Bucket", "Drive", "Robot", "OneDrive"; the signing secret(s) of webhook(s) ${hooks.on}, ${hooks.off}.`
+				`destination(s) "NAS", "Bucket", "Drive", "Robot", "OneDrive"; the signing secret(s) of webhook(s) ${hooks.on}, ${hooks.off}${addressesKept()}.`
 		);
 		expect(res.body.message).toContain(` ${res.body.secretsKept}`);
 		expect(res.body).not.toHaveProperty('secretsToEnter');
@@ -2691,7 +2729,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 			expect(result.sealVerified).toBe(false);
 			expect(result.secrets).toEqual({
 				kept: NOTHING_KEPT,
-				toEnter: { mailPassword: true, destinations: NEEDS, webhooks: hooksToEnter() }
+				toEnter: { mailPassword: true, destinations: NEEDS, webhooks: hooksToEnter(), webhookAddresses: addressesToEnter() }
 			});
 		};
 
@@ -3367,22 +3405,26 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 					'whole-number id or no true-or-false active, and were ignored'
 			]);
 			expect(result.secrets.kept.webhooks).toEqual([hooks.on]);
+			// The unsigned one off: its address, left out of the backup, is nowhere here to fill it from (card 2928).
 			expect(hooksIn(live)).toEqual([
 				{ id: hooks.on, secret: `${HERE}-hook-on`, active: 1 },
 				{ id: hooks.off, secret: '', active: 0 },
-				{ id: hooks.unsigned, secret: '', active: 1 }
+				{ id: hooks.unsigned, secret: '', active: 0 }
 			]);
 		});
 
-		it('changes nothing for a listed webhook that has a secret in the backup', () => {
+		it('leaves out a secret a backup holds in plain beside the address it left out, and fills it from here as one it listed (card 2928, R5)', () => {
+			// Before card 2928 the backup's own value was kept here as it was. A backup made since holds no address, and
+			// a secret is never sealed against none: it is left out as the restore reads it, and listed with its own.
 			const { live, result } = restoringWithList(JSON.stringify([{ id: hooks.on, active: false }]), (backup) => {
 				backup.prepare("UPDATE webhooks SET secret = 'the-backups-own-secret', active = 1 WHERE id = ?").run(hooks.on);
 			});
 
 			expect(result.errors).toEqual([]);
-			expect(hooksIn(live)[0]).toEqual({ id: hooks.on, secret: 'the-backups-own-secret', active: 1 });
-			expect(result.secrets.kept.webhooks).toEqual([]);
+			expect(hooksIn(live)[0]).toEqual({ id: hooks.on, secret: `${HERE}-hook-on`, active: 1 });
+			expect(result.secrets.kept.webhooks).toEqual([hooks.on]);
 			expect(result.secrets.toEnter.webhooks).toEqual([]);
+			expect(JSON.stringify(live.serialize().toString('latin1'))).not.toContain('the-backups-own-secret');
 		});
 	});
 
@@ -3539,11 +3581,13 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		const backup = backupNow();
 		restoreFromBackup(sqlite, backup);
 		expect(settingsOf(sqlite)[WEBHOOK_SECRETS_LEFT_OUT_KEY]).toBeUndefined();
+		expect(settingsOf(sqlite)[WEBHOOK_ADDRESSES_LEFT_OUT_KEY]).toBeUndefined();
 
 		const working = migratedDb();
 		const result = restoreFromBackup(working, backup, { outside: 'off' });
 		expect(settingsOf(working)[WEBHOOK_SECRETS_LEFT_OUT_KEY]).toBeUndefined();
-		expect(result.secrets.toEnter).toEqual({ mailPassword: false, destinations: [], webhooks: hooksToEnter() });
+		expect(settingsOf(working)[WEBHOOK_ADDRESSES_LEFT_OUT_KEY]).toBeUndefined();
+		expect(result.secrets.toEnter).toEqual({ mailPassword: false, destinations: [], webhooks: hooksToEnter(), webhookAddresses: addressesToEnter() });
 	});
 
 	// Card 2923's code review (E1): a webhook held for good is switched on with no secret, never "set its secret".
@@ -3554,21 +3598,34 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		const working = migratedDb();
 		const result = restoreFromBackup(working, backup, { outside: 'off' });
 
-		expect(result.secrets.toEnter).toEqual({ mailPassword: false, destinations: [], webhooks: [], heldWebhooks: hooksToEnter() });
+		// Their addresses are still to enter, and every one of them is held, the unsigned one too (card 2928's code
+		// review, C1): each is told one thing, its url with active true and no secret.
+		expect(result.secrets.toEnter).toEqual({ mailPassword: false, destinations: [], webhooks: [], heldWebhooks: addressesToEnter(), webhookAddresses: addressesToEnter() });
+		const named = `${hooks.on} (board "Hooks"), ${hooks.off} (board "Hooks"), ${hooks.unsigned} (board "Hooks")`;
 		const said = secretsToEnterSentence(result.secrets.toEnter);
 		expect(said).toBe(
+			`To enter again, because a backup does not hold them: the address(es) of webhook(s) ${named}, switched off for good: to keep one, ` +
+				"the board's owner or an administrator switches it on with its url and active true, and no secret, in PUT /api/v1/webhooks/{id} " +
+				'(it is given a new secret, returned once in that answer).'
+		);
+		expect(said).not.toContain('(and its secret)');
+		expect(said).not.toContain('sets each one');
+		// The held words alone, for a webhook held whose address is here (card 2923's code review, E1).
+		expect(secretsToEnterSentence({ mailPassword: false, destinations: [], webhooks: [], heldWebhooks: hooksToEnter() })).toBe(
 			`Nothing to enter for webhook(s) ${hooks.on} (board "Hooks"), ${hooks.off} (board "Hooks"), switched off for good: to keep one, ` +
 				"the board's owner or an administrator should switch it on with no secret; it is given a new one, returned once in that answer " +
 				'(PUT /api/v1/webhooks/{id} with active true alone).'
 		);
-		expect(said).not.toContain('sets each one');
 		// The start-up line's words, from the database as the restore left it.
-		expect(withHeldApart(working, { mailPassword: false, destinations: [], webhooks: hooksToEnter() })).toEqual(result.secrets.toEnter);
-		// At start, as a server whose restore left the list of webhooks without their secrets reads it.
+		expect(withHeldApart(working, { mailPassword: false, destinations: [], webhooks: hooksToEnter(), webhookAddresses: addressesToEnter() })).toEqual(
+			result.secrets.toEnter
+		);
+		// At start, as a server whose restore left the lists of webhooks without their secrets and addresses reads them.
 		working.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_SECRETS_LEFT_OUT_KEY, JSON.stringify(listed()));
+		working.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_ADDRESSES_LEFT_OUT_KEY, settingsOf(backup)[WEBHOOK_ADDRESSES_LEFT_OUT_KEY]);
 		const atStart = secretsToEnter(working).toEnter;
 		expect(atStart.webhooks).toEqual([]);
-		expect(secretsToEnterSentence({ ...atStart, mailPassword: false, destinations: [] }, true)).toBe(`${said?.slice(0, -1)}, or delete it if it is no longer wanted.`);
+		expect(secretsToEnterSentence({ ...atStart, mailPassword: false, destinations: [] }, true)).toBe(`${said?.slice(0, -1)}, or deletes it if it is no longer wanted.`);
 	});
 
 	it('fills a Google Drive refresh token with the scope this server recorded for it, never the backup’s (card 2188, test 15)', () => {
@@ -3675,9 +3732,12 @@ describe('a restore switches off a restored webhook whose setter cannot open its
 	/**
 	 * A backup of the running database made before migration 0071: the
 	 * webhooks table as 0070 left it, with none of the four columns, and
-	 * neither the setting nor the file recorded.
+	 * neither the setting nor the file recorded. Its addresses plain, as a
+	 * backup from then holds them (card 2928).
 	 */
 	function before0071(backup: Database.Database): Database.Database {
+		const opened = (backup.prepare('SELECT id FROM webhooks').pluck().all() as number[]).map((id) => [readOpenedUrl(id, backup)!, id]);
+		for (const [url, id] of opened) backup.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run(url, id);
 		backup.exec(`
 			CREATE TABLE webhooks_0070 (
 				id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -3716,10 +3776,11 @@ describe('a restore switches off a restored webhook whose setter cannot open its
 		const result = restoreFromBackup(sqlite, backup);
 
 		expect(result.webhooksSwitchedOff).toBe(0);
-		// Each secret opened (card 2898): the backup held it in plain, and the restore sealed it as it read it.
-		expect(openedHooks(sqlite, sqlite.prepare('SELECT id, url, secret, active, held_because AS heldBecause, held_at AS heldAt FROM webhooks ORDER BY id').all() as { id: number; secret: string }[])).toEqual([
-			{ id: signed.id, url: signed.url, secret: 'kept-secret', active: 0, heldBecause: 'setter access ended', heldAt },
-			{ id: bare.id, url: bare.url, secret: '', active: 0, heldBecause: 'setter access ended', heldAt },
+		// Each secret opened (card 2898): the backup held it in plain, and the restore sealed it as it read it. Each address opened (card 2928).
+		const rows = sqlite.prepare('SELECT id, secret, active, held_because AS heldBecause, held_at AS heldAt FROM webhooks ORDER BY id').all() as { id: number; secret: string }[];
+		expect(openedHooks(sqlite, rows).map((row) => ({ ...row, url: readOpenedUrl(row.id) }))).toEqual([
+			{ id: signed.id, url: signed.address, secret: 'kept-secret', active: 0, heldBecause: 'setter access ended', heldAt },
+			{ id: bare.id, url: bare.address, secret: '', active: 0, heldBecause: 'setter access ended', heldAt },
 			{ id: moved.id, url: 'https://hooks.example.test/before', secret: '', active: 1, heldBecause: null, heldAt: null }
 		]);
 	});
@@ -3769,7 +3830,7 @@ describe('a restore switches off a restored webhook whose setter cannot open its
 		try {
 			dispatchWebhook(board.id, 'card.created', { cardId: 1 });
 			await sent.settle();
-			expect(sent.webhooks.map((w) => w.url)).toEqual([owners.url]);
+			expect(sent.webhooks.map((w) => w.url)).toEqual([owners.address]);
 		} finally {
 			sent.restore();
 		}
@@ -6394,5 +6455,301 @@ describe('the secrets the server keeps, sealed at rest (card 2898)', () => {
 
 		expect(settingsStored(sqlite)[BACKUP_SEAL_KEY]).toBe(stored);
 		expect(unsealedBecause(backup, sealKeyHere(sqlite)!.key)).toBeNull();
+	});
+});
+
+// ─── Card 2928: a webhook's address, sealed at rest ─────────────────────────
+
+describe("a webhook's address, sealed at rest (card 2928)", () => {
+	const SLACK = 'https://hooks.slack.com/services/T000/B000/xyz-2928';
+	const rowOf = (id: number) =>
+		sqlite.prepare('SELECT active, held_because AS heldBecause, url, receiver FROM webhooks WHERE id = ?').get(id) as {
+			active: number;
+			heldBecause: string | null;
+			url: string;
+			receiver: string;
+		};
+	/** The same address sealed again: another envelope for the same text. */
+	const resealed = (id: number) => {
+		const row = sqlite.prepare('SELECT id, board_id AS boardId, url, receiver FROM webhooks WHERE id = ?').get(id) as { id: number; boardId: number; url: string; receiver: string };
+		const again = sealValue(readOpenedUrl(id)!, webhookUrlAad(row.id, row.boardId, row.receiver), currentMfaKey()!);
+		expect(again).not.toBe(row.url);
+		sqlite.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run(again, id);
+	};
+
+	it("12: a restore fills a webhook's secret from this server's own where the two addresses are the same text sealed twice", () => {
+		startedSinceAlreadyOffHeld();
+		const owner = makeUser();
+		const hook = makeWebhook(makeBoard({ owner }).board, { url: SLACK, secret: 'whsec-2928-12' });
+		sealPlainSecrets(sqlite);
+		const backup = opening(generateBackupData());
+		resealed(hook.id);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.secrets.kept.webhooks).toEqual([hook.id]);
+		expect(readOpened('webhooks', hook.id)).toBe('whsec-2928-12');
+		expect(readOpenedUrl(hook.id)).toBe(SLACK);
+	});
+
+	it.each([
+		{ row: 'the same address sealed twice', change: 'reseal' },
+		{ row: 'an address here that does not open: carried on its id, board and setter (R17)', change: 'spoil' }
+	])("13: this server's hold is carried onto the restored webhook: $row", ({ change }) => {
+		const owner = makeUser();
+		const hook = makeWebhook(makeBoard({ owner }).board, { url: SLACK });
+		// The backup: on, its setter the board's owner.
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		if (change === 'reseal') resealed(hook.id);
+		else {
+			const { url } = rowOf(hook.id);
+			sqlite.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run(url.slice(0, -3) + (url.slice(-3, -2) === 'A' ? 'B' : 'A') + url.slice(-2), hook.id);
+		}
+		sqlite.prepare("UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = '2026-11-18 09:00:00' WHERE id = ?").run(hook.id);
+
+		restoreFromBackup(sqlite, backup);
+
+		expect(rowOf(hook.id)).toMatchObject({ active: 0, heldBecause: 'setter access ended' });
+	});
+
+	// Slice 2: a restore seals what a backup holds in plain.
+	it.each([
+		{ row: 'with no receiver, as a backup from before 0073 holds it', receiver: '' },
+		{ row: 'with a stale receiver, which is never taken (R6)', receiver: 'https://stale.example.test' }
+	])('34: a backup holding an address in plain $row: sealed as it is read, its receiver worked out from it, its plain secret bound to it', ({ receiver }) => {
+		const owner = makeUser();
+		const hook = makeWebhook(makeBoard({ owner }).board, { url: SLACK, secret: 'whsec-2928-34' });
+		sqlite.prepare('UPDATE webhooks SET url = ?, receiver = ? WHERE id = ?').run(SLACK, receiver, hook.id);
+		const backup = opening(Buffer.from(sqlite.serialize()));
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		const row = rowOf(hook.id);
+		expect(row.url).toMatch(/^dfsealed:1:/);
+		expect(row.receiver).toBe('https://hooks.slack.com');
+		expect(readOpenedUrl(hook.id)).toBe(SLACK);
+		expect(readOpened('webhooks', hook.id)).toBe('whsec-2928-34');
+		expect((sqlite.prepare('SELECT url FROM webhooks').pluck().all() as string[]).filter((url) => url !== '' && !url.startsWith('dfsealed:1:'))).toEqual([]);
+	});
+
+	it('35: a restored webhook whose address does not open here, beside a plain secret: the secret left out, the webhook off and listed (R5, R6)', () => {
+		// A server started since card 2923's release, so that the restore holds none of what is off (its own rule).
+		startedSinceAlreadyOffHeld();
+		const owner = makeUser();
+		const hook = makeWebhook(makeBoard({ owner }).board, { url: SLACK, secret: 'whsec-2928-35' });
+		sqlite.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run(sealValue(SLACK, webhookUrlAad(hook.id, hook.boardId, hook.receiver), keyFromBytes(randomBytes(32))), hook.id);
+		const backup = opening(Buffer.from(sqlite.serialize()));
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(rowOf(hook.id)).toMatchObject({ active: 0 });
+		expect(sqlite.prepare('SELECT secret FROM webhooks WHERE id = ?').pluck().get(hook.id)).toBe('');
+		expect(result.secrets.toEnter.webhooks.map((each) => each.id)).toEqual([hook.id]);
+		expect(JSON.stringify(sqlite.serialize().toString('latin1'))).not.toContain('whsec-2928-35');
+	});
+
+	// ─── Slice 3: the backup blanks the address, and a restore fills it back ───
+
+	const TEAMS = 'https://example.webhook.office.com/webhookb2/abc-2928/IncomingWebhook/def';
+	const marker = (database: Database.Database) => JSON.parse(settingsStored(database)[WEBHOOK_ADDRESSES_LEFT_OUT_KEY] ?? 'null');
+	/** Two webhooks on one board, their addresses and secrets sealed as the server stores them: one signed and on, one unsigned and on. */
+	function twoHooks() {
+		startedSinceAlreadyOffHeld();
+		const owner = makeUser();
+		const board = makeBoard({ owner }).board;
+		const signed = makeWebhook(board, { url: SLACK, secret: 'whsec-2928-slice-3' });
+		const unsigned = makeWebhook(board, { url: TEAMS });
+		sealPlainSecrets(sqlite);
+		return { owner, board, signed, unsigned };
+	}
+
+	it('37: a backup holds every address as empty, its receiver, the webhook off and listed with its match, and nothing of the address or its key', () => {
+		const { signed, unsigned } = twoHooks();
+		const key = settingsStored(sqlite)[WEBHOOK_ADDRESS_MAC_KEY];
+
+		const bytes = generateBackupData();
+
+		const backup = opening(bytes);
+		expect(backup.prepare('SELECT id, url, receiver, active FROM webhooks ORDER BY id').all()).toEqual([
+			{ id: signed.id, url: '', receiver: 'https://hooks.slack.com', active: 0 },
+			{ id: unsigned.id, url: '', receiver: 'https://example.webhook.office.com', active: 0 }
+		]);
+		expect(marker(backup)).toEqual([
+			{ id: signed.id, active: true, address: expect.stringMatching(/^[0-9a-f]{64}$/) },
+			{ id: unsigned.id, active: true, address: expect.stringMatching(/^[0-9a-f]{64}$/) }
+		]);
+		// The key's sealed form, and the key itself as it opens, 64 hex (the code review, C11), in either case.
+		const opened = readOpened('settings', WEBHOOK_ADDRESS_MAC_KEY, sqlite)!;
+		expect(opened).toMatch(/^[0-9a-f]{64}$/);
+		for (const text of ['dfsealed:', 'xyz-2928', 'abc-2928', WEBHOOK_ADDRESS_MAC_KEY, settingsStored(sqlite)[WEBHOOK_ADDRESS_MAC_KEY], opened, opened.toUpperCase()]) {
+			expect(bytes.includes(Buffer.from(text)), text).toBe(false);
+		}
+		expect(bytes.includes(Buffer.from(opened, 'hex')), 'the key as bytes').toBe(false);
+		// The key made by that backup, at first need, stored sealed (R14).
+		expect(key).toBeUndefined();
+		expect(isSealed(settingsStored(sqlite)[WEBHOOK_ADDRESS_MAC_KEY])).toBe(true);
+	});
+
+	it.each([
+		{ row: 'one stored that does not open is replaced with the WARN the start writes for it', stored: 'spoiled', warned: true },
+		{ row: 'none stored is made at first need, and nothing is said', stored: 'none', warned: false }
+	])("37b: a backup's webhook address key: $row (the code review, C14)", ({ stored, warned }) => {
+		twoHooks();
+		const spoiled = sealValue('ab'.repeat(32), settingAad(WEBHOOK_ADDRESS_MAC_KEY), keyFromBytes(randomBytes(32)));
+		if (stored === 'spoiled') sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_ADDRESS_MAC_KEY, spoiled);
+
+		// At WARN, which the tests' ERROR level would not write.
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			generateBackupData();
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+
+		const said = sqlite.prepare("SELECT level, message FROM system_logs WHERE context = 'BACKUP' AND message LIKE 'Replaced %'").all();
+		expect(said).toEqual(warned ? [{ level: 'WARN', message: replacedSigningKeysLine(['the webhook address key']) }] : []);
+		expect(readOpened('settings', WEBHOOK_ADDRESS_MAC_KEY, sqlite)).toMatch(/^[0-9a-f]{64}$/);
+		expect(settingsStored(sqlite)[WEBHOOK_ADDRESS_MAC_KEY]).not.toBe(spoiled);
+		// The line names the key, never a value.
+		expect(JSON.stringify(said)).not.toContain('abab');
+	});
+
+	it.each([
+		{ row: 'an address that does not open in the copy is listed with no match', setup: 'spoil' },
+		{ row: 'the live marker’s entry for a webhook still without an address is carried (R8)', setup: 'carry' }
+	])('38: $row', ({ setup }) => {
+		const { signed, unsigned } = twoHooks();
+		if (setup === 'spoil') {
+			const { url } = rowOf(signed.id);
+			sqlite.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run(url.slice(0, -3) + (url.slice(-3, -2) === 'A' ? 'B' : 'A') + url.slice(-2), signed.id);
+		} else {
+			sqlite.prepare("UPDATE webhooks SET url = '', active = 0 WHERE id = ?").run(signed.id);
+			sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_ADDRESSES_LEFT_OUT_KEY, JSON.stringify([{ id: signed.id, active: true, address: 'a'.repeat(64) }]));
+		}
+
+		const backup = opening(generateBackupData());
+
+		const entries = marker(backup) as { id: number; active: boolean; address?: string }[];
+		expect(entries.map((entry) => entry.id)).toEqual([signed.id, unsigned.id]);
+		if (setup === 'spoil') expect(entries[0]).toEqual({ id: signed.id, active: true });
+		else expect(entries[0]).toEqual({ id: signed.id, active: true, address: 'a'.repeat(64) });
+	});
+
+	it("39: a restore of this server's own backup fills each address back byte for byte, and the secret, switched on as it was", () => {
+		const { signed, unsigned } = twoHooks();
+		const before = [rowOf(signed.id).url, rowOf(unsigned.id).url];
+
+		const result = restoreFromBackup(sqlite, opening(generateBackupData()));
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.secrets.kept.webhookAddresses).toEqual([signed.id, unsigned.id]);
+		expect(result.secrets.toEnter.webhookAddresses).toBeUndefined();
+		expect([rowOf(signed.id).url, rowOf(unsigned.id).url]).toEqual(before);
+		expect(readOpened('webhooks', signed.id)).toBe('whsec-2928-slice-3');
+		expect([rowOf(signed.id).active, rowOf(unsigned.id).active]).toEqual([1, 1]);
+		expect(marker(sqlite)).toBeNull();
+	});
+
+	it('40: an address changed here since the backup is not filled: empty, off, and listed to enter', () => {
+		const { signed } = twoHooks();
+		const backup = opening(generateBackupData());
+		const changed = sealValue('https://hooks.slack.com/services/T000/B000/another', webhookUrlAad(signed.id, signed.boardId, 'https://hooks.slack.com'), currentMfaKey()!);
+		sqlite.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run(changed, signed.id);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(rowOf(signed.id)).toMatchObject({ url: '', active: 0 });
+		expect(result.secrets.toEnter.webhookAddresses?.map((each) => each.id)).toEqual([signed.id]);
+		expect(marker(sqlite)).toEqual([{ id: signed.id, active: true, address: expect.stringMatching(/^[0-9a-f]{64}$/) }]);
+	});
+
+	it.each([
+		{ row: 'filled and switched on', held: false },
+		{ row: 'held here: filled, and off with its hold (R19)', held: true }
+	])("41: an unsigned webhook's address is $row", ({ held }) => {
+		const { unsigned } = twoHooks();
+		const backup = opening(generateBackupData());
+		if (held) sqlite.prepare("UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = '2026-11-18 09:00:00' WHERE id = ?").run(unsigned.id);
+
+		restoreFromBackup(sqlite, backup);
+
+		expect(readOpenedUrl(unsigned.id)).toBe(TEAMS);
+		expect(rowOf(unsigned.id)).toMatchObject(held ? { active: 0, heldBecause: 'setter access ended' } : { active: 1, heldBecause: null });
+	});
+
+	it.each([
+		{ row: 'a backup whose seal does not verify', change: 'seal' },
+		{ row: "this server's webhook address key lost (R14)", change: 'key' }
+	])('42: nothing is filled for $row, every address listed to enter', ({ change }) => {
+		const { signed, unsigned } = twoHooks();
+		const backup = opening(generateBackupData());
+		if (change === 'seal') backup.prepare("UPDATE boards SET name = 'changed' WHERE id = ?").run(signed.boardId);
+		else sqlite.prepare('DELETE FROM settings WHERE key = ?').run(WEBHOOK_ADDRESS_MAC_KEY);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.secrets.kept.webhookAddresses).toBeUndefined();
+		expect(result.secrets.toEnter.webhookAddresses?.map((each) => each.id)).toEqual([signed.id, unsigned.id]);
+		expect([rowOf(signed.id), rowOf(unsigned.id)].map((row) => [row.url, row.active])).toEqual([
+			['', 0],
+			['', 0]
+		]);
+	});
+
+	it('43: a working copy fills nothing where nothing is here, keeps everything off, and counts each listed as on once, from either list', () => {
+		const { signed, unsigned } = twoHooks();
+		const backup = opening(generateBackupData());
+
+		const result = restoreFromBackup(migratedDb(), backup, { outside: 'off' });
+
+		// The signed one listed in both lists, the unsigned in the addresses' alone: two, each once.
+		expect(result.outside?.webhooks).toBe(2);
+		expect(result.secrets.toEnter.webhookAddresses?.map((each) => each.id)).toEqual([signed.id, unsigned.id]);
+		// Here, where both are, the addresses are filled and both stay off.
+		const here = restoreFromBackup(sqlite, opening(generateBackupData()), { outside: 'off' });
+		expect(here.secrets.kept.webhookAddresses).toEqual([signed.id, unsigned.id]);
+		expect([rowOf(signed.id).active, rowOf(unsigned.id).active]).toEqual([0, 0]);
+		expect(readOpenedUrl(unsigned.id)).toBe(TEAMS);
+	});
+
+	it('44: the start line names each webhook whose address is to enter, held or not', () => {
+		const { signed, unsigned } = twoHooks();
+		const backup = opening(generateBackupData());
+		const live = migratedDb();
+		restoreFromBackup(live, backup);
+		live.prepare("UPDATE webhooks SET held_because = 'setter access ended', held_at = '2026-11-18 09:00:00' WHERE id = ?").run(unsigned.id);
+
+		const { toEnter } = secretsToEnter(live);
+
+		expect(toEnter.webhookAddresses?.map((each) => each.id)).toEqual([signed.id, unsigned.id]);
+		const said = secretsToEnterSentence(toEnter, true)!;
+		expect(said).toMatch(new RegExp(`the address\\(es\\) of webhook\\(s\\) ${signed.id} \\(board "[^"]+"\\), which stay switched off`));
+		expect(said).toContain('sends each one its url (and its secret) with active true in PUT /api/v1/webhooks/{id}, or deletes it if it is no longer wanted');
+		// The held one is told one thing (card 2928's code review, C1): its url with active true, and no secret.
+		expect(said).toMatch(
+			new RegExp(
+				`the address\\(es\\) of webhook\\(s\\) ${unsigned.id} \\(board "[^"]+"\\), switched off for good: to keep one, the board's owner or an ` +
+					'administrator switches it on with its url and active true, and no secret, in PUT /api/v1/webhooks/\\{id\\} \\(it is given a new secret, ' +
+					'returned once in that answer\\), or deletes it if it is no longer wanted'
+			)
+		);
+		expect(said.match(new RegExp(`webhook\\(s\\)[^;]*\\b${unsigned.id} \\(board`, 'g'))).toHaveLength(1);
+	});
+
+	it("45: the webhook address key is made once, sealed, and kept as it was across a restore", () => {
+		twoHooks();
+		const made = webhookAddressMacKey(sqlite);
+		const stored = settingsStored(sqlite)[WEBHOOK_ADDRESS_MAC_KEY];
+		expect(isSealed(stored)).toBe(true);
+		expect(webhookAddressMacKey(sqlite).equals(made)).toBe(true);
+
+		restoreFromBackup(sqlite, opening(generateBackupData()));
+
+		expect(settingsStored(sqlite)[WEBHOOK_ADDRESS_MAC_KEY]).toBe(stored);
 	});
 });

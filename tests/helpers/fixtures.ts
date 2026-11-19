@@ -76,6 +76,9 @@ import {
 } from '$lib/server/auth';
 import { forgetUnreadablePrefsWarnings } from '$lib/server/notifications';
 import { ensureFormSecret } from '$lib/server/request-tokens';
+import { sealValue, webhookUrlAad } from '$lib/server/stored-secrets';
+import { currentMfaKey } from '$lib/server/mfa-key';
+import { receiverOf } from '$lib/server/webhook-address';
 import { CONFIRMATION_HEADER, STEP_UP_FIELD, forgetImportConfirmations, issueImportConfirmation } from '$lib/server/step-up';
 import { STEP_UP_CODE_FIELD } from '$lib/step-up-words';
 import { addTotpFactor, factorSecret } from '$lib/server/mfa-store';
@@ -659,6 +662,14 @@ export function assignCard(card: Card, user: SessionUser): void {
  * webhook made with no credential at all (a test's) records, which the key
  * rule never holds; `true` with `setByKey` a key's row id, or with none; and
  * `null`, as a webhook made before keys were recorded.
+ *
+ * Its address is stored as the server stores one (card 2928, R2): sealed
+ * through the production helper (`sealValue` with `webhookUrlAad`), bound to
+ * its id, board and `receiver`, which is filled as `receiverOf` reads the
+ * address. The row returned is as stored, its `url` the envelope, with the
+ * address as given beside it as `address`, for a test to compare deliveries
+ * and answers with (`readOpenedUrl` opens the stored one). A test that needs a
+ * plain address stored, or a plain row, builds it itself and says so.
  */
 export function makeWebhook(
 	board: Board,
@@ -672,12 +683,15 @@ export function makeWebhook(
 		setWithKey?: boolean | null;
 		setByKey?: number | null;
 	} = {}
-): typeof webhooks.$inferSelect {
-	return db
+): typeof webhooks.$inferSelect & { address: string } {
+	const url = opts.url ?? `https://hooks.example.test/${next()}`;
+	const receiver = receiverOf(url) ?? '';
+	const made = db
 		.insert(webhooks)
 		.values({
 			boardId: board.id,
-			url: opts.url ?? `https://hooks.example.test/${next()}`,
+			url: '',
+			receiver,
 			events: JSON.stringify(opts.events ?? []),
 			secret: opts.secret ?? '',
 			active: opts.heldBecause === undefined ? (opts.active ?? true) : false,
@@ -688,6 +702,17 @@ export function makeWebhook(
 		})
 		.returning()
 		.get();
+	const stored = db
+		.update(webhooks)
+		// `sealValue`, as the start's sweep seals one: no key check recorded, so that a test's own check stands.
+		.set({ url: sealValue(url, webhookUrlAad(made.id, made.boardId, receiver), currentMfaKey()!) })
+		.where(eq(webhooks.id, made.id))
+		.returning()
+		.get()!;
+	// The row as stored, its `url` the envelope (card 2928's code review, C8), and the address as the test wrote
+	// it beside, as `address`: what deliveries and answers are compared with. Handed to `deliver` or
+	// `deliveryResultFor`, the row takes the sealed path a stored row takes.
+	return { ...stored, address: url };
 }
 
 /**

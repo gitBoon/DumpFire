@@ -1,10 +1,11 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.276
+version: 1.277
 status: Living
 date: 2026-11-19
 tags:
+  - card-2928
   - card-2939
   - service-account-key
   - card-2938
@@ -354,7 +355,7 @@ inside a test is its own bound (1 s unless given), and these settings do not cha
 | `tests/helpers/each-write.ts` | `eachWriteInTurn()` puts the three above together to prove a request is all or nothing |
 | `tests/helpers/timestamps.ts` | `otherTimestampForms(database)` lists every value in a timestamp column that is not a real moment in the stored form (the conversion's own `is_stamp`, so `2026-02-30 08:00:00` is listed) or NULL, as `table.column = <value>`, at most five a column; `allowOtherTimestampForms()` lets the test that calls it leave such values, for the one test; `afterEachTimestampCheck(database)` throws naming each value, and forgets the allowance either way. See [Timestamps: the check after every test](#timestamps-the-check-after-every-test) |
 | `tests/helpers/held-body.ts` | `sendAround(method, path, { key } or { session }, body, meanwhile, { headers })` sends a request through the gate with its body held back, runs `meanwhile` once the gate has let it in (a key deleted, a session ended, a role lowered), then sends the body, and answers the status and the answer; `heldBody(value)` is the held stream. The body is JSON, a `FormData` written out as multipart with the page's `Origin`, or bytes as they are, with the `content-type` given in `headers`. A request the gate answers before it reads the body is answered, with `meanwhile` not run (card 2253) |
-| `tests/helpers/reads.ts` | `readOpened(table, key, database?)` (card 2898) reads a stored secret and opens it under the process's MFA key: `readOpened('settings', 'smtp_pass')`, a signing key, `backup_config` as text with every destination's secrets opened, or `readOpened('webhooks', id)`; a value in plain is given as it is, and one that does not open is a throw, so a test never takes `''` for a secret. Every test that used to read these rows straight from the table reads them through it. `watchReads(table, afterRead)` shows that a check is made inside the transaction that writes, by letting another request's write land between two reads. `readBudget(limit)` counts every read and throws past the limit, so a walk that would never end fails its test in milliseconds instead of hanging the run (card 2142) |
+| `tests/helpers/reads.ts` | `readOpened(table, key, database?)` (card 2898) reads a stored secret and opens it under the process's MFA key: `readOpened('settings', 'smtp_pass')`, a signing key, `backup_config` as text with every destination's secrets opened, or `readOpened('webhooks', id)`; a value in plain is given as it is, and one that does not open is a throw, so a test never takes `''` for a secret. Every test that used to read these rows straight from the table reads them through it. `readOpenedUrl(id, database?)` (card 2928) opens a webhook's address the same way; `makeWebhook` (fixtures) stores each address sealed, as the server does, its `receiver` filled, and returns the row with `url` as the test gave it. `watchReads(table, afterRead)` shows that a check is made inside the transaction that writes, by letting another request's write land between two reads. `readBudget(limit)` counts every read and throws past the limit, so a walk that would never end fails its test in milliseconds instead of hanging the run (card 2142) |
 | `tests/helpers/decision-faults.ts` | Card 2676: `readyDraft`, a draft that would open, and the table of `openDecision`'s refusals, each fault alone (card 2675's nine, a participant deleted from the directory and two participants holding one account), taking the world as an argument, so `tests/decision-service.test.ts` and `tests/decision-authoring.test.ts`'s drift guard loop over one list; and `revisionNow(decisionId)`, the decision's revision as it is, which every authoring write sends |
 | `tests/fixtures/production-schema-2026-10-12.json` | The structure of the production database as captured on 2026-10-12: every table and index as `sqlite_master` reported it, and the names of the 55 migration files it had recorded. No rows. `tests/migrations.test.ts` builds a database from it to prove that production's shape, which differs from the shape the migrations give a new database, converges on the model |
 
@@ -2618,6 +2619,37 @@ rows and 31b); the GET masking the two key names alone (the GET case); `lacks()`
 `private_key` (three rows and two restore rows); no `SERVICE_ACCOUNT_NOT_A_KEY` (five rows); every
 entered JSON taken as not a copy's (the copy's row); `lacks()` reading `privateKey` as the key (a
 row and a restore row).
+
+**Card 2928** (2026-11-19; 65 tests added, 13,231 in all): every webhook address sealed at
+rest, cases numbered as its plan's section 5. `stored-secrets.test.ts`: the address's additional
+data and its four readings (1, 2), the start's sweep with a stale or empty receiver (23), on a
+scratch file sealed by card 2898 already (25), this release's first start marking the scrub once
+(26), this release's first start deleting the stale copies (27), the old log lines masked in
+the live log and a backup's copy (28), and a log rewrite that fails never stopping the start (29).
+`webhooks.test.ts`: `receiver` in no answer (3), deliveries on the opened text and refused for an
+address `''` or not opening (4 to 7), hosts from `receiver` (8), the held-off rule by `receiver`
+(9), and the writers: the create sealed (15), an unchanged `url` written back byte for byte (16), a
+new one with its secret sealed again (17), the switch-on refusal (18), no secret sealed against an
+address that does not open (19), a held switch-on (20), a secret alone (21) and a `url` not
+well-formed (22). `mfa-storage.test.ts` 24, 32 and 20c (33); `mfa-secrets.test.ts` 30, 31;
+`backups.test.ts` 12, 13, 34, 35 and 37 to 45 (the copy blanking each address with its match, the
+restore's fill, its holds and its switch-on, the key lost, a working copy, the start line and the
+key kept); `migrations.test.ts` 14; `two-step-sign-in.test.ts` T37 (10);
+`mfa-reset-script.test.ts` T21 (11); `openapi-document.test.ts` (46); the inventory in
+`check-at-the-write.test.ts` (36). `tests/helpers/fixtures.ts` `makeWebhook` seals.
+
+**Card 2928's code review** (2026-11-19; 5 tests added, 13,236 in all): `makeWebhook` returns the
+row as stored (`url` the envelope) with the address beside it as `address`, so every direct
+`deliver` and `deliveryResultFor` takes the sealed path; the one test that needs the plain branch
+(the 10,000-webhook WARN memory, whose made-up ids would not open a sealed address) builds its
+plain row and says so. Case 24 now: the secret beside an address that does not open blanked at
+every start with no flag, and a second start writing nothing (C2). Case 27: the stale `.backup-temp`
+copies deleted by this release's first start, with nothing to seal; 27b: a crashed import's
+`.restore-temp` and its journal files deleted at every start (C4). `webhooks.test.ts` 10 (an
+address with a lone surrogate sealed as one string, sent signed, C3) and 19b (a secret `''` alone
+on an address that does not open taken, C5). `backups.test.ts`: 2923 R5 and 44 pin the one
+instruction for a held webhook whose address is to enter (C1); 37 also looks for the opened key
+(C11); 37b the backup's WARN for a key that does not open, and none at first need (C14).
 
 **Card 2898** (2026-11-19; 48 tests added, 13,087 in all) and **its code review** (14 added,
 13,101 in all): the service secrets sealed at rest, `tests/stored-secrets.test.ts` (new) and the

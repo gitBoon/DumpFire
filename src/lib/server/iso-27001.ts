@@ -255,7 +255,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Session ids, invite tokens, API keys, recovery codes, sign-in challenges, decision links and (since card 2870) requester links are held only as SHA-256 hashes. ' +
 			'Every route that sets a password refuses one over 1,024 characters, the most the step-up reads (card 2888). ' +
 			'Requester links end 90 days after their request is settled (card 2902). ' +
-			'The mail password, backup destination credentials, webhook secrets and the server\'s signing keys are sealed with AES-256-GCM under a key kept outside the database, each bound to where it is used (card 2898).',
+			'The mail password, backup destination credentials, webhook secrets and the server\'s signing keys are sealed with AES-256-GCM under a key kept outside the database, each bound to where it is used (card 2898); ' +
+				'so is every webhook address, which can carry a receiver\'s token, and no backup holds one (card 2928).',
 		evidence: [
 			{ path: 'src/lib/server/passwords.ts', symbol: 'BCRYPT_ROUNDS' },
 			{ path: 'src/lib/server/passwords.ts', symbol: 'LONGEST_PASSWORD' },

@@ -53,7 +53,12 @@ const spec = {
 			'a webhook whose stored secret cannot be opened (sealed under another key, or its row changed outside DumpFire) is never delivered, neither unsigned nor with that stored text: ' +
 			'its lastDelivery says "Not sent: its signing secret cannot be opened", it stays as active as it was with its pausedBecause unchanged, and a read that gives the secret gives \'\' with hasSecret true; ' +
 			'a PUT that sends secret for such a webhook always replaces it, \'\' clearing it to unsigned, and records the caller as its setter as any change of secret does; ' +
-			'(6) nothing else changed: no operation, field or schema.\n\n' +
+			'(6) webhook urls are stored sealed too, bound to the webhook\'s id, board and receiver (card 2928), and are given in answers as before, to the same callers; ' +
+			'a backup holds no url: a restore onto the server that made it puts each back, and any other gives url \'\' until it is entered, the webhook off and listed to enter; ' +
+			'a webhook whose url is \'\' or cannot be opened is never delivered, its lastDelivery saying "Not sent: it has no address" or "Not sent: its address cannot be opened", and its url is given as \'\'; ' +
+			'a PUT that switches such a webhook on must send url in the same request (400 otherwise), a secret other than \'\' sent for it must come with url, and a url sent beside a secret that cannot be opened must come with a new secret (400 otherwise); ' +
+			'a url that is not well-formed text is answered 400; ' +
+			'(7) nothing else changed: no operation, field or schema.\n\n' +
 			'**Changed on 2026-11-18 (version 1.14.0), breaking.** A reset of an account\'s two-step sign-in, by an administrator or on the server\'s host, ends the account\'s API keys and switches off the webhooks it set (card 2915): ' +
 			'(1) its keys answer 401, as after a password reset; ' +
 			'(2) the webhooks it set are switched off, active false, recording setter access ended, so switching one on again is the board owner\'s or an administrator\'s and gives it a new secret; ' +
@@ -1025,9 +1030,9 @@ const spec = {
 					boardId: { type: 'integer' },
 					url: {
 						type: 'string',
-						format: 'uri',
 						description:
-							'The delivery address. Present only when the caller is the board owner or an administrator, and in the response to the request that created the webhook, as the secret is. Omitted for every other caller, including board editors and viewers, and in the answer to an editor\'s own update: an address can name a server inside a network or carry credentials. Until 2026-10-14 it was given to every caller who could view the board.'
+							'The delivery address. Present only when the caller is the board owner or an administrator, and in the response to the request that created the webhook, as the secret is. Omitted for every other caller, including board editors and viewers, and in the answer to an editor\'s own update: an address can name a server inside a network or carry credentials. Until 2026-10-14 it was given to every caller who could view the board. ' +
+							'Stored sealed since 1.15.0 (card 2928): a uri, or \'\' where it must be entered again, because a backup left it out and the restore could not put it back, or because it cannot be opened with this server\'s key; such a webhook is not delivered, and is switched on only with a url sent in the same PUT.'
 					},
 					hasSecret: {
 						type: 'boolean',
@@ -1047,6 +1052,7 @@ const spec = {
 						description:
 							'What the last delivery came to. Present only when the caller is the board owner or an administrator, as the address is, and null in the response to the request that created the webhook. ' +
 							'null until the webhook\'s first delivery since the server last started, and after its url changes until the next delivery or until the address is changed back: a result is kept in the server\'s memory, never stored, so a restart, a deploy included, forgets it. ' +
+							'The same url sealed again (a change of the server\'s key, a restore) is the same url, and keeps its result (since 1.15.0, card 2928). ' +
 							'The latest attempt only, not a history: an earlier failure followed by a success is not shown; the system log keeps each failure. Read through the API only: nothing else tells anyone that a delivery failed, so poll this webhook or the board\'s list. ' +
 							'An event the webhook does not ask for, and a webhook switched off, record nothing. Of two deliveries in flight the later dispatch\'s result is kept, whichever answers last.',
 						properties: {
@@ -6915,7 +6921,9 @@ const spec = {
 					'Since 1.11.0, switching on a webhook switched off for good because its setter lost the board, had its access ended or its key ended (see Webhook) gives it a new secret, 64 hexadecimal characters, in this answer\'s secret: ' +
 					'send active true alone, as a secret sent with it is answered 400 and nothing is written; since 1.15.0 so is one switched off because nobody was recorded as its setter, which kept its secret before. ' +
 					'Switching it on clears why it was switched off, and pausedBecause is then null. Sending active false for one switched off that way leaves it so. ' +
-					'Since 1.15.0, a secret sent for a webhook whose stored secret cannot be opened (see Webhook) is always a change: a value replaces it, and \'\' clears it, so the webhook is delivered unsigned.',
+					'Since 1.15.0, a secret sent for a webhook whose stored secret cannot be opened (see Webhook) is always a change: a value replaces it, and \'\' clears it, so the webhook is delivered unsigned. ' +
+					'Since 1.15.0 (card 2928), a webhook whose url is \'\' or cannot be opened is switched on only with url sent in the same request, a secret other than \'\' is sent for it only with url (\'\' clears it), and a url is sent beside a secret that cannot be opened only with a new secret (each 400 otherwise); ' +
+					'events alone may still be changed. The url sent back unchanged leaves the stored one as it is.',
 				parameters: [{ $ref: '#/components/parameters/webhookId' }],
 				requestBody: {
 					required: true,

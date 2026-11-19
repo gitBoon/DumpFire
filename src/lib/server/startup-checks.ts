@@ -111,7 +111,7 @@ import { schedulerSetting } from './schedulers';
 // every line as well. Names are still put through it where they sit inside
 // quotes, and the line printed past LOG_LEVEL below does not go through `emit`.
 import { createLogger, isLogged, printable } from './logger';
-import { maskSecretsInLog } from './secret-paths';
+import { maskOldWebhookAddresses, maskSecretsInLog } from './secret-paths';
 import { NOT_IN_HASH_FORM, REPLACE_PLAIN_USED_INVITES } from './invites';
 import { SESSION_NOT_IN_HASH_FORM, httpsOnlyCookie, keyEnded } from './auth';
 import { END_PLAIN_REQUEST_LINKS } from './request-tokens';
@@ -125,7 +125,7 @@ import {
 	boardsOverWebhookCap,
 	holdOf,
 	holdUnheldOfGoneSetters,
-	hostOf,
+	hostOfHook,
 	keysBeforeRecorded,
 	MAX_WEBHOOKS_PER_BOARD,
 	SWITCHED_OFF_NAMED,
@@ -153,12 +153,15 @@ import {
 	PROCESS_STARTED_AT,
 	SECRETS_SCRUB_PENDING,
 	STORED_SECRETS_FIRST_SEALED,
+	WEBHOOK_ADDRESSES_SCRUB_MARKED,
 	checkpointTruncate,
 	markScrubPending,
+	forgetSecretsBesideNoAddress,
 	forgetStoredSecrets,
 	normaliseServiceAccounts,
 	recordKeyCheck,
 	replaceUnopenableSigningKeys,
+	replacedSigningKeysLine,
 	resealStoredSecrets,
 	sealPlainSecrets,
 	sealedTotal,
@@ -635,7 +638,9 @@ export function checkMfaKeyAtStart(
 	storedCheck: () => string | null = () => readMfaKeyCheck(sqlite),
 	previous: PreviousKeyLoad = loadPreviousMfaKey({ keyFile: process.env.MFA_KEY_FILE_PREVIOUS }),
 	seal: typeof sealWith = sealWith,
-	stored: () => readonly StoredSecret[] = () => storedSecretsAtStart(sqlite),
+	// Each webhook's address opened with this key or the previous one, to bind its secret to (card 2928).
+	stored: () => readonly StoredSecret[] = () =>
+		storedSecretsAtStart(sqlite, [load.ok ? load.key : null, previous.ok ? previous.key : null]),
 	forgetUnopenable: boolean = process.env[FORGET_UNOPENABLE_SECRETS] === '1'
 ): void {
 	try {
@@ -762,7 +767,8 @@ function startWithMfaKey(
 			authLog.error(
 				`No key check was stored and none of the ${forgotten.length} stored secret(s) opens with this server's MFA key, ` +
 					`so they were forgotten as a backup forgets them: ${namedSecrets(forgotten)}. Enter them again (the mail ` +
-					'password and backup destination credentials in Admin; each webhook a new secret with its receiver).',
+					'password and backup destination credentials in Admin; each webhook its address and a new secret with its receiver, ' +
+					'with PUT /api/v1/webhooks/{id}).',
 				{ forgotten: forgotten.length }
 			);
 		}
@@ -847,6 +853,13 @@ function namedSecrets(secrets: readonly { where: string }[]): string {
  * (`later`, E4), and so is one this start could not finish: a VACUUM that
  * fails never delays listening, nor stops a start. The marker stays until a
  * scrub succeeds, and each failure is an ERROR naming Admin › Vacuum.
+ *
+ * Card 2928 adds, in the same transaction: every plain webhook address sealed
+ * with the rest; the old log lines that quoted a whole address masked, in a
+ * savepoint; the scrub marked once on the release's first start, which also
+ * deletes the stale backup copies; and each plain secret beside an address
+ * that is '' or does not open blanked, off and listed. After it, at every
+ * start, a crashed import's `.restore-temp` upload is deleted.
  */
 export function sealStoredSecretsAtStart(
 	database: Database.Database = sqlite,
@@ -857,11 +870,28 @@ export function sealStoredSecretsAtStart(
 	let replaced: string[];
 	let firstSealing = false;
 	let normalised: ServiceAccountNormalised[];
+	let firstOfRelease = false;
+	let logMaskFailed: string | null = null;
+	let forgottenBesideNoAddress: number[] = [];
 	try {
 		if (key === null) throw new Error('no MFA key is loaded');
-		[counts, replaced, firstSealing, normalised] = database
-			.transaction((): [SealedCounts, string[], boolean, ServiceAccountNormalised[]] => {
+		[counts, replaced, firstSealing, normalised, firstOfRelease, forgottenBesideNoAddress] = database
+			.transaction((): [SealedCounts, string[], boolean, ServiceAccountNormalised[], boolean, number[]] => {
 				recordKeyCheck(database, key);
+				const insertOnce = (setting: string) =>
+					database.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING').run(setting, new Date().toISOString()).changes === 1;
+				// Card 2928 (R20): this version's first start scrubs the file once, whatever it seals, so that the free
+				// pages left from before secure_delete are cleared; and deletes the stale copies below (its code review, C4).
+				const first2928 = insertOnce(WEBHOOK_ADDRESSES_SCRUB_MARKED);
+				if (first2928) markScrubPending(database);
+				// Card 2928 (R12, R16): the old log lines that quoted a webhook's whole address, alone, in a savepoint
+				// whose failure is caught: rewritten before the scrub below takes their old text out of the file, and
+				// never a reason not to start.
+				try {
+					if (database.transaction(() => maskOldWebhookAddresses(database))() > 0) markScrubPending(database);
+				} catch (err) {
+					logMaskFailed = (err as Error)?.message ?? String(err);
+				}
 				// Every service account JSON brought to the one rule's form (card
 				// 2939, ruling P1), before anything is sealed: what it drops leaves
 				// the file with this start's scrub, but it is no first sealing.
@@ -872,12 +902,13 @@ export function sealStoredSecretsAtStart(
 				let first = false;
 				if (sealedTotal(sealedNow) > 0 || replacedNow.length > 0) {
 					markScrubPending(database);
-					first =
-						database
-							.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING')
-							.run(STORED_SECRETS_FIRST_SEALED, new Date().toISOString()).changes === 1;
+					first = insertOnce(STORED_SECRETS_FIRST_SEALED);
 				}
-				return [sealedNow, replacedNow, first, normalisedNow];
+				// Card 2928 (R5; its code review, C2): a plain secret beside an address that is '' or does not open is
+				// never sealed against it, and never left in plain: blanked, the webhook off and listed, as a backup
+				// leaves one out, at every start that finds one.
+				const forgotten = sealedNow.secretsBesideNoAddress.length > 0 ? forgetSecretsBesideNoAddress(database, sealedNow.secretsBesideNoAddress) : [];
+				return [sealedNow, replacedNow, first, normalisedNow, first2928, forgotten];
 			})
 			.immediate();
 	} catch (err) {
@@ -889,26 +920,50 @@ export function sealStoredSecretsAtStart(
 	}
 
 	const total = sealedTotal(counts);
-	if (total > 0) {
-		const dbPath = database.name;
-		const onDisk = dbPath !== '' && dbPath !== ':memory:';
-		// The copies a backup leaves beside the database while it is made (backup.ts), stale after a stop (S13):
-		// on the first sealing start alone (E8), when no backup of this process can be making them.
-		if (onDisk && firstSealing) {
-			for (const path of [`${dbPath}.backup-temp`, `${dbPath}.backup-temp-cleared`]) {
-				for (const suffix of ['', '-journal', '-wal', '-shm']) {
-					try {
-						unlinkSync(path + suffix);
-					} catch {
-						// Not there.
-					}
+	const dbPath = database.name;
+	const onDisk = dbPath !== '' && dbPath !== ':memory:';
+	const removeWithSuffixes = (paths: readonly string[]) => {
+		for (const path of paths) {
+			for (const suffix of ['', '-journal', '-wal', '-shm']) {
+				try {
+					unlinkSync(path + suffix);
+				} catch {
+					// Not there.
 				}
 			}
 		}
+	};
+	// The copies a backup leaves beside the database while it is made (backup.ts), stale after a stop (S13):
+	// on the first sealing start (E8), and on the first start of card 2928's release (its code review, C4), whose
+	// copies held webhook addresses in plain. This runs before the server listens: no backup of this process can
+	// be making them, and another instance on the same database is refused by the transaction above.
+	if (onDisk && (firstSealing || firstOfRelease)) removeWithSuffixes([`${dbPath}.backup-temp`, `${dbPath}.backup-temp-cleared`]);
+	// And, at every start, the upload a crashed import left (card 2928's code review, C4): `.restore-temp`, which
+	// holds a whole backup. An import runs only on a request, and none is answered before the server listens.
+	if (onDisk) removeWithSuffixes([importFiles(dbPath).upload]);
+	if (logMaskFailed !== null) {
+		// Card 2928 (R12): loud, and never a reason not to start.
+		warnOnConsoleAlways(
+			`The old log lines that quoted a webhook's whole address could not be masked (${printable(logMaskFailed)}). ` +
+				'Read GET /api/logs for lines beginning "Webhook delivery failed for hook", and change the address of each webhook ' +
+				'they name with its receiver; the next start tries again.'
+		);
+	}
+	if (forgottenBesideNoAddress.length > 0) {
+		// Card 2928 (R5; its code review, C2): never sealed against an address that cannot be read, never left in plain.
+		const named = (ids: number[]) => ids.slice(0, UNREADABLE_NAMED).map((id) => `webhook ${id}`).join(', ') + (ids.length > UNREADABLE_NAMED ? `, and ${ids.length - UNREADABLE_NAMED} more` : '');
+		authLog.error(
+			`${forgottenBesideNoAddress.length} webhook secret(s) held in plain beside an address that is empty or cannot be opened ` +
+				`were forgotten as a backup forgets them: ${named(forgottenBesideNoAddress)}. Each is switched off: set its address and ` +
+				'secret with PUT /api/v1/webhooks/{id}.',
+			{ forgotten: forgottenBesideNoAddress.length }
+		);
+	}
+	if (total > 0) {
 		const safety = onDisk ? importFiles(dbPath).safety : null;
 		warnOnConsoleAlways(
 			`Sealed ${total} stored secret(s) held in plain (${counts.mail > 0 ? 'the mail password, ' : ''}` +
-				`${counts.destinationFields} destination field(s), ${counts.webhooks} webhook secret(s), ${counts.signingKeys} ` +
+				`${counts.destinationFields} destination field(s), ${counts.webhooks} webhook secret(s), ${counts.webhookAddresses} webhook address(es), ${counts.signingKeys} ` +
 				`signing key(s); ${counts.unreadableConfigs} backup configuration(s) unreadable): they are now encrypted under the MFA key.` +
 				(safety !== null && existsSync(safety)
 					? ` The import's safety copy ${printable(safety)} holds them in plain as they were: delete it once it is not needed.`
@@ -918,12 +973,7 @@ export function sealStoredSecretsAtStart(
 	}
 	if (normalised.length > 0) warnOnConsoleAlways(serviceAccountsNormalisedLine(normalised));
 	if (replaced.length > 0) {
-		warnOnConsoleAlways(
-			`Replaced ${replaced.join(', ')}, which could not be opened with this server's MFA key, by a new one. A new ` +
-				'remembered-browser key forgets every remembered browser; a new request-form key makes open forms, decision ' +
-				'revisions and comment keys reload; a new backup seal key stops older backups verifying, so a restore of one ' +
-				'fills no secret and takes none of its second factors.'
-		);
+		warnOnConsoleAlways(replacedSigningKeysLine(replaced));
 	}
 
 	const marker = database.prepare('SELECT value FROM settings WHERE key = ?').get(SECRETS_SCRUB_PENDING) as { value: string } | undefined;
@@ -1325,7 +1375,7 @@ export async function announceWebhooksBeforeKeys(
 						: `at the earliest ${stops} UTC; later if that account keeps or replaces a key from before the release`) +
 					'. To keep it, an owner of the board or an administrator re-saves it with a key.'
 			);
-			items.push({ boardId: hook.boardId, id: hook.id, host: hostOf(hook.url), stops });
+			items.push({ boardId: hook.boardId, id: hook.id, host: hostOfHook(hook), stops });
 		}
 		const setting = schedulerSetting(value, isDev);
 		if (!setting.run) {

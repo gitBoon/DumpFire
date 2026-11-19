@@ -29,7 +29,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import ts from 'typescript';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { mfaFactors, sessions, settings, users, webhooks } from '$lib/server/db/schema';
+import { mfaFactors, sessions, settings, users } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
 import {
 	AccountDisabled,
@@ -84,7 +84,7 @@ import { action, pageLoad } from './helpers/actions';
 import { readOpened } from './helpers/reads';
 import { effects, type Effects } from './helpers/effects';
 import { gate } from './helpers/gate';
-import { FIXTURE_PASSWORD, FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, resetDb, sessionHashOf, sessionRow } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, makeWebhook, resetDb, sessionHashOf, sessionRow } from './helpers/fixtures';
 import { VERIFY_AT, codeFor, giveAuthenticator, giveFactor, openReleaseWindow, passwordStep, signInFully, verify, wrongCodeFor, type GivenFactor } from './helpers/two-step';
 
 /** Run while the password is being checked (T42): a password set meanwhile. */
@@ -869,7 +869,8 @@ describe('the second step (slice 2)', () => {
 		const lastSignInAt = userRow().lastSignInAt;
 		makeApiKey(user, 'Deploy key');
 		const { board } = makeBoard({ owner: user, name: 'Ops' });
-		db.insert(webhooks).values({ boardId: board.id, url: 'https://hooks.example.test/in/its-own-secret?k=1', setBy: user.id }).run();
+		// Sealed, as every address is stored (card 2928): the host is its receiver's.
+		makeWebhook(board, { url: 'https://hooks.example.test/in/its-own-secret?k=1', setBy: user });
 		later(30_000);
 
 		const { challenge } = await passwordStep(user);

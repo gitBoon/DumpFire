@@ -99,15 +99,23 @@ import { driveScopeIsNarrow } from '$lib/drive-scope';
 import { getDbPath, sqlite } from './db';
 // A name or a title as a sentence prints it: each control character, a line
 // break above all, as a space (the log's own cleaner, card 2214).
-import { printable } from './logger';
+import { createLogger, printable } from './logger';
 import { HOST_KEY_NOT_CONFIRMED, confirmedHostKey, hostKeyText } from './ssh-host-key';
 import { NEW_SECRET_REASONS } from './webhooks';
 import { SERVICE_ACCOUNT_SHOWN, readServiceAccountJson, serviceAccountKey } from './service-account-json';
 import {
+	WEBHOOK_ADDRESSES_LEFT_OUT,
+	WEBHOOK_ADDRESS_KEY_WORDS,
+	WEBHOOK_ADDRESS_MAC_KEY,
+	addressToBind,
+	replacedSigningKeysLine,
 	looksSealed,
+	sameAddressMac,
+	webhookAddressMac,
 	mailPasswordAad,
 	openDestinationSecrets,
 	openStored,
+	receiverColumn,
 	sealStored,
 	settingAad,
 	unopenableFields,
@@ -118,6 +126,9 @@ import {
 
 /** The setting that lists the webhooks a backup left without their secrets. */
 export const WEBHOOK_SECRETS_LEFT_OUT_KEY = 'webhook_secrets_left_out';
+
+/** Backup's own log label, for the WARN of a replaced webhook address key (card 2928's code review, C14). */
+const log = createLogger('BACKUP');
 
 /** The setting that holds this server's key for sealing its backups: 32 random bytes, as hex. Never in a backup. */
 export const BACKUP_SEAL_KEY = 'backup_seal_key';
@@ -238,8 +249,14 @@ type Entry = Record<string, unknown>;
 /** A webhook the marker lists: its id, and whether it was on when the backup was made. */
 export type ListedWebhook = { id: number; active: boolean };
 
-/** What a restore kept from this server. */
-export type SecretsKept = { mailPassword: boolean; destinations: string[]; webhooks: number[] };
+/** A webhook the marker of addresses left out lists (card 2928): with the match of its address, where it opened. */
+export type ListedAddress = ListedWebhook & { address?: string };
+
+/** The setting that lists the webhooks whose address a backup left out (card 2928). */
+export const WEBHOOK_ADDRESSES_LEFT_OUT_KEY = WEBHOOK_ADDRESSES_LEFT_OUT;
+
+/** What a restore kept from this server; `webhookAddresses` (card 2928) present only where it kept one. */
+export type SecretsKept = { mailPassword: boolean; destinations: string[]; webhooks: number[]; webhookAddresses?: number[] };
 
 /** What is still to enter, with what each destination needs and each webhook's board. */
 export type SecretsToEnter = {
@@ -260,6 +277,12 @@ export type SecretsToEnter = {
 	 * the switch-on is refused. Present only where there is one.
 	 */
 	heldWebhooks?: { id: number; boardId: number; board: string | null }[];
+	/**
+	 * The webhooks whose address a backup left out and is still to enter (card
+	 * 2928), held or not: none is switched on without one. Present only where
+	 * there is one.
+	 */
+	webhookAddresses?: { id: number; boardId: number; board: string | null }[];
 };
 
 /** `RestoreResult.secrets`: what the restore kept, and what is to enter. */
@@ -269,7 +292,22 @@ export type SecretsAccount = { kept: SecretsKept; toEnter: SecretsToEnter };
 export type SecretsHere = {
 	mail: Record<(typeof MAIL_KEYS)[number], string | null>;
 	destinations: Entry[];
-	webhooks: { id: number; boardId: number; url: string; secret: string; setBy: number | null; heldBecause: string | null; heldAt: string | null }[];
+	webhooks: {
+		id: number;
+		boardId: number;
+		/** As stored: sealed (card 2928), compared opened. */
+		url: string;
+		receiver: string;
+		secret: string;
+		setBy: number | null;
+		heldBecause: string | null;
+		heldAt: string | null;
+	}[];
+	/**
+	 * Every webhook here whose address opens (card 2928): as stored, for a fill
+	 * to move byte for byte, and opened, for the match. Absent where none was read.
+	 */
+	addresses?: { id: number; boardId: number; receiver: string; url: string; opened: string; setBy: number | null; heldBecause: string | null }[];
 };
 
 const isEntry = (value: unknown): value is Entry => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -503,6 +541,39 @@ export function readListed(database: Database.Database): { listed: ListedWebhook
 	return parseListed(settingOf(database, WEBHOOK_SECRETS_LEFT_OUT_KEY));
 }
 
+/**
+ * The webhooks a marker of addresses left out lists (card 2928), as
+ * `parseListed` reads its own, each with its `address` match where it holds 64
+ * hex characters, none where it holds none or anything else (it then matches
+ * nothing, and the address is to enter). The backup's word, as the other.
+ */
+export function parseAddressesListed(text: string | null | undefined): { listed: ListedAddress[]; problems: string[] } {
+	const { listed, problems } = parseListed(text);
+	let raw: unknown[] = [];
+	try {
+		const parsed = JSON.parse(text ?? '[]');
+		if (Array.isArray(parsed)) raw = parsed;
+	} catch {
+		// Said by parseListed.
+	}
+	const addressOf = (id: number): string | undefined => {
+		const entry = raw.find((each) => isEntry(each) && each.id === id) as Entry | undefined;
+		return entry !== undefined && typeof entry.address === 'string' && /^[0-9a-f]{64}$/.test(entry.address) ? entry.address : undefined;
+	};
+	return {
+		listed: listed.map((entry) => {
+			const address = addressOf(entry.id);
+			return address === undefined ? entry : { ...entry, address };
+		}),
+		problems: problems.map((problem) => problem.replace(`without their secrets (${WEBHOOK_SECRETS_LEFT_OUT_KEY})`, `without their addresses (${WEBHOOK_ADDRESSES_LEFT_OUT_KEY})`))
+	};
+}
+
+/** The webhooks `database`'s own marker of addresses left out lists (card 2928). */
+export function readAddressesListed(database: Database.Database): { listed: ListedAddress[]; problems: string[] } {
+	return parseAddressesListed(settingOf(database, WEBHOOK_ADDRESSES_LEFT_OUT_KEY));
+}
+
 /** The destinations a `backup_config`'s text holds, each an object; none where it is not JSON or holds no list (N4). */
 function destinationsIn(text: string | null): Entry[] {
 	if (text === null) return [];
@@ -585,12 +656,18 @@ function clearedConfig(text: string): string | null {
  * there with no secret, with the `active` it recorded (R2): a backup made
  * before a restored webhook's secret is entered still says it lacks one.
  *
+ * And every webhook's address (card 2928): '' in the copy, the webhook
+ * switched off and listed in `webhook_addresses_left_out` with whether it was
+ * on and, where it opens and `macKey` is given, the match of it a restore
+ * fills it back by (`webhookAddressMac`); the key itself deleted. Entries the
+ * copy's own marker holds for a webhook still without one are carried (R8).
+ *
  * Throws, before it writes anything, when handed the running database (N1):
  * there it would delete the mail password and switch off every signed
  * webhook. A table that is not there is skipped; anything else that goes
  * wrong is thrown, for `withoutSecrets` to stop the backup with.
  */
-export function clearSecrets(copy: Database.Database): void {
+export function clearSecrets(copy: Database.Database, macKey: Buffer | null = null): void {
 	if (isTheRunningDatabase(copy)) {
 		throw new Error('The secrets are cleared from a backup’s copy only, never from the running database. Nothing was changed.');
 	}
@@ -600,14 +677,38 @@ export function clearSecrets(copy: Database.Database): void {
 		copy.prepare("DELETE FROM settings WHERE key = 'smtp_pass'").run();
 		// The key this server seals its backups with (S1): whoever held it could
 		// seal a backup of their own making, and have this server fill it. And
-		// any seal already in the copy, which `sealCopy` writes afresh.
-		copy.prepare('DELETE FROM settings WHERE key IN (?, ?)').run(BACKUP_SEAL_KEY, BACKUP_SEAL);
-		const stored = settingOf(copy, 'backup_config');
+		// any seal already in the copy, which `sealCopy` writes afresh. And the
+		// key the copy's address matches are made with (card 2928, R14).
+		copy.prepare('DELETE FROM settings WHERE key IN (?, ?, ?)').run(BACKUP_SEAL_KEY, BACKUP_SEAL, WEBHOOK_ADDRESS_MAC_KEY);		const stored = settingOf(copy, 'backup_config');
 		if (stored !== null) {
 			const cleared = clearedConfig(stored);
 			if (cleared === null) copy.prepare("DELETE FROM settings WHERE key = 'backup_config'").run();
 			else if (cleared !== stored) copy.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(cleared);
 		}
+	}
+
+	// Each address (card 2928): '' in the copy, the webhook off, and listed with whether it was on and the match
+	// of the address this server can make again (`macKey`); read, with every webhook's on or off, before anything
+	// below switches one off. The live marker's entries for rows still '' are carried (R8).
+	let addressEntries: ListedAddress[] = [];
+	const wasOn = new Map<number, boolean>(
+		hasColumns(copy, 'webhooks', 'id', 'active')
+			? (copy.prepare('SELECT id, active FROM webhooks').all() as { id: number; active: number }[]).map((row) => [row.id, row.active !== 0])
+			: []
+	);
+	if (hasColumns(copy, 'webhooks', 'id', 'board_id', 'url', 'active')) {
+		const stillWithoutAddress = (id: number) => !!copy.prepare("SELECT 1 FROM webhooks WHERE id = ? AND url = ''").get(id);
+		const carried = hasSettings ? readAddressesListed(copy).listed.filter((entry) => stillWithoutAddress(entry.id)) : [];
+		const left = (
+			copy
+				.prepare(`SELECT id, board_id AS boardId, url, ${receiverColumn(copy)} AS receiver, active FROM webhooks WHERE url <> '' ORDER BY id`)
+				.all() as { id: number; boardId: number; url: string; receiver: string; active: number }[]
+		).map((row) => {
+			const opened = addressToBind(row);
+			return { id: row.id, active: row.active !== 0, ...(opened !== null && macKey !== null ? { address: webhookAddressMac(macKey, row, opened) } : {}) };
+		});
+		copy.prepare("UPDATE webhooks SET url = '', active = 0 WHERE url <> ''").run();
+		addressEntries = [...carried, ...left].sort((a, b) => a.id - b.id);
 	}
 
 	let entries: ListedWebhook[] = [];
@@ -620,7 +721,7 @@ export function clearSecrets(copy: Database.Database): void {
 				id: number;
 				active: number;
 			}[]
-		).map((row) => ({ id: row.id, active: row.active !== 0 }));
+		).map((row) => ({ id: row.id, active: wasOn.get(row.id) ?? row.active !== 0 }));
 		copy.prepare("UPDATE webhooks SET secret = '', active = 0 WHERE secret IS NOT NULL AND secret <> ''").run();
 		entries = [...carried, ...signed].sort((a, b) => a.id - b.id);
 	}
@@ -628,6 +729,10 @@ export function clearSecrets(copy: Database.Database): void {
 		copy.prepare('DELETE FROM settings WHERE key = ?').run(WEBHOOK_SECRETS_LEFT_OUT_KEY);
 		if (entries.length > 0) {
 			copy.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_SECRETS_LEFT_OUT_KEY, JSON.stringify(entries));
+		}
+		copy.prepare('DELETE FROM settings WHERE key = ?').run(WEBHOOK_ADDRESSES_LEFT_OUT_KEY);
+		if (addressEntries.length > 0) {
+			copy.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_ADDRESSES_LEFT_OUT_KEY, JSON.stringify(addressEntries));
 		}
 	}
 }
@@ -906,6 +1011,46 @@ export function backupSealKey(live: Database.Database = sqlite): Buffer {
 	return Buffer.from(made, 'hex');
 }
 
+/**
+ * This server's key for the match a backup carries of each webhook address it
+ * leaves out (card 2928, R14), made the first time a backup asks for it: 32
+ * random bytes, stored sealed as `webhook_address_mac_key`, bound to its
+ * setting's name. No backup, export or safety copy holds it, and a restore
+ * keeps this server's (`addressMacKeyHere`, `keepSetting`).
+ */
+export function webhookAddressMacKey(live: Database.Database = sqlite): Buffer {
+	const here = addressMacKeyHere(live);
+	if (here !== null) return here.key;
+	// One stored that does not open is replaced, with the start's own WARN for a replaced key (its code review, C14).
+	if (settingOf(live, WEBHOOK_ADDRESS_MAC_KEY) !== null) log.warn(replacedSigningKeysLine([WEBHOOK_ADDRESS_KEY_WORDS]));
+	const made = randomBytes(32).toString('hex');
+	live.transaction(() => {
+		live
+			.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value')
+			.run(WEBHOOK_ADDRESS_MAC_KEY, sealStored(made, settingAad(WEBHOOK_ADDRESS_MAC_KEY), live));
+	})();
+	return Buffer.from(made, 'hex');
+}
+
+/**
+ * The webhook address key as `live` holds it: `stored`, as it is stored, for a
+ * restore to put back unchanged, and `key`, opened; null where there is none,
+ * or none that opens (a restore then fills no address, R14). Writes nothing.
+ */
+export function addressMacKeyHere(live: Database.Database): { stored: string; key: Buffer } | null {
+	const stored = settingOf(live, WEBHOOK_ADDRESS_MAC_KEY);
+	const opened = openStored(stored, settingAad(WEBHOOK_ADDRESS_MAC_KEY));
+	return stored !== null && (opened.kind === 'opened' || opened.kind === 'plain') && HEX_32.test(opened.value)
+		? { stored, key: Buffer.from(opened.value, 'hex') }
+		: null;
+}
+
+/** Put back, in `live`'s restored settings, a setting of this server's as it was read before the restore cleared them. */
+export function keepSetting(live: Database.Database, key: string, stored: string): void {
+	if (!hasColumns(live, 'settings', 'key', 'value')) return;
+	live.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, stored);
+}
+
 /** The key, 64 hex characters, from its setting as stored: opened, or as it is when plain; null for none, one that does not open, or one that is not 64 hex. */
 function sealKeyOpened(stored: string | null): string | null {
 	const opened = openStored(stored, settingAad(BACKUP_SEAL_KEY));
@@ -1025,15 +1170,32 @@ export function readSecretsHere(live: Database.Database): SecretsHere {
 	const mail = readMailHere(live);
 	if (looksSealed(mail.smtp_pass) && openStored(mail.smtp_pass, mailPasswordAad(mail)).kind === 'unopenable') mail.smtp_pass = null;
 	const setBy = hasColumns(live, 'webhooks', 'set_by') ? 'set_by' : 'NULL';
-	const held = hasColumns(live, 'webhooks', 'held_because', 'held_at') ? 'held_because AS heldBecause, held_at AS heldAt' : 'NULL AS heldBecause, NULL AS heldAt';
+	const holds = hasColumns(live, 'webhooks', 'held_because', 'held_at');
+	const held = holds ? 'held_because AS heldBecause, held_at AS heldAt' : 'NULL AS heldBecause, NULL AS heldAt';
 	const webhooks = hasColumns(live, 'webhooks', 'id', 'board_id', 'url', 'secret')
 		? (live
-				.prepare(`SELECT id, board_id AS boardId, url, secret, ${setBy} AS setBy, ${held} FROM webhooks WHERE secret IS NOT NULL AND secret <> ''`)
-				.all() as SecretsHere['webhooks']).filter(
-				(hook) => !looksSealed(hook.secret) || openStored(hook.secret, webhookSecretAad(hook.id, hook.boardId, hook.url)).kind !== 'unopenable'
-			)
+				.prepare(
+					`SELECT id, board_id AS boardId, url, ${receiverColumn(live)} AS receiver, secret, ${setBy} AS setBy, ${held} FROM webhooks WHERE secret IS NOT NULL AND secret <> ''`
+				)
+				.all() as SecretsHere['webhooks']).filter((hook) => {
+				// Bound to the address as opened (card 2928): one beside an address that is '' or does not open is absent too (R5).
+				const address = addressToBind(hook);
+				if (address === null) return false;
+				return !looksSealed(hook.secret) || openStored(hook.secret, webhookSecretAad(hook.id, hook.boardId, address)).kind !== 'unopenable';
+			})
 		: [];
-	return { mail, destinations: destinationsIn(settingOf(live, 'backup_config')).map(withoutUnopenableSecrets), webhooks };
+	// Every address here that opens (card 2928), for the restore to fill one a backup left out.
+	const addresses = hasColumns(live, 'webhooks', 'id', 'board_id', 'url', 'receiver')
+		? (
+				live
+					.prepare(`SELECT id, board_id AS boardId, url, receiver, ${setBy} AS setBy, ${holds ? 'held_because' : 'NULL'} AS heldBecause FROM webhooks WHERE url <> ''`)
+					.all() as { id: number; boardId: number; url: string; receiver: string; setBy: number | null; heldBecause: string | null }[]
+			).flatMap((hook) => {
+				const opened = addressToBind(hook);
+				return opened === null ? [] : [{ ...hook, opened }];
+			})
+		: [];
+	return { mail, destinations: destinationsIn(settingOf(live, 'backup_config')).map(withoutUnopenableSecrets), webhooks, addresses };
 }
 
 /**
@@ -1060,7 +1222,8 @@ function withoutUnopenableSecrets(destination: Entry): Entry {
 export const nothingHere = (): SecretsHere => ({
 	mail: Object.fromEntries(MAIL_KEYS.map((key) => [key, null])) as SecretsHere['mail'],
 	destinations: [],
-	webhooks: []
+	webhooks: [],
+	addresses: []
 });
 
 /** A field as it is compared: as stored, a missing one and a null alike. */
@@ -1511,7 +1674,7 @@ export function fillSecretGaps(
 	live: Database.Database,
 	here: SecretsHere,
 	listed: readonly ListedWebhook[],
-	options: { writeMarker: boolean }
+	options: { writeMarker: boolean; addressListed?: readonly ListedAddress[] }
 ): { kept: SecretsKept; unfilled: SecretsToEnter; listedOnLeftOff: number } {
 	const kept = emptyKept();
 	const unfilled = emptyToEnter();
@@ -1604,19 +1767,24 @@ export function fillSecretGaps(
 		// The hold (card 2752, migration 0071), where this server has its columns.
 		const holds = hasColumns(live, 'webhooks', 'held_because', 'held_at');
 		const find = live.prepare(
-			`SELECT id, board_id AS boardId, url, secret, active, ${setBy} AS setBy, ${holds ? 'held_because' : 'NULL'} AS heldBecause FROM webhooks WHERE id = ?`
+			`SELECT id, board_id AS boardId, url, ${receiverColumn(live)} AS receiver, secret, active, ${setBy} AS setBy, ${holds ? 'held_because' : 'NULL'} AS heldBecause FROM webhooks WHERE id = ?`
 		);
 		const fill = live.prepare(
 			`UPDATE webhooks SET secret = @secret, active = @active${holds ? ', held_because = COALESCE(@heldBecause, held_because), held_at = COALESCE(@heldAt, held_at)' : ''} WHERE id = @id`
 		);
 		for (const entry of listed) {
 			const row = find.get(entry.id) as
-				| { id: number; boardId: number; url: string; secret: string | null; active: number; setBy: number | null; heldBecause: string | null }
+				| { id: number; boardId: number; url: string; receiver: string; secret: string | null; active: number; setBy: number | null; heldBecause: string | null }
 				| undefined;
 			if (!row || has(row.secret)) continue;
-			const match = here.webhooks.find(
-				(hook) => hook.id === row.id && hook.boardId === row.boardId && hook.url === row.url && (hook.setBy ?? null) === row.setBy
-			);
+			// The same address, compared opened on both sides (card 2928): never one that is '' or does not open.
+			const address = addressToBind(row);
+			const match =
+				address === null
+					? undefined
+					: here.webhooks.find(
+							(hook) => hook.id === row.id && hook.boardId === row.boardId && addressToBind(hook) === address && (hook.setBy ?? null) === row.setBy
+						);
 			if (match) {
 				// On or off as the marker says it was. The marker is the backup's
 				// word, but `here` holds anything only for a backup whose seal
@@ -1625,7 +1793,8 @@ export function fillSecretGaps(
 				// here or in the restored row (card 2752, S1): it stays off, with
 				// this server's hold, or the row's own.
 				const heldOff = (match.heldBecause ?? null) !== null || (row.heldBecause ?? null) !== null;
-				const params = { secret: match.secret, active: entry.active && !heldOff ? 1 : 0, id: row.id };
+				// On only where its address opens (card 2928, R17): `address` is the row's, after the addresses were filled.
+				const params = { secret: match.secret, active: entry.active && !heldOff && address !== null ? 1 : 0, id: row.id };
 				fill.run(holds ? { ...params, heldBecause: match.heldBecause ?? null, heldAt: match.heldAt ?? null } : params);
 				kept.webhooks.push(row.id);
 			} else {
@@ -1640,7 +1809,82 @@ export function fillSecretGaps(
 		live.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_SECRETS_LEFT_OUT_KEY, JSON.stringify(leftListed));
 	}
 
+	// The webhooks whose address alone the backup left out (card 2928, R19): decided here, after `carryHolds`,
+	// once the addresses were filled (`fillAddressGaps`), on or off as the marker says only where the address
+	// opens and nothing holds it off (R17). One listed as on that stays off is counted.
+	const addressOnly = (options.addressListed ?? []).filter((entry) => !listed.some((each) => each.id === entry.id));
+	if (addressOnly.length > 0 && hasColumns(live, 'webhooks', 'id', 'board_id', 'url', 'receiver', 'active')) {
+		const holds = hasColumns(live, 'webhooks', 'held_because');
+		const find = live.prepare(`SELECT id, board_id AS boardId, url, receiver, active, ${holds ? 'held_because' : 'NULL'} AS heldBecause FROM webhooks WHERE id = ?`);
+		const switchOn = live.prepare('UPDATE webhooks SET active = 1 WHERE id = ? AND active = 0');
+		for (const entry of addressOnly) {
+			const row = find.get(entry.id) as { id: number; boardId: number; url: string; receiver: string; active: number; heldBecause: string | null } | undefined;
+			if (!row) continue;
+			const opens = addressToBind(row) !== null;
+			if (entry.active && opens && row.heldBecause === null) switchOn.run(row.id);
+			else if (entry.active && row.active === 0) listedOnLeftOff++;
+		}
+	}
+
 	return { kept, unfilled, listedOnLeftOff };
+}
+
+/**
+ * Fill each webhook address a backup left out (card 2928), inside the
+ * restore's transaction, before `carryHolds`: a webhook `listed` in the
+ * backup's marker whose restored row has no address is given the stored
+ * address, byte for byte, of the one webhook here with the same id, board,
+ * receiver and setter whose address, opened, gives the match the backup
+ * carries (`webhookAddressMac` under `macKey`, compared in constant time).
+ * It moves sealed, and opens where it is put: its seal is bound to the id,
+ * board and receiver it matched. Nothing is switched on here (R19):
+ * `fillSecretGaps` decides on or off after the holds are carried. With no key
+ * (none here, or one that does not open, R14), or a backup whose seal did not
+ * verify (`here` empty), nothing is filled and each is listed. A row the
+ * backup gave an address keeps it. `writeMarker` writes the marker into the
+ * restored settings trimmed to those not filled, for every start to name.
+ * Opens no transaction.
+ */
+export function fillAddressGaps(
+	live: Database.Database,
+	here: SecretsHere,
+	listed: readonly ListedAddress[],
+	macKey: Buffer | null,
+	options: { writeMarker: boolean }
+): { kept: number[]; unfilled: { id: number; boardId: number; board: string | null }[] } {
+	const kept: number[] = [];
+	const unfilled: { id: number; boardId: number; board: string | null }[] = [];
+	if (listed.length === 0 || !hasColumns(live, 'webhooks', 'id', 'board_id', 'url', 'receiver')) return { kept, unfilled };
+	const setBy = hasColumns(live, 'webhooks', 'set_by') ? 'set_by' : 'NULL';
+	const find = live.prepare(`SELECT id, board_id AS boardId, url, receiver, ${setBy} AS setBy FROM webhooks WHERE id = ?`);
+	const fill = live.prepare("UPDATE webhooks SET url = ? WHERE id = ? AND url = ''");
+	const leftListed: ListedAddress[] = [];
+	for (const entry of listed) {
+		const row = find.get(entry.id) as { id: number; boardId: number; url: string; receiver: string; setBy: number | null } | undefined;
+		if (!row || row.url !== '') continue;
+		const match =
+			macKey === null || entry.address === undefined
+				? undefined
+				: (here.addresses ?? []).find(
+						(hook) =>
+							hook.id === row.id &&
+							hook.boardId === row.boardId &&
+							hook.receiver === row.receiver &&
+							(hook.setBy ?? null) === (row.setBy ?? null) &&
+							sameAddressMac(webhookAddressMac(macKey, hook, hook.opened), entry.address)
+					);
+		if (match && fill.run(match.url, row.id).changes === 1) {
+			kept.push(row.id);
+		} else {
+			unfilled.push({ id: row.id, boardId: row.boardId, board: boardName(live, row.boardId) });
+			leftListed.push(entry);
+		}
+	}
+	if (options.writeMarker && hasColumns(live, 'settings', 'key', 'value')) {
+		live.prepare('DELETE FROM settings WHERE key = ?').run(WEBHOOK_ADDRESSES_LEFT_OUT_KEY);
+		if (leftListed.length > 0) live.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_ADDRESSES_LEFT_OUT_KEY, JSON.stringify(leftListed));
+	}
+	return { kept, unfilled };
 }
 
 // ─── What is still to enter ──────────────────────────────────────────────────
@@ -1676,7 +1920,17 @@ export function secretsToEnter(database: Database.Database): { toEnter: SecretsT
 			if (row) toEnter.webhooks.push({ id: row.id, boardId: row.boardId, board: boardName(database, row.boardId) });
 		}
 	}
-	return { toEnter: withHeldApart(database, toEnter), problems };
+	// The webhooks its own marker lists as left without their address, still without one (card 2928), held or not.
+	const addressed = readAddressesListed(database);
+	if (addressed.listed.length > 0 && hasColumns(database, 'webhooks', 'id', 'board_id', 'url')) {
+		const find = database.prepare("SELECT id, board_id AS boardId FROM webhooks WHERE id = ? AND url = ''");
+		const toEnterAddresses = addressed.listed.flatMap((entry) => {
+			const row = find.get(entry.id) as { id: number; boardId: number } | undefined;
+			return row ? [{ id: row.id, boardId: row.boardId, board: boardName(database, row.boardId) }] : [];
+		});
+		if (toEnterAddresses.length > 0) toEnter.webhookAddresses = toEnterAddresses;
+	}
+	return { toEnter: withHeldApart(database, toEnter), problems: [...problems, ...addressed.problems] };
 }
 
 /**
@@ -1688,15 +1942,23 @@ export function secretsToEnter(database: Database.Database): { toEnter: SecretsT
  * database has no hold column.
  */
 export function withHeldApart(database: Database.Database, toEnter: SecretsToEnter): SecretsToEnter {
-	if (toEnter.webhooks.length === 0 || !hasColumns(database, 'webhooks', 'id', 'held_because')) return toEnter;
+	const addresses = toEnter.webhookAddresses ?? [];
+	if ((toEnter.webhooks.length === 0 && addresses.length === 0) || !hasColumns(database, 'webhooks', 'id', 'held_because')) return toEnter;
 	const heldBecause = database.prepare('SELECT held_because FROM webhooks WHERE id = ?').pluck();
 	const isHeld = (id: number) => {
 		const reason = heldBecause.get(id);
 		return typeof reason === 'string' && NEW_SECRET_REASONS.includes(reason);
 	};
-	const held = toEnter.webhooks.filter((hook) => isHeld(hook.id));
+	// Card 2928's code review (C1): a held webhook whose address is to enter is held too, and stays among the
+	// addresses to enter: its sentence tells it to be switched on with its url and no secret.
+	const already = new Set((toEnter.heldWebhooks ?? []).map((hook) => hook.id));
+	const held = [...toEnter.webhooks, ...addresses].filter((hook, at, all) => isHeld(hook.id) && !already.has(hook.id) && all.findIndex((each) => each.id === hook.id) === at);
 	if (held.length === 0) return toEnter;
-	return { ...toEnter, webhooks: toEnter.webhooks.filter((hook) => !isHeld(hook.id)), heldWebhooks: [...(toEnter.heldWebhooks ?? []), ...held] };
+	return {
+		...toEnter,
+		webhooks: toEnter.webhooks.filter((hook) => !isHeld(hook.id)),
+		heldWebhooks: [...(toEnter.heldWebhooks ?? []), ...held].sort((a, b) => a.id - b.id)
+	};
 }
 
 // ─── The two sentences ───────────────────────────────────────────────────────
@@ -1709,6 +1971,7 @@ export function secretsKeptSentence(kept: SecretsKept): string | null {
 		parts.push(`the credentials of backup destination(s) ${kept.destinations.map((name) => `"${printable(name)}"`).join(', ')}`);
 	}
 	if (kept.webhooks.length > 0) parts.push(`the signing secret(s) of webhook(s) ${kept.webhooks.join(', ')}`);
+	if ((kept.webhookAddresses ?? []).length > 0) parts.push(`the address(es) of webhook(s) ${kept.webhookAddresses!.join(', ')}`);
 	return parts.length > 0 ? `Kept from this server, because a backup does not hold them: ${parts.join('; ')}.` : null;
 }
 
@@ -1746,8 +2009,30 @@ export function secretsToEnterSentence(toEnter: SecretsToEnter, atStart = false,
 					: 'sets each one and switches it on with PUT /api/v1/webhooks/{id}')
 		);
 	}
+	// Card 2928: the addresses a backup left out. A webhook held for good among them is given one instruction, its url
+	// with active true and no secret (its code review, C1): it is given a new secret then, and a secret sent is refused.
+	const heldIds = new Set((toEnter.heldWebhooks ?? []).map((hook) => hook.id));
+	const addresses = (toEnter.webhookAddresses ?? []).filter((hook) => !heldIds.has(hook.id));
+	const heldAddresses = (toEnter.webhookAddresses ?? []).filter((hook) => heldIds.has(hook.id));
+	const nameAll = (hooks: readonly { id: number; boardId: number; board: string | null }[]) =>
+		hooks.map((hook) => `${hook.id} (board ${hook.board === null ? hook.boardId : `"${printable(hook.board)}"`})`).join(', ');
+	if (addresses.length > 0) {
+		parts.push(
+			`the address(es) of webhook(s) ${nameAll(addresses)}, which stay switched off until the board's owner or an administrator ` +
+				'sends each one its url (and its secret) with active true in PUT /api/v1/webhooks/{id}' +
+				(atStart ? ', or deletes it if it is no longer wanted' : '')
+		);
+	}
+	if (heldAddresses.length > 0) {
+		parts.push(
+			`the address(es) of webhook(s) ${nameAll(heldAddresses)}, switched off for good: to keep one, the board's owner or an ` +
+				'administrator switches it on with its url and active true, and no secret, in PUT /api/v1/webhooks/{id} (it is given a new ' +
+				'secret, returned once in that answer)' +
+				(atStart ? ', or deletes it if it is no longer wanted' : '')
+		);
+	}
 	// Card 2923's code review (E1): a webhook held for good is never "set its secret and switch it on".
-	const held = toEnter.heldWebhooks ?? [];
+	const held = (toEnter.heldWebhooks ?? []).filter((hook) => !heldAddresses.some((each) => each.id === hook.id));
 	const heldSaid =
 		held.length === 0
 			? null

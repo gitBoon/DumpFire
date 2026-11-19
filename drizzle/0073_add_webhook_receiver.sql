@@ -1,0 +1,38 @@
+-- The receiver a webhook's address sends to, in plain, beside the address
+-- sealed (card 2928, 2026-11-19).
+--
+-- webhooks.url is stored sealed under the MFA key from this release
+-- (stored-secrets.ts `webhookUrlAad`): a Slack, Teams or Discord address holds
+-- its secret in its path, and anyone who read the file, a backup or the export
+-- could post into the receiver's channel. webhooks.receiver is what of the
+-- address is no secret: its scheme, host and port, as `receiverOf` reads them
+-- (src/lib/server/webhook-address.ts), '' for an address that is no http or
+-- https URL. It is bound into the address's seal, so a hand edit of it leaves
+-- the address unusable rather than misnamed. It is read where the key is not
+-- at hand or not needed: the rule that refuses an editor a webhook to a
+-- receiver held off on the board (card 2752), the host a log line, a mail, the
+-- two-step lists and scripts/mfa-reset.mjs name, and a backup's copy, which
+-- holds no address. Never in an answer.
+--
+-- Changes no row's values but the new column's default: SQL cannot read a URL
+-- as Node does (punycode, default ports, case), so the first start of this
+-- release fills receiver as it seals each address (`sealPlainSecrets`), and a
+-- restore fills it as it seals a backup's plain address (`sealedForRestore`),
+-- recomputed from the address both times. Nothing is declared in
+-- tests/rehearsal/one-offs.ts: no row is lost or rewritten here.
+--
+-- No IF NOT EXISTS, as 0063: a column of this name already in a database would
+-- be one this file did not make, and the file fails rather than record itself
+-- over it. Runs once: "duplicate column" is tolerated only in a fixed list of
+-- older files, and this is not one of them.
+--
+-- A backup made before this file has no receiver: its addresses are plain, and
+-- a restore seals each and fills receiver as it reads it.
+--
+-- Going back to an older image (1.14.0): it does not read receiver, and reads
+-- each sealed address as the address, so every webhook is refused as written
+-- and nothing is sent. Keep the column, and do not drop it: the older image's
+-- schema check reports it as a column it does not know, and leaves it. See
+-- docs/deployment.md, The Release That Seals Webhook Addresses.
+
+ALTER TABLE `webhooks` ADD COLUMN `receiver` text DEFAULT '' NOT NULL;

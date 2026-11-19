@@ -37,6 +37,7 @@
  * (`maskFailedSignIn`), by the same two callers.
  */
 import type Database from 'better-sqlite3';
+import { hostOf } from './webhook-address';
 
 /**
  * Each route whose path holds a secret, by route id, with the part of the
@@ -122,13 +123,59 @@ export function maskFailedSignIn(message: string): string {
 export const SECRET_PATH_MARKERS: readonly string[] = [...SECRET_IN_PATH.map(({ before }) => before), 'token='];
 
 /**
+ * How every line began that an image before `35491fc` wrote when a webhook's
+ * delivery failed, followed by the webhook's id, ` → ` and its whole address
+ * (card 2928, N1): a Slack, Teams or Discord address holds its secret in its
+ * path, and those lines sat in the system log, and in every backup's copy of
+ * it.
+ */
+export const OLD_WEBHOOK_FAILURE = 'Webhook delivery failed for hook ';
+
+/** What such a line's `meta` is replaced by, whole (R16): the error it held could quote the address too. */
+export const MASKED_WEBHOOK_META = '{"error":"[masked]"}';
+
+/**
+ * Such a line with its address replaced by its host (`hostOf`: "an address
+ * that is not a URL" for text that is none). Any other line as it is.
+ */
+export function maskOldWebhookAddress(message: string): string {
+	const arrow = ' → ';
+	const at = message.indexOf(arrow);
+	if (!message.startsWith(OLD_WEBHOOK_FAILURE) || at < 0) return message;
+	return message.slice(0, at + arrow.length) + hostOf(message.slice(at + arrow.length));
+}
+
+/**
+ * Rewrite every old line of `database`'s system log that quoted a webhook's
+ * whole address (card 2928, R16): its message to the host, its `meta` to
+ * `{"error":"[masked]"}`. A line already masked (its `meta` so) is left, so a
+ * second run changes nothing. Answers how many lines it changed. A database
+ * with no system log changes nothing. Run by `maskSecretsInLog`, over every
+ * backup's copy and the live log at every start, and first, alone, inside the
+ * start's sealing transaction (startup-checks.ts), so that the scrub that
+ * follows takes the old text out of the file.
+ */
+export function maskOldWebhookAddresses(database: Database.Database): number {
+	if (!database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'system_logs'").get()) return 0;
+	database.function('mask_old_webhook_address', (text: unknown) => (typeof text === 'string' ? maskOldWebhookAddress(text) : text));
+	return database
+		.prepare(
+			'UPDATE system_logs SET message = mask_old_webhook_address(message), meta = ? ' +
+				'WHERE substr(message, 1, ?) = ? AND meta IS NOT ?'
+		)
+		.run(MASKED_WEBHOOK_META, OLD_WEBHOOK_FAILURE.length, OLD_WEBHOOK_FAILURE, MASKED_WEBHOOK_META).changes;
+}
+
+/**
  * Mask every secret in the `system_logs` of `database`, and return how many
  * changes that made: 0 when there was nothing to mask.
  *
- * Two things, in this order:
+ * Three things, in this order:
  *
  *   - Every line is masked as `maskSecretPaths` masks it: an invite's
  *     address, whatever its token, and a request link's `token=`.
+ *   - Every old line that quoted a webhook's whole address is given its host
+ *     alone, its `meta` replaced (`maskOldWebhookAddresses`, card 2928).
  *   - Every old failed sign-in line at a name that was no account loses the
  *     name, as `maskFailedSignIn` takes it out.
  *
@@ -163,6 +210,9 @@ export function maskSecretsInLog(database: Database.Database): number {
 				`WHERE (${holds}) AND (mask_secret_paths(message) IS NOT message OR mask_secret_paths(meta) IS NOT meta)`
 		)
 		.run(...SECRET_PATH_MARKERS.flatMap((marker) => [marker, marker])).changes;
+
+	// Card 2928: the old lines that quoted a webhook's whole address.
+	changes += maskOldWebhookAddresses(database);
 
 	database.function('mask_failed_sign_in', (text: unknown) => (typeof text === 'string' ? maskFailedSignIn(text) : text));
 	changes += database

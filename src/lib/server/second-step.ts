@@ -524,7 +524,7 @@ export function keysAndWebhooksOf(
 ): { apiKeys: { name: string; createdAt: string; lastUsedAt: string | null }[]; webhooks: { board: string; host: string; createdAt: string }[] } {
 	const keys = liveApiKeysOf(userId, now);
 	const hooks = db
-		.select({ board: boards.name, url: webhooks.url, createdAt: webhooks.createdAt })
+		.select({ board: boards.name, receiver: webhooks.receiver, createdAt: webhooks.createdAt })
 		.from(webhooks)
 		.innerJoin(boards, eq(boards.id, webhooks.boardId))
 		.where(and(eq(webhooks.setBy, userId), eq(webhooks.active, true)))
@@ -566,7 +566,7 @@ export function liveApiKeysOf(userId: number, now: number): { name: string; crea
 export function webhooksByIds(ids: readonly number[]): { board: string; host: string; createdAt: string }[] {
 	if (ids.length === 0) return [];
 	return db
-		.select({ id: webhooks.id, board: boards.name, url: webhooks.url, createdAt: webhooks.createdAt })
+		.select({ id: webhooks.id, board: boards.name, receiver: webhooks.receiver, createdAt: webhooks.createdAt })
 		.from(webhooks)
 		.innerJoin(boards, eq(boards.id, webhooks.boardId))
 		.where(inArray(webhooks.id, [...ids]))
@@ -575,12 +575,15 @@ export function webhooksByIds(ids: readonly number[]): { board: string; host: st
 		.map(hookAsListed);
 }
 
-/** A webhook as a list names it: its board, the host alone and when it was made. */
-function hookAsListed({ board, url, createdAt }: { board: string; url: string; createdAt: string }): { board: string; host: string; createdAt: string } {
-	// The host alone: a path or a query may hold the receiver's own secret.
+/**
+ * A webhook as a list names it: its board, the host alone and when it was
+ * made. The host of its stored `receiver` (card 2928): the address is sealed,
+ * and a path or a query may hold the receiver's own secret.
+ */
+function hookAsListed({ board, receiver, createdAt }: { board: string; receiver: string; createdAt: string }): { board: string; host: string; createdAt: string } {
 	let host: string;
 	try {
-		host = new URL(url).host;
+		host = new URL(receiver).host;
 	} catch {
 		host = 'an address that cannot be read';
 	}

@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.53
+version: 1.54
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2928
+  - webhook-addresses-at-rest
   - card-2939
   - service-account-key
   - card-2938
@@ -707,6 +709,28 @@ flowchart TD
   that way, and that its credentials are not entered where the JSON is empty or as a copy leaves
   it. Since card 2939 a restore brings each destination's JSON to the rule before it reaches the
   live file (`sealedForRestore`), and so does every start.
+- **No webhook address is in a copy** (card 2928): each `url` is `''`, its plain `receiver` kept,
+  the webhook switched off, and listed in `webhook_addresses_left_out` with whether it was on and
+  a match of the address, an HMAC under `webhook_address_mac_key`, a key no copy holds. A restore
+  of this server's own sealed backup moves each address back byte for byte from the one webhook
+  here with the same id, board, receiver, setter and match, switching nothing on until the holds
+  are carried, and only one whose address opens; otherwise, or with the key lost, it is named
+  "the address(es) of webhook(s) …" until its `url` is sent with `active: true`. A plain address a
+  backup made before then holds is sealed as it is read, its `receiver` worked out from it; a plain
+  secret beside an address that is `''` or does not open is left out and listed, never sealed.
+
+```mermaid
+sequenceDiagram
+    participant L as Live database
+    participant C as Copy (clearSecrets)
+    participant R as Restore
+    L->>C: VACUUM INTO (sealed addresses)
+    C->>C: url '', off, {id, active, address = HMAC}
+    C->>R: sealed backup file
+    R->>L: fillAddressGaps (same id, board, receiver, setter, HMAC)
+    R->>L: carryHolds, then fillSecretGaps switches on only an address that opens
+```
+
 - **The live file holds those secrets sealed** (card 2898): the mail password, each
   destination's secret fields and each webhook's secret are stored under a key derived from the
   MFA key file, bound to where each is used, and so are `backup_seal_key`, the request-form key

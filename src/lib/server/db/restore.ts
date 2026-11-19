@@ -24,21 +24,27 @@ import { REQUEST_FORM_SECRET_KEY, writeFormSecret } from '../request-tokens';
 import {
 	BACKUP_SEAL,
 	BACKUP_SEAL_KEY,
+	WEBHOOK_ADDRESSES_LEFT_OUT_KEY,
 	WEBHOOK_SECRETS_LEFT_OUT_KEY,
+	addressMacKeyHere,
+	fillAddressGaps,
 	fillSecretGaps,
 	fromTableStorage,
 	keepSealKey,
+	keepSetting,
 	nothingHere,
+	readAddressesListed,
 	readListed,
 	readSecretsHere,
 	sealKeyHere,
 	unsealedBecause,
+	type ListedWebhook,
 	type SecretsAccount,
 	type Unsealed,
 	withHeldApart
 } from '../backup-secrets';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
-import { NoKeyToSeal, SECRETS_SCRUB_PENDING, checkpointTruncate, markScrubPending, sealedForRestore } from '../stored-secrets';
+import { NoKeyToSeal, SECRETS_SCRUB_PENDING, WEBHOOK_ADDRESS_MAC_KEY, addressToBind, checkpointTruncate, markScrubPending, receiverColumn, sealedForRestore } from '../stored-secrets';
 import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, type MfaRestore } from '../mfa-backup';
 import { createLogger } from '../logger';
 import { REPLACE_PLAIN_USED_INVITES, inHashForm } from '../invites';
@@ -322,8 +328,8 @@ const KEEP_WEBHOOK_KEYS_RECORDED_SETTING =
 	`INSERT INTO settings (key, value) VALUES ('${WEBHOOK_KEYS_RECORDED_SETTING}', @value) ON CONFLICT (key) DO UPDATE SET value = ` +
 	'CASE WHEN stamp_of(settings.value) IS NOT NULL AND stamp_of(settings.value) < stamp_of(excluded.value) THEN settings.value ELSE excluded.value END';
 
-/** A webhook of this server's switched off for good, as `webhookHoldsHere` reads it. */
-type HoldHere = { id: number; boardId: number; url: string; setBy: number | null; heldBecause: string; heldAt: string | null };
+/** A webhook of this server's switched off for good, as `webhookHoldsHere` reads it: its address as stored, sealed (card 2928). */
+type HoldHere = { id: number; boardId: number; url: string; receiver: string; setBy: number | null; heldBecause: string; heldAt: string | null };
 
 /**
  * This server's webhooks switched off for good (migration 0071), whatever
@@ -333,7 +339,9 @@ type HoldHere = { id: number; boardId: number; url: string; setBy: number | null
 function webhookHoldsHere(live: Database.Database): HoldHere[] {
 	try {
 		return live
-			.prepare('SELECT id, board_id AS boardId, url, set_by AS setBy, held_because AS heldBecause, held_at AS heldAt FROM webhooks WHERE held_because IS NOT NULL')
+			.prepare(
+				`SELECT id, board_id AS boardId, url, ${receiverColumn(live)} AS receiver, set_by AS setBy, held_because AS heldBecause, held_at AS heldAt FROM webhooks WHERE held_because IS NOT NULL`
+			)
 			.all() as HoldHere[];
 	} catch {
 		return [];
@@ -347,12 +355,25 @@ function webhookHoldsHere(live: Database.Database): HoldHere[] {
  * whatever the backup had it as, so a restore never switches back on a
  * webhook held off here, the backup's setter being able to open the board or
  * not, its secret filled or not. Returns how many rows it changed.
+ *
+ * The addresses are compared opened (card 2928): the same text sealed twice is
+ * two envelopes. Where either side's address is '' or does not open, the hold
+ * is carried on the id, board and setter alone (R17): failing closed, a hold
+ * is never lost because an address could not be read.
  */
 function carryHolds(live: Database.Database, holds: readonly HoldHere[]): number {
 	if (holds.length === 0) return 0;
-	const carry = live.prepare('UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE id = ? AND board_id = ? AND url = ? AND set_by IS ?');
+	const find = live.prepare(`SELECT id, board_id AS boardId, url, ${receiverColumn(live)} AS receiver FROM webhooks WHERE id = ? AND board_id = ? AND set_by IS ?`);
+	const carry = live.prepare('UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE id = ?');
 	let carried = 0;
-	for (const hold of holds) carried += carry.run(hold.heldBecause, hold.heldAt, hold.id, hold.boardId, hold.url, hold.setBy).changes;
+	for (const hold of holds) {
+		const row = find.get(hold.id, hold.boardId, hold.setBy) as { id: number; boardId: number; url: string; receiver: string } | undefined;
+		if (row === undefined) continue;
+		const here = addressToBind(hold);
+		const restored = addressToBind(row);
+		if (here !== null && restored !== null && here !== restored) continue;
+		carried += carry.run(hold.heldBecause, hold.heldAt, row.id).changes;
+	}
 	return carried;
 }
 
@@ -770,10 +791,16 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
  * its commit. With no MFA key loaded that is a `NoKeyToSeal`, which the
  * restore does not catch: it rolls back (E9).
  */
-export function rowsToRestore(backup: Database.Database, table: string, sealed: { count: number } = { count: 0 }): Record<string, unknown>[] {
+export function rowsToRestore(
+	backup: Database.Database,
+	table: string,
+	sealed: { count: number; secretsLeftOut?: ListedWebhook[] } = { count: 0 }
+): Record<string, unknown>[] {
 	const sealing = (rows: Record<string, unknown>[]) => {
 		const result = sealedForRestore(table, rows);
 		sealed.count += result.sealed;
+		// A secret beside an address that does not open here, left out (card 2928, R6): listed with the backup's.
+		if (result.secretsLeftOut !== undefined && result.secretsLeftOut.length > 0) sealed.secretsLeftOut = [...(sealed.secretsLeftOut ?? []), ...result.secretsLeftOut];
 		return result.rows;
 	};
 	const name = table.toLowerCase();
@@ -788,6 +815,9 @@ export function rowsToRestore(backup: Database.Database, table: string, sealed: 
 				KNOWN_BROWSER_SECRET_KEY,
 				REQUEST_FORM_SECRET_KEY,
 				WEBHOOK_SECRETS_LEFT_OUT_KEY,
+				// Card 2928: the marker of addresses left out, read by the restore itself, and this server's own key.
+				WEBHOOK_ADDRESSES_LEFT_OUT_KEY,
+				WEBHOOK_ADDRESS_MAC_KEY,
 				BACKUP_SEAL,
 				BACKUP_SEAL_KEY,
 				MFA_KEY_CHECK_SETTING,
@@ -1261,6 +1291,12 @@ function restoreInOneSnapshot(
 	// and said, and the restore goes on (the plan's N4).
 	const { listed, problems } = readListed(backup);
 	errors.push(...problems);
+	// And those it lists as left without their address (card 2928), with the match each is filled back by.
+	const addressListed = readAddressesListed(backup);
+	errors.push(...addressListed.problems);
+	// This server's key for those matches, read now to be put back once the clear has taken it (R14): none, or
+	// one that does not open, fills no address.
+	const macKeyHere = addressMacKeyHere(live);
 
 	// Whether this server made the backup, and nobody has changed it since
 	// (S1): its seal made again with this server's key. Asked before anything
@@ -1275,7 +1311,7 @@ function restoreInOneSnapshot(
 	const unsealed = unsealedBecause(backup, sealKey?.key ?? null);
 	const sealVerified = unsealed === null;
 	// How many secrets the backup held in plain and rowsToRestore sealed (card 2898, S7).
-	const sealedInRestore = { count: 0 };
+	const sealedInRestore: { count: number; secretsLeftOut?: ListedWebhook[] } = { count: 0 };
 
 	// The backup's system log, which is not brought in (card 2899): counted
 	// from this snapshot, so that the import can say what the file still
@@ -1429,6 +1465,8 @@ function restoreInOneSnapshot(
 			// This server's key for sealing its backups, as it was before the
 			// clear: see above. Not caught: a restore that lost it is rolled back.
 			if (sealKey !== null) keepSealKey(live, sealKey.stored);
+			// And its webhook address key (card 2928, R14), the same way.
+			if (macKeyHere !== null) keepSetting(live, WEBHOOK_ADDRESS_MAC_KEY, macKeyHere.stored);
 
 			// A new form signing key, which no restore brings in and the clear
 			// took (card 2158): made here, so the restore never commits without
@@ -1581,11 +1619,22 @@ function restoreInOneSnapshot(
 			// Only for a backup whose seal verified (S1): for any other, from
 			// nothing, so that nothing is filled and every gap is listed.
 			const working = options.outside === 'off';
+			// The addresses the backup left out filled first, switching nothing on (card 2928, R19), so that the holds
+			// are carried onto the same webhooks, their addresses opened, and the switch-on below sees them.
+			const addressesFilled = fillAddressGaps(live, sealVerified ? here : nothingHere(), addressListed.listed, macKeyHere?.key ?? null, {
+				writeMarker: !working
+			});
 			// This server's holds carried onto the same webhooks restored (card
 			// 2752's code review, CS5): see above. Before the secrets are filled,
-			// so that no fill switches one on. Not caught.
+			// and before any webhook is switched on, so that no fill switches one
+			// on. Not caught.
 			carryHolds(live, holdsHere);
-			const filled = fillSecretGaps(live, sealVerified ? here : nothingHere(), listed, { writeMarker: !working });
+			// With the secrets the restore left out itself, beside an address that does not open here (card 2928, R6).
+			const listedAll = [...listed.filter((entry) => !(sealedInRestore.secretsLeftOut ?? []).some((left) => left.id === entry.id)), ...(sealedInRestore.secretsLeftOut ?? [])];
+			const filled = fillSecretGaps(live, sealVerified ? here : nothingHere(), listedAll, { writeMarker: !working, addressListed: addressListed.listed });
+			// The addresses kept and to enter beside the secrets' (card 2928), each only where there is one.
+			if (addressesFilled.kept.length > 0) filled.kept.webhookAddresses = addressesFilled.kept;
+			if (addressesFilled.unfilled.length > 0) filled.unfilled.webhookAddresses = addressesFilled.unfilled;
 
 			// Every restored webhook that is on and held switched off for good
 			// (card 2752, S1): see above. On the server's own connection alone,
@@ -1618,8 +1667,18 @@ function restoreInOneSnapshot(
 			// A webhook held for good is set apart from those to enter (card 2923's code review, E1), read after the holds.
 			secrets = working
 				? {
-						kept: { mailPassword: false, destinations: [], webhooks: filled.kept.webhooks },
-						toEnter: withHeldApart(live, { mailPassword: false, destinations: [], webhooks: filled.unfilled.webhooks })
+						kept: {
+							mailPassword: false,
+							destinations: [],
+							webhooks: filled.kept.webhooks,
+							...(filled.kept.webhookAddresses ? { webhookAddresses: filled.kept.webhookAddresses } : {})
+						},
+						toEnter: withHeldApart(live, {
+							mailPassword: false,
+							destinations: [],
+							webhooks: filled.unfilled.webhooks,
+							...(filled.unfilled.webhookAddresses ? { webhookAddresses: filled.unfilled.webhookAddresses } : {})
+						})
 					}
 				: { kept: filled.kept, toEnter: withHeldApart(live, filled.unfilled) };
 		})();

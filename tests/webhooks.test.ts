@@ -117,9 +117,17 @@ import {
 	stepUp
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
-import { readOpened } from './helpers/reads';
-import { TYPED_SECRET_LOOKS_SEALED, sealValue, webhookSecretAad } from '$lib/server/stored-secrets';
-import { keyFromBytes } from '$lib/server/mfa-key';
+import { readOpened, readOpenedUrl } from './helpers/reads';
+import {
+	TYPED_SECRET_LOOKS_SEALED,
+	openStored,
+	sealPlainSecrets,
+	sealValue,
+	sealedForRestore,
+	webhookSecretAad,
+	webhookUrlAad
+} from '$lib/server/stored-secrets';
+import { currentMfaKey, keyFromBytes } from '$lib/server/mfa-key';
 
 beforeEach(resetDb);
 
@@ -174,7 +182,7 @@ describe('a webhook whose events are not a list (card 2145)', () => {
 		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
 		await sent.settle();
 
-		expect(sent.webhooks.map((w) => w.url)).toEqual([hooks[3].url]);
+		expect(sent.webhooks.map((w) => w.url)).toEqual([hooks[3].address]);
 		expect(lines('WARN')).toEqual(
 			hooks.slice(0, 3).map((h) => `Webhook ${h.id} on board ${board.id} not sent: its events are not a list`)
 		);
@@ -189,7 +197,7 @@ describe('a webhook whose events are not a list (card 2145)', () => {
 		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
 		await sent.settle();
 
-		expect(sent.webhooks.map((w) => w.url)).toEqual([good.url]);
+		expect(sent.webhooks.map((w) => w.url)).toEqual([good.address]);
 		expect(lines('WARN')).toEqual([`Webhook ${bad.id} on board ${board.id} not sent: its events are not a list`]);
 	});
 
@@ -202,7 +210,7 @@ describe('a webhook whose events are not a list (card 2145)', () => {
 		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
 		await sent.settle();
 
-		expect(sent.webhooks.map((w) => w.url)).toEqual([naming.url, every.url]);
+		expect(sent.webhooks.map((w) => w.url)).toEqual([naming.address, every.address]);
 		// One event is one body: every webhook of it is sent the same, timestamp and all.
 		expect(sent.webhooks[0].body).toEqual(sent.webhooks[1].body);
 		expect(sent.webhooks[0].body).toMatchObject({ event: 'card.created', boardId: board.id, data: { cardId: 1 } });
@@ -1033,12 +1041,13 @@ describe('where a webhook may send, at registration (card 2161)', () => {
 
 		const same = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: owner, body: { url: 'http://10.0.0.5/x', events: ['card.moved'] } });
 		expect(same.status).toBe(200);
-		expect(rowsOf(board.id)[0]).toMatchObject({ url: 'http://10.0.0.5/x', events: '["card.moved"]' });
+		expect(rowsOf(board.id)[0]).toMatchObject({ events: '["card.moved"]' });
+		expect(readOpenedUrl(hook.id)).toBe('http://10.0.0.5/x');
 
 		const other = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: owner, body: { url: 'http://10.0.0.6/x' } });
 		expect(other.status).toBe(400);
 		expect(other.body.message).toBe('Webhook url points inside the network: 10.0.0.6 is a private network address');
-		expect(rowsOf(board.id)[0].url).toBe('http://10.0.0.5/x');
+		expect(readOpenedUrl(hook.id)).toBe('http://10.0.0.5/x');
 	});
 });
 
@@ -1193,7 +1202,7 @@ describe('at most 10 webhooks a board (card 2201)', () => {
 		try {
 			dispatchWebhook(board.id, 'card.moved', { cardId: 1 });
 			await sent.settle();
-			expect(sent.webhooks.map((w) => w.url)).toEqual(hooks.map((h) => h.url));
+			expect(sent.webhooks.map((w) => w.url)).toEqual(hooks.map((h) => h.address));
 		} finally {
 			sent.restore();
 		}
@@ -1313,7 +1322,10 @@ describe('the same WARN about a webhook at most once an hour (the review, O2)', 
 		vi.useFakeTimers({ toFake: ['Date'] });
 		at(0);
 		const { board } = makeBoard({ owner: makeUser() });
-		const first = makeWebhook(board, { url: 'http://127.0.0.1/x' });
+		// A plain row, on purpose (card 2928's code review, C8): the made-up rows below take other ids, and a sealed
+		// address is bound to its own id, so each would not open; the plain branch reads the address as it is.
+		const stored = makeWebhook(board, { url: 'http://127.0.0.1/x' });
+		const first = { ...stored, url: stored.address };
 		const others = (from: number, count: number) => {
 			for (let i = 0; i < count; i++) deliver({ ...first, id: 1_000_000 + from + i }, 'card.created', '{}');
 		};
@@ -2634,7 +2646,7 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 		expect(taken.body).toMatchObject({ active: true, pausedBecause: null });
 		expect(taken.body.secret).toMatch(/^[0-9a-f]{64}$/);
 
-		expect(await event(s)).toEqual([nobodys.url, owners.url]);
+		expect(await event(s)).toEqual([nobodys.address, owners.url]);
 		expect(signedWith(taken.body.secret, sent.webhooks[0])).toBe(true);
 	});
 
@@ -2695,7 +2707,10 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 		const held =
 			hold === 'setter cannot open'
 				? await hookOf(s, s.editor, 'e', 'old-secret')
-				: makeWebhook(s.board, { url: 'https://hooks.example.test/nobody', secret: 'old-secret', setBy: null, heldBecause: 'no setter' });
+				: // The address as the test gave it, beside the stored row (card 2928's code review, C8).
+					((made) => ({ id: made.id, url: made.address }))(
+						makeWebhook(s.board, { url: 'https://hooks.example.test/nobody', secret: 'old-secret', setBy: null, heldBecause: 'no setter' })
+					);
 		if (hold === 'setter cannot open') await takeOff(s);
 		expectHeldOff(held.id, hold);
 
@@ -3307,7 +3322,7 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 		deliver(onOwners, 'card.created', '{}', undefined, undefined, shared);
 		await sent.settle();
 
-		expect(sent.webhooks.map((w) => w.url)).toEqual([onTheirs.url]);
+		expect(sent.webhooks.map((w) => w.url)).toEqual([onTheirs.address]);
 		expect(deliveryResultFor(onOwners)).toMatchObject({ outcome: 'not-sent', reason: LOST_REASON });
 		expectOn(onTheirs.id);
 		expectHeldOff(onOwners.id);
@@ -3666,7 +3681,7 @@ describe('a webhook whose API key ended is switched off for good (card 2893)', (
 		const delivered = await event(s);
 
 		if (isSent) {
-			expect(delivered).toEqual([hook.url]);
+			expect(delivered).toEqual([hook.address]);
 			expectOn(hook.id);
 		} else {
 			expect(delivered).toEqual([]);
@@ -4692,5 +4707,392 @@ describe("a webhook's secret, stored sealed (card 2898)", () => {
 		expect(readOpened('webhooks', id)).toBe('whsec-2898-39b-new');
 		const [delivery] = await event(s);
 		expect(signedWith('whsec-2898-39b-new', delivery)).toBe(true);
+	});
+});
+
+// ─── Card 2928: a webhook's address sealed at rest (slice 1, the readers) ───
+
+describe("a webhook's address, read sealed (card 2928)", () => {
+	let sent: Effects;
+	beforeEach(() => {
+		sent = effects();
+		forgetDeliveries();
+	});
+	afterEach(() => sent.restore());
+
+	function scene() {
+		const owner = makeUser({ username: 'owner' });
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const editor = makeUser({ username: 'editor' });
+		const viewer = makeUser({ username: 'viewer' });
+		const fixture = makeBoard({ owner });
+		addBoardMember(fixture.board, editor, 'editor');
+		addBoardMember(fixture.board, viewer, 'viewer');
+		return { owner, admin, editor, viewer, ...fixture };
+	}
+	type Scene = ReturnType<typeof scene>;
+	const SLACK = 'https://hooks.slack.com/services/T000/B000/xyz-2928';
+	const stored = (id: number) => sqlite.prepare('SELECT url, receiver, secret FROM webhooks WHERE id = ?').get(id) as { url: string; receiver: string; secret: string };
+	async function event(s: Scene) {
+		sent.clear();
+		const res = await api('POST', `/api/v1/boards/${s.board.id}/cards`, { user: s.owner, body: { title: 'A card, 2928', columnId: s.cols['To Do'].id } });
+		expect(res.status).toBe(201);
+		await sent.settle();
+		return sent.webhooks;
+	}
+	const signedWith = (secret: string, delivery: Effects['webhooks'][number]) =>
+		delivery.headers['x-dumpfire-signature'] === sign(secret, JSON.stringify(delivery.body));
+	/** The address changed by a byte as stored: it no longer opens. */
+	const spoil = (id: number) => {
+		const { url } = stored(id);
+		sqlite.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run(url.slice(0, -3) + (url.slice(-3, -2) === 'A' ? 'B' : 'A') + url.slice(-2), id);
+	};
+
+	it('3: no answer to any caller holds receiver; the viewer and the editor are given no url', async () => {
+		const s = scene();
+		const hook = makeWebhook(s.board, { url: SLACK, secret: 'shh' });
+		expect(stored(hook.id).receiver).toBe('https://hooks.slack.com');
+		const answers: Record<string, unknown>[] = [];
+		for (const user of [s.viewer, s.editor, s.owner, s.admin]) {
+			const one = await api('GET', `/api/v1/webhooks/${hook.id}`, { user });
+			const list = await api('GET', `/api/v1/boards/${s.board.id}/webhooks`, { user });
+			expect([one.status, list.status], user.username).toEqual([200, 200]);
+			answers.push(one.body, ...list.body);
+			if (user === s.viewer || user === s.editor) expect(one.body, user.username).not.toHaveProperty('url');
+			else expect(one.body.url, user.username).toBe(SLACK);
+		}
+		const own = await api('PUT', `/api/v1/webhooks/${hook.id}`, { user: s.editor, body: { events: ['card.moved'] } });
+		expect(own.status).toBe(200);
+		expect(own.body).not.toHaveProperty('url');
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.owner, body: { url: 'https://hooks.example.test/made' } });
+		expect(made.status).toBe(201);
+		answers.push(own.body, made.body);
+		for (const answer of answers) expect(answer).not.toHaveProperty('receiver');
+	});
+
+	it('4: an address stored sealed is delivered to, signed with the secret bound to the address as opened', async () => {
+		const s = scene();
+		const hook = makeWebhook(s.board, { url: SLACK });
+		expect(stored(hook.id).url).toMatch(/^dfsealed:1:/);
+		sqlite.prepare('UPDATE webhooks SET secret = ? WHERE id = ?').run(sealValue('whsec-2928-4', webhookSecretAad(hook.id, hook.boardId, SLACK), currentMfaKey()!), hook.id);
+
+		const [delivery] = await event(s);
+
+		expect(delivery.url).toBe(SLACK);
+		expect(signedWith('whsec-2928-4', delivery)).toBe(true);
+	});
+
+	it.each([
+		{ row: 'an address that does not open', change: 'spoil', reason: 'Not sent: its address cannot be opened' },
+		{ row: "an address ''", change: 'empty', reason: 'Not sent: it has no address; set one with PUT /api/v1/webhooks/{id}' }
+	])('5: a webhook with $row is not sent, and says so', async ({ change, reason }) => {
+		const s = scene();
+		const hook = makeWebhook(s.board, { url: SLACK });
+		if (change === 'spoil') spoil(hook.id);
+		else sqlite.prepare("UPDATE webhooks SET url = '' WHERE id = ?").run(hook.id);
+
+		expect(await event(s)).toEqual([]);
+		expect(await event(s)).toEqual([]);
+
+		const answer = await api('GET', `/api/v1/webhooks/${hook.id}`, { user: s.owner });
+		expect(answer.body.url).toBe('');
+		expect(answer.body.lastDelivery).toMatchObject({ outcome: 'not-sent', reason });
+		const errors = lines('ERROR');
+		if (change === 'spoil') {
+			expect(errors).toEqual([
+				`Webhook ${hook.id} on board ${s.board.id} not sent: its address cannot be opened with this server's MFA key. Nothing is sent until the ` +
+					"board's owner or an administrator sets its address with PUT /api/v1/webhooks/{id}."
+			]);
+		} else {
+			expect(errors).toEqual([]);
+		}
+		expect([...errors, ...lines('WARN')].join(' ')).not.toContain('xyz-2928');
+	});
+
+	it("6: a secret beside an address that is '' or does not open reads as not opening: hasSecret true, secret ''", async () => {
+		const s = scene();
+		const spoiled = makeWebhook(s.board, { url: SLACK, secret: 'plain-beside-spoiled' });
+		const empty = makeWebhook(s.board, { url: 'https://hooks.example.test/e', secret: 'plain-beside-empty' });
+		spoil(spoiled.id);
+		sqlite.prepare("UPDATE webhooks SET url = '' WHERE id = ?").run(empty.id);
+
+		for (const hook of [spoiled, empty]) {
+			const answer = await api('GET', `/api/v1/webhooks/${hook.id}`, { user: s.owner });
+			expect(answer.body, String(hook.id)).toMatchObject({ hasSecret: true, secret: '', url: '' });
+		}
+	});
+
+	it.each([
+		{ row: 'one refused as written, by its host', change: 'inside' },
+		{ row: 'one whose address does not open', change: 'spoil' }
+	])('7: the start line names $row, and nothing of its path', ({ change }) => {
+		const { board } = makeBoard({ owner: makeUser() });
+		const hook = makeWebhook(board, { url: change === 'inside' ? 'http://127.0.0.1:8080/secret-path-2928' : SLACK });
+		if (change === 'spoil') spoil(hook.id);
+
+		expect(reportWebhooksRefused()).toBe(true);
+
+		const line = (sqlite.prepare("SELECT message FROM system_logs WHERE context = 'STARTUP' ORDER BY id DESC").pluck().get() as string) ?? '';
+		expect(line).toContain(
+			change === 'inside'
+				? `webhook ${hook.id} on board ${board.id} (127.0.0.1 is a loopback address)`
+				: `webhook ${hook.id} on board ${board.id} (its address cannot be opened with this server's MFA key)`
+		);
+		expect(line).not.toMatch(/secret-path-2928|xyz-2928/);
+	});
+
+	it.each([
+		{ row: 'a switch-off at delivery', how: 'delivery' },
+		{ row: "an ending of the setter's access", how: 'ending' }
+	])("8: $row names the host of the stored receiver in its WARN and the owners' mail, never the path", async ({ how }) => {
+		const s = scene();
+		makeSmtp();
+		const hook = makeWebhook(s.board, { url: SLACK, setBy: s.editor });
+		if (how === 'delivery') {
+			sqlite.prepare('DELETE FROM board_members WHERE board_id = ? AND user_id = ?').run(s.board.id, s.editor.id);
+			await event(s);
+		} else {
+			inTransaction(() => endAccountAccess(s.editor.id, { apiKeys: true, cause: RESET_IN_A_TEST }));
+			await sent.settle();
+		}
+
+		expect(lines('WARN').some((line) => line.startsWith(`Webhook ${hook.id} on board ${s.board.id} switched off`))).toBe(true);
+		const mail = sent.emails.find((each) => each.to === s.owner.email);
+		expect(mail?.html).toContain('<strong>hooks.slack.com</strong>');
+		expect(JSON.stringify(sent.emails)).not.toContain('xyz-2928');
+	});
+
+	it("9: an editor's create at a receiver held off on the board, whose address is '', is refused 409 by the stored receiver", async () => {
+		const s = scene();
+		const held = makeWebhook(s.board, { url: SLACK, heldBecause: 'setter access ended' });
+		sqlite.prepare("UPDATE webhooks SET url = '' WHERE id = ?").run(held.id);
+		const before = snapshotDb();
+
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.editor, body: { url: 'https://HOOKS.slack.com:443/services/other' } });
+
+		expect(made.status).toBe(409);
+		expectUnchanged(before, 'after a create refused');
+	});
+
+	it("10: an old address with a lone surrogate is sealed as the one string its secret is bound to, and is sent signed (the code review, C3)", async () => {
+		const s = scene();
+		const hook = makeWebhook(s.board);
+		// A plain row from before the release, as a restore hands it over, on purpose: an address no create of
+		// today would take. (Read back from SQLite a string is already well-formed; a row in hand need not be.)
+		const old = 'https://hooks.example.test/c3-\uD800-x';
+		const restored = sealedForRestore('webhooks', [{ id: hook.id, board_id: hook.boardId, url: old, receiver: '', secret: 'whsec-c3', active: 1 }]).rows[0];
+		const canonical = old.toWellFormed();
+		expect(openStored(String(restored.url), webhookUrlAad(hook.id, hook.boardId, String(restored.receiver))).value).toBe(canonical);
+		expect(openStored(String(restored.secret), webhookSecretAad(hook.id, hook.boardId, canonical)).value).toBe('whsec-c3');
+		sqlite.prepare('UPDATE webhooks SET url = ?, receiver = ?, secret = ? WHERE id = ?').run(restored.url, restored.receiver, restored.secret, hook.id);
+
+		// The start's sweep, on the row read back, makes the same one string.
+		sqlite.prepare("UPDATE webhooks SET url = ?, receiver = '', secret = 'whsec-c3b' WHERE id = ?").run(old, hook.id);
+		const asRead = stored(hook.id).url;
+		sealPlainSecrets(sqlite, currentMfaKey());
+		expect(readOpenedUrl(hook.id)).toBe(asRead.toWellFormed());
+		sqlite.prepare('UPDATE webhooks SET url = ?, receiver = ?, secret = ? WHERE id = ?').run(restored.url, restored.receiver, restored.secret, hook.id);
+
+		expect(stored(hook.id).receiver).toBe('https://hooks.example.test');
+		const [delivery] = await event(s);
+		expect(delivery.url).toBe(canonical);
+		expect(signedWith('whsec-c3', delivery)).toBe(true);
+	});
+});
+
+// ─── Card 2928, slice 2: the writers seal the address ───────────────────────
+
+describe("a webhook's address, written sealed (card 2928)", () => {
+	let sent: Effects;
+	beforeEach(() => {
+		sent = effects();
+		forgetDeliveries();
+	});
+	afterEach(() => sent.restore());
+
+	function scene() {
+		const owner = makeUser({ username: 'owner' });
+		const fixture = makeBoard({ owner });
+		return { owner, ...fixture };
+	}
+	type Scene = ReturnType<typeof scene>;
+	const SLACK = 'https://hooks.slack.com/services/T000/B000/xyz-2928';
+	const TEAMS = 'https://example.webhook.office.com/webhookb2/abc-2928/IncomingWebhook/def/ghi';
+	const stored = (id: number) =>
+		sqlite.prepare('SELECT url, receiver, secret, set_by AS setBy, active FROM webhooks WHERE id = ?').get(id) as { url: string; receiver: string; secret: string; setBy: number | null; active: number };
+	const put = (user: SessionUser, id: number, body: Record<string, unknown>) => api('PUT', `/api/v1/webhooks/${id}`, { user, body });
+	async function event(s: Scene) {
+		sent.clear();
+		const res = await api('POST', `/api/v1/boards/${s.board.id}/cards`, { user: s.owner, body: { title: 'A card, 2928', columnId: s.cols['To Do'].id } });
+		expect(res.status).toBe(201);
+		await sent.settle();
+		return sent.webhooks;
+	}
+	const signedWith = (secret: string, delivery: Effects['webhooks'][number]) =>
+		delivery.headers['x-dumpfire-signature'] === sign(secret, JSON.stringify(delivery.body));
+	const spoil = (id: number) => {
+		const { url } = stored(id);
+		sqlite.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run(url.slice(0, -3) + (url.slice(-3, -2) === 'A' ? 'B' : 'A') + url.slice(-2), id);
+	};
+	const plainAddresses = () => (sqlite.prepare('SELECT url FROM webhooks').pluck().all() as string[]).filter((url) => url !== '' && !url.startsWith('dfsealed:1:'));
+
+	it('15: the create stores the address sealed and its receiver plain, answers the address, and leaves no address in plain', async () => {
+		const s = scene();
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.owner, body: { url: SLACK, secret: 'whsec-15' } });
+
+		expect(made.status).toBe(201);
+		expect(made.body.url).toBe(SLACK);
+		expect(stored(made.body.id)).toMatchObject({ url: expect.stringMatching(/^dfsealed:1:/), receiver: 'https://hooks.slack.com' });
+		expect(stored(made.body.id).url).not.toContain('xyz-2928');
+		expect(readOpenedUrl(made.body.id)).toBe(SLACK);
+		expect(readOpened('webhooks', made.body.id)).toBe('whsec-15');
+		const changed = await put(s.owner, made.body.id, { url: TEAMS });
+		expect(changed.status).toBe(200);
+		expect(plainAddresses()).toEqual([]);
+	});
+
+	it.each([
+		{ row: 'the url alone', body: { url: SLACK } },
+		{ row: 'the url with events', body: { url: SLACK, events: ['card.moved'] } }
+	])('16: a PUT sending $row unchanged answers 200, writes the stored address back byte for byte and makes nobody its setter (R3)', async ({ body }) => {
+		const s = scene();
+		const admin = makeUser({ role: 'admin' });
+		const hook = makeWebhook(s.board, { url: SLACK });
+		const before = stored(hook.id);
+
+		const res = await put(admin, hook.id, body);
+
+		expect(res.status).toBe(200);
+		expect(res.body.url).toBe(SLACK);
+		expect(stored(hook.id)).toEqual({ ...before, setBy: before.setBy });
+	});
+
+	it('17: a PUT with a new address seals it with its new receiver, and seals the kept secret again for it, which still signs', async () => {
+		const s = scene();
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.owner, body: { url: SLACK, secret: 'whsec-17' } });
+		const before = stored(made.body.id);
+
+		const res = await put(s.owner, made.body.id, { url: TEAMS });
+
+		expect(res.status).toBe(200);
+		const after = stored(made.body.id);
+		expect(after.receiver).toBe('https://example.webhook.office.com');
+		expect(after.url).not.toBe(before.url);
+		expect(after.secret).not.toBe(before.secret);
+		expect(readOpenedUrl(made.body.id)).toBe(TEAMS);
+		const [delivery] = await event(s);
+		expect(delivery.url).toBe(TEAMS);
+		expect(signedWith('whsec-17', delivery)).toBe(true);
+	});
+
+	it.each([
+		{ row: "url '' is refused", change: 'empty', body: { url: '' }, status: 400 },
+		{ row: 'active true alone is refused', change: 'spoil', body: { active: true }, status: 400 },
+		{ row: 'url with active true switches it on', change: 'empty', body: { url: TEAMS, active: true }, status: 200 },
+		{ row: 'events alone are taken (R7)', change: 'spoil', body: { events: ['card.moved'] }, status: 200 }
+	])('18: on a webhook whose address is empty or does not open, $row', async ({ change, body, status }) => {
+		const s = scene();
+		const hook = makeWebhook(s.board, { url: SLACK, active: false });
+		if (change === 'spoil') spoil(hook.id);
+		else sqlite.prepare("UPDATE webhooks SET url = '' WHERE id = ?").run(hook.id);
+		const before = snapshotDb();
+
+		const res = await put(s.owner, hook.id, body);
+
+		expect(res.status, JSON.stringify(res.body)).toBe(status);
+		if (status === 400) {
+			expectUnchanged(before, 'after a refusal');
+			if ('active' in body) expect(res.body.message).toBe('This webhook has no address it can send to: send url with active true.');
+		} else if ('url' in body) {
+			expect(stored(hook.id)).toMatchObject({ active: 1, receiver: 'https://example.webhook.office.com' });
+			expect(readOpenedUrl(hook.id)).toBe(TEAMS);
+		} else {
+			expect(stored(hook.id).active).toBe(0);
+		}
+	});
+
+	it.each([
+		{ row: 'a secret alone, on an address that does not open: refused', setup: 'spoil-address', body: { secret: 'whsec-19' }, status: 400 },
+		{ row: 'a secret with url, on an address that does not open: taken', setup: 'spoil-address', body: { secret: 'whsec-19', url: TEAMS }, status: 200 },
+		{ row: 'a url alone, beside a secret that does not open: refused', setup: 'spoil-secret', body: { url: TEAMS }, status: 400 },
+		{ row: 'a url with a new secret, beside a secret that does not open: taken', setup: 'spoil-secret', body: { url: TEAMS, secret: 'whsec-19' }, status: 200 }
+	])('19: no secret is sealed against an address that does not open, and none orphaned (R5): $row', async ({ setup, body, status }) => {
+		const s = scene();
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.owner, body: { url: SLACK, secret: 'whsec-old' } });
+		const id = made.body.id as number;
+		if (setup === 'spoil-address') spoil(id);
+		else sqlite.prepare('UPDATE webhooks SET secret = ? WHERE id = ?').run(sealValue('theirs', webhookSecretAad(id, s.board.id, SLACK), keyFromBytes(randomBytes(32))), id);
+		const before = snapshotDb();
+
+		const res = await put(s.owner, id, body);
+
+		expect(res.status, JSON.stringify(res.body)).toBe(status);
+		if (status === 400) {
+			expectUnchanged(before, 'after a refusal');
+			expect(res.body.message).toBe(
+				setup === 'spoil-address'
+					? "This webhook's address is empty or cannot be opened, so a secret cannot be bound to it: send url with the secret."
+					: "This webhook's secret cannot be opened, so it cannot be kept for a new address: send a new secret with the url, or '' for none."
+			);
+		} else {
+			expect(readOpenedUrl(id)).toBe(TEAMS);
+			expect(readOpened('webhooks', id)).toBe('whsec-19');
+			const [delivery] = await event(s);
+			expect(signedWith('whsec-19', delivery)).toBe(true);
+		}
+	});
+
+	it("19b: a secret '' alone, on an address that does not open, is a clear and is taken: nothing sealed (the code review, C5)", async () => {
+		const s = scene();
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.owner, body: { url: SLACK, secret: 'whsec-old' } });
+		const id = made.body.id as number;
+		spoil(id);
+		const spoiledUrl = stored(id).url;
+
+		const res = await put(s.owner, id, { secret: '' });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toMatchObject({ hasSecret: false, secret: '', url: '' });
+		// The secret cleared; the address left as stored, byte for byte, still not opening.
+		expect(stored(id)).toMatchObject({ secret: '', url: spoiledUrl });
+	});
+
+	it("20: a held webhook with a sealed address switched on is given a new secret bound to the address as opened, which signs", async () => {
+		const s = scene();
+		const hook = makeWebhook(s.board, { url: SLACK, secret: 'old', heldBecause: 'setter access ended' });
+
+		const on = await put(s.owner, hook.id, { active: true });
+
+		expect(on.status).toBe(200);
+		expect(on.body.secret).toMatch(/^[0-9a-f]{64}$/);
+		expect(readOpened('webhooks', hook.id)).toBe(on.body.secret);
+		const [delivery] = await event(s);
+		expect(delivery.url).toBe(SLACK);
+		expect(signedWith(on.body.secret, delivery)).toBe(true);
+	});
+
+	it('21: a PUT of a secret alone on a sealed address seals it bound to the address as opened, and it signs', async () => {
+		const s = scene();
+		const hook = makeWebhook(s.board, { url: SLACK });
+
+		const res = await put(s.owner, hook.id, { secret: 'whsec-21' });
+
+		expect(res.status).toBe(200);
+		expect(stored(hook.id).secret).toMatch(/^dfsealed:1:/);
+		const [delivery] = await event(s);
+		expect(signedWith('whsec-21', delivery)).toBe(true);
+	});
+
+	it('22: a url that is not well-formed text is refused 400, its text quoted nowhere (R18)', async () => {
+		const s = scene();
+		const before = snapshotDb();
+		const broken = 'https://hooks.example.test/half-\uD800-2928';
+
+		const made = await api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.owner, body: { url: broken } });
+
+		expect(made.status).toBe(400);
+		expect(made.body.message).toBe('Webhook url must be well-formed text: it holds a character that is broken in half.');
+		expect(JSON.stringify(made.body)).not.toContain('half-');
+		expectUnchanged(before, 'after a refusal');
 	});
 });

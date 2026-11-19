@@ -58,9 +58,9 @@ import { keyEnded } from './auth';
 import { canViewBoard, getBoardRole, roleOnBoard, type Actor } from './board-access';
 import { notifyWebhooksSwitchedOff } from './notifications';
 import { onTheWire } from './v1-json';
-import { addressRefusal, guardedLookup } from './webhook-address';
+import { addressRefusal, guardedLookup, hostOf, receiverOf } from './webhook-address';
 import { stamp } from '$lib/timestamps';
-import { openStored, webhookSecretAad } from './stored-secrets';
+import { openStored, openedUrl, webhookSecretAad, type Opened } from './stored-secrets';
 
 const log = createLogger('Webhooks');
 
@@ -108,24 +108,46 @@ export function canSeeWebhookSecret(user: Actor, boardId: number): boolean {
  * now (`holdOf`), that nothing is sent; null otherwise, for one switched off
  * by a `PUT` included, until its setter's access ends (card 2923). Worked out here, so it is there
  * after a restart, when `lastDelivery` is null until the next event.
+ *
+ * Built from an allowlist of fields, never a spread of the row (card 2928,
+ * R1): a column added to the table is in no answer until it is named here.
+ * `receiver` (card 2928) is in none. The address is given opened, '' for one
+ * a backup left out or that does not open, never as it is stored.
  */
 export function presentWebhook(hook: Webhook, reveal: boolean) {
-	const { secret, url, events, setBy: _setBy, heldBecause: _heldBecause, heldAt: _heldAt, setByKey: _setByKey, setWithKey: _setWithKey, ...rest } = hook;
+	// Opened once for the answer (card 2928's code review, C12), only for a caller shown it; never kept.
+	const address = reveal ? openedUrl(hook) : null;
 	return {
-		...rest,
-		events: JSON.parse(events || '[]') as string[],
+		id: hook.id,
+		boardId: hook.boardId,
+		events: JSON.parse(hook.events || '[]') as string[],
+		active: hook.active,
+		createdAt: hook.createdAt,
 		// Stored sealed (card 2898): one that does not open still has a secret,
 		// and is given as '' (S4, E16), never as it is stored.
-		hasSecret: secret !== '',
-		...(reveal
-			? { url, secret: openedSecret(hook).value, lastDelivery: deliveryResultFor(hook), pausedBecause: pausedBecause(hook) }
+		hasSecret: hook.secret !== '',
+		...(address !== null
+			? {
+					url: address.value,
+					secret: openedSecret(hook, address).value,
+					lastDelivery: deliveryResultFor(hook, address),
+					pausedBecause: pausedBecause(hook)
+				}
 			: {})
 	};
 }
 
-/** The webhook's secret opened (card 2898), bound to its id, board and address: '' for none and for one that does not open. */
-export function openedSecret(hook: Pick<Webhook, 'id' | 'boardId' | 'url' | 'secret'>) {
-	return openStored(hook.secret, webhookSecretAad(hook.id, hook.boardId, hook.url));
+/**
+ * The webhook's secret opened (card 2898), bound to its id, board and address
+ * as opened (card 2928): '' for none and for one that does not open. A secret
+ * beside an address that is '' or does not open is read as not opening,
+ * whatever it holds (R5): it is bound to nothing that can be checked.
+ */
+export function openedSecret(hook: Pick<Webhook, 'id' | 'boardId' | 'url' | 'receiver' | 'secret'>, address: Opened = openedUrl(hook)): Opened {
+	if (hook.secret === '') return { kind: 'empty', value: '' };
+	// The address as the caller opened it (card 2928's code review, C12): opened once, never again here.
+	if (address.kind !== 'opened' && address.kind !== 'plain') return { kind: 'unopenable', value: '' };
+	return openStored(hook.secret, webhookSecretAad(hook.id, hook.boardId, address.value));
 }
 
 // ─── Held while the setter cannot open the board (card 2325) ──────────────
@@ -353,30 +375,11 @@ function pausedBecause(hook: Webhook): string | null {
 
 // ─── Switched off for good (card 2752) ────────────────────────────────────
 
-/** The host of a webhook's address, for a mail: never the path, the query or anything before the host. */
-export function hostOf(address: string): string {
-	try {
-		return new URL(address).host || 'an address with no host';
-	} catch {
-		return 'an address that is not a URL';
-	}
-}
+// `hostOf` and `receiverOf` live in webhook-address.ts since card 2928 (stored-secrets.ts reads them).
+export { hostOf, receiverOf };
 
-/**
- * The receiver an address sends to, as the create's refusal compares it (the
- * code review's CS2): its origin, the scheme, the host (in lower case, a name
- * in punycode) and the port, a default port dropped, as `URL` reads it. Null
- * for an address that is not an http or https URL. Another path, a query, a
- * fragment, the case of the host or `:443` written out reach the same receiver.
- */
-export function receiverOf(address: string): string | null {
-	try {
-		const url = new URL(address);
-		return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null;
-	} catch {
-		return null;
-	}
-}
+/** The host a line, a mail or a list names for a webhook (card 2928): from its stored `receiver`, never from its address. */
+export const hostOfHook = (hook: { receiver: string }) => hostOf(hook.receiver);
 
 /**
  * A webhook this process switched off, or held where it was already off (card
@@ -390,7 +393,8 @@ export type SwitchedOff = {
 	setBy: number | null;
 	setByKey: number | null;
 	setWithKey: boolean | null;
-	url: string;
+	/** Its stored receiver (card 2928), whose host a line or a mail names: never its address. */
+	receiver: string;
 	hold: HeldBecause;
 	/** Held by a pass that found it off with no hold (`holdUnheldOfGoneSetters`), not by an ending of its setter's access. */
 	found?: boolean;
@@ -398,7 +402,7 @@ export type SwitchedOff = {
 
 /** A webhook row and its hold, as `SwitchedOff` names them. */
 function switchedOff(hook: Webhook, hold: Hold): SwitchedOff {
-	return { id: hook.id, boardId: hook.boardId, setBy: hook.setBy, setByKey: hook.setByKey, setWithKey: hook.setWithKey, url: hook.url, hold };
+	return { id: hook.id, boardId: hook.boardId, setBy: hook.setBy, setByKey: hook.setByKey, setWithKey: hook.setWithKey, receiver: hook.receiver, hold };
 }
 
 /**
@@ -600,13 +604,13 @@ export function tellSwitchedOff(
 			done.map((hook) => ({
 				boardId: hook.boardId,
 				id: hook.id,
-				host: hostOf(hook.url),
+				host: hostOfHook(hook),
 				why: HOLD_IN_MAIL[hook.hold](hook),
 				...(hook.hold === 'key ended' && hook.setBy !== null ? { setter: hook.setBy } : {})
 			})),
 			mailCause,
 			// Never a setter's mail for a held one (S1).
-			held.map((hook) => ({ boardId: hook.boardId, id: hook.id, host: hostOf(hook.url), why: HOLD_IN_MAIL[hook.hold](hook) }))
+			held.map((hook) => ({ boardId: hook.boardId, id: hook.id, host: hostOfHook(hook), why: HOLD_IN_MAIL[hook.hold](hook) }))
 		);
 	} else {
 		const all = done.length + held.length;
@@ -628,7 +632,7 @@ export function tellSwitchedOff(
 export const WEBHOOKS_ALREADY_OFF_HELD = 'webhooks_already_off_held';
 
 /** A webhook row as the hold statements return it, `set_with_key` as SQLite stores it (0, 1 or NULL). */
-type HeldRow = { id: number; boardId: number; url: string; setBy: number | null; setByKey: number | null; setWithKey: number | null };
+type HeldRow = { id: number; boardId: number; receiver: string; setBy: number | null; setByKey: number | null; setWithKey: number | null };
 
 /**
  * The rows a hold statement returned, as `SwitchedOff`, held `'setter access
@@ -685,7 +689,7 @@ export function holdWebhooksOfSetter(userId: number, cause: EndingCause): { swit
 	const rows = sqlite
 		.prepare(
 			"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND (active = 1 OR held_because IS NULL) " +
-				'RETURNING id, board_id AS boardId, url, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
+				'RETURNING id, board_id AS boardId, receiver, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
 		)
 		.all(stamp(), userId) as HeldRow[];
 	const switchedOff: SwitchedOff[] = [];
@@ -714,7 +718,7 @@ export function holdUnheldOfGoneSetters(database: typeof sqlite = sqlite, { ever
 		.prepare(
 			"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? " +
 				'WHERE active = 0 AND held_because IS NULL AND (? = 1 OR set_by IS NULL OR set_by IN (SELECT id FROM users WHERE disabled_at IS NOT NULL)) ' +
-				'RETURNING id, board_id AS boardId, url, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
+				'RETURNING id, board_id AS boardId, receiver, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
 		)
 		.all(stamp(), every ? 1 : 0) as HeldRow[];
 	return heldAsSwitchedOff(rows, true);
@@ -965,7 +969,11 @@ export function forgetWebhookWarnings(): void {
 	unopenableSaid.clear();
 }
 
-/** The webhooks whose secret was said at ERROR not to open (card 2898): once each, for the life of the process. */
+/**
+ * The webhooks whose secret was said at ERROR not to open (card 2898), by id,
+ * and whose address was (card 2928), by the id negated: once each, for the life
+ * of the process.
+ */
 const unopenableSaid = new Set<number>();
 
 // ─── The last delivery (card 2178) ─────────────────────────────────────────
@@ -1024,8 +1032,13 @@ const results = new Map<number, { delivery: LastDelivery; order: number; place: 
  * delivery, and a row that reuses an id after a reset or a restore is not
  * given another webhook's result.
  */
-function placeOf(hook: Webhook): string {
-	return createHash('sha256').update(JSON.stringify([hook.boardId, hook.createdAt, hook.url])).digest('hex');
+function placeOf(hook: Webhook, address: Opened = openedUrl(hook)): string {
+	// The address as opened (card 2928): the same address sealed again (a key
+	// change, the start's sweep, a restore) is the same place, and keeps its
+	// result; one that does not open is hashed as stored, and matches nothing.
+	// Given by a caller that opened it already (its code review, C12).
+	const text = address.kind === 'opened' || address.kind === 'plain' ? address.value : hook.url;
+	return createHash('sha256').update(JSON.stringify([hook.boardId, hook.createdAt, text])).digest('hex');
 }
 
 /**
@@ -1034,19 +1047,19 @@ function placeOf(hook: Webhook): string {
  * whichever answers last. Writes nothing to the database: a write here would
  * land at a moment no request controls.
  */
-function recordDelivery(hook: Webhook, dispatch: Dispatch, event: WebhookEvent, result: Result): void {
+function recordDelivery(hook: Webhook, dispatch: Dispatch, event: WebhookEvent, result: Result, address?: Opened): void {
 	const held = results.get(hook.id);
 	if (held && held.order > dispatch.order) return;
 	if (dispatch.order <= forgottenUpTo) return;
 	results.delete(hook.id);
 	while (results.size >= RESULTS_HELD) results.delete(results.keys().next().value as number);
-	results.set(hook.id, { delivery: { at: dispatch.at, event, ...result }, order: dispatch.order, place: placeOf(hook) });
+	results.set(hook.id, { delivery: { at: dispatch.at, event, ...result }, order: dispatch.order, place: placeOf(hook, address) });
 }
 
-/** The webhook's last result since the server started, or null: none yet, or got from another address. */
-export function deliveryResultFor(hook: Webhook): LastDelivery | null {
+/** The webhook's last result since the server started, or null: none yet, or got from another address. `address` as the caller opened it. */
+export function deliveryResultFor(hook: Webhook, address?: Opened): LastDelivery | null {
 	const held = results.get(hook.id);
-	return held && held.place === placeOf(hook) ? held.delivery : null;
+	return held && held.place === placeOf(hook, address) ? held.delivery : null;
 }
 
 /** Forget a webhook's result: its delete has committed. */
@@ -1096,9 +1109,12 @@ export function deliveryReason(err: { code?: unknown }, timeoutMs: number): stri
 }
 
 /** What a webhook refused before any request is recorded as, by why it was refused. */
-const NOT_SENT: Record<Refusal['kind'] | 'events' | Hold | 'secret', string> = {
+const NOT_SENT: Record<Refusal['kind'] | 'events' | Hold | 'secret' | 'address' | 'no address', string> = {
 	// Card 2898 (S4): a stored secret that does not open with this server's key.
 	secret: 'Not sent: its signing secret cannot be opened',
+	// Card 2928: a stored address that does not open, and one a backup left out.
+	address: 'Not sent: its address cannot be opened',
+	'no address': 'Not sent: it has no address; set one with PUT /api/v1/webhooks/{id}',
 	'not a URL': 'Not sent: the address is not an http or https address',
 	scheme: 'Not sent: the address is not an http or https address',
 	credentials: 'Not sent: the address carries a user name or password',
@@ -1148,16 +1164,26 @@ export function refusalAsWritten(address: string): string | null {
  * stored, and looks no name up.
  */
 export function activeWebhooksRefused(): { id: number; boardId: number; reason: string }[] {
-	const rows = sqlite.prepare('SELECT id, board_id AS boardId, url FROM webhooks WHERE active = 1 ORDER BY id').all() as {
+	const rows = sqlite.prepare('SELECT id, board_id AS boardId, url, receiver FROM webhooks WHERE active = 1 ORDER BY id').all() as {
 		id: number;
 		boardId: number;
 		url: string;
+		receiver: string;
 	}[];
-	return rows.flatMap(({ id, boardId, url }) => {
-		const reason = refusalAsWritten(url);
-		return reason === null ? [] : [{ id, boardId, reason }];
+	return rows.flatMap((row) => {
+		// Opened (card 2928): one that does not open, or has none, is not sent either.
+		const address = openedUrl(row);
+		const reason =
+			address.kind === 'unopenable' ? ADDRESS_UNOPENABLE : address.kind === 'empty' ? NO_ADDRESS : refusalAsWritten(address.value);
+		return reason === null ? [] : [{ id: row.id, boardId: row.boardId, reason }];
 	});
 }
+
+/** Why a webhook whose address does not open is not sent (card 2928), for the start's line: names nothing of it. */
+const ADDRESS_UNOPENABLE = "its address cannot be opened with this server's MFA key";
+
+/** Why a webhook with no address is not sent (card 2928): a backup left it out, and a restore could not fill it. */
+const NO_ADDRESS = 'it has no address';
 
 /**
  * Send one webhook its event, or say in the system log why it was not sent.
@@ -1220,6 +1246,8 @@ export function deliver(
 ): void {
 	const which = `Webhook ${hook.id} on board ${hook.boardId}`;
 	const notSent = (kind: WarnKind, reason: string) => warnHourly(hook.id, kind, `${which} not sent: ${reason}`);
+	// Its address, opened once for the delivery (card 2928; its code review, C12), and handed to what needs it.
+	const address = openedUrl(hook);
 	// Once for the attempt, whatever the request does after; `after` ms from
 	// now, on a timer that keeps nothing running (a newer result held meanwhile
 	// stays: `recordDelivery` keeps the later dispatch's).
@@ -1228,10 +1256,10 @@ export function deliver(
 		if (recorded) return;
 		recorded = true;
 		if (after <= 0) {
-			recordDelivery(hook, dispatch, event, result);
+			recordDelivery(hook, dispatch, event, result, address);
 			return;
 		}
-		setTimeout(() => recordDelivery(hook, dispatch, event, result), after).unref?.();
+		setTimeout(() => recordDelivery(hook, dispatch, event, result, address), after).unref?.();
 	};
 
 	// Held while nobody who can open the board answers for it (card 2325), and
@@ -1251,7 +1279,25 @@ export function deliver(
 		return;
 	}
 
-	const refusal = refusedAsWritten(hook.url);
+	// Its address (card 2928). One that does not open, or that a backup left
+	// out, is not sent at all: never to anything else. Named by the webhook's
+	// id alone, never by what it holds.
+	if (address.kind === 'unopenable') {
+		record(notSentResult('address'));
+		if (!unopenableSaid.has(-hook.id)) {
+			unopenableSaid.add(-hook.id);
+			log.error(
+				`${which} not sent: its address cannot be opened with this server's MFA key. Nothing is sent until the ` +
+					"board's owner or an administrator sets its address with PUT /api/v1/webhooks/{id}."
+			);
+		}
+		return;
+	}
+	if (address.kind === 'empty') {
+		record(notSentResult('no address'));
+		return;
+	}
+	const refusal = refusedAsWritten(address.value);
 	if (refusal !== null) {
 		notSent('refused as written', refusal.reason);
 		record(notSentResult(refusal.kind));
@@ -1259,7 +1305,7 @@ export function deliver(
 	}
 	// Its secret, opened (card 2898). One that does not open is not sent at all,
 	// before the test of whether it has one (S4): never sent unsigned.
-	const secret = openedSecret(hook);
+	const secret = openedSecret(hook, address);
 	if (secret.kind === 'unopenable') {
 		record(notSentResult('secret'));
 		if (!unopenableSaid.has(hook.id)) {
@@ -1272,7 +1318,7 @@ export function deliver(
 		return;
 	}
 
-	const url = new URL(hook.url);
+	const url = new URL(address.value);
 	const protocol = url.protocol as 'http:' | 'https:';
 
 	const signature = secret.value
@@ -1281,8 +1327,8 @@ export function deliver(
 
 	// Through the module object, so that a test can stand in for it.
 	const request = protocol === 'https:' ? https.request : http.request;
-	// The text as stored: `http.request` reads it with the same parser.
-	const req = request(hook.url, {
+	// The text as opened: `http.request` reads it with the same parser.
+	const req = request(address.value, {
 		method: 'POST',
 		agent: agents[protocol],
 		headers: {

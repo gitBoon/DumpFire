@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.140
+version: 1.141
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2928
+  - webhook-addresses-at-rest
   - card-2939
   - service-account-key
   - card-2938
@@ -2852,13 +2854,14 @@ flowchart TD
 
 Each runs on the host, against the live database, read-only. None prints a path, a query string, a secret or a password: a webhook's path can hold a token. Check 0l also asks the container's resolver for each host it lists, and connects to nothing.
 
-**Check 0l: where each webhook sends.** Each webhook's board, whether it is on, when it was made, the host and port it sends to and the addresses that host resolves to now from inside the running container, with whether its address carries a user name or password and whether it is written in an odd form:
+**Check 0l: where each webhook sends.** Each webhook's board, whether it is on, when it was made, the host and port it sends to and the addresses that host resolves to now from inside the running container. It runs on either side of migration 0073 (card 2928), and looks for the `receiver` column to know which. Before 0073 it reads the address, and also says whether it carries a user name or password and whether it is written in an odd form. From 0073 on the address is stored sealed, so it reads the plain `receiver` (scheme, host and port), which holds neither: those two columns are not shown, and a user name or password is refused when an address is saved. A row whose `receiver` is empty (no address, or one with no http or https host) shows `(none)`:
 
 ```bash
 docker exec dumpfire node -e "
 const dns = require('dns');
 const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
-const rows = db.prepare('SELECT id, board_id, active, created_at, url FROM webhooks ORDER BY id').all();
+const sealed = db.pragma('table_info(webhooks)').some((c) => c.name === 'receiver');
+const rows = db.prepare('SELECT id, board_id, active, created_at, ' + (sealed ? 'receiver' : 'url') + ' AS url FROM webhooks ORDER BY id').all();
 db.close();
 const backslash = String.fromCharCode(92);
 const read = (url) => {
@@ -2873,13 +2876,16 @@ const read = (url) => {
   const usual = (lower.startsWith('http://') || lower.startsWith('https://')) && url.includes(backslash) === false;
   return { hostAndPort, host, credentials: at >= 0 ? 1 : 0, odd: usual ? 0 : 1 };
 };
-const hosts = [...new Set(rows.map((r) => read(r.url).host))];
+const hosts = [...new Set(rows.filter((r) => r.url !== '').map((r) => read(r.url).host))];
 const looked = hosts.map((h) => dns.promises.lookup(h, { all: true }).then((found) => found.map((a) => a.address).join(' '), (err) => 'not resolved: ' + err.code));
 Promise.all(looked).then((answers) => {
   const resolved = new Map(hosts.map((h, i) => [h, answers[i]]));
   console.table(rows.map((r) => {
+    const base = { id: r.id, board_id: r.board_id, active: r.active, created_at: r.created_at };
+    if (r.url === '') return { ...base, host_and_port: '(none)', resolves_to: '' };
     const w = read(r.url);
-    return { id: r.id, board_id: r.board_id, active: r.active, created_at: r.created_at, host_and_port: w.hostAndPort, resolves_to: resolved.get(w.host), has_credentials: w.credentials, odd_form: w.odd };
+    const where = { ...base, host_and_port: w.hostAndPort, resolves_to: resolved.get(w.host) };
+    return sealed ? where : { ...where, has_credentials: w.credentials, odd_form: w.odd };
   }));
 });
 "
@@ -2889,8 +2895,8 @@ Read it for five things:
 
 - **A host inside the network**, as written or in `resolves_to`: an address `10.x`, `172.16.x` to `172.31.x`, `192.168.x`, `127.x`, `100.64.x` to `100.127.x`, `169.254.x`, `::1`, `fd…` or `fe80…`; `localhost`; a name with no dot (`n8n:5678`); or a name ending `.local`, `.internal` or `.home.arpa`. That webhook stops being delivered when the new image starts, with a `WARN` at the first event and at most once an hour after. If it is wanted, put its host in `WEBHOOK_ALLOW_INSIDE` on the new container (see [Where a Webhook May Send](#where-a-webhook-may-send)). `resolves_to` is what the container's own resolver answers now, every address of the name; a public name that answers an inside address is refused at delivery too. `not resolved: ENOTFOUND` is a name the container cannot resolve, which is not delivered now either.
 - **An `http://` host that is sent**: run `curl -sI http://<host_and_port>/` against each from a machine outside, or from the container. A `307` or `308` there may mean its receiver redirects every `POST`, which stops being followed at the deploy (see [What changes at the first start](#what-changes-at-the-first-start)).
-- **`has_credentials` 1**: that webhook has never been delivered (`fetch` refused such an address) and still will not be. The board's owner or an administrator registers it again without them. The host is read after the last `@`, as the URL parser reads it, so a password holding `@` does not hide the host.
-- **`odd_form` 1**: an address not beginning `http://` or `https://`, such as `http:/127.0.0.1/x`, or one holding a backslash, which the URL parser reads as `/` (`http://hooks.example.com\@10.0.0.5/`), whose host this check may misread. Look at that row's address by hand.
+- **`has_credentials` 1** (before 0073 only): that webhook has never been delivered (`fetch` refused such an address) and still will not be. The board's owner or an administrator registers it again without them. The host is read after the last `@`, as the URL parser reads it, so a password holding `@` does not hide the host.
+- **`odd_form` 1** (before 0073 only): an address not beginning `http://` or `https://`, such as `http:/127.0.0.1/x`, or one holding a backslash, which the URL parser reads as `/` (`http://hooks.example.com\@10.0.0.5/`), whose host this check may misread. Look at that row's address by hand. From 0073 on, `receiver` is the URL parser's own reading of the address, so there is nothing odd left to see; a row showing `(none)` is not sent, and its address is looked at with `GET /api/v1/webhooks/{id}` by the board's owner or an administrator.
 - **Any row at all**: after 0056 none has a recorded setter, so a password reset will not switch it off. Look each over once, with the board's owner.
 
 **Check 0m: webhooks whose events are not a list** (card 2145):
@@ -4121,20 +4127,24 @@ Card 2325's checks after the deploy also use **S2**, a fresh private board O mak
 ```bash
 docker exec dumpfire node -e "
 const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
-const rows = db.prepare('SELECT w.id, b.name AS board, o.username AS board_owner, w.set_by, u.username AS setter, w.url FROM webhooks w JOIN boards b ON b.id = w.board_id LEFT JOIN users o ON o.id = b.created_by LEFT JOIN users u ON u.id = w.set_by WHERE w.active = 1 AND w.set_by IS NOT NULL AND (u.id IS NULL OR (u.role NOT IN (@admin, @superadmin) AND (b.created_by IS NULL OR b.created_by <> u.id) AND b.is_public = 0 AND NOT EXISTS (SELECT 1 FROM board_members m WHERE m.board_id = w.board_id AND m.user_id = u.id) AND NOT EXISTS (SELECT 1 FROM board_teams bt JOIN team_members tm ON tm.team_id = bt.team_id WHERE bt.board_id = w.board_id AND tm.user_id = u.id))) ORDER BY w.id').all({ admin: 'admin', superadmin: 'superadmin' });
-console.table(rows.map(({ url, ...r }) => { let host; try { host = new URL(url).host; } catch { host = '(not a URL)'; } return { ...r, host }; }));
+const sealed = db.pragma('table_info(webhooks)').some((c) => c.name === 'receiver');
+const rows = db.prepare('SELECT w.id, b.name AS board, o.username AS board_owner, w.set_by, u.username AS setter, ' + (sealed ? 'w.receiver' : 'w.url') + ' AS url FROM webhooks w JOIN boards b ON b.id = w.board_id LEFT JOIN users o ON o.id = b.created_by LEFT JOIN users u ON u.id = w.set_by WHERE w.active = 1 AND w.set_by IS NOT NULL AND (u.id IS NULL OR (u.role NOT IN (@admin, @superadmin) AND (b.created_by IS NULL OR b.created_by <> u.id) AND b.is_public = 0 AND NOT EXISTS (SELECT 1 FROM board_members m WHERE m.board_id = w.board_id AND m.user_id = u.id) AND NOT EXISTS (SELECT 1 FROM board_teams bt JOIN team_members tm ON tm.team_id = bt.team_id WHERE bt.board_id = w.board_id AND tm.user_id = u.id))) ORDER BY w.id').all({ admin: 'admin', superadmin: 'superadmin' });
+console.table(rows.map(({ url, ...r }) => { let host; try { host = new URL(url).host || '(none)'; } catch { host = url === '' ? '(none)' : '(not a URL)'; } return { ...r, host }; }));
 db.close();
 "
 ```
 
+It runs on either side of migration 0073 (card 2928): it looks for the `receiver` column, and from 0073 on, when the address is stored sealed, takes the host from `receiver` instead; a row with no address, or one that cannot be read here, shows `(none)`, never an empty host.
+
 An empty table is the hope. Each row stops sending at the deploy. **One you recognise can be taken over before the deploy, so that its integration never stops**: the board's owner or an administrator sends `PUT /api/v1/webhooks/{id}` `{"active": false}`, then `{"active": true, "secret": "<new>"}`, and updates the receiver with the new secret. That makes them its setter, so it is not held. One nobody recognises is left to be held, or deleted. Whoever takes it over answers for it: a reset of their account, or deleting it, switches it off. Prefer the board's owner where they have a key. A single `PUT {"secret": "<new>"}` also takes it over, with no gap while it is off. Off then on, with no secret change, takes over a receiver that does not check signatures.
 
-**Query B: active webhooks with no setter. A GATE** (check 247). Do not deploy until it returns no row. It gives the address in full, which you need in order to recognise it, so do not paste the output anywhere: a path can carry a token.
+**Query B: active webhooks with no setter. A GATE** (check 247). Do not deploy until it returns no row. It runs on either side of migration 0073 (card 2928), and looks for the `receiver` column to know which. Before 0073 it gives the address in full, which you need in order to recognise it, so do not paste that output anywhere: a path can carry a token. From 0073 on the address is stored sealed, and it gives the `receiver` alone (scheme, host and port; empty for a webhook with no address); the board's owner or an administrator reads the full address with `GET /api/v1/webhooks/{id}`.
 
 ```bash
 docker exec dumpfire node -e "
 const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
-console.table(db.prepare('SELECT w.id, w.url, b.name AS board, o.username AS board_owner FROM webhooks w JOIN boards b ON b.id = w.board_id LEFT JOIN users o ON o.id = b.created_by WHERE w.active = 1 AND w.set_by IS NULL ORDER BY w.id').all());
+const sealed = db.pragma('table_info(webhooks)').some((c) => c.name === 'receiver');
+console.table(db.prepare('SELECT w.id, ' + (sealed ? 'w.receiver' : 'w.url') + ', b.name AS board, o.username AS board_owner FROM webhooks w JOIN boards b ON b.id = w.board_id LEFT JOIN users o ON o.id = b.created_by WHERE w.active = 1 AND w.set_by IS NULL ORDER BY w.id').all());
 db.close();
 "
 ```
@@ -7776,6 +7786,58 @@ credentials …"): leave it unset, or set it to `googleapis.com`.
 | H15 | On a scratch copy with a Drive service account saved before the release, start the new image | One `Rewrote the service account JSON of …` line naming it, "kept its key"; check 0g's line for it says `service account type "service_account"`; ▶ Run Now succeeds | No line, key text in it, or the run failing |
 | H16 | Restart | No `Rewrote …` line | A second |
 | H17 | Repeat a saved destination's Test from the browser's network panel with its host, endpoint or folder changed; then again with its secret emptied as well | `400`, nothing connected: with the secret masked, the save's own sentence ("Backup destination "…": type its … again …"); with no secret sent, "Save the destination first, then Test it." | Any connection attempt, or a `200` |
+
+### The Release That Seals Webhook Addresses (Card 2928)
+
+A Slack, Teams or Discord webhook address carries its secret in its path. From this release every
+webhook address is stored sealed under the MFA key, beside a plain `receiver` (its scheme, host and
+port, migration 0073); no backup or export holds one. Nothing is to be done on the deploy.
+
+**Before the deploy (read-only):**
+
+```sql
+SELECT COUNT(*) AS plain_addresses FROM webhooks WHERE url <> '' AND substr(url, 1, 9) <> 'dfsealed:';
+```
+
+**The first start** seals every address and fills `receiver`, counted in the sealing line ("…, N
+webhook address(es), …"); rewrites each old `Webhook delivery failed for hook N → <address>` log
+line to the host, its `meta` replaced, before the scrub takes the old text out of the file; marks
+the scrub once whatever it seals, and deletes stale `.backup-temp` copies. Every start also
+deletes a stale `.restore-temp` upload (and its `-journal`, `-wal` and `-shm`) that a crashed
+import left: no import runs before the server listens. A log rewrite that fails is one WARN naming `GET /api/logs`, never a refused
+start. A plain webhook secret beside an address that is empty or does not open is never sealed:
+every start blanks it, switches the webhook off, lists it among the webhooks to enter, marks the
+scrub and names it at ERROR; a second start writes nothing.
+
+**Copies from before the release** hold the addresses in plain: older backups and exports, volume
+snapshots, cold copies, the import's safety copy, and container, console or shipped logs. Where any
+may be out of your hands, regenerate the receiver's address (Slack: a new incoming webhook; Teams: a
+new workflow URL; Discord: delete and recreate the webhook) and set it with
+`PUT /api/v1/webhooks/{id}`.
+
+**What stays plain.** A webhook's `receiver` (its scheme, host and port) stays plain in the
+database, in backups, and in log lines and mails. A receiver that carries its token in the host
+(a per-endpoint subdomain) is not covered: regenerate such addresses if copies may be out of your
+hands.
+
+**Backups from now on** hold every address as `''`, the webhook off, listed with a match keyed by
+`webhook_address_mac_key`, which no copy holds. A restore onto this server puts each back; onto
+another, or where the webhook here changed or the key is lost, each comes back off and is named
+("the address(es) of webhook(s) …") until its `url` (and secret) is sent with `active: true`.
+
+**Going back to 1.14.0.** No unseal command; nothing is disclosed. 1.14.0 reads each envelope as the
+address: every webhook is refused as written and nothing is sent. Set each address again there with
+`PUT`, or do not go back. Keep the `receiver` column. Coming forward, addresses 1.14.0 wrote are
+sealed at the next start; a 1.14.0 `PUT` of a new `url` that kept the secret leaves that secret bound
+to the old address, so set it again.
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H18 | Run the query, then start the new image | One sealing line counting the webhook addresses; the query gives 0; `receiver` holds each origin | A plain address left, or a path in the log |
+| H19 | Move a card | The receiver gets the event at its path, signed | Not delivered |
+| H20 | Export a backup and search it for a webhook's path and `dfsealed:` | Neither found | Either found |
+| H21 | Import that backup | Each webhook back with its address, on as it was | Listed to enter |
+| H22 | `node scripts/mfa-reset.mjs --keep-api-keys <setter>` | Lists each webhook "to <host>" | A path or an envelope |
 
 ## Changing the Schema
 

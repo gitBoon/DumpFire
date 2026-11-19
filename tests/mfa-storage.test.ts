@@ -32,7 +32,7 @@ import { db, sqlite } from '$lib/server/db';
 import { enrolmentLinks, mfaFactors, mfaRecoveryCodes, settings, signInChallenges, users, webhooks } from '$lib/server/db/schema';
 import { restoreFromBackup } from '$lib/server/db/restore';
 import { generateBackupData } from '$lib/server/backup';
-import { backupSealKey, sealCopy } from '$lib/server/backup-secrets';
+import { backupSealKey, sealCopy, webhookAddressMacKey } from '$lib/server/backup-secrets';
 import { mfaWithoutFactorSentence } from '$lib/server/mfa-backup';
 import { inTransaction } from '$lib/server/db/transaction';
 import { endAccountAccess } from '$lib/server/auth';
@@ -51,8 +51,9 @@ import {
 	storeRecoveryCodes
 } from '$lib/server/mfa-store';
 import { MfaKeyError, checkMfaKeyAtStart, sealStoredSecretsAtStart } from '$lib/server/startup-checks';
-import { mailPasswordAad, openStored, recordKeyCheck, sealValue, settingAad, webhookSecretAad } from '$lib/server/stored-secrets';
+import { mailPasswordAad, openStored, recordKeyCheck, sealValue, settingAad, webhookSecretAad, webhookUrlAad } from '$lib/server/stored-secrets';
 import { stamp } from '$lib/timestamps';
+import { openedSecret } from '$lib/server/webhooks';
 import { api } from './helpers/api';
 import { failingWrite } from './helpers/failing-write';
 import { importConfirmation, makeBoard, makeUser, makeWebhook, resetDb, stepUp } from './helpers/fixtures';
@@ -611,7 +612,14 @@ describe('the stored secrets at start (card 2898)', () => {
 		put('request_form_secret', sealValue('f'.repeat(64), settingAad('request_form_secret'), theirs));
 		const owner = makeUser();
 		const hook = makeWebhook(makeBoard({ owner }).board, { url: 'https://hooks.example.test/forgotten' });
-		db.update(webhooks).set({ secret: sealValue('their webhook secret', webhookSecretAad(hook.id, hook.boardId, hook.url), theirs) }).where(eq(webhooks.id, hook.id)).run();
+		// Its address sealed under their key too (card 2928): nothing opens.
+		db.update(webhooks)
+			.set({
+				url: sealValue(hook.address, webhookUrlAad(hook.id, hook.boardId, hook.receiver), theirs),
+				secret: sealValue('their webhook secret', webhookSecretAad(hook.id, hook.boardId, hook.address), theirs)
+			})
+			.where(eq(webhooks.id, hook.id))
+			.run();
 		return hook;
 	}
 	const NO_PREVIOUS = { ok: true as const, key: null, path: null, warnings: [] };
@@ -631,7 +639,8 @@ describe('the stored secrets at start (card 2898)', () => {
 		});
 
 		expect(thrown).toBeInstanceOf(MfaKeyError);
-		expect((thrown as MfaKeyError).message).toMatch(/None of the 3 stored secret\(s\) opens with this MFA key, and no key check is stored/);
+		// The webhook's address among them (card 2928).
+		expect((thrown as MfaKeyError).message).toMatch(/None of the 4 stored secret\(s\) opens with this MFA key, and no key check is stored/);
 		expect((thrown as MfaKeyError).message).toContain('FORGET_UNOPENABLE_SECRETS=1');
 		expectUnchanged(before);
 	});
@@ -649,8 +658,14 @@ describe('the stored secrets at start (card 2898)', () => {
 		expect(row.secret).toBe('');
 		expect(row.active).toBe(false);
 		expect(JSON.parse(settingNow('webhook_secrets_left_out')!)).toEqual([{ id: hook.id, active: true }]);
+		// Case 33 (card 2928): its address forgotten the same way, listed apart, and the ERROR names addresses (R15).
+		expect(row.url).toBe('');
+		expect(JSON.parse(settingNow('webhook_addresses_left_out')!)).toEqual([{ id: hook.id, active: true }]);
 		expect(keyCheck()).toBe(key().check);
-		expect(lines.error.filter((line) => line.includes('were forgotten as a backup forgets them'))).toHaveLength(1);
+		const forgot = lines.error.filter((line) => line.includes('were forgotten as a backup forgets them'));
+		expect(forgot).toHaveLength(1);
+		expect(forgot[0]).toContain(`webhook ${hook.id}'s address`);
+		expect(forgot[0]).toContain('each webhook its address and a new secret');
 	});
 
 	it('20b: with no check stored and some stored secrets opening, the check is recorded and the rest named unreadable, nothing forgotten', () => {
@@ -666,6 +681,53 @@ describe('the stored secrets at start (card 2898)', () => {
 		expect(keyCheck()).toBe(key().check);
 		expect(lines.error.filter((line) => line.includes('1 stored secret(s) could not be opened') && line.includes('the mail password'))).toHaveLength(1);
 		expect(lines.error.filter((line) => line.includes('forgotten'))).toEqual([]);
+	});
+
+	// Card 2928: a webhook's address at start.
+	/** A webhook whose address, sealed, no longer opens: changed by a byte, as by hand. */
+	function spoiledAddress(secret: string) {
+		const owner = makeUser();
+		const hook = makeWebhook(makeBoard({ owner }).board, { url: 'https://hooks.slack.com/services/T/B/address-2928', secret });
+		const url = db.select().from(webhooks).where(eq(webhooks.id, hook.id)).get()!.url;
+		db.update(webhooks).set({ url: url.slice(0, -3) + (url.slice(-3, -2) === 'A' ? 'B' : 'A') + url.slice(-2) }).where(eq(webhooks.id, hook.id)).run();
+		return hook;
+	}
+
+	it.each([
+		{ row: 'blanked at every start, no flag asked: emptied, off, listed and named at ERROR (C2)', second: false },
+		{ row: 'blanked once: a second start writes nothing', second: true }
+	])("2928 case 24: a plain secret beside an address that does not open is $row (R5)", ({ second }) => {
+		const hook = spoiledAddress('plain-beside-24');
+
+		const lines = consoleLines(() => sealStoredSecretsAtStart(sqlite, () => {}));
+
+		const row = db.select().from(webhooks).where(eq(webhooks.id, hook.id)).get()!;
+		expect(row).toMatchObject({ secret: '', active: false });
+		expect(JSON.parse(settingNow('webhook_secrets_left_out')!)).toEqual([{ id: hook.id, active: true }]);
+		expect(lines.error.filter((line) => line.includes(`were forgotten as a backup forgets them: webhook ${hook.id}`))).toHaveLength(1);
+		expect([...lines.error, ...lines.warn].join(' ')).not.toMatch(/plain-beside-24|address-2928/);
+		if (second) {
+			const before = snapshotDb();
+			const again = consoleLines(() => sealStoredSecretsAtStart(sqlite, () => {}));
+			expectUnchanged(before, 'after a second start');
+			expect(again.error.filter((line) => line.includes('were forgotten'))).toEqual([]);
+		}
+	});
+
+	it("2928 case 32: with the right key and a webhook's address tampered with, the start goes on, one ERROR names it, holding nothing of it; its secret reads as not opening", () => {
+		const owner = makeUser();
+		const hook = makeWebhook(makeBoard({ owner }).board, { url: 'https://hooks.slack.com/services/T/B/address-2928-32' });
+		db.update(webhooks).set({ secret: sealValue('whsec-32', webhookSecretAad(hook.id, hook.boardId, hook.address), key()) }).where(eq(webhooks.id, hook.id)).run();
+		db.update(webhooks).set({ receiver: 'https://elsewhere.example.test' }).where(eq(webhooks.id, hook.id)).run();
+
+		const lines = consoleLines(() => checkMfaKeyAtStart(mfaKeyLoad(), () => [], undefined, { ok: true, key: null, path: null, warnings: [] }));
+
+		const errors = lines.error.filter((line) => line.includes('stored secret(s) could not be opened'));
+		expect(errors).toHaveLength(1);
+		expect(errors[0]).toContain(`webhook ${hook.id}'s address`);
+		expect(errors[0]).toContain(`webhook ${hook.id}`);
+		expect(errors[0]).not.toContain('address-2928-32');
+		expect(openedSecret(db.select().from(webhooks).where(eq(webhooks.id, hook.id)).get()!).kind).toBe('unopenable');
 	});
 });
 
@@ -756,6 +818,8 @@ describe('backups and restores', () => {
 		// The key backups are sealed with, made now, before the check of another key is stored: it is
 		// written sealed under this process's key, which records the check by the one rule (card 2898, S2).
 		backupSealKey(sqlite);
+		// And the webhook address key, the same way (card 2928).
+		webhookAddressMacKey(sqlite);
 		const factorUid = newFactorUid();
 		const sealed = sealWith(fileKey, newTotpSecret(), factorAad(user.id, factorUid));
 		db.insert(mfaFactors)

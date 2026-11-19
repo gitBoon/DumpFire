@@ -180,6 +180,20 @@ function hostOf(url) {
 	}
 }
 
+/**
+ * The host a webhook is listed by (card 2928): its stored `receiver`, as
+ * `hookAsListed` in second-step.ts reads it. The address itself is sealed
+ * under the MFA key, which this reads nothing of: only one that is not sealed
+ * (a database this release has not started yet, which has no `receiver`) is
+ * read for its host.
+ * @param {{ url: string, receiver: string | null }} hook
+ */
+function hostOfHook(hook) {
+	if (hook.receiver) return hostOf(hook.receiver);
+	if (hook.url.startsWith('dfsealed:') || hook.url === '') return 'an address that cannot be read here';
+	return hostOf(hook.url);
+}
+
 /** The ids a log line names, or nothing for none: `namingIds` in auth.ts. @param {number[]} ids */
 const namingIds = (ids) => (ids.length === 0 ? '' : ` (${ids.length === 1 ? 'id' : 'ids'} ${ids.join(', ')})`);
 
@@ -499,34 +513,20 @@ function reset(database, username, keep) {
 			const heldIds = heldRows.map((row) => row.id);
 			// The webhooks listed: those switched off, by their own ids (S5), or, kept, those the account set that
 			// are on, as `keysAndWebhooksOf` in second-step.ts lists them. For stdout alone, never the log.
-			const hooks = /** @type {{ id: number, board: string, url: string, created_at: string }[]} */ (
+			// Each listed by the host of its stored receiver (card 2928, migration 0073), where the database has the column.
+			const receiver = database.prepare("SELECT 1 FROM pragma_table_info('webhooks') WHERE name = 'receiver'").get() ? 'w.receiver' : 'NULL';
+			const listed = `SELECT w.id, b.name AS board, w.url, ${receiver} AS receiver, w.created_at FROM webhooks w JOIN boards b ON b.id = w.board_id `;
+			const hooks = /** @type {{ id: number, board: string, url: string, receiver: string | null, created_at: string }[]} */ (
 				keep
-					? database
-							.prepare(
-								'SELECT w.id, b.name AS board, w.url, w.created_at FROM webhooks w JOIN boards b ON b.id = w.board_id ' +
-									'WHERE w.set_by = ? AND w.active = 1 ORDER BY w.id'
-							)
-							.all(id)
+					? database.prepare(listed + 'WHERE w.set_by = ? AND w.active = 1 ORDER BY w.id').all(id)
 					: webhookIds.length === 0
 						? []
-						: database
-								.prepare(
-									'SELECT w.id, b.name AS board, w.url, w.created_at FROM webhooks w JOIN boards b ON b.id = w.board_id ' +
-										`WHERE w.id IN (${webhookIds.map(() => '?').join(', ')}) ORDER BY w.id`
-								)
-								.all(...webhookIds)
-			).map((hook) => ({ id: hook.id, board: hook.board, host: hostOf(hook.url), createdAt: hook.created_at }));
+						: database.prepare(listed + `WHERE w.id IN (${webhookIds.map(() => '?').join(', ')}) ORDER BY w.id`).all(...webhookIds)
+			).map((hook) => ({ id: hook.id, board: hook.board, host: hostOfHook(hook), createdAt: hook.created_at }));
 			// The webhooks held where they were already off (card 2923, S2), by their own ids as above. For stdout alone.
-			const held = /** @type {{ id: number, board: string, url: string, created_at: string }[]} */ (
-				heldIds.length === 0
-					? []
-					: database
-							.prepare(
-								'SELECT w.id, b.name AS board, w.url, w.created_at FROM webhooks w JOIN boards b ON b.id = w.board_id ' +
-									`WHERE w.id IN (${heldIds.map(() => '?').join(', ')}) ORDER BY w.id`
-							)
-							.all(...heldIds)
-			).map((hook) => ({ id: hook.id, board: hook.board, host: hostOf(hook.url), createdAt: hook.created_at }));
+			const held = /** @type {{ id: number, board: string, url: string, receiver: string | null, created_at: string }[]} */ (
+				heldIds.length === 0 ? [] : database.prepare(listed + `WHERE w.id IN (${heldIds.map(() => '?').join(', ')}) ORDER BY w.id`).all(...heldIds)
+			).map((hook) => ({ id: hook.id, board: hook.board, host: hostOfHook(hook), createdAt: hook.created_at }));
 			const keptWebhookIds = keep ? hooks.map((hook) => hook.id) : [];
 			const apiKeys = apiKeyIds.length;
 			const reportScheduleIds = /** @type {{ id: number }[]} */ (

@@ -147,8 +147,8 @@
 		return {
 			detail: parts.length > 0 ? `${from}: ${parts.join(', ')}.` : `${from}. It held no rows.`,
 			workingCopy: result.workingCopy,
-			// A backup holds no mail password, destination credential or webhook
-			// secret (card 2169). The server's two sentences say which of this
+			// A backup holds no mail password, destination credential, webhook
+			// secret (card 2169) or webhook address (card 2928). The server's two sentences say which of this
 			// server's were kept and which are to enter again; each is absent when
 			// there is nothing to say, as for a backup made before that card.
 			secretsKept: result.secretsKept,
@@ -616,7 +616,7 @@
 					<input type="radio" name="import-outside" value="keep" bind:group={importOutside} />
 					<span>
 						<strong>Restore everything as it is</strong>
-						<span class="import-choice-desc">For putting this installation back. Backup destinations, report schedules, mail settings and webhooks come back as the backup has them. A backup holds no mail password, destination credential or webhook secret: the ones this server has for the same accounts are kept, and the result lists any to enter again; a webhook that had a secret stays off until it is set.</span>
+						<span class="import-choice-desc">For putting this installation back. Backup destinations, report schedules, mail settings and webhooks come back as the backup has them. A backup holds no mail password, destination credential, webhook secret or webhook address: the ones this server has for the same accounts are kept, and the result lists any to enter again; a webhook whose secret or address is to enter stays off until it is set.</span>
 					</span>
 				</label>
 				<label class="import-choice" class:selected={importOutside === 'off'}>

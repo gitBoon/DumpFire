@@ -39,7 +39,7 @@ import { db, sqlite } from '$lib/server/db';
 import { mfaFactors, settings, signInChallenges, webhooks } from '$lib/server/db/schema';
 import { readMfaKeyCheck } from '$lib/server/mfa-store';
 import { MfaKeyError, checkMfaKeyAtStart } from '$lib/server/startup-checks';
-import { mailPasswordAad, openStored, sealValue, settingAad, webhookSecretAad } from '$lib/server/stored-secrets';
+import { mailPasswordAad, openStored, sealValue, settingAad, webhookSecretAad, webhookUrlAad } from '$lib/server/stored-secrets';
 import { eq } from 'drizzle-orm';
 import { stamp } from '$lib/timestamps';
 import { makeBoard, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
@@ -634,7 +634,7 @@ describe('changing the MFA key at start (card 2773)', () => {
 			putSetting('known_browser_secret', sealValue('d'.repeat(64), settingAad('known_browser_secret'), by));
 			const owner = makeUser();
 			const hook = makeWebhook(makeBoard({ owner }).board, { url: 'https://hooks.example.test/rotate' });
-			const secret = sealValue('the webhook secret', webhookSecretAad(hook.id, hook.boardId, hook.url), by);
+			const secret = sealValue('the webhook secret', webhookSecretAad(hook.id, hook.boardId, hook.address), by);
 			db.update(webhooks).set({ secret }).where(eq(webhooks.id, hook.id)).run();
 			return hook;
 		}
@@ -654,7 +654,7 @@ describe('changing the MFA key at start (card 2773)', () => {
 			expect(opened(settingNow('smtp_pass'), mailPasswordAad(MAIL))).toEqual({ kind: 'opened', value: 'the mail password' });
 			expect(opened(settingNow('known_browser_secret'), settingAad('known_browser_secret')).value).toBe('d'.repeat(64));
 			const secret = db.select().from(webhooks).where(eq(webhooks.id, hook.id)).get()!.secret;
-			expect(opened(secret, webhookSecretAad(hook.id, hook.boardId, hook.url)).value).toBe('the webhook secret');
+			expect(opened(secret, webhookSecretAad(hook.id, hook.boardId, hook.address)).value).toBe('the webhook secret');
 			expect(keyCheck()).toBe(current().check);
 			expect(lines.warn.filter((line) => line.includes('Rotated 0 second factor(s) and 3 stored secret(s) to the new MFA key'))).toHaveLength(1);
 			// The old key's ciphertexts are to be scrubbed from the file (the code review S4).
@@ -685,6 +685,57 @@ describe('changing the MFA key at start (card 2773)', () => {
 			expect(thrown).toBeInstanceOf(MfaKeyError);
 			expect(lines.error.filter((line) => line.includes('[CRITICAL] [AUTH]'))).toHaveLength(1);
 			expectUnchanged(before);
+		});
+
+		// ─── Card 2928: a webhook's address rotates with them ──────────────
+
+		/** A webhook whose address and secret are both sealed under `by`. */
+		function addressUnder(by: MfaKey) {
+			const owner = makeUser();
+			const hook = makeWebhook(makeBoard({ owner }).board, { url: 'https://hooks.slack.com/services/T/B/rotate-2928' });
+			db.update(webhooks)
+				.set({
+					url: sealValue(hook.address, webhookUrlAad(hook.id, hook.boardId, hook.receiver), by),
+					secret: sealValue('the webhook secret 30', webhookSecretAad(hook.id, hook.boardId, hook.address), by)
+				})
+				.where(eq(webhooks.id, hook.id))
+				.run();
+			return hook;
+		}
+
+		it("2928 case 30: rotating seals a webhook's address and its secret again under this key, both opening", () => {
+			const raw = randomBytes(32);
+			const old = keyFromBytes(raw);
+			const hook = addressUnder(old);
+			putSetting(MFA_KEY_CHECK_SETTING, old.check);
+
+			const lines = consoleLines(() => checkMfaKeyAtStart(mfaKeyLoad(), undefined, undefined, previousOf(raw)));
+
+			const row = db.select().from(webhooks).where(eq(webhooks.id, hook.id)).get()!;
+			expect(row.url).toMatch(new RegExp(`^dfsealed:1:${current().id}:`));
+			expect(openStored(row.url, webhookUrlAad(hook.id, hook.boardId, hook.receiver), current()).value).toBe(hook.address);
+			expect(openStored(row.secret, webhookSecretAad(hook.id, hook.boardId, hook.address), current()).value).toBe('the webhook secret 30');
+			expect(lines.warn.filter((line) => line.includes('Rotated 0 second factor(s) and 2 stored secret(s)'))).toHaveLength(1);
+		});
+
+		it("2928 case 31: a start with another key, and nothing sealed but a webhook's address, is refused", () => {
+			const other = keyFromBytes(randomBytes(32));
+			const owner = makeUser();
+			makeWebhook(makeBoard({ owner }).board, { url: 'https://hooks.slack.com/services/T/B/only-2928' });
+			db.delete(settings).where(eq(settings.key, 'request_form_secret')).run();
+			putSetting(MFA_KEY_CHECK_SETTING, current().check);
+
+			let thrown: unknown;
+			consoleLines(() => {
+				try {
+					checkMfaKeyAtStart({ ok: true, key: other, path: null, made: false, insideDatabaseDir: false, warnings: [] }, undefined, undefined, { ok: true, key: null, path: null, warnings: [] });
+				} catch (err) {
+					thrown = err;
+				}
+			});
+
+			expect(thrown).toBeInstanceOf(MfaKeyError);
+			expect((thrown as MfaKeyError).message).toMatch(/does not match the one the second factors were made with or the stored secrets were sealed with/);
 		});
 	});
 

@@ -1314,9 +1314,9 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 
 		expect(said).toBe(
 			'For putting this installation back. Backup destinations, report schedules, mail settings and webhooks come ' +
-				'back as the backup has them. A backup holds no mail password, destination credential or webhook secret: ' +
+				'back as the backup has them. A backup holds no mail password, destination credential, webhook secret or webhook address: ' +
 				'the ones this server has for the same accounts are kept, and the result lists any to enter again; a ' +
-				'webhook that had a secret stays off until it is set.'
+				'webhook whose secret or address is to enter stays off until it is set.'
 		);
 		expect(everywhere).not.toContain('come back exactly as the backup has them');
 	});

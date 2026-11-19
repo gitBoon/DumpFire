@@ -6,10 +6,10 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { pathId, readBody, readChoices, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
-import { canSeeWebhookSecret, hostOf, keyOfWrite, presentWebhook, receiverOf, refuseWebhookOverCap, WEBHOOK_EVENTS } from '$lib/server/webhooks';
+import { canSeeWebhookSecret, hostOfHook, keyOfWrite, presentWebhook, receiverOf, refuseWebhookOverCap, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import { readWebhookUrl } from '$lib/server/webhook-address';
 import { notifyWebhookCreated } from '$lib/server/notifications';
-import { TYPED_SECRET_LOOKS_SEALED, looksSealed, sealStored, webhookSecretAad } from '$lib/server/stored-secrets';
+import { TYPED_SECRET_LOOKS_SEALED, looksSealed, sealStored, webhookSecretAad, webhookUrlAad } from '$lib/server/stored-secrets';
 import type { RequestHandler } from './$types';
 
 /** Said to a create at a receiver held off on the board, by anyone but its owners and administrators (card 2752, D6; the code review's CS2). */
@@ -92,30 +92,33 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		// fails any other check is told that, and nothing says whether the
 		// receiver is held off.
 		const owns = canSeeWebhookSecret(user, boardId);
-		if (!owns) {
-			const receiver = receiverOf(url);
-			const heldOff = db.select({ url: webhooks.url }).from(webhooks)
-				.where(and(eq(webhooks.boardId, boardId), eq(webhooks.active, false), isNotNull(webhooks.heldBecause)))
-				.all()
-				.some((hook) => receiver !== null && receiverOf(hook.url) === receiver);
+		// The receiver as stored beside the sealed address (card 2928), compared in SQL.
+		const receiver = receiverOf(url) ?? '';
+		if (!owns && receiver !== '') {
+			const heldOff = db.select({ id: webhooks.id }).from(webhooks)
+				.where(and(eq(webhooks.boardId, boardId), eq(webhooks.active, false), isNotNull(webhooks.heldBecause), eq(webhooks.receiver, receiver)))
+				.get();
 			if (heldOff) throw error(409, HELD_OFF_RECEIVER);
 		}
+		// Made with no address, then given it sealed: never written in plain (card 2928).
 		const made = db.insert(webhooks)
-			.values({ boardId, url, secret: '', events: JSON.stringify(events ?? []), setBy: user.id, ...keyOfWrite(locals.credential) })
+			.values({ boardId, url: '', receiver, secret: '', events: JSON.stringify(events ?? []), setBy: user.id, ...keyOfWrite(locals.credential) })
 			.returning()
 			.get();
-		// The secret sealed under the MFA key, bound to the webhook's id, board
-		// and address, which are known only once it is made (card 2898, decision
-		// 19), in the same transaction: never written in plain.
-		const hook = secret
-			? db.update(webhooks)
-				.set({ secret: sealStored(secret, webhookSecretAad(made.id, made.boardId, made.url)) })
-				.where(eq(webhooks.id, made.id))
-				.returning()
-				.get()
-			: made;
+		// The address and the secret sealed under the MFA key, bound to the
+		// webhook's id and board, which are known only once it is made (card 2898,
+		// decision 19; card 2928), in the same transaction: the address to its
+		// receiver, the secret to the address as typed.
+		const hook = db.update(webhooks)
+			.set({
+				url: sealStored(url, webhookUrlAad(made.id, made.boardId, receiver)),
+				...(secret ? { secret: sealStored(secret, webhookSecretAad(made.id, made.boardId, url)) } : {})
+			})
+			.where(eq(webhooks.id, made.id))
+			.returning()
+			.get()!;
 		// The board's owners are told of a webhook someone else made (card 2752, S3), once it is committed.
-		if (!owns) notifyWebhookCreated(boardId, user.username, { id: hook.id, host: hostOf(hook.url) });
+		if (!owns) notifyWebhookCreated(boardId, user.username, { id: hook.id, host: hostOfHook(hook) });
 		// Made here, in the transaction that saved it: `pausedBecause` (card
 		// 2325) reads whether its setter, the caller, can open the board.
 		return presentWebhook(hook, true);

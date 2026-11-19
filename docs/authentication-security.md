@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.152
+version: 1.153
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2928
+  - webhook-addresses-at-rest
   - card-2939
   - service-account-key
   - external-account
@@ -3319,8 +3321,81 @@ is done with a previous key.
 
 | Control | How the stored secrets meet it |
 |---|---|
-| A.5.17 Authentication information | Met: the mail password, backup destination credentials, webhook secrets and the server's signing keys are sealed with AES-256-GCM under a key kept outside the database, each bound to where it is used (card 2898) |
+| A.5.17 Authentication information | Met: the mail password, backup destination credentials, webhook secrets and the server's signing keys are sealed with AES-256-GCM under a key kept outside the database, each bound to where it is used (card 2898); so is every webhook address, and no backup holds one (card 2928) |
 | A.8.24 Use of cryptography | Partly met: backup files are not encrypted (card 2900) |
+
+## Webhook Addresses at Rest (Card 2928)
+
+A Slack, Teams or Discord webhook address carries its secret in its path (Google Chat in its
+query, others in their host): whoever holds it can post into the receiver's channel as
+DumpFire. From this release every webhook address is stored sealed, every kind, since no test
+of "this address carries a token" is reliable.
+
+```mermaid
+flowchart TD
+    W["v1 POST / PUT"] -->|"url sealed, AAD webhook-url, id, board, receiver"| R["webhooks row<br/>url = dfsealed:1:…<br/>receiver = https://hooks.slack.com (plain)<br/>secret bound to the url as opened"]
+    S["sealStoredSecretsAtStart<br/>plain url to receiver + envelope"] --> R
+    R --> O["openedUrl: empty, plain, opened, unopenable"]
+    O --> D["deliver: not sent when '' or unopenable"]
+    O --> A["presentWebhook (owner, admin): url opened, '' when to enter"]
+    R --> H["hostOf(receiver): log lines, mails, two-step lists, mfa-reset.mjs, held-off rule"]
+    R --> B["backup copy: url '', off, webhook_addresses_left_out {id, active, address = HMAC}"]
+    B --> F["restore on this server: fillAddressGaps moves the envelope back byte for byte"]
+```
+
+**What is stored.** `webhooks.url` is an envelope of card 2898's form, under the stored-secrets
+key, bound to `[1, "webhook-url", id, boardId, receiver]`. `webhooks.receiver` (migration 0073)
+is the address's scheme, host and port in plain (`receiverOf`): what the held-off rule compares,
+and what every line, mail and list names. It is never in an answer: `presentWebhook` answers an
+allowlist of fields. A hand edit of `receiver` leaves the address unopenable, so it is never
+misnamed. The secret stays bound to the address as opened. Nothing opened is cached.
+
+**One rule for secrets.** No secret is sealed against an address that is `''` or does not open.
+Every start blanks such a plain secret: emptied, the webhook switched off and listed in
+`webhook_secrets_left_out`, the scrub marked, and one ERROR naming the webhook; a second start
+writes nothing. A PUT that sets such a webhook's secret to anything but `''` must send `url` with
+it (a clear is taken), and a PUT that changes the `url` beside a secret that does not open must
+send a new secret.
+Only a switch-on with no usable address and no `url` is refused; events alone may change.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Plain: an older image wrote it
+    Plain --> Sealed: next start (receiver recomputed)
+    Sealed --> Sealed: key change re-seals
+    Sealed --> Unopenable: hand edit, another key
+    Sealed --> Empty: a backup left it out
+    Empty --> Sealed: restore fills it (same id, board, receiver, setter, HMAC)
+    Empty --> Sealed: PUT url with active true
+    Unopenable --> Sealed: PUT url (and secret)
+    Unopenable --> Empty: FORGET_UNOPENABLE_SECRETS=1
+```
+
+**Backups and the export.** A copy holds no address: `clearSecrets` sets each `url` to `''`,
+switches the webhook off and lists it in `webhook_addresses_left_out` as `{ id, active, address }`,
+where `address` is `HMAC-SHA256(HKDF-SHA256(key, 'dumpfire webhook address v1'), JSON([id,
+boardId, receiver, url]))`. The key is `webhook_address_mac_key`, 32 random bytes made at the first
+backup, stored sealed like the other signing keys, re-sealed at a key change and forgotten with
+them, and in no backup, export or import safety copy; a restore keeps this server's. One that
+does not open is replaced, at start or by the backup that finds it, with the same `WARN` naming
+"the webhook address key" either way, never a value. A restore
+of this server's own sealed backup fills each address back, byte for byte, from the one webhook
+here with the same id, board, receiver, setter and match (compared in constant time), switching
+nothing on; on or off is decided after this server's holds are carried, and only a webhook whose
+address opens is switched on. Any other backup, or a lost key, fills nothing: each address is
+listed to enter.
+
+**At start.** The sealing transaction seals every plain address, recomputing `receiver`; masks
+the old `Webhook delivery failed for hook N → <address>` lines to the host (their `meta` replaced
+by `{"error":"[masked]"}`) in a savepoint whose failure is a WARN naming `GET /api/logs`, never a
+refusal to start; marks the scrub once on this release's first start, which also deletes stale
+`.backup-temp` copies; blanks any plain secret beside an address that is `''` or does not open;
+and, at every start, deletes a crashed import's stale `.restore-temp` upload.
+
+**Going back to 1.14.0.** No unseal command; nothing is disclosed. 1.14.0 reads the envelope as
+the address, so every webhook is refused as written and nothing is sent. A 1.14.0 PUT of a new
+`url` that keeps the secret leaves that secret bound to the old address: set it again coming
+forward. Keep the `receiver` column.
 
 ## A Lost Authenticator: the Reset, the Host's Command and a Change of Key (Card 2773)
 

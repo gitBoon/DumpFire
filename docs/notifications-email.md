@@ -1,10 +1,11 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.86
+version: 1.87
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2928
   - card-2898
   - secrets-at-rest
   - card-2923
@@ -2901,7 +2902,8 @@ recipients' mail switches. A start and a restore mail only where the schedulers 
 its keys mail the owners too, always, once committed: one mail to each recipient for the write,
 over the boards of both groups, each recipient told only of their own boards. The webhooks
 switched off are listed as above; the ones held where they were already off are listed apart,
-in fixed words, host only, every text escaped: "Board **B**: webhook *N* to **host**: already
+in fixed words, host only (since card 2928 the host of the webhook's stored `receiver`, its address
+being sealed), every text escaped: "Board **B**: webhook *N* to **host**: already
 switched off; now held because the account that set it up had its access ended; switched on, it
 is given a new secret." A mail of switched-off webhooks alone keeps its subject; one that holds a
 held webhook is "A notice about webhooks on your boards", subject and heading. Held webhooks never

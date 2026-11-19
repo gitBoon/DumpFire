@@ -38,7 +38,23 @@
  */
 import type Database from 'better-sqlite3';
 import { sqlite } from '$lib/server/db';
-import { MAIL_CONNECTION_SETTINGS, mailPasswordAad, openDestinationSecrets, openStored, settingAad, webhookSecretAad } from '$lib/server/stored-secrets';
+import { MAIL_CONNECTION_SETTINGS, mailPasswordAad, openDestinationSecrets, openStored, openedUrl, receiverColumn, settingAad, webhookSecretAad } from '$lib/server/stored-secrets';
+
+/**
+ * Webhook `id`'s address read and opened under this process's MFA key (card
+ * 2928), for a test that used to read `url` straight from the table. Undefined
+ * where there is no such row; '' for one a backup left out; a plain one as it
+ * is; one that does not open is a throw naming it.
+ */
+export function readOpenedUrl(id: number, database: Database.Database = sqlite): string | undefined {
+	const row = database.prepare(`SELECT id, board_id AS boardId, url, ${receiverColumn(database)} AS receiver FROM webhooks WHERE id = ?`).get(id) as
+		| { id: number; boardId: number; url: string; receiver: string }
+		| undefined;
+	if (row === undefined) return undefined;
+	const opened = openedUrl(row);
+	if (opened.kind === 'unopenable') throw new Error(`readOpenedUrl: webhook ${row.id}'s address does not open with this process's MFA key`);
+	return opened.value;
+}
 
 /**
  * A stored secret's row read and opened under this process's MFA key (card
@@ -58,11 +74,12 @@ export function readOpened(table: 'settings' | 'webhooks', key: string | number,
 		throw new Error(`readOpened: ${what} does not open with this process's MFA key`);
 	};
 	if (table === 'webhooks') {
-		const row = database.prepare('SELECT id, board_id AS boardId, url, secret FROM webhooks WHERE id = ?').get(key) as
-			| { id: number; boardId: number; url: string; secret: string }
+		const row = database.prepare(`SELECT id, board_id AS boardId, url, ${receiverColumn(database)} AS receiver, secret FROM webhooks WHERE id = ?`).get(key) as
+			| { id: number; boardId: number; url: string; receiver: string; secret: string }
 			| undefined;
 		if (row === undefined) return undefined;
-		const opened = openStored(row.secret, webhookSecretAad(row.id, row.boardId, row.url));
+		// Bound to the address as opened (card 2928).
+		const opened = openStored(row.secret, webhookSecretAad(row.id, row.boardId, readOpenedUrl(row.id, database) ?? ''));
 		return opened.kind === 'unopenable' ? fail(`webhook ${row.id}'s secret`) : opened.value;
 	}
 	const setting = (name: string) => (database.prepare('SELECT value FROM settings WHERE key = ?').get(name) as { value: string } | undefined)?.value;

@@ -32,6 +32,8 @@ import { currentMfaKey, keyFromBytes, type MfaKey } from '$lib/server/mfa-key';
 import { sealWith } from '$lib/server/mfa-crypto';
 import { destinationPlace, mailChanges, mailConnection, secretsToEnter } from '$lib/server/backup-secrets';
 import { sealStoredSecretsAtStart } from '$lib/server/startup-checks';
+import { maskSecretsInLog } from '$lib/server/secret-paths';
+import { generateBackupData } from '$lib/server/backup';
 import {
 	SECRETS_SCRUB_PENDING,
 	anythingSealed,
@@ -47,7 +49,9 @@ import {
 	sealedForRestore,
 	settingAad,
 	vacuumAndScrub,
-	webhookSecretAad
+	openedUrl,
+	webhookSecretAad,
+	webhookUrlAad
 } from '$lib/server/stored-secrets';
 import type { Cookies } from '@sveltejs/kit';
 import { KNOWN_BROWSER_SECRET_KEY, rememberBrowser, rememberedNonce, resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
@@ -202,9 +206,30 @@ describe('the additional data (S8)', () => {
 			expected: '[1,"destination-secret","password","sftp",["sftp.example.test",22,"backup","/backups"],null,"SHA256:s16t1ixxsjxOgoaXCXACvAIOEG1K5biSlM7GekmavrY"]'
 		},
 		{ kind: 'webhook secret', aad: () => webhookSecretAad(7, 3, 'https://hooks.example.test/a'), expected: '[1,"webhook-secret",7,3,"https://hooks.example.test/a"]' },
-		{ kind: 'signing key', aad: () => settingAad('request_form_secret'), expected: '[1,"setting","request_form_secret"]' }
+		{ kind: 'signing key', aad: () => settingAad('request_form_secret'), expected: '[1,"setting","request_form_secret"]' },
+		// Card 2928, case 1: a webhook's address.
+		{ kind: 'webhook address', aad: () => webhookUrlAad(7, 3, 'https://hooks.example.test'), expected: '[1,"webhook-url",7,3,"https://hooks.example.test"]' }
 	])('7: the $kind is bound to fixed, versioned text', ({ aad, expected }) => {
 		expect(aad()).toBe(expected);
+	});
+
+	it("2928 case 1: a webhook's address opens with the same id, board and receiver, and not with any of them changed", () => {
+		const row = { id: 7, boardId: 3, receiver: 'https://hooks.slack.com' };
+		const url = sealValue('https://hooks.slack.com/services/T0/B0/xyz', webhookUrlAad(row.id, row.boardId, row.receiver), key());
+		expect(openedUrl({ ...row, url })).toEqual({ kind: 'opened', value: 'https://hooks.slack.com/services/T0/B0/xyz' });
+		for (const changed of [{ id: 8 }, { boardId: 4 }, { receiver: 'https://hooks.elsewhere.test' }]) {
+			expect(openedUrl({ ...row, ...changed, url }).kind, JSON.stringify(changed)).toBe('unopenable');
+		}
+	});
+
+	it("2928 case 2: an address is empty when '', plain as it is, opened when it opens, and unopenable when a byte is changed, never thrown", () => {
+		const row = { id: 7, boardId: 3, receiver: 'https://hooks.example.test' };
+		const sealed = sealValue('https://hooks.example.test/a?token=t', webhookUrlAad(7, 3, row.receiver), key());
+		const changed = sealed.slice(0, -4) + (sealed.slice(-4, -3) === 'A' ? 'B' : 'A') + sealed.slice(-3);
+		expect(openedUrl({ ...row, url: '' })).toEqual({ kind: 'empty', value: '' });
+		expect(openedUrl({ ...row, url: 'https://hooks.example.test/plain' })).toEqual({ kind: 'plain', value: 'https://hooks.example.test/plain' });
+		expect(openedUrl({ ...row, url: sealed })).toEqual({ kind: 'opened', value: 'https://hooks.example.test/a?token=t' });
+		expect(openedUrl({ ...row, url: changed })).toEqual({ kind: 'unopenable', value: '' });
 	});
 
 	it("8: a mail password opens after its host's case and spaces change, and not after a change of host, port, user or way out", () => {
@@ -336,7 +361,8 @@ describe('destinations', () => {
 
 		const counts = sealPlainSecrets(sqlite);
 
-		expect(counts).toEqual({ mail: 1, destinationFields: 2, webhooks: 1, signingKeys: 1, unreadableConfigs: 0 });
+		// The fixtures' addresses are stored sealed already (card 2928).
+		expect(counts).toEqual({ mail: 1, destinationFields: 2, webhooks: 1, webhookAddresses: 0, signingKeys: 1, unreadableConfigs: 0, secretsBesideNoAddress: [] });
 		expect(isSealed(setting('smtp_pass'))).toBe(true);
 		expect(readOpened('settings', 'smtp_pass')).toBe('mail password in plain');
 		expect(readOpened('settings', 'known_browser_secret')).toBe('b'.repeat(64));
@@ -355,7 +381,7 @@ describe('destinations', () => {
 			'unknown type in plain'
 		]);
 
-		expect(sealPlainSecrets(sqlite)).toEqual({ mail: 0, destinationFields: 0, webhooks: 0, signingKeys: 0, unreadableConfigs: 0 });
+		expect(sealPlainSecrets(sqlite)).toEqual({ mail: 0, destinationFields: 0, webhooks: 0, webhookAddresses: 0, signingKeys: 0, unreadableConfigs: 0, secretsBesideNoAddress: [] });
 
 		// Row 2 (S12): a configuration that is not JSON is counted, nothing is sealed in it, and none of its text is logged.
 		putSetting('backup_config', 'not json: hunter2-in-a-broken-config');
@@ -373,7 +399,8 @@ describe('what is taken for sealed (the code review S2)', () => {
 		const hook = makeWebhook(makeBoard({ owner: user }).board, { secret: 'DFSEALED:a plain secret' });
 		db.delete(settings).where(eq(settings.key, 'request_form_secret')).run();
 		putSetting('backup_config', JSON.stringify({ destinations: [{ type: 's3', name: 'dfsealed: a name', prefix: 'dfsealed:/path', secretAccessKey: '' }] }));
-		db.update(webhooks).set({ secret: '' }).where(eq(webhooks.id, hook.id)).run();
+		// Its address plain too, as an older image stored it (card 2928): nothing sealed.
+		db.update(webhooks).set({ secret: '', url: 'https://hooks.example.test/plain' }).where(eq(webhooks.id, hook.id)).run();
 		expect(anythingSealed(sqlite)).toBe(false);
 		db.update(webhooks).set({ secret: 'DFSEALED:a plain secret' }).where(eq(webhooks.id, hook.id)).run();
 		expect(anythingSealed(sqlite)).toBe(false);
@@ -569,6 +596,135 @@ describe('the start step: signing keys and the scrub', () => {
 			expect(sqlite.pragma('secure_delete', { simple: true })).toBe(1);
 		});
 
+		it("2928 case 25: on a file card 2898 has sealed already, a plain address is sealed and scrubbed out of the file and its log, the WARN naming addresses, the scrub marked (R11)", () => {
+			const user = makeUser({ role: 'admin' });
+			const hook = makeWebhook(makeBoard({ owner: user }).board);
+			const { database, path } = scratch();
+			// Card 2898's start has run: everything else sealed, its markers there; this release's first start too.
+			linesOf(() => sealStoredSecretsAtStart(database, () => {}));
+			expect(settingIn(database, SECRETS_SCRUB_PENDING)).toBeUndefined();
+			database.pragma('secure_delete = ON');
+			database.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run('https://hooks.slack.com/services/T/B/LIVE-ADDRESS-2928-25', hook.id);
+			database.pragma('wal_checkpoint(TRUNCATE)');
+			const marked: string[] = [];
+			const mark = database.prepare('SELECT value FROM settings WHERE key = ?');
+
+			const lines = linesOf(() => sealStoredSecretsAtStart(database, () => marked.push(String((mark.get(SECRETS_SCRUB_PENDING) as { value: string } | undefined)?.value))));
+
+			expect(isSealed(database.prepare('SELECT url FROM webhooks WHERE id = ?').pluck().get(hook.id))).toBe(true);
+			expect(bytesOf(path).includes('LIVE-ADDRESS-2928-25')).toBe(false);
+			expect(lines.filter((line) => line.includes('Sealed 1 stored secret(s) held in plain') && line.includes('1 webhook address(es)'))).toHaveLength(1);
+			// Scrubbed before the server listens: the marker this start set is gone, nothing left for later.
+			expect(settingIn(database, SECRETS_SCRUB_PENDING)).toBeUndefined();
+			expect(marked).toEqual([]);
+		});
+
+		it("2928 case 27: this release's first start deletes the stale temporary copies, with nothing to seal; a later one that seals an address leaves them (R21; the code review, C4)", () => {
+			const user = makeUser({ role: 'admin' });
+			const board = makeBoard({ owner: user }).board;
+			const { database, path } = scratch();
+			// Card 2898's first sealing ran on an earlier release: its marker there, this release's not yet.
+			database.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('smtp_pass', 'sealed on an earlier release')").run();
+			linesOf(() => sealStoredSecretsAtStart(database, () => {}));
+			expect(settingIn(database, 'stored_secrets_first_sealed')).toMatch(/^\d{4}-/);
+			database.prepare("DELETE FROM settings WHERE key = 'webhook_addresses_scrub_marked'").run();
+			const temps = [`${path}.backup-temp`, `${path}.backup-temp-cleared`, `${path}.backup-temp-wal`, `${path}.backup-temp-cleared-journal`];
+			for (const temp of temps) writeFileSync(temp, 'stale copy holding https://hooks.example.test/plain-27');
+
+			linesOf(() => sealStoredSecretsAtStart(database, () => {}));
+
+			expect(settingIn(database, 'webhook_addresses_scrub_marked')).toMatch(/^\d{4}-/);
+			expect(temps.filter((temp) => existsSync(temp))).toEqual([]);
+			// A later start that seals an address leaves a copy made since.
+			for (const temp of temps) writeFileSync(temp, 'a copy a backup is making');
+			database.prepare("INSERT INTO webhooks (board_id, url, set_by) VALUES (?, 'https://hooks.example.test/plain-27b', ?)").run(board.id, user.id);
+			linesOf(() => sealStoredSecretsAtStart(database, () => {}));
+			expect(isSealed(database.prepare("SELECT url FROM webhooks WHERE url <> '' ORDER BY id DESC").pluck().get())).toBe(true);
+			expect(temps.filter((temp) => existsSync(temp))).toEqual(temps);
+		});
+
+		it("2928 case 27b: every start deletes a crashed import's stale upload and its journal files, and nothing else beside the database (the code review, C4)", () => {
+			const { database, path } = scratch();
+			// A start that is neither this release's first nor a first sealing.
+			linesOf(() => sealStoredSecretsAtStart(database, () => {}));
+			const uploads = [`${path}.restore-temp`, `${path}.restore-temp-journal`, `${path}.restore-temp-wal`, `${path}.restore-temp-shm`];
+			const kept = [`${path}.backup-temp`, join(folder, 'restore-temp-elsewhere.db')];
+			for (const each of [...uploads, ...kept]) writeFileSync(each, 'a whole backup, left by a crashed import');
+
+			linesOf(() => sealStoredSecretsAtStart(database, () => {}));
+
+			expect(uploads.filter((each) => existsSync(each))).toEqual([]);
+			expect(kept.filter((each) => existsSync(each))).toEqual(kept);
+			expect(existsSync(path)).toBe(true);
+		});
+
+		/** A reader holding the log, so that a scrub cannot finish and its marker stays to be seen. */
+		function holdTheLog(path: string): () => void {
+			const reader = new Database(path);
+			opened.push(reader);
+			reader.prepare('BEGIN').run();
+			reader.prepare('SELECT COUNT(*) FROM settings').get();
+			return () => {
+				reader.prepare('COMMIT').run();
+				reader.close();
+			};
+		}
+		const oldLine = (database: Database.Database, message: string, meta: string | null) =>
+			database
+				.prepare("INSERT INTO system_logs (timestamp, level, context, message, meta, user_id, ip) VALUES ('2026-09-01 10:00:00', 'ERROR', 'Webhooks', ?, ?, NULL, NULL)")
+				.run(message, meta);
+
+		it.each([
+			{ row: 'the first start of this release marks the scrub, with nothing to seal', start: 'first' },
+			{ row: 'a later start with nothing to seal does not', start: 'later' }
+		])('2928 case 26: $row (R20)', ({ start }) => {
+			const { database, path } = scratch();
+			if (start === 'later') {
+				linesOf(() => sealStoredSecretsAtStart(database, () => {}));
+				expect(settingIn(database, SECRETS_SCRUB_PENDING)).toBeUndefined();
+			}
+			const release = holdTheLog(path);
+
+			linesOf(() => sealStoredSecretsAtStart(database, () => {}));
+
+			expect(settingIn(database, 'webhook_addresses_scrub_marked')).toMatch(/^\d{4}-/);
+			if (start === 'first') expect(settingIn(database, SECRETS_SCRUB_PENDING)).toMatch(/^\d{4}-/);
+			else expect(settingIn(database, SECRETS_SCRUB_PENDING)).toBeUndefined();
+			release();
+		});
+
+		it.each([
+			{ row: 'a line it rewrites marks the scrub', fail: false },
+			{ row: 'one it cannot rewrite is a WARN naming GET /api/logs, and the start goes on', fail: true }
+		])('2928 case 29: the old log lines at start: $row (R12)', ({ fail }) => {
+			const { database, path } = scratch();
+			linesOf(() => sealStoredSecretsAtStart(database, () => {}));
+			oldLine(database, 'Webhook delivery failed for hook 4 → https://hooks.slack.com/services/T/B/OLD-LINE-2928-29', '{"error":"fetch failed"}');
+			if (fail) {
+				database.exec("CREATE TRIGGER hold_the_log BEFORE UPDATE ON system_logs BEGIN SELECT RAISE(ABORT, 'held for the test'); END;");
+				database.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('smtp_pass', 'kept plain 29')").run();
+			}
+			const release = fail ? () => {} : holdTheLog(path);
+
+			const lines = linesOf(() => sealStoredSecretsAtStart(database, () => {}));
+
+			const message = database.prepare("SELECT message FROM system_logs WHERE message LIKE 'Webhook delivery failed for hook 4%'").pluck().get() as string;
+			if (fail) {
+				// The start went on: the rest was sealed.
+				expect(isSealed(settingIn(database, 'smtp_pass'))).toBe(true);
+				expect(message).toContain('OLD-LINE-2928-29');
+				const warned = lines.filter((line) => line.includes("The old log lines that quoted a webhook's whole address could not be masked"));
+				expect(warned).toHaveLength(1);
+				expect(warned[0]).toContain('GET /api/logs');
+				expect(warned[0]).not.toContain('OLD-LINE');
+			} else {
+				expect(message).toBe('Webhook delivery failed for hook 4 → hooks.slack.com');
+				// Marked with the sealing, and held up here by the reader: the scrub has the old text to take out.
+				expect(settingIn(database, SECRETS_SCRUB_PENDING)).toMatch(/^\d{4}-/);
+			}
+			release();
+		});
+
 		it('keeps the marker while a reader holds the log and says so at ERROR naming Admin › Vacuum; a pending scrub is tried after the start, in the background, until it succeeds', () => {
 			const { database, path } = scratch();
 			database.prepare("INSERT INTO settings (key, value) VALUES ('smtp_pass', 'LIVE-PLAIN-TEXT-4b2e')").run();
@@ -729,5 +885,59 @@ describe('the two signing keys, stored sealed', () => {
 		const token = issueFormToken();
 		resetFormSecretCache();
 		expect(verifyFormToken(token)).toBe(true);
+	});
+});
+
+// ─── Card 2928, slice 2: the start's sweep and the old log lines ────────────
+
+describe("a webhook's address at the start, and the old log lines (card 2928)", () => {
+	const rowOf = (id: number) =>
+		db.select({ url: webhooks.url, receiver: webhooks.receiver, secret: webhooks.secret }).from(webhooks).where(eq(webhooks.id, id)).get()!;
+
+	it.each([
+		{ row: 'with no receiver', receiver: '', url: 'https://Hooks.Slack.com:443/services/T/B/plain-23', expected: 'https://hooks.slack.com' },
+		{ row: 'with a stale receiver, worked out again (R6)', receiver: 'https://stale.example.test', url: 'https://hooks.slack.com/services/T/B/plain-23', expected: 'https://hooks.slack.com' },
+		{ row: 'that is no http address, its receiver empty', receiver: 'https://stale.example.test', url: 'ftp://hooks.example.test/plain-23', expected: '' }
+	])('23: the sweep seals a plain address $row, and a plain secret beside it bound to it; then nothing is left to seal', ({ receiver, url, expected }) => {
+		const user = makeUser({ role: 'admin' });
+		const hook = makeWebhook(makeBoard({ owner: user }).board, { secret: 'whsec-23' });
+		db.update(webhooks).set({ url, receiver }).where(eq(webhooks.id, hook.id)).run();
+		db.delete(settings).where(eq(settings.key, 'request_form_secret')).run();
+		expect(anythingSealed(sqlite)).toBe(false);
+
+		const counts = sealPlainSecrets(sqlite);
+
+		expect(counts).toMatchObject({ webhooks: 1, webhookAddresses: 1, secretsBesideNoAddress: [] });
+		const row = rowOf(hook.id);
+		expect(row.receiver).toBe(expected);
+		expect(isSealed(row.url)).toBe(true);
+		expect(openedUrl({ id: hook.id, boardId: hook.boardId, url: row.url, receiver: expected }).value).toBe(url);
+		expect(openStored(row.secret, webhookSecretAad(hook.id, hook.boardId, url)).value).toBe('whsec-23');
+		expect(anythingSealed(sqlite)).toBe(true);
+		expect(sealPlainSecrets(sqlite)).toMatchObject({ webhooks: 0, webhookAddresses: 0 });
+	});
+
+	it.each([
+		{ row: 'a line naming an address: the host alone, the meta replaced whole', message: 'Webhook delivery failed for hook 3 → https://hooks.slack.com/services/T/B/OLD-28', meta: '{"error":"fetch failed"}', expected: 'Webhook delivery failed for hook 3 → hooks.slack.com' },
+		{ row: 'a line whose meta quotes an address with a user name', message: 'Webhook delivery failed for hook 4 → https://u:pw-28@hooks.example.test/OLD-28', meta: '{"error":"x","url":"https://u:pw-28@hooks.example.test/OLD-28"}', expected: 'Webhook delivery failed for hook 4 → hooks.example.test' },
+		{ row: 'a line whose address is no URL', message: 'Webhook delivery failed for hook 5 → not a url OLD-28', meta: null, expected: 'Webhook delivery failed for hook 5 → an address that is not a URL' }
+	])("28: the old log lines that quoted a webhook's whole address are masked, in the live log and in a backup's copy, once: $row (R16)", ({ message, meta, expected }) => {
+		const insert = sqlite.prepare("INSERT INTO system_logs (timestamp, level, context, message, meta) VALUES ('2026-09-01 10:00:00', 'ERROR', 'Webhooks', ?, ?)");
+		insert.run(message, meta);
+		const linesNow = () => sqlite.prepare("SELECT message, meta FROM system_logs WHERE message LIKE 'Webhook delivery failed for hook %'").all() as { message: string; meta: string | null }[];
+
+		// A backup's copy, made before the live log is masked: masked in the copy (withoutSecrets runs the rule).
+		const copy = new Database(generateBackupData());
+		expect(copy.prepare("SELECT message, meta FROM system_logs WHERE message LIKE 'Webhook delivery failed for hook %'").all()).toEqual([
+			{ message: expected, meta: '{"error":"[masked]"}' }
+		]);
+		copy.close();
+
+		expect(maskSecretsInLog(sqlite)).toBe(1);
+		expect(linesNow()).toEqual([{ message: expected, meta: '{"error":"[masked]"}' }]);
+		expect(JSON.stringify(linesNow())).not.toContain('OLD-28');
+		// A second run changes nothing.
+		expect(maskSecretsInLog(sqlite)).toBe(0);
+		expect(linesNow()).toEqual([{ message: expected, meta: '{"error":"[masked]"}' }]);
 	});
 });

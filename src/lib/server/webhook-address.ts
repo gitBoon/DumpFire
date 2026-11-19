@@ -379,6 +379,40 @@ export function addressRefusal(url: URL): AddressRefusal | null {
 	return why === null ? null : { kind: 'inside', reason: why };
 }
 
+/** Said to a webhook url that is not well-formed text (card 2928, R18). */
+export const NOT_WELL_FORMED = 'Webhook url must be well-formed text: it holds a character that is broken in half.';
+
+/**
+ * The host of a webhook's address, for a mail or a line: never the path, the
+ * query or anything before the host. Here, not in webhooks.ts, since card 2928:
+ * stored-secrets.ts reads it, and imports nothing from webhooks.ts.
+ */
+export function hostOf(address: string): string {
+	try {
+		return new URL(address).host || 'an address with no host';
+	} catch {
+		return 'an address that is not a URL';
+	}
+}
+
+/**
+ * The receiver an address sends to, as the create's refusal compares it (card
+ * 2752's code review, CS2): its origin, the scheme, the host (in lower case, a
+ * name in punycode) and the port, a default port dropped, as `URL` reads it.
+ * Null for an address that is not an http or https URL. Another path, a query,
+ * a fragment, the case of the host or `:443` written out reach the same
+ * receiver. Stored beside the sealed address as `webhooks.receiver` (card
+ * 2928), '' where this is null.
+ */
+export function receiverOf(address: string): string | null {
+	try {
+		const url = new URL(address);
+		return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * The `url` of a webhook's body, as card 2117's reader reads it, refused 400
  * if `addressRefusal` refuses it (registration, decision 4). A value equal to
@@ -388,6 +422,9 @@ export function addressRefusal(url: URL): AddressRefusal | null {
 export function readWebhookUrl<R extends UrlRule>(body: RequestBody, rule: R): string | undefined {
 	const url = readUrl(body, 'url', rule) as string | null | undefined;
 	if (typeof url !== 'string' || (rule.keep !== undefined && url === rule.keep)) return url ?? undefined;
+	// One string for the sealed address, its secret's binding, the restore's HMAC and its receiver (card 2928,
+	// R18): text with a lone surrogate would be encoded differently by each. Said without quoting it.
+	if (!url.isWellFormed()) throw error(400, NOT_WELL_FORMED);
 	const refusal = addressRefusal(new URL(url));
 	if (refusal?.kind === 'credentials') throw error(400, 'Webhook url must not carry a user name or password');
 	if (refusal) throw error(400, `Webhook url points inside the network: ${refusal.reason}`);

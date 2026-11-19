@@ -4236,15 +4236,25 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 	},
 	'src/lib/server/backup-secrets.ts#clearSecrets': {
 		does: 'switches off only',
-		writes: 1,
-		why: "Blanks the signing secrets in a backup's working copy and switches those webhooks off; never the running database (card 2169)."
+		writes: 2,
+		why:
+			"Blanks the signing secrets in a backup's working copy and switches those webhooks off; never the running database (card 2169). " +
+			'And blanks every address there the same way, in a statement of its own (card 2928).'
 	},
 	'src/lib/server/backup-secrets.ts#fillSecretGaps': {
 		does: 'sets',
-		writes: 1,
+		writes: 2,
 		why:
 			"An import's restore refills a secret from this server's own, for the same webhook only, and sets it on or off as the backup had it, never on where it is held off here or in the restored row, whose hold it keeps (card 2752). " +
+			'The second write switches on a webhook whose address alone the backup left out, once that address is filled and opens, after the holds are carried (card 2928, R19). ' +
 			'It runs behind the import’s confirmation of the password (POST /api/admin/import/confirm, on STEP_UP_ACTIONS); its importers are pinned (WEBHOOK_WRITER_IMPORTERS).'
+	},
+	'src/lib/server/backup-secrets.ts#fillAddressGaps': {
+		does: 'sets',
+		writes: 1,
+		why:
+			"An import's restore refills an address a backup left out from this server's own, sealed, byte for byte, for the same webhook only (its id, board, receiver, setter and the backup's match of the address), switching nothing on (card 2928). " +
+			'Behind the same confirmation of the password as fillSecretGaps; pinned to the restore.'
 	},
 	'src/lib/server/webhooks.ts#switchOffHeld': {
 		does: 'switches off only',
@@ -4260,7 +4270,9 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 	'src/lib/server/stored-secrets.ts#sealPlainSecrets': {
 		does: 'sets',
 		writes: 1,
-		why: 'Seals, at every start, each webhook secret held in plain: the same secret, sealed in place, matched on the plain value it read (card 2898, decision 6).'
+		why:
+			'Seals, at every start, each webhook secret held in plain: the same secret, sealed in place, matched on the plain value it read (card 2898, decision 6); ' +
+			'and each address held in plain with its receiver worked out again, in the same statement (card 2928).'
 	},
 	'src/lib/server/stored-secrets.ts#resealStoredSecrets': {
 		does: 'sets',
@@ -4269,8 +4281,16 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 	},
 	'src/lib/server/stored-secrets.ts#forgetStoredSecrets': {
 		does: 'switches off only',
+		writes: 2,
+		why:
+			"Forgets, at a start with no key check stored and nothing sealed opening, each webhook's secret as a backup does: blanked, switched off and listed (card 2898, decision 10); " +
+			'and each webhook address the same way, in a second statement (card 2928).'
+	},
+	'src/lib/server/stored-secrets.ts#forgetSecretsBesideNoAddress': {
+		does: 'switches off only',
 		writes: 1,
-		why: "Forgets, at a start with no key check stored and nothing sealed opening, each webhook's secret as a backup does: blanked, switched off and listed (card 2898, decision 10)."
+		why:
+			"Forgets, at every start that finds one, each webhook secret held in plain beside an address that is '' or does not open, which is never sealed against it: blanked, switched off and listed (card 2928, R5; its code review, C2)."
 	}
 };
 
@@ -4281,6 +4301,8 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
  */
 const WEBHOOK_WRITER_CALLERS: Record<string, readonly string[]> = {
 	'src/lib/server/backup-secrets.ts#fillSecretGaps': ['src/lib/server/db/restore.ts#restoreInOneSnapshot'],
+	// Card 2928: the restore alone fills an address a backup left out.
+	'src/lib/server/backup-secrets.ts#fillAddressGaps': ['src/lib/server/db/restore.ts#restoreInOneSnapshot'],
 	// Card 2923 (S3): the start-up pass and the restore (a working copy included, its code review's S3).
 	'src/lib/server/webhooks.ts#holdUnheldOfGoneSetters': [
 		'src/lib/server/startup-checks.ts#holdAlreadyOffWebhooksAtStart',
@@ -4291,7 +4313,9 @@ const WEBHOOK_WRITER_CALLERS: Record<string, readonly string[]> = {
 	// Card 2898 (E15): the start alone seals, seals again and forgets the stored secrets.
 	'src/lib/server/stored-secrets.ts#sealPlainSecrets': ['src/lib/server/startup-checks.ts#sealStoredSecretsAtStart'],
 	'src/lib/server/stored-secrets.ts#resealStoredSecrets': ['src/lib/server/startup-checks.ts#startWithMfaKey'],
-	'src/lib/server/stored-secrets.ts#forgetStoredSecrets': ['src/lib/server/startup-checks.ts#startWithMfaKey']
+	'src/lib/server/stored-secrets.ts#forgetStoredSecrets': ['src/lib/server/startup-checks.ts#startWithMfaKey'],
+	// Card 2928 (R5; its code review, C2): the start's sealing step alone.
+	'src/lib/server/stored-secrets.ts#forgetSecretsBesideNoAddress': ['src/lib/server/startup-checks.ts#sealStoredSecretsAtStart']
 };
 
 /** The made-up files of the rule's own examples (card 2702), in place of auth.ts and deletes.ts. */
@@ -4318,26 +4342,34 @@ const EXAMPLE_WRITERS: Record<string, WebhookWriter> = {
 const WEBHOOK_NAME_STRINGS: Record<string, { count: number; why: string }> = {
 	'src/lib/server/db/schema.ts#(top level)': { count: 1, why: "The table's declaration, sqliteTable('webhooks', …)." },
 	'src/lib/server/backup-secrets.ts#clearSecrets': {
-		count: 1,
-		why: "hasColumns(copy, 'webhooks', …): whether a backup's working copy has the columns before its secrets are blanked."
+		count: 3,
+		why:
+			"hasColumns(copy, 'webhooks', …): whether a backup's working copy has the columns before its secrets are blanked; " +
+			'and twice for its addresses, whether the copy has the columns to read who was on and to blank them (card 2928).'
 	},
 	'src/lib/server/backup-secrets.ts#readSecretsHere': {
-		count: 4,
+		count: 5,
 		why:
 			"hasColumns(live, 'webhooks', …) three times, whether this server has the columns before its secrets are read, the hold's of card 2752 among them; " +
-			"and the type SecretsHere['webhooks']."
+			"the type SecretsHere['webhooks']; and once whether it has the columns before its addresses are read (card 2928)."
 	},
 	'src/lib/server/backup-secrets.ts#fillSecretGaps': {
-		count: 3,
-		why: "hasColumns(live, 'webhooks', …) three times: whether this server has the columns before a secret is refilled, the hold's of card 2752 among them."
+		count: 5,
+		why:
+			"hasColumns(live, 'webhooks', …) three times: whether this server has the columns before a secret is refilled, the hold's of card 2752 among them; " +
+			'and twice before a webhook whose address alone was left out is switched on, its hold column among them (card 2928).'
+	},
+	'src/lib/server/backup-secrets.ts#fillAddressGaps': {
+		count: 2,
+		why: "hasColumns(live, 'webhooks', …) twice: whether this server has the columns before an address is refilled, the setter's among them (card 2928)."
 	},
 	'src/lib/server/backup-secrets.ts#withHeldApart': {
 		count: 1,
 		why: "hasColumns(database, 'webhooks', …): whether the database has the hold column before the webhooks held for good are set apart from those to enter (card 2923's code review, E1)."
 	},
 	'src/lib/server/backup-secrets.ts#secretsToEnter': {
-		count: 1,
-		why: "hasColumns(database, 'webhooks', …): whether the database has the columns before the webhooks left without a secret are read."
+		count: 2,
+		why: "hasColumns(database, 'webhooks', …): whether the database has the columns before the webhooks left without a secret are read, and those without an address (card 2928)."
 	},
 	'src/lib/server/db/restore.ts#switchOffOutside': { count: 1, why: "hasColumns('webhooks', 'active'): whether the restored copy has the column before it is switched off." },
 	'src/lib/server/webhooks.ts#(top level)': { count: 1, why: "createLogger('Webhooks'): the label of the module's log lines (the name in another case, which SQLite reads as the same)." },
@@ -4345,7 +4377,12 @@ const WEBHOOK_NAME_STRINGS: Record<string, { count: number; why: string }> = {
 	// Card 2898 (E15): whether a database has the columns before its stored secrets are read, sealed or forgotten.
 	'src/lib/server/stored-secrets.ts#anythingSealed': { count: 1, why: "hasColumns(database, 'webhooks', 'secret'): whether a webhook's secret is to be counted as sealed." },
 	'src/lib/server/stored-secrets.ts#storedSecretsAtStart': { count: 1, why: "hasColumns(database, 'webhooks', …): whether the webhooks' sealed secrets are to be read at start." },
-	'src/lib/server/stored-secrets.ts#sealPlainSecrets': { count: 1, why: "hasColumns(database, 'webhooks', …): whether the webhooks' plain secrets are to be sealed." },
+	// Card 2928: whether a database has the receiver beside each sealed address (migration 0073).
+	'src/lib/server/stored-secrets.ts#receiverColumn': { count: 1, why: "hasColumns(database, 'webhooks', 'receiver'): whether a database's webhooks have the receiver column, else '' for each." },
+	'src/lib/server/stored-secrets.ts#sealPlainSecrets': {
+		count: 2,
+		why: "hasColumns(database, 'webhooks', …): whether the webhooks' plain secrets are to be sealed, and whether they have the receiver their plain addresses are sealed against (card 2928)."
+	},
 	'src/lib/server/stored-secrets.ts#forgetStoredSecrets': { count: 1, why: "hasColumns(database, 'webhooks', …): whether the webhooks' secrets are to be forgotten." },
 	'src/lib/server/stored-secrets.ts#sealedForRestore': { count: 1, why: "name === 'webhooks': which of a backup's tables its webhook rows are, whose plain secrets are sealed as a restore reads them (card 2898, S7)." },
 	'src/lib/server/db/restore.ts#rowsToRestore': { count: 1, why: "name === 'webhooks': the backup's webhook rows, each secret held in plain sealed as it is read (card 2898, S7)." }
@@ -4393,8 +4430,8 @@ const WEBHOOK_SQL_WRITE = new RegExp(
 	'gi'
 );
 
-/** What a switch-off-only writer may set: `active` off, or `secret` blank. */
-const SWITCH_OFF_SQL = /^["`[]?(?:active["`\]]?\s*=\s*0|secret["`\]]?\s*=\s*'')$/i;
+/** What a switch-off-only writer may set: `active` off, or `secret` blank, or `url` blank (card 2928: an address left out, to enter). */
+const SWITCH_OFF_SQL = /^["`[]?(?:active["`\]]?\s*=\s*0|(?:secret|url)["`\]]?\s*=\s*'')$/i;
 
 /** What a switch-off-only writer may also set, to any value, beside `active` off: why and when it was held off (card 2752, E11). */
 const HOLD_SQL = /^["`[]?held_(?:because|at)["`\]]?\s*=\s*\S[\s\S]*$/i;
@@ -4470,6 +4507,15 @@ const WEBHOOK_WALKED = /\.(ts|mts|cts|tsx|js|mjs|cjs|jsx|svelte)$/;
 
 /** What a pinned writer is, in its findings. */
 const SETS_SECRET = "which sets a webhook's secret and switches it on";
+
+/**
+ * What a pinned writer does, as its findings say it, keyed per writer (card 2928's code review, C10):
+ * `fillAddressGaps` sets an address and switches nothing on; any other is said as `SETS_SECRET`.
+ */
+const WHAT_IT_DOES: Record<string, string> = {
+	'src/lib/server/backup-secrets.ts#fillAddressGaps': "which sets a webhook's address and switches nothing on"
+};
+const doesOf = (key: string) => WHAT_IT_DOES[key] ?? SETS_SECRET;
 
 /**
  * Card 2702 for one file under src (plan section 6; code review K1 to K6, K9,
@@ -4549,7 +4595,7 @@ function judgeWebhookWrites(file: string, source: string, writers: Readonly<Reco
 	const reach = (key: string, node: ts.Node, how: string) => {
 		reading.reaches.push(key);
 		const allowed = WEBHOOK_WRITER_CALLERS[key].map(fileOf);
-		if (!allowed.includes(file)) reading.findings.push(`${file}:${line(node)} imports ${nameOf(key)}${how}, ${SETS_SECRET}: only ${allowed.join(', ')} may (card 2702)`);
+		if (!allowed.includes(file)) reading.findings.push(`${file}:${line(node)} imports ${nameOf(key)}${how}, ${doesOf(key)}: only ${allowed.join(', ')} may (card 2702)`);
 	};
 	const naming = (node: ts.Node): void => {
 		const named = moduleNamedBy(node);
@@ -4603,13 +4649,13 @@ function judgeWebhookWrites(file: string, source: string, writers: Readonly<Reco
 			} else if (named.form === 'import()' || named.form === 'require') {
 				reading.reaches.push(key);
 				const how = named.form === 'require' ? 'require()' : named.form;
-				reading.findings.push(`${file}:${line(node)} imports ${fileOf(key)} with ${how}, which holds ${name}, ${SETS_SECRET}: import it by its own name, only in its callers' files (card 2702)`);
+				reading.findings.push(`${file}:${line(node)} imports ${fileOf(key)} with ${how}, which holds ${name}, ${doesOf(key)}: import it by its own name, only in its callers' files (card 2702)`);
 			} else if (named.form === 'export' && ts.isExportDeclaration(node) && !node.isTypeOnly) {
 				const clauseOut = node.exportClause;
 				const exported = !clauseOut || ts.isNamespaceExport(clauseOut) || clauseOut.elements.some((element) => !element.isTypeOnly && (element.propertyName ?? element.name).text === name);
 				if (exported) {
 					reading.reaches.push(key);
-					reading.findings.push(`${file}:${line(node)} re-exports ${name}, ${SETS_SECRET}: no file may (card 2702)`);
+					reading.findings.push(`${file}:${line(node)} re-exports ${name}, ${doesOf(key)}: no file may (card 2702)`);
 				}
 			}
 		}
@@ -4885,7 +4931,7 @@ function judgeWebhookWrites(file: string, source: string, writers: Readonly<Reco
 		const by = keyOf(node);
 		reading.refers.push({ key, by });
 		const callers = WEBHOOK_WRITER_CALLERS[key];
-		if (!callers.includes(by)) reading.findings.push(`${file}:${line(node)} refers to ${nameOf(key)} in ${writerNameOf(node)}, ${SETS_SECRET}: only ${callers.join(', ')} may (card 2702)`);
+		if (!callers.includes(by)) reading.findings.push(`${file}:${line(node)} refers to ${nameOf(key)} in ${writerNameOf(node)}, ${doesOf(key)}: only ${callers.join(', ')} may (card 2702)`);
 	};
 	/** A reference to a pinned writer's module as a namespace: its writer by name, or another of its names; never the module whole. */
 	const judgePinnedSpace = (key: string, reference: ts.Identifier) => {
@@ -4899,7 +4945,7 @@ function judgeWebhookWrites(file: string, source: string, writers: Readonly<Reco
 			if (parent.argumentExpression.text === name) refer(key, parent);
 			return;
 		}
-		reading.findings.push(`${file}:${line(reference)} uses ${fileOf(key)} whole, which holds ${name}, ${SETS_SECRET}: import it by its own name (card 2702)`);
+		reading.findings.push(`${file}:${line(reference)} uses ${fileOf(key)} whole, which holds ${name}, ${doesOf(key)}: import it by its own name (card 2702)`);
 	};
 
 	/**
@@ -5144,6 +5190,8 @@ describe('the webhooks table is written only by the writers listed, each as list
 		const THROUGH_SCHEMA = "reaches the webhooks table through Drizzle's schema";
 		const TAKEN = "takes webhooks out of Drizzle's schema";
 		const refill = `which sets a webhook's secret and switches it on: only src/lib/server/db/restore.ts may (card 2702)`;
+		/** Card 2928's address refill, said as what it does (its code review, C10). */
+		const addressRefill = `which sets a webhook's address and switches nothing on: only src/lib/server/db/restore.ts may (card 2702)`;
 		const referred = (at: number, name: string, file: string) =>
 			`${file}:${at} refers to fillSecretGaps in ${name}, which sets a webhook's secret and switches it on: only src/lib/server/db/restore.ts#restoreInOneSnapshot may (card 2702)`;
 		const ran = (at = 4, name = 'reopen', file = EXAMPLE) => `${file}:${at} ${RUNS_TEXT} in ${name} (card 2702)`;
@@ -5351,7 +5399,9 @@ describe('the webhooks table is written only by the writers listed, each as list
 			expect(judgeWebhookWrites(EXAMPLE, importing, WEBHOOK_WRITERS).findings).toEqual([
 				`${EXAMPLE}:1 imports fillSecretGaps, ${refill}`,
 				`${EXAMPLE}:2 imports fillSecretGaps, ${refill}`,
-				`${EXAMPLE}:3 imports fillSecretGaps as a namespace, ${refill}`
+				`${EXAMPLE}:3 imports fillSecretGaps as a namespace, ${refill}`,
+				// And card 2928's address refill, held in the same module.
+				`${EXAMPLE}:3 imports fillAddressGaps as a namespace, ${addressRefill}`
 			]);
 		});
 
@@ -5413,13 +5463,20 @@ describe('the webhooks table is written only by the writers listed, each as list
 				source: ["import schema = require('$lib/server/db/schema');", 'export const reopen = () => db.update(schema.webhooks).set({}).run();'].join('\n'),
 				found: [`${EXAMPLE}:1 imports ${WEBHOOK_SCHEMA} with require(): import webhooks by its own name (card 2702)`, unlisted('updates webhooks', 2)]
 			},
-			{ form: 'backup-secrets by import x = require()', file: EXAMPLE, source: "import secrets = require('./backup-secrets');", found: [`${EXAMPLE}:1 imports fillSecretGaps with import x = require(), ${refill}`] },
+			{
+				form: 'backup-secrets by import x = require()',
+				file: EXAMPLE,
+				source: "import secrets = require('./backup-secrets');",
+				// And card 2928's address refill, pinned the same way.
+				found: [`${EXAMPLE}:1 imports fillSecretGaps with import x = require(), ${refill}`, `${EXAMPLE}:1 imports fillAddressGaps with import x = require(), ${addressRefill}`]
+			},
 			{
 				form: 'backup-secrets by require()',
 				file: EXAMPLE,
 				source: "const secrets = require('$lib/server/backup-secrets');",
 				found: [
-					`${EXAMPLE}:1 imports src/lib/server/backup-secrets.ts with require(), which holds fillSecretGaps, which sets a webhook's secret and switches it on: import it by its own name, only in its callers' files (card 2702)`
+					`${EXAMPLE}:1 imports src/lib/server/backup-secrets.ts with require(), which holds fillSecretGaps, which sets a webhook's secret and switches it on: import it by its own name, only in its callers' files (card 2702)`,
+					`${EXAMPLE}:1 imports src/lib/server/backup-secrets.ts with require(), which holds fillAddressGaps, which sets a webhook's address and switches nothing on: import it by its own name, only in its callers' files (card 2702)`
 				]
 			},
 			// K12: db/schema.ts is judged: its declaration and its columns pass; any other name for the table is found.

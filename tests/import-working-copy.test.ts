@@ -45,7 +45,7 @@ import { issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/serv
 import { api, routeMethods } from './helpers/api';
 import { importConfirmation, makeUser, resetDb, startedSinceAlreadyOffHeld } from './helpers/fixtures';
 import { afterEachTimestampCheck } from './helpers/timestamps';
-import { readOpened } from './helpers/reads';
+import { readOpened, readOpenedUrl } from './helpers/reads';
 
 const REAL_MIGRATIONS = join(process.cwd(), 'drizzle');
 
@@ -97,7 +97,11 @@ function contentsOf(database: Database.Database): Record<string, string[]> {
 		database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[]
 	).map((t) => t.name);
 	const opened = (name: string, row: Record<string, unknown>): Record<string, unknown> => {
-		if (name === 'webhooks') return { ...row, secret: readOpened('webhooks', row.id as number, database) };
+		if (name === 'webhooks') {
+			// The address opened too, and its receiver, which a restore works out again from it, left out (card 2928).
+			const { receiver: _receiver, ...rest } = row;
+			return { ...rest, url: readOpenedUrl(row.id as number, database), secret: readOpened('webhooks', row.id as number, database) };
+		}
 		if (name === 'settings' && (row.key === 'smtp_pass' || row.key === 'backup_config')) return { ...row, value: readOpened('settings', row.key, database) };
 		return row;
 	};
@@ -406,9 +410,16 @@ describe('restoring as a working copy', () => {
 		);
 		expect(rowsOf(live, 'report_schedules').map((row) => row.id)).toEqual([1, 2, 3, 4]);
 		// Each secret the backup held in plain is sealed as it was read (card 2898), and opens to it.
+		// And each address (card 2928), its receiver worked out again from it.
 		const withSecretsOpened = (database: Database.Database) =>
-			rowsOf(database, 'webhooks').map((row) => ({ ...row, secret: readOpened('webhooks', row.id as number, database) }));
+			rowsOf(database, 'webhooks').map(({ receiver: _receiver, ...row }) => ({
+				...row,
+				url: readOpenedUrl(row.id as number, database),
+				secret: readOpened('webhooks', row.id as number, database)
+			}));
 		expect(rowsOf(live, 'webhooks').every((row) => String(row.secret).startsWith('dfsealed:1:'))).toBe(true);
+		expect(rowsOf(live, 'webhooks').every((row) => String(row.url).startsWith('dfsealed:1:'))).toBe(true);
+		expect(rowsOf(live, 'webhooks').map((row) => row.receiver)).toEqual(['https://hooks.example.test', 'https://hooks.example.test', expect.any(String)]);
 		expect(withSecretsOpened(live)).toEqual(withSecretsOpened(backup).map((row) => ({ ...row, active: 0 })));
 		expect(rowsOf(live, 'webhooks').map((row) => row.id)).toEqual([1, 2, 3]);
 
@@ -464,7 +475,8 @@ describe('restoring as a working copy', () => {
 		]);
 		expect(result.secrets).toEqual({
 			kept: { mailPassword: false, destinations: [], webhooks: [] },
-			toEnter: { mailPassword: false, destinations: [], webhooks: ARMED_HOOKS_TO_ENTER }
+			// And their addresses, which a backup leaves out too (card 2928).
+			toEnter: { mailPassword: false, destinations: [], webhooks: ARMED_HOOKS_TO_ENTER, webhookAddresses: ARMED_HOOKS_TO_ENTER }
 		});
 		// No list written: its webhooks are off on purpose.
 		expect(settingsIn(live)['webhook_secrets_left_out']).toBeUndefined();
@@ -1041,7 +1053,9 @@ describe('through the route', () => {
 		expect(response.body.secretsToEnter).toBe(
 			'To enter again, because a backup does not hold them: the signing secret(s) of webhook(s) 1 (board "A"), 2 ' +
 				`(board "A"), 3 (board "B"), which stay switched off until the board's owner or an administrator sets each ` +
-				'one and switches it on with PUT /api/v1/webhooks/{id}.'
+				'one and switches it on with PUT /api/v1/webhooks/{id}; the address(es) of webhook(s) 1 (board "A"), 2 (board "A"), 3 (board "B"), ' +
+				"which stay switched off until the board's owner or an administrator sends each one its url (and its secret) with active true " +
+				'in PUT /api/v1/webhooks/{id}.'
 		);
 		expect(response.body).not.toHaveProperty('secretsKept');
 		// The working copy's sentence is still the last thing it says.

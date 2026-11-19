@@ -1222,7 +1222,8 @@ const MIRRORS: Record<string, Mirror> = {
 			heldBecause: 'presentWebhook leaves it out for every caller: pausedBecause says it in words (card 2752)',
 			heldAt: 'presentWebhook leaves it out for every caller, with heldBecause (card 2752)',
 			setByKey: 'presentWebhook leaves it out for every caller: the key that last set the webhook, which card 2893 reads',
-			setWithKey: 'presentWebhook leaves it out for every caller: whether a key set the webhook, which card 2893 reads'
+			setWithKey: 'presentWebhook leaves it out for every caller: whether a key set the webhook, which card 2893 reads',
+			receiver: 'presentWebhook answers an allowlist of fields, and this is not on it: the plain receiver beside the sealed address, for lines, mails and the held-off rule (card 2928, R1)'
 		},
 		sometimesAbsent: {
 			secret: 'presentWebhook leaves it out unless the caller is the board owner or an administrator, or has just created the webhook',
@@ -2917,7 +2918,8 @@ describe('what a route answers, against the schema the document gives for it', (
 		// board's owners; breaking, five points since its code review (S1, S2, S5, S6), and a sixth for card 2898's sealed
 		// webhook secrets, which ship in the same release.
 		const held = note.slice(note.indexOf('**Changed on 2026-11-18 (version 1.15.0), breaking.**'), note.indexOf('**Changed on 2026-11-18 (version 1.14.0), breaking.**'));
-		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6]);
+		// And a seventh for card 2928's sealed webhook urls (case 46).
+		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7]);
 		for (const words of [
 			"Ending an account's access also holds the webhooks it set that were switched off without a hold, and mails the board's owners (card 2923)",
 			"(1) a webhook switched off without a hold (by PUT, or by a restore kept apart) whose setter then has their password reset, has their two-step sign-in reset (on the server's host, unless run with --keep-api-keys), uses an invite, ends their keys on their own password change, is disabled or is deleted is held as setter access ended",
@@ -2929,10 +2931,18 @@ describe('what a route answers, against the schema the document gives for it', (
 			"(5) webhook secrets are stored sealed, under a key derived from the server's MFA key and bound to the webhook's id, board and url (card 2898)",
 			'is never delivered, neither unsigned nor with that stored text',
 			"a PUT that sends secret for such a webhook always replaces it, '' clearing it to unsigned",
-			'(6) nothing else changed: no operation, field or schema.'
+			"(6) webhook urls are stored sealed too, bound to the webhook's id, board and receiver (card 2928)",
+			"a backup holds no url: a restore onto the server that made it puts each back, and any other gives url '' until it is entered",
+			'a PUT that switches such a webhook on must send url in the same request (400 otherwise)',
+			'(7) nothing else changed: no operation, field or schema.'
 		]) {
 			expect(held, words).toContain(words);
 		}
+		// Card 2928 (case 46, R9): the url may be '' and is no longer format uri; lastDelivery survives a re-seal.
+		const webhook = res.body.components.schemas.Webhook;
+		expect(webhook.properties.url).not.toHaveProperty('format');
+		expect(webhook.properties.url.description).toContain("a uri, or '' where it must be entered again");
+		expect(webhook.properties.lastDelivery.description).toContain('The same url sealed again (a change of the server\'s key, a restore) is the same url, and keeps its result');
 
 		// The 1.14.0 note (card 2915): a two-step reset ends the account's keys and switches off its webhooks; breaking.
 		const resets = note.slice(note.indexOf('**Changed on 2026-11-18 (version 1.14.0), breaking.**'), note.indexOf('**Changed on 2026-11-18 (version 1.13.1).**'));

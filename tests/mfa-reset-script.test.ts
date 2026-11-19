@@ -304,6 +304,9 @@ describe('scripts/mfa-reset.mjs', () => {
 		// 2894's code review, CS1); and the settings the holder is recorded as having set (S1).
 		expect(ran.stdout).toContain(`Ended 2 API key(s); the 1 still working: ${live[0].name} (made ${live[0].createdAt.slice(0, 10)}).`);
 		expect(ran.stdout).toContain(`Switched off 1 webhook(s) they set up: Ops board, to hooks.example.test (made ${hook.createdAt.slice(0, 10)}).`);
+		// Card 2928, case 11: each address is stored sealed; the host is its stored receiver's, never the envelope's.
+		expect(sqlite.prepare('SELECT url FROM webhooks WHERE id = ?').pluck().get(hook.id)).toMatch(/^dfsealed:1:/);
+		expect(ran.stdout).not.toContain('dfsealed');
 		// Card 2923 (S2): the one held listed apart, by board, host and day; and the owners are the operator's to tell.
 		expect(ran.stdout).toContain(
 			`Held 1 webhook(s) they set up that were already switched off: Paused board, to paused.example.test (made ${pausedHook.createdAt.slice(0, 10)}); ` +
@@ -465,7 +468,7 @@ describe('scripts/mfa-reset.mjs', () => {
 		process.env.LOG_LEVEL = 'WARN';
 		const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		try {
-			const hook = (id: number): SwitchedOff => ({ id, boardId: 100 + (id % 3), setBy: 7, setByKey: null, setWithKey: true, url: `https://x.example.test/${id}`, hold: 'setter access ended' });
+			const hook = (id: number): SwitchedOff => ({ id, boardId: 100 + (id % 3), setBy: 7, setByKey: null, setWithKey: true, receiver: 'https://x.example.test', hold: 'setter access ended' });
 			const doneHooks = Array.from({ length: done }, (_, i) => hook(i + 1));
 			const heldHooks = Array.from({ length: held }, (_, i) => hook(i + 101));
 			const cause = "holder's two-step sign-in was reset on the server's host";

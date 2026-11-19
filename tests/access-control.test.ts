@@ -34,7 +34,7 @@ import {
 import type { SessionUser } from '$lib/server/auth';
 import { dispatchWebhook } from '$lib/server/webhooks';
 import { pageLoad } from './helpers/actions';
-import { readOpened } from './helpers/reads';
+import { readOpened, readOpenedUrl } from './helpers/reads';
 import { api } from './helpers/api';
 import {
 	addBoardMember,
@@ -859,7 +859,8 @@ describe('webhook secrets and addresses', () => {
 	// The secret opened: it is stored sealed (card 2898).
 	const rowOf = (id: number) => {
 		const row = db.select().from(webhooks).where(eq(webhooks.id, id)).get()!;
-		return { ...row, secret: readOpened('webhooks', id)! };
+		// The address opened too (card 2928).
+		return { ...row, url: readOpenedUrl(id)!, secret: readOpened('webhooks', id)! };
 	};
 
 	it('refuses an editor who sends an address or a secret, whatever the value, and writes nothing (card 2154)', async () => {

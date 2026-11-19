@@ -148,7 +148,7 @@ import {
 import { failingWrite } from './helpers/failing-write';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
-import { readOpened } from './helpers/reads';
+import { readOpened, readOpenedUrl } from './helpers/reads';
 import { handlersOf } from './helpers/source-scan';
 import { codeFor, giveAuthenticator, giveFactor, wrongCodeFor } from './helpers/two-step';
 import { factorSecret, spendStep } from '$lib/server/mfa-store';
@@ -2480,7 +2480,8 @@ describe('webhooks are written only with a key, which takes the password to make
 		});
 
 		expect(res.status, await res.clone().text()).toBe(201);
-		expect(webhookRows().map(({ boardId, url, setBy }) => ({ boardId, url, setBy }))).toEqual([
+		// The address read opened (card 2928: stored sealed).
+		expect(webhookRows().map(({ id, boardId, setBy }) => ({ boardId, url: readOpenedUrl(id), setBy }))).toEqual([
 			{ boardId: board.id, url: 'https://hooks.example.test/x', setBy: owner.id }
 		]);
 		expect(stub.compared).toBe(0);

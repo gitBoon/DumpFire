@@ -429,9 +429,13 @@ export const webhooks = sqliteTable('webhooks', {
 	boardId: integer('board_id')
 		.notNull()
 		.references(() => boards.id, { onDelete: 'cascade' }),
+	// The delivery address, sealed under the MFA key, bound to the webhook's id,
+	// board and `receiver` (card 2928, stored-secrets.ts `webhookUrlAad`); '' for
+	// one a backup left out and a restore could not fill, to be entered again.
+	// Never read as it is stored: `openedUrl`.
 	url: text('url').notNull(),
-	// Sealed under the MFA key, bound to the webhook's id, board and address
-	// (card 2898, stored-secrets.ts): '' for none. Never read as it is stored.
+	// Sealed under the MFA key, bound to the webhook's id, board and address as
+	// opened (card 2898, stored-secrets.ts): '' for none. Never read as it is stored.
 	secret: text('secret').notNull().default(''),
 	events: text('events').notNull().default('[]'),
 	active: integer('active', { mode: 'boolean' }).notNull().default(true),
@@ -462,7 +466,17 @@ export const webhooks = sqliteTable('webhooks', {
 	// and whether one was used (card 2893, carried by migration 0071). Never in
 	// an answer.
 	setByKey: integer('set_by_key').references(() => apiKeys.id, { onDelete: 'set null' }),
-	setWithKey: integer('set_with_key', { mode: 'boolean' })
+	setWithKey: integer('set_with_key', { mode: 'boolean' }),
+	// The receiver the address sends to, in plain (card 2928, migration 0073):
+	// its scheme, host and port (`receiverOf`), '' for an address that is no http
+	// or https URL. Written with every address and bound into its seal:
+	// recomputed from a plain one (the start's sweep, a restore), never taken
+	// from the row or the backup then; kept from a backup where its address is
+	// '' or an envelope, whose seal it is bound into. Read where the
+	// key is not at hand or not needed: the held-off rule, the host a line, a
+	// mail, a list or scripts/mfa-reset.mjs names, a backup's copy. Never in an
+	// answer: presentWebhook answers an allowlist of fields, and this is not on it.
+	receiver: text('receiver').notNull().default('')
 }, (table) => [
 	index('idx_webhooks_board_id').on(table.boardId),
 	index('idx_webhooks_set_by').on(table.setBy),
@@ -565,7 +579,8 @@ export const cardLabels = sqliteTable('card_labels', {
 
 // The secrets kept here are sealed under the MFA key (card 2898,
 // stored-secrets.ts): `smtp_pass`, the secret fields of `backup_config`, and
-// `known_browser_secret`, `request_form_secret` and `backup_seal_key`.
+// `known_browser_secret`, `request_form_secret`, `backup_seal_key` and card
+// 2928's `webhook_address_mac_key`.
 export const settings = sqliteTable('settings', {
 	key: text('key').primaryKey(),
 	value: text('value').notNull()

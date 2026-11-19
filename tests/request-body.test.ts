@@ -107,7 +107,7 @@ import {
 	stepUpCode
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
-import { readOpened } from './helpers/reads';
+import { readOpened, readOpenedUrl } from './helpers/reads';
 import { giveAuthenticator, giveFactor } from './helpers/two-step';
 import { LABEL_MISSING, LABEL_TOO_LONG, LABEL_UNPRINTABLE, NEW_CODE_MALFORMED } from '$lib/server/account-two-step';
 import { STEP_UP_MISSING } from '$lib/step-up-words';
@@ -1571,10 +1571,11 @@ describe('the handlers card 2115 moved onto the readers', () => {
 			body: { url: ' https://hooks.example.test/x ', events: ['card.created', ' card.moved'] }
 		});
 		expect(hook.status).toBe(201);
-		expect(db.select({ url: webhooks.url, events: webhooks.events }).from(webhooks).where(eq(webhooks.id, hook.body.id)).get()).toEqual({
-			url: 'https://hooks.example.test/x',
+		// The address trimmed, read opened (card 2928: stored sealed).
+		expect(db.select({ events: webhooks.events }).from(webhooks).where(eq(webhooks.id, hook.body.id)).get()).toEqual({
 			events: '["card.created","card.moved"]'
 		});
+		expect(readOpenedUrl(hook.body.id)).toBe('https://hooks.example.test/x');
 
 		// No userId in the body: the user in the path is the one added.
 		const added = await api('POST', `/api/teams/${w.teamId}/members/${w.other.id}`, { user: w.owner, body: {} });

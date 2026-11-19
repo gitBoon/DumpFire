@@ -45,7 +45,7 @@ vi.mock('$lib/server/passwords', async (importOriginal) => {
 
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { enrolmentLinks, inviteTokens, mfaFactors, mfaRecoveryCodes, sessions, settings, users, webhooks } from '$lib/server/db/schema';
+import { enrolmentLinks, inviteTokens, mfaFactors, mfaRecoveryCodes, sessions, settings, users } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
 import { PLACEHOLDER_ORIGIN } from '$lib/server/email';
@@ -79,7 +79,7 @@ import { parseStamp, stamp } from '$lib/timestamps';
 import { action, pageLoad, type ActionResult } from './helpers/actions';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, resetDb, stepUp, sessionHashOf } from './helpers/fixtures';
+import { FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, makeWebhook, resetDb, stepUp, sessionHashOf } from './helpers/fixtures';
 import { gate } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { codeFor, giveFactor, openReleaseWindow, passwordStep, verify, wrongCodeFor } from './helpers/two-step';
@@ -424,7 +424,8 @@ describe('setting up after an invite or the first-run set-up (slice 3)', () => {
 		const link = resetByAdmin();
 		makeApiKey(user, 'Deploy key');
 		const { board } = makeBoard({ owner: user, name: 'Ops' });
-		db.insert(webhooks).values({ boardId: board.id, url: 'https://hooks.example.test/in/its-own-secret', setBy: user.id }).run();
+		// Sealed, as every address is stored (card 2928): the host is its receiver's.
+		makeWebhook(board, { url: 'https://hooks.example.test/in/its-own-secret', setBy: user });
 		// On a set-up link, which a mail host set up meanwhile does not end (a
 		// set-up on the password alone it does: CS6).
 		const token = await startEnrolment(user, { [ENROL_LINK_COOKIE]: link });
