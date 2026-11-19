@@ -3,11 +3,14 @@
  * on it at start (card 2768).
  *
  * The key is 32 bytes kept in a file outside the database and outside every
- * backup, named by `MFA_KEY_FILE`, as 64 hexadecimal characters. Three keys
+ * backup, named by `MFA_KEY_FILE`, as 64 hexadecimal characters. Four keys
  * are derived from it, so the file's bytes are never used under two
- * primitives: the AES-256-GCM key that seals secrets (HKDF-SHA256), the key
- * check stored in `settings.mfa_key_check` (HMAC-SHA256), and the key id each
- * sealed secret names (the first 16 hex of another HMAC-SHA256). Nothing else
+ * primitives: the AES-256-GCM key that seals authenticator secrets
+ * (HKDF-SHA256), the AES-256-GCM key that seals the other secrets the server
+ * keeps in its database (HKDF-SHA256 with an info of its own, card 2898,
+ * stored-secrets.ts), the key check stored in `settings.mfa_key_check`
+ * (HMAC-SHA256), and the key id each sealed secret names (the first 16 hex of
+ * another HMAC-SHA256). Nothing else
  * of the key is kept, and none of it is ever written to a log, a message, a
  * row or a backup.
  *
@@ -42,8 +45,13 @@ export const MFA_KEY_CHECK_SETTING = 'mfa_key_check';
 export const MFA_KEY_FILE_NAME = 'mfa.key';
 export const MFA_KEY_FILE_MAX_BYTES = 4096;
 
-/** What the rest of the code holds: never the file's bytes themselves. */
-export type MfaKey = { id: string; check: string; encryptionKey: Buffer };
+/**
+ * What the rest of the code holds: never the file's bytes themselves.
+ * `secretsKey` seals the secrets the server keeps in its database (card 2898,
+ * stored-secrets.ts): a key of its own, so that no ciphertext of one kind is
+ * made under the key of the other.
+ */
+export type MfaKey = { id: string; check: string; encryptionKey: Buffer; secretsKey: Buffer };
 
 export type KeyLoad =
 	| { ok: true; key: MfaKey; path: string | null; made: boolean; insideDatabaseDir: boolean; warnings: string[] }
@@ -52,12 +60,17 @@ export type KeyLoad =
 const SEE = 'See docs/deployment.md, The Key That Protects Authenticator Secrets.';
 const KEY_TEXT = /^[0-9a-f]{64}$/i;
 
-/** The three keys derived from the file's 32 bytes. */
+/**
+ * The keys derived from the file's 32 bytes: the key id, the key check, the
+ * AES key of the factors, and the AES key of the stored secrets (card 2898),
+ * each HKDF-SHA256 with an info of its own.
+ */
 export function keyFromBytes(raw: Buffer): MfaKey {
 	return {
 		id: createHmac('sha256', raw).update('dumpfire-mfa-key-id').digest('hex').slice(0, 16),
 		check: createHmac('sha256', raw).update('dumpfire-mfa-check').digest('hex'),
-		encryptionKey: Buffer.from(hkdfSync('sha256', raw, Buffer.alloc(0), 'dumpfire mfa aes-256-gcm v1', 32))
+		encryptionKey: Buffer.from(hkdfSync('sha256', raw, Buffer.alloc(0), 'dumpfire mfa aes-256-gcm v1', 32)),
+		secretsKey: Buffer.from(hkdfSync('sha256', raw, Buffer.alloc(0), 'dumpfire stored secrets aes-256-gcm v1', 32))
 	};
 }
 
@@ -286,7 +299,14 @@ export function currentMfaKey(): MfaKey | null {
 /** A factor as the start-up check reads it. */
 export type FactorAtStart = { id: number; userId: number; factorUid: string; keyId: string; ciphertext: string; nonce: string };
 
-export type MfaStartVerdict =
+/**
+ * A stored secret sealed in the database (card 2898, stored-secrets.ts), as
+ * the verdict reads it: where it is, in words that hold no value, the key id
+ * its envelope names, and whether it opens with a key.
+ */
+export type StoredAtStart = { where: string; keyId: string; opens: (key: MfaKey) => boolean };
+
+export type MfaStartVerdict<S extends StoredAtStart = StoredAtStart> =
 	| { refuse: string }
 	| {
 			refuse: null;
@@ -295,7 +315,24 @@ export type MfaStartVerdict =
 			reseal: number[];
 			unreadable: { id: number; userId: number }[];
 			warnings: string[];
+			/**
+			 * The stored secrets (card 2898) to seal again, that do not open, and to
+			 * forget (decision 10). Each is left out when empty, so that a verdict
+			 * with no stored secrets is as it was.
+			 */
+			storedReseal?: S[];
+			storedUnreadable?: S[];
+			storedForget?: S[];
 	  };
+
+/** The verdict's stored-secret fields, each only when it holds any (card 2898, E3). */
+function storedFields<S extends StoredAtStart>(fields: { storedReseal?: S[]; storedUnreadable?: S[]; storedForget?: S[] }) {
+	return Object.fromEntries(Object.entries(fields).filter(([, list]) => list !== undefined && list.length > 0)) as {
+		storedReseal?: S[];
+		storedUnreadable?: S[];
+		storedForget?: S[];
+	};
+}
 
 /**
  * The previous key, named by `MFA_KEY_FILE_PREVIOUS` while the key is being
@@ -339,8 +376,8 @@ function opensWith(key: MfaKey, factor: FactorAtStart): boolean {
 }
 
 const KEY_MISMATCH =
-	"The MFA key does not match the one the second factors were made with (a volume swap, a moved DB_PATH, " +
-	`a restore by hand, or the wrong key file). ${SEE}`;
+	'The MFA key does not match the one the second factors were made with or the stored secrets were sealed with ' +
+	`(a volume swap, a moved DB_PATH, a restore by hand, or the wrong key file). ${SEE}`;
 
 /**
  * Whether the server may start with the key it loaded, and what to record and
@@ -361,14 +398,32 @@ const KEY_MISMATCH =
  * them: with no factors, a stored check of the previous key is replaced by
  * this key's (recorded, where the rules above would record nothing), so the
  * next start compares this key and not the old one.
+ *
+ * The stored secrets (card 2898, `stored`: the mail password, the backup
+ * destinations' credentials, the webhooks' secrets and the three signing
+ * keys, each as sealed in the database) count with the factors: "anything
+ * sealed" is a factor or a stored secret. So with no factors (S1): a check of
+ * another key refuses where a stored secret is sealed; with no check stored,
+ * the check is recorded and each that does not open named
+ * (`storedUnreadable`), unless none opens, when all are forgotten
+ * (`storedForget`, decision 10). With a previous key, a check of neither key
+ * refuses where a stored secret is sealed, and each stored secret that opens
+ * with the previous key is sealed again (`storedReseal`) with the factors;
+ * the previous key opens nothing only when neither a factor nor a stored
+ * secret opens with it.
  */
-export function mfaStartVerdict(input: {
+export function mfaStartVerdict<S extends StoredAtStart = StoredAtStart>(input: {
 	load: KeyLoad;
 	factors: readonly FactorAtStart[];
 	storedCheck: string | null;
 	previous?: PreviousKeyLoad | null;
-}): MfaStartVerdict {
+	stored?: readonly S[];
+	/** `FORGET_UNOPENABLE_SECRETS=1` (the code review's S6): the operator's word that stored secrets none of which opens may be forgotten. */
+	forgetUnopenable?: boolean;
+}): MfaStartVerdict<S> {
 	const { load, factors, storedCheck } = input;
+	const stored = input.stored ?? [];
+	const forget = input.forgetUnopenable === true;
 	const previous = input.previous ?? null;
 	if (!load.ok) return { refuse: load.problem };
 
@@ -393,19 +448,39 @@ export function mfaStartVerdict(input: {
 				'secrets and their key. Move it, see docs/deployment.md'
 		);
 	}
-	if (old === null) return withThisKey(key, factors, storedCheck, warnings);
+	if (old === null) return withThisKey(key, factors, stored, storedCheck, warnings, forget);
 
 	const opensNothing =
-		'The previous MFA key, named by MFA_KEY_FILE_PREVIOUS, opens nothing: no second factor is sealed under it. ' +
-		`Remove MFA_KEY_FILE_PREVIOUS, and keep the old key file offline for as long as you keep backups made with it. ${SEE}`;
+		'The previous MFA key, named by MFA_KEY_FILE_PREVIOUS, opens nothing: no second factor or stored secret is sealed ' +
+		`under it. Remove MFA_KEY_FILE_PREVIOUS, and keep the old key file offline for as long as you keep backups made with it. ${SEE}`;
+	// Branch 2 (card 2898, S1): a check of neither key refuses where anything is sealed.
 	if (storedCheck !== null && storedCheck !== key.check && storedCheck !== old.check) {
-		if (factors.length > 0) return { refuse: KEY_MISMATCH };
+		if (factors.length > 0 || stored.length > 0) return { refuse: KEY_MISMATCH };
 		return { refuse: null, recordCheck: null, reseal: [], unreadable: [], warnings };
 	}
 
-	// A stored check of the previous key is replaced by this one's, so that the
-	// next start compares this key.
+	const storedReseal = stored.filter((secret) => secret.opens(old));
+	const storedUnreadable = (resealed: readonly S[]) => stored.filter((secret) => !resealed.includes(secret) && !secret.opens(key));
+
+	// Branch 3 (card 2898, S1): with no factors, the stored secrets that open
+	// with the previous key are sealed again, and this key's check recorded.
 	if (factors.length === 0) {
+		if (storedReseal.length > 0) {
+			return {
+				refuse: null,
+				recordCheck: key.check,
+				reseal: [],
+				unreadable: [],
+				warnings,
+				...storedFields({ storedReseal, storedUnreadable: storedUnreadable(storedReseal) })
+			};
+		}
+		if (stored.length > 0) {
+			const verdict = withThisKey(key, factors, stored, storedCheck === old.check ? null : storedCheck, warnings, forget);
+			return verdict.refuse === null ? { ...verdict, warnings: [...verdict.warnings, opensNothing] } : verdict;
+		}
+		// A stored check of the previous key is replaced by this one's, so that the
+		// next start compares this key.
 		return {
 			refuse: null,
 			recordCheck: storedCheck === old.check ? key.check : null,
@@ -416,31 +491,45 @@ export function mfaStartVerdict(input: {
 	}
 
 	const reseal = factors.filter((factor) => opensWith(old, factor)).map((factor) => factor.id);
-	if (reseal.length > 0) {
+	if (reseal.length > 0 || storedReseal.length > 0) {
 		const unreadable = factors
 			.filter((factor) => !reseal.includes(factor.id) && !opensWith(key, factor))
 			.map(({ id, userId }) => ({ id, userId }));
-		return { refuse: null, recordCheck: key.check, reseal, unreadable, warnings };
+		return {
+			refuse: null,
+			recordCheck: key.check,
+			reseal,
+			unreadable,
+			warnings,
+			...storedFields({ storedReseal, storedUnreadable: storedUnreadable(storedReseal) })
+		};
 	}
 
-	const verdict = withThisKey(key, factors, storedCheck === old.check ? null : storedCheck, warnings);
+	const verdict = withThisKey(key, factors, stored, storedCheck === old.check ? null : storedCheck, warnings, forget);
 	return verdict.refuse === null ? { ...verdict, warnings: [...verdict.warnings, opensNothing] } : verdict;
 }
 
-/** The verdict on this key alone, as it was before a previous key could be named. */
-function withThisKey(
+/** The environment variable that lets one start forget stored secrets none of which opens (the code review's S6). */
+export const FORGET_UNOPENABLE_SECRETS = 'FORGET_UNOPENABLE_SECRETS';
+
+/** The verdict on this key alone, as it was before a previous key could be named, the stored secrets counted (card 2898). */
+function withThisKey<S extends StoredAtStart>(
 	key: MfaKey,
 	factors: readonly FactorAtStart[],
+	stored: readonly S[],
 	storedCheck: string | null,
-	warnings: string[]
-): MfaStartVerdict {
-	if (factors.length === 0) return { refuse: null, recordCheck: null, reseal: [], unreadable: [], warnings };
+	warnings: string[],
+	forget: boolean
+): MfaStartVerdict<S> {
+	if (factors.length === 0 && stored.length === 0) return { refuse: null, recordCheck: null, reseal: [], unreadable: [], warnings };
 
+	// Branch 1 (card 2898, S1): another key's check refuses where anything is sealed.
 	if (storedCheck !== null && storedCheck !== key.check) return { refuse: KEY_MISMATCH };
 
 	const unreadable = factors.filter((factor) => !opensWith(key, factor)).map(({ id, userId }) => ({ id, userId }));
+	const storedUnreadable = stored.filter((secret) => !secret.opens(key));
 	if (storedCheck === null) {
-		if (unreadable.length === factors.length) {
+		if (factors.length > 0 && unreadable.length === factors.length) {
 			return {
 				refuse:
 					`None of the ${factors.length} second factor(s) opens with this MFA key, and no key check is stored: ` +
@@ -448,7 +537,26 @@ function withThisKey(
 					`hand, or the wrong key file). ${SEE}`
 			};
 		}
-		return { refuse: null, recordCheck: key.check, reseal: [], unreadable, warnings };
+		// Nothing sealed opens and no check is stored (decision 10, S16, as the
+		// code review's S6 amends it): the key is the wrong one, or the right one
+		// lost. The start is refused, as it is for factors, unless the operator
+		// has said to forget them (`FORGET_UNOPENABLE_SECRETS=1`): then they are
+		// forgotten as a backup forgets them, and the check recorded. Where any
+		// opens, the rest are unreadable, and none forgotten.
+		if (factors.length === 0 && storedUnreadable.length === stored.length) {
+			if (!forget) {
+				return {
+					refuse:
+						`None of the ${stored.length} stored secret(s) opens with this MFA key, and no key check is stored: the key ` +
+						'does not match the one they were sealed with (a volume swap, a moved DB_PATH, a restore by hand, or the wrong ' +
+						`key file). Mount that key. If it is lost, start once with ${FORGET_UNOPENABLE_SECRETS}=1 to forget them as a ` +
+						'backup forgets them (the mail password, the backup destinations\' credentials and the webhooks\' secrets are ' +
+						`then entered again), then remove it. ${SEE}`
+				};
+			}
+			return { refuse: null, recordCheck: key.check, reseal: [], unreadable, warnings, ...storedFields({ storedForget: [...stored] }) };
+		}
+		return { refuse: null, recordCheck: key.check, reseal: [], unreadable, warnings, ...storedFields({ storedUnreadable }) };
 	}
-	return { refuse: null, recordCheck: null, reseal: [], unreadable, warnings };
+	return { refuse: null, recordCheck: null, reseal: [], unreadable, warnings, ...storedFields({ storedUnreadable }) };
 }

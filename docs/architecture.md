@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.135
+version: 1.136
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2898
+  - secrets-at-rest
   - card-2923
   - card-2910
   - upload-limits
@@ -242,7 +244,11 @@ away, and the security headers it puts on every answer, are in
 `src/lib/server/gate-answers.ts`.
 
 Loading the module is also what starts the server's own work, once, before the first
-request: `runMigrations()`, `endPlainSessions()` (card 2775: it deletes any session an older
+request: `runMigrations()`, `refuseUserlessBesideAnother()`, `checkMfaKeyAtStart()` (which
+judges the stored secrets with the second factors, card 2898), `ensureFormSecret()`,
+`sealStoredSecretsAtStart()` (card 2898: it seals every stored secret still held in plain under
+the MFA key, records the key check, and scrubs the old plain text from the file; a sealing that
+fails stops the server), `endPlainSessions()` (card 2775: it deletes any session an older
 image stored in plain, and runs before the clean-up so that each is counted),
 `cleanExpiredSessions()`, `startChallengeSweep()` (card 2769: it sweeps expired sign-in
 challenges now and every five minutes), `startSessionSweep()` (card 2883: it runs the clean-up

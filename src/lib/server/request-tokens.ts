@@ -24,6 +24,7 @@ import { db, sqlite } from './db';
 import { settings } from './db/schema';
 import { inTransaction } from './db/transaction';
 import { sha256Hex } from './mfa-crypto';
+import { openStored, sealStored, settingAad } from './stored-secrets';
 
 // ─── Request tokens ──────────────────────────────────────────────────────────
 
@@ -159,9 +160,17 @@ export const REQUEST_FORM_SECRET_KEY = 'request_form_secret';
 
 let cachedSecret: string | null = null;
 
-/** The stored key, or undefined where there is none. A read, and nothing else. */
+/**
+ * The stored key opened (card 2898), or undefined where there is none, or
+ * where it does not open: no key signs then, and nothing verifies. A key
+ * held in plain, before the start seals it, is used as it is. A read, and
+ * nothing else.
+ */
 function storedSecret(): string | undefined {
-	return db.select().from(settings).where(eq(settings.key, REQUEST_FORM_SECRET_KEY)).get()?.value;
+	const stored = db.select().from(settings).where(eq(settings.key, REQUEST_FORM_SECRET_KEY)).get()?.value;
+	if (stored === undefined) return undefined;
+	const opened = openStored(stored, settingAad(REQUEST_FORM_SECRET_KEY));
+	return opened.kind === 'plain' || opened.kind === 'opened' ? opened.value : undefined;
 }
 
 /**
@@ -181,11 +190,18 @@ function storedSecret(): string | undefined {
  * Two at once agree. The insert does nothing where a key is there, and the
  * key used is the one read from the table, never the one written here, so
  * whichever process wrote first is the one every process uses.
+ *
+ * Written sealed under the MFA key (card 2898), which records the key check
+ * by the one rule (S2): so a Reset, which deletes every setting, the check
+ * among them, records it again here, and a start with another key is then
+ * refused. A key already there is not read, and nothing is sealed for it.
  */
 export function writeFormSecret(database: Database.Database = sqlite): void {
+	if (database.prepare('SELECT 1 FROM settings WHERE key = ?').get(REQUEST_FORM_SECRET_KEY) !== undefined) return;
+	const made = randomBytes(32).toString('hex');
 	database
 		.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING')
-		.run(REQUEST_FORM_SECRET_KEY, randomBytes(32).toString('hex'));
+		.run(REQUEST_FORM_SECRET_KEY, sealStored(made, settingAad(REQUEST_FORM_SECRET_KEY), database));
 }
 
 /**
@@ -196,7 +212,11 @@ export function writeFormSecret(database: Database.Database = sqlite): void {
 export function ensureFormSecret(): void {
 	cachedSecret = null;
 	writeFormSecret();
-	if (storedSecret() === undefined) throw new Error('The form signing key could not be made: no row was there to read back');
+	// The row, as stored: one that does not open is replaced by the start's
+	// next step (`sealStoredSecretsAtStart`, card 2898), not refused here.
+	if (sqlite.prepare('SELECT 1 FROM settings WHERE key = ?').get(REQUEST_FORM_SECRET_KEY) === undefined) {
+		throw new Error('The form signing key could not be made: no row was there to read back');
+	}
 }
 
 /**

@@ -48,6 +48,7 @@ import { buildActivityReport } from '$lib/server/activity-report';
 import { api, routeMethods } from './helpers/api';
 import { importConfirmation, makeBoard, makeCard, makeSession, makeUser, resetDb, sessionHashOf } from './helpers/fixtures';
 import { afterEachTimestampCheck } from './helpers/timestamps';
+import { readOpened } from './helpers/reads';
 import { stamp } from '$lib/timestamps';
 import production from './fixtures/production-schema-2026-10-12.json';
 import { compare, stateOf, type Findings, type State } from './rehearsal/compare';
@@ -4375,14 +4376,20 @@ describe('restoring a backup taken before the latest migrations', () => {
 		expect(live.prepare('SELECT key, value FROM settings ORDER BY key').all()).toEqual([
 			// This server's API key deadline, written back for a backup made before 0069 (card 2772).
 			{ key: 'api_key_deadline', value: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) },
-			// Made in the restore's transaction (card 2750).
-			{ key: 'request_form_secret', value: expect.stringMatching(/^[0-9a-f]{64}$/) },
+			// Recorded with the form key, sealed (card 2898, S2).
+			{ key: 'mfa_key_check', value: expect.stringMatching(/^[0-9a-f]{64}$/) },
+			// Made in the restore's transaction (card 2750), sealed (card 2898).
+			{ key: 'request_form_secret', value: expect.stringMatching(/^dfsealed:1:/) },
+			// The scrub every restore marks pending (card 2898's code review, S1).
+			{ key: 'secrets_scrub_pending', value: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) },
 			{ key: 'smtp_host', value: 'mail.example.test' },
 			{ key: 'theme', value: 'dark' },
 			// This server's moment keys began to be recorded on webhooks, kept by a restore (card 2752).
 			{ key: 'webhook_keys_recorded_at', value: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) }
 		]);
 		expect(result.restored['settings']).toBe(2);
+		// The form key opens to 32 random bytes as hex (card 2898).
+		expect(readOpened('settings', 'request_form_secret', live)).toMatch(/^[0-9a-f]{64}$/);
 		// The rest of the backup is in, and committed.
 		expect(live.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
 		// The backup's three, and each board's Options column, which it was made before.
@@ -5069,9 +5076,12 @@ describe('restoring a backup taken before the latest migrations', () => {
 			// and this server's API key deadline, written back for a backup made before 0069 (card 2772),
 			// and the flag the check of the stored images writes once the import has committed, the backup
 			// holding no image (card 2761, the code review's CS3).
+			// And the key check, recorded with the form key, sealed (card 2898).
 			expect(sqlite.prepare('SELECT key FROM settings ORDER BY key').all()).toEqual([
 				{ key: 'api_key_deadline' },
+				{ key: 'mfa_key_check' },
 				{ key: 'request_form_secret' },
+				{ key: 'secrets_scrub_pending' },
 				{ key: 'smtp_host' },
 				{ key: 'stored_images_rechecked' },
 				{ key: 'theme' }

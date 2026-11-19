@@ -21,6 +21,7 @@ import {
 } from '$lib/server/email';
 import { readBody, readBoolean, readEmail, readNumber, readText, readUrl } from '$lib/server/request-body';
 import { requireAdmin } from '$lib/server/route-guards';
+import { TYPED_SECRET_LOOKS_SEALED, looksSealed } from '$lib/server/stored-secrets';
 import { mailPlacesNow, recordMailSetters } from '$lib/server/setting-setters';
 import { confirmStepUp } from '$lib/server/step-up';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
@@ -239,6 +240,8 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 		// again, so that it is never sent to a server it was not saved for, nor
 		// over a connection weaker than the one it was saved with.
 		const pass = readText(body, 'pass', {});
+		// One that looks sealed is refused (card 2898, S9): it would be taken for one.
+		if (looksSealed(pass)) throw error(400, TYPED_SECRET_LOOKS_SEALED);
 		const kept = keepMailPassword({ host, port, allowInsecure, user, pass }, here);
 		if ('refusal' in kept) throw error(400, kept.refusal);
 		if (kept.pass !== undefined) config.pass = kept.pass;

@@ -36,11 +36,13 @@ import {
 	type PreviousKeyLoad
 } from '$lib/server/mfa-key';
 import { db, sqlite } from '$lib/server/db';
-import { mfaFactors, settings, signInChallenges } from '$lib/server/db/schema';
+import { mfaFactors, settings, signInChallenges, webhooks } from '$lib/server/db/schema';
 import { readMfaKeyCheck } from '$lib/server/mfa-store';
 import { MfaKeyError, checkMfaKeyAtStart } from '$lib/server/startup-checks';
+import { mailPasswordAad, openStored, sealValue, settingAad, webhookSecretAad } from '$lib/server/stored-secrets';
+import { eq } from 'drizzle-orm';
 import { stamp } from '$lib/timestamps';
-import { makeUser, resetDb } from './helpers/fixtures';
+import { makeBoard, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
 import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 /** The RFC 4226 and RFC 6238 SHA-1 test secret. */
@@ -148,6 +150,15 @@ describe('mfa-crypto.ts and the key derivations', () => {
 		const aad = 'mfa-factor:7:00112233445566778899aabbccddeeff';
 		expect(openSealed(key, pinned, aad)?.toString('ascii')).toBe('12345678901234567890');
 		expect(openSealed({ ...key, encryptionKey: FILE_KEY }, pinned, aad)).toBeNull();
+
+		// Card 2898, case 1: the stored secrets' own key, pinned, not the factors'; a
+		// pinned stored envelope opens under it and not under the factors' key.
+		expect(key.secretsKey.toString('hex')).toBe('e8667f866b27f1da5375960e10e8b9c6f712f0b2be8c98c866e7d5169dc81553');
+		expect(key.secretsKey.equals(key.encryptionKey)).toBe(false);
+		const stored =
+			'dfsealed:1:a8b674d849ff1f39:oKGio6Slpqeoqaqr:L9L5FksIzmmunBb81wL0YfTRbEOqaX9/Id7i5UCiuMTXz8mhH/uw9mY2ep6g3Mew44Tdb7LU/8iKDT4oEHJKm+crUXin8NmdHZ047WRXW7M=';
+		expect(openStored(stored, settingAad('request_form_secret'), key)).toEqual({ kind: 'opened', value: 'the pinned stored secret' });
+		expect(openStored(stored, settingAad('request_form_secret'), { ...key, secretsKey: key.encryptionKey }).kind).toBe('unopenable');
 	});
 
 	it('T11: opens what it sealed with the same additional data; two seals differ; the seal names the key', () => {
@@ -425,6 +436,12 @@ describe('mfaStartVerdict', () => {
 			warnings: []
 		});
 	});
+
+	it("14: with no factors and a stored secret sealed, another key's check refuses, naming the stored secrets", () => {
+		const stored = [{ where: 'the mail password', keyId: key.id, opens: (by: MfaKey) => by === key }];
+		const verdict = mfaStartVerdict({ load: loaded, factors: [], storedCheck: otherKey.check, stored });
+		expect(verdict.refuse).toMatch(/does not match the one the second factors were made with or the stored secrets were sealed with/);
+	});
 });
 
 // ─── Changing the key at start (card 2773) ───────────────────────────────────
@@ -490,7 +507,11 @@ describe('changing the MFA key at start (card 2773)', () => {
 			const first = storeFactor(ann.id, old, secrets[0]);
 			const second = storeFactor(bob.id, old, secrets[1]);
 			const third = storeFactor(cy.id, keyFromBytes(randomBytes(32)));
-			db.insert(settings).values({ key: MFA_KEY_CHECK_SETTING, value: old.check }).run();
+			// Over the check resetDb's sealed form key recorded (card 2898).
+			db.insert(settings)
+				.values({ key: MFA_KEY_CHECK_SETTING, value: old.check })
+				.onConflictDoUpdate({ target: settings.key, set: { value: old.check } })
+				.run();
 			storeEnrolment(ann.id, old.id, 'e1');
 			return { raw, old, secrets, factors: [first, second, third], users: [ann, bob, cy] };
 		}
@@ -598,6 +619,73 @@ describe('changing the MFA key at start (card 2773)', () => {
 			expect((thrown as MfaKeyError).message).toMatch(/Nothing was changed, and starting again is safe/);
 			expectUnchanged(before);
 		});
+
+		// ─── Card 2898: the stored secrets rotate with the factors ───────────
+
+		const MAIL = { smtp_host: 'mail.example.test', smtp_user: 'sender' };
+		const putSetting = (key: string, value: string) =>
+			db.insert(settings).values({ key, value }).onConflictDoUpdate({ target: settings.key, set: { value } }).run();
+		const settingNow = (key: string) => db.select().from(settings).where(eq(settings.key, key)).get()?.value ?? null;
+
+		/** A mail password, a webhook's secret and the remembered-browser key, each sealed under `by`. */
+		function storedUnder(by: MfaKey) {
+			for (const [key, value] of Object.entries(MAIL)) putSetting(key, value);
+			putSetting('smtp_pass', sealValue('the mail password', mailPasswordAad(MAIL), by));
+			putSetting('known_browser_secret', sealValue('d'.repeat(64), settingAad('known_browser_secret'), by));
+			const owner = makeUser();
+			const hook = makeWebhook(makeBoard({ owner }).board, { url: 'https://hooks.example.test/rotate' });
+			const secret = sealValue('the webhook secret', webhookSecretAad(hook.id, hook.boardId, hook.url), by);
+			db.update(webhooks).set({ secret }).where(eq(webhooks.id, hook.id)).run();
+			return hook;
+		}
+
+		it('16: rotating with no factors seals each stored secret again under this key and records its check, in a transaction for them alone', () => {
+			const raw = randomBytes(32);
+			const old = keyFromBytes(raw);
+			const hook = storedUnder(old);
+			putSetting(MFA_KEY_CHECK_SETTING, old.check);
+			expect(factorRows()).toEqual([]);
+			expect(settingNow('secrets_scrub_pending')).toBeNull();
+
+			const lines = consoleLines(() => checkMfaKeyAtStart(mfaKeyLoad(), undefined, undefined, previousOf(raw)));
+
+			const opened = (value: string | null, aad: string) => openStored(value, aad, current());
+			expect(settingNow('smtp_pass')).toMatch(new RegExp(`^dfsealed:1:${current().id}:`));
+			expect(opened(settingNow('smtp_pass'), mailPasswordAad(MAIL))).toEqual({ kind: 'opened', value: 'the mail password' });
+			expect(opened(settingNow('known_browser_secret'), settingAad('known_browser_secret')).value).toBe('d'.repeat(64));
+			const secret = db.select().from(webhooks).where(eq(webhooks.id, hook.id)).get()!.secret;
+			expect(opened(secret, webhookSecretAad(hook.id, hook.boardId, hook.url)).value).toBe('the webhook secret');
+			expect(keyCheck()).toBe(current().check);
+			expect(lines.warn.filter((line) => line.includes('Rotated 0 second factor(s) and 3 stored secret(s) to the new MFA key'))).toHaveLength(1);
+			// The old key's ciphertexts are to be scrubbed from the file (the code review S4).
+			expect(settingNow('secrets_scrub_pending')).toMatch(/^\d{4}-/);
+		});
+
+		it('17: rotating factors and stored secrets, with the seal failing partway through the stored secrets, changes nothing and refuses the start', () => {
+			const scene = underThePreviousKey();
+			storedUnder(scene.old);
+			const before = snapshotDb();
+			let sealed = 0;
+			// The two factors, then the first stored secret, which fails.
+			const failing: typeof sealWith = (key, plaintext, aad) => {
+				if (++sealed === 3) throw new Error('the seal failed partway');
+				return sealWith(key, plaintext, aad);
+			};
+
+			let thrown: unknown;
+			const lines = consoleLines(() => {
+				try {
+					checkMfaKeyAtStart(mfaKeyLoad(), undefined, undefined, previousOf(scene.raw), failing);
+				} catch (err) {
+					thrown = err;
+				}
+			});
+
+			expect(sealed).toBe(3);
+			expect(thrown).toBeInstanceOf(MfaKeyError);
+			expect(lines.error.filter((line) => line.includes('[CRITICAL] [AUTH]'))).toHaveLength(1);
+			expectUnchanged(before);
+		});
 	});
 
 	describe('mfaStartVerdict, with a previous key', () => {
@@ -701,6 +789,12 @@ describe('changing the MFA key at start (card 2773)', () => {
 				}
 			])('$case: refuses $says', ({ refusal, expected }) => {
 				expect(refusal()).toMatch(expected);
+			});
+
+			it('15: refuses a stored check of neither key with no factors where a stored secret is sealed (card 2898, S1)', () => {
+				const stored = [{ where: 'webhook 7', keyId: current.id, opens: (by: MfaKey) => by === current }];
+				const verdict = mfaStartVerdict({ load: loaded, factors: [], storedCheck: keyFromBytes(randomBytes(32)).check, previous: previousOf(oldRaw), stored });
+				expect(verdict.refuse).toMatch(/or the stored secrets were sealed with/);
 			});
 
 			it.skipIf(!POSIX)('T42: refuses a previous key file its group can write, with no factors stored', () => {

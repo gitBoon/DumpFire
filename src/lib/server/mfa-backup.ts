@@ -47,6 +47,7 @@ import { toStamp } from '$lib/timestamps';
 import { fromTableStorage } from './backup-secrets';
 import { MFA_KEY_CHECK_SETTING, type MfaKey } from './mfa-key';
 import { readMfaKeyCheck } from './mfa-store';
+import { anythingSealed } from './stored-secrets';
 
 /** The tables no restore copies: this module puts back the first two, and the other two are never brought in. */
 export const MFA_ROWS_NOT_RESTORED = ['mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges', 'enrolment_links'] as const;
@@ -283,10 +284,15 @@ export function restoreMfaRows(
 			.run(...history.map(([, value]) => value), account.id, account.createdAt);
 	}
 
-	// 4. The key check: this key's when any factor exists now, and otherwise
-	// this server's as it was. The backup's is never copied (rowsToRestore).
+	// 4. The key check: this key's when any factor exists now; otherwise the
+	// one recorded in this restore with a stored secret sealed in it (card
+	// 2898, S2: the restore's form key, and any secret `rowsToRestore`
+	// sealed, were written under this server's key, which recorded it);
+	// otherwise this server's as it was. The backup's is never copied
+	// (rowsToRestore).
 	const factorsNow = factorsHere ? (live.prepare('SELECT COUNT(*) AS n FROM mfa_factors').get() as { n: number }).n : 0;
-	const check = factorsNow > 0 && options.key !== null ? options.key.check : here.keyCheck;
+	const recordedNow = anythingSealed(live) ? readMfaKeyCheck(live) : null;
+	const check = factorsNow > 0 && options.key !== null ? options.key.check : (recordedNow ?? here.keyCheck);
 	const settingsColumns = columnsOf(live, 'settings');
 	if (check !== null && settingsColumns.includes('key') && settingsColumns.includes('value')) {
 		live

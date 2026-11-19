@@ -20,7 +20,9 @@ import { createLogger } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { KNOWN_BROWSER_SECRET_KEY } from './known-browsers';
 import { REQUEST_FORM_SECRET_KEY } from './request-tokens';
-import { backupSealKey, clearSecrets, credentialsMissing, hostKeyMissing, sealCopy } from './backup-secrets';
+import { CREDENTIALS_NOT_ENTERED, backupSealKey, clearSecrets, credentialsMissing, hostKeyMissing, sealCopy } from './backup-secrets';
+import { openDestinationSecrets, sealDestinationSecrets, unopenableFields } from './stored-secrets';
+import { inTransaction } from './db/transaction';
 
 const log = createLogger('BACKUP');
 
@@ -81,7 +83,10 @@ export function getBackupConfig(): BackupConfig {
 		};
 	}
 	try {
-		return JSON.parse(raw) as BackupConfig;
+		// Each destination's secrets opened for use (card 2898); one that does
+		// not open is '' and named in the destination's `unopenable`, and the
+		// destination is not tried (S3).
+		return openDestinationSecrets(JSON.parse(raw) as BackupConfig);
 	} catch {
 		return {
 			schedule: 'disabled',
@@ -95,8 +100,23 @@ export function getBackupConfig(): BackupConfig {
 	}
 }
 
+/**
+ * Store the backup settings, every destination's secrets sealed under the MFA
+ * key and bound to the destination's place (card 2898), with the key check,
+ * in one transaction.
+ */
 export function saveBackupConfig(config: BackupConfig): void {
-	setSetting('backup_config', JSON.stringify(config));
+	inTransaction(() => setSetting('backup_config', JSON.stringify(sealDestinationSecrets(config))));
+}
+
+/**
+ * Why `runBackup` does not try `destination`, or null: a secret stored for it
+ * that does not open (card 2898, S3), an SFTP one included, then the
+ * credentials not entered and the host key not confirmed (cards 2169, 2250).
+ */
+function notTried(destination: DestinationConfig): string | null {
+	if (unopenableFields(destination).length > 0) return CREDENTIALS_NOT_ENTERED;
+	return credentialsMissing(destination) ?? hostKeyMissing(destination);
 }
 
 // ─── Backup Data Generation ─────────────────────────────────────────────────
@@ -569,7 +589,7 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	// 6): it would send its password, and the backup, to whoever answered.
 	const ready: DestinationConfig[] = [];
 	for (const destConfig of destinations) {
-		const missing = credentialsMissing(destConfig) ?? hostKeyMissing(destConfig);
+		const missing = notTried(destConfig);
 		if (missing === null) ready.push(destConfig);
 		else failed(destConfig, missing, 0, 0);
 	}
@@ -970,7 +990,7 @@ export function initBackupScheduler(): void {
 				firstRunSinceStart = false;
 				const run = ++runsStarted;
 				const unfixable = new Set(
-					config.destinations.filter((d) => (credentialsMissing(d) ?? hostKeyMissing(d)) !== null).map((d) => d.name)
+					config.destinations.filter((d) => notTried(d) !== null).map((d) => d.name)
 				);
 				let results: Awaited<ReturnType<typeof runBackup>> | null = null;
 				try {

@@ -422,7 +422,15 @@ Now:
 4. A webhook switched off because nobody was recorded as its setter is given a new secret too when
    switched on, and a `secret` sent with that switch-on is `400`; its `pausedBecause` says so. It
    kept its secret before, which an account whose access has ended since may have set.
-5. Nothing else changed: no operation, field or schema. The internal answers'
+5. Webhook secrets are stored sealed, under a key derived from the server's MFA key and bound to
+   the webhook's id, board and url (card 2898), and are given in answers as before. A webhook
+   whose stored secret cannot be opened (sealed under another key, or its row changed outside
+   DumpFire) is never delivered, neither unsigned nor with that stored text: its `lastDelivery`
+   says "Not sent: its signing secret cannot be opened", it stays as `active` as it was with its
+   `pausedBecause` unchanged, and a read that gives the secret gives `''` with `hasSecret` `true`.
+   A `PUT` that sends `secret` for such a webhook always replaces it, `''` clearing it to
+   unsigned, and records the caller as its setter as any change of secret does.
+6. Nothing else changed: no operation, field or schema. The internal answers'
    `webhooksSwitchedOff` still counts only the webhooks that were on; an ending that keeps the keys
    (the holder's own change without ending them, or `--keep-api-keys` on the host) holds nothing,
    and `pausedBecause` stays `null` for one of its webhooks switched off by a `PUT`.

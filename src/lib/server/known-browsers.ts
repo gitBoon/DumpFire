@@ -38,9 +38,11 @@
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Cookies } from '@sveltejs/kit';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from './db';
 import { settings } from './db/schema';
+import { openStored, sealStored, settingAad } from './stored-secrets';
+import { inTransaction } from './db/transaction';
 import { httpsOnlyCookie } from './auth';
 import { FREE_WRONG_SIGN_INS, wrongSignInsAt } from './rate-limit';
 import { createLogger } from './logger';
@@ -75,19 +77,38 @@ let cachedSecret: string | null = null;
 function knownBrowserSecret(make: boolean): string | null {
 	if (cachedSecret) return cachedSecret;
 
+	const aad = settingAad(KNOWN_BROWSER_SECRET_KEY);
 	const existing = db.select().from(settings).where(eq(settings.key, KNOWN_BROWSER_SECRET_KEY)).get();
 	if (existing) {
-		cachedSecret = existing.value;
-		return cachedSecret;
+		// Stored sealed (card 2898); one held in plain, from before, as it is.
+		const opened = openStored(existing.value, aad);
+		if (opened.kind === 'opened' || opened.kind === 'plain') {
+			cachedSecret = opened.value;
+			return cachedSecret;
+		}
+		// One that does not open is no key: no cookie holds, and the next
+		// remember replaces it with a new one (E16), forgetting every browser.
+		if (!make) return null;
+		// The key check and the key in one transaction (card 2898's code review, E10).
+		inTransaction(() =>
+			db.update(settings)
+				.set({ value: sealStored(randomBytes(32).toString('hex'), aad) })
+				.where(and(eq(settings.key, KNOWN_BROWSER_SECRET_KEY), eq(settings.value, existing.value)))
+				.run()
+		);
+	} else {
+		if (!make) return null;
+		inTransaction(() =>
+			db.insert(settings)
+				.values({ key: KNOWN_BROWSER_SECRET_KEY, value: sealStored(randomBytes(32).toString('hex'), aad) })
+				.onConflictDoNothing()
+				.run()
+		);
 	}
-	if (!make) return null;
-
-	db.insert(settings)
-		.values({ key: KNOWN_BROWSER_SECRET_KEY, value: randomBytes(32).toString('hex') })
-		.onConflictDoNothing()
-		.run();
 	// Read back rather than trust what was written: another process may have got there first.
-	cachedSecret = db.select().from(settings).where(eq(settings.key, KNOWN_BROWSER_SECRET_KEY)).get()!.value;
+	const opened = openStored(db.select().from(settings).where(eq(settings.key, KNOWN_BROWSER_SECRET_KEY)).get()?.value, aad);
+	if (opened.kind !== 'opened' && opened.kind !== 'plain') return null;
+	cachedSecret = opened.value;
 	return cachedSecret;
 }
 

@@ -430,6 +430,8 @@ export const webhooks = sqliteTable('webhooks', {
 		.notNull()
 		.references(() => boards.id, { onDelete: 'cascade' }),
 	url: text('url').notNull(),
+	// Sealed under the MFA key, bound to the webhook's id, board and address
+	// (card 2898, stored-secrets.ts): '' for none. Never read as it is stored.
 	secret: text('secret').notNull().default(''),
 	events: text('events').notNull().default('[]'),
 	active: integer('active', { mode: 'boolean' }).notNull().default(true),
@@ -561,6 +563,9 @@ export const cardLabels = sqliteTable('card_labels', {
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
+// The secrets kept here are sealed under the MFA key (card 2898,
+// stored-secrets.ts): `smtp_pass`, the secret fields of `backup_config`, and
+// `known_browser_secret`, `request_form_secret` and `backup_seal_key`.
 export const settings = sqliteTable('settings', {
 	key: text('key').primaryKey(),
 	value: text('value').notNull()

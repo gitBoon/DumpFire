@@ -65,7 +65,7 @@ import { db, sqlite } from './db';
 import { settingSetters } from './db/schema';
 import { afterCommit, inTransaction } from './db/transaction';
 import { destinationPlace, quotedName as quoted, typedSecret, type BackupSettingsChanges } from './backup-secrets';
-import { appUrlAsRead, mailSettingsAsRead } from './email';
+import { appUrlAsRead, mailConnectionAsRead } from './email';
 import { createLogger } from './logger';
 
 const smtpLog = createLogger('SMTP');
@@ -89,7 +89,8 @@ function placeKey(parts: readonly unknown[]): string {
 
 /** Where mail goes, as a mail reads it: the server, the account on it and the way out (card 2189). */
 function mailPlace(): string {
-	const { host, port, user, allowInsecure } = mailSettingsAsRead();
+	// The password is not opened for it (card 2898's code review, E10).
+	const { host, port, user, allowInsecure } = mailConnectionAsRead();
 	return placeKey([host, port, user, allowInsecure]);
 }
 

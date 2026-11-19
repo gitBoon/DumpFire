@@ -537,7 +537,8 @@ const WRITING = ['POST', 'PUT', 'PATCH', 'DELETE'];
  * guards, by its callee as written: one for each check, in source order.
  */
 const STILL_CALLER_NOW: Record<string, { reason: string; guards: RegExp[] }> = {
-	'src/routes/api/admin/vacuum/+server.ts POST': { reason: 'VACUUM cannot run in a transaction.', guards: [/^sqlite\.exec$/] },
+	// The VACUUM and the checkpoint after it that empties the write-ahead log (card 2898, S6), in one call.
+	'src/routes/api/admin/vacuum/+server.ts POST': { reason: 'VACUUM cannot run in a transaction.', guards: [/^vacuumAndScrub$/] },
 	'src/routes/api/admin/import/+server.ts POST': {
 		reason:
 			'The restore opens its own transaction, and files are written before it: the first is .restore-temp.db. ' +
@@ -2322,7 +2323,7 @@ describe("card 2253's rule itself", () => {
 		const code = 'export const POST = async ({ locals }) => {\n\tconst caller = stillCallerNow(locals);\n\treturn json({});\n};';
 
 		expect(judged(code, 'src/routes/api/admin/vacuum/+server.ts')).toEqual([
-			'src/routes/api/admin/vacuum/+server.ts:1 POST calls nothing matching /^sqlite\\.exec$/ after its check at line 2 (c)'
+			'src/routes/api/admin/vacuum/+server.ts:1 POST calls nothing matching /^vacuumAndScrub$/ after its check at line 2 (c)'
 		]);
 	});
 
@@ -4206,8 +4207,10 @@ type WebhookWriter = { does: 'switches off only' | 'sets'; writes: number; why: 
 const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 	'src/routes/api/v1/boards/[boardId]/webhooks/+server.ts#POST': {
 		does: 'sets',
-		writes: 1,
-		why: 'Creates a webhook. Only an API key reaches it: the gate reads no session under /api/v1/, and a key takes the current password to make. What a key may do is card 2703.'
+		writes: 2,
+		why:
+			'Creates a webhook. Only an API key reaches it: the gate reads no session under /api/v1/, and a key takes the current password to make. What a key may do is card 2703. ' +
+			'The second write seals its secret, bound to the id the insert gave it, in the same transaction (card 2898, decision 19).'
 	},
 	'src/routes/api/v1/webhooks/[webhookId]/+server.ts#PUT': {
 		does: 'sets',
@@ -4252,6 +4255,22 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 		does: 'switches off only',
 		writes: 1,
 		why: "A restore carries this server's hold onto the same webhook restored, so that no restore switches back on one held off here (card 2752's code review, CS5): active off, held_because and held_at."
+	},
+	// Card 2898 (E15): the start's sealing of the stored secrets, each the same secret as it was.
+	'src/lib/server/stored-secrets.ts#sealPlainSecrets': {
+		does: 'sets',
+		writes: 1,
+		why: 'Seals, at every start, each webhook secret held in plain: the same secret, sealed in place, matched on the plain value it read (card 2898, decision 6).'
+	},
+	'src/lib/server/stored-secrets.ts#resealStoredSecrets': {
+		does: 'sets',
+		writes: 1,
+		why: 'Seals each webhook secret of the previous MFA key again under the new one at a start that changes the key: the same secret, matched on the envelope it read (card 2898, decision 12).'
+	},
+	'src/lib/server/stored-secrets.ts#forgetStoredSecrets': {
+		does: 'switches off only',
+		writes: 1,
+		why: "Forgets, at a start with no key check stored and nothing sealed opening, each webhook's secret as a backup does: blanked, switched off and listed (card 2898, decision 10)."
 	}
 };
 
@@ -4268,7 +4287,11 @@ const WEBHOOK_WRITER_CALLERS: Record<string, readonly string[]> = {
 		'src/lib/server/db/restore.ts#holdRestoredAlreadyOff'
 	],
 	// Card 2923's code review (E4): the endings of an account's access.
-	'src/lib/server/webhooks.ts#holdWebhooksOfSetter': ['src/lib/server/auth.ts#endAccountAccess', 'src/lib/server/deletes.ts#deleteUser']
+	'src/lib/server/webhooks.ts#holdWebhooksOfSetter': ['src/lib/server/auth.ts#endAccountAccess', 'src/lib/server/deletes.ts#deleteUser'],
+	// Card 2898 (E15): the start alone seals, seals again and forgets the stored secrets.
+	'src/lib/server/stored-secrets.ts#sealPlainSecrets': ['src/lib/server/startup-checks.ts#sealStoredSecretsAtStart'],
+	'src/lib/server/stored-secrets.ts#resealStoredSecrets': ['src/lib/server/startup-checks.ts#startWithMfaKey'],
+	'src/lib/server/stored-secrets.ts#forgetStoredSecrets': ['src/lib/server/startup-checks.ts#startWithMfaKey']
 };
 
 /** The made-up files of the rule's own examples (card 2702), in place of auth.ts and deletes.ts. */
@@ -4318,7 +4341,14 @@ const WEBHOOK_NAME_STRINGS: Record<string, { count: number; why: string }> = {
 	},
 	'src/lib/server/db/restore.ts#switchOffOutside': { count: 1, why: "hasColumns('webhooks', 'active'): whether the restored copy has the column before it is switched off." },
 	'src/lib/server/webhooks.ts#(top level)': { count: 1, why: "createLogger('Webhooks'): the label of the module's log lines (the name in another case, which SQLite reads as the same)." },
-	'src/routes/api/v1/openapi.json/+server.ts#(top level)': { count: 6, why: "The OpenAPI document's tag 'Webhooks': five operations' tags and the tag's own entry." }
+	'src/routes/api/v1/openapi.json/+server.ts#(top level)': { count: 6, why: "The OpenAPI document's tag 'Webhooks': five operations' tags and the tag's own entry." },
+	// Card 2898 (E15): whether a database has the columns before its stored secrets are read, sealed or forgotten.
+	'src/lib/server/stored-secrets.ts#anythingSealed': { count: 1, why: "hasColumns(database, 'webhooks', 'secret'): whether a webhook's secret is to be counted as sealed." },
+	'src/lib/server/stored-secrets.ts#storedSecretsAtStart': { count: 1, why: "hasColumns(database, 'webhooks', …): whether the webhooks' sealed secrets are to be read at start." },
+	'src/lib/server/stored-secrets.ts#sealPlainSecrets': { count: 1, why: "hasColumns(database, 'webhooks', …): whether the webhooks' plain secrets are to be sealed." },
+	'src/lib/server/stored-secrets.ts#forgetStoredSecrets': { count: 1, why: "hasColumns(database, 'webhooks', …): whether the webhooks' secrets are to be forgotten." },
+	'src/lib/server/stored-secrets.ts#sealedForRestore': { count: 1, why: "name === 'webhooks': which of a backup's tables its webhook rows are, whose plain secrets are sealed as a restore reads them (card 2898, S7)." },
+	'src/lib/server/db/restore.ts#rowsToRestore': { count: 1, why: "name === 'webhooks': the backup's webhook rows, each secret held in plain sealed as it is read (card 2898, S7)." }
 };
 
 /**

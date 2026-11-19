@@ -2914,9 +2914,10 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(note.match(/\*\*Changed on [^*]+\*\*/)?.[0]).toContain(`(version ${res.body.info.version})`);
 
 		// The 1.15.0 note (card 2923): ending an account's access also holds its already-off webhooks and mails the
-		// board's owners; breaking, five points since its code review (S1, S2, S5, S6).
+		// board's owners; breaking, five points since its code review (S1, S2, S5, S6), and a sixth for card 2898's sealed
+		// webhook secrets, which ship in the same release.
 		const held = note.slice(note.indexOf('**Changed on 2026-11-18 (version 1.15.0), breaking.**'), note.indexOf('**Changed on 2026-11-18 (version 1.14.0), breaking.**'));
-		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5]);
+		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6]);
 		for (const words of [
 			"Ending an account's access also holds the webhooks it set that were switched off without a hold, and mails the board's owners (card 2923)",
 			"(1) a webhook switched off without a hold (by PUT, or by a restore kept apart) whose setter then has their password reset, has their two-step sign-in reset (on the server's host, unless run with --keep-api-keys), uses an invite, ends their keys on their own password change, is disabled or is deleted is held as setter access ended",
@@ -2925,7 +2926,10 @@ describe('what a route answers, against the schema the document gives for it', (
 			"(2) the board's owners are mailed of the webhooks such an ending switched off, and of those it held, listed apart, naming the kind of action and no account; a reset on the server's host mails nobody",
 			"(3) the setter access ended sentence now names the holder's own change that ends keys, and the webhooks held when already off",
 			'(4) a webhook switched off because nobody was recorded as its setter is now given a new secret too when switched on, and a secret sent with that switch-on is answered 400; its pausedBecause says so',
-			'(5) nothing else changed: no operation, field or schema.'
+			"(5) webhook secrets are stored sealed, under a key derived from the server's MFA key and bound to the webhook's id, board and url (card 2898)",
+			'is never delivered, neither unsigned nor with that stored text',
+			"a PUT that sends secret for such a webhook always replaces it, '' clearing it to unsigned",
+			'(6) nothing else changed: no operation, field or schema.'
 		]) {
 			expect(held, words).toContain(words);
 		}

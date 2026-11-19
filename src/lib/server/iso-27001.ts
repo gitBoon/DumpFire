@@ -249,28 +249,30 @@ export const CHECKLIST: readonly IsoItem[] = [
 		title: 'Authentication information',
 		theme: 'organisational',
 		applicability: 'app',
-		status: 'partly-met',
+		status: 'met',
 		how:
 			'Passwords are hashed with bcrypt at cost 12. Authenticator secrets are sealed with AES-256-GCM under a key kept outside the database. ' +
 			'Session ids, invite tokens, API keys, recovery codes, sign-in challenges, decision links and (since card 2870) requester links are held only as SHA-256 hashes. ' +
 			'Every route that sets a password refuses one over 1,024 characters, the most the step-up reads (card 2888). ' +
 			'Requester links end 90 days after their request is settled (card 2902). ' +
-			'Still open: the mail password, backup destination credentials, webhook secrets and the server\'s own signing keys are stored in plain in the live database.',
+			'The mail password, backup destination credentials, webhook secrets and the server\'s signing keys are sealed with AES-256-GCM under a key kept outside the database, each bound to where it is used (card 2898).',
 		evidence: [
 			{ path: 'src/lib/server/passwords.ts', symbol: 'BCRYPT_ROUNDS' },
 			{ path: 'src/lib/server/passwords.ts', symbol: 'LONGEST_PASSWORD' },
 			{ path: 'src/lib/server/mfa-crypto.ts', symbol: 'aes-256-gcm' },
 			{ path: 'src/lib/server/mfa-key.ts' },
+			{ path: 'src/lib/server/stored-secrets.ts', symbol: 'sealStored' },
 			{ path: 'src/lib/server/db/schema.ts', symbol: 'tokenHash' },
 			{ path: 'src/lib/server/db/schema.ts', symbol: 'keyHash' },
 			{ path: 'src/lib/server/db/schema.ts', symbol: 'linkTokenHash' },
 			{ path: 'src/lib/server/request-tokens.ts', symbol: 'request_links' },
 			{ path: 'src/lib/server/request-access.ts', symbol: 'SETTLED_LINK_DAYS' },
 			{ path: AUTH_DOC, anchor: 'requester-links-stored-as-hashes-card-2870' },
+			{ path: AUTH_DOC, anchor: 'service-secrets-at-rest-card-2898' },
 			{ path: AUTH_DOC, anchor: 'isoiec-270012022' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2898]
+		gapCards: []
 	},
 	{
 		ref: 'A.5.18',
@@ -730,16 +732,18 @@ export const CHECKLIST: readonly IsoItem[] = [
 		how:
 			'AES-256-GCM with bound additional data, and key rotation at start. bcrypt for passwords. SHA-256 for every token kept. ' +
 			'An HMAC seal on backups and on webhook deliveries. STARTTLS with certificate checks, unless an administrator switches on mail without a checked, encrypted connection. A pinned SFTP host key, and __Host- Secure cookies. ' +
-			'Still open: the stored service credentials are not encrypted, and neither are backup files.',
+			'The stored service secrets sealed with AES-256-GCM under a derived key, padded and bound to where each is used (card 2898). ' +
+			'Still open: backup files are not encrypted.',
 		evidence: [
 			{ path: 'src/lib/server/mfa-crypto.ts', symbol: 'createCipheriv' },
 			{ path: 'src/lib/server/mfa-key.ts' },
+			{ path: 'src/lib/server/stored-secrets.ts', symbol: 'sealStored' },
 			{ path: 'src/lib/server/startup-checks.ts' },
 			{ path: 'src/lib/server/passwords.ts', symbol: 'BCRYPT_ROUNDS' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'createHmac' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2898, 2900],
+		gapCards: [2900],
 		organisationalPart: 'TLS at the reverse proxy, custody of MFA_KEY_FILE, and a cryptography policy.'
 	},
 	{

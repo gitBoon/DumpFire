@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.89
+version: 1.90
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2898
+  - secrets-at-rest
   - card-2923
   - ended-access-holds-webhooks
   - card-2915
@@ -3287,6 +3289,23 @@ flowchart LR
   never brings either in, and fills this server's secrets only into a backup whose seal it
   can make again. See
   [The Secrets a Backup Does Not Hold](authentication-security.md#the-secrets-a-backup-does-not-hold-card-2169).
+- **The live database keeps its secrets sealed** (card 2898, no migration): `webhooks.secret`,
+  `settings.smtp_pass`, the secret fields of `settings.backup_config`'s destinations (and a
+  service account's `private_key` inside its JSON), `known_browser_secret`,
+  `request_form_secret` and `backup_seal_key` each hold `''` for none or an envelope,
+  `dfsealed:1:<key id>:<nonce>:<ciphertext>`: AES-256-GCM under a key derived from the MFA key
+  file, bound to the webhook's id, board and address, the mail connection, the destination's
+  place, or the setting's name. A value held in plain (written by an older image) is used as it
+  is and sealed at the next start. `settings.mfa_key_check` is recorded at every start before
+  anything is sealed, and with every sealed write. `settings.secrets_scrub_pending` (an ISO time)
+  is set by a start that sealed anything, by every restore (a working copy's included) and every
+  Reset in their own transaction, and by a change of key or a forget of what does not open; it is
+  never brought in by a restore, and cleared only once the old text is scrubbed from the file
+  and its write-ahead log (checkpoint, `VACUUM`, checkpoint), by the start that set it, a try in
+  the background after a start, or Admin › Vacuum (card 2898's code review, S1, S4, E4).
+  `settings.stored_secrets_first_sealed` (an ISO time) is written once, by the first start that
+  sealed anything: only that start deletes the stale `.backup-temp` copies (E8). See
+  [Service Secrets at Rest](authentication-security.md#service-secrets-at-rest-card-2898).
 - **Positions** use `real` float type for fractional ordering — allows inserting between items without reordering all rows
 - **Sub-boards** are regular boards with a `parent_card_id` linking them to a card. The
   column is a foreign key to `cards` with `ON DELETE CASCADE`, so a sub-board is deleted

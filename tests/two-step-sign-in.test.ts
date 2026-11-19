@@ -81,6 +81,7 @@ import {
 import { base32, otpauthUri, qrDataUri, secretInGroups } from '$lib/server/otpauth';
 import { parseStamp, stamp } from '$lib/timestamps';
 import { action, pageLoad } from './helpers/actions';
+import { readOpened } from './helpers/reads';
 import { effects, type Effects } from './helpers/effects';
 import { gate } from './helpers/gate';
 import { FIXTURE_PASSWORD, FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, resetDb, sessionHashOf, sessionRow } from './helpers/fixtures';
@@ -198,7 +199,8 @@ describe('remembered browsers (decision 24)', () => {
 		expect(rememberedNonce(sending(value), user)).toBe(nonce);
 
 		// The same browser, time and nonce under the same secret, signed as an older image signs.
-		const secret = db.select().from(settings).where(eq(settings.key, KNOWN_BROWSER_SECRET_KEY)).get()!.value;
+		// Opened: it is stored sealed (card 2898).
+		const secret = readOpened('settings', KNOWN_BROWSER_SECRET_KEY)!;
 		const olderMac = createHmac('sha256', secret)
 			.update(`known-browser:1:${user.id}:${issuedAt}:${nonce}:${user.passwordHash}`)
 			.digest('hex');

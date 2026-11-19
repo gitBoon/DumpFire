@@ -37,6 +37,7 @@ import { settings } from './db/schema';
 import { eq } from 'drizzle-orm';
 import { createLogger } from './logger';
 import { maskSecretPaths } from './secret-paths';
+import { MAIL_CONNECTION_SETTINGS, mailPasswordAad, openStored, sealStored } from './stored-secrets';
 
 const log = createLogger('EMAIL');
 
@@ -70,10 +71,40 @@ export type SmtpConfig = {
 	 */
 	allowInsecure: boolean;
 	user: string;
+	/** The mail password opened (card 2898); '' for none, and for one that does not open. */
 	pass: string;
 	fromAddress: string;
 	fromName: string;
+	/**
+	 * Present, and true, only where a password is stored that does not open
+	 * under this server's key (card 2898, S3): a host changed by hand, or a
+	 * row tampered with. No mail is sent while a user is set.
+	 */
+	passUnopenable?: true;
 };
+
+/** The stored mail settings the password is sealed bound to (card 2898): `mailPasswordAad`'s connection. */
+function storedMailConnection(): Record<string, string | null> {
+	return Object.fromEntries(MAIL_CONNECTION_SETTINGS.map((name) => [name, getSetting(name)]));
+}
+
+/**
+ * Where mail goes, as a mail reads it, without the password, which is not
+ * opened for it (the code review's E10): the host, port, user and way out.
+ */
+export function mailConnectionAsRead(): Pick<SmtpConfig, 'host' | 'port' | 'user' | 'allowInsecure'> {
+	return {
+		host: getSetting('smtp_host') || '',
+		port: Number(getSetting('smtp_port') || '587'),
+		allowInsecure: getSetting('smtp_allow_insecure') === 'true',
+		user: getSetting('smtp_user') || ''
+	};
+}
+
+/** The stored mail password, opened (card 2898). */
+function storedMailPassword() {
+	return openStored(getSetting('smtp_pass'), mailPasswordAad(storedMailConnection()));
+}
 
 /** Read SMTP config from the settings table. Returns null if not configured. */
 export function getSmtpConfig(): SmtpConfig | null {
@@ -85,14 +116,16 @@ export function getSmtpConfig(): SmtpConfig | null {
 
 /** The mail settings with `host`, each other one read with the default a mail uses. */
 function smtpSettingsWith(host: string): SmtpConfig {
+	const pass = storedMailPassword();
 	return {
 		host,
 		port: Number(getSetting('smtp_port') || '587'),
 		allowInsecure: getSetting('smtp_allow_insecure') === 'true',
 		user: getSetting('smtp_user') || '',
-		pass: getSetting('smtp_pass') || '',
+		pass: pass.value,
 		fromAddress: getSetting('smtp_from_address') || '',
-		fromName: getSetting('smtp_from_name') || 'DumpFire'
+		fromName: getSetting('smtp_from_name') || 'DumpFire',
+		...(pass.kind === 'unopenable' ? { passUnopenable: true as const } : {})
 	};
 }
 
@@ -111,6 +144,11 @@ export function mailSettingsAsRead(): SmtpConfig & { appUrl: string } {
  *
  * One transaction: each setting is a row of its own, and a failure part of
  * the way used to leave a new host saved with the old port and password.
+ *
+ * A password is written sealed under the MFA key (card 2898), bound to the
+ * mail connection the save leaves stored, the key check recorded with it; ''
+ * is stored ''. One kept by the save is not passed, and its row is left as it
+ * is (decision 18).
  */
 export function saveSmtpConfig(config: Partial<SmtpConfig>): void {
 	inTransaction(() => {
@@ -118,7 +156,7 @@ export function saveSmtpConfig(config: Partial<SmtpConfig>): void {
 		if (config.port !== undefined) setSetting('smtp_port', String(config.port));
 		if (config.allowInsecure !== undefined) setSetting('smtp_allow_insecure', String(config.allowInsecure));
 		if (config.user !== undefined) setSetting('smtp_user', config.user);
-		if (config.pass !== undefined) setSetting('smtp_pass', config.pass);
+		if (config.pass !== undefined) setSetting('smtp_pass', sealStored(config.pass, mailPasswordAad(storedMailConnection())));
 		if (config.fromAddress !== undefined) setSetting('smtp_from_address', config.fromAddress);
 		if (config.fromName !== undefined) setSetting('smtp_from_name', config.fromName);
 	});
@@ -132,10 +170,14 @@ export function isSmtpConfigured(): boolean {
 /**
  * Whether the mail settings name a user and hold no password: every mail
  * would fail to sign in. What a restore leaves until the password is entered
- * again, since a backup does not hold it (card 2169).
+ * again, since a backup does not hold it (card 2169). And where the stored one
+ * does not open under this server's key (card 2898, S3), which is as good as
+ * none.
  */
 export function smtpPasswordMissing(): boolean {
-	return !!getSetting('smtp_user') && !getSetting('smtp_pass');
+	if (!getSetting('smtp_user')) return false;
+	const pass = storedMailPassword();
+	return pass.kind === 'empty' || pass.kind === 'unopenable';
 }
 
 // ─── App URL ─────────────────────────────────────────────────────────────────
@@ -407,6 +449,9 @@ function createTransporter(config: SmtpConfig): Transporter {
 		secure: implicitTls,
 		requireTLS: !implicitTls && checked,
 		auth: config.user ? { user: config.user, pass: config.pass } : undefined,
+		// With a user set, the password is always sent, and a server that does
+		// not ask for one is not mailed through without it (card 2898, S3).
+		...(config.user ? { forceAuth: true } : {}),
 		tls: { rejectUnauthorized: checked },
 		name: 'dumpfire.app', // Explicit EHLO name prevents Google 421 rate-limit errors from local computer names
 		connectionTimeout: 10000,
@@ -505,6 +550,7 @@ function warnIfTlsFault(err: unknown, detail: string): void {
 export type MailProblem =
 	| 'not-configured'
 	| 'no-password'
+	| 'password-unopenable'
 	| 'secure-connection'
 	| 'unreachable'
 	| 'sign-in'
@@ -520,6 +566,8 @@ export type MailProblem =
 export const MAIL_PROBLEM_WORDS: Record<MailProblem, string> = {
 	'not-configured': 'mail is not set up on this server',
 	'no-password': 'the mail password has not been entered on this server; an administrator enters it under 📧 Email / SMTP',
+	'password-unopenable':
+		'the mail password stored on this server cannot be opened, so it must be entered again; an administrator enters it under 📧 Email / SMTP',
 	'secure-connection': "the mail server's certificate could not be checked, or it does not offer STARTTLS",
 	unreachable: 'the mail server could not be reached',
 	'sign-in': 'the mail server refused the sign-in',
@@ -699,6 +747,27 @@ async function deliverMail(
 		return { sent: false, problem: 'not-configured', detail: MAIL_PROBLEM_WORDS['not-configured'] };
 	}
 
+	/** Counted, kept as the last failure and logged at ERROR, as every mail that did not go is. */
+	const failed = (problem: Exclude<MailProblem, 'not-configured'>, detail: string, fields: Record<string, unknown> = {}): MailOutcome => {
+		status.failed++;
+		status.lastFailure = {
+			at: new Date().toISOString(),
+			subject: message.subject,
+			problem: MAIL_PROBLEM_WORDS[problem],
+			detail
+		};
+		log.error(`Failed to send email to ${recipient ?? message.to}: ${message.subject}`, { ...fields, problem, detail });
+		return { sent: false, problem, detail };
+	};
+
+	// A user set and no password to send, or one that cannot be opened (card
+	// 2898, S3): refused before anything is asked of the mail server, so that
+	// no mail server that does not ask for a password is mailed through without one.
+	if (config.user && (config.passUnopenable || !config.pass)) {
+		const problem = config.passUnopenable ? 'password-unopenable' : 'no-password';
+		return failed(problem, MAIL_PROBLEM_WORDS[problem]);
+	}
+
 	try {
 		const transporter = createTransporter(config);
 		await transporter.sendMail({ from: `"${config.fromName}" <${config.fromAddress}>`, ...message });
@@ -715,22 +784,13 @@ async function deliverMail(
 			command?: unknown;
 			responseCode?: unknown;
 		};
-		status.failed++;
-		status.lastFailure = {
-			at: new Date().toISOString(),
-			subject: message.subject,
-			problem: MAIL_PROBLEM_WORDS[problem],
-			detail
-		};
-		log.error(`Failed to send email to ${recipient ?? message.to}: ${message.subject}`, {
+		const outcome = failed(problem, detail, {
 			code: typeof code === 'string' ? code.slice(0, 40) : undefined,
 			command: typeof command === 'string' ? command.slice(0, 40) : undefined,
-			responseCode: typeof responseCode === 'number' ? responseCode : undefined,
-			problem,
-			detail
+			responseCode: typeof responseCode === 'number' ? responseCode : undefined
 		});
 		if (!test) warnIfTlsFault(err, detail);
-		return { sent: false, problem, detail };
+		return outcome;
 	}
 }
 

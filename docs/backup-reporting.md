@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.50
+version: 1.51
 status: As-Built
-date: 2026-11-18
+date: 2026-11-19
 tags:
+  - card-2898
+  - secrets-at-rest
   - card-2671
   - account-disable
   - card-2899
@@ -679,6 +681,22 @@ flowchart TD
   again rather than filled under the backup's setter, where that account's password reset
   would not reach it. See
   [The Secrets a Backup Does Not Hold](authentication-security.md#the-secrets-a-backup-does-not-hold-card-2169).
+- **The live file holds those secrets sealed** (card 2898): the mail password, each
+  destination's secret fields and each webhook's secret are stored under a key derived from the
+  MFA key file, bound to where each is used, and so are `backup_seal_key`, the request-form key
+  and the remembered-browser key. A copy holds none of them, sealed or not. A restore of this
+  server's own backup moves each sealed value as it is (its match rules are what it is bound to,
+  so it opens where it is put); a value here that does not open is not moved, and its gap is
+  listed, a matched destination whose credential does not open among them (never given the host
+  key as one with no credentials; card 2898's code review, E2). A backup whose secrets were sealed
+  under another key brings them in as they are: they stay unopenable, are never used or filled,
+  and are listed to enter. Every restore, a working copy's included, marks
+  `secrets_scrub_pending` in its transaction and never brings in a backup's marker (S1), so the
+  replaced rows' old text is scrubbed from the file after it. A backup that holds secrets in plain (one made before card 2169, or a file copied by
+  hand) has each sealed as the restore reads it (`rowsToRestore()`), so none reaches the live
+  file in plain, and the write-ahead log is emptied after the commit; with no MFA key loaded, such
+  a restore is refused and rolled back. See
+  [Service Secrets at Rest](authentication-security.md#service-secrets-at-rest-card-2898).
 - **Sealed** (card 2169's review, S1): `sealCopy()` writes into the cleared copy, as the
   `backup_seal` setting, an HMAC-SHA256 of a dump of it that is the same from the same rows
   whatever file they are in (`sealOf()`: every row of `sqlite_master` by type and name, SQLite's own included; every

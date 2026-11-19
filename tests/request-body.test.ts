@@ -107,6 +107,7 @@ import {
 	stepUpCode
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { readOpened } from './helpers/reads';
 import { giveAuthenticator, giveFactor } from './helpers/two-step';
 import { LABEL_MISSING, LABEL_TOO_LONG, LABEL_UNPRINTABLE, NEW_CODE_MALFORMED } from '$lib/server/account-two-step';
 import { STEP_UP_MISSING } from '$lib/step-up-words';
@@ -3158,7 +3159,8 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		const box = { type: 'sftp', name: 'Box', host: 'box.example.test', port: 22, username: 'backup', password: 'the-real-one', remotePath: '/b' };
 		const stored = { schedule: 'daily', scheduleTime: '03:30', scheduleDay: 2, retention: 9, destinations: [box], notifyOnFailure: true, notifyEmail: 'ops@example.test' };
 		db.insert(settings).values({ key: 'backup_config', value: JSON.stringify(stored) }).run();
-		const config = () => JSON.parse(db.select().from(settings).where(eq(settings.key, 'backup_config')).get()!.value);
+		// Opened: a save stores the destinations' secrets sealed (card 2898).
+		const config = () => JSON.parse(readOpened('settings', 'backup_config')!);
 
 		const kept = await api('PUT', '/api/admin/backup', { user: w.chief, body: { retention: 3 } });
 		expect(kept.status, JSON.stringify(kept.body)).toBe(200);

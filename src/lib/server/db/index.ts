@@ -28,6 +28,9 @@ sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('synchronous = NORMAL');
 sqlite.pragma('foreign_keys = ON');
 sqlite.pragma('cache_size = -64000'); // 64MB cache
+// Deleted and overwritten content is zeroed, not left in free space (card
+// 2898, decision 14): a secret sealed in place leaves no plain text behind.
+sqlite.pragma('secure_delete = ON');
 // Searches fold every letter's case by it (card 2843, db/fold-case.ts).
 registerFoldCase(sqlite);
 

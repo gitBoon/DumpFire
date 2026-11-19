@@ -131,6 +131,7 @@ import {
 import { fakeEvent, FROM_THE_PAGE } from './helpers/gate';
 import { sendAround } from './helpers/held-body';
 import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
+import { readOpened } from './helpers/reads';
 
 /**
  * What SvelteKit's `getRequestEvent` answers: the request a test names, or,
@@ -1556,7 +1557,8 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 	/** The lines these routes write, and the Connect's. */
 	const lines = () =>
 		(sqlite.prepare("SELECT level, context, message FROM system_logs WHERE context IN ('BACKUP', 'GDRIVE', 'SMTP') ORDER BY id").all() as Record<string, string>[]);
-	const storedDrive = () => JSON.parse(db.select().from(settings).where(eq(settings.key, 'backup_config')).get()!.value).destinations[1];
+	// Opened: a save stores the destinations' secrets sealed (card 2898).
+	const storedDrive = () => JSON.parse(readOpened('settings', 'backup_config')!).destinations[1];
 
 	/** What left the process, or would have: mail, a backup sent, a destination made with its secret, a code sent to Google. */
 	const sentOut = (mail: { emails: unknown[] }) => ({

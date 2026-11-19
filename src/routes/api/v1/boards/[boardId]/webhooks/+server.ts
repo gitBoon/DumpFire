@@ -9,6 +9,7 @@ import { writeAs } from '$lib/server/write-as';
 import { canSeeWebhookSecret, hostOf, keyOfWrite, presentWebhook, receiverOf, refuseWebhookOverCap, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import { readWebhookUrl } from '$lib/server/webhook-address';
 import { notifyWebhookCreated } from '$lib/server/notifications';
+import { TYPED_SECRET_LOOKS_SEALED, looksSealed, sealStored, webhookSecretAad } from '$lib/server/stored-secrets';
 import type { RequestHandler } from './$types';
 
 /** Said to a create at a receiver held off on the board, by anyone but its owners and administrators (card 2752, D6; the code review's CS2). */
@@ -75,6 +76,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		requireBoard(user, boardId, 'edit');
 
 		const url = readWebhookUrl(body, { required: true, says: { missing: 'URL is required' } })!;		const secret = readText(body, 'secret', { max: 256 });
+		// One that looks sealed is refused (card 2898, S9): it would be taken for one.
+		if (looksSealed(secret)) throw error(400, TYPED_SECRET_LOOKS_SEALED);
 		// Each name trimmed: the wrapper sends "card.created, card.moved" split
 		// on the commas. An empty list, or none, is every event.
 		const events = readChoices(body, 'events', { from: WEBHOOK_EVENTS, trim: true });
@@ -97,10 +100,20 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 				.some((hook) => receiver !== null && receiverOf(hook.url) === receiver);
 			if (heldOff) throw error(409, HELD_OFF_RECEIVER);
 		}
-		const hook = db.insert(webhooks)
-			.values({ boardId, url, secret: secret ?? '', events: JSON.stringify(events ?? []), setBy: user.id, ...keyOfWrite(locals.credential) })
+		const made = db.insert(webhooks)
+			.values({ boardId, url, secret: '', events: JSON.stringify(events ?? []), setBy: user.id, ...keyOfWrite(locals.credential) })
 			.returning()
 			.get();
+		// The secret sealed under the MFA key, bound to the webhook's id, board
+		// and address, which are known only once it is made (card 2898, decision
+		// 19), in the same transaction: never written in plain.
+		const hook = secret
+			? db.update(webhooks)
+				.set({ secret: sealStored(secret, webhookSecretAad(made.id, made.boardId, made.url)) })
+				.where(eq(webhooks.id, made.id))
+				.returning()
+				.get()
+			: made;
 		// The board's owners are told of a webhook someone else made (card 2752, S3), once it is committed.
 		if (!owns) notifyWebhookCreated(boardId, user.username, { id: hook.id, host: hostOf(hook.url) });
 		// Made here, in the transaction that saved it: `pausedBecause` (card

@@ -575,6 +575,18 @@ describe('a database with no users while another is beside it', () => {
 		expect(() => refuseUserlessBesideAnother(OTHER)).not.toThrow();
 	});
 
+	it('23: seals the stored secrets at start after the form key and the MFA key check, and before the schedulers and the rest (card 2898, E10)', () => {
+		const hooks = readFileSync(join(process.cwd(), 'src', 'hooks.server.ts'), 'utf8').replace(/\r\n/g, '\n');
+		const at = (call: string) => hooks.indexOf(`\n${call}`);
+
+		expect(at('sealStoredSecretsAtStart();')).toBeGreaterThan(-1);
+		expect(at('sealStoredSecretsAtStart();')).toBeGreaterThan(at('ensureFormSecret();'));
+		expect(at('sealStoredSecretsAtStart();')).toBeGreaterThan(at('checkMfaKeyAtStart();'));
+		for (const later of ['startSchedulers();', 'void announceWebhooksBeforeKeys();', 'reportInstallation();']) {
+			expect(at(later), later).toBeGreaterThan(at('sealStoredSecretsAtStart();'));
+		}
+	});
+
 	it('is asked by the server as it starts, after the migrations and before anything else', () => {
 		const hooks = readFileSync(join(process.cwd(), 'src', 'hooks.server.ts'), 'utf8').replace(/\r\n/g, '\n');
 		const at = (call: string) => hooks.indexOf(`\n${call}`);

@@ -57,6 +57,10 @@
  * can read or one kept in the database's own folder. With
  * `MFA_KEY_FILE_PREVIOUS` set it changes the key (card 2773): every factor of
  * the old key is sealed again under the new one before the server listens.
+ * The stored secrets (card 2898) are judged and sealed again with the
+ * factors, and `sealStoredSecretsAtStart`, after `ensureFormSecret`, seals
+ * every one still held in plain and scrubs the old text from the file; a
+ * sealing that fails stops the server too.
  *
  * And five things that are changed at start, beside them: `maskLiveLog`,
  * which masks the secrets an older gate wrote into the system log;
@@ -78,14 +82,15 @@
  * board, that nobody is recorded as having set up, or whose key has ended
  * (card 2893), and mails the boards' owners where the schedulers run.
  */
-import { readFileSync } from 'node:fs';
+import type Database from 'better-sqlite3';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { posix } from 'node:path';
 import { dev } from '$app/environment';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { createdAtStart, db, getDbPath, otherDatabaseAtStart, sqlite } from './db';
 import { webhooks } from './db/schema';
 import { stamp, toStamp } from '$lib/timestamps';
-import { DatabaseLocationError, described, heldInContainerLayer, type OtherDatabase } from './db/location';
+import { DatabaseLocationError, described, heldInContainerLayer, importFiles, type OtherDatabase } from './db/location';
 import {
 	PLACEHOLDER_ORIGIN,
 	appUrlFrom,
@@ -132,7 +137,9 @@ import {
 import { inTransaction } from './db/transaction';
 import { removeSettingsOfFormerAdministrators, settingsHeldBy } from './setting-setters';
 import {
+	FORGET_UNOPENABLE_SECRETS,
 	MFA_KEY_CHECK_SETTING,
+	currentMfaKey,
 	loadPreviousMfaKey,
 	mfaKeyLoad,
 	mfaStartVerdict,
@@ -142,6 +149,22 @@ import {
 } from './mfa-key';
 import { factorAad, openSealed, sealWith } from './mfa-crypto';
 import { readMfaKeyCheck } from './mfa-store';
+import {
+	PROCESS_STARTED_AT,
+	SECRETS_SCRUB_PENDING,
+	STORED_SECRETS_FIRST_SEALED,
+	checkpointTruncate,
+	markScrubPending,
+	forgetStoredSecrets,
+	recordKeyCheck,
+	replaceUnopenableSigningKeys,
+	resealStoredSecrets,
+	sealPlainSecrets,
+	sealedTotal,
+	storedSecretsAtStart,
+	type SealedCounts,
+	type StoredSecret
+} from './stored-secrets';
 
 const log = createLogger('STARTUP');
 const authLog = createLogger('AUTH');
@@ -595,19 +618,32 @@ const UNREADABLE_NAMED = 20;
  * changes nothing, and starting again is safe. What was opened, and the keys
  * derived from the old one, are zeroed once used (decision 17). `seal` is a
  * seam for the tests, to fail partway.
+ *
+ * The stored secrets (card 2898, stored-secrets.ts) are judged with the
+ * factors (`stored`, read afresh inside the transaction too): a key that does
+ * not match them refuses the start; a rotation seals them again with the
+ * factors, in the same transaction, factors or none (S1); with no check
+ * stored and none of them opening, they are forgotten as a backup forgets
+ * them (decision 10); and each that does not open is named in one AUTH ERROR
+ * line of its own, never with a value.
  */
 export function checkMfaKeyAtStart(
 	load: KeyLoad = mfaKeyLoad(),
 	factors: () => readonly FactorAtStart[] = readFactorsAtStart,
 	storedCheck: () => string | null = () => readMfaKeyCheck(sqlite),
 	previous: PreviousKeyLoad = loadPreviousMfaKey({ keyFile: process.env.MFA_KEY_FILE_PREVIOUS }),
-	seal: typeof sealWith = sealWith
+	seal: typeof sealWith = sealWith,
+	stored: () => readonly StoredSecret[] = () => storedSecretsAtStart(sqlite),
+	forgetUnopenable: boolean = process.env[FORGET_UNOPENABLE_SECRETS] === '1'
 ): void {
 	try {
-		startWithMfaKey(load, factors, storedCheck, previous, seal);
+		startWithMfaKey(load, factors, storedCheck, previous, seal, stored, forgetUnopenable);
 	} finally {
 		// The old key is needed for nothing after this (decision 17).
-		if (previous.ok && previous.key !== null) previous.key.encryptionKey.fill(0);
+		if (previous.ok && previous.key !== null) {
+			previous.key.encryptionKey.fill(0);
+			previous.key.secretsKey.fill(0);
+		}
 	}
 }
 
@@ -624,9 +660,19 @@ function startWithMfaKey(
 	factors: () => readonly FactorAtStart[],
 	storedCheck: () => string | null,
 	previous: PreviousKeyLoad,
-	seal: typeof sealWith
+	seal: typeof sealWith,
+	stored: () => readonly StoredSecret[],
+	forgetUnopenable: boolean
 ): void {
-	let verdict = mfaStartVerdict({ load, factors: factors(), storedCheck: storedCheck(), previous });
+	// Said at every start while it is set (the code review's S6): it is meant for one start, and removed.
+	if (forgetUnopenable) {
+		warnOnConsoleAlways(
+			`${FORGET_UNOPENABLE_SECRETS}=1 is set: a start with no key check stored and no stored secret opening forgets them. ` +
+				'Remove it once the start it was set for has run. See docs/deployment.md, If the Key Is Lost.',
+			'AUTH'
+		);
+	}
+	let verdict = mfaStartVerdict({ load, factors: factors(), storedCheck: storedCheck(), previous, stored: stored(), forgetUnopenable });
 	if (verdict.refuse !== null) throw mfaKeyRefusal(verdict.refuse);
 
 	const old = previous.ok ? previous.key : null;
@@ -635,6 +681,8 @@ function startWithMfaKey(
 	// with MFA_KEY_FILE_PREVIOUS still set, say), as nothing opens it any more.
 	const staleChallenges =
 		old !== null && sqlite.prepare('SELECT 1 FROM sign_in_challenges WHERE key_id = ? LIMIT 1').get(old.id) !== undefined;
+	// Stored secrets to seal again or to forget always come with a check to
+	// record (card 2898, S1), so `recordCheck` opens the transaction for them.
 	if (load.ok && (verdict.reseal.length > 0 || verdict.recordCheck !== null || staleChallenges)) {
 		const key = load.key;
 		try {
@@ -642,12 +690,13 @@ function startWithMfaKey(
 				.transaction(() => {
 					// Read and decided again, under the write lock: what was read above
 					// may have been changed by another instance since (decision 16).
-					const stored = factors();
-					const again = mfaStartVerdict({ load, factors: stored, storedCheck: storedCheck(), previous });
+					const storedFactors = factors();
+					const storedSecrets = stored();
+					const again = mfaStartVerdict({ load, factors: storedFactors, storedCheck: storedCheck(), previous, stored: storedSecrets, forgetUnopenable });
 					if (again.refuse !== null) throw mfaKeyRefusal(again.refuse);
 
 					if (again.reseal.length > 0 && old !== null) {
-						const byId = new Map(stored.map((factor) => [factor.id, factor]));
+						const byId = new Map(storedFactors.map((factor) => [factor.id, factor]));
 						const update = sqlite.prepare(
 							'UPDATE mfa_factors SET key_id = ?, secret_nonce = ?, secret_ciphertext = ? WHERE id = ? AND key_id = ?'
 						);
@@ -666,6 +715,12 @@ function startWithMfaKey(
 							}
 						}
 					}
+
+					// The stored secrets of the previous key, sealed again beside the
+					// factors (card 2898, decision 12); and, where no check is stored and
+					// none opens, forgotten (decision 10).
+					if ((again.storedReseal?.length ?? 0) > 0 && old !== null) resealStoredSecrets(sqlite, again.storedReseal!, old, key, seal);
+					if ((again.storedForget?.length ?? 0) > 0) forgetStoredSecrets(sqlite, again.storedForget!);
 
 					// A secret being set up, sealed under the old key, opens with nothing now.
 					if (old !== null) sqlite.prepare('DELETE FROM sign_in_challenges WHERE key_id = ?').run(old.id);
@@ -688,12 +743,25 @@ function startWithMfaKey(
 		}
 
 		// Said whatever LOG_LEVEL is: the new key is now the only one that opens
-		// the factors, and no backup holds it (decision 18).
-		if (verdict.reseal.length > 0) {
+		// the factors, and no backup holds it (decision 18). The stored secrets
+		// are counted beside them (card 2898, decision 12).
+		const storedResealed = verdict.refuse === null ? (verdict.storedReseal?.length ?? 0) : 0;
+		if (verdict.reseal.length > 0 || storedResealed > 0) {
 			warnOnConsoleAlways(
-				`Rotated ${verdict.reseal.length} second factor(s) to the new MFA key. Back up the new key now, then remove ` +
+				`Rotated ${verdict.reseal.length} second factor(s)` +
+					(storedResealed > 0 ? ` and ${storedResealed} stored secret(s)` : '') +
+					' to the new MFA key. Back up the new key now, then remove ' +
 					'MFA_KEY_FILE_PREVIOUS; keep the old key file offline for as long as you keep backups made before today.',
 				'AUTH'
+			);
+		}
+		const forgotten = verdict.refuse === null ? (verdict.storedForget ?? []) : [];
+		if (forgotten.length > 0) {
+			authLog.error(
+				`No key check was stored and none of the ${forgotten.length} stored secret(s) opens with this server's MFA key, ` +
+					`so they were forgotten as a backup forgets them: ${namedSecrets(forgotten)}. Enter them again (the mail ` +
+					'password and backup destination credentials in Admin; each webhook a new secret with its receiver).',
+				{ forgotten: forgotten.length }
 			);
 		}
 	}
@@ -712,6 +780,18 @@ function startWithMfaKey(
 		);
 	}
 
+	// The stored secrets that do not open with this key (card 2898, decision
+	// 9): named, never a value, and none is used.
+	const storedUnreadable = verdict.storedUnreadable ?? [];
+	if (storedUnreadable.length > 0) {
+		authLog.error(
+			`${storedUnreadable.length} stored secret(s) could not be opened with this server's MFA key: ${namedSecrets(storedUnreadable)}. ` +
+				'None is used: mail is not sent without its password, a destination is not tried, a webhook is not sent, and ' +
+				'a signing key is replaced. Enter each again where it is set.',
+			{ unreadable: storedUnreadable.length }
+		);
+	}
+
 	// A key this start made (development and test only, mfa-key.ts) is said
 	// whatever LOG_LEVEL is: it is the only copy, and no backup holds it.
 	if (load.ok && load.made && load.path !== null) {
@@ -723,6 +803,173 @@ function startWithMfaKey(
 	}
 
 	for (const warning of verdict.warnings) warnOnConsoleAlways(warning);
+}
+
+/** The stored secrets named one by one, the first `UNREADABLE_NAMED`, each by where it is and never by what it holds. */
+function namedSecrets(secrets: readonly { where: string }[]): string {
+	const named = secrets.slice(0, UNREADABLE_NAMED).map((secret) => printable(secret.where)).join(', ');
+	return secrets.length > UNREADABLE_NAMED ? `${named}, and ${secrets.length - UNREADABLE_NAMED} more` : named;
+}
+
+/**
+ * Seal, before the server listens, every stored secret held in plain (card
+ * 2898, decision 6), and scrub the old plain text out of the file (decision
+ * 14, S6). Called once, from hooks.server.ts, after `ensureFormSecret`, as a
+ * bare call: a sealing that fails throws, and the server stops, nothing
+ * changed. `database` is the running one unless a test gives a scratch file.
+ *
+ * One `BEGIN IMMEDIATE` transaction: the key check recorded first, by the
+ * one rule (S2; the code review's E1: before anything is sealed, so that a
+ * stale check of another key while nothing is sealed is replaced, the T35
+ * rule, and not refused once the sweep has sealed something), then every
+ * plain value sealed (`sealPlainSecrets`: the mail password, each
+ * destination's secret fields, each webhook's secret and the three signing
+ * keys), each signing key that does not open replaced by a new one (S14),
+ * and, when anything was sealed or replaced, the `secrets_scrub_pending`
+ * marker set. A second start seals nothing.
+ *
+ * After the commit, on a start that sealed anything: one `[WARN] [STARTUP]`
+ * line counting them by kind, never a value, naming the import's safety copy
+ * where there is one (S13), which holds them in plain; and, on the first such
+ * start alone (the `stored_secrets_first_sealed` setting, E8), the stale
+ * temporary copies a backup leaves beside the database deleted (S13). A
+ * replaced signing key is a WARN of its own, saying what it breaks.
+ *
+ * Then the scrub (`scrubStoredSecrets`). A marker this start set (by its
+ * sealing, a change of key or a forget) is scrubbed now, before the server
+ * listens, as decision 14 has it; one left pending by an earlier start, a
+ * restore or a Reset is tried after the server listens, in the background
+ * (`later`, E4), and so is one this start could not finish: a VACUUM that
+ * fails never delays listening, nor stops a start. The marker stays until a
+ * scrub succeeds, and each failure is an ERROR naming Admin › Vacuum.
+ */
+export function sealStoredSecretsAtStart(
+	database: Database.Database = sqlite,
+	later: (scrub: () => boolean) => void = retryScrubInBackground
+): void {
+	const key = currentMfaKey();
+	let counts: SealedCounts;
+	let replaced: string[];
+	let firstSealing = false;
+	try {
+		if (key === null) throw new Error('no MFA key is loaded');
+		[counts, replaced, firstSealing] = database
+			.transaction((): [SealedCounts, string[], boolean] => {
+				recordKeyCheck(database, key);
+				const sealedNow = sealPlainSecrets(database, key);
+				const replacedNow = replaceUnopenableSigningKeys(database, key);
+				let first = false;
+				if (sealedTotal(sealedNow) > 0 || replacedNow.length > 0) {
+					markScrubPending(database);
+					first =
+						database
+							.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING')
+							.run(STORED_SECRETS_FIRST_SEALED, new Date().toISOString()).changes === 1;
+				}
+				return [sealedNow, replacedNow, first];
+			})
+			.immediate();
+	} catch (err) {
+		throw mfaKeyRefusal(
+			`The stored secrets could not be sealed under the MFA key (${(err as Error)?.message ?? String(err)}). Nothing was ` +
+				'changed, and starting again is safe; if another instance is running on this database, stop it first. See ' +
+				'docs/deployment.md, The Key That Protects Authenticator Secrets.'
+		);
+	}
+
+	const total = sealedTotal(counts);
+	if (total > 0) {
+		const dbPath = database.name;
+		const onDisk = dbPath !== '' && dbPath !== ':memory:';
+		// The copies a backup leaves beside the database while it is made (backup.ts), stale after a stop (S13):
+		// on the first sealing start alone (E8), when no backup of this process can be making them.
+		if (onDisk && firstSealing) {
+			for (const path of [`${dbPath}.backup-temp`, `${dbPath}.backup-temp-cleared`]) {
+				for (const suffix of ['', '-journal', '-wal', '-shm']) {
+					try {
+						unlinkSync(path + suffix);
+					} catch {
+						// Not there.
+					}
+				}
+			}
+		}
+		const safety = onDisk ? importFiles(dbPath).safety : null;
+		warnOnConsoleAlways(
+			`Sealed ${total} stored secret(s) held in plain (${counts.mail > 0 ? 'the mail password, ' : ''}` +
+				`${counts.destinationFields} destination field(s), ${counts.webhooks} webhook secret(s), ${counts.signingKeys} ` +
+				`signing key(s); ${counts.unreadableConfigs} backup configuration(s) unreadable): they are now encrypted under the MFA key.` +
+				(safety !== null && existsSync(safety)
+					? ` The import's safety copy ${printable(safety)} holds them in plain as they were: delete it once it is not needed.`
+					: '') +
+				' Copies of the database made before today (volume snapshots, cold copies) hold them in plain: change them if any such copy may be out of your hands.'
+		);
+	}
+	if (replaced.length > 0) {
+		warnOnConsoleAlways(
+			`Replaced ${replaced.join(', ')}, which could not be opened with this server's MFA key, by a new one. A new ` +
+				'remembered-browser key forgets every remembered browser; a new request-form key makes open forms, decision ' +
+				'revisions and comment keys reload; a new backup seal key stops older backups verifying, so a restore of one ' +
+				'fills no secret and takes none of its second factors.'
+		);
+	}
+
+	const marker = database.prepare('SELECT value FROM settings WHERE key = ?').get(SECRETS_SCRUB_PENDING) as { value: string } | undefined;
+	if (marker === undefined) return;
+	// Set by this start: scrubbed now, before the server listens. Pending from before, or failing now: in the background.
+	const setByThisStart = marker.value >= PROCESS_STARTED_AT;
+	if (setByThisStart && scrubStoredSecrets(database)) return;
+	later(() => scrubStoredSecrets(database));
+}
+
+/** How long after the start the first background scrub is tried, and how long between tries after a failure (E4). */
+export const SCRUB_RETRY_FIRST_MS = 60 * 1000;
+export const SCRUB_RETRY_EVERY_MS = 30 * 60 * 1000;
+
+/**
+ * Try `scrub` after the server listens, in the background, until it
+ * succeeds (the code review's E4): first after a minute, then every half
+ * hour. Its timers keep nothing running. Each failure is the scrub's own
+ * ERROR line.
+ */
+export function retryScrubInBackground(scrub: () => boolean): void {
+	const attempt = () => {
+		if (!scrub()) setTimeout(attempt, SCRUB_RETRY_EVERY_MS).unref?.();
+	};
+	setTimeout(attempt, SCRUB_RETRY_FIRST_MS).unref?.();
+}
+
+/**
+ * The scrub of decision 14 (S6), while `secrets_scrub_pending` is set: a
+ * checkpoint that empties the WAL, a `VACUUM` that rewrites every page, and a
+ * checkpoint again; the marker cleared only when all three succeed. Answers
+ * whether it is done. Never throws.
+ */
+export function scrubStoredSecrets(database: Database.Database = sqlite): boolean {
+	try {
+		const pending = database.prepare('SELECT 1 FROM settings WHERE key = ?').get(SECRETS_SCRUB_PENDING) !== undefined;
+		if (!pending) return true;
+		const checkpoint = () => {
+			if (!checkpointTruncate(database)) throw new Error('a reader held the write-ahead log');
+		};
+		checkpoint();
+		database.exec('VACUUM');
+		checkpoint();
+		database.prepare('DELETE FROM settings WHERE key = ?').run(SECRETS_SCRUB_PENDING);
+		// The marker's own delete is in the log again: emptied once more, best effort.
+		checkpointTruncate(database);
+		return true;
+	} catch (err) {
+		try {
+			log.error(
+				`The old plain text of the stored secrets could not be scrubbed from the database file (${(err as Error)?.message ?? err}). ` +
+					'It is tried again in the background and at every start; to do it now, run Admin › Vacuum once nothing else is reading the database.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return false;
+	}
 }
 
 function readFactorsAtStart(): FactorAtStart[] {

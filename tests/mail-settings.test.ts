@@ -35,11 +35,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
 import { settings } from '$lib/server/db/schema';
-import { TLS_FAULT_HINT, appUrlAsRead, linkBaseUrl, sendEmail, sendEmailWithAttachment, sendTestEmail } from '$lib/server/email';
+import { TLS_FAULT_HINT, appUrlAsRead, linkBaseUrl, sendEmail, sendEmailWithAttachment, sendTestEmail, smtpPasswordMissing } from '$lib/server/email';
+import { TYPED_SECRET_LOOKS_SEALED } from '$lib/server/stored-secrets';
 import { eq } from 'drizzle-orm';
 import { api } from './helpers/api';
 import { FIXTURE_PASSWORD, makeSession, makeUser, resetDb, stepUp, stepUpCode, stepUpFactor } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { readOpened } from './helpers/reads';
 
 const MASK = '••••••••';
 const PASSWORD = 'the-stored-mail-password-2190';
@@ -89,8 +91,11 @@ const stored = () =>
 			.from(settings)
 			.all()
 			.filter((row) => row.key !== 'request_form_secret' && row.key !== 'mfa_key_check')
-			.map((row) => [row.key, row.value])
+			// The mail password opened: a save stores it sealed (card 2898).
+			.map((row) => [row.key, row.key === 'smtp_pass' ? readOpened('settings', 'smtp_pass') : row.value])
 	);
+/** The rows as they are stored, the mail password as sealed. */
+const storedRaw = () => Object.fromEntries(db.select().from(settings).all().map((row) => [row.key, row.value]));
 const save = (body: Record<string, unknown>) =>
 	api('PUT', '/api/admin/smtp', {
 		user: chief,
@@ -946,5 +951,66 @@ describe('the mail panel on the admin page (cards 2189 and 2190, slice 4)', () =
 
 	it('shows a refused save in the server’s own words (decision 4)', () => {
 		expect(fn('saveSmtp')).toContain("smtpMessage = await failureMessage(res, 'Failed to save SMTP settings');");
+	});
+});
+
+// ─── Card 2898: the mail password sealed at rest ─────────────────────────────
+
+describe('the mail password, stored sealed (card 2898)', () => {
+	let transport: ReturnType<typeof standInTransport>;
+	beforeEach(() => {
+		transport = standInTransport();
+	});
+	afterEach(() => transport.restore());
+
+	it('25: a save stores the password sealed, the mailer is given it in plain and the GET masks it; an empty one is stored empty', async () => {
+		expect((await save({ ...PANEL, host: 'smtp.elsewhere.test', pass: 'a-sealed-password-25' })).status).toBe(200);
+
+		const row = storedRaw().smtp_pass;
+		expect(row).toMatch(/^dfsealed:1:/);
+		expect(row).not.toContain('a-sealed-password-25');
+		expect(await sendEmail('someone@example.test', 'A notification', '<p>Hello</p>')).toBe(true);
+		expect(transport.handed.at(-1)).toMatchObject({ host: 'smtp.elsewhere.test', auth: { user: 'mailer', pass: 'a-sealed-password-25' } });
+		expect((await api('GET', '/api/admin/smtp', { user: chief })).body.pass).toBe(MASK);
+
+		// Row 2 (E6): an emptied password is stored empty, not sealed.
+		expect((await save({ ...PANEL, host: 'relay.example.test', user: '', pass: '' })).status).toBe(200);
+		expect(storedRaw().smtp_pass).toBe('');
+	});
+
+	it('26: a save with the password masked and the connection unchanged leaves its row byte for byte, and the mailer still has it', async () => {
+		expect((await save({ ...PANEL, pass: 'a-sealed-password-26' })).status).toBe(200);
+		const row = storedRaw().smtp_pass;
+		expect(row).toMatch(/^dfsealed:1:/);
+
+		expect((await save({ ...PANEL, host: '  SMTP.Example.TEST ', fromName: 'Another name' })).status).toBe(200);
+
+		expect(storedRaw().smtp_pass).toBe(row);
+		expect(await sendEmail('someone@example.test', 'A notification', '<p>Hello</p>')).toBe(true);
+		expect(transport.handed.at(-1)).toMatchObject({ auth: { user: 'mailer', pass: 'a-sealed-password-26' } });
+	});
+
+	it('27: with the host changed by hand, no mail is handed to the mail server and the password reads as missing; with a user set the transport is made to sign in', async () => {
+		expect((await save({ ...PANEL, pass: 'a-sealed-password-27' })).status).toBe(200);
+		// Row 2: with the password opening, every transport is told to sign in.
+		expect(await sendEmail('someone@example.test', 'A notification', '<p>Hello</p>')).toBe(true);
+		expect(transport.handed.at(-1)).toMatchObject({ forceAuth: true, auth: { user: 'mailer', pass: 'a-sealed-password-27' } });
+		const handed = transport.handed.length;
+
+		setMail({ smtp_host: 'smtp.moved-by-hand.test' });
+
+		expect(smtpPasswordMissing()).toBe(true);
+		expect(await sendEmail('someone@example.test', 'A notification', '<p>Hello</p>')).toBe(false);
+		await expect(sendTestEmail('someone@example.test')).rejects.toThrow(/cannot be opened, so it must be entered again/);
+		expect(transport.handed).toHaveLength(handed);
+		expect((await api('GET', '/api/admin/smtp', { user: chief })).body.pass).toBe('');
+	});
+
+	it('28: a typed password that begins dfsealed: is refused, and nothing is written', async () => {
+		const before = snapshotDb();
+		const res = await save({ ...PANEL, pass: 'dfsealed:1:0123456789abcdef:AAAAAAAAAAAAAAAA:AAAA' });
+		expect(res.status).toBe(400);
+		expect(res.body.message).toBe(TYPED_SECRET_LOOKS_SEALED);
+		expectUnchanged(before);
 	});
 });

@@ -35,6 +35,7 @@ import { createLogger } from './logger';
 import { registerStampFunctions } from './db/timestamps';
 import { parseStamp, stamp } from '$lib/timestamps';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey } from './mfa-key';
+import { KeyCheckMismatch, recordKeyCheck } from './stored-secrets';
 import { enrolAad, factorAad, newFactorUid, openSealed, sealWith, sha256Hex, type Sealed } from './mfa-crypto';
 import { TOTP_SECRET_BYTES, matchingStep } from './totp';
 import { canonicalRecoveryCode, recoveryCodeHash } from './recovery-codes';
@@ -73,9 +74,10 @@ export function holdsFactor(userId: number): boolean {
 /**
  * Write a TOTP factor for the account, its secret sealed under this server's
  * key, and answer its row id and `factor_uid`. In one transaction with the key
- * check: none stored is recorded; one of another key is replaced while no
- * factor exists, and otherwise refused with nothing written. Throws when no
- * key is loaded.
+ * check, by the one rule of card 2898 (`recordKeyCheck`, S2): none stored is
+ * recorded; one of another key is replaced while nothing is sealed (no factor
+ * and no stored secret), and otherwise refused with nothing written. Throws
+ * when no key is loaded.
  */
 export function addTotpFactor(userId: number, label: string, secret: Buffer): { id: number; factorUid: string } {
 	const key = currentMfaKey();
@@ -88,15 +90,15 @@ export function addTotpFactor(userId: number, label: string, secret: Buffer): { 
 	}
 
 	return inTransaction(() => {
-		const stored = readMfaKeyCheck(sqlite);
-		if (stored === null) {
-			db.insert(settings).values({ key: MFA_KEY_CHECK_SETTING, value: key.check }).run();
-		} else if (stored !== key.check) {
-			const factors = db.select({ n: sql<number>`count(*)` }).from(mfaFactors).get()!.n;
-			if (factors > 0) {
-				throw new Error("The stored MFA key check does not match this server's key; no factor was written.");
-			}
-			db.update(settings).set({ value: key.check }).where(eq(settings.key, MFA_KEY_CHECK_SETTING)).run();
+		// The one rule of card 2898 (S2): "anything sealed" is a factor or a
+		// stored secret, so a stored secret sealed under another key's check
+		// refuses the factor as a factor would.
+		try {
+			recordKeyCheck(sqlite, key);
+		} catch (err) {
+			// The mismatch alone is put in the factor's words (the code review's E9); anything else is as it was thrown.
+			if (err instanceof KeyCheckMismatch) throw new Error("The stored MFA key check does not match this server's key; no factor was written.");
+			throw err;
 		}
 
 		const factorUid = newFactorUid();

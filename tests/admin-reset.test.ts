@@ -43,6 +43,10 @@ import { inviteHashOf, sessionHashOf } from './helpers/fixtures';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { stamp } from '$lib/timestamps';
 import { issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
+import { randomBytes } from 'node:crypto';
+import { currentMfaKey, keyFromBytes, type KeyLoad } from '$lib/server/mfa-key';
+import { readMfaKeyCheck } from '$lib/server/mfa-store';
+import { MfaKeyError, checkMfaKeyAtStart } from '$lib/server/startup-checks';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { failingWrite } from './helpers/failing-write';
@@ -306,8 +310,9 @@ describe('POST /api/admin/reset', () => {
 				});
 
 				// Everything is cleared, the users among them: they used to stay.
-				// Settings hold one row: the form signing key, made again as the reset commits (card 2750).
-				for (const table of cleared()) expect(count(table), table).toBe(table === 'settings' ? 1 : 0);
+				// Settings hold three rows: the form signing key, made again as the reset commits (card 2750),
+				// sealed, the key check recorded with it (card 2898, S2), and the scrub marked pending (its code review, S1).
+				for (const table of cleared()) expect(count(table), table).toBe(table === 'settings' ? 3 : 0);
 
 				// The backup history is as it was, and so is the line that was in
 				// the system log.
@@ -369,9 +374,14 @@ describe('POST /api/admin/reset', () => {
 		// 2771). Then one statement for each table, and nothing else: no id
 		// counter is deleted, and neither kept table is written to.
 		expect(run.writes.slice(0, STEP_UP_WRITES.length).map((sql) => sql.split(' ').slice(0, 3).join(' ').replace(/"/g, ''))).toEqual([...STEP_UP_WRITES]);
-		// And the new form signing key, last, in the same transaction (card 2750).
-		expect(run.writes.at(-1)).toMatch(/^INSERT INTO settings \(key, value\) VALUES/);
-		expect(run.writes.slice(STEP_UP_WRITES.length, -1).sort()).toEqual(
+		// And the new form signing key, last, in the same transaction (card 2750),
+		// sealed, after the key check it records (card 2898, S2).
+		// And then the scrub marked pending, in the same transaction (its code review, S1).
+		const upsert = 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value';
+		expect(run.writes.at(-1)).toBe(upsert);
+		expect(run.writes.at(-2)).toMatch(/^INSERT INTO settings \(key, value\) VALUES/);
+		expect(run.writes.at(-3)).toBe(upsert);
+		expect(run.writes.slice(STEP_UP_WRITES.length, -3).sort()).toEqual(
 			cleared()
 				.map((table) => `DELETE FROM "${table}"`)
 				.sort()
@@ -476,6 +486,34 @@ describe('POST /api/admin/reset', () => {
 		expect(sqlite.pragma('foreign_key_check')).toEqual([]);
 	});
 
+	it('24: records the key check with the sealed form key it makes, so that a start with another key is then refused (card 2898, S2)', async () => {
+		const e = everything();
+
+		expect((await reset(e)).status).toBe(200);
+
+		const formKey = sqlite.prepare("SELECT value FROM settings WHERE key = 'request_form_secret'").get() as { value: string };
+		expect(formKey.value).toMatch(/^dfsealed:1:/);
+		expect(readMfaKeyCheck(sqlite)).toBe(currentMfaKey()!.check);
+		const silenced = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			const another: KeyLoad = { ok: true, key: keyFromBytes(randomBytes(32)), path: null, made: false, insideDatabaseDir: false, warnings: [] };
+			expect(() => checkMfaKeyAtStart(another, () => [], undefined, { ok: true, key: null, path: null, warnings: [] })).toThrow(MfaKeyError);
+		} finally {
+			silenced.mockRestore();
+		}
+	});
+
+	it('24b: marks the scrub pending in its transaction, at its own time, over a marker already set (card 2898 code review, S1)', async () => {
+		const e = everything();
+		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('secrets_scrub_pending', '2026-01-01T00:00:00.000Z');
+
+		expect((await reset(e)).status).toBe(200);
+
+		const marker = sqlite.prepare("SELECT value FROM settings WHERE key = 'secrets_scrub_pending'").get() as { value: string } | undefined;
+		expect(marker?.value).toMatch(/^\d{4}-\d\d-\d\dT/);
+		expect(marker?.value).not.toBe('2026-01-01T00:00:00.000Z');
+	});
+
 	it('forgets the key the public request form signs with, so a form token made before it is refused after it', async () => {
 		const e = everything();
 		// As a process that has just started: nothing cached by an earlier test.
@@ -488,15 +526,17 @@ describe('POST /api/admin/reset', () => {
 
 		// The key was a setting and went with the rest. The copy of it in memory
 		// used to stay, and went on accepting this token. A new one is made as
-		// the reset commits (card 2750), and it is the only setting.
-		expect(sqlite.prepare('SELECT key FROM settings').all()).toEqual([{ key: 'request_form_secret' }]);
+		// the reset commits (card 2750), sealed, with the key check it records
+		// (card 2898), and the scrub marked pending (its code review, S1): the only settings.
+		const only = [{ key: 'mfa_key_check' }, { key: 'request_form_secret' }, { key: 'secrets_scrub_pending' }];
+		expect(sqlite.prepare('SELECT key FROM settings ORDER BY key').all()).toEqual(only);
 		expect(verifyFormToken(before)).toBe(false);
 
 		// A token made now is good, and is signed with a key that is in the
 		// settings: a process starting now agrees with this one.
 		const after = issueFormToken();
 		expect(verifyFormToken(after)).toBe(true);
-		expect(sqlite.prepare('SELECT key FROM settings').all()).toEqual([{ key: 'request_form_secret' }]);
+		expect(sqlite.prepare('SELECT key FROM settings ORDER BY key').all()).toEqual(only);
 		resetFormSecretCache();
 		expect(verifyFormToken(after)).toBe(true);
 		expect(verifyFormToken(before)).toBe(false);
@@ -515,8 +555,9 @@ describe('POST /api/admin/reset', () => {
 		expect(res.status).toBe(200);
 		expect(res.body).toMatchObject({ success: true, redirect: '/setup', trash: { moved: 3, missing: 0 } });
 		expect(res.body.trash.failed).toEqual([expect.stringMatching(/^card \d+, "\.\.\/outside\.txt": /)]);
-		// Settings hold one row: the form signing key, made again as the reset commits (card 2750).
-		for (const table of cleared()) expect(count(table), table).toBe(table === 'settings' ? 1 : 0);
+		// Settings hold three rows: the form signing key, made again as the reset commits (card 2750), the key check (card 2898)
+		// and the scrub marked pending (its code review, S1).
+		for (const table of cleared()) expect(count(table), table).toBe(table === 'settings' ? 3 : 0);
 		expect(logLines().at(-1)?.message).toMatch(
 			/3 attachment file\(s\) moved to the trash, and 1 could not be moved and are where they were: card \d+, "\.\.\/outside\.txt"/
 		);

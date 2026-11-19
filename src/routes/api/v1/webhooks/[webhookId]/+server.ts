@@ -9,6 +9,7 @@ import {
 	forgetDelivery,
 	keyOfWrite,
 	NEW_SECRET_REASONS,
+	openedSecret,
 	presentWebhook,
 	storedEvents,
 	WEBHOOK_EVENTS,
@@ -19,6 +20,7 @@ import { readWebhookUrl } from '$lib/server/webhook-address';
 import type { SessionUser } from '$lib/server/auth';
 import { writeAs } from '$lib/server/write-as';
 import { randomBytes } from 'node:crypto';
+import { TYPED_SECRET_LOOKS_SEALED, looksSealed, sealStored, webhookSecretAad } from '$lib/server/stored-secrets';
 import type { RequestHandler } from './$types';
 
 /** Said to a `secret` sent with the switch-on that gives a webhook a new one (card 2752, D3). */
@@ -126,8 +128,23 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		const updates: Partial<typeof webhooks.$inferInsert> = {};
 		const url = readWebhookUrl(body, { keep: hook.url });
 		if (url !== undefined) updates.url = url;
-		const secret = givenNewSecret ? randomBytes(32).toString('hex') : readText(body, 'secret', { max: 256, keep: hook.secret });
-		if (secret !== undefined) updates.secret = secret;
+		// The secret as it opens (card 2898): what one sent back unchanged is compared with.
+		const stored = openedSecret(hook);
+		const sent = readText(body, 'secret', { max: 256, keep: stored.value });
+		// One that looks sealed is refused (card 2898, S9): it would be taken for one.
+		if (looksSealed(sent)) throw error(400, TYPED_SECRET_LOOKS_SEALED);
+		const secret = givenNewSecret ? randomBytes(32).toString('hex') : sent;
+		const urlChanged = url !== undefined && url !== hook.url;
+		// One sent for a secret that does not open is always a change (the code
+		// review's E6): '' clears it, unsigned, and a value replaces it.
+		const secretChanged = secret !== undefined && (secret !== stored.value || stored.kind === 'unopenable');
+		// Written sealed, bound to the id, board and address it is left with: a
+		// new one; the one kept, sealed again when the address changes (S10), so
+		// that it still opens there; one sent back unchanged left as it is.
+		const sealedFor = (plain: string) => sealStored(plain, webhookSecretAad(hook.id, hook.boardId, url ?? hook.url));
+		if (secretChanged) updates.secret = sealedFor(secret);
+		else if (urlChanged && (stored.kind === 'opened' || stored.kind === 'plain')) updates.secret = sealedFor(stored.value);
+		else if (secret !== undefined) updates.secret = hook.secret;
 		// Each name trimmed; an empty list is every event.
 		const events = readChoices(body, 'events', { from: WEBHOOK_EVENTS, trim: true, keep: storedEvents(hook.events) });
 		if (events !== undefined) updates.events = JSON.stringify(events);
@@ -137,7 +154,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		// again answers for them, and their reset is what switches it off.
 		// With the setter, the key they came in with (card 2893, S11); a change
 		// of events alone, or a switch-off, keeps the key it had.
-		if ((url !== undefined && url !== hook.url) || (secret !== undefined && secret !== hook.secret) || switchedOn) {
+		if (urlChanged || secretChanged || switchedOn) {
 			updates.setBy = user.id;
 			Object.assign(updates, keyOfWrite(locals.credential));
 		}

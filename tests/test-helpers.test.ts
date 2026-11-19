@@ -96,7 +96,7 @@ describe('failingWrite', () => {
 		setting('third');
 
 		// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750).
-		expect(db.select().from(settings).all().map((r) => r.key).filter((key) => key !== 'request_form_secret')).toEqual(['first', 'third']);
+		expect(db.select().from(settings).all().map((r) => r.key).filter((key) => key !== 'request_form_secret' && key !== 'mfa_key_check')).toEqual(['first', 'third']);
 	});
 
 	it('starts counting again when it is armed and when it is reset', () => {
@@ -122,7 +122,7 @@ describe('failingWrite', () => {
 		insert.run('a', 'x');
 		setting('b');
 		expect(writes.count).toBe(0);
-		expect(db.select().from(settings).all().filter((r) => r.key !== 'request_form_secret')).toHaveLength(2);
+		expect(db.select().from(settings).all().filter((r) => r.key !== 'request_form_secret' && r.key !== 'mfa_key_check')).toHaveLength(2);
 
 		// Installed again for afterEach to remove.
 		writes = failingWrite();

@@ -60,6 +60,7 @@ import { notifyWebhooksSwitchedOff } from './notifications';
 import { onTheWire } from './v1-json';
 import { addressRefusal, guardedLookup } from './webhook-address';
 import { stamp } from '$lib/timestamps';
+import { openStored, webhookSecretAad } from './stored-secrets';
 
 const log = createLogger('Webhooks');
 
@@ -113,9 +114,18 @@ export function presentWebhook(hook: Webhook, reveal: boolean) {
 	return {
 		...rest,
 		events: JSON.parse(events || '[]') as string[],
+		// Stored sealed (card 2898): one that does not open still has a secret,
+		// and is given as '' (S4, E16), never as it is stored.
 		hasSecret: secret !== '',
-		...(reveal ? { url, secret, lastDelivery: deliveryResultFor(hook), pausedBecause: pausedBecause(hook) } : {})
+		...(reveal
+			? { url, secret: openedSecret(hook).value, lastDelivery: deliveryResultFor(hook), pausedBecause: pausedBecause(hook) }
+			: {})
 	};
+}
+
+/** The webhook's secret opened (card 2898), bound to its id, board and address: '' for none and for one that does not open. */
+export function openedSecret(hook: Pick<Webhook, 'id' | 'boardId' | 'url' | 'secret'>) {
+	return openStored(hook.secret, webhookSecretAad(hook.id, hook.boardId, hook.url));
 }
 
 // ─── Held while the setter cannot open the board (card 2325) ──────────────
@@ -952,7 +962,11 @@ function warnHourly(hookId: number, kind: WarnKind, line: string): void {
 /** Forget every WARN written, as a restart does. For tests: each starts as a server does. */
 export function forgetWebhookWarnings(): void {
 	warned.clear();
+	unopenableSaid.clear();
 }
+
+/** The webhooks whose secret was said at ERROR not to open (card 2898): once each, for the life of the process. */
+const unopenableSaid = new Set<number>();
 
 // ─── The last delivery (card 2178) ─────────────────────────────────────────
 
@@ -1082,7 +1096,9 @@ export function deliveryReason(err: { code?: unknown }, timeoutMs: number): stri
 }
 
 /** What a webhook refused before any request is recorded as, by why it was refused. */
-const NOT_SENT: Record<Refusal['kind'] | 'events' | Hold, string> = {
+const NOT_SENT: Record<Refusal['kind'] | 'events' | Hold | 'secret', string> = {
+	// Card 2898 (S4): a stored secret that does not open with this server's key.
+	secret: 'Not sent: its signing secret cannot be opened',
 	'not a URL': 'Not sent: the address is not an http or https address',
 	scheme: 'Not sent: the address is not an http or https address',
 	credentials: 'Not sent: the address carries a user name or password',
@@ -1241,11 +1257,26 @@ export function deliver(
 		record(notSentResult(refusal.kind));
 		return;
 	}
+	// Its secret, opened (card 2898). One that does not open is not sent at all,
+	// before the test of whether it has one (S4): never sent unsigned.
+	const secret = openedSecret(hook);
+	if (secret.kind === 'unopenable') {
+		record(notSentResult('secret'));
+		if (!unopenableSaid.has(hook.id)) {
+			unopenableSaid.add(hook.id);
+			log.error(
+				`${which} not sent: its signing secret cannot be opened with this server's MFA key. Nothing is sent until the ` +
+					"board's owner or an administrator sets a new secret with PUT /api/v1/webhooks/{id}."
+			);
+		}
+		return;
+	}
+
 	const url = new URL(hook.url);
 	const protocol = url.protocol as 'http:' | 'https:';
 
-	const signature = hook.secret
-		? createHmac('sha256', hook.secret).update(body).digest('hex')
+	const signature = secret.value
+		? createHmac('sha256', secret.value).update(body).digest('hex')
 		: '';
 
 	// Through the module object, so that a test can stand in for it.

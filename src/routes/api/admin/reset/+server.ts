@@ -4,6 +4,7 @@ import { restorableTables } from '$lib/server/db/restore';
 import { clearSessionCookie, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { readBody } from '$lib/server/request-body';
 import { resetFormSecretCache, writeFormSecret } from '$lib/server/request-tokens';
+import { markScrubPending } from '$lib/server/stored-secrets';
 import { resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -98,6 +99,10 @@ export const POST: RequestHandler = async ({ request, locals, cookies, url }) =>
 			// one, in this transaction, so the reset never commits without one
 			// and no read-only check is ever the first to need it (card 2750).
 			writeFormSecret();
+			// The rows deleted, the sealed secrets among them, are still in the
+			// file's free space and its log: the scrub is marked pending, in this
+			// transaction, and tried at the next start (card 2898's code review, S1).
+			markScrubPending(sqlite);
 
 			return { tables: tables.length, rows, files };
 		}));

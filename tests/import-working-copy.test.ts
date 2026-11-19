@@ -45,6 +45,7 @@ import { issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/serv
 import { api, routeMethods } from './helpers/api';
 import { importConfirmation, makeUser, resetDb, startedSinceAlreadyOffHeld } from './helpers/fixtures';
 import { afterEachTimestampCheck } from './helpers/timestamps';
+import { readOpened } from './helpers/reads';
 
 const REAL_MIGRATIONS = join(process.cwd(), 'drizzle');
 
@@ -86,22 +87,37 @@ function migratedDb(): Database.Database {
 	return database;
 }
 
-/** Every row of every table, as text, sorted. */
+/**
+ * Every row of every table, as text, sorted. The stored secrets opened: a
+ * restore seals each one a backup holds in plain as it reads it (card 2898),
+ * and a value in plain is given as it is.
+ */
 function contentsOf(database: Database.Database): Record<string, string[]> {
 	const names = (
 		database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[]
 	).map((t) => t.name);
+	const opened = (name: string, row: Record<string, unknown>): Record<string, unknown> => {
+		if (name === 'webhooks') return { ...row, secret: readOpened('webhooks', row.id as number, database) };
+		if (name === 'settings' && (row.key === 'smtp_pass' || row.key === 'backup_config')) return { ...row, value: readOpened('settings', row.key, database) };
+		return row;
+	};
 	const contents: Record<string, string[]> = {};
 	for (const name of names) {
 		contents[name] = (database.prepare(`SELECT * FROM "${name}"`).all() as Record<string, unknown>[])
-			.map((row) => JSON.stringify(Object.fromEntries(Object.entries(row).sort(([a], [b]) => a.localeCompare(b)))))
+			.map((row) => JSON.stringify(Object.fromEntries(Object.entries(opened(name, row)).sort(([a], [b]) => a.localeCompare(b)))))
 			.sort();
 	}
 	return contents;
 }
 
-/** A table's rows without the form signing key, which a restore makes in its transaction (card 2750) and no backup brings. */
-const withoutFormKey = (rows: string[]) => rows.filter((row) => !row.includes('"key":"request_form_secret"'));
+/**
+ * A table's rows without the form signing key, which a restore makes in its transaction (card 2750) and no backup
+ * brings, and without the key check its sealing records (card 2898), which no restore takes from a backup.
+ */
+const withoutFormKey = (rows: string[]) =>
+	rows.filter(
+		(row) => !row.includes('"key":"request_form_secret"') && !row.includes('"key":"mfa_key_check"') && !row.includes('"key":"secrets_scrub_pending"')
+	);
 
 /**
  * Settings rows without migration 0071's moment, which a restore keeps as this
@@ -389,7 +405,11 @@ describe('restoring as a working copy', () => {
 			rowsOf(backup, 'report_schedules').map((row) => ({ ...row, enabled: 0 }))
 		);
 		expect(rowsOf(live, 'report_schedules').map((row) => row.id)).toEqual([1, 2, 3, 4]);
-		expect(rowsOf(live, 'webhooks')).toEqual(rowsOf(backup, 'webhooks').map((row) => ({ ...row, active: 0 })));
+		// Each secret the backup held in plain is sealed as it was read (card 2898), and opens to it.
+		const withSecretsOpened = (database: Database.Database) =>
+			rowsOf(database, 'webhooks').map((row) => ({ ...row, secret: readOpened('webhooks', row.id as number, database) }));
+		expect(rowsOf(live, 'webhooks').every((row) => String(row.secret).startsWith('dfsealed:1:'))).toBe(true);
+		expect(withSecretsOpened(live)).toEqual(withSecretsOpened(backup).map((row) => ({ ...row, active: 0 })));
 		expect(rowsOf(live, 'webhooks').map((row) => row.id)).toEqual([1, 2, 3]);
 
 		// The backup configuration keeps what does not reach outside. The mail
@@ -400,11 +420,14 @@ describe('restoring as a working copy', () => {
 		// and its api_key_deadline, written by migration 0069 (card 2772), and this
 		// server's webhook_keys_recorded_at, written by migration 0071 and kept (card 2752).
 		// And the backup's webhooks_already_off_held: one made since card 2923's release (its code review, S2).
+		// And the key check the sealed form key records, and the scrub every restore marks pending (card 2898).
 		expect(Object.keys(settings).sort()).toEqual([
 			'api_key_deadline',
 			'app_url',
 			'backup_config',
+			'mfa_key_check',
 			'request_form_secret',
+			'secrets_scrub_pending',
 			'theme',
 			'two_step_released_at',
 			'webhook_keys_recorded_at',
@@ -485,7 +508,9 @@ describe('restoring as a working copy', () => {
 			expect(Object.keys(settingsIn(live)).sort()).toEqual([
 				'api_key_deadline',
 				'app_url',
+				'mfa_key_check',
 				'request_form_secret',
+				'secrets_scrub_pending',
 				'theme',
 				'two_step_released_at',
 				'webhook_keys_recorded_at',
@@ -517,13 +542,18 @@ describe('restoring as a working copy', () => {
 		// No configuration is written where there was none.
 		expect(settingsIn(live)).toEqual({
 			app_url: APP_URL,
-			request_form_secret: expect.stringMatching(/^[0-9a-f]{64}$/),
+			// The key check its sealing records, and the form key sealed (card 2898).
+			mfa_key_check: expect.stringMatching(/^[0-9a-f]{64}$/),
+			request_form_secret: expect.stringMatching(/^dfsealed:1:/),
+			// The scrub every restore marks pending (card 2898's code review, S1).
+			secrets_scrub_pending: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
 			theme: 'dark',
 			// This server's, written by migration 0071 and kept by a restore (card 2752).
 			webhook_keys_recorded_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
 			// The backup's: one made since card 2923's release (its code review, S2).
 			webhooks_already_off_held: '2026-11-19T00:00:00.000Z'
 		});
+		expect(readOpened('settings', 'request_form_secret', live)).toMatch(/^[0-9a-f]{64}$/);
 		// The settings as the backup has them, but for this server's 0071 moment, kept (card 2752).
 		for (const table of OUTSIDE_TABLES) {
 			expect(withoutKeysRecorded(withoutFormKey(contentsOf(live)[table]))).toEqual(withoutFormKey(contentsOf(backup)[table]));
@@ -1191,7 +1221,9 @@ describe('through the route', () => {
 		// A new one is made as the restore commits (card 2750), not at first
 		// use, so no check that only reads is the first to need it.
 		const made = settingsIn(sqlite)['request_form_secret'];
-		expect(made).toMatch(/^[0-9a-f]{64}$/);
+		// Sealed (card 2898), 32 random bytes as hex once opened.
+		expect(made).toMatch(/^dfsealed:1:/);
+		expect(readOpened('settings', 'request_form_secret')).toMatch(/^[0-9a-f]{64}$/);
 		expect(verifyFormToken(before)).toBe(false);
 
 		// A token made now is signed with it: a process starting now agrees

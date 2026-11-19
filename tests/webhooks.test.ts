@@ -60,7 +60,7 @@
 import dns from 'node:dns';
 import http from 'node:http';
 import net from 'node:net';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { isHttpError } from '@sveltejs/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -117,6 +117,9 @@ import {
 	stepUp
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { readOpened } from './helpers/reads';
+import { TYPED_SECRET_LOOKS_SEALED, sealValue, webhookSecretAad } from '$lib/server/stored-secrets';
+import { keyFromBytes } from '$lib/server/mfa-key';
 
 beforeEach(resetDb);
 
@@ -2371,15 +2374,17 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 	const signedWith = (secret: string, delivery: Effects['webhooks'][number]) =>
 		delivery.headers['x-dumpfire-signature'] === sign(secret, JSON.stringify(delivery.body));
 
-	/** The webhook's row as stored: on or off, why and when it was held off, its setter and its secret. */
-	const rowOf = (id: number) =>
-		sqlite.prepare('SELECT active, held_because AS heldBecause, held_at AS heldAt, set_by AS setBy, secret FROM webhooks WHERE id = ?').get(id) as {
+	/** The webhook's row as stored: on or off, why and when it was held off, its setter and its secret, opened (card 2898). */
+	const rowOf = (id: number) => {
+		const row = sqlite.prepare('SELECT active, held_because AS heldBecause, held_at AS heldAt, set_by AS setBy, secret FROM webhooks WHERE id = ?').get(id) as {
 			active: number;
 			heldBecause: string | null;
 			heldAt: string | null;
 			setBy: number | null;
 			secret: string;
 		};
+		return { ...row, secret: readOpened('webhooks', id)! };
+	};
 
 	/** Switched off for good by a hold: off, why, and a moment in the stored form (D1). */
 	function expectHeldOff(id: number, hold: 'setter cannot open' | 'no setter' = 'setter cannot open') {
@@ -3422,13 +3427,15 @@ describe('a webhook whose API key ended is switched off for good (card 2893)', (
 		return sent.webhooks.map((w) => w.url);
 	}
 
-	/** The webhook's row as stored: on or off, why, its setter and the key it records. */
-	const rowOf = (id: number) =>
-		sqlite
+	/** The webhook's row as stored: on or off, why, its setter and the key it records, its secret opened (card 2898). */
+	const rowOf = (id: number) => ({
+		...(sqlite
 			.prepare(
 				'SELECT active, held_because AS heldBecause, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey, secret FROM webhooks WHERE id = ?'
 			)
-			.get(id) as { active: number; heldBecause: string | null; setBy: number | null; setByKey: number | null; setWithKey: number | null; secret: string };
+			.get(id) as { active: number; heldBecause: string | null; setBy: number | null; setByKey: number | null; setWithKey: number | null; secret: string }),
+		secret: readOpened('webhooks', id)!
+	});
 
 	const expectKeyEnded = (id: number) => expect(rowOf(id)).toMatchObject({ active: 0, heldBecause: 'key ended' });
 	const expectOn = (id: number) => expect(rowOf(id)).toMatchObject({ active: 1, heldBecause: null });
@@ -3937,8 +3944,11 @@ describe("a change to a webhook held now is judged as switched off for good (car
 		expect(sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(made.body.id)).toEqual({ active: 1, heldBecause: null });
 		return { owner, editor, board, id: made.body.id as number };
 	}
-	const rowOf = (id: number) =>
-		sqlite.prepare('SELECT active, held_because AS heldBecause, secret FROM webhooks WHERE id = ?').get(id) as { active: number; heldBecause: string | null; secret: string };
+	// The secret opened (card 2898).
+	const rowOf = (id: number) => ({
+		...(sqlite.prepare('SELECT active, held_because AS heldBecause, secret FROM webhooks WHERE id = ?').get(id) as { active: number; heldBecause: string | null; secret: string }),
+		secret: readOpened('webhooks', id)!
+	});
 
 	it("(a) an editor's active false records the hold first: it ends 'key ended', said and mailed once, and the editor's delete is then 403", async () => {
 		const s = await heldNow();
@@ -4541,5 +4551,146 @@ describe("the share list tells the board's owner which webhooks a removal stops 
 		expect((await api('PATCH', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { isPublic: false } })).status).toBe(200);
 		const shut = await shareList(s, s.owner);
 		expect([shut.privateStopsWebhooks, shut.heldWebhooks]).toEqual([0, 1]);
+	});
+});
+
+// ─── Card 2898: a webhook's secret sealed at rest ───────────────────────────
+
+describe("a webhook's secret, stored sealed (card 2898)", () => {
+	let sent: Effects;
+	beforeEach(() => {
+		sent = effects();
+	});
+	afterEach(() => sent.restore());
+
+	const LOOKS_SEALED = 'dfsealed:1:0123456789abcdef:AAAAAAAAAAAAAAAA:AAAA';
+	const storedSecret = (id: number) => (sqlite.prepare('SELECT secret FROM webhooks WHERE id = ?').get(id) as { secret: string }).secret;
+	const setterOf = (id: number) => (sqlite.prepare('SELECT set_by AS setBy FROM webhooks WHERE id = ?').get(id) as { setBy: number | null }).setBy;
+
+	function scene() {
+		const owner = makeUser({ username: 'owner' });
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const fixture = makeBoard({ owner });
+		return { owner, admin, ...fixture };
+	}
+	type Scene = ReturnType<typeof scene>;
+	const create = (s: Scene, body: Record<string, unknown>) => api('POST', `/api/v1/boards/${s.board.id}/webhooks`, { user: s.owner, body });
+	const put = (user: SessionUser, id: number, body: Record<string, unknown>) => api('PUT', `/api/v1/webhooks/${id}`, { user, body });
+	/** The owner raises a card through the API: the deliveries it made. */
+	async function event(s: Scene) {
+		sent.clear();
+		const res = await api('POST', `/api/v1/boards/${s.board.id}/cards`, { user: s.owner, body: { title: 'A card, 2898', columnId: s.cols['To Do'].id } });
+		expect(res.status).toBe(201);
+		await sent.settle();
+		return sent.webhooks;
+	}
+	const signedWith = (secret: string, delivery: Effects['webhooks'][number]) =>
+		delivery.headers['x-dumpfire-signature'] === sign(secret, JSON.stringify(delivery.body));
+
+	it('36: the POST stores the secret sealed and answers it in plain, and a delivery is signed with the plain secret; one made without a secret stays empty', async () => {
+		const s = scene();
+		const made = await create(s, { url: 'https://hooks.example.test/sealed', secret: 'whsec-2898-36' });
+
+		expect(made.status).toBe(201);
+		expect(made.body.secret).toBe('whsec-2898-36');
+		expect(storedSecret(made.body.id)).toMatch(/^dfsealed:1:/);
+		expect(storedSecret(made.body.id)).not.toContain('whsec-2898-36');
+		const [delivery] = await event(s);
+		expect(signedWith('whsec-2898-36', delivery)).toBe(true);
+
+		// Row 2: no secret, none stored.
+		const bare = await create(s, { url: 'https://hooks.example.test/bare' });
+		expect(bare.status).toBe(201);
+		expect(storedSecret(bare.body.id)).toBe('');
+		expect(bare.body).toMatchObject({ hasSecret: false, secret: '' });
+	});
+
+	it('37: the PUT: the same secret sent back changes no setter; a new one is sealed; the switch-on gives a new one sealed and answered in plain; an address change seals the kept one again, which still signs', async () => {
+		const s = scene();
+		const made = await create(s, { url: 'https://hooks.example.test/first', secret: 'whsec-2898-37' });
+		const id = made.body.id as number;
+
+		// Row 1: sent back as it opens, by another account: nothing set.
+		expect((await put(s.admin, id, { secret: 'whsec-2898-37' })).status).toBe(200);
+		expect(setterOf(id)).toBe(s.owner.id);
+
+		// Row 2: a new one.
+		const changed = await put(s.owner, id, { secret: 'whsec-2898-37-new' });
+		expect(changed.body.secret).toBe('whsec-2898-37-new');
+		expect(storedSecret(id)).toMatch(/^dfsealed:1:/);
+		expect(readOpened('webhooks', id)).toBe('whsec-2898-37-new');
+
+		// Row 4: the address changed, the secret kept and sealed again for it.
+		const before = storedSecret(id);
+		const moved = await put(s.owner, id, { url: 'https://hooks.example.test/second' });
+		expect(moved.status).toBe(200);
+		expect(storedSecret(id)).not.toBe(before);
+		expect(readOpened('webhooks', id)).toBe('whsec-2898-37-new');
+		const [delivery] = await event(s);
+		expect(delivery.url).toBe('https://hooks.example.test/second');
+		expect(signedWith('whsec-2898-37-new', delivery)).toBe(true);
+
+		// Row 3: held for good, the switch-on gives a new secret, sealed, answered in plain.
+		sqlite.prepare("UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = '2026-11-19 00:00:00' WHERE id = ?").run(id);
+		const on = await put(s.owner, id, { active: true });
+		expect(on.status).toBe(200);
+		expect(on.body.secret).toMatch(/^[0-9a-f]{64}$/);
+		expect(storedSecret(id)).toMatch(/^dfsealed:1:/);
+		expect(readOpened('webhooks', id)).toBe(on.body.secret);
+	});
+
+	it('38: a typed webhook secret that begins dfsealed: is refused by the POST and the PUT, and nothing is written', async () => {
+		const s = scene();
+		const made = await create(s, { url: 'https://hooks.example.test/kept', secret: 'whsec-2898-38' });
+		const before = snapshotDb();
+
+		for (const res of [
+			await create(s, { url: 'https://hooks.example.test/other', secret: LOOKS_SEALED }),
+			await put(s.owner, made.body.id, { secret: LOOKS_SEALED })
+		]) {
+			expect(res.status).toBe(400);
+			expect(res.body.message).toBe(TYPED_SECRET_LOOKS_SEALED);
+		}
+		expectUnchanged(before);
+	});
+
+	it('39: a secret that does not open is not delivered, recorded as not sent and said once, never sent unsigned; reveal gives it empty, with hasSecret', async () => {
+		const s = scene();
+		const made = await create(s, { url: 'https://hooks.example.test/tampered', secret: 'whsec-2898-39' });
+		const id = made.body.id as number;
+		// Moved by hand to another address: the seal no longer opens there.
+		sqlite.prepare("UPDATE webhooks SET url = 'https://hooks.example.test/moved' WHERE id = ?").run(id);
+
+		expect(await event(s)).toEqual([]);
+		expect(await event(s)).toEqual([]);
+		const hook = db.select().from(webhooks).where(eq(webhooks.id, id)).get()!;
+		expect(deliveryResultFor(hook)).toMatchObject({ outcome: 'not-sent', status: null, reason: 'Not sent: its signing secret cannot be opened' });
+		expect(lines('ERROR').filter((line) => line.includes(`Webhook ${id} `) && line.includes('cannot be opened'))).toHaveLength(1);
+
+		// Row 2: the owner's answer.
+		const answer = await api('GET', `/api/v1/webhooks/${id}`, { user: s.owner });
+		expect(answer.body).toMatchObject({ hasSecret: true, secret: '' });
+		expect(JSON.stringify(answer.body)).not.toContain('dfsealed');
+	});
+
+	it("39b: a PUT sending a secret for one that does not open is a change: '' clears it, unsigned, and a value replaces it (the code review E6)", async () => {
+		const s = scene();
+		const made = await create(s, { url: 'https://hooks.example.test/first', secret: 'whsec-2898-39b' });
+		const id = made.body.id as number;
+		// Moved by hand: the seal no longer opens at the address the row now has.
+		sqlite.prepare("UPDATE webhooks SET url = 'https://hooks.example.test/moved' WHERE id = ?").run(id);
+
+		const cleared = await put(s.admin, id, { secret: '' });
+		expect(cleared.status).toBe(200);
+		expect(cleared.body).toMatchObject({ hasSecret: false, secret: '' });
+		expect(storedSecret(id)).toBe('');
+		expect(setterOf(id)).toBe(s.admin.id);
+
+		sqlite.prepare("UPDATE webhooks SET secret = ? WHERE id = ?").run(sealValue('whsec', webhookSecretAad(id, s.board.id, 'https://elsewhere.example.test/'), keyFromBytes(randomBytes(32))), id);
+		const replaced = await put(s.owner, id, { secret: 'whsec-2898-39b-new' });
+		expect(replaced.status).toBe(200);
+		expect(readOpened('webhooks', id)).toBe('whsec-2898-39b-new');
+		const [delivery] = await event(s);
+		expect(signedWith('whsec-2898-39b-new', delivery)).toBe(true);
 	});
 });

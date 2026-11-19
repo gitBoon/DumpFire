@@ -52,12 +52,23 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { google } from 'googleapis';
-import { generateBackupData, saveBackupConfig, withoutSecrets } from '$lib/server/backup';
+import { generateBackupData, getBackupConfig, saveBackupConfig, withoutSecrets } from '$lib/server/backup';
+import {
+	TYPED_SECRET_LOOKS_SEALED,
+	destinationSecretAad,
+	isSealed,
+	mailPasswordAad,
+	openStored,
+	sealPlainSecrets,
+	sealValue,
+	webhookSecretAad
+} from '$lib/server/stored-secrets';
+import { keyFromBytes } from '$lib/server/mfa-key';
 import { GDriveDestination, dumpfireFolderName, type DestinationConfig, type GDriveDestinationConfig } from '$lib/server/backup-destinations';
 import {
 	BACKUP_SEAL,
@@ -145,12 +156,21 @@ import {
 import { FROM_THE_PAGE, gate, gateApiRoutes } from './helpers/gate';
 import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { afterEachTimestampCheck } from './helpers/timestamps';
+import { readOpened } from './helpers/reads';
 
 /** What the stand-in destination was handed: the bytes, under the name and for the destination they were for. */
 const uploaded = vi.hoisted(() => [] as { destination: string; filename: string; bytes: Buffer }[]);
 
 /** Each configuration the stand-in destination was made from, as `createDestination` was handed it (cards 2187 and 2190). */
 const handed = vi.hoisted(() => [] as Record<string, unknown>[]);
+
+/** No MFA key loaded, for one case of card 2898 (case 33): `currentMfaKey` answers null while it is set. */
+const keyStub = vi.hoisted(() => ({ none: false }));
+
+vi.mock('$lib/server/mfa-key', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/mfa-key')>();
+	return { ...real, currentMfaKey: () => (keyStub.none ? null : real.currentMfaKey()) };
+});
 
 vi.mock('$lib/server/backup-destinations', async (importOriginal) => {
 	const real = await importOriginal<typeof import('$lib/server/backup-destinations')>();
@@ -746,11 +766,14 @@ describe('a restore', () => {
 		// wrote to it and a restore brings in as any setting (card 2769), and
 		// its api_key_deadline, which migration 0069 wrote to it (card 2772),
 		// and this server's webhook_keys_recorded_at, which migration 0071 wrote
-		// here and a restore keeps (card 2752).
+		// here and a restore keeps (card 2752). And the key check the sealed form
+		// key records, and the scrub every restore marks pending (card 2898).
 		expect(column(live, 'SELECT key FROM settings ORDER BY key')).toEqual([
 			'api_key_deadline',
 			'app_url',
+			'mfa_key_check',
 			'request_form_secret',
+			'secrets_scrub_pending',
 			'two_step_released_at',
 			'webhook_keys_recorded_at'
 		]);
@@ -806,7 +829,8 @@ describe('a restore', () => {
 			// the one there is the restore made, in its transaction (card 2750).
 			const formKey = column<string>(live, `SELECT value FROM settings WHERE key = '${REQUEST_FORM_SECRET_KEY}'`);
 			expect(formKey).toHaveLength(1);
-			expect(formKey[0]).toMatch(/^[0-9a-f]{64}$/);
+			// Sealed (card 2898), 32 random bytes as hex once opened.
+			expect(readOpened('settings', REQUEST_FORM_SECRET_KEY, live)).toMatch(/^[0-9a-f]{64}$/);
 		});
 
 		it('counts none for a backup with no requests', () => {
@@ -2079,10 +2103,31 @@ function armSecrets(database: Database.Database): { on: number; off: number; uns
 	};
 }
 
+/** The settings that are stored sealed (card 2898), read opened by the helpers below. */
+const SEALED_SETTINGS = ['smtp_pass', 'backup_config', BACKUP_SEAL_KEY];
+
+/**
+ * `database`'s settings, each stored secret opened (card 2898): a value held
+ * in plain, as a backup or a database made by hand holds it, is as it is.
+ */
 const settingsOf = (database: Database.Database): Record<string, string> =>
+	Object.fromEntries(
+		(database.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[]).map((row) => [
+			row.key,
+			SEALED_SETTINGS.includes(row.key) ? readOpened('settings', row.key, database)! : row.value
+		])
+	);
+
+/** `database`'s settings as they are stored, the sealed ones sealed. */
+const settingsStored = (database: Database.Database): Record<string, string> =>
 	Object.fromEntries((database.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[]).map((row) => [row.key, row.value]));
 
-const hooksIn = (database: Database.Database) => database.prepare('SELECT id, secret, active FROM webhooks ORDER BY id').all();
+/** Each webhook's secret opened (card 2898). */
+const openedHooks = <T extends { id: number; secret: string }>(database: Database.Database, rows: T[]): T[] =>
+	rows.map((row) => ({ ...row, secret: readOpened('webhooks', row.id, database)! }));
+
+const hooksIn = (database: Database.Database) =>
+	openedHooks(database, database.prepare('SELECT id, secret, active FROM webhooks ORDER BY id').all() as { id: number; secret: string; active: number }[]);
 
 /** Everything a secret is in, or decides where one goes. */
 const secretsOf = (database: Database.Database) => {
@@ -2091,7 +2136,10 @@ const secretsOf = (database: Database.Database) => {
 		mail: Object.entries(settings).filter(([key]) => key.startsWith('smtp_')).sort(),
 		config: settings['backup_config'] ?? null,
 		marker: settings[WEBHOOK_SECRETS_LEFT_OUT_KEY] ?? null,
-		hooks: database.prepare('SELECT id, board_id, url, secret, active FROM webhooks ORDER BY id').all()
+		hooks: openedHooks(
+			database,
+			database.prepare('SELECT id, board_id, url, secret, active FROM webhooks ORDER BY id').all() as { id: number; secret: string; active: number }[]
+		)
 	};
 };
 
@@ -2689,7 +2737,8 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 
 		it('takes a seal of any other form as no seal this server can check, the right MAC without its number included', () => {
 			const made = backupNow();
-			const key = sealKeyHere(sqlite);
+			// The key opened (card 2898: `sealKeyHere` gives it as stored, sealed, and as the seal is checked with).
+			const key = sealKeyHere(sqlite)?.key ?? null;
 			const mac = sealOf(made, backupSealKey(sqlite));
 			expect(unsealedBecause(made, key)).toBeNull();
 
@@ -3555,7 +3604,8 @@ describe('a restore switches off a restored webhook whose setter cannot open its
 		const result = restoreFromBackup(sqlite, backup);
 
 		expect(result.webhooksSwitchedOff).toBe(0);
-		expect(sqlite.prepare('SELECT id, url, secret, active, held_because AS heldBecause, held_at AS heldAt FROM webhooks ORDER BY id').all()).toEqual([
+		// Each secret opened (card 2898): the backup held it in plain, and the restore sealed it as it read it.
+		expect(openedHooks(sqlite, sqlite.prepare('SELECT id, url, secret, active, held_because AS heldBecause, held_at AS heldAt FROM webhooks ORDER BY id').all() as { id: number; secret: string }[])).toEqual([
 			{ id: signed.id, url: signed.url, secret: 'kept-secret', active: 0, heldBecause: 'setter access ended', heldAt },
 			{ id: bare.id, url: bare.url, secret: '', active: 0, heldBecause: 'setter access ended', heldAt },
 			{ id: moved.id, url: 'https://hooks.example.test/before', secret: '', active: 1, heldBecause: null, heldAt: null }
@@ -5659,5 +5709,278 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 			expectUnchanged(before);
 			expect(rowOf(hook)).toEqual({ active: 0, heldBecause: null });
 		});
+	});
+});
+
+// ─── Card 2898: the secrets the server keeps, sealed at rest ────────────────
+
+describe('the secrets the server keeps, sealed at rest (card 2898)', () => {
+	const put = (destinations: unknown[]) => api('PUT', '/api/admin/backup', confirmedByChief({ destinations }));
+	const tested = (destination: unknown) => api('POST', '/api/admin/backup/test', { user: chief, body: destination });
+	const runNow = async () =>
+		(await api('POST', '/api/admin/backup', confirmedByChief())).body.results as { destination: string; status: string; message: string }[];
+	const storedConfig = () => JSON.parse(settingsStored(sqlite)['backup_config']) as { destinations: Record<string, unknown>[] };
+	const LOOKS_SEALED = 'dfsealed:1:0123456789abcdef:AAAAAAAAAAAAAAAA:AAAA';
+	const otherKey = () => keyFromBytes(randomBytes(32));
+	const secretOf = (database: Database.Database, id: number) =>
+		(database.prepare('SELECT secret, active FROM webhooks WHERE id = ?').get(id) as { secret: string; active: number });
+
+	afterEach(() => {
+		keyStub.none = false;
+	});
+
+	it('28: a typed destination secret, or a service account JSON key, that begins dfsealed: is refused by the save and by the Test, and nothing is written', async () => {
+		const before = settingsStored(sqlite);
+		for (const res of [
+			await put([{ ...BUCKET, secretAccessKey: LOOKS_SEALED }]),
+			await put([{ ...ROBOT, serviceAccountJson: serviceAccountJson(LOOKS_SEALED) }]),
+			await tested({ ...BUCKET, secretAccessKey: LOOKS_SEALED })
+		]) {
+			expect(res.status, JSON.stringify(res.body)).toBe(400);
+			expect(res.body.message).toBe(TYPED_SECRET_LOOKS_SEALED);
+		}
+		expect(handed).toEqual([]);
+		expect(settingsStored(sqlite)).toEqual(before);
+	});
+
+	it('29: the admin save stores each destination secret sealed, getBackupConfig gives them in plain, the GET masks them, and one kept masked is sealed again and opens', async () => {
+		const saved = await put(DESTINATIONS);
+		expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+
+		const stored = JSON.stringify(settingsStored(sqlite));
+		for (const [name, value] of Object.entries(SECRETS)) expect(stored.includes(value), name).toBe(false);
+		const first = storedConfig().destinations;
+		expect(isSealed(first[1].secretAccessKey)).toBe(true);
+		expect(isSealed(JSON.parse(first[3].serviceAccountJson as string).private_key)).toBe(true);
+		expect(getBackupConfig().destinations).toEqual(DESTINATIONS);
+
+		const shown = (await api('GET', '/api/admin/backup', { user: chief })).body.destinations as Record<string, unknown>[];
+		expect(shown[1].secretAccessKey).toBe(SECRET_MASK);
+		expect(JSON.stringify(shown)).not.toContain('dfsealed');
+
+		const again = await put(shown);
+		expect(again.status, JSON.stringify(again.body)).toBe(200);
+		const second = storedConfig().destinations;
+		expect(isSealed(second[1].secretAccessKey)).toBe(true);
+		expect(second[1].secretAccessKey).not.toBe(first[1].secretAccessKey);
+		expect(getBackupConfig().destinations).toEqual(DESTINATIONS);
+	});
+
+	it('30: a destination whose stored secret does not open is not tried, S3 and SFTP alike, Backup History saying its credentials are not entered', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const theirs = otherKey();
+		const sftp = { ...NAS, privateKey: '', hostKey: HOST_KEY };
+		sqlite
+			.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)')
+			.run(
+				'backup_config',
+				configWith([
+					{ ...BUCKET, secretAccessKey: sealValue(SECRETS.s3Secret, destinationSecretAad(BUCKET, 'secretAccessKey'), theirs) },
+					{ ...sftp, password: sealValue(SECRETS.sftpPassword, destinationSecretAad(sftp, 'password'), theirs) }
+				])
+			);
+
+		const results = await runNow();
+
+		expect(results.map((r) => [r.destination, r.status, r.message])).toEqual([
+			['Bucket', 'failed', CREDENTIALS_NOT_ENTERED],
+			['NAS', 'failed', CREDENTIALS_NOT_ENTERED]
+		]);
+		expect(handed).toEqual([]);
+		expect(sqlite.prepare("SELECT destination_name AS name, error FROM backup_log WHERE status = 'failed' ORDER BY id").all()).toEqual([
+			{ name: 'Bucket', error: CREDENTIALS_NOT_ENTERED },
+			{ name: 'NAS', error: CREDENTIALS_NOT_ENTERED }
+		]);
+	});
+
+	it('30b: a save that does not type again a secret whose stored value does not open keeps it as stored: never tried, the Test refused, still listed to enter (the code review E2, S3)', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const sftp = { ...NAS, privateKey: '', hostKey: HOST_KEY };
+		const envelope = sealValue(SECRETS.sftpPassword, destinationSecretAad(sftp, 'password'), otherKey());
+		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('backup_config', configWith([{ ...sftp, password: envelope }]));
+		const lines = () => sqlite.prepare("SELECT message FROM system_logs WHERE context = 'BACKUP' ORDER BY id").pluck().all() as string[];
+
+		// An unrelated save: Keep Last alone.
+		expect((await api('PUT', '/api/admin/backup', confirmedByChief({ retention: 9 }))).status).toBe(200);
+		expect(storedConfig().destinations[0].password).toBe(envelope);
+
+		// The list sent back as the GET shows it: the secret masked, as one stored.
+		const shown = (await api('GET', '/api/admin/backup', { user: chief })).body.destinations as Record<string, unknown>[];
+		expect(shown[0].password).toBe(SECRET_MASK);
+		expect(JSON.stringify(shown)).not.toMatch(/unopenable|dfsealed/);
+		const saved = await put(shown);
+		expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+		expect(storedConfig().destinations[0]).toEqual({ ...sftp, password: envelope });
+		// Compared without the carriers (E5): no line says the destination changed.
+		expect(lines().filter((line) => /unopenable|NAS/.test(line))).toEqual([]);
+
+		expect((await runNow()).map((r) => [r.destination, r.status, r.message])).toEqual([['NAS', 'failed', CREDENTIALS_NOT_ENTERED]]);
+		expect((await tested({ ...sftp, password: SECRET_MASK })).status).toBe(400);
+		expect(handed).toEqual([]);
+		expect(secretsToEnter(sqlite).toEnter.destinations.map((d) => d.name)).toEqual(['NAS']);
+
+		// Typed again: the line names the password changed, never the carriers or the envelope (E5).
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'INFO';
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		try {
+			const retyped = await put([{ ...shown[0], password: 'typed-again-2898' }]);
+			expect(retyped.status, JSON.stringify(retyped.body)).toBe(200);
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+		const changedLines = sqlite.prepare("SELECT message || ' ' || COALESCE(meta, '') FROM system_logs WHERE message LIKE 'Backup settings changed:%' ORDER BY id").pluck().all() as string[];
+		expect(changedLines).toHaveLength(1);
+		expect(changedLines[0]).toMatch(/^Backup settings changed: destination "NAS" changed: password /);
+		expect(changedLines.filter((line) => /unopenable|dfsealed/i.test(line))).toEqual([]);
+		expect(secretsToEnter(sqlite).toEnter.destinations).toEqual([]);
+	});
+
+	it("30c: a restore's destination matched with one here whose credential does not open is listed to enter, never given the host key as one with no credentials (the code review E2, S3)", () => {
+		const sftp = { ...NAS, privateKey: '', hostKey: HOST_KEY };
+		const envelope = sealValue(SECRETS.sftpPassword, destinationSecretAad(sftp, 'password'), otherKey());
+		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('backup_config', configWith([{ ...sftp, password: envelope }]));
+		const backup = opening(generateBackupData());
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.secrets.toEnter.destinations.map((d) => d.name)).toEqual(['NAS']);
+		const restored = storedConfig().destinations[0];
+		expect(restored.hostKey).toBeUndefined();
+		expect(restored.password).toBe('');
+	});
+
+	it("33c: a restore of a backup whose secrets were sealed under another key leaves them unopenable: never filled, never used, listed to enter (the code review's tests)", () => {
+		armSecrets(sqlite);
+		const theirs = otherKey();
+		sqlite.prepare("UPDATE settings SET value = ? WHERE key = 'smtp_pass'").run(sealValue('their password', mailPasswordAad(MAIL), theirs));
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		const live = migratedDb();
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.secrets.kept.mailPassword).toBe(false);
+		const stored = settingsStored(live)['smtp_pass'];
+		expect(stored).toMatch(/^dfsealed:1:/);
+		expect(openStored(stored, mailPasswordAad(MAIL)).kind).toBe('unopenable');
+		expect(secretsToEnter(live).toEnter.mailPassword).toBe(true);
+	});
+
+	it('33d: every restore marks the scrub pending, at its own time, and never brings in a backup\'s marker (the code review S1)', () => {
+		const backup = opening(generateBackupData());
+		backup.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('secrets_scrub_pending', 'THE-BACKUP-MARKER');
+		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('secrets_scrub_pending', '2026-01-01T00:00:00.000Z');
+
+		restoreFromBackup(sqlite, backup);
+
+		const marker = settingsStored(sqlite)['secrets_scrub_pending'];
+		expect(marker).toMatch(/^\d{4}-\d\d-\d\dT/);
+		expect(marker).not.toBe('THE-BACKUP-MARKER');
+		// A working copy too.
+		sqlite.prepare("DELETE FROM settings WHERE key = 'secrets_scrub_pending'").run();
+		restoreFromBackup(sqlite, opening(generateBackupData()), { outside: 'off' });
+		expect(settingsStored(sqlite)['secrets_scrub_pending']).toMatch(/^\d{4}-\d\d-\d\dT/);
+	});
+
+	it('31: no value in any table of the copy a backup makes is sealed, though the live file holds them sealed', () => {
+		armSecrets(sqlite);
+		sealPlainSecrets(sqlite);
+		backupSealKey(sqlite);
+		expect(JSON.stringify(settingsStored(sqlite))).toContain('dfsealed:1:');
+
+		const bytes = generateBackupData();
+
+		expect(bytes.includes(Buffer.from('dfsealed:'))).toBe(false);
+	});
+
+	it("32: a restore of this server's own sealed backup keeps the mail password, a destination's secret and a webhook's secret, each sealed and opening", () => {
+		startedSinceAlreadyOffHeld();
+		const hooks = armSecrets(sqlite);
+		sealPlainSecrets(sqlite);
+		const backup = opening(generateBackupData());
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.secrets.kept).toMatchObject({ mailPassword: true, webhooks: expect.arrayContaining([hooks.off]) });
+		const stored = settingsStored(sqlite);
+		expect(isSealed(stored['smtp_pass'])).toBe(true);
+		expect(readOpened('settings', 'smtp_pass')).toBe(SECRETS.mailPassword);
+		expect(isSealed(storedConfig().destinations[1].secretAccessKey)).toBe(true);
+		expect(JSON.parse(readOpened('settings', 'backup_config')!).destinations[1].secretAccessKey).toBe(SECRETS.s3Secret);
+		expect(isSealed(secretOf(sqlite, hooks.off).secret)).toBe(true);
+		expect(readOpened('webhooks', hooks.off)).toBe(SECRETS.webhookOff);
+	});
+
+	it('33: a restore of a backup holding its secrets in plain leaves only sealed values in the live file, its log emptied', () => {
+		const hooks = armSecrets(sqlite);
+		// As an older build made it: the running database, secrets and all, in plain.
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		const folder = mkdtempSync(join(tmpdir(), 'dumpfire-sealed-restore-'));
+		tempDirs.push(folder);
+		const path = join(folder, 'live.db');
+		writeFileSync(path, migratedDb().serialize());
+		const live = new Database(path);
+		opened.push(live);
+		live.pragma('journal_mode = WAL');
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		const stored = settingsStored(live);
+		expect(isSealed(stored['smtp_pass'])).toBe(true);
+		expect(readOpened('settings', 'smtp_pass', live)).toBe(SECRETS.mailPassword);
+		expect(isSealed(JSON.parse(stored['backup_config']).destinations[0].password)).toBe(true);
+		expect(isSealed(secretOf(live, hooks.on).secret)).toBe(true);
+		expect(readOpened('webhooks', hooks.on, live)).toBe(SECRETS.webhookOn);
+		expect(readFileSync(`${path}-wal`).length).toBe(0);
+		const bytes = readFileSync(path);
+		for (const [name, value] of Object.entries(SECRETS)) expect(bytes.includes(Buffer.from(value)), name).toBe(false);
+	});
+
+	it('33b: with no MFA key loaded, a restore of a backup holding its secrets in plain throws, and nothing is changed', () => {
+		armSecrets(sqlite);
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		const live = migratedDb();
+		const before = JSON.stringify([live.prepare('SELECT * FROM settings').all(), live.prepare('SELECT * FROM users').all()]);
+		keyStub.none = true;
+
+		expect(() => restoreFromBackup(live, backup)).toThrow(/No MFA key is loaded, so the secrets this backup holds in plain cannot be sealed/);
+
+		keyStub.none = false;
+		expect(JSON.stringify([live.prepare('SELECT * FROM settings').all(), live.prepare('SELECT * FROM users').all()])).toBe(before);
+	});
+
+	it('34: a secret here that does not open is absent to the restore: the webhook is left with none, off and listed, and secretsToEnter lists it', () => {
+		startedSinceAlreadyOffHeld();
+		const hooks = armSecrets(sqlite);
+		const backup = opening(generateBackupData());
+		// Here, its secret sealed under another key since: it does not open.
+		sqlite
+			.prepare('UPDATE webhooks SET secret = ? WHERE id = ?')
+			.run(sealValue(SECRETS.webhookOff, webhookSecretAad(hooks.off, hooks.boardId, 'https://hooks.example.test/off'), otherKey()), hooks.off);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.secrets.kept.webhooks).not.toContain(hooks.off);
+		expect(secretOf(sqlite, hooks.off)).toEqual({ secret: '', active: 0 });
+		expect(result.secrets.toEnter.webhooks.map((hook) => hook.id)).toContain(hooks.off);
+		expect(secretsToEnter(sqlite).toEnter.webhooks.map((hook) => hook.id)).toContain(hooks.off);
+	});
+
+	it('35: the backup seal key is stored sealed; a backup sealed here verifies before a restore and after it, and the row kept is the envelope as it was', () => {
+		const backup = opening(generateBackupData());
+		const stored = settingsStored(sqlite)[BACKUP_SEAL_KEY];
+		expect(isSealed(stored)).toBe(true);
+		expect(unsealedBecause(backup, sealKeyHere(sqlite)!.key)).toBeNull();
+
+		expect(restoreFromBackup(sqlite, opening(generateBackupData())).sealVerified).toBe(true);
+
+		expect(settingsStored(sqlite)[BACKUP_SEAL_KEY]).toBe(stored);
+		expect(unsealedBecause(backup, sealKeyHere(sqlite)!.key)).toBeNull();
 	});
 });

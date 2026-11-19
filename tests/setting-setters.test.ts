@@ -52,6 +52,7 @@ import { api } from './helpers/api';
 import { sendAround } from './helpers/held-body';
 import { FIXTURE_PASSWORD, importConfirmation, makeSession, makeUser, resetDb, sessionCredential, stepUpCode, stepUpFactor } from './helpers/fixtures';
 import { diffSnapshots, expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
+import { readOpened } from './helpers/reads';
 
 /** The three destinations of the scene: chief's, ann's and one saved before 0059. */
 const s3 = (name: string, bucket: string) => ({
@@ -129,7 +130,11 @@ const lines = () =>
 	sqlite
 		.prepare("SELECT level, context, message, meta, user_id AS userId FROM system_logs WHERE context IN ('SMTP', 'BACKUP') ORDER BY id")
 		.all() as { level: string; context: string; message: string; meta: string | null; userId: number | null }[];
-const setting = (key: string) => db.select().from(settings).where(eq(settings.key, key)).get()?.value ?? null;
+// The mail password and the backup settings opened: both are stored sealed (card 2898).
+const setting = (key: string) =>
+	key === 'smtp_pass' || key === 'backup_config'
+		? (readOpened('settings', key) ?? null)
+		: (db.select().from(settings).where(eq(settings.key, key)).get()?.value ?? null);
 const stored = () => JSON.parse(setting('backup_config')!) as typeof CONFIG & { destinations: Record<string, unknown>[] };
 const names = () => stored().destinations.map((d) => d.name);
 const roleOf = (user: SessionUser) => db.select({ role: users.role }).from(users).where(eq(users.id, user.id)).get()?.role;

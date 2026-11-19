@@ -38,6 +38,7 @@ import {
 	withHeldApart
 } from '../backup-secrets';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
+import { NoKeyToSeal, SECRETS_SCRUB_PENDING, checkpointTruncate, markScrubPending, sealedForRestore } from '../stored-secrets';
 import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, type MfaRestore } from '../mfa-backup';
 import { createLogger } from '../logger';
 import { REPLACE_PLAIN_USED_INVITES, inHashForm } from '../invites';
@@ -760,8 +761,21 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
  * order (`fromTableStorage`), as the seal is made: an index in a backup can
  * hold rows its table does not, and a bare `SELECT *` that a `sqlite_stat1`
  * row steers to it would copy rows the seal never saw (the second review's B1).
+ *
+ * And every secret a backup holds in plain (one made before card 2169, or a
+ * file copied by hand) is sealed as it is read (card 2898, S7:
+ * `sealedForRestore`), so that none reaches the live file, not even to be
+ * written over: the mail password, each destination's secret fields and each
+ * webhook's secret. `sealed` counts them, for the restore's checkpoint after
+ * its commit. With no MFA key loaded that is a `NoKeyToSeal`, which the
+ * restore does not catch: it rolls back (E9).
  */
-export function rowsToRestore(backup: Database.Database, table: string): Record<string, unknown>[] {
+export function rowsToRestore(backup: Database.Database, table: string, sealed: { count: number } = { count: 0 }): Record<string, unknown>[] {
+	const sealing = (rows: Record<string, unknown>[]) => {
+		const result = sealedForRestore(table, rows);
+		sealed.count += result.sealed;
+		return result.rows;
+	};
 	const name = table.toLowerCase();
 	if (name === 'sessions') return [];
 	if ((MFA_ROWS_NOT_RESTORED as readonly string[]).includes(name)) return [];
@@ -776,11 +790,13 @@ export function rowsToRestore(backup: Database.Database, table: string): Record<
 				WEBHOOK_SECRETS_LEFT_OUT_KEY,
 				BACKUP_SEAL,
 				BACKUP_SEAL_KEY,
-				MFA_KEY_CHECK_SETTING
+				MFA_KEY_CHECK_SETTING,
+				// This server's own: set by the restore itself (card 2898's code review, S1).
+				SECRETS_SCRUB_PENDING
 			];
-			return backup
-				.prepare(fromTableStorage(backup, table, leftOut.map(() => 'key IS NOT ?').join(' AND ')))
-				.all(...leftOut) as Record<string, unknown>[];
+			return sealing(
+				backup.prepare(fromTableStorage(backup, table, leftOut.map(() => 'key IS NOT ?').join(' AND '))).all(...leftOut) as Record<string, unknown>[]
+			);
 		}
 	}
 	if (name === 'invite_tokens') {
@@ -805,6 +821,7 @@ export function rowsToRestore(backup: Database.Database, table: string): Record<
 	if (name === 'request_links') return [];
 	const rows = backup.prepare(fromTableStorage(backup, table)).all() as Record<string, unknown>[];
 	if (name === 'task_requests') return rows.map((row) => ('access_token' in row ? { ...row, access_token: null } : row));
+	if (name === 'webhooks') return sealing(rows);
 	return rows;
 }
 
@@ -1253,9 +1270,12 @@ function restoreInOneSnapshot(
 	// unsealed whatever its seal says. The restore goes ahead either way; only
 	// the filling is withheld. The key is read now, to be put back once the
 	// restore has cleared the settings it is in.
+	// As stored (sealed, card 2898) to be put back unchanged, and opened to verify with (S5).
 	const sealKey = sealKeyHere(live);
-	const unsealed = unsealedBecause(backup, sealKey);
+	const unsealed = unsealedBecause(backup, sealKey?.key ?? null);
 	const sealVerified = unsealed === null;
+	// How many secrets the backup held in plain and rowsToRestore sealed (card 2898, S7).
+	const sealedInRestore = { count: 0 };
 
 	// The backup's system log, which is not brought in (card 2899): counted
 	// from this snapshot, so that the import can say what the file still
@@ -1333,8 +1353,8 @@ function restoreInOneSnapshot(
 						.get(table);
 					if (!exists) continue;
 
-					// Every row, but no session and no unused invite: see rowsToRestore.
-					const rows = rowsToRestore(backup, table);
+					// Every row, but no session and no unused invite, every plain secret sealed: see rowsToRestore.
+					const rows = rowsToRestore(backup, table, sealedInRestore);
 					if (rows.length === 0) continue;
 
 					// Only the columns both sides have.
@@ -1386,6 +1406,8 @@ function restoreInOneSnapshot(
 						defaulted.push({ table, column, rows: count, value: defaults.get(column) as string });
 					}
 				} catch (e) {
+					// A secret in plain with no key to seal it (card 2898, E9): the restore rolls back.
+					if (e instanceof NoKeyToSeal) throw e;
 					leaveOut(table, `${table}: ${(e as Error).message}`);
 				}
 			}
@@ -1406,13 +1428,19 @@ function restoreInOneSnapshot(
 
 			// This server's key for sealing its backups, as it was before the
 			// clear: see above. Not caught: a restore that lost it is rolled back.
-			if (sealKey !== null) keepSealKey(live, sealKey);
+			if (sealKey !== null) keepSealKey(live, sealKey.stored);
 
 			// A new form signing key, which no restore brings in and the clear
 			// took (card 2158): made here, so the restore never commits without
 			// one and no read-only check is the first to need it (card 2750).
 			// Not caught: a restore that could not make it is rolled back.
 			writeFormSecret(live);
+
+			// The rows replaced, this server's sealed secrets among them, are still
+			// in the file's free space and its log: the scrub is marked pending in
+			// this transaction, a working copy's included (card 2898's code review,
+			// S1), and tried at the next start. Never cleared by a restore.
+			markScrubPending(live);
 
 			// The second factors and recovery codes, by their own rules, the
 			// guessing counters zeroed, the same accounts' sign-in history and
@@ -1694,6 +1722,18 @@ function restoreInOneSnapshot(
 			`Timestamps in no form this build can read were left as they are: ${unreadableList(timestamps.unreadable)}. ` +
 				'Each start reports them until they are corrected.'
 		);
+	}
+
+	// The plain text of the secrets this restore sealed was never written to the
+	// live file, but the write-ahead log still holds the pages the restore
+	// replaced: emptied into the file (card 2898, S7). Best effort: a reader
+	// that holds the log leaves it to the next start's scrub.
+	if (sealedInRestore.count > 0) {
+		try {
+			checkpointTruncate(live);
+		} catch {
+			// Nothing more to be done here.
+		}
 	}
 
 	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut };

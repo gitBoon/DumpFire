@@ -49,7 +49,11 @@ const spec = {
 			'(2) the board\'s owners are mailed of the webhooks such an ending switched off, and of those it held, listed apart, naming the kind of action and no account; a reset on the server\'s host mails nobody; ' +
 			'(3) the setter access ended sentence now names the holder\'s own change that ends keys, and the webhooks held when already off; ' +
 			'(4) a webhook switched off because nobody was recorded as its setter is now given a new secret too when switched on, and a secret sent with that switch-on is answered 400; its pausedBecause says so; ' +
-			'(5) nothing else changed: no operation, field or schema.\n\n' +
+			'(5) webhook secrets are stored sealed, under a key derived from the server\'s MFA key and bound to the webhook\'s id, board and url (card 2898), and are given in answers as before; ' +
+			'a webhook whose stored secret cannot be opened (sealed under another key, or its row changed outside DumpFire) is never delivered, neither unsigned nor with that stored text: ' +
+			'its lastDelivery says "Not sent: its signing secret cannot be opened", it stays as active as it was with its pausedBecause unchanged, and a read that gives the secret gives \'\' with hasSecret true; ' +
+			'a PUT that sends secret for such a webhook always replaces it, \'\' clearing it to unsigned, and records the caller as its setter as any change of secret does; ' +
+			'(6) nothing else changed: no operation, field or schema.\n\n' +
 			'**Changed on 2026-11-18 (version 1.14.0), breaking.** A reset of an account\'s two-step sign-in, by an administrator or on the server\'s host, ends the account\'s API keys and switches off the webhooks it set (card 2915): ' +
 			'(1) its keys answer 401, as after a password reset; ' +
 			'(2) the webhooks it set are switched off, active false, recording setter access ended, so switching one on again is the board owner\'s or an administrator\'s and gives it a new secret; ' +
@@ -1032,7 +1036,8 @@ const spec = {
 					secret: {
 						type: 'string',
 						description:
-							'The signing secret. Present only when the caller is the board owner or an administrator, and in the response to the request that created the webhook. Omitted for every other caller, including board editors and viewers.'
+							'The signing secret. Present only when the caller is the board owner or an administrator, and in the response to the request that created the webhook. Omitted for every other caller, including board editors and viewers. ' +
+							'Stored sealed (since 1.15.0); one whose stored value cannot be opened is given as \'\' with hasSecret true, and the webhook is not delivered until a PUT sets a new secret or clears it.'
 					},
 					events: { type: 'array', items: { type: 'string' } },
 					active: { type: 'boolean' },
@@ -6909,7 +6914,8 @@ const spec = {
 					'the webhook is switched off for good when that key ends; a change of events alone keeps the key it had. ' +
 					'Since 1.11.0, switching on a webhook switched off for good because its setter lost the board, had its access ended or its key ended (see Webhook) gives it a new secret, 64 hexadecimal characters, in this answer\'s secret: ' +
 					'send active true alone, as a secret sent with it is answered 400 and nothing is written; since 1.15.0 so is one switched off because nobody was recorded as its setter, which kept its secret before. ' +
-					'Switching it on clears why it was switched off, and pausedBecause is then null. Sending active false for one switched off that way leaves it so.',
+					'Switching it on clears why it was switched off, and pausedBecause is then null. Sending active false for one switched off that way leaves it so. ' +
+					'Since 1.15.0, a secret sent for a webhook whose stored secret cannot be opened (see Webhook) is always a change: a value replaces it, and \'\' clears it, so the webhook is delivered unsigned.',
 				parameters: [{ $ref: '#/components/parameters/webhookId' }],
 				requestBody: {
 					required: true,

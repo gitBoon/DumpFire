@@ -1,10 +1,12 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.85
+version: 1.86
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2898
+  - secrets-at-rest
   - card-2923
   - ended-access-holds-webhooks
   - card-2915
@@ -150,7 +152,7 @@ names each change too, since card 2396: see
 | `smtp_allow_insecure` | `'true'` or `'false'` | not set (off) | "Allow mail without a checked, encrypted connection" (card 2189): only `'true'` is on. Written when the panel first saves it |
 | `smtp_secure` | boolean | false | No longer read or written (card 2189). It was "Use SSL/TLS", which only switched the certificate check on for ports other than 465; that is now always on. A row saved before is left where it is, and a working copy removes it with the other mail settings |
 | `smtp_user` | string | — | Auth username |
-| `smtp_pass` | string | — | Auth password |
+| `smtp_pass` | string | — | Auth password, stored sealed under a key derived from the MFA key file and bound to the host, port, user and way out it was saved with (card 2898): a host changed by hand leaves it unopenable, and no mail is then sent while a user is set ("the mail password stored on this server cannot be opened, so it must be entered again"). See [Service Secrets at Rest](authentication-security.md#service-secrets-at-rest-card-2898) |
 | `smtp_from_address` | string | — | Sender email address |
 | `smtp_from_name` | string | DumpFire | Sender display name |
 
@@ -161,9 +163,11 @@ server keeps) and its `smtp_host` (trimmed of ASCII spaces and tabs, ASCII lette
 `smtp_allow_insecure` (off when not set, as in a backup made before card 2189) and
 `smtp_user` are all this server's, and otherwise lists the mail password to enter again in
 **Admin → 📧 Email / SMTP**: with the port and the way out compared too, a backup cannot have this server's
-password sent over a connection whose certificate is not checked. Until it is entered, mail
-is tried with the user name and an empty password, which a mail server that asks for one
-refuses, the backup failure mail included; a requester who asks for a new link, or (card
+password sent over a connection whose certificate is not checked. Until it is entered, no mail
+is handed to the mail server while a user name is set (card 2898: the problem `no-password`, and
+`password-unopenable` for a stored one that cannot be opened; each transport with a user is made
+with `forceAuth`, so that a mail server that does not ask is never mailed through without one),
+the backup failure mail included; a requester who asks for a new link, or (card
 2870) sends the public form a request that must be confirmed, is told "New links cannot be
 sent just now. Please contact the team that sent you the link." rather than that one was
 sent, with the reason in a `[WARN] [REQUESTS]` line; no requester link is issued for a team

@@ -34,6 +34,7 @@ import {
 	refuseUserlessBesideAnother,
 	removeSettingsOfNonAdministrators,
 	reportInstallation,
+	sealStoredSecretsAtStart,
 	switchOffHeldWebhooksAtStart
 } from '$lib/server/startup-checks';
 import { recheckStoredImages } from '$lib/server/image-recheck';
@@ -62,7 +63,8 @@ refuseUserlessBesideAnother();
 
 // Stop here too, the same way, when the key that protects authenticator
 // secrets does not load, or is not the one the stored second factors were
-// made with (card 2768): under the production rules MFA_KEY_FILE must name
+// made with (card 2768), or the stored secrets sealed with (card 2898): under
+// the production rules MFA_KEY_FILE must name
 // it, and a server must not run with secrets it cannot read. The key is read
 // here, for the first time, and never at import. A bare call: its throw is
 // what stops the server before it listens. See $lib/server/startup-checks.ts.
@@ -73,6 +75,15 @@ checkMfaKeyAtStart();
 // reads it. It was made at first use, which could be inside a read-only check.
 // A bare call: a database that cannot take it stops the server here.
 ensureFormSecret();
+
+// Seal every secret the database still holds in plain (card 2898): the mail
+// password, the backup destinations' credentials, the webhooks' secrets and
+// the signing keys, under the MFA key checked above, the key check recorded
+// with them; then scrub the old plain text out of the file. After the form
+// key is made, so that it is sealed with the rest. A bare call: a sealing
+// that fails stops the server here, nothing changed. See
+// $lib/server/startup-checks.ts.
+sealStoredSecretsAtStart();
 
 // End every session an older image kept in plain (card 2775). An image from
 // before the card, started here after going back, keeps a session's code as

@@ -22,6 +22,7 @@ import { error, json } from '@sveltejs/kit';
 import { HostKeySignatureFailed, createDestination, readDestination, type SftpTestResult } from '$lib/server/backup-destinations';
 import { getBackupConfig } from '$lib/server/backup';
 import { keepMaskedSecrets } from '$lib/server/backup-secrets';
+import { TYPED_SECRET_LOOKS_SEALED, destinationLooksSealed, unopenableFields } from '$lib/server/stored-secrets';
 import { readBody } from '$lib/server/request-body';
 import { requireAdmin } from '$lib/server/route-guards';
 import { stillCallerNow } from '$lib/server/write-as';
@@ -55,8 +56,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		(name) => existing.destinations.find((d) => d.name === name),
 		'Missing destination type or name'
 	);
+	// A secret typed that looks sealed is refused (card 2898, S9): it would be taken for one.
+	if (destinationLooksSealed(sent)) throw error(400, TYPED_SECRET_LOOKS_SEALED);
 	const kept = keepMaskedSecrets(sent, existing.destinations, 'test');
 	if ('refusal' in kept) throw error(400, kept.refusal);
+	// A kept secret whose stored value does not open is no secret to test
+	// with, and an SFTP Test without it would try none (card 2898's code review, E2, S3).
+	if (unopenableFields(kept.destination).length > 0) {
+		throw error(400, `Backup destination "${String(kept.destination.name ?? '')}": type its credentials again. The saved ones cannot be opened with this server's MFA key.`);
+	}
 	const destConfig = kept.destination;
 
 	try {

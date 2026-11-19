@@ -76,6 +76,7 @@ import { api, routeMethods, routePatterns } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
 import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 import { handlersOf } from './helpers/source-scan';
+import { readOpened } from './helpers/reads';
 import { failingWrite, type FailingWrite } from './helpers/failing-write';
 import {
 	importConfirmation,
@@ -1148,7 +1149,9 @@ describe('a browser that has signed in here before', () => {
 
 		const cookie = await rememberedAt();
 		const [made] = keys();
-		expect(made.value).toMatch(/^[0-9a-f]{64}$/);
+		// Stored sealed (card 2898), 32 random bytes as hex once opened.
+		expect(made.value).toMatch(/^dfsealed:1:/);
+		expect(readOpened('settings', KNOWN_BROWSER_SECRET_KEY)).toMatch(/^[0-9a-f]{64}$/);
 		await rememberedAt(user, B);
 		expect(keys()).toEqual([made]);
 

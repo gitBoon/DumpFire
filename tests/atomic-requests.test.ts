@@ -51,7 +51,7 @@ import {
 	stepUp,
 	type BoardFixture
 } from './helpers/fixtures';
-import { watchReads } from './helpers/reads';
+import { readOpened, watchReads } from './helpers/reads';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 beforeEach(() => {
@@ -958,7 +958,9 @@ describe('the form signing key (card 2750)', () => {
 		sqlite.prepare("DELETE FROM settings WHERE key = 'request_form_secret'").run();
 		ensureFormSecret();
 		const made = keyRows();
-		expect(made).toEqual([{ value: expect.stringMatching(/^[0-9a-f]{64}$/) }]);
+		// Stored sealed (card 2898), 32 random bytes as hex once opened.
+		expect(made).toEqual([{ value: expect.stringMatching(/^dfsealed:1:/) }]);
+		expect(readOpened('settings', 'request_form_secret')).toMatch(/^[0-9a-f]{64}$/);
 
 		// A second start, or a second process that lost the race, writes nothing over it.
 		ensureFormSecret();

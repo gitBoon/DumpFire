@@ -231,6 +231,8 @@ const TEST_FILES = [
 	'share-window.svelte.test.ts',
 	// Card 2701: the password asked for again before destructive admin actions.
 	'step-up.test.ts',
+	// Card 2898: the secrets the server keeps in its database, sealed at rest.
+	'stored-secrets.test.ts',
 	'sub-board-depth.test.ts',
 	'subtask-order.test.ts',
 	'team-owners.test.ts',

@@ -148,6 +148,7 @@ import {
 import { failingWrite } from './helpers/failing-write';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
+import { readOpened } from './helpers/reads';
 import { handlersOf } from './helpers/source-scan';
 import { codeFor, giveAuthenticator, giveFactor, wrongCodeFor } from './helpers/two-step';
 import { factorSecret, spendStep } from '$lib/server/mfa-store';
@@ -288,7 +289,8 @@ function backingUp(): void {
 }
 
 /** The backup settings as stored. */
-const backupConfig = () => JSON.parse(db.select().from(settings).where(eq(settings.key, 'backup_config')).get()!.value);
+// Opened: a save stores the destinations' secrets sealed (card 2898).
+const backupConfig = () => JSON.parse(readOpened('settings', 'backup_config')!);
 
 /** Google, stood in for: the code exchanged for a refresh token, and a folder made. The exchange is answered. */
 function standInGoogle() {

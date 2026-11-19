@@ -29,14 +29,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { enrolmentLinks, mfaFactors, mfaRecoveryCodes, settings, signInChallenges, users } from '$lib/server/db/schema';
+import { enrolmentLinks, mfaFactors, mfaRecoveryCodes, settings, signInChallenges, users, webhooks } from '$lib/server/db/schema';
 import { restoreFromBackup } from '$lib/server/db/restore';
 import { generateBackupData } from '$lib/server/backup';
 import { backupSealKey, sealCopy } from '$lib/server/backup-secrets';
 import { mfaWithoutFactorSentence } from '$lib/server/mfa-backup';
 import { inTransaction } from '$lib/server/db/transaction';
 import { endAccountAccess } from '$lib/server/auth';
-import { MFA_KEY_CHECK_SETTING, currentMfaKey, keyFromBytes, loadMfaKey, type FactorAtStart, type KeyLoad, type MfaKey } from '$lib/server/mfa-key';
+import { MFA_KEY_CHECK_SETTING, currentMfaKey, keyFromBytes, loadMfaKey, mfaKeyLoad, type FactorAtStart, type KeyLoad, type MfaKey } from '$lib/server/mfa-key';
 import { factorAad, newFactorUid, sealWith, sha256Hex } from '$lib/server/mfa-crypto';
 import { newTotpSecret, stepAt } from '$lib/server/totp';
 import { canonicalRecoveryCode, newRecoveryCodes, recoveryCodeHash } from '$lib/server/recovery-codes';
@@ -50,12 +50,14 @@ import {
 	spendStep,
 	storeRecoveryCodes
 } from '$lib/server/mfa-store';
-import { MfaKeyError, checkMfaKeyAtStart } from '$lib/server/startup-checks';
+import { MfaKeyError, checkMfaKeyAtStart, sealStoredSecretsAtStart } from '$lib/server/startup-checks';
+import { mailPasswordAad, openStored, recordKeyCheck, sealValue, settingAad, webhookSecretAad } from '$lib/server/stored-secrets';
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { failingWrite } from './helpers/failing-write';
-import { importConfirmation, makeUser, resetDb, stepUp } from './helpers/fixtures';
+import { importConfirmation, makeBoard, makeUser, makeWebhook, resetDb, stepUp } from './helpers/fixtures';
 import { watchReads } from './helpers/reads';
+import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { allowOtherTimestampForms } from './helpers/timestamps';
 
 /** This process's key. */
@@ -111,8 +113,9 @@ const pendingOf = (userId: number) => ({
 });
 
 beforeEach(() => {
-	resetDb();
+	// The key back first: resetDb writes the form key sealed under it (card 2898).
 	keyStub.none = false;
+	resetDb();
 });
 
 describe('checkMfaKeyAtStart', () => {
@@ -132,6 +135,8 @@ describe('checkMfaKeyAtStart', () => {
 		const path = join(folder, 'mfa.key');
 		writeFileSync(path, `${content}\n`, { mode: 0o600 });
 		const load = loadMfaKey({ nodeEnv: 'production', keyFile: path, dbPath: join(scratch, 'dumpfire.db') });
+		// resetDb's sealed form key recorded one (card 2898): none, to see that none is written.
+		db.delete(settings).where(eq(settings.key, MFA_KEY_CHECK_SETTING)).run();
 
 		let thrown: unknown;
 		const lines = consoleLines(() => {
@@ -273,6 +278,8 @@ describe('the store', () => {
 
 	it("T35: replaces another key's stored check while no factor exists, and writes the factor", () => {
 		const user = makeUser();
+		// Nothing sealed (card 2898, S2): resetDb's sealed form key taken away.
+		db.delete(settings).where(eq(settings.key, 'request_form_secret')).run();
 		setKeyCheck(keyFromBytes(randomBytes(32)).check);
 
 		const { id } = addTotpFactor(user.id, 'Phone', newTotpSecret());
@@ -490,9 +497,183 @@ describe('what an account change ends', () => {
 	});
 });
 
+// ─── Card 2898: the key check's one rule, and the stored secrets at start ────
+
+describe('the key check, one rule for factors and stored secrets (card 2898, S2)', () => {
+	const formKeyRow = () => db.select().from(settings).where(eq(settings.key, 'request_form_secret')).get();
+
+	it('13: none stored is recorded; another key\'s while anything is sealed throws; a stale one while nothing is sealed is replaced; a factor is refused when only a stored secret is sealed', () => {
+		// Row 1: none stored.
+		db.delete(settings).where(eq(settings.key, MFA_KEY_CHECK_SETTING)).run();
+		recordKeyCheck(sqlite, key());
+		expect(keyCheck()).toBe(key().check);
+
+		// Row 2: another key's, and the form key sealed: thrown, nothing written.
+		const theirs = keyFromBytes(randomBytes(32)).check;
+		setKeyCheck(theirs);
+		expect(formKeyRow()?.value).toMatch(/^dfsealed:1:/);
+		expect(() => recordKeyCheck(sqlite, key())).toThrow(/does not match this server's key/);
+		expect(keyCheck()).toBe(theirs);
+
+		// Row 4: no factor at all, and the stored secret alone refuses one (addTotpFactor counts anything sealed).
+		const user = makeUser();
+		expect(() => addTotpFactor(user.id, 'Phone', newTotpSecret())).toThrow(/does not match this server's key; no factor was written/);
+		expect(factorCount()).toBe(0);
+		expect(keyCheck()).toBe(theirs);
+
+		// Row 3: nothing sealed, a stale check replaced.
+		db.delete(settings).where(eq(settings.key, 'request_form_secret')).run();
+		recordKeyCheck(sqlite, key());
+		expect(keyCheck()).toBe(key().check);
+	});
+});
+
+describe('the stored secrets at start (card 2898)', () => {
+	const MAIL = { smtp_host: 'mail.example.test', smtp_user: 'sender' };
+	const settingNow = (name: string) => db.select().from(settings).where(eq(settings.key, name)).get()?.value;
+	const put = (name: string, value: string) =>
+		db.insert(settings).values({ key: name, value }).onConflictDoUpdate({ target: settings.key, set: { value } }).run();
+	const loaded = (by: MfaKey): KeyLoad => ({ ok: true, key: by, path: null, made: false, insideDatabaseDir: false, warnings: [] });
+
+	it('18: a fresh install with secrets in plain is sealed at start and its check recorded; a start with another key is then refused', () => {
+		db.delete(settings).where(eq(settings.key, MFA_KEY_CHECK_SETTING)).run();
+		for (const [name, value] of Object.entries(MAIL)) put(name, value);
+		put('smtp_pass', 'the mail password');
+		put('request_form_secret', 'e'.repeat(64));
+
+		consoleLines(() => sealStoredSecretsAtStart());
+
+		expect(settingNow('smtp_pass')).toMatch(/^dfsealed:1:/);
+		expect(settingNow('request_form_secret')).toMatch(/^dfsealed:1:/);
+		expect(keyCheck()).toBe(key().check);
+
+		let thrown: unknown;
+		consoleLines(() => {
+			try {
+				checkMfaKeyAtStart(loaded(keyFromBytes(randomBytes(32))), () => [], undefined, { ok: true, key: null, path: null, warnings: [] });
+			} catch (err) {
+				thrown = err;
+			}
+		});
+		expect(thrown).toBeInstanceOf(MfaKeyError);
+		expect((thrown as MfaKeyError).message).toMatch(/or the stored secrets were sealed with/);
+	});
+
+	it("18b: a stale check of another key with nothing sealed, a plain form key and no factors: the start goes on, and this key's check is recorded (the code review E1)", () => {
+		put(MFA_KEY_CHECK_SETTING, keyFromBytes(randomBytes(32)).check);
+		put('request_form_secret', 'e'.repeat(64));
+
+		consoleLines(() => checkMfaKeyAtStart(mfaKeyLoad(), () => [], undefined, { ok: true, key: null, path: null, warnings: [] }));
+		consoleLines(() => sealStoredSecretsAtStart(sqlite, () => {}));
+
+		expect(keyCheck()).toBe(key().check);
+		expect(settingNow('request_form_secret')).toMatch(/^dfsealed:1:/);
+	});
+
+	it('18c: addTotpFactor puts only the key-check mismatch in its own words, and any other failure is thrown as it was (the code review E9)', () => {
+		const user = makeUser();
+		db.delete(settings).where(eq(settings.key, MFA_KEY_CHECK_SETTING)).run();
+		const writes = failingWrite();
+		let thrown: unknown;
+		try {
+			writes.failNth(1);
+			addTotpFactor(user.id, 'Phone', newTotpSecret());
+		} catch (err) {
+			thrown = err;
+		} finally {
+			writes.restore();
+		}
+		expect(String(thrown)).toMatch(/failingWrite: write 1 was made to fail/);
+		expect(factorCount()).toBe(0);
+	});
+
+	it('19: with the right key and one stored secret tampered with, the start goes on and one ERROR names it, holding no value; it reads as unopenable', () => {
+		for (const [name, value] of Object.entries(MAIL)) put(name, value);
+		put('smtp_pass', sealValue('the-mail-password-19', mailPasswordAad(MAIL), key()));
+		// Moved by hand to another host: the seal no longer opens there.
+		put('smtp_host', 'mail.elsewhere.test');
+
+		const lines = consoleLines(() => checkMfaKeyAtStart(mfaKeyLoad(), () => [], undefined, { ok: true, key: null, path: null, warnings: [] }));
+
+		const errors = lines.error.filter((line) => line.includes('[ERROR] [AUTH]') && line.includes('stored secret(s) could not be opened'));
+		expect(errors).toHaveLength(1);
+		expect(errors[0]).toContain('the mail password');
+		expect([...lines.error, ...lines.warn].filter((line) => line.includes('the-mail-password-19'))).toEqual([]);
+		expect(openStored(settingNow('smtp_pass'), mailPasswordAad({ ...MAIL, smtp_host: 'mail.elsewhere.test' })).kind).toBe('unopenable');
+	});
+
+	/** No check stored, and a mail password, the form key and a webhook's secret sealed under another key: none opens. */
+	function noneOpens() {
+		const theirs = keyFromBytes(randomBytes(32));
+		db.delete(settings).where(eq(settings.key, MFA_KEY_CHECK_SETTING)).run();
+		for (const [name, value] of Object.entries(MAIL)) put(name, value);
+		put('smtp_pass', sealValue('their mail password', mailPasswordAad(MAIL), theirs));
+		put('request_form_secret', sealValue('f'.repeat(64), settingAad('request_form_secret'), theirs));
+		const owner = makeUser();
+		const hook = makeWebhook(makeBoard({ owner }).board, { url: 'https://hooks.example.test/forgotten' });
+		db.update(webhooks).set({ secret: sealValue('their webhook secret', webhookSecretAad(hook.id, hook.boardId, hook.url), theirs) }).where(eq(webhooks.id, hook.id)).run();
+		return hook;
+	}
+	const NO_PREVIOUS = { ok: true as const, key: null, path: null, warnings: [] };
+
+	// The code review's S6 reversed decision 10: the forget never runs on its own.
+	it('20: with no check stored and none of the stored secrets opening, the start is refused, naming FORGET_UNOPENABLE_SECRETS, and nothing is changed', () => {
+		noneOpens();
+		const before = snapshotDb();
+
+		let thrown: unknown;
+		consoleLines(() => {
+			try {
+				checkMfaKeyAtStart(mfaKeyLoad(), () => [], undefined, NO_PREVIOUS, undefined, undefined, false);
+			} catch (err) {
+				thrown = err;
+			}
+		});
+
+		expect(thrown).toBeInstanceOf(MfaKeyError);
+		expect((thrown as MfaKeyError).message).toMatch(/None of the 3 stored secret\(s\) opens with this MFA key, and no key check is stored/);
+		expect((thrown as MfaKeyError).message).toContain('FORGET_UNOPENABLE_SECRETS=1');
+		expectUnchanged(before);
+	});
+
+	it('20c: with FORGET_UNOPENABLE_SECRETS=1, stored secrets none of which opens are forgotten as a backup forgets them, the check recorded and the scrub marked', () => {
+		const hook = noneOpens();
+
+		const lines = consoleLines(() => checkMfaKeyAtStart(mfaKeyLoad(), () => [], undefined, NO_PREVIOUS, undefined, undefined, true));
+
+		expect(settingNow('secrets_scrub_pending')).toMatch(/^\d{4}-/);
+		expect(lines.warn.filter((line) => line.includes('FORGET_UNOPENABLE_SECRETS=1 is set'))).toHaveLength(1);
+		expect(settingNow('smtp_pass')).toBeUndefined();
+		expect(settingNow('request_form_secret')).toBeUndefined();
+		const row = db.select().from(webhooks).where(eq(webhooks.id, hook.id)).get()!;
+		expect(row.secret).toBe('');
+		expect(row.active).toBe(false);
+		expect(JSON.parse(settingNow('webhook_secrets_left_out')!)).toEqual([{ id: hook.id, active: true }]);
+		expect(keyCheck()).toBe(key().check);
+		expect(lines.error.filter((line) => line.includes('were forgotten as a backup forgets them'))).toHaveLength(1);
+	});
+
+	it('20b: with no check stored and some stored secrets opening, the check is recorded and the rest named unreadable, nothing forgotten', () => {
+		db.delete(settings).where(eq(settings.key, MFA_KEY_CHECK_SETTING)).run();
+		for (const [name, value] of Object.entries(MAIL)) put(name, value);
+		const theirs = sealValue('their mail password', mailPasswordAad(MAIL), keyFromBytes(randomBytes(32)));
+		put('smtp_pass', theirs);
+		// The form key resetDb sealed under this key opens.
+
+		const lines = consoleLines(() => checkMfaKeyAtStart(mfaKeyLoad(), () => [], undefined, { ok: true, key: null, path: null, warnings: [] }));
+
+		expect(settingNow('smtp_pass')).toBe(theirs);
+		expect(keyCheck()).toBe(key().check);
+		expect(lines.error.filter((line) => line.includes('1 stored secret(s) could not be opened') && line.includes('the mail password'))).toHaveLength(1);
+		expect(lines.error.filter((line) => line.includes('forgotten'))).toEqual([]);
+	});
+});
+
 describe('addTotpFactor, given a secret that is not 20 bytes', () => {
 	it('refuses it and writes nothing: no factor row, no mfa_key_check', () => {
 		const user = makeUser();
+		// resetDb's sealed form key recorded one (card 2898): none, to see that none is written.
+		db.delete(settings).where(eq(settings.key, MFA_KEY_CHECK_SETTING)).run();
 
 		for (const length of [0, 19, 21, 32]) {
 			expect(() => addTotpFactor(user.id, 'Phone', randomBytes(length))).toThrow(/is 20 bytes; no factor was written/);
@@ -572,6 +753,9 @@ describe('backups and restores', () => {
 		const raw = randomBytes(32);
 		const fileKey = keyFromBytes(Buffer.from(raw));
 		const user = makeUser();
+		// The key backups are sealed with, made now, before the check of another key is stored: it is
+		// written sealed under this process's key, which records the check by the one rule (card 2898, S2).
+		backupSealKey(sqlite);
 		const factorUid = newFactorUid();
 		const sealed = sealWith(fileKey, newTotpSecret(), factorAad(user.id, factorUid));
 		db.insert(mfaFactors)
@@ -950,22 +1134,23 @@ describe('backups and restores', () => {
 		expect(keyCheck()).toBe(key().check);
 	});
 
-	it("T58: with no factor after the restore, this server's stored check is put back and a backup's other check is not kept", () => {
+	// Card 2898 (S2): a restore always writes its new form key sealed, which
+	// records this key's check, so with no factor the check is this key's,
+	// whatever this server or the backup held; the backup's is never kept.
+	it("T58: with no factor after the restore, the check is this key's, recorded with the sealed form key, and a backup's other check is not kept", () => {
 		makeUser({ role: 'superadmin' });
-		const ours = keyFromBytes(randomBytes(32)).check;
-		setKeyCheck(ours);
 		const backup = backupNow();
 		setBackupKeyCheck(backup, keyFromBytes(randomBytes(32)).check);
 
 		restore(backup);
 
 		expect(factorCount()).toBe(0);
-		expect(keyCheck()).toBe(ours);
+		expect(keyCheck()).toBe(key().check);
 
-		// None here: none after.
+		// None here: this key's after.
 		db.delete(settings).where(eq(settings.key, MFA_KEY_CHECK_SETTING)).run();
 		restore(backup);
-		expect(keyCheck()).toBeNull();
+		expect(keyCheck()).toBe(key().check);
 	});
 
 	describe("the import's answer", () => {

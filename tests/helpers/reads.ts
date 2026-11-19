@@ -1,4 +1,7 @@
 /**
+ * Reading helpers. `readOpened` (card 2898), below the imports, reads a
+ * stored secret and opens it.
+ *
  * Watch the reads a request makes of one table: whether a transaction was
  * open for each, and a chance to change the table between two of them.
  *
@@ -33,7 +36,58 @@
  * `readBudget(limit)`, below, is the other use of the same wrapping: it counts
  * every read of every table, and stops a walk that would never end.
  */
+import type Database from 'better-sqlite3';
 import { sqlite } from '$lib/server/db';
+import { MAIL_CONNECTION_SETTINGS, mailPasswordAad, openDestinationSecrets, openStored, settingAad, webhookSecretAad } from '$lib/server/stored-secrets';
+
+/**
+ * A stored secret's row read and opened under this process's MFA key (card
+ * 2898), for a test that used to read it straight from the table:
+ *
+ *     readOpened('settings', 'smtp_pass')            the mail password
+ *     readOpened('settings', 'request_form_secret')  a signing key
+ *     readOpened('settings', 'backup_config')        the configuration's text, every destination's secrets opened
+ *     readOpened('webhooks', 7)                      webhook 7's secret
+ *
+ * Undefined where there is no such row. A value held in plain is given as it
+ * is; one that does not open is a throw naming it, so that a test never
+ * takes '' for a secret.
+ */
+export function readOpened(table: 'settings' | 'webhooks', key: string | number, database: Database.Database = sqlite): string | undefined {
+	const fail = (what: string): never => {
+		throw new Error(`readOpened: ${what} does not open with this process's MFA key`);
+	};
+	if (table === 'webhooks') {
+		const row = database.prepare('SELECT id, board_id AS boardId, url, secret FROM webhooks WHERE id = ?').get(key) as
+			| { id: number; boardId: number; url: string; secret: string }
+			| undefined;
+		if (row === undefined) return undefined;
+		const opened = openStored(row.secret, webhookSecretAad(row.id, row.boardId, row.url));
+		return opened.kind === 'unopenable' ? fail(`webhook ${row.id}'s secret`) : opened.value;
+	}
+	const setting = (name: string) => (database.prepare('SELECT value FROM settings WHERE key = ?').get(name) as { value: string } | undefined)?.value;
+	const value = setting(String(key));
+	if (value === undefined) return undefined;
+	if (key === 'backup_config') {
+		// Text that is not a JSON object holds nothing sealed, and is given as it is.
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(value);
+		} catch {
+			return value;
+		}
+		if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return value;
+		const config = openDestinationSecrets(parsed as { destinations?: { unopenable?: string[] }[] });
+		if ((config.destinations ?? []).some((destination) => (destination.unopenable ?? []).length > 0)) fail('a destination secret');
+		return JSON.stringify(config);
+	}
+	const aad =
+		key === 'smtp_pass'
+			? mailPasswordAad(Object.fromEntries(MAIL_CONNECTION_SETTINGS.map((name) => [name, setting(name) ?? null])))
+			: settingAad(String(key));
+	const opened = openStored(value, aad);
+	return opened.kind === 'unopenable' ? fail(`setting ${key}`) : opened.value;
+}
 
 export type WatchedReads = {
 	/** For each read so far, in order: whether a transaction was open when it ran. */

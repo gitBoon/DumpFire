@@ -30,6 +30,13 @@
  * server's credentials. A value the backup has is never replaced, so a backup
  * made before this change restores as it does today.
  *
+ * Since card 2898 the live database holds each of these sealed under the MFA
+ * key, bound to where it is used, and a fill moves the sealed value as it is:
+ * the rules that match an entry here are the ones its seal is bound to, so it
+ * opens where it is put. A value here that does not open is not moved
+ * (`readSecretsHere`), and a backup that holds one in plain has it sealed as
+ * the restore reads it (`rowsToRestore`, db/restore.ts).
+ *
  * And only from a backup this server made and nobody changed since (the
  * review's S1). Matching the fields beside a secret is not enough on its own:
  * a backup that is this server's own in every field but one added superadmin
@@ -94,6 +101,18 @@ import { getDbPath, sqlite } from './db';
 import { printable } from './logger';
 import { HOST_KEY_NOT_CONFIRMED, confirmedHostKey, hostKeyText } from './ssh-host-key';
 import { NEW_SECRET_REASONS } from './webhooks';
+import {
+	looksSealed,
+	mailPasswordAad,
+	openDestinationSecrets,
+	openStored,
+	sealStored,
+	settingAad,
+	unopenableFields,
+	webhookSecretAad,
+	withSecretField,
+	withUnopenableCarried
+} from './stored-secrets';
 
 /** The setting that lists the webhooks a backup left without their secrets. */
 export const WEBHOOK_SECRETS_LEFT_OUT_KEY = 'webhook_secrets_left_out';
@@ -135,6 +154,13 @@ const ANY_SECRET_FIELD = [...new Set(Object.values(SECRET_FIELDS).flat())];
  * be the same account and the same place as one restored (the plan's R1):
  * every field that is not secret, the name included. The same rule decides
  * whether a secret sent back masked to the admin routes is kept (card 2190).
+ *
+ * Frozen into the stored secrets' additional data (card 2898, S8): these
+ * fields less `name` are `DESTINATION_PLACE_FIELDS` in stored-secrets.ts at
+ * version 1, which every destination secret is sealed bound to. A change here
+ * changes which secrets a restore moves, not what they open with: change the
+ * two together, with a new `AAD_VERSION` and a re-seal at start, or a secret
+ * moved by the new rule will not open.
  */
 const SAME_IN = {
 	sftp: ['name', 'host', 'port', 'username', 'remotePath'],
@@ -785,26 +811,46 @@ export function sealOf(database: Database.Database, key: Buffer): string {
  * backup holds it (`clearSecrets`), and a restore keeps this server's in
  * place of anything a backup brings (`restoreFromBackup`). A key that is not
  * 64 hex characters is replaced, as one never made is.
+ *
+ * Stored sealed under the MFA key (card 2898), bound to its setting's name,
+ * and opened here; one held in plain, from before, is used as it is until the
+ * next start seals it. One that does not open is replaced, as one never made
+ * is (decision 9): backups made before then no longer verify.
  */
 export function backupSealKey(live: Database.Database = sqlite): Buffer {
-	const stored = settingOf(live, BACKUP_SEAL_KEY);
-	if (stored !== null && HEX_32.test(stored)) return Buffer.from(stored, 'hex');
+	const opened = sealKeyOpened(settingOf(live, BACKUP_SEAL_KEY));
+	if (opened !== null) return Buffer.from(opened, 'hex');
 	const made = randomBytes(32).toString('hex');
-	live
-		.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value')
-		.run(BACKUP_SEAL_KEY, made);
+	// The key check and the key in one transaction (card 2898's code review, E10).
+	live.transaction(() => {
+		live
+			.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value')
+			.run(BACKUP_SEAL_KEY, sealStored(made, settingAad(BACKUP_SEAL_KEY), live));
+	})();
 	return Buffer.from(made, 'hex');
 }
 
-/** This server's key as `live` holds it, or null where it has none yet. Reads, and writes nothing. */
-export function sealKeyHere(live: Database.Database): string | null {
+/** The key, 64 hex characters, from its setting as stored: opened, or as it is when plain; null for none, one that does not open, or one that is not 64 hex. */
+function sealKeyOpened(stored: string | null): string | null {
+	const opened = openStored(stored, settingAad(BACKUP_SEAL_KEY));
+	return (opened.kind === 'opened' || opened.kind === 'plain') && HEX_32.test(opened.value) ? opened.value : null;
+}
+
+/**
+ * This server's key as `live` holds it, or null where it has none yet, or
+ * none that opens: `stored`, the setting as it is stored (sealed, card 2898),
+ * which a restore puts back unchanged, and `key`, the 64 hex characters a
+ * backup's seal is checked with (S5, E1). Reads, and writes nothing.
+ */
+export function sealKeyHere(live: Database.Database): { stored: string; key: string } | null {
 	const stored = settingOf(live, BACKUP_SEAL_KEY);
-	return stored !== null && HEX_32.test(stored) ? stored : null;
+	const key = sealKeyOpened(stored);
+	return stored !== null && key !== null ? { stored, key } : null;
 }
 
 /**
  * Put back, in `live`'s restored settings, this server's key as it was read
- * before the restore cleared them (`sealKeyHere`). A backup holds none, and
+ * before the restore cleared them (`sealKeyHere`'s `stored`). A backup holds none, and
  * one that does has it left out (`rowsToRestore`): the key is this server's,
  * so that the backups it made before the restore still verify after it.
  */
@@ -892,17 +938,41 @@ export function unsealedBecause(backup: Database.Database, key: string | null): 
  * switched off for, and when (card 2752; none before migration 0071). Read by
  * `restoreFromBackup` inside its transaction, before the first table is
  * cleared. A table or setting that is not there reads as none.
+ *
+ * Each secret is read as stored, sealed (card 2898), and moved so by
+ * `fillSecretGaps`: its additional data are the match rules that move it, so
+ * it opens where it is put. One that does not open under this server's key
+ * (tampered with, or sealed under another key) is read as absent (S15, E8):
+ * nothing is filled from it, and the gap is listed.
  */
 export function readSecretsHere(live: Database.Database): SecretsHere {
 	const mail = readMailHere(live);
+	if (looksSealed(mail.smtp_pass) && openStored(mail.smtp_pass, mailPasswordAad(mail)).kind === 'unopenable') mail.smtp_pass = null;
 	const setBy = hasColumns(live, 'webhooks', 'set_by') ? 'set_by' : 'NULL';
 	const held = hasColumns(live, 'webhooks', 'held_because', 'held_at') ? 'held_because AS heldBecause, held_at AS heldAt' : 'NULL AS heldBecause, NULL AS heldAt';
 	const webhooks = hasColumns(live, 'webhooks', 'id', 'board_id', 'url', 'secret')
 		? (live
 				.prepare(`SELECT id, board_id AS boardId, url, secret, ${setBy} AS setBy, ${held} FROM webhooks WHERE secret IS NOT NULL AND secret <> ''`)
-				.all() as SecretsHere['webhooks'])
+				.all() as SecretsHere['webhooks']).filter(
+				(hook) => !looksSealed(hook.secret) || openStored(hook.secret, webhookSecretAad(hook.id, hook.boardId, hook.url)).kind !== 'unopenable'
+			)
 		: [];
-	return { mail, destinations: destinationsIn(settingOf(live, 'backup_config')), webhooks };
+	return { mail, destinations: destinationsIn(settingOf(live, 'backup_config')).map(withoutUnopenableSecrets), webhooks };
+}
+
+/**
+ * A destination here as stored, each secret in it that does not open under
+ * this server's key emptied (S15), by the one visitor, and named in its
+ * `unopenable`: `fillSecretGaps` lists a destination matched with it, and
+ * never takes it as one with no credentials (card 2898's code review, E2,
+ * S3).
+ */
+function withoutUnopenableSecrets(destination: Entry): Entry {
+	const fields = unopenableFields(openDestinationSecrets({ destinations: [destination] }).destinations[0]);
+	if (fields.length === 0) return destination;
+	let usable: Entry = { ...destination };
+	for (const field of fields) usable = withSecretField(usable, field, '');
+	return { ...usable, unopenable: fields };
 }
 
 /**
@@ -1258,6 +1328,11 @@ export function settingsChanges(before: object, after: object): BackupSettingsCh
  * calls the same account and place: a secret typed again, an SFTP host key
  * and a field no list names do not move a destination. Empty for an entry
  * that is not an object.
+ *
+ * Frozen into the stored secrets' additional data (card 2898, S8):
+ * `destinationSecretAad` in stored-secrets.ts reads the same place, by its
+ * own copy of this rule at version 1. Change the two together, with a new
+ * `AAD_VERSION` and a re-seal at start.
  */
 export function destinationPlace(destination: unknown): unknown[] {
 	if (!isEntry(destination)) return [];
@@ -1426,6 +1501,9 @@ export function fillSecretGaps(
 			const matches = here.destinations.filter((candidate) => sameEntry(destination, candidate));
 			if (matches.length !== 1) return listIt();
 			const match = matches[0];
+			// Its credentials here do not open (card 2898's code review, E2, S3): listed to
+			// enter, never taken as an entry with none, which an SFTP one would be tried as.
+			if (unopenableFields(match).length > 0) return listIt();
 			// An SFTP destination with neither here either is as it is here, with
 			// the key it has here, or none.
 			if (destination.type === 'sftp' && lacks(match, true)) {
@@ -1497,13 +1575,18 @@ export function fillSecretGaps(
  * lacks its credentials (`credentialsMissing`'s rule, so not an SFTP one); a
  * webhook its own marker lists is still there, off and with no secret. What
  * in the marker could not be read is in `problems`. Reads, and writes nothing.
+ *
+ * A mail password or a destination's secret that does not open under this
+ * server's key (card 2898, S15) is read as missing, an SFTP one included.
  */
 export function secretsToEnter(database: Database.Database): { toEnter: SecretsToEnter; problems: string[] } {
 	const toEnter = emptyToEnter();
+	const mail = readMailHere(database);
 	toEnter.mailPassword =
-		has(settingOf(database, 'smtp_host')) && has(settingOf(database, 'smtp_user')) && !has(settingOf(database, 'smtp_pass'));
-	for (const destination of destinationsIn(settingOf(database, 'backup_config'))) {
-		if (credentialsMissing(destination) !== null) {
+		has(mail.smtp_host) && has(mail.smtp_user) && (!has(mail.smtp_pass) || openStored(mail.smtp_pass, mailPasswordAad(mail)).kind === 'unopenable');
+	for (const stored of destinationsIn(settingOf(database, 'backup_config'))) {
+		const destination = openDestinationSecrets({ destinations: [stored] }).destinations[0];
+		if (credentialsMissing(destination) !== null || unopenableFields(destination).length > 0) {
 			toEnter.destinations.push({ name: String(destination.name ?? ''), type: String(destination.type), needs: needs(destination) });
 		}
 	}
@@ -1819,11 +1902,13 @@ export function keepMaskedSecrets<T>(
 	// secret goes to the host it was saved with byte for byte (S1).
 	if ('host' in destination && typeof match.host === 'string') destination.host = match.host;
 	if (masked.includes('refreshToken') && has(match.refreshToken) && has(match.grantedScope)) destination.grantedScope = match.grantedScope;
-	return { destination: destination as T };
+	// A masked field whose stored value does not open is kept as it is stored
+	// by the save, still to be typed again (card 2898's code review, E2).
+	return { destination: withUnopenableCarried(destination, match, masked) as T };
 }
 
 /** The mail settings as they decide where the password goes, and over what. */
-type MailConnection = { host: string; port: number; allowInsecure: boolean; user: string };
+export type MailConnection = { host: string; port: number; allowInsecure: boolean; user: string };
 
 /** The way out's name on the panel (card 2189, decision 14). */
 const WAY_OUT = '"Allow mail without a checked, encrypted connection"';
@@ -1843,8 +1928,13 @@ const MAIL_WORDS: Record<keyof MailConnection, string> = {
  * as `hostAsCompared` has it (S1), the port a number with 587 for none, the way out
  * on only for true (a backup made before card 2189 has no row: off), the
  * user '' for none.
+ *
+ * Frozen into the mail password's additional data (card 2898, S8):
+ * `mailPasswordAad` in stored-secrets.ts reads the same connection
+ * (`MAIL_CONNECTION_FIELDS`) by its own copy of this rule at version 1.
+ * Change the two together, with a new `AAD_VERSION` and a re-seal at start.
  */
-function mailConnection(values: Partial<Record<string, unknown>>): MailConnection {
+export function mailConnection(values: Partial<Record<string, unknown>>): MailConnection {
 	const host = values.host ?? values.smtp_host;
 	const user = values.user ?? values.smtp_user;
 	const allowInsecure = values.allowInsecure ?? values.smtp_allow_insecure;
@@ -1857,7 +1947,7 @@ function mailConnection(values: Partial<Record<string, unknown>>): MailConnectio
 }
 
 /** The fields of the mail rule in which `b` differs from `a`: R1's mail rule, the restore's and the SMTP route's. */
-function mailChanges(a: MailConnection, b: MailConnection): (keyof MailConnection)[] {
+export function mailChanges(a: MailConnection, b: MailConnection): (keyof MailConnection)[] {
 	return (['host', 'port', 'user', 'allowInsecure'] as const).filter((field) => a[field] !== b[field]);
 }
 
@@ -1880,7 +1970,9 @@ export function readMailHere(live: Database.Database = sqlite): SecretsHere['mai
  * sender's address and name and the App URL decide nothing about where the
  * password goes, and are not asked. With no password stored there is none to
  * keep: a masked one is written empty, as before. `pass` is undefined where
- * nothing is to be written.
+ * nothing is to be written, and `keep` is true where the stored one is kept
+ * (card 2898, decision 18): nothing is written for it, so its sealed row is
+ * left as it is.
  *
  * Where the stored password is kept and a host was sent, `host` is the stored
  * host, which the save writes in place of the one sent (S1, belt and braces):
@@ -1890,7 +1982,7 @@ export function readMailHere(live: Database.Database = sqlite): SecretsHere['mai
 export function keepMailPassword(
 	sent: { host?: string; port?: number; allowInsecure?: boolean; user?: string; pass?: string },
 	stored: SecretsHere['mail']
-): { pass: string | undefined; host?: string } | { refusal: string } {
+): { pass: string | undefined; keep?: true; host?: string } | { refusal: string } {
 	if (sent.pass !== undefined && sent.pass !== SECRET_MASK) return { pass: sent.pass };
 	const password = stored.smtp_pass;
 	if (!has(password)) return { pass: sent.pass === undefined ? undefined : '' };
@@ -1911,5 +2003,8 @@ export function keepMailPassword(
 		};
 	}
 	const host = sent.host !== undefined && typeof stored.smtp_host === 'string' ? stored.smtp_host : undefined;
-	return { pass: sent.pass === undefined ? undefined : (password as string), host };
+	// Kept: nothing is written for it (card 2898, decision 18), so the row,
+	// sealed, stays byte for byte as it is, and still opens with the
+	// connection the save leaves, which is the same by this rule.
+	return { pass: undefined, keep: true, host };
 }

@@ -58,6 +58,7 @@ import {
 	type BoardFixture
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { readOpened } from './helpers/reads';
 
 beforeEach(resetDb);
 
@@ -714,7 +715,8 @@ describe('PUT /api/admin/smtp', () => {
 				.all()
 				// Nor the MFA key's check, which the superadmin's factor wrote (card 2771).
 				.filter((row) => row.key !== 'request_form_secret' && row.key !== 'mfa_key_check')
-				.map((row) => [row.key, row.value])
+				// The mail password opened: a save stores it sealed (card 2898).
+				.map((row) => [row.key, row.key === 'smtp_pass' ? readOpened('settings', 'smtp_pass') : row.value])
 		);
 
 	const NEW = {
@@ -766,10 +768,11 @@ describe('PUT /api/admin/smtp', () => {
 		// address it leaves, saved before anyone was recorded, as nobody's; the
 		// saver's other App URL rows dropped; the saver's row (the third review).
 		// Before them, the current password counted, the code spent and the
-		// count cleared (cards 2701 and 2771).
+		// count cleared (cards 2701 and 2771). The password, sent masked and
+		// kept, is not written at all: its sealed row stays as it is (card 2898,
+		// decision 18).
 		expect(shape(run.writes)).toEqual([
 			...STEP_UP_WRITES,
-			'update settings set',
 			'update settings set',
 			'update settings set',
 			'update settings set',

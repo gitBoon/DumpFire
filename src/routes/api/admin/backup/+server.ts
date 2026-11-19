@@ -37,6 +37,7 @@ import {
 } from '$lib/server/backup';
 import { readDestination } from '$lib/server/backup-destinations';
 import {
+	SECRET_MASK,
 	hostKeyChanges,
 	keepMaskedSecrets,
 	maskDestination,
@@ -46,6 +47,7 @@ import {
 	type BackupSettingsChanges,
 	type HostKeyChange
 } from '$lib/server/backup-secrets';
+import { TYPED_SECRET_LOOKS_SEALED, destinationLooksSealed, withUnopenableMasked, withoutUnopenable } from '$lib/server/stored-secrets';
 import { afterCommit } from '$lib/server/db/transaction';
 import { createLogger } from '$lib/server/logger';
 import {
@@ -179,6 +181,9 @@ function superadminOnly(before: BackupConfig, after: BackupConfig, changes: Back
 	return `${SUPERADMIN_FOR_FEWER_COPIES} This save would ${would.join(', and ')}.`;
 }
 
+/** `config` with each destination's carriers of a secret that did not open taken off (card 2898's code review, E5). */
+const withoutCarriers = (config: BackupConfig): BackupConfig => ({ ...config, destinations: config.destinations.map(withoutUnopenable) });
+
 /**
  * GET — Return backup config and recent history: every row of the newest 30
  * runs, the rule the history is kept to (card 2413; it asked for 30 rows of a
@@ -190,8 +195,11 @@ export const GET: RequestHandler = async ({ locals }) => {
 	const config = getBackupConfig();
 	const history = getBackupHistory();
 
-	// Every secret field masked, by the one list (card 2187).
-	const maskedDestinations = config.destinations.map(maskDestination);
+	// Every secret field masked, by the one list (card 2187). One stored that
+	// does not open (card 2898) is shown empty, to be typed again.
+	// Shown masked, as a secret that is stored, so that a save that does not
+	// type it again keeps it (the code review's E2): no backup goes to it until then.
+	const maskedDestinations = config.destinations.map((destination) => maskDestination(withUnopenableMasked(destination, SECRET_MASK)));
 
 	return json({
 		schedule: config.schedule,
@@ -291,6 +299,8 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 			// is found by its name to connect, test and back up to.
 			const twice = twiceNamed(read, existing.destinations);
 			if (twice !== null) throw error(400, twice);
+			// A secret typed that looks sealed is refused (card 2898, S9): it would be taken for one.
+			if (read.some(destinationLooksSealed)) throw error(400, TYPED_SECRET_LOOKS_SEALED);
 			config.destinations = read.map((sent) => {
 				const kept = keepMaskedSecrets(sent, existing.destinations);
 				if ('refusal' in kept) throw error(400, kept.refusal);
@@ -306,11 +316,15 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 		// the account as it is now, before anything is written or queued: a
 		// superadmin made an administrator while the body arrived is refused as
 		// an administrator is.
-		const changed = settingsChanges(existing, config);
-		const refusal = user.role === 'superadmin' ? null : superadminOnly(existing, config, changed);
+		// Compared without the carriers of a secret that did not open (card 2898's
+		// code review, E5): they are no field of a destination, and change nothing.
+		const before = withoutCarriers(existing);
+		const after = withoutCarriers(config);
+		const changed = settingsChanges(before, after);
+		const refusal = user.role === 'superadmin' ? null : superadminOnly(before, after, changed);
 		if (refusal !== null) throw error(403, refusal);
 
-		return { user, existing, config, destinations, changed };
+		return { user, existing: before, config, compared: after, destinations, changed };
 	};
 
 	/**
@@ -318,17 +332,17 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	 * writes it, so what is kept is what is there when the change is written.
 	 */
 	const save = (caller: SessionUser | null) => {
-		const { user, existing, config, destinations, changed } = readSave(caller);
+		const { user, existing, config, compared, destinations, changed } = readSave(caller);
 
 		// After the commit, not here: the logger writes a row logged inside a
 		// transaction whichever way it ends, and a save that fails would leave
 		// a line for a change it never saved (cards 2267 and 2270). The line for
 		// the whole save is queued first, so it reads before the key lines.
 		if (changed !== null) {
-			const write = leavesFewerCopies(existing, config, changed) ? log.warn : log.info;
+			const write = leavesFewerCopies(existing, compared, changed) ? log.warn : log.info;
 			afterCommit(() => write(settingsChangeLine(changed), changed, { userId: user.id }));
 		}
-		const changes = destinations === undefined ? [] : hostKeyChanges(existing.destinations, config.destinations);
+		const changes = destinations === undefined ? [] : hostKeyChanges(existing.destinations, compared.destinations);
 		for (const change of changes) {
 			afterCommit(() =>
 				log.warn(
@@ -346,7 +360,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 		// reviews); a secret typed again for the same place, or a host key
 		// confirmed, changes nobody's. A move by the superadmin, or with a secret
 		// typed into it as sent, takes its place over (the third review).
-		recordDestinationSetters(existing.destinations, config.destinations, destinations ?? [], changed, {
+		recordDestinationSetters(existing.destinations, compared.destinations, destinations ?? [], changed, {
 			id: user.id,
 			superadmin: user.role === 'superadmin'
 		});

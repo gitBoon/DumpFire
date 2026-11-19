@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.137
+version: 1.138
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2898
+  - secrets-at-rest
   - card-2923
   - ended-access-holds-webhooks
   - card-2925
@@ -78,7 +80,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Docker deployment, the release that holds already-off webhooks when an account's access ends and mails the boards' owners (card 2923: OpenAPI 1.15.0, breaking, a one-time start-up hold, the host's command printing what it held), the release that ends API keys at a two-step reset (card 2915: always from the admin page, on the host unless --keep-api-keys, a read-only check of what will end, going back, OpenAPI 1.14.0 breaking), the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Docker deployment, the release that seals the stored secrets under the MFA key (card 2898: the read-only queries before, the first start's line, the scrub and Admin › Vacuum, copies made before, a value that does not open, and going back), the release that holds already-off webhooks when an account's access ends and mails the boards' owners (card 2923: OpenAPI 1.15.0, breaking, a one-time start-up hold, the host's command printing what it held), the release that ends API keys at a two-step reset (card 2915: always from the admin page, on the host unless --keep-api-keys, a read-only check of what will end, going back, OpenAPI 1.14.0 breaking), the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -239,6 +241,7 @@ On the Docker host itself there is usually no Node to run the suite with outside
 | `NODE_ENV` | `production` in the image; unset for a server started any other way | No | Node.js environment mode. It also decides whether the production rules for the MFA key apply (card 2768): they do unless it is exactly `development` or `test`, or the database is in memory. Unset, `production`, `staging` and a misspelling are all production, so a local `node build` needs `MFA_KEY_FILE` as the image does. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets) |
 | `MFA_KEY_FILE` | not set | **Yes, wherever the production rules apply**: in the image always | The path, inside the container, of the file holding the key that protects authenticator secrets (card 2768): 64 hexadecimal characters, made with `openssl rand -hex 32`, in a regular file of at most 4096 bytes. Mount it read-only from outside the volume (`/run/secrets/dumpfire_mfa_key`), never under `/app/data`. Under the production rules the server **refuses to start** when it is unset, names no file, or names a file that is not a key, and never makes one; under `development` or `test` a missing key is made, beside the database as `mfa.key` when this is unset. Read once, at start. Empty is unset. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets) |
 | `MFA_KEY_FILE_PREVIOUS` | not set | No: **set it only to change the key**, as [Changing the Key](#changing-the-key) says, **and remove it after** | The path, inside the container, of the **old** key file while the key is being changed (card 2773); `MFA_KEY_FILE` then names the new one. At that start, before the server listens, every second factor that opens with the old key is sealed again under the new one and the new key's check is recorded, in one transaction. The file is read by `MFA_KEY_FILE`'s rules (a regular file of at most 4096 bytes holding 64 hexadecimal characters, refused if its group or everyone can write it), must exist (a previous key is never made, under any `NODE_ENV`), and must not be the same key as `MFA_KEY_FILE`: each of those **refuses the start**. Read afresh at every start, used once and not kept. Empty is unset. While it is set and opens nothing, every start says so in a `[WARN] [STARTUP]` line |
+| `FORGET_UNOPENABLE_SECRETS` | not set | No: **set it only as** [If the Key Is Lost](#if-the-key-is-lost) **says, for one start, and remove it after** | `1` alone sets it; anything else is unset. With no second factor and no key check stored and not one stored secret opening with the key (card 2898's code review, S6), the start forgets them as a backup forgets them instead of refusing. It forgets nothing where any stored secret opens, or where a key check is stored. While it is `1`, every start says so in a `[WARN] [AUTH]` line, on the console whatever `LOG_LEVEL` is. Read at every start |
 | `PORT` | `3000` | No | HTTP port the server listens on |
 | `ORIGIN` | `http://localhost:3000` | **Yes** | Public URL — must match your domain exactly. Incorrect value causes CSRF failures. It must be the public origin: where a browser sends no `Sec-Fetch-Site` (over plain HTTP at any address but `localhost`, or an old browser), every write from the web application, sign-in included, is refused `403` unless its `Origin` is exactly `ORIGIN` (card 2700; see [Writes From DumpFire's Own Pages Alone](authentication-security.md#writes-from-dumpfires-own-pages-alone-card-2700)). It is also the address every link in a mail begins with, unless an App URL is set: see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from) |
 | `APP_URL` | not set | No | The address links in mail begin with, when it should not be `ORIGIN`. The App URL on the admin page, under Application Settings, does the same and is read first, but only where it is on `APP_URL`'s origin or a real `ORIGIN`'s (card 2847): set, `APP_URL` holds the App URL to this server's own address |
@@ -546,6 +549,15 @@ every start all the same, from the update that brings migration 0065, so **the k
 be in place before that image starts in production**. How the key is used is in
 [Second-Factor Secrets at Rest](authentication-security.md#second-factor-secrets-at-rest-card-2768).
 
+**It protects the stored service secrets too** (card 2898): the mail password, every backup
+destination's credentials, every webhook's signing secret and the three signing keys
+(remembered browsers, the request form, the backup seal) are kept in the database sealed under a
+key derived from the same file, and the key check is recorded with the first of them. So a
+server with no factor yet still refuses to start with another key once anything is sealed, and
+losing the key file loses these secrets too (see [If the Key Is Lost](#if-the-key-is-lost)). How
+they are sealed is in
+[Service Secrets at Rest](authentication-security.md#service-secrets-at-rest-card-2898).
+
 ### When It Is Required
 
 The production rules apply unless `NODE_ENV` is exactly `development` or `test`, or the
@@ -686,12 +698,14 @@ flowchart TD
 | `The MFA key file <path> is not a regular file.`, `… is larger than 4096 bytes, so it is not a key file.`, `… could not be read (<code>).` | It is not a key | Point it at the key file; for `EACCES`, let the container read it |
 | `The MFA key file <path> can be written by its group or by everyone, so it could be swapped for another key. Make it readable and writable by its owner alone (chmod 600).` | A key anyone on the host can replace protects nothing | `chmod 600` the file on the host |
 | `The MFA key file <path> does not hold a key: it must hold 64 hexadecimal characters and nothing else (openssl rand -hex 32).` | It is not a key | Put the key back as it was made; never a new one if factors exist (below) |
-| `The MFA key does not match the one the second factors were made with (a volume swap, a moved DB_PATH, a restore by hand, or the wrong key file).` | Second factors are stored and `mfa_key_check` is another key's: the server would run with secrets it cannot read | Mount the key the factors were made with. If it is gone, follow [If the Key Is Lost](#if-the-key-is-lost) |
+| `The MFA key does not match the one the second factors were made with or the stored secrets were sealed with (a volume swap, a moved DB_PATH, a restore by hand, or the wrong key file).` | Second factors or stored secrets (card 2898) are stored and `mfa_key_check` is another key's: the server would run with secrets it cannot read. A check of another key with nothing sealed is not refused: the start replaces it with this key's before it seals anything (card 2898's code review, E1) | Mount the key they were sealed with. If it is gone, follow [If the Key Is Lost](#if-the-key-is-lost) |
 | `None of the N second factor(s) opens with this MFA key, and no key check is stored: the key does not match the one they were made with (…).` | No key check is stored (deleted by hand, say) and no factor opens, so the key is the wrong one | As the row above |
+| `None of the N stored secret(s) opens with this MFA key, and no key check is stored: … Mount that key. If it is lost, start once with FORGET_UNOPENABLE_SECRETS=1 to forget them as a backup forgets them … then remove it.` | No factor and no key check are stored, and not one stored secret opens (card 2898's code review, S6): the wrong key mounted is likelier than a lost one, and forgetting cannot be undone by mounting the right key afterwards, so nothing is forgotten without the operator saying so | Mount the key they were sealed with. If it is truly lost, follow step 5 of [If the Key Is Lost](#if-the-key-is-lost) |
 | `MFA_KEY_FILE_PREVIOUS names no file (<path>); a previous key is never made.` | The key is being changed and the old key is not where it is said to be (card 2773) | Correct the path or the mount, or take `MFA_KEY_FILE_PREVIOUS` out: see [Changing the Key](#changing-the-key) |
 | `MFA_KEY_FILE_PREVIOUS cannot be used. The MFA key file <path> …`, followed by any of the key file's own reasons above | The old key file is not a key, or could be swapped for another | As for `MFA_KEY_FILE`'s own row |
 | `MFA_KEY_FILE_PREVIOUS holds the same key as MFA_KEY_FILE. To change the key, MFA_KEY_FILE names the new key and MFA_KEY_FILE_PREVIOUS the old one.` | Both name one key, so nothing would change: a mistake in how the server was started, refused whether or not factors are stored | Point `MFA_KEY_FILE` at the new key |
 | `The second factors could not be sealed again under the new MFA key (<why>). Nothing was changed, and starting again is safe; if another instance is running on this database, stop it first.` | The change of key failed partway, most often because another instance holds the database (`database is locked`): its transaction is rolled back whole | Stop every instance on the database, then start again |
+| `The stored secrets could not be sealed under the MFA key (<why>). Nothing was changed, and starting again is safe; if another instance is running on this database, stop it first.` | The start's sealing of secrets held in plain (card 2898, `sealStoredSecretsAtStart`) failed: its transaction is rolled back whole | As the row above |
 
 Every reason ends `See docs/deployment.md, The Key That Protects Authenticator Secrets.`
 **Until card 2769 lets an account set up a factor there is no factor to compare**, so only the
@@ -746,9 +760,13 @@ of this in one `BEGIN IMMEDIATE` transaction:
 - deletes every authenticator being set up under the old key (a pending enrolment, which can no
   longer be opened: that person starts setting up again), at every start while
   `MFA_KEY_FILE_PREVIOUS` is set, even one with nothing to seal again and no check to record;
-- records the new key's check.
+- records the new key's check;
+- seals again under the new key every stored secret (card 2898: the mail password, the
+  destinations' credentials, the webhooks' secrets, the signing keys) that opens with the old
+  one, factors or none, and counts them in the `Rotated …` line ("Rotated N second factor(s) and
+  M stored secret(s) to the new MFA key").
 
-Each old secret, and the AES key derived from the old file, is zeroed once used; the old key is
+Each old secret, and the AES keys derived from the old file, are zeroed once used; the old key is
 not kept by the running server. If any of it fails, the transaction is rolled back whole,
 nothing is changed, the start is refused (the last row of the table in
 [What the Start-Up Check Does](#what-the-start-up-check-does)), and starting again is safe.
@@ -879,7 +897,19 @@ not:
 
 4. **Install a new key**: make it as in [Making the Key](#making-the-key), at the path
    `MFA_KEY_FILE` names, and back it up apart from the database.
-5. **Start the server.** With no factor stored there is nothing to compare, and it starts.
+5. **Start the server once with `FORGET_UNOPENABLE_SECRETS=1`**, then remove it. With no factor
+   stored there is nothing to compare. The stored secrets sealed under the lost key (card 2898)
+   open with nothing, and without the variable the start is refused with "None of the N stored
+   secret(s) opens with this MFA key …", nothing changed (card 2898's code review, S6): a start
+   never forgets them on its own. With it, and no key check stored and none of them opening, the
+   start forgets them as a backup forgets them (the mail password and the destinations'
+   credentials emptied, each signed webhook switched off and listed, the signing keys made
+   again), names them in one `[ERROR] [AUTH]` line, records the new key's check and marks the
+   scrub pending. While the variable is set every start says at `[WARN] [AUTH]` to remove it:
+   take it out of the container's environment and recreate the container. Enter the mail
+   password and the destinations' credentials again in Admin, and set each webhook a new secret
+   with its receiver. Where some stored secrets do open, none is forgotten, with the variable or
+   without: the key is then not the lost one, and those that do not open are only named.
 6. **Every account that had a second factor now has none**, and needs its two-step sign-in
    reset before it can sign in with one: 🛡️ on the admin page (see
    [Resetting Two-Step Sign-In](admin-guide.md#resetting-two-step-sign-in)), and for the
@@ -1099,6 +1129,9 @@ What stops a start, and what is only reported:
 | `MFA_KEY_FILE_PREVIOUS` is set and names no file, a file that is not a key, or the same key as `MFA_KEY_FILE`; or the change of key failed partway (another instance holds the database, say) (card 2773) | `[CRITICAL] [AUTH] The server will not start. MFA_KEY_FILE_PREVIOUS …` (or `The second factors could not be sealed again under the new MFA key …`), on the console only | **No**. Nothing was changed. See [Changing the Key](#changing-the-key) |
 | `MFA_KEY_FILE_PREVIOUS` is set and factors open with it (card 2773) | `[WARN] [AUTH] Rotated N second factor(s) to the new MFA key. Back up the new key now, then remove MFA_KEY_FILE_PREVIOUS; …`, at that start, on the console whatever `LOG_LEVEL` is | Yes, with every such factor sealed again under the new key. Back up the new key, then remove `MFA_KEY_FILE_PREVIOUS` |
 | `MFA_KEY_FILE_PREVIOUS` is set and no factor opens with it (card 2773) | `[WARN] [STARTUP] The previous MFA key, named by MFA_KEY_FILE_PREVIOUS, opens nothing: …`, at every start while it is set, on the console whatever `LOG_LEVEL` is | Yes. Remove `MFA_KEY_FILE_PREVIOUS` |
+| No second factor and no key check are stored, and not one stored secret opens with the key (card 2898's code review, S6) | `[CRITICAL] [AUTH] The server will not start. None of the N stored secret(s) opens with this MFA key, and no key check is stored: …` | **No**, nothing changed. Mount the right key; if it is lost, see [If the Key Is Lost](#if-the-key-is-lost), step 5 |
+| `FORGET_UNOPENABLE_SECRETS=1` | `[WARN] [AUTH] FORGET_UNOPENABLE_SECRETS=1 is set: a start with no key check stored and no stored secret opening forgets them. Remove it …`, at every start while it is set | Yes. Remove it once the start it was set for has run |
+| A scrub of the stored secrets' old text is pending from an earlier start, a restore, a Reset or a key change, or this start's scrub found the write-ahead log held | `[ERROR] [STARTUP] … could not be scrubbed …` for each try that fails, naming Admin › Vacuum | Yes: tried after the server listens, a minute after the start and then every 30 minutes, until it succeeds (card 2898's code review, E4) |
 | The MFA key file can be read by its group or by everyone (Linux only), or a named key file is inside the database's folder (card 2768) | `[WARN] [STARTUP]`, at every start while it is so, on the console whatever `LOG_LEVEL` is | Yes. Expected for a Docker Swarm secret (`0444`); otherwise `chmod 600` the file, or move it off the volume |
 | A migration file fails, cannot be read, holds no SQL statement, or holds a statement the runner refuses (see [Changing the Schema](#changing-the-schema)) | `[CRITICAL] [DB]` | **No** |
 | `/app/drizzle` is missing or holds no `.sql` file (an image built without its migrations) | `[CRITICAL] [DB]` | **No** |
@@ -7609,6 +7642,97 @@ Ed; a local receiver allowed by `WEBHOOK_ALLOW_INSIDE`):
 | H6 | H1 to H3 again with a disable of Ed | Mail to Owner; Ed not sent the owners' mail | Ed sent it |
 | H7 | Stopped: switch a webhook off by `PUT` and disable its setter on the database directly; start the new image | One `Webhooks` WARN at start naming it; it is held; a restart writes nothing | No line, or a second |
 | H8 | On a scratch copy, `node scripts/mfa-reset.mjs Ed` with one of his webhooks already off | stdout lists it as held and says to tell the owners; `system_logs` has the `Webhooks` rows before the `CRITICAL` row; it is held | Not listed, or not held |
+
+### The Release That Seals the Stored Secrets (Card 2898)
+
+No migration, no API version. From this release the mail password, every backup destination's
+credentials, every webhook's signing secret and the three signing keys are stored sealed under a
+key derived from `MFA_KEY_FILE` (see
+[Service Secrets at Rest](authentication-security.md#service-secrets-at-rest-card-2898)). The
+first start seals every one held in plain, before the server listens, and scrubs the old plain
+text out of the file.
+
+**Before the deploy** (read-only, on production as well), to know what the first start should
+say:
+
+```sql
+SELECT key, CASE WHEN value LIKE 'dfsealed:1:%' THEN 'sealed' WHEN value = '' THEN 'empty' ELSE 'plain' END AS form
+  FROM settings WHERE key IN ('smtp_pass', 'known_browser_secret', 'request_form_secret', 'backup_seal_key');
+SELECT COUNT(*) AS signed_webhooks FROM webhooks WHERE secret <> '';
+SELECT json_array_length(value, '$.destinations') AS destinations FROM settings WHERE key = 'backup_config';
+SELECT COUNT(*) AS key_check FROM settings WHERE key = 'mfa_key_check';
+```
+
+**The first start** writes one `[WARN] [STARTUP]` line, on the console whatever `LOG_LEVEL` is:
+`Sealed N stored secret(s) held in plain (the mail password, D destination field(s), W webhook
+secret(s), K signing key(s); U backup configuration(s) unreadable): they are now encrypted under
+the MFA key.`, naming the import's safety copy (`.pre-restore-safety.json`) where there is one,
+which holds them in plain as they were: delete it once it is not needed. It records the key
+check before it seals anything. This first sealing start alone (it writes
+`stored_secrets_first_sealed`) deletes the stale `.backup-temp` copies a stopped backup can leave
+beside the database; a later start never does. Then it scrubs the file before it listens:
+`wal_checkpoint(TRUNCATE)`, `VACUUM`, `wal_checkpoint(TRUNCATE)`, and clears the setting
+`secrets_scrub_pending`. On a large database that start takes as long as a VACUUM does. If a
+reader holds the write-ahead log, one `[ERROR] [STARTUP]` line says to run **Admin › Vacuum**
+once nothing else reads the database, and the scrub is tried again **after** the server listens,
+in the background (a minute after the start, then every 30 minutes, an `ERROR` for each failure),
+the setting kept until one succeeds. A scrub left pending by an earlier start, a restore, a
+Reset or a key change is also tried in the background, never before the server listens. Admin ›
+Vacuum now checkpoints after its `VACUUM` and clears the setting; when a reader holds the log it
+answers `503` ("The database was compacted, but its write-ahead log is held by a reader …") with
+an `ERROR [STARTUP]` line, and is run again once nothing else reads the database. Every restore
+and every Reset sets `secrets_scrub_pending`, so the replaced rows' old text is scrubbed too.
+
+```mermaid
+flowchart TD
+    Q["Run the read-only queries"] --> D["Deploy the new image"]
+    D --> K{"checkMfaKeyAtStart"}
+    K -- "another key, with anything sealed" --> X["CRITICAL AUTH, exit 1"]
+    K -- "this key" --> F["ensureFormSecret"]
+    F --> S["sealStoredSecretsAtStart:<br/>one transaction, the key check recorded first,<br/>every plain secret sealed"]
+    S --> W["WARN STARTUP: Sealed N stored secret(s)"]
+    W --> V["Scrub: checkpoint, VACUUM, checkpoint"]
+    V -- "a reader held the log" --> E["ERROR STARTUP naming Admin › Vacuum"]
+    V -- "done" --> L["Listening on"]
+    E --> L
+    E -. "after listening" .-> B["Tried again in the background:<br/>+1 min, then every 30 min,<br/>ERROR each failure, marker kept"]
+```
+
+**Copies made before the release** still hold the secrets in plain: volume snapshots, cold copies
+and the import's safety copy. Change the mail password, the destinations' credentials and the
+webhooks' secrets if any such copy may be out of your hands. Backups never held them (card 2169)
+and are unchanged.
+
+**A value that does not open** (a row edited by hand, or sealed under another key) is named at
+`ERROR` at start and never used: mail is not sent while a user is set, the destination is not
+tried, the webhook is not delivered ("Not sent: its signing secret cannot be opened"), and a
+signing key is replaced, which forgets remembered browsers, makes open forms reload and stops
+older backups verifying. Enter it again where it is set.
+
+**Going back to an older image** is possible but costs the secrets: there is no unseal command.
+The older image reads the sealed text as if it were the secret, so mail and backups fail to sign
+in, webhooks are signed with a key no receiver holds, remembered browsers and open forms reset,
+and it replaces the backup seal key, so backups made under this image fill nothing there. No
+secret is disclosed. Before going back, plan to enter the mail password and destination
+credentials again there and to set new webhook secrets with their receivers, or do not go back.
+What the older image writes is sealed again at the next start on this one.
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | Run the queries above, then start the new image | One `Sealed N stored secret(s) …` line, N matching; the safety file named if one exists | No line, a count that differs, or secret text in the log |
+| H2 | Run the first query again | Every row `sealed`; `key_check` 1; no `secrets_scrub_pending` row | Any `plain`, or the marker left |
+| H3 | Restart | No sealing line | A second |
+| H4 | Admin, Mail: send a test mail; save with the password masked | The mail arrives; the row is byte for byte as before | Mail fails, or the row changed |
+| H5 | Run a backup by hand | It succeeds | A credentials error |
+| H6 | Make a webhook with a known secret through v1; move a card; change its address with `PUT`; move a card | Both signatures verify with that secret; the owner's `GET` shows it plain; the table holds `dfsealed:1:` | A signature that fails, or a plain row |
+| H7 | Export a backup; search it for `dfsealed` and the mail password | Neither found | Either found |
+| H8 | With the server running, search `dumpfire.db` and `dumpfire.db-wal` for the mail password | Not found | Found |
+| H9 | Stopped: change `smtp_host` by hand; start; Admin, Mail; send a test mail | One `ERROR` naming the mail password; the field empty; the test mail refused, nothing sent | The password used or shown |
+| H10 | Change the key with `MFA_KEY_FILE_PREVIOUS` | The `Rotated …` line counts the stored secrets; mail and backups still work | A refused start, or a failure |
+| H11 | Start with a different key file | Refused with the mismatch line naming stored secrets | It starts |
+| H12 | Import Backup of the H7 backup | Mail password, destination and webhook kept and working | Any listed to enter |
+| H13 | Admin › Vacuum | Succeeds; `dumpfire.db-wal` is empty after | A log left with frames |
+| H14 | Stopped: point `MFA_KEY_FILE` at a new, empty key's file with nothing else changed; start | Refused: "None of the N stored secret(s) opens with this MFA key … FORGET_UNOPENABLE_SECRETS=1"; nothing changed. Put the right key back | It starts, or anything is forgotten |
 
 ## Changing the Schema
 
