@@ -53,7 +53,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { google } from 'googleapis';
@@ -86,6 +86,8 @@ import {
 import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
 import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
+// For the database file's path the import route asks for, stood in for in one case (card 2925).
+import * as connection from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
 import {
 	NO_SUPERADMIN_IN_BACKUP,
@@ -1216,6 +1218,136 @@ describe('a restore', () => {
 		expect(safety).not.toContain('the-key-that-was-here');
 		const settings = (JSON.parse(safety) as { settings: { key: string; value: string }[] }).settings;
 		expect(settings).toContainEqual(expect.objectContaining({ key: 'app_url', value: 'https://here.example.test' }));
+	});
+
+	// Card 2925. A full-suite run found the temporary working directory a test
+	// had made gone by the time the import wrote into it. For a database in
+	// memory the import makes that folder; for a database file it never makes
+	// the database's own folder. A write it cannot make is refused in words,
+	// naming no path, and nothing is changed.
+	describe('that cannot write one of its files (card 2925)', () => {
+		/** A backup with one board, sent by the superadmin once `prepare` has had the working directory. */
+		const importAfter = (prepare: (dir: string) => void) =>
+			importing(async (dir) => {
+				const backup = migratedDb();
+				backup.exec("INSERT INTO boards (id, name) VALUES (1, 'From the backup')");
+				prepare(dir);
+				const res = await api('POST', '/api/admin/import?outside=keep', { user: chief, headers: confirmedImport(), body: backup.serialize() });
+				return { status: res.status, message: res.body.message as string };
+			});
+
+		it('makes the working directory again when the database is in memory and it is gone', async () => {
+			const res = await importAfter((dir) => rmSync(dir, { recursive: true }));
+
+			expect([res.status, res.message]).toEqual([200, expect.stringContaining(SIGNED_OUT)]);
+			expect(column(sqlite, 'SELECT name FROM boards')).toEqual(['From the backup']);
+			// Made again, with the safety copy in it and the working copy gone.
+			expect(readdirSync(res.dir)).toEqual(['.pre-restore-safety.json']);
+		});
+
+		it("never makes a database file's folder: one that is missing is refused in the ruled words", async () => {
+			const before = snapshotDb();
+			const from = lastLineId();
+			let gone = '';
+
+			const res = await importAfter((dir) => {
+				gone = join(dir, 'gone');
+				vi.spyOn(connection, 'getDbPath').mockReturnValue(join(gone, 'dumpfire.db'));
+			});
+
+			expect({ status: res.status, message: res.message }).toEqual({
+				status: 500,
+				message: 'The import could not write its working copy beside the database. Nothing was changed.'
+			});
+			expect(existsSync(gone)).toBe(false);
+			expectNothingWritten(before, res.dir);
+			// The CRITICAL line keeps the error, path and all.
+			const critical = importLinesSince(from).filter((line) => line.level === 'CRITICAL');
+			expect(critical).toHaveLength(1);
+			expect(critical[0].message).toContain(join(gone, 'dumpfire.db.restore-temp'));
+		});
+
+		it('refuses a working copy it cannot write, naming no path, and changes nothing', async () => {
+			const before = snapshotDb();
+
+			const res = await importAfter((dir) => mkdirSync(join(dir, '.restore-temp.db')));
+
+			expect(res.status).toBe(500);
+			// A folder in the way is said in words (the code review's F5).
+			expect(res.message).toBe(
+				'The import could not write its working copy beside the database (something else is in the way). Nothing was changed.'
+			);
+			expect(res.message).not.toContain(res.dir);
+			expectUnchanged(before);
+			expect(readdirSync(res.dir)).toEqual(['.restore-temp.db']);
+		});
+
+		// The code review's F1 and F2: a file the write could not open is not
+		// its own, and is never removed. Root opens a read-only file all the same.
+		it.skipIf(process.getuid?.() === 0)('leaves a file it could not open as it was', async () => {
+			const before = snapshotDb();
+			let stale = '';
+
+			const res = await importAfter((dir) => {
+				stale = join(dir, '.restore-temp.db');
+				writeFileSync(stale, 'left by an earlier import');
+				chmodSync(stale, 0o444);
+			});
+
+			try {
+				expect({ status: res.status, message: res.message }).toEqual({
+					status: 500,
+					message: 'The import could not write its working copy beside the database (the server may not write there). Nothing was changed.'
+				});
+				expectUnchanged(before);
+				expect(readFileSync(stale, 'utf8')).toBe('left by an earlier import');
+			} finally {
+				if (existsSync(stale)) chmodSync(stale, 0o644);
+			}
+		});
+
+		it('refuses a safety copy it cannot write, naming no path, before anything is replaced', async () => {
+			const before = snapshotDb();
+			const from = lastLineId();
+
+			const res = await importAfter((dir) => mkdirSync(join(dir, '.pre-restore-safety.json')));
+
+			expect(res.status).toBe(500);
+			expect(res.message).toMatch(
+				/^Restore failed: The import could not write the safety copy of this server's data beside the database \(.+\)\. Nothing was changed\.$/
+			);
+			expect(res.message).not.toContain(res.dir);
+			expectUnchanged(before);
+			// The working copy is gone again, and so is the safety copy's temporary
+			// file, written and then refused its rename over the folder (the code
+			// review's F3): the folder in the way is all there is.
+			expect(readdirSync(res.dir)).toEqual(['.pre-restore-safety.json']);
+			// Its CRITICAL line keeps the error, path and all, in its message and
+			// as its details (the code review's F7).
+			const critical = importLinesSince(from).filter((line) => line.level === 'CRITICAL');
+			expect(critical).toHaveLength(1);
+			expect(critical[0].message).toContain(res.dir);
+			expect(critical[0].meta).toContain(JSON.stringify(res.dir).slice(1, -1));
+		});
+
+		// The code review's F3: the safety copy goes through a temporary name, so
+		// one that cannot be written leaves an earlier import's copy as it was.
+		it("keeps an earlier import's safety copy when the new one cannot be written", async () => {
+			const before = snapshotDb();
+
+			const res = await importAfter((dir) => {
+				writeFileSync(join(dir, '.pre-restore-safety.json'), '{"earlier":true}');
+				mkdirSync(join(dir, '.pre-restore-safety.json.tmp'));
+			});
+
+			expect(res.status).toBe(500);
+			expect(res.message).toBe(
+				"Restore failed: The import could not write the safety copy of this server's data beside the database (something else is in the way). Nothing was changed."
+			);
+			expectUnchanged(before);
+			expect(readFileSync(join(res.dir, '.pre-restore-safety.json'), 'utf8')).toBe('{"earlier":true}');
+			expect(readdirSync(res.dir).sort()).toEqual(['.pre-restore-safety.json', '.pre-restore-safety.json.tmp']);
+		});
 	});
 
 	it('knows a backup with no superadmin by its users, and one whose users have no role at all', () => {

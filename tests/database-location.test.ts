@@ -406,12 +406,13 @@ describe('the image', () => {
 	// is never taken for a hidden database (the code review's 2776 point 6). The
 	// import tests run on a database in memory, and hold the working directory.
 	it.each([
-		['beside a database file', IMAGE_DB_PATH, { upload: '/app/data/dumpfire.db.restore-temp', safety: '/app/data/.pre-restore-safety.json' }],
-		['in the working directory for a database in memory', ':memory:', { upload: '/work/.restore-temp.db', safety: '/work/.pre-restore-safety.json' }]
+		['beside a database file', IMAGE_DB_PATH, { upload: '/app/data/dumpfire.db.restore-temp', safety: '/app/data/.pre-restore-safety.json', inMemory: false }],
+		['in the working directory for a database in memory', ':memory:', { upload: '/work/.restore-temp.db', safety: '/work/.pre-restore-safety.json', inMemory: true }]
 	])('has an import write its files %s', (_name, dbPath, paths) => {
 		const found = importFiles(dbPath, '/work');
 		const slashes = (p: string) => p.split(String.fromCharCode(92)).join('/');
-		expect({ upload: slashes(found.upload), safety: slashes(found.safety) }).toEqual(paths);
+		// Which of the two it is, too (card 2925's code review, F6): the import makes the folder for a database in memory alone.
+		expect({ upload: slashes(found.upload), safety: slashes(found.safety), inMemory: found.inMemory }).toEqual(paths);
 		expect(paths.upload.endsWith('.db') && dbPath !== ':memory:').toBe(false);
 	});
 });

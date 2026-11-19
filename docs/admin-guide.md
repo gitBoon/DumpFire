@@ -1,10 +1,12 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.124
+version: 1.125
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2925
+  - import-files-refused-in-words
   - card-2915
   - two-step-reset-ends-keys
   - card-2910
@@ -1126,6 +1128,8 @@ The page says which of four things went wrong, or that the file is not a backup 
 | No answer from the server. It is not known whether the backup "…" was accepted | The request was sent and nothing came back | Reload the page and look at what the database holds before trying again |
 | The backup "…" was refused before it reached DumpFire, probably a size limit at the proxy in front of it (HTTP 413) | Something in front of DumpFire answered, and not DumpFire. nginx refuses any upload over 1 MB unless it is told otherwise | Raise the proxy's limit for the import: see [Reverse Proxy](deployment.md#reverse-proxy--nginx) |
 | The backup "…" is larger than this server accepts. The limit here is 512 MB | DumpFire refused it for its size, and says its limit | Raise `BODY_SIZE_LIMIT`: see [Upload Size Limits](deployment.md#upload-size-limits) |
+| The import could not write its working copy beside the database (…). Nothing was changed. Or: Restore failed: The import could not write the safety copy of this server's data beside the database (…). Nothing was changed. | DumpFire could not write one of the two files an import writes beside the database before it replaces anything (card 2925). The brackets say why: no space left on the disk, the server not allowed to write there, a read-only disk, its folder missing (a database held in memory, as the tests use), something else in the way (a folder with the file's name), the file in use, or the error's code. Anything written part-way was removed, and an earlier import's safety copy is left as it was: the new one is written under a temporary name and only then put in its place | Free space on the volume, or check who owns the database's folder and what is in it. The `CRITICAL` "Import failed" or "Database restore failed" line in the system log names the path. See [How Large an Import Can Be](deployment.md#how-large-an-import-can-be) |
+| The import could not write its working copy beside the database. Nothing was changed. | The folder the database is in is not there (card 2925). The import never makes it: a server whose database folder has gone is already in trouble | Stop and look at the server before anything else: is the volume mounted where `DB_PATH` says? The `CRITICAL` line names the path |
 
 Anything else DumpFire refuses is shown in its own words. Nothing is changed by any of these but, possibly, the "No answer" one.
 

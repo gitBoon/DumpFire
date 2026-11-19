@@ -92,6 +92,15 @@
  * their user id and address, on the line it writes: a file that is not a
  * SQLite database and a backup with no superadmin, each at WARN (F7), among
  * them.
+ *
+ * The import's two files, its working copy of the upload and the safety copy,
+ * are written beside the database (card 2776). One it cannot write (a full
+ * disk, a folder it may not write, the database's folder missing) is refused
+ * 500 in words that name no path, with nothing changed and no part-written
+ * file left; its CRITICAL line keeps the error. The safety copy is written
+ * under a temporary name and renamed over an earlier one, which a failed write
+ * leaves as it was. The folder is made when missing only for a database in
+ * memory (card 2925): see writeImportFile.
  */
 
 import { error, isHttpError, json } from '@sveltejs/kit';
@@ -118,7 +127,8 @@ import {
 } from '$lib/server/db/restore';
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
-import { writeFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 import { resetFormSecretCache } from '$lib/server/request-tokens';
@@ -152,6 +162,110 @@ const log = createLogger('IMPORT');
 const NOT_A_DB_BACKUP =
 	'Import takes a .db backup, sent as application/octet-stream. Exports in the old JSON format, which DumpFire ' +
 	'wrote only from 1 to 7 April 2026, are no longer imported. Nothing was changed.';
+
+/**
+ * The answer when the folder of a database file is not there to write the
+ * upload's working copy in (card 2925, ruled 2026-11-18): the import never
+ * makes that folder, which is the database's own and is missing only on a
+ * server that is already broken.
+ */
+const NO_FOLDER_FOR_WORKING_COPY = 'The import could not write its working copy beside the database. Nothing was changed.';
+
+/**
+ * A file the import could not write (card 2925): its working copy of the
+ * upload, or the safety copy. Its message is for the page: why, in words, and
+ * no path. The error it came from, path and all, is its `cause`, for the
+ * CRITICAL line.
+ */
+class ImportFileError extends Error {
+	constructor(message: string, cause: unknown) {
+		super(message, { cause });
+		this.name = 'ImportFileError';
+	}
+}
+
+/** Why a write failed, in words, from the error's code. */
+function writeFailureReason(code: string | undefined): string {
+	switch (code) {
+		case 'ENOSPC':
+			return 'there is no space left on the disk';
+		case 'EACCES':
+		case 'EPERM':
+			return 'the server may not write there';
+		case 'EROFS':
+			return 'the disk is read-only';
+		case 'ENOENT':
+			return 'its folder is missing';
+		// The code review's F5.
+		case 'EISDIR':
+		case 'ENOTDIR':
+			return 'something else is in the way';
+		case 'EBUSY':
+			return 'the file is in use';
+		default:
+			return code || 'an unknown error';
+	}
+}
+
+/**
+ * The calls a failed write got as far as, having opened the file it writes
+ * (card 2925's code review, F2): only then is that file its own, part-written,
+ * and removed. An allow-list, so a failure before it (making the folder,
+ * opening the file) never removes a file the write did not make.
+ */
+const GOT_PAST_OPENING = new Set(['write', 'close', 'rename']);
+
+/**
+ * Write one of the import's two files, readable by its owner alone (card
+ * 2776), in the folder `importFiles` names (card 2925).
+ *
+ * For a database in memory that folder is the working directory, which only
+ * tests use: it is made when missing, as a temporary folder made for a test
+ * was once found gone by the time the import wrote into it. For a database
+ * file it is the database's own folder, and it is never made: missing, the
+ * import refuses, in words, with nothing changed.
+ *
+ * The safety copy is written to a temporary name beside it, `.tmp` after its
+ * own, and renamed over the copy an earlier import left (the code review's
+ * F3): a write that fails leaves that earlier copy as it was. The working copy
+ * is written in place: nothing before it is worth keeping.
+ *
+ * A write that fails once its file is open (a full disk, or a rename refused)
+ * leaves no part-written file: the file it wrote is removed, the temporary
+ * one for the safety copy. One that failed before (see GOT_PAST_OPENING) is
+ * not touched.
+ */
+function writeImportFile(
+	path: string,
+	data: string | Buffer,
+	which: 'its working copy' | "the safety copy of this server's data",
+	inMemory: boolean
+): void {
+	const replacing = which !== 'its working copy';
+	const written = replacing ? `${path}.tmp` : path;
+	try {
+		if (inMemory) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+		writeFileSync(written, data, { mode: 0o600 });
+		if (replacing) renameSync(written, path);
+	} catch (err) {
+		const { code, syscall } = (err ?? {}) as NodeJS.ErrnoException;
+		if (syscall && GOT_PAST_OPENING.has(syscall)) {
+			try { unlinkSync(written); } catch {}
+		}
+		throw new ImportFileError(
+			!inMemory && code === 'ENOENT' && which === 'its working copy'
+				? NO_FOLDER_FOR_WORKING_COPY
+				: `The import could not write ${which} beside the database (${writeFailureReason(code)}). Nothing was changed.`,
+			err
+		);
+	}
+}
+
+/** What the CRITICAL line says of an error: for a file not written, the error it came from, path and all. */
+function loggedMessage(err: unknown): string {
+	const said = err instanceof ImportFileError ? err.cause : err;
+	return said instanceof Error ? said.message : String(said ?? 'Unknown error');
+}
 
 /**
  * What a working copy had switched off or removed, as the one sentence that
@@ -452,9 +566,12 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 
 		// Write the uploaded backup to a temp file so we can open it as a DB
 		// Beside the database, readable by its owner alone (card 2776): see importFiles.
+		// Its folder is made only for a database in memory, and a write that
+		// cannot be made is refused in words, with no path (card 2925): see
+		// writeImportFile.
 		const importPaths = importFiles(getDbPath());
 		const tempPath = importPaths.upload;
-		writeFileSync(tempPath, buffer, { mode: 0o600 });
+		writeImportFile(tempPath, buffer, 'its working copy', importPaths.inMemory);
 
 		let errors: string[] = [];
 		// Whether the restore has committed: from then on a failure is one of a
@@ -489,7 +606,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 									: sqlite.prepare(`SELECT * FROM "${table}"`).all();
 						} catch {}
 					}
-					writeFileSync(importPaths.safety, JSON.stringify(safetyBackup), { mode: 0o600 });
+					writeImportFile(importPaths.safety, JSON.stringify(safetyBackup), "the safety copy of this server's data", importPaths.inMemory);
 
 					result = restoreFromBackup(sqlite, backupDb, { outside, by: importer.username });
 				}
@@ -843,7 +960,14 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 					{ status: 500 }
 				);
 			}
-			log.critical(`Database restore failed: ${err.message}${byCaller(importer)}`, undefined, { userId: importer.id, ip });
+			// A safety copy that could not be written (card 2925) is said on the
+			// page in words, and on this line as the error it came from, path and
+			// all, that error as the line's details too (the code review's F7).
+			log.critical(
+				`Database restore failed: ${loggedMessage(err)}${byCaller(importer)}`,
+				err instanceof ImportFileError ? err.cause : undefined,
+				{ userId: importer.id, ip }
+			);
 			return json({ message: `Restore failed: ${err.message}`, errors }, { status: 500 });
 		}
 	} catch (err) {
@@ -852,8 +976,14 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 		// where it is read, above. It is not an Error, so left to the lines
 		// below it would be answered 500 "Import failed: Unknown error".
 		if (isHttpError(err)) throw err;
-		// Anything else thrown before the restore, which answers for itself:
-		// the upload could not be written down to be opened, above all.
+		// The upload's working copy that could not be written (card 2925): the
+		// page has the refusal in words, with no path; this line has the error
+		// it came from, path and all.
+		if (err instanceof ImportFileError) {
+			log.critical(`Import failed: ${loggedMessage(err)}${caller ? byCaller(caller) : ''}`, err.cause, caller ? { userId: caller.id, ip } : undefined);
+			return json({ message: err.message }, { status: 500 });
+		}
+		// Anything else thrown before the restore, which answers for itself.
 		const msg = err instanceof Error ? err.message : 'Unknown error';
 		// Naming who sent it, once they are known (card 2899's code review, F7).
 		log.critical(`Import failed: ${msg}${caller ? byCaller(caller) : ''}`, err, caller ? { userId: caller.id, ip } : undefined);

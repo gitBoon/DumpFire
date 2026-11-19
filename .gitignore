@@ -32,6 +32,7 @@ mfa.key.*.tmp
 
 # Backup/restore temp files
 .pre-restore-safety.json
+.pre-restore-safety.json.tmp
 .restore-temp.*
 # A backup's two copies, left beside the database by a crash (backup.ts:
 # <db>.backup-temp and <db>.backup-temp-cleared, with any -journal, -wal or

@@ -541,8 +541,9 @@ const STILL_CALLER_NOW: Record<string, { reason: string; guards: RegExp[] }> = {
 	'src/routes/api/admin/import/+server.ts POST': {
 		reason:
 			'The restore opens its own transaction, and files are written before it: the first is .restore-temp.db. ' +
-			'No writeAs after the restore: the database it would ask is no longer the one the caller was let in by.',
-		guards: [/(^|\.)writeFileSync$/]
+			'No writeAs after the restore: the database it would ask is no longer the one the caller was let in by. ' +
+			'Both files are written through writeImportFile (card 2925).',
+		guards: [/^writeImportFile$/]
 	},
 	'src/routes/api/reports/+server.ts POST': {
 		reason: 'It only reads, after a body, and builds a PDF with an await.',
@@ -1924,7 +1925,7 @@ describe("card 2253's rule itself", () => {
 			'export const POST = async ({ request, locals }) => {',
 			'\tconst buffer = await request.arrayBuffer();',
 			'\trequireSuperadmin(stillCallerNow(locals));',
-			'\twriteFileSync("restore.db", buffer);',
+			'\twriteImportFile("restore.db", buffer);',
 			'\tsqlite.prepare("SELECT * FROM cards").all();',
 			'\tsqlite.prepare(`SELECT * FROM "${table}"`).get(1);',
 			'\tsqlite.prepare("DELETE FROM cards").all();',

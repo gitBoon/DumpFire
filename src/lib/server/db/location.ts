@@ -58,12 +58,23 @@ export const LEGACY_DB_NAME = 'dumpfire.db';
  * safety copy is `.pre-restore-safety.json` in the same folder. A database in
  * memory has no folder, so both go to the working directory then, under the
  * names they had (`.restore-temp.db`).
+ *
+ * `inMemory` says which of the two it is (card 2925's code review, F6): the
+ * import makes the folder only for a database in memory, and never the folder
+ * of a database file.
  */
-export function importFiles(dbPath: string, cwd: string = process.cwd()): { upload: string; safety: string } {
+export function importFiles(
+	dbPath: string,
+	cwd: string = process.cwd()
+): { upload: string; safety: string; inMemory: boolean } {
 	if (dbPath === ':memory:') {
-		return { upload: nodePath.join(cwd, '.restore-temp.db'), safety: nodePath.join(cwd, '.pre-restore-safety.json') };
+		return { upload: nodePath.join(cwd, '.restore-temp.db'), safety: nodePath.join(cwd, '.pre-restore-safety.json'), inMemory: true };
 	}
-	return { upload: `${dbPath}.restore-temp`, safety: nodePath.join(nodePath.dirname(dbPath), '.pre-restore-safety.json') };
+	return {
+		upload: `${dbPath}.restore-temp`,
+		safety: nodePath.join(nodePath.dirname(dbPath), '.pre-restore-safety.json'),
+		inMemory: false
+	};
 }
 
 /** What is at a path, as far as the guard needs to know. */

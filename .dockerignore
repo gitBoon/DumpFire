@@ -25,6 +25,7 @@ mfa.key
 .env.*
 README.md
 .pre-restore-safety.json
+.pre-restore-safety.json.tmp
 uploads
 .agent
 .claude

@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.135
+version: 1.136
 status: As-Built
 date: 2026-11-18
 tags:
+  - card-2925
+  - import-files-refused-in-words
   - card-2915
   - two-step-reset-ends-keys
   - card-2910
@@ -7753,6 +7755,8 @@ The limit is not the only ceiling. An import does this, in order:
 3. Writes a safety copy of the running database, every table as one JSON text, to `.pre-restore-safety.json` in the same folder, readable by its owner alone. It leaves out the `known_browser_secret` row of `settings`, the key remembered browsers are signed with, which no backup holds either. An invite's `token`, a 32-byte hash since card 2849, is written there as `{"type":"Buffer","data":[…]}`: the hash's bytes, never a token.
 4. Replaces the rows.
 
+A file it cannot write in steps 2 and 3 ends the import before anything is replaced (card 2925). The page says so in words that name no path: "The import could not write its working copy beside the database (there is no space left on the disk). Nothing was changed.", or "Restore failed: The import could not write the safety copy of this server's data beside the database (…). Nothing was changed.", the reason being no space, the server not allowed to write there, a read-only disk, its folder missing (a database held in memory), something else in the way, the file in use, or the error's code. A copy written part-way is removed; a file the import could not even open is left alone. The safety copy is written as `.pre-restore-safety.json.tmp` and renamed over the one an earlier import left, so a safety copy that cannot be written leaves the earlier one as it was. The `CRITICAL` line in the system log keeps the error itself, path included. The import never makes the database's folder: if it is missing (the volume is not where it was), the page says "The import could not write its working copy beside the database. Nothing was changed.", and the server needs looking at before anything else. Only a database held in memory, which the tests use, has its folder (the working directory) made when it is missing.
+
 So the server needs memory for the whole backup and, at the same moment, for the running database as JSON, which is larger than the database's own file because every row repeats its column names. That JSON is one piece of text, and Node 22 cannot make one longer than 536,870,888 characters, about 512 MB: a running database whose rows come to more than that as JSON cannot be imported over. The import then fails with "Restore failed: Invalid string length" and nothing is changed. That, and the memory the container is allowed, are the practical ceiling, and both are reached well before a backup of 512 MB is. Neither has been measured on a large database: try an import of production's size on an instance that is not production before it is needed.
 
 Two limits outside DumpFire end an upload before it is read:
@@ -7760,7 +7764,7 @@ Two limits outside DumpFire end an upload before it is read:
 - **The server's own time limit for a request.** Node gives a request five minutes, its `server.requestTimeout` default of 300 seconds, to arrive in full, and the image does not change it. An upload that takes longer is cut off and the import never starts. Behind nginx, which reads the whole upload before it passes it on, the server is handed it in a moment, whatever the caller's connection. With no proxy, or behind one that passes the upload on as it arrives (Cloudflare Tunnel, Caddy, nginx with `proxy_request_buffering off`), the server receives it at the caller's speed, and an import that takes more than five minutes to upload cannot be done that way: upload it from somewhere closer to the server. A card's upload has a shorter limit of its own: its body is given 120 seconds once its read begins (card 2910's code review), so a slow sender holds its place among the uploads in flight for at most that.
 - **Cloudflare's own limit on a request's body.** Behind Cloudflare, a Cloudflare Tunnel included, Cloudflare refuses a request whose body is over its plan's limit before it reaches the server: 100 MB on the Free and Pro plans. A backup larger than that cannot be imported through it; import it through an address that does not pass through Cloudflare.
 
-Both files are written beside the database, which in the image is `/app/data`: **on the volume** (card 2776). They were written to the working directory, `/app`, inside the container, which the server, running as `node`, cannot write. They need that much free space on the volume. `dumpfire.db.restore-temp` is deleted when the import ends; one left by an import that was stopped (the server out of memory) has no `.db` at its end, so the start-up guard never takes it for a database hidden on the volume, and it can be removed. `.pre-restore-safety.json` is not: it stays until the next import replaces it, now across a container being recreated, and it holds everything the database held, password hashes and live sessions included, but for the key remembered browsers are signed with: as much as the database file beside it, and it rides in any copy of the volume. Once the import is known to be good, remove it:
+Both files are written beside the database, which in the image is `/app/data`: **on the volume** (card 2776). They were written to the working directory, `/app`, inside the container, which the server, running as `node`, cannot write. They need that much free space on the volume. `dumpfire.db.restore-temp` is deleted when the import ends, and when its write fails part-way (card 2925); one left by an import that was stopped (the server out of memory) has no `.db` at its end, so the start-up guard never takes it for a database hidden on the volume, and it can be removed. `.pre-restore-safety.json` is not: it stays until the next import replaces it, now across a container being recreated, and it holds everything the database held, password hashes and live sessions included, but for the key remembered browsers are signed with: as much as the database file beside it, and it rides in any copy of the volume. Once the import is known to be good, remove it:
 
 ```bash
 docker exec <container> rm -f /app/data/.pre-restore-safety.json
