@@ -147,7 +147,15 @@ export function disableAccount(target: User, actor: Actor, ip: string | null = n
 
 	const disabledAt = stamp();
 	db.update(users).set({ disabledAt, disabledBy: actor.id }).where(eq(users.id, target.id)).run();
+	// The settings an administrator set, removed first (card 2922): the ending below holds what an account set, and
+	// finds nothing left to hold, so a disable removes them as it always has and writes no hold's line. Their holds
+	// left by an earlier ending stay, as tombstones (R1).
+	const removed: SettingsRemoved =
+		target.role === 'admin' || target.role === 'superadmin'
+			? removeSettingsSetBy(target, 'disabled', actor)
+			: { mail: false, appUrl: false, destinations: [] };
 	// Told after the commit (card 2923): `disabled_at`, written above, leaves the account out of the owners' mail.
+	// It deletes the links of every request the account made too (card 2922, as S3 here before).
 	const access = endAccountAccess(target.id, {
 		apiKeys: true,
 		cause: { log: `${target.username}'s account was disabled by ${actor.username}`, mail: ENDING_IN_MAIL.disabled }
@@ -155,17 +163,10 @@ export function disableAccount(target: User, actor: Actor, ip: string | null = n
 	// This ending held what the account could read (card 2935): the start pass's moment moves past it (P4), so the
 	// next start does not hold again what an owner switches on with a new secret meanwhile.
 	advanceReadableCovered(disabledAt, target.id);
-	const requestLinksEnded = sqlite
-		.prepare('DELETE FROM request_links WHERE request_id IN (SELECT id FROM task_requests WHERE requester_user_id = ?)')
-		.run(target.id).changes;
+	const requestLinksEnded = access.requestLinks;
 
-	// The settings an administrator set; and the account's address out of the
-	// backup failure address whatever its role (the code review's CS2): any
+	// The account's address out of the backup failure address whatever its role (the code review's CS2): any
 	// address can be typed there, and the mail goes to whoever holds it.
-	const removed: SettingsRemoved =
-		target.role === 'admin' || target.role === 'superadmin'
-			? removeSettingsSetBy(target, 'disabled', actor)
-			: { mail: false, appUrl: false, destinations: [] };
 	const failureAddress = removeFailureAddress(target.email);
 	const settingsRemoved: Disabled['settingsRemoved'] = anyRemoved(removed) || failureAddress ? { ...removed, failureAddress } : null;
 	const owned = soleOwnerOf(target.id);

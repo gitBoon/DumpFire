@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.150
+version: 1.151
 status: As-Built
 date: 2026-11-19
 tags:
@@ -391,6 +391,38 @@ moment as `YYYY-MM-DD HH:MM:SS` in UTC, and the web application's own routes and
 exports answer that form; the API turns it into ISO 8601 as it answers. Until 2026-10-14
 some fields were answered in that form, which names no zone, and the same field could be in
 either.
+
+### Changes on 2026-11-19: settings held for review (card 2922)
+
+**The published API does not change**: no `/api/v1` route reads or writes the mail settings, the
+App URL or the backup destinations, and no v1 answer carries a mail problem. OpenAPI stays `1.15.0`.
+The web application's own routes change:
+
+- `PUT /api/users/:id/password`, `PUT /api/account/password` and `POST
+  /api/users/:id/mfa/reset` answer `settingsHeld`, `{ mail, appUrl, destinations }` or `null`:
+  what the account set that the ending held for the superadmin's review. The two-step reset's
+  message says it by count. A two-step reset whose only link address would be an App URL the
+  account set is refused `503` before the password is asked.
+- New: `GET /api/admin/settings/held` (every administrator) answers `{ held: [{ setting, kind,
+  name, place, heldAt, setBy, setByName, where }], tombstones, mayRelease }`, `where` with no
+  secret. `POST /api/admin/settings/held` (the superadmin, with `currentPassword` and
+  `currentCode`) takes `{ setting, place, action: 'keep' | 'remove' }`: `403` for anyone else, `409`
+  for a setting not held now or held at another place than `place` (for an SFTP destination,
+  `place` covers its confirmed host key too). It answers `{ success, kept }` or `{ success,
+  removed, ended }`, `ended` the counts of invites, set-up links, request links and decision links
+  (`decisionLinks`) a Remove of held mail or a held App URL ended across the server. The `GET` is
+  answered with `Cache-Control: no-store`.
+- `PUT /api/admin/smtp` answers `409` for a save of the mail settings while they are held, and of
+  the App URL while it is held. `POST /api/users/:id/invite` answers `409` where the mail settings
+  or the App URL in force were set by the account invited.
+- `POST /api/admin/backup/test` and `GET`/`POST /api/admin/backup/gdrive/auth` answer `409` for a
+  held destination; `PUT /api/admin/backup` answers `409` for a save that renames, retypes or
+  removes one.
+- Mail held for review is refused as mail that cannot go: `POST /api/users/:id/invite` and a
+  user made with no password `400`, `POST /api/requests` (one to confirm) and `POST
+  /api/requests/:id/link` `503` in their plain words.
+- `POST /api/admin/import` answers a line, and `settingsHeld` among its figures, where this
+  server's holds were carried over a backup that lacked them.
 
 ### Changes on 2026-11-18
 

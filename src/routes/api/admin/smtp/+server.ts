@@ -16,7 +16,9 @@ import {
 	appUrlNormalised,
 	appUrlOnEnvironment,
 	appUrlRowNotUsed,
+	appUrlHeld,
 	environmentOrigins,
+	mailHeld,
 	type SmtpConfig
 } from '$lib/server/email';
 import { readBody, readBoolean, readEmail, readNumber, readText, readUrl } from '$lib/server/request-body';
@@ -51,6 +53,15 @@ const log = createLogger('SMTP');
  * is not the superadmin (card 2847): before the password, nothing counted.
  */
 const APP_URL_NEEDS_SUPERADMIN = 'Setting the App URL needs the superadmin: every link in a mail begins with it. Nothing was saved.';
+
+/** What a save of held mail settings is refused with (card 2922's code review, C1), worded as a held destination's save. */
+const HELD_MAIL_SAVE =
+	"The mail settings are held for the superadmin's review: they cannot be changed by a save. Keep them or remove them under " +
+	'Settings held for review first. Nothing was saved.';
+/** And a save of a held App URL. */
+const HELD_APP_URL_SAVE =
+	"The App URL is held for the superadmin's review: it cannot be changed by a save. Keep it or remove it under Settings held " +
+	'for review first. Nothing was saved.';
 
 /**
  * What an App URL that is no plain web address is refused with (card 2847's
@@ -255,6 +266,13 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 		// 2117's second fix pass): it is stored as it is read.
 		const sentAppUrl = readUrl(body, 'appUrl', { allowEmpty: true, complete: true });
 		if (Object.keys(config).length === 0 && sentAppUrl === undefined) throw error(400, 'No valid fields to update');
+
+		// Held for the superadmin's review (card 2922's code review, C1): no save of the mail settings while they are
+		// held, nor of the App URL while it is, whoever saves and whatever it changes, a host's case alone included.
+		// Only Keep or Remove under Settings held for review releases it. Asked here, before the password, and again
+		// in the transaction that saves.
+		if (Object.keys(config).length > 0 && mailHeld()) throw error(409, HELD_MAIL_SAVE);
+		if (sentAppUrl !== undefined && appUrlHeld()) throw error(409, HELD_APP_URL_SAVE);
 
 		// One string is checked, stored and mailed (card 2847's code review,
 		// CS1): the address's origin and path, or a refusal for text that is

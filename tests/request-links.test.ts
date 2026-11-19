@@ -42,7 +42,8 @@ import { inTransaction } from '$lib/server/db/transaction';
 import type { SessionUser } from '$lib/server/auth';
 import { sha256Hex } from '$lib/server/mfa-crypto';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
-import { END_PLAIN_REQUEST_LINKS, REQUEST_MAIL_LINKS_KEPT, issueFormToken, issueRequestLink } from '$lib/server/request-tokens';
+import { END_PLAIN_REQUEST_LINKS, MAIL_HELD, REQUEST_MAIL_LINKS_KEPT, issueFormToken, issueRequestLink } from '$lib/server/request-tokens';
+import { mailPlaceOf } from '$lib/server/setting-holds';
 import { endPlainRequestLinks } from '$lib/server/startup-checks';
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
@@ -272,6 +273,35 @@ describe('a new link asked for', () => {
 			level: 'INFO',
 			message: `A new link to request ${request.id} was not mailed: the request changed after the link was asked for`
 		});
+	});
+
+	it('T10b: while the mail settings are held for the superadmin’s review (card 2922, R12): 503 in plain words, the WARN says why, and no link', async () => {
+		const request = pendingRequest();
+		sqlite.prepare("INSERT INTO settings (key, value) VALUES ('smtp_host', 'smtp.example.test')").run();
+		sqlite
+			.prepare("INSERT INTO setting_holds (setting, place, held_because, held_at) VALUES ('mail', ?, 'setter access ended', ?)")
+			.run(mailPlaceOf({ host: 'smtp.example.test', port: 587, user: '', allowInsecure: false }), stamp());
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		let asked;
+		try {
+			asked = await api('POST', `/api/requests/${request.id}/link`, { body: { email: REQUESTER } });
+			await afterTheAnswer();
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+			vi.restoreAllMocks();
+		}
+
+		expect({ status: asked.status, body: asked.body }).toEqual({
+			status: 503,
+			body: { message: 'New links cannot be sent just now. Please contact the team that sent you the link.' }
+		});
+		expect(linkRows(request.id)).toEqual([]);
+		expect(mail.sent).toEqual([]);
+		const said = sqlite.prepare("SELECT message FROM system_logs WHERE context = 'REQUESTS' AND level = 'WARN'").all() as { message: string }[];
+		expect(said.map((line) => line.message)).toEqual([`A new link to a request was asked for, and none can be sent: ${MAIL_HELD}.`]);
 	});
 });
 

@@ -140,7 +140,10 @@
 				? `End my ${keysInWords(keys)} too, and switch off the ${webhooksInWords(hooks)} I set up.`
 				: keys > 0
 					? `End my ${keysInWords(keys)} too.`
-					: `Switch off the ${webhooksInWords(hooks)} I set up.`;
+					: hooks > 0
+						? `Switch off the ${webhooksInWords(hooks)} I set up.`
+						: // Card 2922 (F2): offered for the settings alone.
+							'Hold the settings I set for the superadmin’s review.';
 		return [
 			ends,
 			'Do this if anyone else may have used your account.',
@@ -153,7 +156,9 @@
 			// Card 2935 (P8): in words, only where the account may have read a secret (P1).
 			data.holdsReadable
 				? "Every webhook whose secret you could read, as an administrator or a board's owner, is switched off too, whoever set it up, and can be switched on again only with a new secret; its board's owners are mailed."
-				: ''
+				: '',
+			// Card 2922: what the holder set, held for review; the superadmin keeps their own.
+			settingsHeldWords
 		]
 			.filter(Boolean)
 			.join(' ');
@@ -359,13 +364,30 @@
 
 	/** How many webhooks this account set up that are on, from the page's load (card 2168). */
 	let webhooksSet = $derived(data.webhooks ?? 0);
+	/**
+	 * What the account set that is in force, in words (card 2922): ending its keys holds it for the superadmin's review,
+	 * and the box is offered for it alone (its plan's F2). '' for none.
+	 */
+	let settingsHeldWords = $derived.by(() => {
+		const set = data.settingsSet;
+		if (!set) return '';
+		const parts = [
+			...(set.mail ? ['the mail settings'] : []),
+			...(set.appUrl ? ['the App URL'] : []),
+			...(set.destinations.length > 0 ? [`the backup destination${set.destinations.length === 1 ? '' : 's'} ${set.destinations.map((d) => `"${d}"`).join(', ')}`] : [])
+		];
+		if (parts.length === 0) return '';
+		const who = data.user.role === 'superadmin' ? 'you keep or remove them' : 'the superadmin keeps or removes them';
+		return `The settings you set (${parts.join(', ')}) will be held for the superadmin's review: nothing will be sent to them until ${who} under Settings held for review on the admin page.`;
+	});
+
 	/** How many of this account's report schedules are on, from the page's load (card 2894): a password change pauses them. */
 	let schedulesOn = $derived(data.reportSchedulesOn ?? 0);
 	/**
 	 * Whether the box is offered: while the list holds a key, or, once the
 	 * list has been read, while a webhook the account set is on.
 	 */
-	let offerToEnd = $derived(apiKeys.length > 0 || (apiKeysRead && webhooksSet > 0));
+	let offerToEnd = $derived(apiKeys.length > 0 || (apiKeysRead && webhooksSet > 0) || (apiKeysRead && settingsHeldWords !== ''));
 
 	// The box to end the keys goes when there is nothing left for it to end,
 	// and takes its tick with it, so that it cannot come back ticked beside a

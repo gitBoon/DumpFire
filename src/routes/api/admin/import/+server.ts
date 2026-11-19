@@ -295,6 +295,19 @@ function requestLinksSentence(count: number): string {
 }
 
 /**
+ * This server's settings held for review carried over a backup that did not
+ * hold them (card 2922, R10), or null for none: each is held, one the
+ * superadmin kept since the backup was made included, and is kept again.
+ */
+function settingsHeldCarriedSentence(count: number): string | null {
+	if (count === 0) return null;
+	return (
+		`${count} setting hold(s) of this server's kept: a mail setting, App URL or backup destination at a place held for ` +
+		"the superadmin's review is held again, one kept since this backup was made included; keep it again under Settings held for review."
+	);
+}
+
+/**
  * The API key deadline the restore left in the settings (migration 0069, card
  * 2772), as `YYYY-MM-DD HH:MM UTC`; null where there is none that can be read.
  */
@@ -768,8 +781,11 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 			// This server's system log kept, and the backup's lines not brought
 			// in (card 2899): last, and only when the backup held any.
 			const systemLog = systemLogSentence(result.systemLogLeftOut);
+			// This server's settings held for review that the backup did not hold, carried over it (card 2922, R10):
+			// one the superadmin kept here since the backup was made is held again.
+			const settingsHeld = settingsHeldCarriedSentence(result.settingHoldsCarried);
 			const ending = (text: string) =>
-				[linksReplaced, keyDeadlines, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, workingCopy, systemLog].reduce<string>(
+				[linksReplaced, keyDeadlines, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, settingsHeld, workingCopy, systemLog].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					text
 				);
@@ -795,6 +811,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				secretsToEnter: secretsToEnter ?? undefined,
 				mfaWithoutFactor: mfaLine ?? undefined,
 				settingsRemoved: settingsRemoved ?? undefined,
+				settingsHeld: settingsHeld ?? undefined,
 				systemLog: systemLog ?? undefined,
 				superadmins
 			};

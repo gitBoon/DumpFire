@@ -2,6 +2,7 @@ import type { PageServerLoad } from './$types';
 import { redirect } from '@sveltejs/kit';
 import { isAdmin } from '$lib/server/board-access';
 import { CHECKED_ON, CHECKLIST, summarise } from '$lib/server/iso-27001';
+import { settingsHeldForBanner } from '$lib/server/setting-setters';
 
 /**
  * The ISO/IEC 27001:2022 checklist's page (card 2670): every Annex A control
@@ -16,5 +17,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 	if (!locals.user) throw redirect(303, '/login');
 	if (!isAdmin(locals.user)) throw redirect(303, '/');
 
-	return { items: CHECKLIST, summary: summarise(CHECKLIST), checkedOn: CHECKED_ON };
+	// Card 2922 (R7): the settings held for review, for the superadmin's banner: their kind and name alone.
+	return { items: CHECKLIST, summary: summarise(CHECKLIST), checkedOn: CHECKED_ON, settingsHeld: settingsHeldForBanner() };
 };

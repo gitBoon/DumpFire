@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.130
+version: 1.131
 status: As-Built
 date: 2026-11-19
 tags:
@@ -521,6 +521,56 @@ You cannot delete your own account or the superadmin. Only the superadmin can de
 **The confirmation says so beforehand** (card 2380, 2026-10-21). For an account that is the only owner of one or more teams, as the admin page last read its teams, the confirmation's second sentence names them, in name order: "They are the only owner of: Alpha, Beta, so the delete will be refused: make someone else an owner or delete those teams first." ("… delete that team first." for one). Press **Cancel** and change the teams first. **Confirm** still sends the delete, and the server decides: if someone was made an owner since the page was loaded (in another tab, or by another administrator), the delete goes through; otherwise the toast above says it was refused. For an account that alone owns no team the confirmation is as before.
 
 ---
+
+### Settings Held for Review (Card 2922)
+
+When an account's access is ended with its API keys, the mail settings, the App URL and the
+backup destinations it set are **held for the superadmin's review**: nothing is sent to them until
+the superadmin keeps or removes each. That happens on:
+
+- **Reset password** of an administrator (the dialog says what they set, which will be held);
+- **🛡️ Reset two-step sign-in** (its confirm says so);
+- **📧 Send invite**, when the invite is used, for backup destinations alone: where the account set
+  the mail settings or the App URL in force, the invite is refused until its two-step sign-in is
+  reset, which holds them, and the confirm says so before it is sent;
+- the holder's own password change with "end my keys" ticked (the Account page's box says so, and
+  is offered for the settings alone too);
+- the host's `node scripts/mfa-reset.mjs <username>` unless `--keep-api-keys`.
+
+A disable, a demotion to user and a delete still **remove** what the account set, as before.
+
+**Settings held for review**, at the top of the admin page, lists each held setting: where it sends
+(never a password or secret), who set it and since when. Every administrator sees the list; while
+anything is held the superadmin also sees a banner on every admin page, and each settings panel has
+a one-line pointer to the list.
+
+- **Keep** (the superadmin, password and code): the setting is used again exactly as shown. The
+  confirm shows where it sends; if it changed since the list was read, Keep is refused and the list
+  must be read again. Its setter is unchanged.
+- **Remove** (the superadmin, password and code): the setting is removed. Its hold stays, so the
+  same setting saved again, or brought back by a restore (a destination under any name at the same
+  place), is held again. Removing held **mail** or a held **App URL** also ends every invite not
+  yet used, every two-step set-up link, every request link and every decision participant's
+  personal link on the server, as each was mailed through the one with a link beginning with the
+  other: send fresh invites and links once mail is set up again.
+
+Links already mailed through held mail settings stay usable until they are removed, so decide
+quickly. While the mail settings are held, the mail panel's Save is refused ("keep or remove it
+first"); so is the App URL's while it is held. Sending an invite to an account whose own mail
+settings or App URL are in force is refused: reset its two-step sign-in first.
+
+While mail is held, nothing is mailed: invites, resets and notices are refused or say the mail is
+held. While a destination is held, each backup run names it in Backup History as held, and Test,
+Google Drive Connect, and a save that renames, retypes or removes it are refused. A two-step reset
+whose only link address would be the held App URL is refused before anything changes: disable the
+account or reset its password, set `APP_URL` on the host or save the App URL yourself, then reset.
+
+```mermaid
+flowchart LR
+    E["Reset, invite used,<br/>two-step reset, own change<br/>ending keys, host reset"] --> H["Held for review:<br/>nothing sent"]
+    H -->|"Keep"| U["In use again"]
+    H -->|"Remove"| T["Removed; held again<br/>if saved back"]
+```
 
 ## Team Management
 

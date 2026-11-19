@@ -477,7 +477,7 @@ describe('PUT /api/account/password', () => {
 			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
 				// Card 2935 (P9): webhooksSwitchedOff stays the ones it set; those of others it could read are counted apart.
-				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 1 });
+				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 1, settingsHeld: null });
 				// Card 2894 (D1): the holder's schedule paused, with the keys kept; nobody else's.
 				expect(schedulesOnOf(me.id)).toEqual([false]);
 				expect(schedulesOnOf(other.id)).toEqual([true]);
@@ -531,7 +531,7 @@ describe('PUT /api/account/password', () => {
 			apart: [...STEP_UP_APART],
 			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
-				expect(res.body).toEqual({ success: true, apiKeysEnded: 2, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 1 });
+				expect(res.body).toEqual({ success: true, apiKeysEnded: 2, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 1, settingsHeld: null });
 				expect(await matches(NEW, hashOf(me.id))).toBe(true);
 				expect(sessionsOf(me.id)).toEqual([sessionHashOf(res.cookie!.value)]);
 				expect(invitesOf(me.id)).toEqual([]);
@@ -556,6 +556,8 @@ describe('PUT /api/account/password', () => {
 			// The webhooks the account set (card 2168): written whether or not one
 			// matches, and only when the keys end.
 			'update webhooks set',
+			// The links of the requests it made (card 2922), with its keys.
+			'delete from request_links',
 			'update report_schedules set',
 			'insert into sessions'
 		]);
@@ -573,14 +575,14 @@ describe('PUT /api/account/password', () => {
 
 		const kept = await changeOwn(chief, { currentPassword: OLD, newPassword: NEW, endApiKeys: false });
 		expect(kept.status).toBe(200);
-		expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 0 });
+		expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 0, settingsHeld: null });
 		expect((await meWithKey(key)).status).toBe(200);
 
 		// From the session the change started: it ended the one it was asked from.
 		// The code made again: the first spent its step (card 2771).
 		stepUpCode(chief);
 		const ended = await changeOwn(chief, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true }, kept.cookie!.value);
-		expect(ended.body).toEqual({ success: true, apiKeysEnded: 1, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 0 });
+		expect(ended.body).toEqual({ success: true, apiKeysEnded: 1, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 0, settingsHeld: null });
 		expect(keysOf(chief.id)).toEqual([]);
 		const refused = await meWithKey(key);
 		expect(refused.status).toBe(401);
@@ -796,7 +798,8 @@ describe('PUT /api/users/:id/password', () => {
 					apiKeysEnded: 1,
 					webhooksSwitchedOff: 0,
 					readableWebhooksHeld: 0,
-					reportSchedulesPaused: 0
+					reportSchedulesPaused: 0,
+					settingsHeld: null
 				});
 				expect(await matches(NEW, hashOf(target.id))).toBe(true);
 				expect(sessionsOf(target.id)).toEqual([]);
@@ -827,6 +830,8 @@ describe('PUT /api/users/:id/password', () => {
 			'delete from api_keys',
 			// What the account set going (card 2168), written whether or not a row matches.
 			'update webhooks set',
+			// The links of the requests it made (card 2922), written whether or not a row matches.
+			'delete from request_links',
 			'update report_schedules set'
 		]);
 		expect(run.effects).toEqual([]);
@@ -839,7 +844,7 @@ describe('PUT /api/users/:id/password', () => {
 		const res = await reset(s.chief, s.admin.id, NEW, 'the-chief');
 
 		expect(res.status).toBe(200);
-		expect(res.body).toEqual({ success: true, sessionsEnded: 1, apiKeysEnded: 1, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 0 });
+		expect(res.body).toEqual({ success: true, sessionsEnded: 1, apiKeysEnded: 1, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 0, settingsHeld: null });
 		expect(sessionsOf(s.admin.id)).toEqual([]);
 		expect(keysOf(s.admin.id)).toEqual([]);
 		// The target's are not the administrator's.
@@ -1009,10 +1014,11 @@ describe('POST /api/users/:id/disable', () => {
 			'delete from enrolment_links',
 			'delete from api_keys',
 			'update webhooks set',
+			// The links of the requests it made, by the ending itself since card 2922.
+			'delete from request_links',
 			'update report_schedules set',
 			// Card 2935 (P4): the start pass's moment moved past this disable.
-			'update settings set',
-			'delete from request_links'
+			'update settings set'
 		]);
 		expect(run.effects).toEqual([]);
 	});
@@ -1486,6 +1492,8 @@ describe('the invite page', () => {
 			'delete from enrolment_links',
 			'delete from api_keys',
 			'update webhooks set',
+			// The links of the requests it made (card 2922).
+			'delete from request_links',
 			'update report_schedules set',
 			// The set-up challenge, in place of a session (card 2769): the expired
 			// ones swept, this browser's and the account's older ones, and the new one.
@@ -1520,6 +1528,8 @@ describe('the invite page', () => {
 			valid: true,
 			// Card 2935 (P8): no webhook of others whose secret it could read.
 			holdsReadable: false,
+			// Card 2922: nothing the account set to hold, said as a yes or no alone (its code review's C10).
+			holdsSettings: false,
 			username: 'invitee',
 			emoji: '👤',
 			apiKeys: 2,
@@ -1811,7 +1821,8 @@ describe('what taking an account back switches off (card 2168)', () => {
 					apiKeysEnded: 0,
 					webhooksSwitchedOff: 1,
 					readableWebhooksHeld: 0,
-					reportSchedulesPaused: 1
+					reportSchedulesPaused: 1,
+					settingsHeld: null
 				});
 				expectTakenBack(s, { schedules: true });
 				expectOwnersMail(s, sent, ENDING_IN_MAIL.passwordReset);
@@ -1832,6 +1843,8 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'delete from enrolment_links',
 			'delete from api_keys',
 			'update webhooks set',
+			// The links of the requests it made (card 2922).
+			'delete from request_links',
 			'update report_schedules set'
 		]);
 		// Card 2923 (case 5): the successful run mailed the board's owner, the target, once, with both lists, and sent
@@ -1879,6 +1892,8 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'delete from enrolment_links',
 			'delete from api_keys',
 			'update webhooks set',
+			// The links of the requests it made (card 2922).
+			'delete from request_links',
 			'update report_schedules set',
 			// The link (issueEnrolmentLink), issued last.
 			'delete from enrolment_links',
@@ -1972,6 +1987,8 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'delete from enrolment_links',
 			'delete from api_keys',
 			'update webhooks set',
+			// The links of the requests it made (card 2922).
+			'delete from request_links',
 			'update report_schedules set',
 			// The set-up challenge, in place of a session (card 2769).
 			'delete from sign_in_challenges',
@@ -2031,7 +2048,7 @@ describe('what taking an account back switches off (card 2168)', () => {
 			// A change that keeps the keys keeps their webhooks, and pauses both
 			// schedules all the same: the flag does not split the pause.
 			const kept = await changeOwn(s.target, { currentPassword: OLD, newPassword: NEW, endApiKeys: false });
-			expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 2 });
+			expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 2, settingsHeld: null });
 			expect(hookRow(s.hooks.theirs)).toEqual({ active: 1, setBy: s.target.id });
 			// Card 2923 (decision 3): nor is the one already off held, and nobody is mailed of webhooks.
 			expect(heldOf(s.hooks.alreadyOff)).toBeNull();
@@ -2051,7 +2068,7 @@ describe('what taking an account back switches off (card 2168)', () => {
 			// pause. The code made again: the first spent its step (card 2771).
 			stepUpCode(s.target);
 			const ended = await changeOwn(s.target, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true }, kept.cookie!.value);
-			expect(ended.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 1, readableWebhooksHeld: 0, reportSchedulesPaused: 0 });
+			expect(ended.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 1, readableWebhooksHeld: 0, reportSchedulesPaused: 0, settingsHeld: null });
 			expectTakenBack(s, { schedules: true });
 			// Card 2923 (case 2): the change that ends the keys holds the one already off, and mails the owner, the
 			// holder, naming it.
@@ -2130,6 +2147,8 @@ describe('what taking an account back switches off (card 2168)', () => {
 			valid: true,
 			// Card 2935 (P8): the board's other webhooks are not its to read (an editor).
 			holdsReadable: false,
+			// Card 2922: nothing the account set to hold, said as a yes or no alone (its code review's C10).
+			holdsSettings: false,
 			username: 'target',
 			emoji: '👤',
 			apiKeys: 0,

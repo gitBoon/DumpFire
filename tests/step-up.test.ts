@@ -346,9 +346,11 @@ const linkRevokedReasons = (participantId: number) =>
 // ─── 1 and 2. The list, and the routes that ask ──────────────────────────────
 
 describe('the list of what asks, pinned against the routes (cases 1 and 2)', () => {
-	it("is the forty-two actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two, card 2773's one, card 2771's three, card 2772's five, card 2751's three and card 2671's two, each with why it asks", () => {
+	it("is the forty-three actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two, card 2773's one, card 2771's three, card 2772's five, card 2751's three, card 2671's two and card 2922's one, each with why it asks", () => {
 		expect(Object.keys(STEP_UP_ACTIONS).sort()).toEqual(
 			[
+				// Card 2922: a setting held for review kept or removed.
+				'POST /api/admin/settings/held',
 				'POST /api/admin/reset',
 				'POST /api/admin/import/confirm',
 				'POST /api/admin/purge-archived',
@@ -403,7 +405,7 @@ describe('the list of what asks, pinned against the routes (cases 1 and 2)', () 
 				'POST /api/users/[id]/enable'
 			].sort()
 		);
-		expect(Object.keys(STEP_UP_ACTIONS)).toHaveLength(42);
+		expect(Object.keys(STEP_UP_ACTIONS)).toHaveLength(43);
 		for (const [action, why] of Object.entries(STEP_UP_ACTIONS)) expect(why.trim().length, action).toBeGreaterThan(20);
 		expect(Object.isFrozen(STEP_UP_ACTIONS)).toBe(true);
 	});
@@ -797,7 +799,8 @@ describe('each admin action asks for the current password (case 3)', () => {
 			body: () => ({ newPassword: 'a long new password' }),
 			done: (res, s) => {
 				// Card 2935: the webhooks of others whose secret it could read, counted apart (none: the keys are kept).
-				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 0 });
+				// Card 2922: nothing held, as the keys are kept.
+				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 0, settingsHeld: null });
 				expect(db.select({ hash: users.passwordHash }).from(users).where(eq(users.id, s.admin.id)).get()!.hash).not.toBe(FIXTURE_PASSWORD_HASH);
 				// A new session, in place of the one the change ended.
 				expect(db.select().from(sessions).where(eq(sessions.userId, s.admin.id)).all()).toHaveLength(1);

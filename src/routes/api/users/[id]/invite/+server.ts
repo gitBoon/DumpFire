@@ -2,7 +2,8 @@ import { json, error } from '@sveltejs/kit';
 import { issueInvite } from '$lib/server/invites';
 import { holdsFactor } from '$lib/server/mfa-store';
 import { inviteMailAnswer } from '$lib/server/invite-link';
-import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
+import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, linkBaseUrlWithoutAppUrlSetting, mailCannotSendProblem } from '$lib/server/email';
+import { settingsSetBy } from '$lib/server/setting-setters';
 import { sendInviteEmail } from '$lib/server/notifications';
 import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { requireAdmin, requireManagedAccount } from '$lib/server/route-guards';
@@ -11,6 +12,14 @@ import { pathId, readBody } from '$lib/server/request-body';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
+
+/**
+ * What an invite is refused with where the mail settings or the App URL in force were set by the account itself
+ * (card 2922's code review, C15): its invite would go through them.
+ */
+const OWN_SETTINGS_REFUSAL =
+	"The mail settings or the App URL in force were set by this account, so its invite would go through them. Reset the account's " +
+	'two-step sign-in first, which holds them for review, then keep or remove the setting under Settings held for review. Nothing was sent.';
 
 /**
  * POST — Resend invite email (generates a new token). Admin only.
@@ -79,6 +88,13 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 			throw error(409, 'This account uses two-step sign-in. Reset it first, then send the invite.');
 		}
 
+		// Not through the mail settings, or with a link from the App URL, that the
+		// account itself set and that are in force (card 2922's code review, C15):
+		// an intruder who held it would read the invite that takes it back. Its
+		// two-step reset holds them first, or they are kept or removed.
+		const set = settingsSetBy(target.id).get(target.id) ?? null;
+		if (set !== null && (set.mail || set.appUrl)) throw error(409, OWN_SETTINGS_REFUSAL);
+
 		// Asked after the account rule, so that a caller who may not invite this
 		// account is told so whether or not mail is set up.
 		if (!isSmtpConfigured()) {
@@ -90,17 +106,21 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 		// made. So it is refused here, as no mail host is, and the account's
 		// earlier invite is not ended for a mail that cannot go, nor a link put
 		// on screen for it (the review-fix pass's item 2, decision 8).
-		if (smtpPasswordMissing()) {
+		// Or the mail settings held for the superadmin's review (card 2922, R12): `mailCannotSendProblem`.
+		const cannot = mailCannotSendProblem();
+		if (cannot !== null) {
 			throw error(
 				400,
-				`The invite was not made: ${MAIL_PROBLEM_WORDS['no-password']}. Any earlier invite to this account still works.`
+				`The invite was not made: ${MAIL_PROBLEM_WORDS[cannot]}. Any earlier invite to this account still works.`
 			);
 		}
 
 		// The address the link begins with is this server's configuration and
 		// never what the request says: see linkBaseUrl. With none there is no
 		// link to send, and no token is made for one.
-		const baseUrl = linkBaseUrl(url);
+		// Never an App URL the account set (C15): what the server would answer
+		// without it. The refusal above leaves none such here; this is the second wall.
+		const baseUrl = set !== null && set.appUrl ? linkBaseUrlWithoutAppUrlSetting(url) : linkBaseUrl(url);
 		if (baseUrl === null) {
 			throw error(503, NO_LINK_ADDRESS);
 		}

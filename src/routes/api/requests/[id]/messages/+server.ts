@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { requestMessages, type TaskRequest } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { notifyRequesterMessage, notifyAdminMessage } from '$lib/server/notifications';
-import { isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
+import { isSmtpConfigured, linkBaseUrl, mailCannotSend } from '$lib/server/email';
 import { canHandleRequest, canReadRequest, linkCheck, requesterMailAddress, requireRequest } from '$lib/server/request-access';
 import { issueRequestLink, requestReplyUrl } from '$lib/server/request-tokens';
 import { checkRateLimit, resetRateLimit } from '$lib/server/rate-limit';
@@ -182,7 +182,8 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 			// None for a requester whose account is disabled (card 2671): no link, no mail.
 			requester = requesterMailAddress(taskReq);
 			const baseUrl = linkBaseUrl(url);
-			if (requester !== null && baseUrl !== null && isSmtpConfigured() && !smtpPasswordMissing()) {
+			// Not while the mail settings are held for review either (card 2922, R12): `mailCannotSend`.
+			if (requester !== null && baseUrl !== null && isSmtpConfigured() && !mailCannotSend()) {
 				replyUrl = requestReplyUrl(baseUrl, requestId, issueRequestLink(requestId, 'mail'));
 			}
 		}

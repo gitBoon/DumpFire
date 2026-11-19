@@ -43,7 +43,7 @@ import Database from 'better-sqlite3';
 import { generateBackupData } from '$lib/server/backup';
 import { db, sqlite } from '$lib/server/db';
 import { settingSetters, settings, users } from '$lib/server/db/schema';
-import { mailPlacesNow, recordMailSetters, settingsHeldBy } from '$lib/server/setting-setters';
+import { mailPlacesNow, recordMailSetters, settingsSetBy } from '$lib/server/setting-setters';
 import { setAppUrl } from '$lib/server/email';
 import { removeSettingsOfNonAdministrators } from '$lib/server/startup-checks';
 import { load as loadAdminPage } from '../src/routes/admin/+page.server';
@@ -99,16 +99,16 @@ const confirmed = ({ code, ...who }: Who, body: Record<string, unknown> = {}) =>
 });
 
 /**
- * Whose each setting is now, as a demotion would read it (`settingsHeldBy`):
+ * Whose each setting is now, as a demotion would read it (`settingsSetBy`):
  * the account recorded for the place it is at (the second code review). A
  * setting at a place nobody is recorded for, or not stored, is nobody's.
  */
 const setters = () =>
-	[...settingsHeldBy()]
-		.flatMap(([userId, held]) => [
-			...(held.mail ? [{ setting: 'mail', userId }] : []),
-			...(held.appUrl ? [{ setting: 'app_url', userId }] : []),
-			...held.destinations.map((name) => ({ setting: `backup_destination:${name}`, userId }))
+	[...settingsSetBy()]
+		.flatMap(([userId, set]) => [
+			...(set.mail ? [{ setting: 'mail', userId }] : []),
+			...(set.appUrl ? [{ setting: 'app_url', userId }] : []),
+			...set.destinations.map((name) => ({ setting: `backup_destination:${name}`, userId }))
 		])
 		.sort((a, b) => (a.setting < b.setting ? -1 : a.setting > b.setting ? 1 : 0));
 /**

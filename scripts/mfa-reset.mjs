@@ -71,6 +71,17 @@
  * 2915, S1): recorded, since whether one is still at the recorded place needs
  * the server's own rules, which this does not copy.
  *
+ * Card 2922: unless `--keep-api-keys`, those settings are held for the
+ * superadmin's review as the server's `holdSettingsSetBy` holds them: every
+ * setter row of the account copied into `setting_holds`, and the server's
+ * SMTP and BACKUP WARN lines written from those rows (`heldLines`, copied
+ * word for word) before the CRITICAL line; and every link of the requests the
+ * account made is ended. Stdout names each held setting, a destination by
+ * its name, and, for the superadmin's own mail, that no mail is sent until
+ * they keep it on the admin page. The link's address never begins with a
+ * held App URL. A database without `setting_holds` (migration 0074) is
+ * refused, not reset in part (its plan's R14).
+ *
  * `--hold-readable` (card 2935, P7) resets nothing: it holds only the webhooks
  * whose secret the named account can read now (`holdReadableScope`, which is
  * `readableNowScope` in webhooks.ts), writes the Webhooks lines and one AUTH WARN, and
@@ -98,10 +109,11 @@ const PLACEHOLDER_ORIGIN = 'http://localhost:3000';
 
 /**
  * The tables migration 0065 makes, the oldest table this writes to (the
- * system log, 0039), and the report schedules it pauses (card 2894, S15): a
+ * system log, 0039), the report schedules it pauses (card 2894, S15), and the
+ * settings it holds for review (card 2922, migration 0074, its plan's R14): a
  * database without them is refused, not reset in part.
  */
-const NEEDED_TABLES = ['mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges', 'enrolment_links', 'system_logs', 'report_schedules'];
+const NEEDED_TABLES = ['mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges', 'enrolment_links', 'system_logs', 'report_schedules', 'setting_holds'];
 
 /** What `held_because` records for a webhook whose setter's access ended: `'setter access ended'` in src/lib/server/webhooks.ts. */
 const SETTER_ACCESS_ENDED = 'setter access ended';
@@ -254,6 +266,60 @@ function hostOfHook(hook) {
 /** The ids a log line names, or nothing for none: `namingIds` in auth.ts. @param {number[]} ids */
 const namingIds = (ids) => (ids.length === 0 ? '' : ` (${ids.length === 1 ? 'id' : 'ids'} ${ids.join(', ')})`);
 
+/**
+ * A place as `setting_setters` and `setting_holds` record it: `placeKey` in
+ * src/lib/server/setting-holds.ts, word for word (card 2922;
+ * tests/mfa-reset-script.test.ts compares them). Read here for the App URL
+ * alone, which the link may begin with.
+ * @param {unknown[]} parts
+ */
+export function placeKey(parts) {
+	return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
+}
+
+/** A name in quotes as the server's lines quote one: `quotedName` in src/lib/server/backup-secrets.ts. @param {string} name */
+const quotedName = (name) => `"${name.replace(/[\\"]/g, '\\$&')}"`;
+
+/**
+ * The SMTP and BACKUP WARN lines the server writes when it holds what an
+ * account set for review (card 2922, its plan's R13): `heldLines` in
+ * src/lib/server/setting-setters.ts, word for word, from the setter rows
+ * copied. None for no row.
+ *
+ * @param {{ id: number, username: string }} setter
+ * @param {string[]} settings the rows' settings, once each, in order
+ * @param {string} because
+ * @returns {{ context: 'SMTP' | 'BACKUP', message: string, meta: { setter: number, held: string[] } }[]}
+ */
+export function heldLines(setter, settings, because) {
+	/** @type {{ context: 'SMTP' | 'BACKUP', message: string, meta: { setter: number, held: string[] } }[]} */
+	const lines = [];
+	const whose = `set by ${quotedName(setter.username)} (user ${setter.id})`;
+	const mail = settings.filter((s) => s === 'mail' || s === 'app_url');
+	if (mail.length > 0) {
+		const what = mail.map((s) => (s === 'mail' ? 'the mail settings' : 'the App URL')).join(' and ');
+		lines.push({
+			context: 'SMTP',
+			message:
+				`Held for the superadmin's review: ${what}, ${whose}, as ${because}. No mail is sent through held mail settings, and no ` +
+				'link begins with a held App URL, until the superadmin keeps or removes each under Settings held for review.',
+			meta: { setter: setter.id, held: mail }
+		});
+	}
+	const destinations = settings.filter((s) => s.startsWith('backup_destination:')).map((s) => s.slice('backup_destination:'.length));
+	if (destinations.length > 0) {
+		const list = destinations.map((name) => quotedName(name)).join(', ');
+		lines.push({
+			context: 'BACKUP',
+			message:
+				`Held for the superadmin's review: backup destination${destinations.length === 1 ? '' : 's'} ${list}, ${whose}, as ${because}. ` +
+				'No backup is sent to, pruned at, tested at or connected for a held destination until the superadmin keeps or removes it under Settings held for review.',
+			meta: { setter: setter.id, held: destinations.map((name) => `backup_destination:${name}`) }
+		});
+	}
+	return lines;
+}
+
 /** How many webhooks one Webhooks line names; the rest are counted: `SWITCHED_OFF_NAMED` in webhooks.ts. */
 const SWITCHED_OFF_NAMED = 20;
 
@@ -395,7 +461,13 @@ function linkAddress(database) {
 	// It is used only where the host configures no address, so no origin is
 	// there to hold it to.
 	const setting = appUrlNormalised(row?.value ?? '');
-	if (setting) {
+	// Not one held for the superadmin's review (card 2922), as the server's `getAppUrl` does not use one: this
+	// reset may just have held it. Its place is the server's, `placeKey([appUrlAsRead(value)])`.
+	const read = appUrlAsRead(row?.value ?? '');
+	const held =
+		read !== '' &&
+		database.prepare("SELECT 1 FROM setting_holds WHERE setting = 'app_url' AND place = ?").get(placeKey([read])) !== undefined;
+	if (setting && !held) {
 		return {
 			base: setting,
 			said:
@@ -450,7 +522,12 @@ function openDatabase(path) {
 	const missing = NEEDED_TABLES.filter((table) => !tables.has(table));
 	if (missing.length > 0) {
 		database.close();
-		const what = missing.length === 1 && missing[0] === 'report_schedules' ? 'no report schedules table' : 'no two-step sign-in tables';
+		const what =
+			missing.length === 1 && missing[0] === 'report_schedules'
+				? 'no report schedules table'
+				: missing.length === 1 && missing[0] === 'setting_holds'
+					? 'no table of the settings held for review'
+					: 'no two-step sign-in tables';
 		throw new Refused(`Refused: this database has ${what}; start the server once to migrate it (${path}).`);
 	}
 	// The webhook holds (migration 0071, card 2752) the switch-off records (card 2915, E16): a database
@@ -558,7 +635,7 @@ function reset(database, username, keep) {
 	return database
 		.transaction(() => {
 			// Every column, so that a database from before 0072, with no disabled_at, is read too.
-			const account = /** @type {{ id: number, username: string, disabled_at?: string | null } | undefined} */ (
+			const account = /** @type {{ id: number, username: string, role: string, disabled_at?: string | null } | undefined} */ (
 				database.prepare('SELECT * FROM users WHERE username = ?').get(username)
 			);
 			if (!account) throw new Refused(`Refused: there is no account with the username "${printable(username)}". Nothing was changed.`);
@@ -584,7 +661,7 @@ function reset(database, username, keep) {
 				.filter((key) => !keyEnded(key, nowStamp))
 				.map((key) => ({ name: key.name, createdAt: key.created_at }));
 			// And the settings the account is recorded as having set (S1): the rows of setting_setters, not
-			// whether each is still at the recorded place, which needs the server's rules (`settingsHeldBy`).
+			// whether each is still at the recorded place, which needs the server's rules (`settingsSetBy`).
 			const recorded = /** @type {{ setting: string }[]} */ (
 				database.prepare('SELECT DISTINCT setting FROM setting_setters WHERE user_id = ? ORDER BY setting').all(id)
 			).map((row) => row.setting);
@@ -657,6 +734,17 @@ function reset(database, username, keep) {
 				heldRows = rows.filter((row) => alreadyOff.has(row.id));
 				// Those it set (P9): the meta and the line, as the route's.
 				webhookIds = switchedOffRows.filter((row) => row.reader === undefined).map((row) => row.id);
+				// The settings it set held for the superadmin's review (card 2922, `holdSettingsSetBy` in
+				// setting-setters.ts): every setter row of the account copied as it is, whatever is at that place now,
+				// which the server decides when it reads the setting. Then every link of the requests it made ended,
+				// as the server's `endAccountAccess` ends them.
+				database
+					.prepare(
+						'INSERT OR IGNORE INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) ' +
+							'SELECT setting, place, @hold, @at, user_id, @name FROM setting_setters WHERE user_id = @id ORDER BY rowid'
+					)
+					.run({ id, hold: SETTER_ACCESS_ENDED, at: stamp(now), name: account.username });
+				database.prepare('DELETE FROM request_links WHERE request_id IN (SELECT id FROM task_requests WHERE requester_user_id = ?)').run(id);
 			}
 			const heldIds = heldRows.filter((row) => row.reader === undefined).map((row) => row.id);
 			// The webhooks of others whose secret it could read, switched off or held (card 2935): listed apart.
@@ -732,6 +820,14 @@ function reset(database, username, keep) {
 					.prepare('INSERT INTO system_logs (timestamp, level, context, message, meta, user_id, ip) VALUES (?, ?, ?, ?, ?, ?, ?)')
 					.run(stamp(now), 'WARN', 'Webhooks', line, null, null, null);
 			}
+			// And the server's lines for the settings held for review (card 2922, R13), from the rows copied.
+			if (!keep) {
+				for (const line of heldLines({ id, username: account.username }, recorded, `${name}'s two-step sign-in was reset on the server's host`)) {
+					database
+						.prepare('INSERT INTO system_logs (timestamp, level, context, message, meta, user_id, ip) VALUES (?, ?, ?, ?, ?, ?, ?)')
+						.run(stamp(now), 'WARN', line.context, printable(line.message), JSON.stringify(line.meta), null, null);
+				}
+			}
 			database
 				.prepare('INSERT INTO system_logs (timestamp, level, context, message, meta, user_id, ip) VALUES (?, ?, ?, ?, ?, ?, ?)')
 				.run(stamp(now), 'CRITICAL', 'AUTH', message, meta, id, null);
@@ -764,6 +860,9 @@ function reset(database, username, keep) {
 				held,
 				others,
 				settings,
+				// Card 2922: what the reset held for review, by the rows copied, and whether the account is the superadmin's.
+				heldSettings: keep ? [] : recorded,
+				superadmin: account.role === 'superadmin',
 				token
 			};
 		})
@@ -910,14 +1009,31 @@ function main() {
 			);
 			console.log("Those boards' owners were not mailed: tell them.");
 		}
-		// The settings the account is recorded as having set (card 2915, S1): recorded, not judged here.
-		const set = [
-			done.settings.mail ? 'the mail settings' : null,
-			done.settings.destinations === 0 ? null : `${done.settings.destinations} backup destination(s)`,
-			done.settings.appUrl ? 'the App URL' : null
-		].filter((part) => part !== null);
-		if (set.length > 0) {
-			console.log(`They are recorded as having set ${joined(set)}; some may have changed since: review them on the admin page.`);
+		// The settings the account is recorded as having set (card 2915, S1): recorded, not judged here. Held for
+		// review unless kept (card 2922): each named, a destination by its name (its plan's R7).
+		if (done.heldSettings.length > 0) {
+			const named = done.heldSettings.map((setting) =>
+				setting === 'mail' ? 'the mail settings' : setting === 'app_url' ? 'the App URL' : `backup destination ${quotedName(setting.slice('backup_destination:'.length))}`
+			);
+			console.log(
+				`Held for the superadmin's review: ${joined(named)}, as they set them. Nothing is sent to them until the superadmin keeps ` +
+					'or removes each under Settings held for review on the admin page.'
+			);
+			if (done.superadmin && done.heldSettings.includes('mail')) {
+				console.log(
+					'Mail is held: no mail is sent until you sign in with the new authenticator and keep the mail settings under Settings ' +
+						'held for review. Run with --keep-api-keys only where the authenticator was lost, not taken.'
+				);
+			}
+		} else {
+			const set = [
+				done.settings.mail ? 'the mail settings' : null,
+				done.settings.destinations === 0 ? null : `${done.settings.destinations} backup destination(s)`,
+				done.settings.appUrl ? 'the App URL' : null
+			].filter((part) => part !== null);
+			if (set.length > 0) {
+				console.log(`They are recorded as having set ${joined(set)}; some may have changed since: review them on the admin page.`);
+			}
 		}
 		console.log('');
 		console.log(

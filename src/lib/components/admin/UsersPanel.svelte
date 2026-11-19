@@ -41,6 +41,8 @@
 		answerBody,
 		failureMessage,
 		heldOfOthersWords,
+		heldOnEndingWords,
+		inviteHeldWords,
 		NEVER_HAD_ACCESS,
 		readableWebhooksWords,
 		settingsGoneWords,
@@ -320,6 +322,14 @@
 			destinations: Array.isArray(r.destinations) ? r.destinations.filter((d): d is string => typeof d === 'string') : []
 		};
 		return named.mail || named.appUrl || named.destinations.length > 0 ? named : null;
+	}
+
+	/**
+	 * What the account set, as the page read it (card 2922): an invite used or a two-step reset holds it for the
+	 * superadmin's review, which their confirms say. Null for none, or an account the caller is given no count for.
+	 */
+	function settingsOf(userId: number): SettingsGone | null {
+		return settingsNamed(data.users.find((u) => u.id === userId)?.settingsSet ?? null);
 	}
 
 	/** Those settings in words (card 2397's review), as `$lib/api` says them for the disable's confirm too (card 2671). */
@@ -626,7 +636,7 @@
 		if (data.users.find((u) => u.id === userId)?.twoStep === true) return;
 		confirm(
 			'Send Invite',
-			`Send ${username} a new invite? Whoever opens its link sets the account's password, and an invite sent earlier stops working. ${ASKS_FOR_PASSWORD}`,
+			`Send ${username} a new invite? Whoever opens its link sets the account's password, and an invite sent earlier stops working.${inviteHeldWords(settingsOf(userId))} ${ASKS_FOR_PASSWORD}`,
 			(proof: StepUpProof) => resendInvite(userId, proof, control),
 			{ askPassword: true }
 		);
@@ -691,7 +701,7 @@
 		if (inviteInFlight !== null || inviteLink !== null) return;
 		confirm(
 			'Reset Two-Step Sign-In',
-			`Reset ${username}'s two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their API keys end, the webhooks they set up are switched off, their report schedules are paused, and you are given a link, once, to pass on to them yourself. Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret.${readableWebhooksWords(isAdministrator(userId))} ${ASKS_FOR_PASSWORD}`,
+			`Reset ${username}'s two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their API keys end, the webhooks they set up are switched off, their report schedules are paused, and you are given a link, once, to pass on to them yourself. Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret.${readableWebhooksWords(isAdministrator(userId))}${heldOnEndingWords(settingsOf(userId))} ${ASKS_FOR_PASSWORD}`,
 			(proof: StepUpProof) => resetTwoStepOf(userId, username, proof, control),
 			{ askPassword: true }
 		);

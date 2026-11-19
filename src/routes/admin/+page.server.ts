@@ -5,7 +5,7 @@ import { mayManageAccount } from '$lib/account-rule';
 import { db } from '$lib/server/db';
 import { getDbPath } from '$lib/server/db';
 import { defaultOutside } from '$lib/server/db/restore';
-import { isFailureAddress, settingsHeldBy } from '$lib/server/setting-setters';
+import { isFailureAddress, settingsSetBy } from '$lib/server/setting-setters';
 import { TWO_STEP_RELEASED_AT, passwordSetUpEnds } from '$lib/server/mfa-store';
 import { stamp } from '$lib/timestamps';
 import { readableCountSql, readyReadableCounts } from '$lib/server/webhooks';
@@ -68,7 +68,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// would remove (card 2397's review), or null where it would remove none.
 	// The users panel names them in its confirmation before anything is sent.
 	const caller = locals.user;
-	const held = settingsHeldBy();
+	const held = settingsSetBy();
 	const now = Date.now();
 	const mayReset = (target: { id: number; role: string }) => target.id !== caller.id && mayManageAccount(caller, target);
 	// `stamp_of`, which the readable count below reads (card 2935, P1).
@@ -108,9 +108,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 		// still set one up on its password alone: marked, holding no factor and
 		// no link but the release mail's (card 2769, decision 25 and CS4), while
 		// no mail host is set up, since a sign-in is then mailed a link instead
-		// (CR10; `isSmtpConfigured`'s rule, read in this one query). Null for
-		// any other. The 14 days are added below.
-		releasedAt: sql<string | null>`CASE WHEN "users"."mfa_password_enrol" = 1 AND NOT EXISTS (SELECT 1 FROM "mfa_factors" WHERE "mfa_factors"."user_id" = "users"."id") AND NOT EXISTS (SELECT 1 FROM "enrolment_links" WHERE "enrolment_links"."user_id" = "users"."id" AND "enrolment_links"."issued_by" <> 'release-mail') AND NOT EXISTS (SELECT 1 FROM "settings" WHERE "settings"."key" = 'smtp_host' AND coalesce("settings"."value", '') <> '') THEN (SELECT "value" FROM "settings" WHERE "settings"."key" = ${TWO_STEP_RELEASED_AT}) END`
+		// (CR10; `isSmtpConfigured`'s rule, read in this one query), and never
+		// once mail has been set up here (card 2922, R9: `mailEverConfigured`).
+		// Null for any other. The 14 days are added below.
+		releasedAt: sql<string | null>`CASE WHEN "users"."mfa_password_enrol" = 1 AND NOT EXISTS (SELECT 1 FROM "mfa_factors" WHERE "mfa_factors"."user_id" = "users"."id") AND NOT EXISTS (SELECT 1 FROM "enrolment_links" WHERE "enrolment_links"."user_id" = "users"."id" AND "enrolment_links"."issued_by" <> 'release-mail') AND NOT EXISTS (SELECT 1 FROM "settings" WHERE "settings"."key" = 'smtp_host' AND coalesce("settings"."value", '') <> '') AND NOT EXISTS (SELECT 1 FROM "settings" WHERE "settings"."key" = 'mail_ever_configured_at') THEN (SELECT "value" FROM "settings" WHERE "settings"."key" = ${TWO_STEP_RELEASED_AT}) END`
 	}).from(users).all()
 		.map(({ releasedAt, backupConfig, ...user }) => {
 			const counted = mayReset(user);

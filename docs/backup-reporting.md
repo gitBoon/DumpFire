@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.55
+version: 1.56
 status: As-Built
 date: 2026-11-19
 tags:
@@ -1234,6 +1234,49 @@ no confirmed host key is not tried either, with "SFTP host key not confirmed: no
 to this destination. In Admin, Scheduled Backups, press Test on it and confirm the key it
 shows." (see [The SFTP Host Key](#the-sftp-host-key)). The results are given in the
 destinations' order.
+
+### A Destination Held for Review (Card 2922)
+
+When the access of the account that set a destination ends with its API keys (a password or
+two-step reset, an invite used, the holder's own change ending keys, or the host's
+`scripts/mfa-reset.mjs`), the destination is **held for the superadmin's review**
+(`setting_holds`, migration 0074). `notTried()` asks first, and `runBackup()` asks again
+synchronously, by the place of the entry in use, immediately before each destination's upload and
+again before its retention, so a hold written while an earlier destination is uploading is not
+missed; an upload already on the wire finishes. A held destination is not tried, pruned, tested
+(`POST /api/admin/backup/test` answers `409`) or connected (Google Drive Connect answers `409`); its
+result and `backup_log` row are `failed` with "This backup destination is held for the
+superadmin's review: the account that set it up had its access ended. Nothing is sent to it until
+the superadmin keeps or removes it under Settings held for review on the admin page.", the failure
+mail naming it where mail is not held, and it is not tried again as fixable. A save of the backup
+settings that renames, retypes or removes a held destination is refused `409`: keep or remove it
+under Settings held for review first. Keep puts it back in use exactly as it is; Remove takes it out
+of `backup_config` with its stored secrets and leaves the hold, so the same destination saved again
+is held again.
+
+**A hold is by place, under any name** (the code review's C12). A destination's place leaves its
+name out, and a hold of any destination's name at a place holds every destination at that place:
+a held destination renamed (by a restore or on the host), or one removed and saved again under a
+new name with the same type, account and folder, is held. Keep releases every destination hold at
+that place. For an SFTP destination, Keep is checked against the host key the superadmin saw: one
+confirmed after the list was read is refused `409` (C16).
+
+**Restore.** A backup carries `setting_holds`. The restore carries this server's holds over the
+backup's as a union (`carrySettingHolds`), so a destination removed here after a hold, or kept here
+since the backup was made, comes back held; the import's answer says how many holds it carried. A
+working copy, which removes every destination, deletes their holds after the carry.
+
+```mermaid
+flowchart TD
+    Run["runBackup()"] --> NT{"notTried():<br/>held?"}
+    NT -->|yes| F["failed: held words"]
+    NT -->|no| Again{"held now?<br/>(before upload)"}
+    Again -->|yes| F
+    Again -->|no| Up["upload"]
+    Up --> Ret{"held now?<br/>(before retention)"}
+    Ret -->|yes| Skip["retention skipped, WARN"]
+    Ret -->|no| Clean["cleanupRetention"]
+```
 
 ### A Copy That Cannot Be Made
 

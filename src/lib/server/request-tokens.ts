@@ -25,6 +25,7 @@ import { settings } from './db/schema';
 import { inTransaction } from './db/transaction';
 import { sha256Hex } from './mfa-crypto';
 import { openStored, sealStored, settingAad } from './stored-secrets';
+import { MAIL_PROBLEM_WORDS } from './email';
 
 // ─── Request tokens ──────────────────────────────────────────────────────────
 
@@ -54,6 +55,14 @@ export const CANNOT_SEND_LINK = 'New links cannot be sent just now. Please conta
 export const NO_MAIL_PASSWORD =
 	'the mail settings name a user and hold no password, so every mail would fail; a backup does not hold it, and it ' +
 	'is entered again in Admin, 📧 Email / SMTP';
+
+/** Why, when the mail settings are held for the superadmin's review (card 2922, R12): the mail's own words (its code review's C13). */
+export const MAIL_HELD = MAIL_PROBLEM_WORDS.held;
+
+/** Why no mail can go though a host is set, for the WARN line, or null where one can (card 2922: held first). */
+export function cannotMailWhy(problem: 'held' | 'no-password' | null): string | null {
+	return problem === 'held' ? MAIL_HELD : problem === 'no-password' ? NO_MAIL_PASSWORD : null;
+}
 
 /** A new random token for a link: 32 bytes as 64 hex characters (decision 7). */
 function newToken(): string {

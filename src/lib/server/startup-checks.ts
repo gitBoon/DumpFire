@@ -100,10 +100,12 @@ import {
 	getAppUrl,
 	isSmtpConfigured,
 	linkBaseUrl,
-	smtpPasswordMissing,
+	mailCannotSend,
+	recordMailEverConfigured,
 	storedAppUrl,
 	storedAppUrlText
 } from './email';
+import { heldSettingWords, holdRows } from './setting-holds';
 import { notifyWebhooksBeforeKeys, securityNoticeSent, type NoticeSchedule, type WebhookBeforeKeys } from './notifications';
 import { noticeScheduleOf } from './reports';
 import { schedulerSetting } from './schedulers';
@@ -139,7 +141,7 @@ import {
 	type SwitchedOff
 } from './webhooks';
 import { inTransaction } from './db/transaction';
-import { removeSettingsOfFormerAdministrators, settingsHeldBy } from './setting-setters';
+import { removeSettingsOfFormerAdministrators, settingsHeldForReview, settingsSetBy } from './setting-setters';
 import {
 	FORGET_UNOPENABLE_SECRETS,
 	MFA_KEY_CHECK_SETTING,
@@ -275,7 +277,7 @@ export function reportAppUrlNotUsed(plainOriginSaid: boolean = false): boolean {
 
 /**
  * One WARN line when the App URL saved on the admin page is in use and the
- * account recorded as having set it (card 2397, `settingsHeldBy`) is not the
+ * account recorded as having set it (card 2397, `settingsSetBy`) is not the
  * superadmin, or none is recorded (card 2847's code review, CS2). Returns
  * whether it was said.
  *
@@ -292,7 +294,7 @@ export function reportAppUrlSetByOther(): boolean {
 	if (url === null) return false;
 
 	let setter: number | null = null;
-	for (const [id, held] of settingsHeldBy()) if (held.appUrl) setter = id;
+	for (const [id, set] of settingsSetBy()) if (set.appUrl) setter = id;
 	const superadmin = sqlite.prepare("SELECT id FROM users WHERE role = 'superadmin' ORDER BY id LIMIT 1").get() as { id: number } | undefined;
 	if (setter !== null && superadmin !== undefined && setter === superadmin.id) return false;
 
@@ -1122,8 +1124,19 @@ export function maskLiveLog(): number | null {
  *
  * It never throws: what cannot be removed is no reason not to start. It is
  * said at WARN, and the server starts.
+ *
+ * Card 2922: then, each on its own and never throwing, records that mail is
+ * set up where a mail host is stored (`recordMailEverConfigured`, its R9), and
+ * names at WARN every setting held for the superadmin's review
+ * (`reportSettingsHeld`, R7, R11), before the schedulers start.
  */
 export function removeSettingsOfNonAdministrators(): number | null {
+	try {
+		if (isSmtpConfigured()) inTransaction(() => recordMailEverConfigured());
+	} catch (err) {
+		log.warn(`Whether mail has been set up on this server could not be recorded: ${(err as Error)?.message ?? err}.`);
+	}
+	reportSettingsHeld();
 	try {
 		return removeSettingsOfFormerAdministrators().length;
 	} catch (err) {
@@ -1136,6 +1149,46 @@ export function removeSettingsOfNonAdministrators(): number | null {
 			// Nothing more to be done about it.
 		}
 		return null;
+	}
+}
+
+/**
+ * One WARN line, at start, naming every setting held for the superadmin's
+ * review and in force at its held place (card 2922, R7; its code review's
+ * C5): the mail settings, the App URL and each backup destination by name,
+ * and who they were held for. None where nothing is held. It says too that
+ * an older image would put them back in force (R11). The other holds,
+ * tombstones and places a setting has left, are one INFO line, counted.
+ * Returns how many settings it named; never throws.
+ */
+export function reportSettingsHeld(): number {
+	try {
+		if (holdRows().length === 0) return 0;
+		// Only the holds in force: a setting at its held place (the code review's C5). The rest, tombstones and copies
+		// of places a setting has left, are counted at INFO.
+		const { held, tombstones } = settingsHeldForReview();
+		if (tombstones > 0) {
+			log.info(
+				`${tombstones} setting hold(s) at places no setting is at now (removed or moved settings), kept so that a setting saved ` +
+					'or restored there again is held again.'
+			);
+		}
+		if (held.length === 0) return 0;
+		const named = [...new Set(held.map((row) => heldSettingWords(row.setting)))].join(', ');
+		const whose = [...new Set(held.map((row) => (row.setByName === null ? `user ${row.setBy ?? 'unknown'}` : `"${printable(row.setByName)}"`)))].join(', ');
+		log.warn(
+			`Settings held for the superadmin's review: ${named} (set by ${whose}, whose access was ended). Nothing is sent to them ` +
+				'until the superadmin keeps or removes each under Settings held for review on the admin page; an older image would use them again.',
+			{ held: held.map((row) => ({ setting: row.setting, heldAt: row.heldAt, setBy: row.setBy })) }
+		);
+		return held.length;
+	} catch (err) {
+		try {
+			log.warn(`The settings held for review could not be read: ${(err as Error)?.message ?? err}.`);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return 0;
 	}
 }
 
@@ -1430,7 +1483,7 @@ export async function announceWebhooksBeforeKeys(
 			}
 			return null;
 		}
-		if (items.length > 0 && (!isSmtpConfigured() || smtpPasswordMissing())) {
+		if (items.length > 0 && (!isSmtpConfigured() || mailCannotSend())) {
 			webhooksLog.warn(
 				`The owners of the boards of the ${items.length} webhook(s) set up before API keys were recorded were not mailed, as mail ` +
 					'is not set up. The lines above name each.'
@@ -1533,7 +1586,7 @@ export async function announceReportSchedules(
 		}
 		const at = new Date();
 		const named = (list: { username: string }[]) => list.map((owner) => `"${owner.username}"`).join(', ');
-		if (owners.size > 0 && (!isSmtpConfigured() || smtpPasswordMissing())) {
+		if (owners.size > 0 && (!isSmtpConfigured() || mailCannotSend())) {
 			reportsLog.warn(
 				`${owners.size} owner(s) of report schedules that are on were not told of them, as mail is not set up: ` +
 					`${named([...owners.values()])}. The WARN lines above name each schedule and its addresses.`

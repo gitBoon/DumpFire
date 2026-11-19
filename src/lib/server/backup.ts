@@ -20,7 +20,8 @@ import { createLogger } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { KNOWN_BROWSER_SECRET_KEY } from './known-browsers';
 import { REQUEST_FORM_SECRET_KEY } from './request-tokens';
-import { CREDENTIALS_NOT_ENTERED, backupSealKey, clearSecrets, credentialsMissing, hostKeyMissing, sealCopy, webhookAddressMacKey } from './backup-secrets';
+import { CREDENTIALS_NOT_ENTERED, backupSealKey, clearSecrets, credentialsMissing, destinationPlace, hostKeyMissing, sealCopy, webhookAddressMacKey } from './backup-secrets';
+import { DESTINATION_HELD, destinationHeldAt, placeKey } from './setting-holds';
 import { openDestinationSecrets, sealDestinationSecrets, unopenableFields } from './stored-secrets';
 import { inTransaction } from './db/transaction';
 
@@ -115,8 +116,22 @@ export function saveBackupConfig(config: BackupConfig): void {
  * credentials not entered and the host key not confirmed (cards 2169, 2250).
  */
 function notTried(destination: DestinationConfig): string | null {
+	// Held for the superadmin's review first (card 2922): nothing else about it matters until it is kept.
+	if (destinationHeldNow(destination)) return DESTINATION_HELD;
 	if (unopenableFields(destination).length > 0) return CREDENTIALS_NOT_ENTERED;
 	return credentialsMissing(destination) ?? hostKeyMissing(destination);
+}
+
+/**
+ * Whether `destination`, as it is about to be used, is held for the
+ * superadmin's review (card 2922): its place computed from this entry, never
+ * found by its name alone (its plan's R3), and read from the table now.
+ * Synchronous, so that a caller asks it immediately before it reaches the
+ * destination.
+ */
+export function destinationHeldNow(destination: DestinationConfig | Record<string, unknown>): boolean {
+	// By its place alone, whatever name it has now (the code review's C12).
+	return destinationHeldAt(placeKey(destinationPlace(destination)));
 }
 
 // ─── Backup Data Generation ─────────────────────────────────────────────────
@@ -624,6 +639,13 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	for (const destConfig of ready) {
 		const start = Date.now();
 		let durationMs: number;
+		// Asked again, of the destination as it is used, immediately before it is reached (card 2922, its plan's
+		// R3): a hold committed while an earlier destination was uploading is not missed. Nothing is awaited
+		// between this and the upload begun below. An upload already on the wire finishes.
+		if (destinationHeldNow(destConfig)) {
+			failed(destConfig, DESTINATION_HELD, 0, 0);
+			continue;
+		}
 		try {
 			const dest = createDestination(destConfig);
 			await dest.upload(buffer, filename);
@@ -654,8 +676,13 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 			note = `Uploaded, but Backup History could not record it: ${err?.message || 'Unknown error'}`;
 		}
 
-		// Run retention cleanup over this run's own kind of copy (card 2405).
-		await cleanupRetention(destConfig, config.retention, how);
+		// Run retention cleanup over this run's own kind of copy (card 2405). Not at a destination held while its
+		// upload ran (card 2922, R3): asked again here, with nothing awaited before the cleanup reaches it.
+		if (destinationHeldNow(destConfig)) {
+			log.warn(`Retention not run at "${destConfig.name}": ${DESTINATION_HELD}`);
+		} else {
+			await cleanupRetention(destConfig, config.retention, how);
+		}
 
 		outcome.set(destConfig, {
 			destination: destConfig.name,

@@ -59,39 +59,27 @@
  * that a backup's setter who is not an administrator in it loses their
  * settings then, and not at the next start.
  */
-import { createHash } from 'node:crypto';
-import { and, eq, isNotNull, ne } from 'drizzle-orm';
+import { and, eq, isNotNull, like, ne } from 'drizzle-orm';
 import { db, sqlite } from './db';
-import { settingSetters } from './db/schema';
+import { settingHolds, settingSetters } from './db/schema';
 import { afterCommit, inTransaction } from './db/transaction';
-import { destinationPlace, quotedName as quoted, typedSecret, type BackupSettingsChanges } from './backup-secrets';
-import { appUrlAsRead, mailConnectionAsRead } from './email';
+import { destinationPlace, maskDestination, quotedName as quoted, typedSecret, type BackupSettingsChanges } from './backup-secrets';
+import { appUrlAsRead, mailConnectionAsRead, recordMailEverConfigured } from './email';
+import { revokeEveryLink } from './decision-links';
+import type { RecordActor } from './decision-record';
+import { writingWithKey } from './write-as';
 import { createLogger } from './logger';
+// The digest and the settings' names are the holds' too (card 2922): one rule, in the leaf, setting-holds.ts.
+import { APP_URL_SETTING as APP_URL, DESTINATION_SETTING as DESTINATION, MAIL_SETTING as MAIL, SETTER_ACCESS_ENDED, mailPlaceOf, placeKey } from './setting-holds';
+import { stamp } from '$lib/timestamps';
 
 const smtpLog = createLogger('SMTP');
 const backupLog = createLogger('BACKUP');
 
-/** The mail settings' row: every smtp_* setting, as one. */
-const MAIL = 'mail';
-/** The App URL's row. */
-const APP_URL = 'app_url';
-/** Each destination's row begins with this, its name after it. */
-const DESTINATION = 'backup_destination:';
-
-/**
- * A place as a row stores it: a SHA-256 digest of what decides where the
- * setting sends, so that no mail host, user name (some mail providers take it
- * as a token), bucket or key ID is copied into another table.
- */
-function placeKey(parts: readonly unknown[]): string {
-	return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
-}
-
 /** Where mail goes, as a mail reads it: the server, the account on it and the way out (card 2189). */
 function mailPlace(): string {
 	// The password is not opened for it (card 2898's code review, E10).
-	const { host, port, user, allowInsecure } = mailConnectionAsRead();
-	return placeKey([host, port, user, allowInsecure]);
+	return mailPlaceOf(mailConnectionAsRead());
 }
 
 /** The App URL row's place, as a link reads it, or null where the row holds no address (`APP_URL` is nobody's). */
@@ -348,8 +336,11 @@ function placesNow(): PlacesNow {
 	return { mail: mailStored() ? mailPlace() : null, appUrl: appUrlPlace(), config, destinations };
 }
 
-/** What one account's setter rows hold now: each setting at a place they record (the second code review). */
-function heldIn(rows: readonly { setting: string; place: string }[], now: PlacesNow) {
+/**
+ * What one account's setter rows set that is in force now: each setting at a place they record (the second code
+ * review). Named `heldIn` before card 2922, whose "hold" is the review hold alone (its R16).
+ */
+function setIn(rows: readonly { setting: string; place: string }[], now: PlacesNow) {
 	const at = (setting: string, place: string | null) => place !== null && rows.some((row) => row.setting === setting && row.place === place);
 	return {
 		mail: at(MAIL, now.mail),
@@ -364,26 +355,26 @@ function heldIn(rows: readonly { setting: string; place: string }[], now: Places
  * review of 2026-10-22), or for `userId` alone where one is given: the admin
  * page's users panel reads it for the account just before it asks to make
  * it a user or delete it (the second review). An account that holds nothing
- * is not in it.
+ * is not in it. Named `settingsHeldBy` before card 2922 (its R16).
  */
-export function settingsHeldBy(userId?: number): Map<number, SettingsRemoved> {
-	// A row naming nobody is held by nobody (the third review).
+export function settingsSetBy(userId?: number): Map<number, SettingsRemoved> {
+	// A row naming nobody is set by nobody (the third review).
 	const rows = db
 		.select()
 		.from(settingSetters)
 		.where(userId === undefined ? isNotNull(settingSetters.userId) : eq(settingSetters.userId, userId))
 		.all();
-	const held = new Map<number, SettingsRemoved>();
-	if (rows.length === 0) return held;
+	const set = new Map<number, SettingsRemoved>();
+	if (rows.length === 0) return set;
 	const now = placesNow();
 	const byUser = new Map<number, typeof rows>();
 	for (const row of rows) if (row.userId !== null) byUser.set(row.userId, [...(byUser.get(row.userId) ?? []), row]);
 	for (const [id, theirs] of byUser) {
-		const holds = heldIn(theirs, now);
-		const entry: SettingsRemoved = { mail: holds.mail, appUrl: holds.appUrl, destinations: [...new Set(holds.destinations.map((d) => d.name))] };
-		if (anyRemoved(entry)) held.set(id, entry);
+		const setRows = setIn(theirs, now);
+		const entry: SettingsRemoved = { mail: setRows.mail, appUrl: setRows.appUrl, destinations: [...new Set(setRows.destinations.map((d) => d.name))] };
+		if (anyRemoved(entry)) set.set(id, entry);
 	}
-	return held;
+	return set;
 }
 
 /**
@@ -425,23 +416,29 @@ export function removeSettingsSetBy(
 	const removed: SettingsRemoved = { mail: false, appUrl: false, destinations: [] };
 	if (rows.length === 0) return removed;
 	const now = placesNow();
-	const holds = heldIn(rows, now);
-	/** A setting removed is nobody's anywhere: every row of it goes. */
+	const setRows = setIn(rows, now);
+	/**
+	 * A setting removed is nobody's anywhere: every setter row of it goes. A hold of it stays (card 2922, R1): a
+	 * tombstone, so that the setting saved or restored at that place again is held again.
+	 */
 	const forget = (setting: string) => db.delete(settingSetters).where(eq(settingSetters.setting, setting)).run();
 
-	if (holds.mail) {
+	if (setRows.mail) {
+		// Mail set up on this server is recorded before its rows go (card 2922's code review, C4): the removal never
+		// opens the password-alone set-up leave, though the start has not yet recorded it.
+		recordMailEverConfigured();
 		removed.mail = sqlite.prepare("DELETE FROM settings WHERE key LIKE 'smtp\\_%' ESCAPE '\\'").run().changes > 0;
 		forget(MAIL);
 	}
-	if (holds.appUrl) {
+	if (setRows.appUrl) {
 		sqlite.prepare("DELETE FROM settings WHERE key = 'app_url'").run();
 		removed.appUrl = true;
 		forget(APP_URL);
 	}
 
-	const gone = holds.destinations.map(({ name, type }) => ({ name, type }));
+	const gone = setRows.destinations.map(({ name, type }) => ({ name, type }));
 	if (gone.length > 0 && now.config !== null) {
-		const going = new Set(holds.destinations.map((d) => d.entry));
+		const going = new Set(setRows.destinations.map((d) => d.entry));
 		const kept = now.config.destinations.filter((d) => !going.has(d));
 		sqlite.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(JSON.stringify({ ...now.config, destinations: kept }));
 	}
@@ -492,6 +489,287 @@ export function removeSettingsSetBy(
 		);
 	}
 	return removed;
+}
+
+/** What `holdSettingsSetBy` held: the settings named by the rows it copied, and those of them in force, for an answer. */
+export type SettingsHeld = {
+	/** Each setting a row of the account names, by its row's name (`mail`, `app_url`, `backup_destination:<name>`), once each. */
+	rows: string[];
+	/** Of them, those at a place the account's rows record now, as `settingsSetBy` reads them: what an answer and a screen say. */
+	inForce: SettingsRemoved;
+};
+
+/**
+ * Hold for the superadmin's review what `setter` set (card 2922), inside the
+ * caller's transaction: the account's access is ending with its API keys
+ * (`endAccountAccess`), `cause` saying how, as the webhooks' lines say it.
+ * Every setter row of the account is copied into `setting_holds`, as it is,
+ * whatever the setting is at now (`INSERT OR IGNORE`: a place held already
+ * keeps its hold): a setting is then held while it is at one of those
+ * places (setting-holds.ts). Nothing is removed, and no setter row changes:
+ * the sealed mail password and destination secrets stay, for Keep.
+ *
+ * Once committed, one WARN under SMTP for the mail settings and the App URL
+ * and one under BACKUP for the destinations, written from the rows copied
+ * (its plan's R13, as scripts/mfa-reset.mjs writes them from its own copy),
+ * naming the settings, whose they were and why; none where the account has
+ * no row. `inForce` is what an answer says (`setIn`).
+ */
+export function holdSettingsSetBy(setter: Named, cause: { log: string }): SettingsHeld {
+	const rows = db.select().from(settingSetters).where(eq(settingSetters.userId, setter.id)).all();
+	const held: SettingsHeld = { rows: [], inForce: { mail: false, appUrl: false, destinations: [] } };
+	if (rows.length === 0) return held;
+	const now = placesNow();
+	const set = setIn(rows, now);
+	held.inForce = { mail: set.mail, appUrl: set.appUrl, destinations: [...new Set(set.destinations.map((d) => d.name))] };
+	const at = stamp();
+	const copy = sqlite.prepare(
+		'INSERT OR IGNORE INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) VALUES (?, ?, ?, ?, ?, ?)'
+	);
+	for (const row of rows) copy.run(row.setting, row.place, SETTER_ACCESS_ENDED, at, setter.id, setter.username);
+	held.rows = [...new Set(rows.map((row) => row.setting))].sort();
+	for (const [line, ofIt] of heldLines(setter, held.rows, cause.log)) afterCommit(() => line.warn(ofIt.message, ofIt.meta, ofIt.filedUnder));
+	return held;
+}
+
+/**
+ * The lines a hold writes (card 2922, R13): one under SMTP for the mail
+ * settings and the App URL and one under BACKUP for the destinations, from
+ * the settings the rows name, filed under nobody (the ending's own line names
+ * who made it). scripts/mfa-reset.mjs writes the same words, which
+ * tests/mfa-reset-script.test.ts holds equal.
+ */
+export function heldLines(
+	setter: Named,
+	settings: readonly string[],
+	because: string
+): [ReturnType<typeof createLogger>, { message: string; meta: Record<string, unknown>; filedUnder: { userId: null } }][] {
+	const lines: [ReturnType<typeof createLogger>, { message: string; meta: Record<string, unknown>; filedUnder: { userId: null } }][] = [];
+	const whose = `set by ${quoted(setter.username)} (user ${setter.id})`;
+	const mail = settings.filter((s) => s === MAIL || s === APP_URL);
+	if (mail.length > 0) {
+		const what = mail.map((s) => (s === MAIL ? 'the mail settings' : 'the App URL')).join(' and ');
+		lines.push([
+			smtpLog,
+			{
+				message:
+					`Held for the superadmin's review: ${what}, ${whose}, as ${because}. No mail is sent through held mail settings, and no ` +
+					'link begins with a held App URL, until the superadmin keeps or removes each under Settings held for review.',
+				meta: { setter: setter.id, held: mail },
+				filedUnder: { userId: null }
+			}
+		]);
+	}
+	const destinations = settings.filter((s) => s.startsWith(DESTINATION)).map((s) => s.slice(DESTINATION.length));
+	if (destinations.length > 0) {
+		const list = destinations.map((name) => quoted(name)).join(', ');
+		lines.push([
+			backupLog,
+			{
+				message:
+					`Held for the superadmin's review: backup destination${destinations.length === 1 ? '' : 's'} ${list}, ${whose}, as ${because}. ` +
+					'No backup is sent to, pruned at, tested at or connected for a held destination until the superadmin keeps or removes it under Settings held for review.',
+				meta: { setter: setter.id, held: destinations.map((name) => DESTINATION + name) },
+				filedUnder: { userId: null }
+			}
+		]);
+	}
+	return lines;
+}
+
+// ─── Settings held for review: the list, Keep and Remove (card 2922) ────────
+
+/** One setting held for the superadmin's review and in force at its held place, as the review list shows it. */
+export type HeldForReview = {
+	/** The setter rows' name: `mail`, `app_url` or `backup_destination:<name>`. */
+	setting: string;
+	kind: 'mail' | 'app_url' | 'destination';
+	/** A destination's name; null for the mail settings and the App URL. */
+	name: string | null;
+	/**
+	 * What the superadmin reviewed, the digest Keep and Remove are sent back with (its plan's R4): the place
+	 * it is held at, and for an SFTP destination its confirmed host key's fingerprint too (the code review's
+	 * C16), so a key confirmed after the list was read is refused.
+	 */
+	place: string;
+	/** The place the hold names, which Keep deletes. */
+	holdPlace: string;
+	heldAt: string;
+	setBy: number | null;
+	setByName: string | null;
+	/** Where it sends, with no secret (R4): the mail's host, port, user and way out; the App URL; a destination masked. */
+	where: Record<string, unknown>;
+};
+
+/**
+ * Every setting held for review that is at its held place now, by the hold
+ * rows and the settings as stored, for the review list (`GET
+ * /api/admin/settings/held`) and the checks of Keep and Remove; and how many
+ * holds are at a place no setting is at now (tombstones, R1, R19). Never a
+ * secret: a destination is masked as the backup panel masks it.
+ */
+export function settingsHeldForReview(): { held: HeldForReview[]; tombstones: number } {
+	const rows = db.select().from(settingHolds).all();
+	if (rows.length === 0) return { held: [], tombstones: 0 };
+	const now = placesNow();
+	const held: HeldForReview[] = [];
+	/** The destinations listed already: a place held under two names (a rename) is one entry (C12). */
+	const listed = new Set<unknown>();
+	let inForce = 0;
+	for (const row of rows) {
+		const base = { place: row.place, holdPlace: row.place, heldAt: row.heldAt, setBy: row.setBy, setByName: row.setByName };
+		if (row.setting === MAIL && now.mail === row.place) {
+			const { host, port, user, allowInsecure } = mailConnectionAsRead();
+			held.push({ ...base, setting: MAIL, kind: 'mail', name: null, where: { host, port, user, allowInsecure } });
+			inForce++;
+		} else if (row.setting === APP_URL && now.appUrl === row.place) {
+			held.push({ ...base, setting: APP_URL, kind: 'app_url', name: null, where: { url: appUrlAsRead(storedAppUrlValue()) } });
+			inForce++;
+		} else if (row.setting.startsWith(DESTINATION)) {
+			// By its place, under whatever name it has now (C12).
+			const found = now.destinations.filter((d) => d.place === row.place);
+			if (found.length === 0) continue;
+			inForce++;
+			for (const destination of found) {
+				if (listed.has(destination.entry)) continue;
+				listed.add(destination.entry);
+				const entry = destination.entry as Record<string, unknown>;
+				const { name: _name, ...shown } = maskDestination(entry) as Record<string, unknown>;
+				// An SFTP destination's confirmed host key is part of what was reviewed (C16).
+				const place = entry.type === 'sftp' ? placeKey([row.place, String(entry.hostKey ?? '')]) : row.place;
+				held.push({ ...base, place, setting: DESTINATION + destination.name, kind: 'destination', name: destination.name, where: shown });
+			}
+		}
+	}
+	held.sort((a, b) => (a.setting < b.setting ? -1 : a.setting > b.setting ? 1 : 0));
+	return { held, tombstones: rows.length - inForce };
+}
+
+/** The settings held for review, by kind and name alone: what the superadmin's banner on the admin pages says (R7). */
+export function settingsHeldForBanner(): Pick<HeldForReview, 'kind' | 'name'>[] {
+	return settingsHeldForReview().held.map(({ kind, name }) => ({ kind, name }));
+}
+
+/** The App URL row as stored, '' for none. */
+function storedAppUrlValue(): string {
+	const row = sqlite.prepare("SELECT value FROM settings WHERE key = 'app_url'").get() as { value: string } | undefined;
+	return row?.value ?? '';
+}
+
+/** A setting's name as the lines say it. */
+const settingWords = (held: Pick<HeldForReview, 'kind' | 'name'>) =>
+	held.kind === 'mail' ? 'the mail settings' : held.kind === 'app_url' ? 'the App URL' : `backup destination ${quoted(held.name ?? '')}`;
+
+/** Whose a hold says it was, for the lines. */
+const heldFor = (held: Pick<HeldForReview, 'setBy' | 'setByName'>) =>
+	held.setByName === null ? `user ${held.setBy ?? 'unknown'}` : `${quoted(held.setByName)} (user ${held.setBy ?? 'unknown'})`;
+
+/** The logger a setting's lines go under: SMTP for the mail settings and the App URL, BACKUP for a destination. */
+const logOf = (held: Pick<HeldForReview, 'kind'>) => (held.kind === 'destination' ? backupLog : smtpLog);
+
+/**
+ * Keep a setting held for review (card 2922, its plan's R4), inside the
+ * caller's transaction: its hold at that place is deleted, and nothing else.
+ * No setter row changes: the superadmin approves the place, and does not take
+ * it over. One WARN once committed, filed under `actor`.
+ */
+export function keepHeldSetting(held: HeldForReview, actor: Named): void {
+	// A destination's hold is by its place under any name (C12): every hold of a destination at that place goes.
+	if (held.kind === 'destination') {
+		db.delete(settingHolds).where(and(like(settingHolds.setting, `${DESTINATION}%`), eq(settingHolds.place, held.holdPlace))).run();
+	} else {
+		db.delete(settingHolds).where(and(eq(settingHolds.setting, held.setting), eq(settingHolds.place, held.holdPlace))).run();
+	}
+	afterCommit(() =>
+		logOf(held).warn(
+			`Kept after the superadmin's review by ${quoted(actor.username)}: ${settingWords(held)}, set by ${heldFor(held)}, held since ${held.heldAt}. ` +
+				'It is in use again.',
+			{ setting: held.setting, keptBy: actor.id, setBy: held.setBy },
+			{ userId: actor.id }
+		)
+	);
+}
+
+/** What removing held mail settings or a held App URL ended across the server (R2; the code review's C2, C3): every mailed key. */
+export type MailCredentialsEnded = { invites: number; enrolmentLinks: number; requestLinks: number; decisionLinks: number };
+
+/**
+ * End, across the server, every key mailed to anyone, inside the caller's
+ * transaction (R2, C2, C3): each invite not yet used, each set-up link, each
+ * request link and each decision participant's personal link. Each was mailed
+ * through the mail settings, and its link began with the App URL: whoever ran
+ * the relay, or the server a held App URL named, may hold any of them. Each
+ * decision link ended is recorded on its decision, as every other ending of
+ * one is: `link_revoked { reason: 'held_setting_removed' }` by `actor`.
+ */
+function endMailedCredentials(actor: Named): MailCredentialsEnded {
+	const by: RecordActor = { userId: actor.id, name: actor.username, source: writingWithKey() ? 'api' : 'ui' };
+	return {
+		invites: sqlite.prepare('DELETE FROM invite_tokens WHERE used = 0').run().changes,
+		enrolmentLinks: sqlite.prepare('DELETE FROM enrolment_links').run().changes,
+		requestLinks: sqlite.prepare('DELETE FROM request_links').run().changes,
+		decisionLinks: revokeEveryLink('held_setting_removed', by)
+	};
+}
+
+/**
+ * Remove a setting held for review (card 2922), inside the caller's
+ * transaction: the mail settings (every smtp_* row), the App URL row, or the
+ * destination with its stored secrets out of `backup_config`; and every
+ * setter row of it. Its hold stays, a tombstone (R1): the setting saved or
+ * restored at that place again is held again.
+ *
+ * Removing held mail settings, or a held App URL (the code review's C3), also
+ * ends, across the server, every key that was mailed (`endMailedCredentials`:
+ * R2, C2). Their counts are answered and said in one line, counts only. Mail
+ * set up on this server is recorded first (`recordMailEverConfigured`, C4), so
+ * that the removal never opens the password-alone set-up leave.
+ *
+ * One WARN once committed, filed under `actor`, and the credentials' line.
+ */
+export function removeHeldSetting(held: HeldForReview, actor: Named): { ended: MailCredentialsEnded | null } {
+	let ended: MailCredentialsEnded | null = null;
+	if (held.kind === 'mail') {
+		if (mailStored()) recordMailEverConfigured();
+		sqlite.prepare("DELETE FROM settings WHERE key LIKE 'smtp\\_%' ESCAPE '\\'").run();
+		ended = endMailedCredentials(actor);
+	} else if (held.kind === 'app_url') {
+		sqlite.prepare("DELETE FROM settings WHERE key = 'app_url'").run();
+		ended = endMailedCredentials(actor);
+	} else {
+		const config = storedBackupConfig();
+		if (config !== null) {
+			// Every entry at the held place, whatever its name (C12).
+			const kept = config.destinations.filter((d) => placeKey(destinationPlace(d)) !== held.holdPlace);
+			sqlite.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(JSON.stringify({ ...config, destinations: kept }));
+		}
+	}
+	db.delete(settingSetters).where(eq(settingSetters.setting, held.setting)).run();
+	// And a destination's rows under any other name at the place removed (C12).
+	if (held.kind === 'destination') {
+		db.delete(settingSetters).where(and(like(settingSetters.setting, `${DESTINATION}%`), eq(settingSetters.place, held.holdPlace))).run();
+	}
+	afterCommit(() =>
+		logOf(held).warn(
+			`Removed after the superadmin's review by ${quoted(actor.username)}: ${settingWords(held)}, set by ${heldFor(held)}, held since ${held.heldAt}. ` +
+				'Its hold stays: saved again at the same place, it is held again.',
+			{ setting: held.setting, removedBy: actor.id, setBy: held.setBy },
+			{ userId: actor.id }
+		)
+	);
+	if (ended !== null) {
+		const counts = ended;
+		afterCommit(() =>
+			smtpLog.warn(
+				`Removing the held ${held.kind === 'mail' ? 'mail settings' : 'App URL'} ended, across the server, ${counts.invites} invite(s) ` +
+					`not yet used, ${counts.enrolmentLinks} set-up link(s), ${counts.requestLinks} request link(s) and ${counts.decisionLinks} ` +
+					`decision link(s): each was mailed ${held.kind === 'mail' ? 'through them' : 'with a link that began with it'}.`,
+				{ ...counts },
+				{ userId: actor.id }
+			)
+		);
+	}
+	return { ended };
 }
 
 /**

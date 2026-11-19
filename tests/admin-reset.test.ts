@@ -236,6 +236,11 @@ function everything(): Everything {
 		INSERT INTO enrolment_links (token_hash, user_id, issued_by, expires_at)
 			VALUES ('${'e'.repeat(64)}', ${member.id}, 'owner', '2099-01-01 00:00:00');
 	`);
+	// A setting held for the superadmin's review (card 2922, migration 0074): cleared with the settings it holds, as a
+	// new installation has none.
+	sqlite
+		.prepare("INSERT INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) VALUES ('mail', ?, 'setter access ended', ?, ?, 'member')")
+		.run('f'.repeat(64), '2026-11-19 09:00:00', member.id);
 
 	// The two tables a reset keeps.
 	db.insert(backupLog)

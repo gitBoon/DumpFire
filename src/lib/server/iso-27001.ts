@@ -289,9 +289,11 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Revoking an API key switches off, in the same change, the webhooks it set up, and one whose key expires or passes its deadline is switched off at the next start, restore or event (card 2893). ' +
 			'Every way of setting a password, the holder\'s own change included, and a reset of an account\'s two-step sign-in, from the admin page or the host, pause the account\'s report schedules, and removing an authenticator lists its schedules that are on (card 2894). ' +
 			'The reset also ends the account\'s API keys and switches off the webhooks it set, as an administrator\'s password reset does; the reset\'s mail names them, and the host keeps them only when told to (card 2915). ' +
-			'Disabling an account ends all of this at once and refuses it at every gate, on every board and on every decision; a restore keeps it disabled (card 2671).',
+			'Disabling an account ends all of this at once and refuses it at every gate, on every board and on every decision; a restore keeps it disabled (card 2671). ' +
+			'Every ending that ends the keys also holds the mail settings, App URL and backup destinations the account set for the superadmin\'s review, so nothing is sent to them until the superadmin keeps or removes each, and ends the links of the requests it made (card 2922).',
 		evidence: [
 			{ path: 'src/lib/server/auth.ts', symbol: 'endAccountAccess' },
+			{ path: 'src/lib/server/setting-setters.ts', symbol: 'holdSettingsSetBy' },
 			{ path: 'src/lib/server/account-disable.ts', symbol: 'disableAccount' },
 			{ path: 'src/routes/api/account/password/+server.ts', symbol: 'endAccountAccess' },
 			{ path: 'scripts/mfa-reset.mjs', symbol: 'report_schedules' },

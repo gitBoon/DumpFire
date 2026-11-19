@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.92
+version: 1.93
 status: As-Built
 date: 2026-11-19
 tags:
@@ -3037,14 +3037,47 @@ of about zero.
   none (the review of 2026-10-22; `src/lib/server/setting-setters.ts`). Demoting an account to
   user, or `deleteUser()`, removes each setting still at a place its rows record, then every row
   of each setting removed and every row of the account, in the same transaction
-  (`removeSettingsSetBy`); `settingsHeldBy()` reads the same for the admin page and `GET
-  /api/users/:id`. A table of
+  (`removeSettingsSetBy`); `settingsSetBy()` (named `settingsHeldBy()` before card 2922) reads
+  the same for the admin page and `GET /api/users/:id`. A table of
   its own rather than a column: the destinations are one JSON row, and `settings` is a
   reconciled table, rebuilt whenever it differs from the model. 0059 changes no row: every
   setting already stored has no row, names nobody and stays in force, so it declares nothing to
   the rehearsal. A backup from before 0059 restores with the table empty; one from after it
   brings its rows, with the accounts they name. A backup copy keeps the table (it holds no
   secret).
+- **Settings held for review** (card 2922, migration `0074_add_setting_holds.sql`, 2026-11-19).
+  `setting_holds`: `setting` and `place` text, as `setting_setters` names them, the key
+  `PRIMARY KEY(setting, place)`; `held_because` text, `'setter access ended'`; `held_at`, a
+  moment in the stored form; `set_by` integer and `set_by_name` text, the account whose ending
+  made the hold and its username then, with **no foreign key**, so a hold outlives the account.
+  Every ending of an account's access with its API keys copies each of its setter rows here
+  (`holdSettingsSetBy`); a setting at a place this table holds sends nothing (mail refused, App
+  URL not used, destination not tried, tested or connected). Only the superadmin's Keep
+  (`POST /api/admin/settings/held`) deletes a row; a removal leaves it as a tombstone. A backup
+  copy keeps the table; a restore carries this server's rows over the backup's as a union
+  (`carrySettingHolds`), and a working copy then deletes the mail and destination rows. 0074
+  changes no row and declares nothing to the rehearsal. The record that mail was ever set up,
+  which keeps the password-alone set-up leave closed once it was, is a `settings` row,
+  `mail_ever_configured_at`, kept by a restore.
+
+```mermaid
+erDiagram
+    setting_setters ||..o| setting_holds : "same (setting, place)"
+    setting_setters {
+        text setting PK
+        text place PK
+        integer user_id FK "cascade"
+    }
+    setting_holds {
+        text setting PK
+        text place PK
+        text held_because
+        text held_at
+        integer set_by "no FK"
+        text set_by_name
+    }
+```
+
 - **Upstream and the commitment point** (milestone 22, migration
   `0060_add_upstream_options.sql`, 2026-10-26). Four things are stored, each free text
   checked in code rather than a `CHECK`, since `columns` and `boards` are reconciled tables

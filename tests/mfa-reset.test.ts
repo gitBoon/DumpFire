@@ -12,7 +12,7 @@
  * hash, as another request would. The key is the process's own, written
  * nowhere.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 vi.mock('$app/environment', () => ({ dev: false, building: false, browser: false, version: 'test' }));
 
@@ -63,7 +63,7 @@ import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS } from '$lib/server/email';
 import { sha256Hex } from '$lib/server/mfa-crypto';
 import { ENROLMENT_LINK_LIFETIME_MS, addTotpFactor, issueEnrolmentLink, storeRecoveryCodes } from '$lib/server/mfa-store';
 import { newRecoveryCodes } from '$lib/server/recovery-codes';
-import { mailPlacesNow, recordDestinationSetter, recordMailSetters, settingsHeldBy } from '$lib/server/setting-setters';
+import { mailPlacesNow, recordDestinationSetter, recordMailSetters, settingsSetBy } from '$lib/server/setting-setters';
 import { newTotpSecret } from '$lib/server/totp';
 import { isStamp, parseStamp, stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
@@ -812,11 +812,20 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 
 	// Card 2915 (case 4, S1): the settings the account set, said where the link is given, never a destination's name.
 	// The code review's CR2: two destinations in the plural, and nothing of settings where the link is withheld.
+	// Card 2922: they are held for review now, and the words say so; the reset holds Ada's App URL, so the link is
+	// made from APP_URL (its plan's R8).
+	const HELD_WORDS = 'they set are held for review: nothing is sent to them until you keep or remove them under Settings held for review on the admin page.';
 	it.each([
-		{ row: 'one destination', destinations: 1, withheld: false, says: ' They set the mail settings, 1 backup destination and the App URL: review them on the admin page.' },
-		{ row: 'two destinations', destinations: 2, withheld: false, says: ' They set the mail settings, 2 backup destinations and the App URL: review them on the admin page.' },
+		{ row: 'one destination', destinations: 1, withheld: false, says: ` The mail settings, 1 backup destination and the App URL ${HELD_WORDS}` },
+		{ row: 'two destinations', destinations: 2, withheld: false, says: ` The mail settings, 2 backup destinations and the App URL ${HELD_WORDS}` },
 		{ row: 'the link withheld', destinations: 1, withheld: true, says: null }
-	])('T19 (card 2915, $row): the superadmin resetting an administrator recorded as setter of settings is told to review them', async ({ destinations, withheld, says }) => {
+	])('T19 (card 2915, $row): the superadmin resetting an administrator recorded as setter of settings is told they are held', async ({ destinations, withheld, says }) => {
+		const appUrlWas = process.env.APP_URL;
+		process.env.APP_URL = BASE;
+		onTestFinished(() => {
+			if (appUrlWas === undefined) delete process.env.APP_URL;
+			else process.env.APP_URL = appUrlWas;
+		});
 		const chief = makeUser({ role: 'superadmin', username: 'chief' });
 		const admin = makeUser({ role: 'admin', username: 'ada' });
 		giveFactor(admin.id);
@@ -835,18 +844,20 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 				: {}
 		);
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
-		recordMailSetters(before, { id: admin.id, superadmin: false }, true);
+		// Not the mail where the link is withheld (card 2922): the reset would hold it, and the notice, whose sending
+		// withholds the link here, would not go.
+		if (!withheld) recordMailSetters(before, { id: admin.id, superadmin: false }, true);
 		const names = ['Offsite copies', 'Second copies'].slice(0, destinations);
 		const list = names.map((name, i) => ({ type: 's3', name, region: 'eu-west-2', bucket: `ada-bucket-${i}`, accessKeyId: 'AKIA', secretAccessKey: 'secret', prefix: '' }));
 		db.insert(settings).values({ key: 'backup_config', value: JSON.stringify({ destinations: list }) }).run();
 		for (const destination of list) recordDestinationSetter(destination, admin.id);
-		expect(settingsHeldBy(admin.id).get(admin.id)).toEqual({ mail: true, appUrl: true, destinations: names });
+		expect(settingsSetBy(admin.id).get(admin.id)).toEqual({ mail: !withheld, appUrl: !withheld, destinations: names });
 
 		const res = await reset(chief, admin.id);
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(res.body.enrolmentUrl === null).toBe(withheld);
-		if (says === null) expect(res.body.message).not.toContain('They set');
+		if (says === null) expect(res.body.message).not.toContain('they set');
 		else expect(res.body.message).toContain(says);
 		for (const name of names) expect(res.body.message).not.toContain(name);
 	});

@@ -11,6 +11,7 @@ import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { pathId, readBody, readText } from '$lib/server/request-body';
 import { ENDING_IN_MAIL } from '$lib/server/webhooks';
+import { anyRemoved } from '$lib/server/setting-setters';
 import { createLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
@@ -134,6 +135,8 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 		webhooksSwitchedOff: ended.webhooks,
 		// Card 2935: the webhooks of others whose secret the account could read, switched off or held.
 		readableWebhooksHeld: ended.readableWebhooks,
-		reportSchedulesPaused: ended.reportSchedules
+		reportSchedulesPaused: ended.reportSchedules,
+		// Card 2922: what the account set that the reset held for the superadmin's review, or null for nothing.
+		settingsHeld: anyRemoved(ended.settingsHeld) ? ended.settingsHeld : null
 	});
 };

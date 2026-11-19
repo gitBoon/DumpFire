@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.142
+version: 1.143
 status: As-Built
 date: 2026-11-19
 tags:
@@ -1283,7 +1283,9 @@ docker exec <container> node scripts/mfa-reset.mjs -- <username>                
 
 It works for any account, by its username, trimmed and matched exactly as sign-in matches it, so it is also the way back when no administrator can reach the admin page. It does what 🛡️ does, in one `BEGIN IMMEDIATE` transaction: the account's authenticators and recovery codes are deleted, its counts of wrong codes set to nought and their pauses cleared, its sessions, unused invites, sign-ins waiting for a second factor and enrolment links ended, **its API keys deleted and the webhooks it set switched off for good** (`setter access ended`, card 2915, 2026-11-18), and since card 2923 those it set that were already switched off without a hold held the same way, its report schedules that are on paused (card 2894), and one new enrolment link issued (`issued_by` `host-reset`), good for seven days. **It sends no mail** (card 2923): it writes the server's `Webhooks` lines for the webhooks switched off and held, and one saying the boards' owners were not mailed, before its `CRITICAL` line; stdout lists the held ones apart and ends "Their boards' owners were not mailed: tell them." Its password and security banner are kept: it sets no password (for a lost password, see [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin)).
 
-**`--keep-api-keys` keeps the keys and webhooks** (card 2915, decision 4). The superadmin is the account likeliest to hold the keys an integration uses, and whoever runs this on the host often knows whether the phone was lost or stolen: lost, keep them; stolen, or not sure, let them end, as 🛡️ always does. A keep is never silent: stdout says so and the log line names what was kept. The options are read strictly: each argument trimmed; `--keep-api-keys` once only; any other argument starting with "-" refused as an unknown option, unless after a lone `--`, which ends the options. A refused argument changes nothing and opens nothing.
+**The settings the account set are held for review** (card 2922, 2026-11-19). Unless `--keep-api-keys`, every setting the account is recorded as having set (`setting_setters`) is held, as the admin page's resets hold them: the mail settings send no mail, the App URL begins no link, a backup destination is not backed up to, until the superadmin keeps or removes each under **Settings held for review** on the admin page. The links of the requests the account made are ended too. Stdout names each held setting, a destination by its name, and after the superadmin's own reset says that mail is held until they sign in with the new authenticator and keep it; signing in needs no mail. The link's address never begins with a held App URL: with no `APP_URL` or `ORIGIN` it is the path alone. A database from before migration 0074 is refused: start the server once to migrate it.
+
+**`--keep-api-keys` keeps the keys and webhooks** (card 2915, decision 4), and since card 2922 the settings the account set and its request links. The superadmin is the account likeliest to hold the keys an integration uses, and whoever runs this on the host often knows whether the phone was lost or stolen: lost, keep them; stolen, or not sure, let them end, as 🛡️ always does. A keep is never silent: stdout says so and the log line names what was kept. The options are read strictly: each argument trimmed; `--keep-api-keys` once only; any other argument starting with "-" refused as an unknown option, unless after a lone `--`, which ends the options. A refused argument changes nothing and opens nothing.
 
 The same transaction writes one `CRITICAL` line under `AUTH` to the system log, which the Audit page's Live Console shows: `Two-step sign-in reset for user 1 ("greg") on the server's host, with scripts/mfa-reset.mjs: removed 1 factor(s) and 10 recovery code(s), ended 2 session(s), 0 pending sign-in(s), 0 invite(s) and 2 API key(s), switched off 1 webhook(s) they set up (id 7), and paused 1 report schedule(s) (id 3); an enrolment link was issued`, or with `--keep-api-keys` `…, ended 2 session(s), 0 pending sign-in(s) and 0 invite(s), kept 1 live API key(s) and 1 webhook(s) they set up (id 7), as --keep-api-keys asked, and paused 1 report schedule(s) (id 3); …`, its details the same fields as 🛡️'s line. Neither the line nor anything else holds the link or a key's name.
 
@@ -1296,7 +1298,8 @@ Two-step sign-in was reset for "greg" (user 1): removed 1 factor(s) and 10 recov
 Ended 2 API key(s); the 1 still working: Deploy (made 2026-11-01).
 Switched off 1 webhook(s) they set up: Sales, to hooks.example.com (made 2026-11-12).
 Give them the names: they make new keys once signed in, and the board's owner or an administrator switches back on any webhook they recognise, which gives it a new secret.
-They are recorded as having set the mail settings, 1 backup destination(s) and the App URL; some may have changed since: review them on the admin page.
+Held for the superadmin's review: the App URL, backup destination "Offsite" and the mail settings, as they set them. Nothing is sent to them until the superadmin keeps or removes each under Settings held for review on the admin page.
+Mail is held: no mail is sent until you sign in with the new authenticator and keep the mail settings under Settings held for review. Run with --keep-api-keys only where the authenticator was lost, not taken.
 
 Give greg this link yourself, by a way only they read. It is shown once and works for seven days, and the account still needs its password.
 The link's address is from ORIGIN.
@@ -7561,6 +7564,41 @@ administrator who saved the App URL. Never run the host command on the repositor
 | H8 | On a fresh copy: `… mfa-reset.mjs --keep-api-keys holder` | Exit 0; "They keep …" and "Kept, as --keep-api-keys asked"; the line "kept 1 live API key(s) and 1 webhook(s) …" | Keys ended |
 | H9 | On a fresh copy: `… mfa-reset.mjs -k holder`, then `… mfa-reset.mjs --keep-api-keys --keep-api-keys holder` | Exit 2 each, nothing changed | Any reset |
 | H10 | As the superadmin, 🛡️ on the administrator who saved the App URL | The message says "They set the App URL: review them on the admin page." (before the notice's sentence, where mail went) | No settings sentence |
+
+Since card 2922 that sentence says the settings are held for review: see the next section.
+
+### The Release That Holds What an Account Set When Its Access Ends (Card 2922)
+
+**What changes.** Resetting an administrator's password or two-step sign-in, an administrator
+using an invite, or an administrator ending their own keys when changing their password, holds the
+mail settings, the App URL and the backup destinations that account set for the superadmin's
+review: no mail through held mail settings, no link from a held App URL, no backup to a held
+destination, until the superadmin keeps or removes each under **Settings held for review** on the
+admin page (password and code). The same endings end the links mailed for the account's own
+requests. Disable, demotion and delete remove, as before.
+
+**Removing held mail** ends every invite not yet used, every two-step set-up link and every
+request link on the server, each of which was mailed through it.
+
+**The host reset** does the same unless `--keep-api-keys`; after resetting the superadmin, mail is
+held until you sign in with the new authenticator and keep it.
+
+**Password-only set-up** (the two-step release's leave) is closed for good once mail has ever been
+set up on the server: the first start of this release records it where a mail host is stored.
+
+**A restore** carries this server's holds over the backup's, so a setting kept here since the backup
+was made may come back held: keep it again. The import's answer says how many holds it carried.
+
+**After upgrading.** Nothing records resets made before this release. Open the Users panel and
+review what each administrator set; remove anything you do not recognise.
+
+**Migration 0074** adds `setting_holds`, applied at start; it changes no row. `scripts/mfa-reset.mjs`
+refuses a database without it.
+
+**Going back to an older image** ignores the table: every held setting is in force again. Each
+start of this release names the held settings at `WARN`; keep or remove each before going back.
+
+No published API change: OpenAPI stays 1.15.0.
 
 ### The Release That Holds the Webhooks an Owner or Administrator Could Read (Card 2935)
 

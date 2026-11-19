@@ -42,7 +42,9 @@ export type RevokeReason =
 	| 'person_deleted'
 	| 'account_attached'
 	| 'participant_address'
-	| 'restore';
+	| 'restore'
+	/** Card 2922's code review (C2, C3): held mail settings or a held App URL removed, every mailed link ended with them. */
+	| 'held_setting_removed';
 
 /** Why a participant was not mailed (decision 16), the first that applies in this order. */
 export type SkipReason = 'deleted' | 'left' | 'account_not_attached' | 'account_disabled' | 'account_removed' | 'address_changed';
@@ -96,7 +98,9 @@ export const REVOKE_WORDS: Readonly<Record<RevokeReason, string>> = {
 	person_deleted: 'Their link was ended when they were deleted from the people directory',
 	account_attached: 'Their link was ended when an administrator attached their account on this decision',
 	participant_address: 'Their link was ended when an administrator changed their address on this decision',
-	restore: 'Their link was ended by a restore from a backup: Resend sends them a new one'
+	restore: 'Their link was ended by a restore from a backup: Resend sends them a new one',
+	held_setting_removed:
+		'Their link was ended when the superadmin removed mail settings or an App URL held for review: Resend sends them a new one once mail works'
 };
 
 /**
@@ -281,6 +285,32 @@ export function revokeLinks(where: { personId: number } | { participantId: numbe
 		appendEvent({ decisionId: row.decisionId, kind: 'link_revoked', participantId: row.id, detail: { reason } }, by);
 	}
 	return rows.map((row) => row.id);
+}
+
+/**
+ * End every personal link on the server, as a restore does (card 2675,
+ * decision 13), for `reason` (card 2922's code review, C2): `link_revoked
+ * { reason }` by `by` for each participant holding a link on a decision that
+ * is not a draft, whose participants no event may name; then every
+ * `link_token_hash` and `link_issued_at` emptied, drafts' included. Answers
+ * how many were emptied.
+ */
+export function revokeEveryLink(reason: RevokeReason, by: RecordActor): number {
+	const rows = db
+		.select({ id: decisionParticipants.id, decisionId: decisionParticipants.decisionId, status: decisions.status })
+		.from(decisionParticipants)
+		.innerJoin(decisions, eq(decisions.id, decisionParticipants.decisionId))
+		.where(isNotNull(decisionParticipants.linkTokenHash))
+		.orderBy(decisionParticipants.id)
+		.all();
+	for (const row of rows) {
+		if (row.status !== 'draft') appendEvent({ decisionId: row.decisionId, kind: 'link_revoked', participantId: row.id, detail: { reason } }, by);
+	}
+	return db
+		.update(decisionParticipants)
+		.set({ linkTokenHash: null, linkIssuedAt: null })
+		.where(isNotNull(decisionParticipants.linkTokenHash))
+		.run().changes;
 }
 
 /**

@@ -25,6 +25,10 @@
 	import InviteLinkDialog from '$lib/components/admin/InviteLinkDialog.svelte';
 	import TeamsPanel from '$lib/components/admin/TeamsPanel.svelte';
 	import DangerZonePanel from '$lib/components/admin/DangerZonePanel.svelte';
+	// Card 2922: the one list of the settings held for the superadmin's review.
+	import SettingsHeldPanel from '$lib/components/admin/SettingsHeldPanel.svelte';
+	import { HELD_POINTER, type HeldSetting } from '$lib/settings-held';
+	import SettingsHeldBanner from '$lib/components/SettingsHeldBanner.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
 	import type { StepUpProof } from '$lib/step-up-words';
 
@@ -107,6 +111,15 @@
 	let mailRead = $state(0);
 	let destinationsRead = $state(0);
 
+	/**
+	 * The settings held for the superadmin's review, as the list last read them (card 2922): each settings panel shows
+	 * a one-line pointer to the list while one of its settings is among them (its plan's R7).
+	 */
+	let settingsHeld = $state<HeldSetting[]>([]);
+	let mailHeldHere = $derived(settingsHeld.some((held) => held.kind === 'mail'));
+	let appUrlHeldHere = $derived(settingsHeld.some((held) => held.kind === 'app_url'));
+	let destinationsHeldHere = $derived(settingsHeld.some((held) => held.kind === 'destination'));
+
 	/** What the users panel says a role change or a delete removed: the panels that show it are drawn again. */
 	function settingsRemoved(removed: { mail: boolean; appUrl: boolean; destinations: string[] }) {
 		if (removed.mail || removed.appUrl) mailRead++;
@@ -137,9 +150,17 @@
 	</header>
 
 	<main class="admin-content">
+		<!-- Card 2922 (R7): the superadmin's banner while a setting is held for review, on every admin page. -->
+		<SettingsHeldBanner held={settingsHeld} superadmin={isSuperadmin} />
 		<AdminOverview {data} />
 
+		<!-- Card 2922: the settings held for review, every administrator's to read, the superadmin's to keep or remove.
+		     A Keep or a Remove draws the panels that show the setting again. -->
+		<SettingsHeldPanel {confirm} bind:held={settingsHeld} onChanged={(setting) => (setting.startsWith('backup_destination:') ? destinationsRead++ : mailRead++)} />
+
 		<!-- The App URL: shown to every administrator since card 2395, set by the superadmin alone since card 2847. Drawn again once the mail settings or the App URL an account had set are removed with it (card 2397). -->
+		<!-- Card 2922 (R7): a pointer to the list while the App URL is held. -->
+		{#if appUrlHeldHere}<p class="held-pointer"><a href="#settings-held">⏸️ The App URL is held for review: {HELD_POINTER}</a></p>{/if}
 		{#key mailRead}
 		<AppUrlPanel {isSuperadmin} {superadminName} />
 		{/key}
@@ -164,6 +185,8 @@
 		<!-- Every administrator's since card 2395: the scheduled backups and their destinations. Lowering Keep Last,
 		     removing a destination and switching the schedule off are the superadmin's (card 2398). Drawn again once
 		     destinations an account had set are removed with it (card 2397). -->
+		<!-- Card 2922 (R7): a pointer to the list while a destination is held. -->
+		{#if destinationsHeldHere}<p class="held-pointer"><a href="#settings-held">⏸️ A backup destination is held for review: {HELD_POINTER}</a></p>{/if}
 		{#key destinationsRead}
 		<ScheduledBackupsPanel {confirm} {isSuperadmin} />
 		{/key}
@@ -191,6 +214,8 @@
 		</section>
 
 		<!-- SMTP Configuration: every administrator's since card 2395. Drawn again with the App URL panel (card 2397). -->
+		<!-- Card 2922 (R7): a pointer to the list while the mail settings are held. -->
+		{#if mailHeldHere}<p class="held-pointer"><a href="#settings-held">⏸️ The mail settings are held for review: {HELD_POINTER}</a></p>{/if}
 		{#key mailRead}
 		<SmtpPanel bind:this={smtpPanel} currentUser={data.currentUser} />
 		{/key}
@@ -369,4 +394,14 @@
 	.admin-page :global(.dest-type-s3) { background: rgba(249, 115, 22, 0.12); color: #f97316; }
 	.admin-page :global(.dest-type-gdrive) { background: rgba(59, 130, 246, 0.12); color: #3b82f6; }
 	.admin-page :global(.dest-type-onedrive) { background: rgba(99, 102, 241, 0.12); color: #6366f1; }
+
+	/* Card 2922: the line above a settings panel while one of its settings is held for review */
+	.held-pointer {
+		margin: 0 0 var(--space-xs);
+		padding: var(--space-xs) var(--space-md);
+		border-radius: 8px;
+		background: color-mix(in srgb, var(--accent-amber) 15%, transparent);
+		font-size: 0.78rem;
+	}
+	.held-pointer a { color: var(--text-primary); }
 </style>

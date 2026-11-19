@@ -26,6 +26,8 @@
 	import { answerBody } from '$lib/api';
 	import { sent, sentAsking, showToast } from '$lib/admin/send';
 	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
+	// Card 2922 (R7): the superadmin's banner while a setting is held for review.
+	import SettingsHeldBanner from '$lib/components/SettingsHeldBanner.svelte';
 
 	type Person = PageData['people'][number];
 	type Group = PageData['groups'][number];
@@ -170,6 +172,7 @@
 	</header>
 
 	<main class="admin-content">
+		<SettingsHeldBanner held={data.settingsHeld} superadmin={data.user?.role === 'superadmin'} />
 		<!-- People -->
 		<section class="admin-card glass">
 			<div class="section-header">

@@ -1,7 +1,14 @@
 import { error, json } from '@sveltejs/kit';
 import { afterCommit } from '$lib/server/db/transaction';
 import { namingIds, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
-import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
+import {
+	MAIL_PROBLEM_WORDS,
+	NO_LINK_ADDRESS,
+	isSmtpConfigured,
+	linkBaseUrl,
+	linkBaseUrlWithoutAppUrlSetting,
+	mailCannotSendProblem
+} from '$lib/server/email';
 import { ENROLMENT_LINK_NOT_GIVEN, enrolmentLinkNotGiven } from '$lib/server/invite-link';
 import { sha256Hex } from '$lib/server/mfa-crypto';
 import { ENROLMENT_LINK_PATH, resetTwoStep, twoStepResetMeta } from '$lib/server/mfa-store';
@@ -9,7 +16,7 @@ import { sendMfaResetNotice, type NoticeKey, type NoticeWebhook } from '$lib/ser
 import { refuseOwnAccount, requireAdmin, requireManagedAccount, requireUser } from '$lib/server/route-guards';
 import { requireEnabledAccount } from '$lib/server/account-disable';
 import { liveApiKeysOf, webhooksByIds } from '$lib/server/second-step';
-import { settingsHeldBy, type SettingsRemoved } from '$lib/server/setting-setters';
+import { settingsSetBy, type SettingsRemoved } from '$lib/server/setting-setters';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { pathId, readBody } from '$lib/server/request-body';
@@ -72,12 +79,21 @@ function readableHeldWords(n: number): string {
 }
 
 /**
- * The settings the account set that are still in force, as their removal
- * would read them (`settingsHeldBy`; card 2915, S1): the mail settings, how
- * many backup destinations, never their names, and the App URL, for the
- * administrator to review. Said only where the link is given, as what the
- * account kept is (the code review's CS2). Removing them at a reset is card
- * 2922.
+ * What the reset is refused with where the App URL the account set is the
+ * only address this server has for the link (card 2922, its plan's R8): the
+ * reset would hold it for review and leave no address, so it is refused
+ * before anything is held or ended, and the words give the step to take now.
+ */
+const APP_URL_HELD_NO_ADDRESS =
+	"The App URL this account set is the only address this server has for the set-up link, and the reset would hold it for review. " +
+	'Disable the account, or reset its password, now. Then set APP_URL on the host, or save the App URL yourself, and reset its two-step sign-in. Nothing was changed.';
+
+/**
+ * The settings the account set that were in force, as their removal would
+ * read them (`settingsSetBy`; card 2915, S1), which the reset holds for the
+ * superadmin's review (card 2922): the mail settings, how many backup
+ * destinations, never their names, and the App URL. Said only where the link
+ * is given, as what the account kept is (the code review's CS2).
  */
 function settingsWords(set: SettingsRemoved | null): string {
 	if (set === null) return '';
@@ -89,7 +105,12 @@ function settingsWords(set: SettingsRemoved | null): string {
 	].filter((part) => part !== null);
 	if (parts.length === 0) return '';
 	const listed = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
-	return ` They set ${listed}: review them on the admin page.`;
+	// One App URL or one destination alone is "it"; the mail settings, or more than one, "them".
+	const one = parts.length === 1 && !set.mail && (set.appUrl || count === 1);
+	return (
+		` ${listed.charAt(0).toUpperCase()}${listed.slice(1)} they set ${one ? 'is' : 'are'} held for review: nothing is sent to ` +
+		`${one ? 'it' : 'them'} until you keep or remove ${one ? 'it' : 'them'} under Settings held for review on the admin page.`
+	);
 }
 
 /**
@@ -130,7 +151,14 @@ function settingsWords(set: SettingsRemoved | null): string {
  *
  *     { success, enrolmentUrl | null, mailSent, mailProblem?, factorsRemoved,
  *       recoveryCodesRemoved, sessionsEnded, challengesEnded, invitesEnded,
- *       apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused, message }
+ *       apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused, settingsHeld, message }
+ *
+ * `settingsHeld` (card 2922): the mail settings, App URL and backup
+ * destinations the account set that the reset held for the superadmin's
+ * review, `{ mail, appUrl, destinations }`, or null for none. The message says
+ * them by count where the link is given. A reset whose hold of the account's
+ * App URL would leave no address for the link is refused 503 before the
+ * password, and nothing is held or ended (its plan's R8).
  *
  * `readableWebhooksHeld` (card 2935) counts the webhooks of others whose
  * secret the account could read, switched off or held; the message says how
@@ -174,13 +202,18 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 		// The address the link begins with is this server's configuration and
 		// never what the request says: see linkBaseUrl. With none there is no
 		// link to give, and a reset with no link would leave the account with no
-		// way to set up a new authenticator (decision 5).
-		const baseUrl = linkBaseUrl(url);
+		// way to set up a new authenticator (decision 5). The reset holds the App
+		// URL the account set (card 2922), so the address is the one left once it
+		// is held, asked here, before the password, so that a reset that would
+		// leave none is refused before anything is held or ended (its plan's R8).
+		const set = settingsSetBy(target.id).get(target.id) ?? null;
+		const holdsAppUrl = set !== null && set.appUrl;
+		const baseUrl = holdsAppUrl ? linkBaseUrlWithoutAppUrlSetting(url) : linkBaseUrl(url);
 		if (baseUrl === null) {
-			throw error(503, NO_LINK_ADDRESS);
+			throw error(503, holdsAppUrl ? APP_URL_HELD_NO_ADDRESS : NO_LINK_ADDRESS);
 		}
 
-		return { actor, target, baseUrl };
+		return { actor, target, baseUrl, set };
 	};
 
 	// The caller's password, asked for again (card 2701): a reset hands them a
@@ -196,16 +229,19 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 	// stored hash is the one their password was checked against.
 	const done = await whilePasswordHolds(callerId, hash, () =>
 		writeAs(locals, (caller) => {
-			const { actor, target, baseUrl } = refusals(caller);
+			const { actor, target, set } = refusals(caller);
 			// The live keys, read before the reset deletes them (card 2915): the message counts them, and
 			// the notice names them.
 			const ending = liveApiKeysOf(target.id, Date.now());
-			// The settings the account set that are in force, read as their removal would read them
-			// (card 2915, S1): the message names them to review. Removing them is card 2922.
-			const set = settingsHeldBy(target.id).get(target.id) ?? null;
+			// `set`: the settings the account set that are in force, read as their removal would read them (card 2915,
+			// S1), which the reset now holds for the superadmin's review (card 2922): the message names them.
 			const reset = resetTwoStep(target.id, 'admin-reset', {
 				cause: { log: `${target.username}'s two-step sign-in was reset by ${actor.username}`, mail: ENDING_IN_MAIL.twoStepReset }
 			});
+			// The link's address asked again once the hold is written, as every link reads it (R8): none, and the
+			// reset is rolled back whole.
+			const baseUrl = linkBaseUrl(url);
+			if (baseUrl === null) throw error(503, set !== null && set.appUrl ? APP_URL_HELD_NO_ADDRESS : NO_LINK_ADDRESS);
 			// The webhooks, read after, by the switch-off's own ids (S5): the list is exactly what was
 			// switched off, which the switch-off leaves in place to be read.
 			const switchedOff = webhooksByIds(reset.webhookIds);
@@ -234,8 +270,10 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 	let mailSent = false;
 	let mailProblem: string | undefined;
 	if (isSmtpConfigured()) {
-		if (smtpPasswordMissing()) {
-			mailProblem = MAIL_PROBLEM_WORDS['no-password'];
+		// Held for the superadmin's review too (card 2922, R12), as the reset itself may have held them.
+		const cannot = mailCannotSendProblem();
+		if (cannot !== null) {
+			mailProblem = MAIL_PROBLEM_WORDS[cannot];
 		} else {
 			// Whether it had an authenticator picks what the notice says was lost (card 2773's review); the
 			// schedules paused (card 2894, S14) and the keys and webhooks ended (card 2915) are said as the message
@@ -260,7 +298,9 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 		webhooksSwitchedOff: reset.webhooks,
 		// Card 2935: the webhooks of others whose secret the account could read, switched off or held.
 		readableWebhooksHeld: reset.readableWebhooks,
-		reportSchedulesPaused: reset.reportSchedules
+		reportSchedulesPaused: reset.reportSchedules,
+		// Card 2922: what the account set that the reset held for review, or null for nothing.
+		settingsHeld: set
 	};
 	// The schedules paused and the keys and webhooks ended are said in both of the message's branches (card
 	// 2894, E24; card 2915): the reset stands either way. When each was made, and the settings the account

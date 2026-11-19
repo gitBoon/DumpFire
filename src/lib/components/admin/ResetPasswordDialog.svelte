@@ -21,7 +21,7 @@
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
 	import { invalidateAll } from '$app/navigation';
-	import { answerBody, failureMessage, heldOfOthersWords } from '$lib/api';
+	import { answerBody, failureMessage, heldOfOthersWords, heldOnEndingWords } from '$lib/api';
 	import { NO_ANSWER, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
@@ -91,6 +91,11 @@
 	 */
 	let resetTargetReadable = $derived(resetKeysRead ? (resetTarget?.webhooksReadable ?? null) : null);
 	let resetTargetSchedules = $derived(resetKeysRead ? (resetTarget?.reportSchedules ?? null) : null);
+	/**
+	 * What that account set that is in force (card 2922), which the reset holds for the superadmin's review: read again
+	 * as the counts are, as it opens; '' for none.
+	 */
+	let resetTargetHeld = $derived(resetKeysRead ? heldOnEndingWords(resetTarget?.settingsSet ?? null).trim() : '');
 
 	/** Open the dialog on an account, and read the key counts again for it. */
 	export async function openResetDialog(userId: number) {
@@ -238,6 +243,10 @@
 				{/if}
 				{#if resetTargetSchedules !== null && resetTargetSchedules > 0}
 					<p class="warning-text">They have {counted(resetTargetSchedules, 'report schedule')}, which {resetTargetSchedules === 1 ? 'is' : 'are'} paused.</p>
+				{/if}
+				<!-- Card 2922: what they set, held for the superadmin's review. -->
+				{#if resetTargetHeld}
+					<p class="warning-text settings-held">{resetTargetHeld}</p>
 				{/if}
 				<p>They are signed out everywhere, every API key they have stops working, any invite not yet used stops working, the webhooks they set up are switched off and their report schedules are paused. Their boards' owners are mailed about them, and about any already switched off, which can now be switched on only with a new secret.</p>
 				<!-- The administrator's own password, which a reset asks for again (card 2701). -->

@@ -175,6 +175,7 @@ import { watchReads } from './helpers/reads';
 import { diffSnapshots, expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 import { loadKeys, pageLoad } from './helpers/actions';
 import { stamp, toIso } from '$lib/timestamps';
+import { mailPlaceOf } from '$lib/server/setting-holds';
 
 // The first request through the harness starts SvelteKit's server for this file,
 // which takes two or three seconds alone and more under the whole suite's load;
@@ -190,6 +191,9 @@ beforeAll(async () => {
  * In the name of everything on board A. An answer given to a caller who cannot
  * open board A must not contain it.
  */
+/** The place `makeSmtp`'s mail settings are at, held for review for the walk of a Keep (card 2922). */
+const HELD_MAIL_PLACE = mailPlaceOf({ host: 'smtp.example.test', port: 587, user: '', allowInsecure: false });
+
 const MARK = 'kept-to-board-A';
 
 /** The same for board B: in the name of everything on it. */
@@ -1267,6 +1271,17 @@ const TABLE: Record<string, Case | Case[]> = {
 		writesNothing: 'the test mail leaves the process, and writes no row'
 	}),
 	'POST /api/admin/vacuum': admin(() => '/api/admin/vacuum', { writesNothing: 'VACUUM rewrites the file, not a row' }),
+	// Card 2922: the settings held for review, read by every administrator, kept or removed by the superadmin alone.
+	'GET /api/admin/settings/held': admin(() => '/api/admin/settings/held'),
+	'POST /api/admin/settings/held': superadmin(() => json('/api/admin/settings/held', { setting: 'mail', place: HELD_MAIL_PLACE, action: 'keep' }), {
+		// The mail settings held, so that the Keep is a write.
+		setup: () => {
+			makeSmtp();
+			sqlite
+				.prepare("INSERT INTO setting_holds (setting, place, held_because, held_at) VALUES ('mail', ?, 'setter access ended', '2026-11-19 09:00:00')")
+				.run(HELD_MAIL_PLACE);
+		}
+	}),
 	'GET /api/logs': admin(() => '/api/logs'),
 	'GET /api/logs/stream': admin(() => '/api/logs/stream', { stream: true }),
 

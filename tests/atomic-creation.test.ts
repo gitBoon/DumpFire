@@ -713,8 +713,9 @@ describe('PUT /api/admin/smtp', () => {
 				.select()
 				.from(settings)
 				.all()
-				// Nor the MFA key's check, which the superadmin's factor wrote (card 2771).
-				.filter((row) => row.key !== 'request_form_secret' && row.key !== 'mfa_key_check')
+				// Nor the MFA key's check, which the superadmin's factor wrote (card 2771), nor the record that mail was
+				// set up, written in the save's own transaction (card 2922, R9).
+				.filter((row) => row.key !== 'request_form_secret' && row.key !== 'mfa_key_check' && row.key !== 'mail_ever_configured_at')
 				// The mail password opened: a save stores it sealed (card 2898).
 				.map((row) => [row.key, row.key === 'smtp_pass' ? readOpened('settings', 'smtp_pass') : row.value])
 		);
@@ -778,6 +779,8 @@ describe('PUT /api/admin/smtp', () => {
 			'update settings set',
 			'update settings set',
 			'update settings set',
+			'insert into settings',
+			// The record that mail is set up on this server, once (card 2922, R9), in the same transaction.
 			'insert into settings',
 			'update settings set',
 			'insert into setting_setters',

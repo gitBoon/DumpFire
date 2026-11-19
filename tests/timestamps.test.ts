@@ -164,8 +164,8 @@ describe('timestampColumns', () => {
 		// deadline and an account's latest security signal (migration 0069, card 2772 and its code
 		// review's CS1); and when a requester's link was issued (migration 0070, card 2870); and when a
 		// webhook was switched off by a hold (migration 0071, card 2752); and when an account was
-		// disabled (migration 0072, card 2671).
-		expect(found).toHaveLength(81);
+		// disabled (migration 0072, card 2671); and when a setting was held for review (migration 0074, card 2922).
+		expect(found).toHaveLength(82);
 		for (const column of [
 			'activity_log.created_at',
 			'api_keys.expires_at',
@@ -188,7 +188,9 @@ describe('timestampColumns', () => {
 			// Card 2752.
 			'webhooks.held_at',
 			// Card 2671.
-			'users.disabled_at'
+			'users.disabled_at',
+			// Card 2922.
+			'setting_holds.held_at'
 		]) {
 			expect(found).toContain(column);
 		}

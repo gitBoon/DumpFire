@@ -27,6 +27,7 @@ import { endPendingSignIns, holdsFactor, matchFactors, spendRecoveryCode, spendS
 import { raiseSignal } from './sign-in-challenges';
 // A cycle of functions only (webhooks.ts imports `keyEnded`): neither uses the other at module load (card 2923, decision 13).
 import { accountMayHaveRead, holdWebhooksOfSetter, type EndingCause } from './webhooks';
+import { holdSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
@@ -932,11 +933,23 @@ export type AccessEnded = {
 	readableWebhooks: number;
 	/** The account's report schedules that were on, paused. */
 	reportSchedules: number;
+	/**
+	 * Card 2922, with `apiKeys` alone (none otherwise): the mail settings, App URL and backup destinations the
+	 * account set that were in force, now held for the superadmin's review (`holdSettingsSetBy`), and how many links
+	 * of the requests it made were ended.
+	 */
+	settingsHeld: SettingsRemoved;
+	requestLinks: number;
 	/** The ids of the API keys deleted, in order (card 2915's code review, CS2). */
 	apiKeyIds: number[];
 	webhookIds: number[];
 	reportScheduleIds: number[];
 };
+
+/** The account's username, for a hold's lines (card 2922), or `user <id>` where it is not found. */
+function usernameOf(userId: number): string {
+	return db.select({ username: users.username }).from(users).where(eq(users.id, userId)).get()?.username ?? `user ${userId}`;
+}
 
 /** ` (id 4)`, ` (ids 4, 7)`, or nothing for none: the ids a log line names. */
 export const namingIds = (ids: number[]): string =>
@@ -1021,6 +1034,13 @@ export const namingIds = (ids: number[]): string =>
  * `exceptInvite`, the invite being used now, left out. Those are counted in
  * `readableWebhooks`; `webhooks` and `webhookIds` stay the ones it set (P9).
  *
+ * Under `apiKeys` too (card 2922): the mail settings, the App URL and the
+ * backup destinations the account set are held for the superadmin's review
+ * (`holdSettingsSetBy`, setting-setters.ts), so that nothing whoever held the
+ * account pointed elsewhere sends anything until the superadmin keeps or
+ * removes it, and every link of the requests the account made is deleted, as
+ * a disable deletes them (card 2671): `settingsHeld` and `requestLinks`.
+ *
  * It throws if no transaction is open.
  */
 export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause: EndingCause; exceptInvite?: Buffer }): AccessEnded {
@@ -1046,6 +1066,15 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause
 	// With those whose secret it could read (card 2935); the ids are those it set (P9).
 	const hold = opts.apiKeys ? holdWebhooksOfSetter(userId, opts.cause, { readable }) : null;
 	const webhookIds = hold ? hold.switchedOff.filter((hook) => hook.reader === undefined).map((hook) => hook.id) : [];
+	// With its keys (card 2922): the mail settings, App URL and backup destinations it set held for the superadmin's
+	// review, its lines told once committed; and every link of the requests it made ended, as a disable ends them
+	// (card 2671): a mailed link is a key to the thread that whoever held the account may hold.
+	const settingsHeld = opts.apiKeys
+		? holdSettingsSetBy({ id: userId, username: usernameOf(userId) }, opts.cause).inForce
+		: { mail: false, appUrl: false, destinations: [] };
+	const requestLinksEnded = opts.apiKeys
+		? sqlite.prepare('DELETE FROM request_links WHERE request_id IN (SELECT id FROM task_requests WHERE requester_user_id = ?)').run(userId).changes
+		: 0;
 	// Always (card 2894): every caller is a way of taking the account back.
 	const reportScheduleIds = ids(
 		db
@@ -1064,6 +1093,8 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause
 		webhooks: webhookIds.length,
 		readableWebhooks: hold?.readable ?? 0,
 		reportSchedules: reportScheduleIds.length,
+		settingsHeld,
+		requestLinks: requestLinksEnded,
 		apiKeyIds,
 		webhookIds,
 		reportScheduleIds

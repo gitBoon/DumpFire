@@ -2,12 +2,12 @@ import { json, error } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { taskRequests } from '$lib/server/db/schema';
-import { NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
+import { NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, mailCannotSendProblem } from '$lib/server/email';
 import { notifyRequesterNewLink } from '$lib/server/notifications';
 import { checkRateLimit } from '$lib/server/rate-limit';
 import { addressToCount } from '$lib/server/client-address';
 import { issueRequestLinkFor, linkEnded, requesterMailAddress } from '$lib/server/request-access';
-import { CANNOT_SEND_LINK, NO_MAIL_PASSWORD, requestConfirmUrl, requestReplyUrl } from '$lib/server/request-tokens';
+import { CANNOT_SEND_LINK, cannotMailWhy, requestConfirmUrl, requestReplyUrl } from '$lib/server/request-tokens';
 import { readBody, readText } from '$lib/server/request-body';
 import { createLogger } from '$lib/server/logger';
 import { writeAs } from '$lib/server/write-as';
@@ -127,7 +127,9 @@ export const POST: RequestHandler = async ({ params, request, locals, url, getCl
 	};
 	if (!isSmtpConfigured()) cannotSend(NO_MAIL);
 	// A link said to be sent that every mail fails to carry is worse than none (O6).
-	if (smtpPasswordMissing()) cannotSend(NO_MAIL_PASSWORD);
+	// So is one the held mail settings would refuse (card 2922, R12).
+	const noMail = cannotMailWhy(mailCannotSendProblem());
+	if (noMail !== null) cannotSend(noMail);
 	// The address a mailed link begins with is this server's configuration,
 	// never what the request says: see linkBaseUrl.
 	const baseUrl = linkBaseUrl(url);

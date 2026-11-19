@@ -4,10 +4,10 @@ import { writeAs } from '$lib/server/write-as';
 import { taskRequests, users, teams, teamMembers, cards, columns, boards } from '$lib/server/db/schema';
 import { eq, and, inArray, or, desc, ne, lt } from 'drizzle-orm';
 import { notifyTaskRequest, notifyRequesterConfirm } from '$lib/server/notifications';
-import { NO_LINK_ADDRESS, linkBaseUrl, isSmtpConfigured, smtpPasswordMissing } from '$lib/server/email';
+import { NO_LINK_ADDRESS, linkBaseUrl, isSmtpConfigured, mailCannotSendProblem } from '$lib/server/email';
 import {
 	CANNOT_SEND_LINK,
-	NO_MAIL_PASSWORD,
+	cannotMailWhy,
 	issueRequestLink,
 	publicRequest,
 	requestConfirmUrl,
@@ -225,8 +225,10 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 		// as a restore leaves them (card 2870, S5): the confirmation mail could
 		// never arrive, and no link is issued for a mail that cannot go. The
 		// requester is told in plain words, and why is a WARN line.
-		if (mustVerify && smtpPasswordMissing()) {
-			log.warn(`A request that must be confirmed was refused, and no confirmation can be sent: ${NO_MAIL_PASSWORD}.`);
+		// Or while they are held for the superadmin's review (card 2922, R12).
+		const noMail = mustVerify ? cannotMailWhy(mailCannotSendProblem()) : null;
+		if (noMail !== null) {
+			log.warn(`A request that must be confirmed was refused, and no confirmation can be sent: ${noMail}.`);
 			throw error(503, CANNOT_SEND_LINK);
 		}
 

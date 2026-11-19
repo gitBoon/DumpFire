@@ -693,6 +693,8 @@ const CURRENT_PASSWORD = [
 	'src/routes/api/admin/backup/+server.ts PUT',
 	'src/routes/api/admin/backup/gdrive/auth/+server.ts POST',
 	'src/routes/api/admin/smtp/+server.ts PUT',
+	// Card 2922: a setting held for review kept or removed, the superadmin's alone.
+	'src/routes/api/admin/settings/held/+server.ts POST',
 	// Card 2697, B2b (Q31): the administrator's participant actions, and a person's address or account.
 	'src/routes/api/decisions/[id]/participants/[participantId]/account/+server.ts PUT',
 	'src/routes/api/decisions/[id]/participants/[participantId]/address/+server.ts PUT',
@@ -3106,7 +3108,8 @@ const RECORD_WRITERS: Readonly<Record<string, readonly string[]>> = {
 		'recordDraftReplaced'
 	],
 	'src/lib/server/logActivity.ts': ['logActivity', 'logUiActivity'],
-	'src/lib/server/decision-links.ts': ['issueLink', 'revokeLinks'],
+	// Card 2922's code review (C2): `revokeEveryLink`, a Remove of held mail or a held App URL ending every link.
+	'src/lib/server/decision-links.ts': ['issueLink', 'revokeLinks', 'revokeEveryLink'],
 	// C5: `queueDryRun` queues the dry run's mail after the commit (card 2697); read by reference, its `afterCommit`
 	// reaches the transaction module's `log`, which writes system_logs, so it is a writer and is listed.
 	'src/lib/server/decision-mail.ts': ['queueRecordMails', 'queueDryRun']

@@ -14,7 +14,7 @@ import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { endUnusedInvites } from '$lib/server/invites';
 import { endPendingSignIns } from '$lib/server/mfa-store';
-import { anyRemoved, removeSettingsSetBy, settingsHeldBy } from '$lib/server/setting-setters';
+import { anyRemoved, removeSettingsSetBy, settingsSetBy } from '$lib/server/setting-setters';
 import { ENDING_IN_MAIL, holdNoLongerReadable, switchOffLostWebhooks } from '$lib/server/webhooks';
 import { mayManageAccount } from '$lib/account-rule';
 import { createLogger } from '$lib/server/logger';
@@ -41,7 +41,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const target = db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, userId)).get();
 	if (!target) throw error(404, 'User not found');
 	const counted = target.id !== caller.id && mayManageAccount(caller, target);
-	const settingsSet = counted ? (settingsHeldBy(target.id).get(target.id) ?? null) : null;
+	const settingsSet = counted ? (settingsSetBy(target.id).get(target.id) ?? null) : null;
 	return json({ id: target.id, settingsSet }, { headers: { 'Cache-Control': 'no-store' } });
 };
 

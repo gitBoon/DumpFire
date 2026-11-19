@@ -610,6 +610,26 @@ export const settingSetters = sqliteTable('setting_setters', {
 	index('idx_setting_setters_user_id').on(table.userId)
 ]);
 
+// ─── Setting Holds ───────────────────────────────────────────────────────────
+// The settings held for the superadmin's review (card 2922, migration 0074):
+// when an account's access ends with its API keys, every (setting, place) its
+// setter rows record is copied here, and a setting is held while it is at a
+// place this table holds (src/lib/server/setting-holds.ts): no mail through
+// held mail settings, no link from a held App URL, no backup to a held
+// destination. Only the superadmin's Keep deletes a row; a removal leaves it,
+// so a setting back at that place is held again. No foreign key: a hold
+// outlives the account whose ending made it; `set_by_name` names it then.
+export const settingHolds = sqliteTable('setting_holds', {
+	setting: text('setting').notNull(),
+	place: text('place').notNull(),
+	heldBecause: text('held_because').notNull(),
+	heldAt: text('held_at').notNull(),
+	setBy: integer('set_by'),
+	setByName: text('set_by_name')
+}, (table) => [
+	primaryKey({ columns: [table.setting, table.place] })
+]);
+
 // ─── Card Assignees ──────────────────────────────────────────────────────────
 
 export const cardAssignees = sqliteTable('card_assignees', {

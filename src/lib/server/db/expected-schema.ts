@@ -704,6 +704,17 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	].join('\n'),
 	"CREATE INDEX `idx_sessions_user_id` ON `sessions` (`user_id`);",
 	[
+		"CREATE TABLE `setting_holds` (",
+		"\t`setting` text NOT NULL,",
+		"\t`place` text NOT NULL,",
+		"\t`held_because` text NOT NULL,",
+		"\t`held_at` text NOT NULL,",
+		"\t`set_by` integer,",
+		"\t`set_by_name` text,",
+		"\tPRIMARY KEY(`setting`, `place`)",
+		");"
+	].join('\n'),
+	[
 		"CREATE TABLE `setting_setters` (",
 		"\t`setting` text NOT NULL,",
 		"\t`place` text NOT NULL,",

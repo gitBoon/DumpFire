@@ -31,7 +31,7 @@ import {
 	requesterLabel,
 	sendEmailWithAttachment,
 	isSmtpConfigured,
-	smtpPasswordMissing,
+	mailCannotSend,
 	trySendEmail,
 	type MailOutcome
 } from './email';
@@ -598,7 +598,8 @@ export function sendSecurityNotice(userId: number, notice: SecurityNotice, detai
  * when every notice went.
  */
 export function securityNoticeSent(userId: number, notice: SecurityNotice, detail: SecurityNoticeDetail): Promise<boolean> {
-	if (!isSmtpConfigured() || smtpPasswordMissing()) return Promise.resolve(false);
+	// Nor while the mail settings are held for review (card 2922, R12).
+	if (!isSmtpConfigured() || mailCannotSend()) return Promise.resolve(false);
 	const owner = db.select({ email: users.email, username: users.username }).from(users).where(eq(users.id, userId)).get();
 	if (!owner) return Promise.resolve(false);
 
@@ -1526,8 +1527,8 @@ export function notifyRequesterProgress(event: RequesterProgressEvent): void {
 		if (!shouldNotifyUser(request.requesterUserId, 'email_request_progress')) return;
 	}
 
-	// Every mail would fail, so none is made, and no link is issued for one (S5).
-	if (smtpPasswordMissing()) return;
+	// Every mail would fail, so none is made, and no link is issued for one (S5); held mail alike (card 2922, R12).
+	if (mailCannotSend()) return;
 
 	// Its link is the requester's own way in to their request, so with no
 	// address to make it from there is no mail. The move it reports is done.

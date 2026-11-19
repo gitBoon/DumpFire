@@ -214,6 +214,13 @@ export type RestoreResult = {
 	 * which `errors` says.
 	 */
 	systemLogLeftOut: SystemLogLeftOut | null;
+	/**
+	 * Settings held for the superadmin's review here that the backup did not
+	 * hold, carried over it (card 2922, R10): each is held after the restore,
+	 * one the superadmin kept here since the backup was made included, and is
+	 * kept again under Settings held for review. 0 where none.
+	 */
+	settingHoldsCarried: number;
 };
 
 /** What a restore that committed had done, for a `RestoreError` thrown after the commit. */
@@ -383,6 +390,55 @@ function carryHolds(live: Database.Database, holds: readonly HoldHere[]): number
 		carried += carry.run(hold.heldBecause, hold.heldAt, row.id).changes;
 	}
 	return carried;
+}
+
+/** A setting held for the superadmin's review here (card 2922, migration 0074), as `settingHoldsHere` reads it. */
+type SettingHoldHere = { setting: string; place: string; heldBecause: string; heldAt: string; setBy: number | null; setByName: string | null };
+
+/**
+ * This server's settings held for review (card 2922), read before a restore
+ * clears the table. None where the database has no such table.
+ */
+function settingHoldsHere(live: Database.Database): SettingHoldHere[] {
+	try {
+		return live
+			.prepare(
+				'SELECT setting, place, held_because AS heldBecause, held_at AS heldAt, set_by AS setBy, set_by_name AS setByName FROM setting_holds'
+			)
+			.all() as SettingHoldHere[];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Carry this server's settings held for review over the restored ones (card
+ * 2922, its plan's R10): a union, each (setting, place) held here held after
+ * the restore whatever the backup had, and the backup's own holds kept. So a
+ * backup made before an ending, or before a Remove (whose hold stays as a
+ * tombstone, R1), never brings a setting back in force at a held place; and a
+ * setting kept here since the backup was made may come back held, which the
+ * import says. A name of its own, apart from the webhooks' `carryHolds`.
+ * Returns how many holds the backup did not have.
+ */
+function carrySettingHolds(live: Database.Database, holds: readonly SettingHoldHere[]): number {
+	if (holds.length === 0) return 0;
+	const carry = live.prepare(
+		'INSERT OR IGNORE INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) VALUES (?, ?, ?, ?, ?, ?)'
+	);
+	let carried = 0;
+	for (const hold of holds) carried += carry.run(hold.setting, hold.place, hold.heldBecause, hold.heldAt, hold.setBy, hold.setByName).changes;
+	return carried;
+}
+
+/** The setting `mail_ever_configured_at` here (card 2922, R9: `MAIL_EVER_CONFIGURED` in email.ts), or null for none. */
+function mailEverConfiguredHere(live: Database.Database): string | null {
+	try {
+		const row = live.prepare("SELECT value FROM settings WHERE key = 'mail_ever_configured_at'").get() as { value: string } | undefined;
+		return row?.value ?? null;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -995,6 +1051,11 @@ export function switchOffOutside(database: Database.Database): OutsideSwitchedOf
 	if (hasColumns('setting_setters', 'setting')) {
 		database.prepare("DELETE FROM setting_setters WHERE setting = 'mail' OR substr(setting, 1, 19) = 'backup_destination:'").run();
 	}
+	// And their holds for review, carried just before (card 2922, its plan's R17): a working copy has no mail
+	// settings or destinations to hold, and none of this server's is to be held there. The App URL's stay, as it does.
+	if (hasColumns('setting_holds', 'setting')) {
+		database.prepare("DELETE FROM setting_holds WHERE setting = 'mail' OR substr(setting, 1, 19) = 'backup_destination:'").run();
+	}
 
 	return done;
 }
@@ -1274,6 +1335,8 @@ function restoreInOneSnapshot(
 	const defaulted: RestoreResult['defaulted'] = [];
 	let outside: OutsideSwitchedOff | null = null;
 	let requestLinksReplaced = 0;
+	// The settings held for review here that the backup did not hold, carried over it (card 2922, R10).
+	let settingHoldsCarried = 0;
 	let apiKeyDeadlines = 0;
 	let decisionLinksCleared = 0;
 	// The webhooks switched off for good inside the transaction (card 2752), told after the commit.
@@ -1390,6 +1453,9 @@ function restoreInOneSnapshot(
 			const keysRecordedHere = webhookKeysRecordedHere(live);
 			// And its webhooks switched off for good, whatever their secret (card 2752's code review, CS5): see above.
 			const holdsHere = webhookHoldsHere(live);
+			// And its settings held for review, and whether mail was ever set up here (card 2922, R10 and R9).
+			const settingHoldsNow = settingHoldsHere(live);
+			const mailEverHere = mailEverConfiguredHere(live);
 			// And its disabled accounts (card 2671, S6): see `carryDisabled`.
 			const disabledAccountsHere = disabledHere(live);
 			// The sign-ins left at their second step, which the clear below
@@ -1659,6 +1725,23 @@ function restoreInOneSnapshot(
 			// and before any webhook is switched on, so that no fill switches one
 			// on. Not caught.
 			carryHolds(live, holdsHere);
+			// This server's settings held for review carried over the backup's, a union (card 2922, R10), before any
+			// secret is filled, so that a destination or mail at a held place comes back held. And mail set up here
+			// once stays so (R9). Not caught: a restore that could not carry them is rolled back.
+			if (tables.includes('setting_holds')) settingHoldsCarried = carrySettingHolds(live, settingHoldsNow);
+			if (mailEverHere !== null && tables.includes('settings')) {
+				live.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run('mail_ever_configured_at', mailEverHere);
+			}
+			// And mail set up in the backup is recorded too (the code review's C4), before a working copy removes it: a
+			// backup made before this release holds no record, and the start that would write it comes after.
+			if (tables.includes('settings')) {
+				live
+					.prepare(
+						"INSERT OR IGNORE INTO settings (key, value) SELECT 'mail_ever_configured_at', ? " +
+							"WHERE EXISTS (SELECT 1 FROM settings WHERE key = 'smtp_host' AND coalesce(value, '') <> '')"
+					)
+					.run(stamp());
+			}
 			// With the secrets the restore left out itself, beside an address that does not open here (card 2928, R6).
 			const listedAll = [...listed.filter((entry) => !(sealedInRestore.secretsLeftOut ?? []).some((left) => left.id === entry.id)), ...(sealedInRestore.secretsLeftOut ?? [])];
 			// The webhooks a disabled owner or administrator of the backup could read, before any secret is filled
@@ -1837,5 +1920,5 @@ function restoreInOneSnapshot(
 		}
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut, settingHoldsCarried };
 }

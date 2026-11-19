@@ -28,12 +28,17 @@ import { endingScope, mayHaveRead, readableBy, readableNowScope, tellSwitchedOff
 // The script's own copy of the server's Webhooks lines (card 2923's code review, E8): importing it runs nothing.
 // And of the readable rule and its scopes (card 2935; its code review, C7).
 import {
+	heldLines,
 	holdReadableScope,
 	mayHaveRead as scriptMayHaveRead,
+	placeKey as scriptPlaceKey,
 	readableBy as scriptReadableBy,
 	resetScope,
 	webhookLines
 } from '../scripts/mfa-reset.mjs';
+// Card 2922: the server's hold lines and places, which the script copies.
+import { heldLines as serverHeldLines } from '$lib/server/setting-setters';
+import { appUrlPlaceOf, mailPlaceOf } from '$lib/server/setting-holds';
 import { db, sqlite } from '$lib/server/db';
 import { enrolmentLinks, inviteTokens, reportSchedules, settingSetters, settings, signInChallenges, users } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -117,6 +122,13 @@ function dumpOf(database: Database.Database, { logs = false, paused = [] as numb
 			rows = rows.map((row) => {
 				if (!held.includes(row.id as number)) return row;
 				expect(isStamp(row.held_at), `webhook ${row.id}`).toBe(true);
+				return { ...row, held_at: '(masked)' };
+			});
+		}
+		// When each setting was held for review (card 2922): the moment of the reset, in the stored form.
+		if (table === 'setting_holds') {
+			rows = rows.map((row) => {
+				expect(isStamp(row.held_at), `the hold of ${row.setting}`).toBe(true);
 				return { ...row, held_at: '(masked)' };
 			});
 		}
@@ -234,6 +246,15 @@ describe('scripts/mfa-reset.mjs', () => {
 		// Card 2915 (E8, S1): a webhook the twin set, which nothing may touch, and the holder recorded as setter of the App URL.
 		const twinsHook = makeWebhook(makeBoard({ owner: twin, name: 'Twin board' }).board, { url: 'https://twin.example.test/in', setBy: twin });
 		db.insert(settingSetters).values({ setting: 'app_url', place: 'a recorded place', userId: holder.id }).run();
+		// Card 2922 (case 30): a request each of them made signed in, with a mailed link: the holder's ends, the twin's stays.
+		for (const account of [holder, twin]) {
+			const request = Number(
+				sqlite
+					.prepare("INSERT INTO task_requests (target_type, target_id, title, requester_user_id) VALUES ('user', ?, 'Please', ?)")
+					.run(account.id, account.id).lastInsertRowid
+			);
+			sqlite.prepare("INSERT INTO request_links (token_hash, request_id, source) VALUES (?, ?, 'mail')").run(sha256Hex(`link of ${account.username}`), request);
+		}
 		// The code review's CR3: a webhook the holder set that is already off with another hold, which neither switch-off touches.
 		const alreadyOff = makeWebhook(makeBoard({ owner: holder, name: 'Old board' }).board, {
 			url: 'https://old.example.test/in',
@@ -325,7 +346,16 @@ describe('scripts/mfa-reset.mjs', () => {
 			"Give them the names: they make new keys once signed in, and the board's owner or an administrator switches back on " +
 				'any webhook they recognise, which gives it a new secret.'
 		);
-		expect(ran.stdout).toContain('They are recorded as having set the App URL; some may have changed since: review them on the admin page.');
+		// Card 2922: held for review now, each named; the request links, the holder's alone, ended by both.
+		expect(ran.stdout).toContain(
+			"Held for the superadmin's review: the App URL, as they set them. Nothing is sent to them until the superadmin keeps or removes each under " +
+				'Settings held for review on the admin page.'
+		);
+		expect(ran.stdout).not.toContain('Mail is held');
+		expect(fileDump().request_links).toHaveLength(1);
+		expect(fileDump().setting_holds).toEqual([
+			{ setting: 'app_url', place: 'a recorded place', held_because: 'setter access ended', held_at: '(masked)', set_by: holder.id, set_by_name: 'holder' }
+		]);
 		expect(ran.stdout).not.toContain('They keep');
 		expect(ran.stdout).not.toContain(endedName);
 		expect(ran.stdout).not.toContain('secret=s');
@@ -339,12 +369,13 @@ describe('scripts/mfa-reset.mjs', () => {
 		expect(isStamp(links[0].createdAt)).toBe(true);
 		expect(Math.abs(parseStamp(links[0].expiresAt)!.getTime() - (Date.now() + ENROLMENT_LINK_LIFETIME_MS))).toBeLessThan(60_000);
 
-		// Four lines more in the log (card 2923, S6): the server's three Webhooks lines, in its words, with no account,
-		// before the CRITICAL line, the account's, with its counts and no token.
+		// Five lines more in the log (card 2923, S6): the server's three Webhooks lines, in its words, with no account,
+		// and its SMTP line for the App URL held (card 2922, R13), before the CRITICAL line, the account's, with its
+		// counts and no token.
 		const copy = new Database(file, { readonly: true, fileMustExist: true });
 		const lines = copy.prepare('SELECT * FROM system_logs ORDER BY id').all() as Row[];
 		copy.close();
-		expect(lines).toHaveLength(logsBefore + 4);
+		expect(lines).toHaveLength(logsBefore + 5);
 		const cause = "holder's two-step sign-in was reset on the server's host";
 		expect(lines.slice(logsBefore).map((row) => [row.level, row.context, row.user_id, row.ip, row.meta, row.message])).toEqual([
 			[
@@ -373,6 +404,15 @@ describe('scripts/mfa-reset.mjs', () => {
 				null,
 				"The owners of the boards of the 2 webhook(s) switched off or held above were not mailed, as this ran on the server's host, " +
 					'which sends no mail. The lines above name them.'
+			],
+			[
+				'WARN',
+				'SMTP',
+				null,
+				null,
+				JSON.stringify({ setter: holder.id, held: ['app_url'] }),
+				`Held for the superadmin's review: the App URL, set by "holder" (user ${holder.id}), as ${cause}. No mail is sent through held mail ` +
+					'settings, and no link begins with a held App URL, until the superadmin keeps or removes each under Settings held for review.'
 			],
 			['CRITICAL', 'AUTH', holder.id, null, expect.any(String), expect.any(String)]
 		]);
@@ -421,6 +461,12 @@ describe('scripts/mfa-reset.mjs', () => {
 		const endedName = (sqlite.prepare('SELECT name FROM api_keys WHERE id = ?').get(ended.id) as { name: string }).name;
 		// Card 2923 (case 13): one already switched off with no hold, which a keep leaves unheld.
 		const pausedHook = makeWebhook(makeBoard({ owner: holder, name: 'Paused board' }).board, { url: 'https://paused.example.test/in', setBy: holder, active: false });
+		// Card 2922 (case 31): a setting the holder set and a link of a request the holder made, which a keep leaves.
+		db.insert(settingSetters).values({ setting: 'mail', place: 'a recorded place', userId: holder.id }).run();
+		const request = Number(
+			sqlite.prepare("INSERT INTO task_requests (target_type, target_id, title, requester_user_id) VALUES ('user', ?, 'Please', ?)").run(holder.id, holder.id).lastInsertRowid
+		);
+		sqlite.prepare("INSERT INTO request_links (token_hash, request_id, source) VALUES (?, ?, 'mail')").run(sha256Hex('link of holder'), request);
 		writeCopy();
 		const [schedule] = schedulesIn(sqlite, holder.id);
 		const keysBefore = sqlite.prepare('SELECT * FROM api_keys ORDER BY id').all();
@@ -443,10 +489,15 @@ describe('scripts/mfa-reset.mjs', () => {
 			expect(copied.prepare('SELECT * FROM webhooks WHERE id = ?').get(pausedHook.id)).toEqual(pausedBefore);
 			// No Webhooks line: nothing was switched off or held.
 			expect(copied.prepare("SELECT COUNT(*) AS n FROM system_logs WHERE context = 'Webhooks'").get()).toEqual({ n: 0 });
+			// Card 2922: nothing held for review, no hold's line, and the request link kept.
+			expect(copied.prepare('SELECT COUNT(*) AS n FROM setting_holds').get()).toEqual({ n: 0 });
+			expect(copied.prepare("SELECT COUNT(*) AS n FROM system_logs WHERE context IN ('SMTP', 'BACKUP')").get()).toEqual({ n: 0 });
+			expect(copied.prepare('SELECT COUNT(*) AS n FROM request_links').get()).toEqual({ n: 1 });
 		} finally {
 			copied.close();
 		}
 		expect(ran.stdout).not.toContain('Held ');
+		expect(ran.stdout).toContain('They are recorded as having set the mail settings; some may have changed since: review them on the admin page.');
 		expect(ran.stdout).toContain(`They keep 1 API key(s): ${key.name} (made ${key.createdAt.slice(0, 10)}).`);
 		expect(ran.stdout).toContain(`They keep 1 webhook(s) they set up: Ops board, to hooks.example.test (made ${hook.createdAt.slice(0, 10)}).`);
 		expect(ran.stdout).toContain('Kept, as --keep-api-keys asked: a password reset ends them.');
@@ -605,9 +656,18 @@ describe('scripts/mfa-reset.mjs', () => {
 			database: 'no holds',
 			status: 1,
 			says: 'this database has no webhook holds; start the server once to migrate it'
+		},
+		// Card 2922 (case 34, R14): the settings held for review, or nothing at all.
+		{
+			case: 'T40',
+			refusal: 'a database without setting_holds',
+			args: ['holder'],
+			database: 'no setting holds',
+			status: 1,
+			says: 'this database has no table of the settings held for review; start the server once to migrate it'
 		}
 	])('$case: refuses $refusal with exit $status, saying so, and changes nothing', ({ args, database, status, says }) => {
-		if (database === 'seeded' || database === 'no schedules' || database === 'disabled' || database === 'no holds') {
+		if (database === 'seeded' || database === 'no schedules' || database === 'disabled' || database === 'no holds' || database === 'no setting holds') {
 			const holder = seedAccount('holder');
 			if (database === 'disabled') db.update(users).set({ disabledAt: stamp(), disabledBy: null }).where(eq(users.id, holder.id)).run();
 			if (database === 'no holds') makeWebhook(makeBoard({ owner: holder, name: 'Ops board' }).board, { setBy: holder });
@@ -622,6 +682,12 @@ describe('scripts/mfa-reset.mjs', () => {
 				// As a database from between migrations 0065 and 0071.
 				const old = new Database(file);
 				old.exec('ALTER TABLE webhooks DROP COLUMN held_because');
+				old.close();
+			}
+			if (database === 'no setting holds') {
+				// As a database from before migration 0074.
+				const old = new Database(file);
+				old.exec('DROP TABLE setting_holds');
 				old.close();
 			}
 		} else if (database === 'unmigrated') {
@@ -859,5 +925,56 @@ describe('scripts/mfa-reset.mjs', () => {
 		expect(ran.status).toBe(2);
 		expect(ran.stderr).toContain('--keep-api-keys and --hold-readable cannot be given together.');
 		expect(fileDump({ logs: true })).toEqual(before);
+	});
+
+	it('T41 (card 2922, case 32): the superadmin’s own reset holds their mail, App URL and destination; stdout names each and says how to keep the mail; the link does not begin with the held App URL', () => {
+		const chief = seedAccount('chief');
+		db.update(users).set({ role: 'superadmin' }).where(eq(users.id, chief.id)).run();
+		db.insert(settings)
+			.values([
+				{ key: 'smtp_host', value: 'smtp.example.test' },
+				{ key: 'app_url', value: 'https://chief.example.test' }
+			])
+			.run();
+		for (const [setting, place] of [
+			['mail', mailPlaceOf({ host: 'smtp.example.test', port: 587, user: '', allowInsecure: false })],
+			['app_url', appUrlPlaceOf('https://chief.example.test')!],
+			['backup_destination:Offsite', 'a recorded place']
+		]) {
+			db.insert(settingSetters).values({ setting, place, userId: chief.id }).run();
+		}
+		writeCopy();
+
+		const ran = run(['chief']);
+
+		expect(ran.status, ran.stderr).toBe(0);
+		expect(ran.stdout).toContain(
+			`Held for the superadmin's review: the App URL, backup destination "Offsite" and the mail settings, as they set them. Nothing is sent to ` +
+				'them until the superadmin keeps or removes each under Settings held for review on the admin page.'
+		);
+		expect(ran.stdout).toContain(
+			'Mail is held: no mail is sent until you sign in with the new authenticator and keep the mail settings under Settings held for review. ' +
+				'Run with --keep-api-keys only where the authenticator was lost, not taken.'
+		);
+		// No APP_URL or ORIGIN, and the App URL held: the path alone, never https://chief.example.test.
+		expect(ran.stdout).toContain('No address for the link was found');
+		expect(ran.stdout).not.toContain('https://chief.example.test/enrol/');
+		expect(fileDump().setting_holds.map((row) => row.setting as string).sort()).toEqual(['app_url', 'backup_destination:Offsite', 'mail']);
+	});
+
+	it('T42 (card 2922, case 33): the script’s hold lines and place digest are the server’s, word for word', () => {
+		const setter = { id: 7, username: 'a "quoted" name' };
+		const settingsHeld = ['app_url', 'backup_destination:Off "site"', 'backup_destination:Second', 'mail'];
+		const because = "a's two-step sign-in was reset on the server's host";
+
+		const server = serverHeldLines(setter, settingsHeld, because).map(([logger, line]) => ({
+			context: logger === serverHeldLines(setter, ['mail'], because)[0][0] ? 'SMTP' : 'BACKUP',
+			message: line.message,
+			meta: line.meta
+		}));
+
+		expect(heldLines(setter, settingsHeld, because)).toEqual(server);
+		for (const url of ['https://dumpfire.example.test', 'http://a.example.test/sub']) expect(scriptPlaceKey([url])).toBe(appUrlPlaceOf(url));
+		expect(scriptPlaceKey(['h', 587, '', false])).toBe(mailPlaceOf({ host: 'h', port: 587, user: '', allowInsecure: false }));
 	});
 });

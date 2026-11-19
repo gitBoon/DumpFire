@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.88
+version: 1.89
 status: As-Built
 date: 2026-11-19
 tags:
@@ -297,6 +297,47 @@ flowchart LR
     Row --> Remove
     Remove --> Off["isSmtpConfigured() false:<br/>no mail sent"]
     Remove --> Line["WARN [SMTP]<br/>after the commit"]
+```
+
+### When the Mail Is Held for Review (Card 2922)
+
+When the access of the account that set the mail settings, or the App URL, ends with its API keys
+(a password or two-step reset, an invite used, the holder's own change ending keys, or the host's
+`scripts/mfa-reset.mjs`), they are **held for the superadmin's review** rather than removed
+(`setting_holds`; see [Settings Held for Review When Access Ends](authentication-security.md#settings-held-for-review-when-access-ends-card-2922)).
+One `WARN` under `SMTP` says so, from the rows held:
+
+```
+Held for the superadmin's review: the mail settings, set by "ann" (user 3), as ann's password was reset by chief. No mail is sent through held mail settings, and no link begins with a held App URL, until the superadmin keeps or removes each under Settings held for review.
+```
+
+**What a held mail does.** `deliverMail` asks, after it reads the configuration and with nothing
+awaited before the transport, whether that configuration's place is held, and refuses with the
+problem `held` ("the mail settings are held for the superadmin's review, …"), not counted as a
+failure and not logged per mail. Every place that asks before sending whether a mail can go asks
+`mailCannotSend()` (`smtpPasswordMissing() || mailHeld()`): an invite or a new user with no password
+is refused `400`, a request that must be confirmed and a requester's new link `503` in their plain
+words with the reason at `WARN`, the team's reply issues no link, a progress mail is not made, and
+the two-step reset's notice is not sent, its answer saying why. **No mail of the ending itself
+goes** through the held relay: the holder's notice and the boards' owners' webhook mail of that
+reset are not sent. `isSmtpConfigured()` still says yes, so a held mail never reads as no mail at all:
+the two-step release's password-alone set-up does not open (and since card 2922 it stays closed for
+good once mail has ever been set up). **A held App URL** is not used: links begin with `APP_URL`, or
+`ORIGIN`.
+
+**Keep** puts the mail back in use as it is. **Remove** deletes every `smtp_*` row and ends, across
+the server, every invite not yet used, every set-up link, every request link and every decision
+participant's personal link (each was mailed through it), one `WARN` counting them; the hold stays,
+so the same settings saved again are held again. A Remove of a held App URL ends the same four, as
+each link began with it. While held, a save of the mail settings, or of a held App URL, is refused
+`409`: only Keep or Remove releases it.
+
+```mermaid
+flowchart LR
+    Mail["deliverMail"] --> Read["getSmtpConfig()"]
+    Read --> Q{"place held?"}
+    Q -->|yes| Held["sent: false, problem 'held'"]
+    Q -->|no| Send["transport.sendMail"]
 ```
 
 ### Where the App URL Comes From

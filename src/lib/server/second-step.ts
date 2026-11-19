@@ -60,7 +60,7 @@ import {
 	usableEnrolmentLink
 } from './mfa-store';
 import { sha256Hex } from './mfa-crypto';
-import { MAIL_PROBLEM_WORDS, PLACEHOLDER_ORIGIN, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from './email';
+import { MAIL_PROBLEM_WORDS, PLACEHOLDER_ORIGIN, isSmtpConfigured, linkBaseUrl, mailCannotSend, mailEverConfigured } from './email';
 import { endUnusedInvites } from './invites';
 import { matchingStep, readAuthenticatorCode } from './totp';
 import { canonicalRecoveryCode, newRecoveryCodes } from './recovery-codes';
@@ -297,8 +297,9 @@ export async function afterPassword(accepted: PasswordAccepted, cookies: Cookies
 		// (b) Leave to set up on the password alone.
 		if (!mayStillEnrolOnPassword(user.id)) return { kind: 'needs link' };
 
-		// (c) No mail host: on the password (R1).
-		if (!isSmtpConfigured()) return issue('enrol', 'password', null);
+		// (c) No mail host: on the password (R1). Never once mail has been set up on this server (card 2922, its
+		// plan's R9): a removal of the mail settings does not open it again.
+		if (!isSmtpConfigured() && !mailEverConfigured()) return issue('enrol', 'password', null);
 		return { kind: 'mail' };
 	});
 
@@ -324,9 +325,10 @@ export async function afterPassword(accepted: PasswordAccepted, cookies: Cookies
 			redirect(303, decided.purpose === 'verify' ? '/login/verify' : '/login/enrol');
 	}
 
-	// (d) A mail host that cannot send the link: never R1 for that (S3).
+	// (d) A mail host that cannot send the link: never R1 for that (S3). Nor no host, where mail was set up once
+	// (card 2922, R9), nor mail held for the superadmin's review (R12).
 	const base = linkBaseUrl(url);
-	if (smtpPasswordMissing() || base === null || isPlaceholder(base)) {
+	if (!isSmtpConfigured() || mailCannotSend() || base === null || isPlaceholder(base)) {
 		noSecondStep('could not email', 'warn');
 		return fail(503, { error: COULD_NOT_EMAIL, identity });
 	}
@@ -1163,7 +1165,7 @@ export function enrolConfirm(input: EnrolInput, cookies: Cookies, url: URL): Enr
 				.get(challenge.enrolment_link_hash, user.id, nowStamp);
 			if (link === undefined) return refused('its set-up link is gone');
 		}
-		if (challenge.enrol_grant === 'password' && (!mayStillEnrolOnPassword(user.id, now) || isSmtpConfigured())) {
+		if (challenge.enrol_grant === 'password' && (!mayStillEnrolOnPassword(user.id, now) || isSmtpConfigured() || mailEverConfigured())) {
 			return refused('its leave to set up on the password alone has ended');
 		}
 

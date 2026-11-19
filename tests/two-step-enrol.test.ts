@@ -48,7 +48,8 @@ import { db, sqlite } from '$lib/server/db';
 import { enrolmentLinks, inviteTokens, mfaFactors, mfaRecoveryCodes, sessions, settings, users } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
-import { PLACEHOLDER_ORIGIN } from '$lib/server/email';
+import { PLACEHOLDER_ORIGIN, saveSmtpConfig } from '$lib/server/email';
+import { mailPlaceOf } from '$lib/server/setting-holds';
 import { knownBrowserCookie } from '$lib/server/known-browsers';
 import { issueEnrolmentLink, resetTwoStep, usableEnrolmentLink } from '$lib/server/mfa-store';
 import { switchOffOutside } from '$lib/server/db/restore';
@@ -567,6 +568,35 @@ describe('the release-day rules and the release mail (slice 4)', () => {
 		expect(links()).toEqual([]);
 		expect(challenges()).toEqual([]);
 		expect(sent.emails).toEqual([]);
+	});
+
+	it('T65b: mail held for the superadmin’s review (card 2922, R12): 503, no link, no mail, and no set-up on the password', async () => {
+		mailReady();
+		sqlite
+			.prepare("INSERT INTO setting_holds (setting, place, held_because, held_at) VALUES ('mail', ?, 'setter access ended', ?)")
+			.run(mailPlaceOf({ host: 'smtp.example.test', port: 587, user: '', allowInsecure: false }), stamp());
+
+		const { res } = await passwordStep(user);
+		await sent.settle();
+
+		expect(res).toMatchObject({ type: 'failure', status: 503, data: { error: COULD_NOT_EMAIL } });
+		expect(links()).toEqual([]);
+		expect(challenges()).toEqual([]);
+		expect(sent.emails).toEqual([]);
+	});
+
+	it('T65c: mail set up once and removed since (card 2922, R9): the password-alone set-up stays closed, 503, and no challenge', async () => {
+		// Saved as the mail panel saves it, which records that mail was set up; then removed, as a removal does.
+		saveSmtpConfig({ host: 'smtp.example.test', fromAddress: 'dumpfire@example.test' });
+		sqlite.prepare("DELETE FROM settings WHERE key LIKE 'smtp\\_%' ESCAPE '\\'").run();
+		db.insert(settings).values({ key: 'app_url', value: BASE }).run();
+
+		const { res } = await passwordStep(user);
+		await sent.settle();
+
+		expect(res).toMatchObject({ type: 'failure', status: 503, data: { error: COULD_NOT_EMAIL } });
+		expect(challenges()).toEqual([]);
+		expect(links()).toEqual([]);
 	});
 
 	it('T66: a link address that is the image’s placeholder: 503, and no link', async () => {

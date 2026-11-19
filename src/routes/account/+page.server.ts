@@ -4,6 +4,7 @@ import { db } from '$lib/server/db';
 import { reportSchedules, webhooks } from '$lib/server/db/schema';
 import { twoStepView } from '$lib/server/account-two-step';
 import { webhooksReadableBy } from '$lib/server/webhooks';
+import { settingsSetBy } from '$lib/server/setting-setters';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const user = locals.user!;
@@ -31,6 +32,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		webhooks: hooks?.count ?? 0,
 		// Whether ending the keys holds webhooks of others whose secret the account could read (card 2935, P8): in words.
 		holdsReadable: webhooksReadableBy(user.id) > 0,
+		// What the account set that is in force (card 2922): ending its keys holds it for the superadmin's review, which
+		// the box says, and offers to do where nothing else is to end (its plan's F2). Null for none.
+		settingsSet: settingsSetBy(user.id).get(user.id) ?? null,
 		reportSchedulesOn: schedules?.count ?? 0,
 		// The Two-step sign-in section and the warning at the top of the page
 		// (card 2772, D10): never a secret, a recovery code or a pending id.

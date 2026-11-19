@@ -202,7 +202,8 @@ describe('the page load', () => {
 	// 9
 	it('gives an administrator and the superadmin the items, the summary and the checked-on date', async () => {
 		for (const role of ['admin', 'superadmin']) {
-			expect(await loadAs(role)).toEqual({ items: CHECKLIST, summary: summarise(CHECKLIST), checkedOn: CHECKED_ON });
+			// Card 2922 (R7): and the settings held for review, for the superadmin's banner: none here.
+			expect(await loadAs(role)).toEqual({ items: CHECKLIST, summary: summarise(CHECKLIST), checkedOn: CHECKED_ON, settingsHeld: [] });
 		}
 	});
 });

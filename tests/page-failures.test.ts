@@ -983,6 +983,8 @@ const ADMINISTRATOR_COMPONENTS = [
 	'InviteLinkDialog',
 	'ResetPasswordDialog',
 	'ScheduledBackupsPanel',
+	// Card 2922: the settings held for review, every administrator's to read.
+	'SettingsHeldPanel',
 	'SmtpPanel',
 	'TeamsPanel',
 	'UsersPanel'
@@ -1630,7 +1632,10 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 		// read, so that a list that failed to load does not hide keys the box
 		// would end.
 		expect(page.getText()).toContain('let webhooksSet = $derived(data.webhooks ?? 0);');
-		expect(page.getText()).toContain('let offerToEnd = $derived(apiKeys.length > 0 || (apiKeysRead && webhooksSet > 0));');
+		// Card 2922 (F2): and for the settings the holder set alone, which ending the keys holds for review.
+		expect(page.getText()).toContain(
+			"let offerToEnd = $derived(apiKeys.length > 0 || (apiKeysRead && webhooksSet > 0) || (apiKeysRead && settingsHeldWords !== ''));"
+		);
 		expect(assignmentsTo(page, 'apiKeysRead').map((assignment) => assignment.right.getText())).toEqual(['true']);
 		expect(around('bind:checked={endApiKeysToo}')).toEqual([{ condition: 'offerToEnd', inElse: false }]);
 		// "It" for one, "they" for more.
@@ -1918,8 +1923,15 @@ describe('the invite page, src/routes/invite/[token]/+page.svelte', () => {
 
 		// The notice shows for something ended, or for a webhook already off alone (card 2923's code review, E9), or for
 		// webhooks of others whose secret the account could read (card 2935, P8).
-		const shown = { condition: 'whatItEnds || webhooksAlreadyOff > 0 || data.holdsReadable', inElse: false };
+		// And for the settings the account set, which setting a password holds for review (card 2922).
+		// A yes or no from the load, never the setting's names (its code review's C10), and said in the future (C11).
+		const shown = { condition: 'whatItEnds || webhooksAlreadyOff > 0 || data.holdsReadable || data.holdsSettings', inElse: false };
 		expect(around(notice)).toEqual([{ condition: 'data.valid', inElse: false }, shown, { condition: 'whatItEnds', inElse: false }]);
+		expect(
+			around(
+				"The mail settings, App URL or backup destinations this account set will be held for the superadmin's review: nothing will be sent to them until the superadmin keeps or removes them."
+			)
+		).toEqual([{ condition: 'data.valid', inElse: false }, shown, { condition: 'data.holdsSettings', inElse: false }]);
 		// Card 2935 (P8): in words, never a number, only where the account may have read a secret (P1, decided by the load).
 		expect(
 			around(
@@ -3032,6 +3044,10 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'confirmImport', reads: 'failureMessage', done: ['importFile = null', 'showImportDialog = false', 'await uploadImport(chosen, confirmation)'] }
 	],
 	'src/lib/components/admin/GDriveConnectModal.svelte': [{ name: 'exchangeGDriveCode', reads: 'sentAsking', done: ['await loadBackupConfig()'] }],
+	// Card 2922: Keep or Remove of a setting held for review, with the password; the list read again once done.
+	'src/lib/components/admin/SettingsHeldPanel.svelte': [
+		{ name: 'release', reads: 'sentAsking', done: ['showToast(await releasedWords(setting, action, res))', 'onChanged(setting.setting)', 'await load()'] }
+	],
 	'src/lib/components/admin/ScheduledBackupsPanel.svelte': [
 		// The card 2398 review: a refused save puts the list back to the one each
 		// caller hands it (`was`) and reads the settings again quietly, so the
@@ -4826,7 +4842,9 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 			'src/lib/components/admin/AppUrlPanel.svelte',
 			'src/lib/components/admin/BoardManagementPanel.svelte',
 			'src/lib/components/admin/TeamsPanel.svelte',
-			'src/lib/components/admin/DangerZonePanel.svelte'
+			'src/lib/components/admin/DangerZonePanel.svelte',
+			// Card 2922: Keep and Remove, through `sentAsking`.
+			'src/lib/components/admin/SettingsHeldPanel.svelte'
 		];
 		if (ownLine.includes(file) || throughSent.includes(file)) expect(checked).toEqual([]);
 		else expect(checked.length).toBeGreaterThan(0);

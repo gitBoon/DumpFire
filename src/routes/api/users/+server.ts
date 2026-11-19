@@ -12,7 +12,7 @@ import { ENROLMENT_LINK_PATH, issueEnrolmentLink } from '$lib/server/mfa-store';
 import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
 import { readBody } from '$lib/server/request-body';
 import { listUsersFor } from '$lib/server/list-access';
-import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
+import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, mailCannotSendProblem } from '$lib/server/email';
 import { sendInviteEmail } from '$lib/server/notifications';
 import { requireAdmin, requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -33,8 +33,15 @@ export const GET: RequestHandler = async ({ locals }) => {
 	return json(listUsersFor(locals.user));
 };
 
-/** What a user with no password is refused with while the mail settings name a user and hold no password. */
-const NO_MAIL_PASSWORD = `Password must be at least 8 characters (${MAIL_PROBLEM_WORDS['no-password']})`;
+/**
+ * What a user with no password is refused with while no invite mail can go though a host is set: the mail
+ * settings name a user and hold no password, or they are held for the superadmin's review (card 2922, R12).
+ * Null where a mail can go.
+ */
+function noMailWords(): string | null {
+	const cannot = mailCannotSendProblem();
+	return cannot === null ? null : `Password must be at least 8 characters (${MAIL_PROBLEM_WORDS[cannot]})`;
+}
 
 /**
  * POST — Create a new user (admin only). Password optional if SMTP configured.
@@ -89,8 +96,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 	// A mail user with no password, as a restore leaves the settings (card
 	// 2169): an invite's mail would fail, and that is known before the user is
 	// made, so it is refused as no mail host is (the review-fix pass's item 2).
-	if (!password && smtpPasswordMissing()) {
-		throw error(400, NO_MAIL_PASSWORD);
+	const noMail = password ? null : noMailWords();
+	if (noMail !== null) {
+		throw error(400, noMail);
 	}
 
 	// A role is exactly `user` or `admin`, and only the superadmin makes an
@@ -146,8 +154,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 		if (!password && !isSmtpConfigured()) {
 			throw error(400, 'Password must be at least 8 characters (SMTP not configured for invite emails)');
 		}
-		if (!password && smtpPasswordMissing()) {
-			throw error(400, NO_MAIL_PASSWORD);
+		const noMailNow = password ? null : noMailWords();
+		if (noMailNow !== null) {
+			throw error(400, noMailNow);
 		}
 
 		// An invite and a set-up link are links, and the address they begin with

@@ -38,6 +38,9 @@ import { eq } from 'drizzle-orm';
 import { createLogger } from './logger';
 import { maskSecretPaths } from './secret-paths';
 import { MAIL_CONNECTION_SETTINGS, mailPasswordAad, openStored, sealStored } from './stored-secrets';
+// The settings held for the superadmin's review (card 2922): a leaf, which this passes the values it reads.
+import { anyHeld, appUrlHeldAt, mailHeldAt } from './setting-holds';
+import { stamp } from '$lib/timestamps';
 
 const log = createLogger('EMAIL');
 
@@ -159,12 +162,73 @@ export function saveSmtpConfig(config: Partial<SmtpConfig>): void {
 		if (config.pass !== undefined) setSetting('smtp_pass', sealStored(config.pass, mailPasswordAad(storedMailConnection())));
 		if (config.fromAddress !== undefined) setSetting('smtp_from_address', config.fromAddress);
 		if (config.fromName !== undefined) setSetting('smtp_from_name', config.fromName);
+		// Mail is set up on this server from now on, whatever happens to its settings (card 2922, R9).
+		if (config.host) recordMailEverConfigured();
 	});
 }
 
 /** Quick check if SMTP is configured (has a host set). */
 export function isSmtpConfigured(): boolean {
 	return !!getSetting('smtp_host');
+}
+
+/**
+ * The setting that records that mail has been set up on this server, with
+ * when it first was (card 2922, R9). Written at the first save of a mail host
+ * and at every start where a host is stored (`recordMailEverConfigured`), kept
+ * by a restore, and never removed: so the leave to set up two-step sign-in on
+ * the password alone (card 2769, R1), given only where no mail host is set,
+ * never opens again once one was, whatever removes the mail settings since (a
+ * Remove of held mail, a demotion, a disable, a working copy).
+ */
+export const MAIL_EVER_CONFIGURED = 'mail_ever_configured_at';
+
+/** Whether mail has ever been set up on this server (R9). */
+export function mailEverConfigured(): boolean {
+	return getSetting(MAIL_EVER_CONFIGURED) !== null;
+}
+
+/** Record that mail is set up, once: the first moment stays. In the caller's transaction where one is open. */
+export function recordMailEverConfigured(): void {
+	if (getSetting(MAIL_EVER_CONFIGURED) === null) setSetting(MAIL_EVER_CONFIGURED, stamp());
+}
+
+/**
+ * Whether the mail settings are held for the superadmin's review (card 2922):
+ * a host is stored, and the place it sends to is held (setting-holds.ts).
+ * `isSmtpConfigured` still says yes, so that nothing reads a held mail as no
+ * mail at all (the password-alone leave above all); every mail is refused at
+ * `deliverMail`, and every place that asks whether one can go asks
+ * `mailCannotSend`.
+ */
+export function mailHeld(): boolean {
+	// Nothing read of the mail settings while nothing is held (the code review's C13).
+	if (!anyHeld()) return false;
+	return mailHeldAt(mailConnectionAsRead());
+}
+
+/** Whether the App URL row is held for the superadmin's review (card 2922): a stored row at a held place. */
+export function appUrlHeld(): boolean {
+	if (!anyHeld()) return false;
+	const stored = getSetting('app_url');
+	return stored !== null && appUrlHeldAt(appUrlAsRead(stored));
+}
+
+/**
+ * Whether no mail can go although a mail host is set (card 2922, its plan's
+ * R12): its password missing or unopenable (`smtpPasswordMissing`), or the
+ * mail settings held for review (`mailHeld`). Asked wherever the server
+ * decides before sending whether a mail can go; `deliverMail` refuses a held
+ * mail whatever was asked.
+ */
+export function mailCannotSend(): boolean {
+	return smtpPasswordMissing() || mailHeld();
+}
+
+/** Why no mail can go although a host is set, in `MAIL_PROBLEM_WORDS`'s terms, or null: held first, then no password. */
+export function mailCannotSendProblem(): 'held' | 'no-password' | null {
+	if (mailHeld()) return 'held';
+	return smtpPasswordMissing() ? 'no-password' : null;
 }
 
 /**
@@ -294,6 +358,8 @@ export function appUrlIgnored(): boolean {
  */
 export function getAppUrl(): string | null {
 	const stored = getSetting('app_url');
+	// A row held for the superadmin's review is not used (card 2922): `APP_URL` is answered, or null.
+	if (stored && appUrlHeldAt(appUrlAsRead(stored))) return appUrlAsRead(process.env.APP_URL || '') || null;
 	if (stored) {
 		if (!appUrlAsRead(stored)) return null;
 		const normal = appUrlNormalised(stored);
@@ -314,7 +380,8 @@ export function appUrlFrom(): 'setting' | 'environment' | 'none' {
 	const stored = getSetting('app_url');
 	if (stored) {
 		if (!appUrlAsRead(stored)) return 'none';
-		if (!appUrlIgnored()) return 'setting';
+		// Held for review (card 2922): not in use, as `getAppUrl` has it.
+		if (!appUrlIgnored() && !appUrlHeldAt(appUrlAsRead(stored))) return 'setting';
 	}
 	return appUrlEnvSet() ? 'environment' : 'none';
 }
@@ -397,16 +464,28 @@ export function configuredOrigin(value: string | undefined = process.env.ORIGIN)
  *
  * `isDev` is the mode, and is this server's own unless it is given: a test
  * asks what a built server does by passing `false`.
+ *
+ * Composed since card 2922's code review (C9): the App URL setting as
+ * `getAppUrl` gives it (with `APP_URL` behind it), else what the server would
+ * answer with no setting at all (`linkBaseUrlWithoutAppUrlSetting`).
  */
 export function linkBaseUrl(url?: URL, isDev: boolean = dev): string | null {
-	const configured = getAppUrl();
-	if (configured) return configured;
+	return getAppUrl() ?? linkBaseUrlWithoutAppUrlSetting(url, isDev);
+}
 
+/**
+ * The address a link would begin with were the App URL setting not used
+ * (card 2922, its plan's R8): `APP_URL`, then `ORIGIN`, then, under dev, the
+ * request's own. What `linkBaseUrl` answers once a reset has held the App URL
+ * an account set, asked before the reset so that one that would leave no
+ * address is refused before anything is held or ended.
+ */
+export function linkBaseUrlWithoutAppUrlSetting(url?: URL, isDev: boolean = dev): string | null {
+	const fromEnv = appUrlAsRead(process.env.APP_URL || '');
+	if (fromEnv) return fromEnv;
 	const origin = configuredOrigin();
 	if (origin) return origin;
-
 	if (isDev && url) return `${url.protocol}//${url.host}`;
-
 	return null;
 }
 
@@ -549,6 +628,7 @@ function warnIfTlsFault(err: unknown, detail: string): void {
  */
 export type MailProblem =
 	| 'not-configured'
+	| 'held'
 	| 'no-password'
 	| 'password-unopenable'
 	| 'secure-connection'
@@ -565,6 +645,8 @@ export type MailProblem =
  */
 export const MAIL_PROBLEM_WORDS: Record<MailProblem, string> = {
 	'not-configured': 'mail is not set up on this server',
+	held:
+		"the mail settings are held for the superadmin's review, as the account that set them had its access ended; the superadmin keeps or removes them under Settings held for review on the admin page",
 	'no-password': 'the mail password has not been entered on this server; an administrator enters it under 📧 Email / SMTP',
 	'password-unopenable':
 		'the mail password stored on this server cannot be opened, so it must be entered again; an administrator enters it under 📧 Email / SMTP',
@@ -597,7 +679,7 @@ export type MailOutcome = { sent: true } | { sent: false; problem: MailProblem; 
  *     unreachable         ECONNECTION, EDNS, ETIMEDOUT, ESOCKET
  *     failed              anything else
  */
-export function mailProblem(err: unknown): Exclude<MailProblem, 'not-configured'> {
+export function mailProblem(err: unknown): Exclude<MailProblem, 'not-configured' | 'held'> {
 	if (isTlsFault(err)) return 'secure-connection';
 	const { code, command } = (err !== null && typeof err === 'object' ? err : {}) as { code?: unknown; command?: unknown };
 	switch (code) {
@@ -746,9 +828,15 @@ async function deliverMail(
 	if (!config || !config.host) {
 		return { sent: false, problem: 'not-configured', detail: MAIL_PROBLEM_WORDS['not-configured'] };
 	}
+	// Held for the superadmin's review (card 2922, its plan's R6): asked here, of the configuration just read and
+	// with nothing awaited between this and the transport below, so a hold committed meanwhile is never missed. Not
+	// counted and not logged, as a mail with no host is not: the hold's own line says that mail stops.
+	if (mailHeldAt(config)) {
+		return { sent: false, problem: 'held', detail: MAIL_PROBLEM_WORDS.held };
+	}
 
 	/** Counted, kept as the last failure and logged at ERROR, as every mail that did not go is. */
-	const failed = (problem: Exclude<MailProblem, 'not-configured'>, detail: string, fields: Record<string, unknown> = {}): MailOutcome => {
+	const failed = (problem: Exclude<MailProblem, 'not-configured' | 'held'>, detail: string, fields: Record<string, unknown> = {}): MailOutcome => {
 		status.failed++;
 		status.lastFailure = {
 			at: new Date().toISOString(),

@@ -28,6 +28,7 @@ import { error, json } from '@sveltejs/kit';
 import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import {
 	BACKUP_SCHEDULES,
+	destinationHeldNow,
 	getBackupConfig,
 	saveBackupConfig,
 	getBackupHistory,
@@ -126,6 +127,14 @@ function leavesFewerCopies(before: BackupConfig, after: BackupConfig, changes: B
 		changes.changed.some((d) => d.elsewhere) ||
 		timeKept(after) < timeKept(before) ||
 		Number(after.retention) < Number(before.retention)
+	);
+}
+
+/** What a save that renames, retypes or removes a destination held for review is refused with (card 2922, R18). */
+function heldDestinationSaveRefusal(name: string): string {
+	return (
+		`Backup destination ${quoted(name)} is held for the superadmin's review: it cannot be renamed, saved as another type or ` +
+		'removed by a save. Keep it or remove it under Settings held for review first. Nothing was saved.'
 	);
 }
 
@@ -321,6 +330,13 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 		const before = withoutCarriers(existing);
 		const after = withoutCarriers(config);
 		const changed = settingsChanges(before, after);
+		// A destination held for the superadmin's review is not renamed, saved as another type or removed by a save
+		// (card 2922, its plan's R18): each is the held one removed, and would slip its hold. It is kept or removed
+		// under Settings held for review first. Asked of the stored entry by its own place, whoever saves.
+		const heldGoing = (changed?.removed ?? []).find(({ name, type }) =>
+			existing.destinations.some((d) => d.name === name && String(d.type) === type && destinationHeldNow(d))
+		);
+		if (heldGoing !== undefined) throw error(409, heldDestinationSaveRefusal(heldGoing.name));
 		const refusal = user.role === 'superadmin' ? null : superadminOnly(before, after, changed);
 		if (refusal !== null) throw error(403, refusal);
 

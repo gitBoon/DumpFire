@@ -14,6 +14,8 @@
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import { theme, themeIcon } from '$lib/stores/theme';
+	// Card 2922 (R7): the superadmin's banner while a setting is held for review.
+	import SettingsHeldBanner from '$lib/components/SettingsHeldBanner.svelte';
 
 	type Item = PageData['items'][number];
 	type Status = Item['status'];
@@ -88,6 +90,7 @@
 	</header>
 
 	<main class="admin-content">
+		<SettingsHeldBanner held={data.settingsHeld} superadmin={data.user?.role === 'superadmin'} />
 		<section class="admin-card glass">
 			<p class="intro">
 				Every Annex A control of ISO/IEC 27001:2022 and clauses 4 to 10, with how far DumpFire meets each, the evidence in its code, and the cards that close

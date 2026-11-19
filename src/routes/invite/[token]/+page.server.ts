@@ -6,6 +6,7 @@ import { apiKeys, inviteTokens, reportSchedules, users, webhooks } from '$lib/se
 import { and, eq, count, isNull } from 'drizzle-orm';
 import { endAccountAccess, namingIds } from '$lib/server/auth';
 import { ENDING_IN_MAIL, webhooksReadableBy } from '$lib/server/webhooks';
+import { settingsSetBy } from '$lib/server/setting-setters';
 import { CheckNotMade, LONGEST_PASSWORD, PASSWORD_TOO_LONG, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
 import { createLogger } from '$lib/server/logger';
 import { usableInvite } from '$lib/server/invites';
@@ -67,10 +68,14 @@ export const load: PageServerLoad = async ({ params }) => {
 	// Whether setting a password here holds webhooks of others whose secret the account could read (card 2935, P8):
 	// said in words, never a number, and only where it provably read nothing is not so (P1).
 	const holdsReadable = webhooksReadableBy(invite.userId) > 0;
+	// Whether the account set anything in force (card 2922): setting a password here holds it for the superadmin's
+	// review. A yes or no alone, never its names, to whoever holds the link (the code review's C10).
+	const holdsSettings = settingsSetBy(invite.userId).has(invite.userId);
 
 	return {
 		valid: true,
 		holdsReadable,
+		holdsSettings,
 		username: user?.username || '',
 		emoji: user?.emoji || '👤',
 		apiKeys: keys?.count ?? 0,

@@ -101,9 +101,10 @@ vi.mock('$lib/server/email', async (importOriginal) => {
 	const real = await importOriginal<typeof import('$lib/server/email')>();
 	return {
 		...real,
-		smtpPasswordMissing: (...args: Parameters<typeof real.smtpPasswordMissing>) => {
+		// What the password step asks just before the release mail: `mailCannotSend` since card 2922 (R12).
+		mailCannotSend: (...args: Parameters<typeof real.mailCannotSend>) => {
 			beforeReleaseMail.run?.();
-			return real.smtpPasswordMissing(...args);
+			return real.mailCannotSend(...args);
 		}
 	};
 });

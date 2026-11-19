@@ -2,6 +2,7 @@ import type { PageServerLoad } from './$types';
 import { redirect } from '@sveltejs/kit';
 import { isAdmin } from '$lib/server/board-access';
 import { readDirectory } from '$lib/server/people-directory';
+import { settingsHeldForBanner } from '$lib/server/setting-setters';
 
 /**
  * The people directory's page (card 2674, plan 4.3): every person, group and
@@ -15,5 +16,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 	if (!locals.user) throw redirect(303, '/login');
 	if (!isAdmin(locals.user)) throw redirect(303, '/');
 
-	return readDirectory();
+	// Card 2922 (R7): the settings held for review, for the superadmin's banner: their kind and name alone.
+	return { ...readDirectory(), settingsHeld: settingsHeldForBanner() };
 };

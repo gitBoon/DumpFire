@@ -117,10 +117,16 @@ function contentsOf(database: Database.Database): Record<string, string[]> {
 /**
  * A table's rows without the form signing key, which a restore makes in its transaction (card 2750) and no backup
  * brings, and without the key check its sealing records (card 2898), which no restore takes from a backup.
+ * And without the record that mail was set up (card 2922's code review, C4), which a restore writes for a backup
+ * with a mail host and a backup made before card 2922 does not hold: pinned by its own cases below.
  */
 const withoutFormKey = (rows: string[]) =>
 	rows.filter(
-		(row) => !row.includes('"key":"request_form_secret"') && !row.includes('"key":"mfa_key_check"') && !row.includes('"key":"secrets_scrub_pending"')
+		(row) =>
+			!row.includes('"key":"request_form_secret"') &&
+			!row.includes('"key":"mfa_key_check"') &&
+			!row.includes('"key":"secrets_scrub_pending"') &&
+			!row.includes('"key":"mail_ever_configured_at"')
 	);
 
 /**
@@ -433,10 +439,13 @@ describe('restoring as a working copy', () => {
 		// And the backup's webhooks_already_off_held: one made since card 2923's release (its code review, S2).
 		// And the key check the sealed form key records, and the scrub every restore marks pending (card 2898).
 		// And the moment the restore's own run of the start pass covered (card 2935, P12).
+		// And the record that mail was set up, written before the working copy removed it (card 2922's code review, C4):
+		// the copy's password-only set-up stays shut.
 		expect(Object.keys(settings).sort()).toEqual([
 			'api_key_deadline',
 			'app_url',
 			'backup_config',
+			'mail_ever_configured_at',
 			'mfa_key_check',
 			'request_form_secret',
 			'secrets_scrub_pending',
@@ -518,10 +527,11 @@ describe('restoring as a working copy', () => {
 
 			expect(result.errors).toEqual([]);
 			expect(result.outside).toEqual({ ...SWITCHED_OFF, backupScheduleWasOn: false, backupDestinations: 0 });
-			// It went on to the mail settings, and the restore is committed.
+			// It went on to the mail settings, and the restore is committed; mail set up recorded first (card 2922, C4).
 			expect(Object.keys(settingsIn(live)).sort()).toEqual([
 				'api_key_deadline',
 				'app_url',
+				'mail_ever_configured_at',
 				'mfa_key_check',
 				'request_form_secret',
 				'secrets_scrub_pending',
@@ -707,13 +717,24 @@ describe('switchOffOutside', () => {
 		setter.run('backup_destination:Bucket', 'place-of-the-bucket', 1);
 		setter.run('backup_destination:Offsite', 'place-of-offsite', 2);
 		setter.run('app_url', 'place-of-the-app-url', 1);
+		// And their holds for review (card 2922, R17), carried just before by a restore: the App URL's stays, as it does.
+		const held = database.prepare("INSERT INTO setting_holds (setting, place, held_because, held_at) VALUES (?, ?, 'setter access ended', '2026-11-19 09:00:00')");
+		held.run('mail', 'place-of-the-mail');
+		held.run('backup_destination:Bucket', 'place-of-the-bucket');
+		held.run('app_url', 'place-of-the-app-url');
 		const before = everythingElseIn(database);
 
 		expect(switchOffOutside(database)).toEqual(SWITCHED_OFF);
 
 		expect(rowsOf(database, 'setting_setters', 'setting')).toEqual([{ setting: 'app_url', place: 'place-of-the-app-url', user_id: 1 }]);
-		// Nothing else but the setter rows changed outside the three tables.
-		expect(everythingElseIn(database)).toEqual({ ...before, setting_setters: [JSON.stringify({ place: 'place-of-the-app-url', setting: 'app_url', user_id: 1 })] });
+		// Nothing else but the setter rows and the holds changed outside the three tables.
+		expect(everythingElseIn(database)).toEqual({
+			...before,
+			setting_setters: [JSON.stringify({ place: 'place-of-the-app-url', setting: 'app_url', user_id: 1 })],
+			setting_holds: [
+				JSON.stringify({ held_at: '2026-11-19 09:00:00', held_because: 'setter access ended', place: 'place-of-the-app-url', set_by: null, set_by_name: null, setting: 'app_url' })
+			]
+		});
 	});
 
 	it('finds nothing to do the second time', () => {

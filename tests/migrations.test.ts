@@ -460,6 +460,8 @@ const FILE_0071 = '0071_add_webhook_holds.sql';
 const FILE_0072 = '0072_add_account_disabled.sql';
 /** The file of card 2928: the receiver a webhook's sealed address sends to, in plain. */
 const FILE_0073 = '0073_add_webhook_receiver.sql';
+/** The file of card 2922: the settings held for the superadmin's review. */
+const FILE_0074 = '0074_add_setting_holds.sql';
 
 /** How the model check reports 0069's api_keys column in a database that has not got it. */
 const COLUMN_OF_0069 = 'api_keys.deadline_at: the column is in the model but not in the database';
@@ -637,6 +639,9 @@ const TABLES_OF_0061_AND_0065 = [...TABLES_OF_0061, ...TABLES_OF_0065].sort();
 
 /** How the model check reports a table of the model that a database has not got. */
 const notInTheDatabase = (table: string) => `${table}: the table is in the model but not in the database`;
+
+/** How the runner's check reports 0074's table in a database that has not got it (card 2922). */
+const TABLE_OF_0074 = notInTheDatabase('setting_holds');
 
 /** The tables 0060 changes the rows of: each gains its new columns, and cards are committed. */
 const TABLES_OF_0060 = ['boards', 'columns', 'cards'];
@@ -4388,6 +4393,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 		expect(live.prepare('SELECT key, value FROM settings ORDER BY key').all()).toEqual([
 			// This server's API key deadline, written back for a backup made before 0069 (card 2772).
 			{ key: 'api_key_deadline', value: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) },
+			// Mail set up in the backup, recorded (card 2922's code review, C4).
+			{ key: 'mail_ever_configured_at', value: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) },
 			// Recorded with the form key, sealed (card 2898, S2).
 			{ key: 'mfa_key_check', value: expect.stringMatching(/^[0-9a-f]{64}$/) },
 			// Made in the restore's transaction (card 2750), sealed (card 2898).
@@ -5091,8 +5098,10 @@ describe('restoring a backup taken before the latest migrations', () => {
 			// and the flag the check of the stored images writes once the import has committed, the backup
 			// holding no image (card 2761, the code review's CS3).
 			// And the key check, recorded with the form key, sealed (card 2898).
+			// And mail set up in the backup, recorded (card 2922's code review, C4).
 			expect(sqlite.prepare('SELECT key FROM settings ORDER BY key').all()).toEqual([
 				{ key: 'api_key_deadline' },
+				{ key: 'mail_ever_configured_at' },
 				{ key: 'mfa_key_check' },
 				{ key: 'request_form_secret' },
 				{ key: 'secrets_scrub_pending' },
@@ -5825,6 +5834,8 @@ describe('the database the runner leaves, against the model', () => {
 			notInTheDatabase('request_links'),
 			SESSIONS_COLUMN_OF_0066,
 			COLUMN_OF_0062,
+			// The table of 0074 (card 2922).
+			TABLE_OF_0074,
 			'setting_setters: the table is in the model but not in the database',
 			'settings.key: is nullable; the model has it NOT NULL',
 			notInTheDatabase('sign_in_challenges'),
@@ -5873,13 +5884,14 @@ describe('the database the runner leaves, against the model', () => {
 			FILE_0070,
 			FILE_0071,
 			FILE_0072,
-			FILE_0073
+			FILE_0073,
+			FILE_0074
 		]);
 		expect(report.tolerated).toEqual([]);
 		expect(report.rebuilt.map((r) => r.table)).toEqual(['columns', 'categories', 'settings', 'user_xp', 'invite_tokens']);
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(recordedIn(database)).toHaveLength(79);
+		expect(recordedIn(database)).toHaveLength(80);
 		expect(sequenceIn(database, 'categories')).toBe(3);
 		expect(foreignKeysOn(database)).toBe(true);
 		expect(differencesIn(database)).toEqual(NONE);
@@ -5939,6 +5951,8 @@ describe('the database the runner leaves, against the model', () => {
 			notInTheDatabase('request_links'),
 			SESSIONS_COLUMN_OF_0066,
 			COLUMN_OF_0062,
+			// The table of 0074 (card 2922).
+			TABLE_OF_0074,
 			'setting_setters: the table is in the model but not in the database',
 			notInTheDatabase('sign_in_challenges'),
 			'time_entries: the table is not in the model',
@@ -5973,7 +5987,7 @@ describe('the database the runner leaves, against the model', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.rebuilt).toEqual([
 			{ table: 'boards', rows: 3, defaulted: [], differences: differed.boards },
 			{ table: 'categories', rows: 3, defaulted: [], differences: differed.categories }
@@ -6104,7 +6118,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		const after = contentsOf(database);
 		expect(after.sessions).toEqual([]);
@@ -6430,7 +6444,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 	});
 
 	it('is the file after 0053: the composite index in place of the one on user_id, then the delete of unused invites', () => {
-		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		const sql = sqlStatements(readFileSync(join(REAL_MIGRATIONS, FILE_0054), 'utf-8')).map((s) => s.text);
 		expect(sql).toEqual([
 			'DROP INDEX IF EXISTS `idx_activity_log_user_id`;',
@@ -6572,7 +6586,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		// The used one, with 0068's token in place of the one it was mailed with (card 2849).
 		expect(database.prepare('SELECT typeof(token) AS type, length(token) AS bytes FROM invite_tokens').all()).toEqual([{ type: 'blob', bytes: 32 }]);
@@ -6657,8 +6671,9 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 		const report = runMigrations({ database, migrationsDir: filesTo(FILE_0069) });
 
 		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069]);
-		// The model is 0071's: 0070's table and 0071's webhooks columns are the differences a database at 0069 has.
-		expect(report.schemaDifferences).toEqual([notInTheDatabase('request_links'), ...MODEL_LINES_OF_0072, ...MODEL_LINES_OF_0071_AND_0073]);
+		// The model is 0074's: 0070's table, 0072's and 0073's columns, 0071's webhooks columns and 0074's table (card
+		// 2922) are the differences a database at 0069 has.
+		expect(report.schemaDifferences).toEqual([notInTheDatabase('request_links'), TABLE_OF_0074, ...MODEL_LINES_OF_0072, ...MODEL_LINES_OF_0071_AND_0073]);
 		const links = linksIn(database);
 		expect(links).toHaveLength(3);
 		for (const link of links) expect(link).toMatch(/^[0-9a-f]{64}$/);
@@ -6760,7 +6775,7 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT id, url, secret, active, set_by FROM webhooks').all()).toEqual([
 			{ id: 1, url: 'https://hooks.example.test/x', secret: 's3cret', active: 1, set_by: null }
@@ -6906,7 +6921,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		const cardsAfter = cardsIn(database);
 		// 0060, applied in the same run, commits all seven, each on a column of a
@@ -6970,7 +6985,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(cardsIn(database)).toEqual([]);
 	});
 
@@ -7021,7 +7036,7 @@ describe("0058, which adds the time zone a report schedule's time is read in (ca
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT * FROM report_schedules').get()).toEqual({ ...scheduleBefore, time_zone: 'UTC' });
 		const after = contentsOf(database);
@@ -7106,7 +7121,7 @@ describe('0059, which adds who last changed the mail settings, the App URL and e
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT * FROM setting_setters').all()).toEqual([]);
 		const after = contentsOf(database);
@@ -7266,7 +7281,7 @@ describe('0060, which adds the Options role, the ideas kind, and each card’s c
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		// The file committed them, so the backfill after it found none.
 		expect(report.backfilled.committedFilled).toBe(0);
@@ -7361,7 +7376,7 @@ describe('0060, which adds the Options role, the ideas kind, and each card’s c
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT COUNT(*) AS n FROM cards').get()).toEqual({ n: 0 });
 	});
@@ -7553,7 +7568,7 @@ describe('0061, which adds the decision records model and a Product Owner on eac
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.tolerated).toEqual([]);
 		// boards takes the column in place: it is in the model's shape, so nothing is rebuilt.
 		expect(report.rebuilt).toEqual([]);
@@ -7748,7 +7763,7 @@ describe("0062, which adds each session's count of wrong current passwords (card
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.tolerated).toEqual([]);
 		// sessions is not one the runner reconciles: the file alone changes it.
 		expect(report.rebuilt).toEqual([]);
@@ -7836,7 +7851,7 @@ describe('0063, which holds one closing-date reminder per participant per round 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.tolerated).toEqual([]);
 		// decision_events is not one the runner reconciles: the file alone changes it.
 		expect(report.rebuilt).toEqual([]);
@@ -7931,7 +7946,7 @@ describe('0064, which adds people_changes, the record of every change to the peo
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0064, FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.tolerated).toEqual([]);
 		// people_changes is new, not one the runner reconciles: the file alone makes it.
 		expect(report.rebuilt).toEqual([]);
@@ -8033,7 +8048,7 @@ describe('0065, which adds the tables and users columns of two-step sign-in (car
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0065, FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.tolerated).toEqual([]);
 		// users is not one the runner reconciles, and the four tables are new: the file alone makes them.
 		expect(report.rebuilt).toEqual([]);
@@ -8164,9 +8179,10 @@ describe('0066 and 0067, which release two-step sign-in: the leave to set up on 
 		expect(report.tolerated).toEqual([]);
 		// users and sessions are not ones the runner reconciles; settings needs no rebuild: the file alone changes them.
 		expect(report.rebuilt).toEqual([]);
-		// Nothing but the columns of 0069 (card 2772), the table of 0070 (card 2870) and the webhooks columns of 0071 (card 2752), later files not applied here.
-		expect(report.schemaDifferences).toEqual([COLUMN_OF_0069, notInTheDatabase('request_links'), USERS_COLUMN_OF_0069, ...MODEL_LINES_OF_0072, ...MODEL_LINES_OF_0071_AND_0073]);
-		expect(schemaDifferences(database)).toEqual([COLUMN_OF_0069, notInTheDatabase('request_links'), USERS_COLUMN_OF_0069, ...MODEL_LINES_OF_0072, ...MODEL_LINES_OF_0071_AND_0073]);
+		// Nothing but the columns of 0069 (card 2772), the table of 0070 (card 2870), the columns of 0071 to 0073 (cards 2752,
+		// 2671 and 2928) and the table of 0074 (card 2922), later files not applied here.
+		expect(report.schemaDifferences).toEqual([COLUMN_OF_0069, notInTheDatabase('request_links'), TABLE_OF_0074, USERS_COLUMN_OF_0069, ...MODEL_LINES_OF_0072, ...MODEL_LINES_OF_0071_AND_0073]);
+		expect(schemaDifferences(database)).toEqual([COLUMN_OF_0069, notInTheDatabase('request_links'), TABLE_OF_0074, USERS_COLUMN_OF_0069, ...MODEL_LINES_OF_0072, ...MODEL_LINES_OF_0071_AND_0073]);
 		// The factor, the live link and the expired link each keep 0.
 		expect(database.prepare('SELECT username, mfa_password_enrol AS flag FROM users ORDER BY id').all()).toEqual([
 			{ username: 'ann', flag: 0 },
@@ -8221,7 +8237,7 @@ describe('0066 and 0067, which release two-step sign-in: the leave to set up on 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0066, FILE_0067, FILE_0068, FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({ n: 0 });
 		// And 0069's API key deadline (card 2772), and 0071's moment keys began to be recorded (card 2752).
@@ -8298,7 +8314,7 @@ describe('0066 and 0067, which release two-step sign-in: the leave to set up on 
 		const report = runMigrations({ database, migrationsDir: dir });
 
 		expect(report.applied).toEqual([FILE_0068]);
-		expect(report.schemaDifferences).toEqual([COLUMN_OF_0069, notInTheDatabase('request_links'), USERS_COLUMN_OF_0069, ...MODEL_LINES_OF_0072, ...MODEL_LINES_OF_0071_AND_0073]);
+		expect(report.schemaDifferences).toEqual([COLUMN_OF_0069, notInTheDatabase('request_links'), TABLE_OF_0074, USERS_COLUMN_OF_0069, ...MODEL_LINES_OF_0072, ...MODEL_LINES_OF_0071_AND_0073]);
 		expect(database.prepare('SELECT COUNT(*) AS n FROM invite_tokens WHERE used = 0').get()).toEqual({ n: 0 });
 		expect(database.prepare(restOfUsed).all()).toEqual(kept);
 		const tokens = database.prepare('SELECT token FROM invite_tokens ORDER BY user_id').pluck().all() as Buffer[];
@@ -8365,7 +8381,7 @@ describe('0066 and 0067, which release two-step sign-in: the leave to set up on 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0069, FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		// The setting, 60 days from the run, in the stored form of a moment, written once.
 		const settings = database.prepare("SELECT value FROM settings WHERE key = 'api_key_deadline'").pluck().all() as string[];
@@ -8440,7 +8456,7 @@ describe('0070, which keeps requester links as hashes and ends every one held in
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0070, FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0070, FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT access_token FROM task_requests ORDER BY id').pluck().all()).toEqual([null, null, null]);
 		// Every other column of every request, and every other table, as it was.
@@ -8531,7 +8547,7 @@ describe('0071, which adds why and when a webhook was switched off for good, and
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0071, FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0071, FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT id, active, held_because, held_at, set_by_key, set_with_key FROM webhooks ORDER BY id').all()).toEqual([
 			{ id: 1, active: 1, held_because: null, held_at: null, set_by_key: null, set_with_key: null },
@@ -8602,8 +8618,9 @@ describe('0072, which adds when an account was disabled and by whom (card 2671)'
 	it('applies to a database at 0071 holding accounts: each gains both columns NULL, the key and the index, a disabler deleted empties disabled_by, and it runs once (case 44)', () => {
 		const database = memoryDb();
 		runMigrations({ database, migrationsDir: filesTo(FILE_0071) });
-		// Before 0072 the model check reports its columns, key and index, and 0073's column (card 2928), nothing else.
-		expect(schemaDifferences(database)).toEqual([...MODEL_LINES_OF_0072, MODEL_LINE_OF_0073]);
+		// Before 0072 the model check reports its columns, key and index, 0073's column (card 2928) and 0074's table
+		// (card 2922), nothing else.
+		expect(schemaDifferences(database)).toEqual([TABLE_OF_0074, ...MODEL_LINES_OF_0072, MODEL_LINE_OF_0073]);
 		database.exec(`
 			INSERT INTO users (id, username, email, password_hash, role) VALUES (1, 'chief', 'chief@example.test', 'x', 'superadmin');
 			INSERT INTO users (id, username, email, password_hash) VALUES (2, 'bob', 'bob@example.test', 'x');
@@ -8613,7 +8630,7 @@ describe('0072, which adds when an account was disabled and by whom (card 2671)'
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0072, FILE_0073]);
+		expect(report.applied).toEqual([FILE_0072, FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT id, disabled_at, disabled_by FROM users ORDER BY id').all()).toEqual([
 			{ id: 1, disabled_at: null, disabled_by: null },
@@ -8661,8 +8678,8 @@ describe('0073, which adds the receiver a webhook sends to beside its sealed add
 	it("14: applies to a database at 0072 holding webhooks: each gains receiver '', no other cell changes, and it runs once", () => {
 		const database = memoryDb();
 		runMigrations({ database, migrationsDir: filesTo(FILE_0072) });
-		// Before 0073 the model check reports its column, and nothing else.
-		expect(schemaDifferences(database)).toEqual([MODEL_LINE_OF_0073]);
+		// Before 0073 the model check reports its column and 0074's table (card 2922), and nothing else.
+		expect(schemaDifferences(database)).toEqual([TABLE_OF_0074, MODEL_LINE_OF_0073]);
 		database.exec(`
 			INSERT INTO users (id, username, email, password_hash, role) VALUES (1, 'chief', 'chief@example.test', 'x', 'superadmin');
 			INSERT INTO boards (id, name, created_by) VALUES (1, 'A', 1);
@@ -8674,7 +8691,7 @@ describe('0073, which adds the receiver a webhook sends to beside its sealed add
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0073]);
+		expect(report.applied).toEqual([FILE_0073, FILE_0074]);
 		expect(report.schemaDifferences).toEqual([]);
 		// The start fills it as it seals each address, not the file: SQL cannot read a URL as Node does.
 		expect(database.prepare('SELECT id, receiver FROM webhooks ORDER BY id').all()).toEqual([
@@ -8686,6 +8703,53 @@ describe('0073, which adds the receiver a webhook sends to beside its sealed add
 			// The board's Options column is the start's (card 2527), not this file's.
 			if (['columns', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
 			expect(after[table], table).toEqual(table === 'webhooks' ? withColumns(before[table], WEBHOOK_COLUMNS_OF_0073) : before[table]);
+		}
+		const found: Findings = { problems: [], notes: [] };
+		compare(state, stateOf(database), report.applied, found);
+		expect(found.problems).toEqual([]);
+
+		expect(runMigrations({ database, migrationsDir: REAL_MIGRATIONS }).applied).toEqual([]);
+	});
+});
+
+// ─── 0074: the settings held for review ─────────────────────────────────────
+
+describe('0074, which adds the settings held for the superadmin’s review (card 2922)', () => {
+	it('is the one table, after a header comment, and declares nothing to the rehearsal', () => {
+		const sql = readFileSync(join(REAL_MIGRATIONS, FILE_0074), 'utf-8').replace(/\r\n/g, '\n');
+		expect(sqlStatements(sql).map((s) => s.text.replace(/\s+/g, ' '))).toEqual([
+			'CREATE TABLE `setting_holds` ( `setting` text NOT NULL, `place` text NOT NULL, `held_because` text NOT NULL, `held_at` text NOT NULL, ' +
+				'`set_by` integer, `set_by_name` text, PRIMARY KEY(`setting`, `place`) );'
+		]);
+		for (const said of ['Only the superadmin', 'No foreign key', 'carrySettingHolds', 'Going back to an older image']) {
+			expect(sql, said).toContain(said);
+		}
+		expect(ONE_OFFS.filter((oneOff) => oneOff.file === FILE_0074)).toEqual([]);
+		expect(TOLERANT_FILES).not.toContain(FILE_0074);
+	});
+
+	it('case 29: applies to a database at 0073 with rows: makes the empty table, changes no other cell, leaves the model clean, and runs once', () => {
+		const database = memoryDb();
+		runMigrations({ database, migrationsDir: filesTo(FILE_0073) });
+		// Before 0074 the model check reports its table, and nothing else.
+		expect(schemaDifferences(database)).toEqual([TABLE_OF_0074]);
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash, role) VALUES (1, 'chief', 'chief@example.test', 'x', 'superadmin');
+			INSERT INTO setting_setters (setting, place, user_id) VALUES ('mail', 'a-place', 1);
+			INSERT INTO settings (key, value) VALUES ('smtp_host', 'smtp.example.test');
+		`);
+		const before = contentsOf(database);
+		const state = stateOf(database);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0074]);
+		expect(report.schemaDifferences).toEqual([]);
+		expect(database.prepare('SELECT COUNT(*) AS n FROM setting_holds').get()).toEqual({ n: 0 });
+		const after = contentsOf(database);
+		for (const table of Object.keys(before)) {
+			if (['columns', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
+			expect(after[table], table).toEqual(before[table]);
 		}
 		const found: Findings = { problems: [], notes: [] };
 		compare(state, stateOf(database), report.applied, found);

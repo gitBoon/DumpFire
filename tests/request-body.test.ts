@@ -3196,14 +3196,15 @@ describe('the accounts, administration, teams, reports and requests that card 21
 			{ key: 'smtp_from_address', value: 'board' }
 		]).run();
 		// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750),
-		// nor the MFA key's check, which the factor `stepUp` gives the caller writes (card 2771).
+		// nor the MFA key's check, which the factor `stepUp` gives the caller writes (card 2771), nor the record that
+		// mail was set up, which a save of a host writes (card 2922, R9).
 		const stored = () =>
 			Object.fromEntries(
 				db
 					.select()
 					.from(settings)
 					.all()
-					.filter((row) => row.key !== 'request_form_secret' && row.key !== 'mfa_key_check')
+					.filter((row) => row.key !== 'request_form_secret' && row.key !== 'mfa_key_check' && row.key !== 'mail_ever_configured_at')
 					.map((row) => [row.key, row.value])
 			);
 

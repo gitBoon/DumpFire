@@ -21,6 +21,7 @@ import { requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { ENDING_IN_MAIL } from '$lib/server/webhooks';
+import { anyRemoved } from '$lib/server/setting-setters';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
@@ -85,7 +86,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 	// awaited, and a session can end meanwhile. Asked before the sessions end
 	// below, the session this request came by among them; nothing in this
 	// request asks it after that, when it has gone.
-	const { accountId, newSession, apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused } = await whilePasswordHolds(userId, hash, () =>
+	const { accountId, newSession, apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused, settingsHeld } = await whilePasswordHolds(userId, hash, () =>
 		writeAs(locals, (caller) => {
 			const me = requireUser(caller);
 			const userId = me.id;
@@ -152,7 +153,9 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 				webhooksSwitchedOff: ended.webhooks,
 				// Card 2935: the webhooks of others whose secret the account could read, held with its keys.
 				readableWebhooksHeld: ended.readableWebhooks,
-				reportSchedulesPaused: ended.reportSchedules
+				reportSchedulesPaused: ended.reportSchedules,
+				// Card 2922: what the holder set that ending their keys held for the superadmin's review, or null.
+				settingsHeld: anyRemoved(ended.settingsHeld) ? ended.settingsHeld : null
 			};
 		}));
 
@@ -161,5 +164,5 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 	// which made the change, is remembered again (card 2194).
 	rememberBrowser(cookies, accountId, newHash, url);
 
-	return json({ success: true, apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused });
+	return json({ success: true, apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused, settingsHeld });
 };

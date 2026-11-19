@@ -58,7 +58,7 @@
 		</div>
 
 		{#if data.valid}
-			{#if whatItEnds || webhooksAlreadyOff > 0 || data.holdsReadable}
+			{#if whatItEnds || webhooksAlreadyOff > 0 || data.holdsReadable || data.holdsSettings}
 				<div class="keys-notice">
 					{#if whatItEnds}
 						<p>Setting a password here {whatItEnds} and signs it out everywhere else.</p>
@@ -73,6 +73,10 @@
 					<!-- Card 2935 (P8): in words, never a number, and only where the account may have read a secret (P1). -->
 					{#if data.holdsReadable}
 						<p>Every webhook whose signing secret this account could read, as an administrator or a board's owner, is switched off too, and can be switched on again only with a new secret; its board's owners are mailed.</p>
+					{/if}
+					<!-- Card 2922: what the account set, held for the superadmin's review. -->
+					{#if data.holdsSettings}
+						<p class="settings-held">The mail settings, App URL or backup destinations this account set will be held for the superadmin's review: nothing will be sent to them until the superadmin keeps or removes them.</p>
 					{/if}
 				</div>
 			{/if}

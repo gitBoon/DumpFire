@@ -270,6 +270,43 @@ export function settingsGoneWords(named: SettingsGone): string {
 }
 
 /**
+ * What an ending of an account's access with its keys does to the settings it set (card 2922): they are held for the
+ * superadmin's review, said before the action with each destination by name; '' where it set none. Said by the
+ * password dialog, the two-step reset's and the invite's confirms, from what the page read of the account
+ * (`settingsSet`), with a space before it.
+ */
+export function heldOnEndingWords(set: SettingsGone | null | undefined, when: 'now' | 'invite used' = 'now'): string {
+	if (set === null || set === undefined) return '';
+	const parts = [
+		...(set.mail ? ['the mail settings'] : []),
+		...(set.appUrl ? ['the App URL'] : []),
+		...(set.destinations.length > 0 ? [`the backup destination${set.destinations.length === 1 ? '' : 's'} ${set.destinations.map((d) => `"${d}"`).join(', ')}`] : [])
+	];
+	if (parts.length === 0) return '';
+	// Said before the action, so in the future (the code review's C11); an invite holds them only once it is used.
+	const once = when === 'invite used' ? ' when the invite is used' : '';
+	return ` What they set (${parts.join(', ')}) will be held for the superadmin's review${once}: nothing will be sent to it until it is kept or removed under Settings held for review.`;
+}
+
+/**
+ * What the invite's confirm says of the settings the account set (card 2922; its code review's B3), with a space
+ * before it; '' where it set none. Where the account set the mail settings or the App URL in force, the server
+ * refuses the invite until its two-step sign-in is reset, which holds them (C15): said so, and never that they will be
+ * held when the invite is used. Where it set backup destinations alone, they are held when the invite is used.
+ */
+export function inviteHeldWords(set: SettingsGone | null | undefined): string {
+	if (set === null || set === undefined) return '';
+	if (set.mail || set.appUrl) {
+		const what = set.mail && set.appUrl ? 'the mail settings and the App URL' : set.mail ? 'the mail settings' : 'the App URL';
+		return (
+			` This account set ${what} in force, so the invite will be refused until the account's two-step sign-in is reset, ` +
+			"which holds them for the superadmin's review."
+		);
+	}
+	return heldOnEndingWords(set, 'invite used');
+}
+
+/**
  * What ending an account's access does to the webhooks whose secret it could read (card 2935, P8), in words, for the
  * confirmations that show no number: every webhook on the server that has a secret, for an administrator; every one
  * on the boards they own, for anyone else. Unless the account provably read nothing, which the server decides.

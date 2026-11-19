@@ -47,6 +47,9 @@ import InviteLinkDialog from '$lib/components/admin/InviteLinkDialog.svelte';
 import TeamsPanel from '$lib/components/admin/TeamsPanel.svelte';
 import SmtpPanel from '$lib/components/admin/SmtpPanel.svelte';
 import DangerZonePanel from '$lib/components/admin/DangerZonePanel.svelte';
+// Card 2922: the settings held for review, and the superadmin's banner.
+import SettingsHeldPanel from '$lib/components/admin/SettingsHeldPanel.svelte';
+import SettingsHeldBanner from '$lib/components/SettingsHeldBanner.svelte';
 
 import AdminPage from '../src/routes/admin/+page.svelte';
 import BackupRestorePanel from '$lib/components/admin/BackupRestorePanel.svelte';
@@ -3621,5 +3624,138 @@ describe('the admin page, mounted with its panels', () => {
 		let shown: { id: number }[] = [];
 		toasts.subscribe((list) => (shown = list))();
 		for (const toast of shown) toasts.dismiss(toast.id);
+	});
+});
+
+// ─── Card 2922: the settings held for review ─────────────────────────────────
+
+describe('the settings held for review on the admin pages, mounted (card 2922, case 35)', () => {
+	const ann = { id: 3, username: 'ann', email: 'ann@example.com', emoji: '🛠️', role: 'admin' };
+	/** Ann's row as the superadmin's admin load gives it: she set the mail settings and destination "Offsite". */
+	const annSet = { mail: true, appUrl: false, destinations: ['Offsite'] };
+	const withAnn = {
+		...pageData,
+		users: [...pageData.users, { ...ann, apiKeys: 0, webhooks: 0, webhooksAlreadyOff: 0, webhooksReadable: 0, reportSchedules: 0, twoStep: false, settingsSet: annSet }]
+	};
+	// Said before the action, so in the future (the code review's C11); the invite's holds only once it is used.
+	const HELD_WORDS =
+		" What they set (the mail settings, the backup destination \"Offsite\") will be held for the superadmin's review: nothing will be sent to it until it is kept or removed under Settings held for review.";
+	// The invite's (B3): mail or the App URL the account set refuses the invite until a two-step reset holds them (C15).
+	const INVITE_REFUSED =
+		" This account set the mail settings in force, so the invite will be refused until the account's two-step sign-in is reset, which holds them for the superadmin's review.";
+	// Destinations alone are held when the invite is used.
+	const HELD_WHEN_USED =
+		" What they set (the backup destination \"Offsite\") will be held for the superadmin's review when the invite is used: nothing will be sent to it until it is kept or removed under Settings held for review.";
+	const MAIL_HELD = {
+		setting: 'mail',
+		kind: 'mail',
+		name: null,
+		place: 'p'.repeat(64),
+		heldAt: '2026-11-19 09:00:00',
+		setBy: 3,
+		setByName: 'ann',
+		where: { host: 'smtp.evil.example', port: 587, user: '', allowInsecure: false }
+	};
+
+	it('says in the two-step reset’s and the invite’s confirms what the account set, which is held, and nothing where it set none', () => {
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: withAnn, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		const rowOf = (name: string) => [...target.querySelectorAll('.user-row')].find((row) => row.querySelector('.user-row-name')!.textContent === name)!;
+
+		rowOf('ann').querySelector<HTMLButtonElement>('button[title="Reset two-step sign-in"]')!.click();
+		rowOf('ann').querySelector<HTMLButtonElement>('button.invite-resend')!.click();
+		rowOf('bob').querySelector<HTMLButtonElement>('button[title="Reset two-step sign-in"]')!.click();
+
+		const messages = confirm.mock.calls.map((call) => call[1] as string);
+		expect(messages).toHaveLength(3);
+		expect(messages[0]).toContain(`${HELD_WORDS} ${ASKS_FOR_PASSWORD}`);
+		expect(messages[1]).toContain(`${INVITE_REFUSED} ${ASKS_FOR_PASSWORD}`);
+		expect(messages[1]).not.toContain('when the invite is used');
+		expect(messages[2]).not.toContain('held for the superadmin');
+	});
+
+	it('says in the invite’s confirm that backup destinations alone are held when the invite is used (B3)', () => {
+		const confirm = vi.fn();
+		const destinationsOnly = {
+			...withAnn,
+			users: withAnn.users.map((user) => (user.id === ann.id ? { ...user, settingsSet: { mail: false, appUrl: false, destinations: ['Offsite'] } } : user))
+		};
+		const target = draw(UsersPanel, { data: destinationsOnly, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		const row = [...target.querySelectorAll('.user-row')].find((r) => r.querySelector('.user-row-name')!.textContent === 'ann')!;
+
+		row.querySelector<HTMLButtonElement>('button.invite-resend')!.click();
+
+		expect(confirm.mock.calls[0][1]).toContain(`${HELD_WHEN_USED} ${ASKS_FOR_PASSWORD}`);
+		expect(confirm.mock.calls[0][1]).not.toContain('will be refused');
+	});
+
+	it('says in the password dialog, once read again, what the account set, which the reset holds', async () => {
+		const target = draw(ResetPasswordDialog, { data: withAnn });
+		await (drawn!.component as unknown as { openResetDialog: (userId: number) => Promise<void> }).openResetDialog(ann.id);
+		flushSync();
+
+		expect(target.querySelector('.settings-held')!.textContent).toBe(HELD_WORDS.trim());
+	});
+
+	it('lists what is held, offers Keep and Remove to the superadmin alone, and sends Keep with the place reviewed and the password', async () => {
+		answer = (what) =>
+			what === 'GET /api/admin/settings/held'
+				? Response.json({ held: [MAIL_HELD], tombstones: 0, mayRelease: true })
+				: what === 'POST /api/admin/settings/held'
+					? Response.json({ success: true, kept: 'mail' })
+					: undefined;
+		const confirm = vi.fn();
+		const target = draw(SettingsHeldPanel, { confirm });
+		await settle();
+
+		expect(target.querySelector('.held-item')!.textContent).toContain('The mail settings: mail server smtp.evil.example, port 587');
+		// What was mailed through it before the hold still works (C14).
+		expect(target.querySelector('.held-urgent')!.textContent!.trim()).toBe(
+			'Links already mailed through these mail settings stay usable until they are removed, so decide quickly.'
+		);
+		// Each button names its setting to a screen reader (C11).
+		expect(buttonNamed(target, 'Keep').getAttribute('aria-label')).toBe('Keep the mail settings');
+		expect(buttonNamed(target, 'Remove').getAttribute('aria-label')).toBe('Remove the mail settings');
+		buttonNamed(target, 'Keep').click();
+		expect(confirm.mock.calls[0][1]).toContain('Keep the mail settings in use as they are now: mail server smtp.evil.example, port 587.');
+		expect(confirm.mock.calls[0][3]).toEqual({ askPassword: true });
+		await confirm.mock.calls[0][2](proofOf(MINE));
+		await settle();
+		expect(asked('POST /api/admin/settings/held').map((request) => request.body)).toEqual([
+			{ setting: 'mail', place: MAIL_HELD.place, action: 'keep', currentPassword: MINE, currentCode: CODE }
+		]);
+		// Remove says, before it is pressed, every mailed link it ends (C2, C3).
+		buttonNamed(target, 'Remove').click();
+		expect(confirm.mock.calls[1][1]).toContain(
+			'Remove the mail settings (mail server smtp.evil.example, port 587). Every invite not yet used, two-step set-up link, request link and ' +
+				'decision link on the server will end too'
+		);
+
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		answer = (what) => (what === 'GET /api/admin/settings/held' ? Response.json({ held: [MAIL_HELD], tombstones: 0, mayRelease: false }) : undefined);
+		const asAdmin = draw(SettingsHeldPanel, { confirm: vi.fn() });
+		await settle();
+		expect(asAdmin.querySelector('.held-item')).not.toBeNull();
+		expect(buttonNamed(asAdmin, 'Keep')).toBeUndefined();
+		expect(buttonNamed(asAdmin, 'Remove')).toBeUndefined();
+	});
+
+	it('shows the superadmin a banner while a setting is held, and nothing to an administrator or with none held', () => {
+		// In its own number (C11): the mail settings are, a destination is.
+		const shown = draw(SettingsHeldBanner, { held: [{ kind: 'mail', name: null }], superadmin: true });
+		const said = (within: HTMLElement) => within.querySelector('.settings-held-banner')!.textContent!.replace(/\s+/g, ' ');
+		expect(said(shown)).toContain('The mail settings are held for your review: nothing is sent to them until you keep or remove them. Review them');
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		const one = draw(SettingsHeldBanner, { held: [{ kind: 'destination', name: 'Offsite' }], superadmin: true });
+		expect(said(one)).toContain('Backup destination "Offsite" is held for your review: nothing is sent to it until you keep or remove it. Review it');
+		unmount(drawn!.component);
+		drawn!.target.remove();
+
+		expect(draw(SettingsHeldBanner, { held: [{ kind: 'mail', name: null }], superadmin: false }).querySelector('.settings-held-banner')).toBeNull();
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		expect(draw(SettingsHeldBanner, { held: [], superadmin: true }).querySelector('.settings-held-banner')).toBeNull();
 	});
 });

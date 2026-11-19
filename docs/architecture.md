@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.137
+version: 1.138
 status: As-Built
 date: 2026-11-19
 tags:
@@ -2998,7 +2998,7 @@ Archiving is not deleting: `archiveCard()` stamps the card and writes the activi
 
 ### Settings that go with their setter
 
-Since card 2397 (2026-10-22), migration `0059_add_setting_setters.sql` adds one table, `setting_setters` (`setting` and `place` text, the key `PRIMARY KEY(setting, place)`, `user_id` integer, nullable for a place recorded as nobody's, `REFERENCES users(id) ON DELETE CASCADE`, `idx_setting_setters_user_id`), and `src/lib/server/setting-setters.ts` reads and writes it. For each setting that sends mail or backups somewhere it names who put it at each place it has been, the place a SHA-256 digest of what decides where it sends: `mail` (every `smtp_*` row of `settings`, as one; its place the host, port, user and `allowInsecure`), `app_url` (an address), and `backup_destination:<name>` (its place `destinationPlace()` in `backup-secrets.ts`, card 2270's `elsewhere` rule). A setting's setter is the account recorded for the place it is at now, so a setting changed and changed back is its first setter's again (the second code review), unless the superadmin moves it or a secret is typed with the move, which takes the place over, and a setting saved before 0059 leaves its place recorded as nobody's; each account keeps one row per setting (the third); a sender's name or address, a secret typed again for the same place, an App URL cleared or an SFTP host key confirmed moves nothing (the first). `settingsHeldBy()` reads what a removal would take, from each account for the admin page's load, or from one for `GET /api/users/:id`, which the users panel reads just before it asks to make an account a user, disable it or delete it. The three settings routes record the setter inside their `writeAs` (`recordMailSetters`, `recordDestinationSetters`, `recordDestinationSetter` after a Google Drive Connect), and the three paths that stop an account being an administrator who can act, the role change of `PUT /api/users/:id`, `disableAccount()` (card 2671, why `'disabled'`) and `deleteUser()`, call `removeSettingsSetBy` in their own transaction, so the role change, the disable or the delete and every removal commit together or not at all; the `WARN` lines under `SMTP` and `BACKUP` are queued with `afterCommit`. A table rather than a column, because the destinations are one JSON row and `settings` is one of the six reconciled tables. Settings from before the migration are at a place with no row, have no setter and stay in force. In the same group (card 2398), `PUT /api/admin/backup` refuses to anyone but the superadmin a save that lowers Keep Last, removes a destination or switches the schedule off, asked of the caller inside its `writeAs`. See [Settings Go With Their Setter](authentication-security.md#settings-go-with-their-setter-card-2397) and [Data Model](data-model.md).
+Since card 2397 (2026-10-22), migration `0059_add_setting_setters.sql` adds one table, `setting_setters` (`setting` and `place` text, the key `PRIMARY KEY(setting, place)`, `user_id` integer, nullable for a place recorded as nobody's, `REFERENCES users(id) ON DELETE CASCADE`, `idx_setting_setters_user_id`), and `src/lib/server/setting-setters.ts` reads and writes it. For each setting that sends mail or backups somewhere it names who put it at each place it has been, the place a SHA-256 digest of what decides where it sends: `mail` (every `smtp_*` row of `settings`, as one; its place the host, port, user and `allowInsecure`), `app_url` (an address), and `backup_destination:<name>` (its place `destinationPlace()` in `backup-secrets.ts`, card 2270's `elsewhere` rule). A setting's setter is the account recorded for the place it is at now, so a setting changed and changed back is its first setter's again (the second code review), unless the superadmin moves it or a secret is typed with the move, which takes the place over, and a setting saved before 0059 leaves its place recorded as nobody's; each account keeps one row per setting (the third); a sender's name or address, a secret typed again for the same place, an App URL cleared or an SFTP host key confirmed moves nothing (the first). `settingsSetBy()` (named `settingsHeldBy()` before card 2922) reads what a removal would take, from each account for the admin page's load, or from one for `GET /api/users/:id`, which the users panel reads just before it asks to make an account a user, disable it or delete it. The three settings routes record the setter inside their `writeAs` (`recordMailSetters`, `recordDestinationSetters`, `recordDestinationSetter` after a Google Drive Connect), and the three paths that stop an account being an administrator who can act, the role change of `PUT /api/users/:id`, `disableAccount()` (card 2671, why `'disabled'`) and `deleteUser()`, call `removeSettingsSetBy` in their own transaction, so the role change, the disable or the delete and every removal commit together or not at all; the `WARN` lines under `SMTP` and `BACKUP` are queued with `afterCommit`. A table rather than a column, because the destinations are one JSON row and `settings` is one of the six reconciled tables. Settings from before the migration are at a place with no row, have no setter and stay in force. In the same group (card 2398), `PUT /api/admin/backup` refuses to anyone but the superadmin a save that lowers Keep Last, removes a destination or switches the schedule off, asked of the caller inside its `writeAs`. See [Settings Go With Their Setter](authentication-security.md#settings-go-with-their-setter-card-2397) and [Data Model](data-model.md).
 
 ```mermaid
 flowchart LR
@@ -3009,8 +3009,30 @@ flowchart LR
     Dis["disableAccount()<br/>(card 2671)"] -->|"removeSettingsSetBy"| R
     Del["deleteUser()"] -->|"removeSettingsSetBy"| R
     T -.->|"names whose, by place"| R
-    Held["admin page load,<br/>GET /api/users/:id"] -->|"settingsHeldBy"| T
+    Held["admin page load,<br/>GET /api/users/:id"] -->|"settingsSetBy"| T
     Users[("users")] -->|"ON DELETE CASCADE"| T
+    End["endAccountAccess with keys<br/>(card 2922)"] -->|"holdSettingsSetBy:<br/>copy the account's rows"| H[("setting_holds")]
+    H -.->|"held at its place"| Senders["deliverMail, getAppUrl,<br/>runBackup, Test, Connect"]
+    Review["POST /api/admin/settings/held"] -->|"Keep deletes; Remove leaves<br/>a tombstone"| H
+```
+
+Since card 2922 (2026-11-19), migration `0074_add_setting_holds.sql` adds `setting_holds` (`setting`, `place`, `held_because`, `held_at`, `set_by`, `set_by_name`, `PRIMARY KEY(setting, place)`, no foreign key). Every ending of an account's access with its keys copies the account's setter rows into it (`holdSettingsSetBy`), and a setting at a held place sends nothing: the leaf `src/lib/server/setting-holds.ts`, which imports the database alone, answers `mailHeldAt`, `appUrlHeldAt` and `destinationHeldAt` from values its callers have just read, at the moment each would reach outside. `GET` and `POST /api/admin/settings/held` list them and let the superadmin keep (delete the hold) or remove (the setting goes, the hold stays as a tombstone) each. `settingsHeldBy()` and `heldIn()` were renamed `settingsSetBy()` and `setIn()` so that "held" names this hold alone. A restore carries this server's holds over the backup's (`carrySettingHolds`); the start names them at `WARN` (`reportSettingsHeld`). See [Settings Held for Review When Access Ends](authentication-security.md#settings-held-for-review-when-access-ends-card-2922).
+
+```mermaid
+sequenceDiagram
+    participant R as Ending route (reset, invite, own change)
+    participant E as endAccountAccess
+    participant S as setting-setters.ts
+    participant H as setting_holds
+    participant L as setting-holds.ts (leaf)
+    participant M as deliverMail / getAppUrl / runBackup
+    R->>E: apiKeys true, cause
+    E->>S: holdSettingsSetBy(account, cause)
+    S->>H: INSERT OR IGNORE each setter row (setting, place)
+    S-->>R: afterCommit: WARN [SMTP], WARN [BACKUP]
+    M->>L: held at the place just read?
+    L->>H: SELECT by (setting, place), a destination by place alone
+    L-->>M: held: send nothing
 ```
 
 Each function in the module opens its own `inTransaction` and checks no access. A route calls it inside the transaction in which it read the row and checked the caller, which makes the delete a savepoint of the route's transaction.

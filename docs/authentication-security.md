@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.154
+version: 1.155
 status: As-Built
 date: 2026-11-19
 tags:
@@ -3491,7 +3491,7 @@ also counts the live keys and the ids of the webhooks kept (`apiKeysKept`, `live
 
 **What the route reads in the reset's transaction** (card 2915): before `resetTwoStep`, the live
 keys (`liveApiKeysOf()` in `second-step.ts`, the key half of `keysAndWebhooksOf()`, since the
-reset deletes them) and the settings the account set that are still in force (`settingsHeldBy()`
+reset deletes them) and the settings the account set that are still in force (`settingsSetBy()`
 in `setting-setters.ts`, read as their removal would read them: the mail settings, the App URL and
 destinations by name, S1); after it, the webhooks switched off, by the switch-off's own ids
 (`webhooksByIds(reset.webhookIds)`, S5), so the message, the answer and the mail name exactly what
@@ -5896,7 +5896,7 @@ demotion. A move with no secret typed keeps the change-and-back protection. **Ea
 keeps one row per setting**, its latest place (`claim()` drops its others), so the table grows
 with the accounts and not with every save. **The place a setting saved before 0059 leaves when
 first moved is recorded as nobody's** (`user_id` NULL), so changed and changed back it is
-nobody's again; a row naming nobody is never held, by the removal or by `settingsHeldBy()`. Demoting an account to user (`PUT
+nobody's again; a row naming nobody is never counted, by the removal or by `settingsSetBy()` (named `settingsHeldBy()` before card 2922, whose "hold" is the review hold alone). Demoting an account to user (`PUT
 /api/users/:id`; only the superadmin lowers an administrator) or deleting it (`deleteUser`)
 calls `removeSettingsSetBy` in the same transaction, which takes each setting still at a place
 the account's rows record: every `smtp_*` row for the mail (no mail is sent, invites and
@@ -5905,7 +5905,7 @@ use `APP_URL`, or else `ORIGIN`; an App URL cleared since is at no recorded plac
 each such destination, out of `backup_config` with its stored secrets; then every row of each
 setting removed, whoever's, and every row of the account. A setting moved since to somebody
 else's place, or to one nobody is recorded for, stays. Just before either is sent, the users
-panel reads what the account holds now from `GET /api/users/:id` (`settingsHeldBy(id)`, read
+panel reads what the account holds now from `GET /api/users/:id` (`settingsSetBy(id)`, read
 as the removal reads it; by the admin page's rule of the counts, null for the caller's own
 account and any the caller may not manage), so a setting another administrator took over, or
 gave back, after the page loaded is asked about as it is (the second review); the delete's
@@ -6008,6 +6008,95 @@ Covered by `tests/setting-setters.test.ts` (the start-up removal of card 2406 in
 `tests/migrations.test.ts` (0059 and a restore of a backup from before it),
 `tests/import-working-copy.test.ts` (a working copy's setter rows) and
 `tests/admin-panels.test.ts`.
+
+### Settings Held for Review When Access Ends (Card 2922)
+
+Disable, demotion and delete remove what an account set (above). Every other ending of an
+account's access that ends its API keys **holds** it for the superadmin's review instead: an
+administrator's password set (`PUT /api/users/[id]/password`), an invite used, a two-step reset
+(`POST /api/users/[id]/mfa/reset`, and `scripts/mfa-reset.mjs` on the host unless
+`--keep-api-keys`), and the holder's own change with "end my keys". An intruder who signed in as
+an administrator and pointed the mail at their relay or added a backup destination keeps nothing
+sending once the account is taken back; a trusted administrator reset for a lost phone loses
+nothing, as the superadmin keeps each setting in one step.
+
+**How.** `endAccountAccess` (under `apiKeys`) calls `holdSettingsSetBy` (`setting-setters.ts`),
+which copies every setter row of the account, as it is, into `setting_holds` (migration 0074:
+`setting`, `place`, `held_because 'setter access ended'`, `held_at`, `set_by`, `set_by_name`; no
+foreign key, so a hold outlives the account). A setting is held while it is at a place that table
+holds (`setting-holds.ts`, a leaf with no import of `email.ts`). Nothing is deleted and no setter
+row changes: the sealed mail password and destination secrets stay, for Keep. One `WARN` under
+`SMTP` and one under `BACKUP` name what was held, from the rows copied. The host script copies the
+same rows in one statement and writes the same lines (`heldLines`, pinned word for word).
+
+**What a hold stops**, each asked at the moment the setting would reach outside, from the values
+just read, with nothing kept in memory:
+
+| Setting | Where it is asked | What happens |
+|---|---|---|
+| Mail | `deliverMail`, after `getSmtpConfig()`, with nothing awaited before the transport | `{ sent: false, problem: 'held' }`, not counted; every place that asks first whether a mail can go asks `mailCannotSend()` (`smtpPasswordMissing() \|\| mailHeld()`); `isSmtpConfigured()` still says yes, so the password-alone set-up leave does not open |
+| App URL | `getAppUrl()`, and so `linkBaseUrl()` | the row is not used: `APP_URL`, else `ORIGIN` |
+| Destination | `notTried()` and again immediately before each upload and its retention (`destinationHeldNow`, by the place of the entry in use, under any name: the code review's C12) | not tried, named in Backup History; Test, Google Drive Connect and a save that renames, retypes or removes it are refused `409`. An upload already on the wire finishes |
+
+**Saves of held mail or a held App URL are refused** (the code review's C1): while the mail
+settings are held, any save of them (`PUT /api/admin/smtp`), a port or a host's case alone
+included, is `409` "keep or remove it first", and so is a save of the App URL while it is held;
+asked before the password and again in the transaction. Only Keep or Remove releases either.
+
+**An invite through the account's own settings is refused** (C15): `POST /api/users/[id]/invite`
+answers `409` where the mail settings or the App URL in force were set by the account invited, and
+never makes the link from such an App URL.
+
+**Keep and Remove** (`GET`/`POST /api/admin/settings/held`; the list on the admin page, a banner
+for the superadmin on every admin page, a pointer above each settings panel). The list is every
+administrator's to read, with where each setting sends and no secret. Only the superadmin keeps or
+removes, with their password and a code, sending the place digest they reviewed (a different one
+is `409`). **Keep** deletes that hold and nothing else: no setter row changes. **Remove** removes
+the setting and its setter rows; its hold stays as a **tombstone**, so the same setting saved or
+restored at that place is held again. Removing held **mail** or a held **App URL** (C3) also ends,
+across the server, every invite not yet used, every set-up link, every request link and every
+decision participant's personal link (C2), each of which was mailed through the mail settings with
+a link that began with the App URL; the answer counts them and one `WARN` says how many. Disable,
+demotion, delete and a destination's removal by a save leave holds as tombstones too. The list is
+answered with `Cache-Control: no-store` (C17); for an SFTP destination the digest Keep is checked
+against includes its confirmed host key (C16). The mail's entry says that links already mailed
+through it stay usable until it is removed (C14).
+
+**The two-step reset's link.** Where the App URL the account set is the only address the server
+has for the link, the reset is refused `503` before the password is asked, with the words to
+disable the account or reset its password now; nothing is held or ended.
+
+**Request links.** Every ending that ends keys deletes the links of the requests the account
+made, as a disable does; the holder reads them signed in or asks for a new link.
+
+**Password-only set-up** (card 2769's leave) closes for good once mail has ever been set up on the
+server (`mail_ever_configured_at`, written at the first save of a host, at every start where
+one is stored, before any removal deletes the `smtp_*` rows, and by a restore whose data holds a
+mail host (C4), and kept by a restore): no removal of the mail settings opens it again.
+
+**Restore.** This server's holds are carried over the backup's as a union
+(`carrySettingHolds` in `db/restore.ts`), so a backup made before an ending, or before a Remove,
+brings the setting back held; one kept here since may come back held, which the import's answer
+says. A working copy deletes the mail and destination holds after the carry, as it removes those
+settings. The start names every held setting in force at `WARN`, and counts the other holds
+(tombstones, places a setting has left) at `INFO` (C5); an older image ignores the table, so keep
+or remove each before going back.
+
+```mermaid
+stateDiagram-v2
+    [*] --> InForce: saved (setter recorded at its place)
+    InForce --> Held: an ending with keys of its setter
+    Held --> InForce: superadmin Keep (hold deleted; setter rows unchanged)
+    Held --> Tombstone: Remove, or setter demoted, disabled or deleted
+    InForce --> Removed: setter demoted, disabled or deleted (no hold)
+    Tombstone --> Held: saved again or restored at that place (a destination under any name)
+    Held --> Held: a save of held mail or App URL refused 409
+    Removed --> [*]
+```
+
+Covered by `tests/setting-holds.test.ts`, `tests/two-step-enrol.test.ts` (T65b, T65c),
+`tests/request-links.test.ts` (T10b), `tests/mfa-reset-script.test.ts` (T21, T34, T40 to T42),
+`tests/import-working-copy.test.ts` and `tests/admin-panels.test.ts`.
 
 ### What a Backup Holds, and What a Restore Brings In
 
@@ -6555,7 +6644,7 @@ log as one, and says "it is not a plain web address".
 
 **An App URL in use that the superadmin did not save is said at start (CS2).** With no
 address configured, a row an administrator saved before card 2847 is still used. Where the
-row is in use and card 2397's record (`settingsHeldBy`) names an account other than the
+row is in use and card 2397's record (`settingsSetBy`) names an account other than the
 superadmin, or none, the start writes one `WARN` line, `reportAppUrlSetByOther()`: "The App URL
 `<url>` was saved by "`<name>`" (or "no recorded account"), not the superadmin; check it, or
 clear it and save it again as the superadmin." Saving the same address again records nothing,

@@ -32,7 +32,8 @@ import { error, isHttpError, json } from '@sveltejs/kit';
 import { google, type Auth, type drive_v3 } from 'googleapis';
 import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
 import { whilePasswordHolds } from '$lib/server/auth';
-import { getBackupConfig, saveBackupConfig } from '$lib/server/backup';
+import { destinationHeldNow, getBackupConfig, saveBackupConfig } from '$lib/server/backup';
+import { DESTINATION_HELD } from '$lib/server/setting-holds';
 import { makeDumpfireFolder, reachFolder } from '$lib/server/backup-destinations';
 import { quotedName } from '$lib/server/backup-secrets';
 import { afterCommit } from '$lib/server/db/transaction';
@@ -122,6 +123,8 @@ function connectable(destName: string) {
 	const config = getBackupConfig();
 	const dest = config.destinations.find(d => d.name === destName && d.type === 'gdrive') as any;
 	if (!dest) throw error(404, 'Google Drive destination not found');
+	// Not one held for the superadmin's review (card 2922, R5): a Connect binds it to a Google account anew.
+	if (destinationHeldNow(dest)) throw error(409, DESTINATION_HELD);
 	const { clientId, clientSecret } = dest;
 	if (!clientId || !clientSecret) throw error(400, 'Client ID and Secret required');
 	return { dest, clientId, clientSecret };
@@ -141,6 +144,8 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const config = getBackupConfig();
 	const dest = config.destinations.find(d => d.name === destName && d.type === 'gdrive');
 	if (!dest || dest.type !== 'gdrive') throw error(404, 'Google Drive destination not found');
+	// Not one held for the superadmin's review (card 2922, R5).
+	if (destinationHeldNow(dest)) throw error(409, DESTINATION_HELD);
 
 	const { clientId, clientSecret } = dest as any;
 	if (!clientId || !clientSecret) throw error(400, 'Client ID and Secret required');
@@ -295,6 +300,8 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 			const index = current.destinations.findIndex(d => d.name === destName && d.type === 'gdrive');
 			const now = index === -1 ? null : (current.destinations[index] as any);
 			if (!now || now.clientId !== clientId || now.clientSecret !== clientSecret || (now.folderId || '') !== folderId) return false;
+			// Held meanwhile (card 2922, R5): nothing is saved, and the folder made goes.
+			if (destinationHeldNow(now)) return false;
 			const connected = { ...now, refreshToken, folderId: madeNow ? madeNow.id : folderId };
 			delete connected.grantedScope;
 			if (grantedScope !== null) connected.grantedScope = grantedScope;
