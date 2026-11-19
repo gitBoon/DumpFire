@@ -28,6 +28,7 @@ import { db, sqlite } from './db';
 import { users, type User } from './db/schema';
 import { afterCommit } from './db/transaction';
 import { endAccountAccess, namingIds, type AccessEnded } from './auth';
+import { ENDING_IN_MAIL } from './webhooks';
 import { anyRemoved, removeFailureAddress, removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { createLogger } from './logger';
 import { stamp } from '$lib/timestamps';
@@ -124,7 +125,9 @@ function requireTransaction(what: string): void {
  *
  * Writes `disabled_at` and `disabled_by`; ends what a password reset ends,
  * with the API keys (`endAccountAccess`: the webhooks it set are switched off
- * as `setter access ended`, its report schedules paused); deletes the links of
+ * as `setter access ended`, those already off held the same way and their
+ * boards' owners mailed once committed, card 2923; its report schedules
+ * paused); deletes the links of
  * every request it made (S3); for an administrator removes the mail
  * settings, the App URL and the destinations they saved
  * (`removeSettingsSetBy`, reason `disabled`); and, whatever its role, takes
@@ -144,7 +147,11 @@ export function disableAccount(target: User, actor: Actor, ip: string | null = n
 
 	const disabledAt = stamp();
 	db.update(users).set({ disabledAt, disabledBy: actor.id }).where(eq(users.id, target.id)).run();
-	const access = endAccountAccess(target.id, { apiKeys: true });
+	// Told after the commit (card 2923): `disabled_at`, written above, leaves the account out of the owners' mail.
+	const access = endAccountAccess(target.id, {
+		apiKeys: true,
+		cause: { log: `${target.username}'s account was disabled by ${actor.username}`, mail: ENDING_IN_MAIL.disabled }
+	});
 	const requestLinksEnded = sqlite
 		.prepare('DELETE FROM request_links WHERE request_id IN (SELECT id FROM task_requests WHERE requester_user_id = ?)')
 		.run(target.id).changes;

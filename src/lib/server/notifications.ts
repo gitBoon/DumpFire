@@ -911,17 +911,25 @@ export type WebhookInMail = { boardId: number; id: number; host: string; why: st
  * that speak to them (`notifyWebhookSetter`), unless they are one of the
  * board's owners told above. One who cannot open the board is told nothing
  * of it.
+ *
+ * `held` (card 2923, S1): webhooks already switched off without a hold that
+ * the same write held. Listed apart, in the same mail: one mail to each
+ * recipient for the write, over the boards of both groups, each owner told
+ * only of their own boards. A mail that holds a held webhook is titled "A
+ * notice about webhooks on your boards"; one of switched-off webhooks alone
+ * keeps its title. A held webhook never mails its setter.
  */
-export function notifyWebhooksSwitchedOff(items: readonly WebhookInMail[], cause: string): void {
-	if (!isSmtpConfigured() || items.length === 0) return;
-	const byRecipient = new Map<number, { email: string; items: WebhookInMail[] }>();
+export function notifyWebhooksSwitchedOff(items: readonly WebhookInMail[], cause: string, held: readonly WebhookInMail[] = []): void {
+	if (!isSmtpConfigured() || (items.length === 0 && held.length === 0)) return;
+	const byRecipient = new Map<number, { email: string; items: WebhookInMail[]; held: WebhookInMail[] }>();
 	const toldOf = new Map<number, Set<number>>();
-	for (const boardId of [...new Set(items.map((item) => item.boardId))]) {
+	for (const boardId of [...new Set([...items, ...held].map((item) => item.boardId))]) {
 		const recipients = webhookRecipients(boardId);
 		toldOf.set(boardId, new Set(recipients.map((recipient) => recipient.id)));
 		for (const recipient of recipients) {
-			const entry = byRecipient.get(recipient.id) ?? { email: recipient.email, items: [] };
+			const entry = byRecipient.get(recipient.id) ?? { email: recipient.email, items: [], held: [] };
 			entry.items.push(...items.filter((item) => item.boardId === boardId));
+			entry.held.push(...held.filter((item) => item.boardId === boardId));
 			byRecipient.set(recipient.id, entry);
 		}
 	}
@@ -936,26 +944,50 @@ export function notifyWebhooksSwitchedOff(items: readonly WebhookInMail[], cause
 		bySetter.set(setter.id, entry);
 	}
 	for (const { email, items: theirs } of bySetter.values()) notifyWebhookSetter(email, theirs, cause);
-	for (const { email, items: theirs } of byRecipient.values()) {
+	// Each board's name read once for the write, however many recipients and webhooks name it (card 2923's code review, E7).
+	const boardNames = new Map<number, string>();
+	const boardName = (boardId: number) => {
+		if (!boardNames.has(boardId)) boardNames.set(boardId, getBoardName(boardId));
+		return boardNames.get(boardId)!;
+	};
+	for (const { email, items: theirs, held: theirsHeld } of byRecipient.values()) {
 		const rows = theirs
 			.map(
 				(item) =>
-					`<li style="margin: 0 0 8px;">Board <strong>${escapeHtml(getBoardName(item.boardId))}</strong>: webhook ${item.id} to ` +
+					`<li style="margin: 0 0 8px;">Board <strong>${escapeHtml(boardName(item.boardId))}</strong>: webhook ${item.id} to ` +
 					`<strong>${escapeHtml(item.host)}</strong>, switched off because ${escapeHtml(item.why)}.</li>`
 			)
 			.join('');
+		// Card 2923 (S1): the already-off webhooks the write held, listed apart, host only, in fixed words.
+		const heldRows = theirsHeld
+			.map(
+				(item) =>
+					`<li style="margin: 0 0 8px;">Board <strong>${escapeHtml(boardName(item.boardId))}</strong>: webhook ${item.id} to ` +
+					`<strong>${escapeHtml(item.host)}</strong>: already switched off; now held because ${escapeHtml(item.why)}; switched on, it is given a new secret.</li>`
+			)
+			.join('');
 		const one = theirs.length === 1;
-		const html = emailTemplate(one ? 'A webhook was switched off' : 'Webhooks were switched off', `
+		const notice = theirsHeld.length > 0;
+		const title = notice ? 'A notice about webhooks on your boards' : one ? 'A webhook was switched off' : 'Webhooks were switched off';
+		const switchedOff =
+			theirs.length === 0
+				? ''
+				: `<ul style="margin: 0 0 12px; padding-left: 20px; font-size: 13px; color: #334155;">${rows}</ul>
+			<p style="margin: 0 0 8px; font-size: 13px; color: #334155;">${one ? 'It sends nothing, and stays off' : 'They send nothing, and stay off'}, even if the account that set ${one ? 'it' : 'them'} up is given the board back.</p>`;
+		const heldList = !notice
+			? ''
+			: `<p style="margin: 0 0 8px; font-size: 13px; color: #334155;">${theirsHeld.length === 1 ? 'This one was already switched off, and is now held' : 'These were already switched off, and are now held'}:</p>
+			<ul style="margin: 0 0 12px; padding-left: 20px; font-size: 13px; color: #334155;">${heldRows}</ul>`;
+		const html = emailTemplate(title, `
 		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #dc2626;">
 			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">What caused it: ${escapeHtml(cause)}.</p>
-			<ul style="margin: 0 0 12px; padding-left: 20px; font-size: 13px; color: #334155;">${rows}</ul>
-			<p style="margin: 0 0 8px; font-size: 13px; color: #334155;">${one ? 'It sends nothing, and stays off' : 'They send nothing, and stay off'}, even if the account that set ${one ? 'it' : 'them'} up is given the board back.</p>
-			<p style="margin: 0; font-size: 13px; color: #475569;">What to do: delete each you do not recognise. To keep one, switch it on with your own API key (PUT /api/v1/webhooks/{id} with active true), which makes you its setter; one switched off for a lost setter or an ended key is given a new secret, given in that answer and readable by the board's owner or an administrator, to give its receiver.</p>
+			${switchedOff}
+			${heldList}
+			<p style="margin: 0; font-size: 13px; color: #475569;">What to do: delete each you do not recognise. To keep one, switch it on with your own API key (PUT /api/v1/webhooks/{id} with active true), which makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, to give its receiver.</p>
 		</div>
 	`);
-		sendEmail(email, one ? 'A webhook on your board was switched off' : `${theirs.length} webhooks on your boards were switched off`, html).catch((err) =>
-			log.error('A notice of webhooks switched off failed', err)
-		);
+		const subject = notice ? 'A notice about webhooks on your boards' : one ? 'A webhook on your board was switched off' : `${theirs.length} webhooks on your boards were switched off`;
+		sendEmail(email, subject, html).catch((err) => log.error('A notice of webhooks switched off failed', err));
 	}
 }
 

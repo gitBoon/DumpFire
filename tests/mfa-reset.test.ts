@@ -145,6 +145,9 @@ function giveKeyAndWebhook(holder: Parameters<typeof makeApiKey>[0]): { keyMade:
 const hookOf = (id: number) =>
 	db.select({ active: webhooks.active, heldBecause: webhooks.heldBecause, heldAt: webhooks.heldAt }).from(webhooks).where(eq(webhooks.id, id)).get()!;
 
+/** The holder's own notice of the reset, by its subject (card 2923, E2): the board's owners' mail may go beside it. */
+const HOLDER_NOTICE = 'Your DumpFire two-step sign-in was reset';
+
 let sent: Effects;
 
 beforeEach(() => {
@@ -574,7 +577,16 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			expect(db.select().from(apiKeys).where(eq(apiKeys.userId, other.id)).all()).toEqual(othersKeys);
 			expect(hookOf(othersHook.id)).toEqual({ active: true, heldBecause: null, heldAt: null });
 			// S5: the count the message says, the answer's and the mail's list of webhooks are the one switch-off's.
-			const [mail] = sent.emails;
+			// Card 2923 (E2): the holder's notice selected by its subject; beside it, the board's owners' mail, one, to the
+			// holder, who owns the board, naming the reset and who made it.
+			const [mail] = sent.emails.filter((email) => email.subject === HOLDER_NOTICE);
+			expect(sent.emails.filter((email) => email.subject !== HOLDER_NOTICE).map((email) => [email.to, email.subject])).toEqual([
+				[holder.email, 'A webhook on your board was switched off']
+			]);
+			// The kind of action and no account (card 2923's code review, S5): neither the holder nor the administrator is named.
+			const owners = sent.emails.find((email) => email.subject !== HOLDER_NOTICE)!.html;
+			expect(owners).toContain('What caused it: the account that set it up had its two-step sign-in reset by an administrator.');
+			for (const name of [/\bholder\b/, /\bada\b/]) expect(owners).not.toMatch(name);
 			const listed = mail.html.match(/<li>[^<]*, to [^<]*: made [^<]*<\/li>/g) ?? [];
 			expect(listed).toEqual([`<li>Sales, to hooks.example.test: made ${ended.hookMade} UTC</li>`]);
 			expect(Number(/the (\d+) webhook/.exec(res.body.message)?.[1])).toBe(res.body.webhooksSwitchedOff);
@@ -766,8 +778,11 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 				expect(sent.emails).toEqual([]);
 				return;
 			}
-			expect(sent.emails).toHaveLength(1);
-			const [mail] = sent.emails;
+			// Card 2923 (E2): the holder's notice by its subject, and beside it, where a webhook was switched off, the
+			// board's owners' mail, to the holder, who owns the board.
+			expect(sent.emails.filter((email) => email.subject === HOLDER_NOTICE)).toHaveLength(1);
+			expect(sent.emails.filter((email) => email.subject !== HOLDER_NOTICE).map((email) => email.to)).toEqual(hooks === 0 ? [] : [holder.email]);
+			const [mail] = sent.emails.filter((email) => email.subject === HOLDER_NOTICE);
 			if (says === null) {
 				expect(mail.html).not.toContain('report schedule');
 			} else {

@@ -66,6 +66,7 @@ import { logCardLeftGoal } from './milestones';
 import { moveToTrash, type UploadFile } from './uploads';
 import { removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { requireDisabledAccount } from './account-disable';
+import { ENDING_IN_MAIL, holdWebhooksOfSetter } from './webhooks';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DELETE');
@@ -923,7 +924,11 @@ export type UserRemoved = {
  * (card 2168): deleting an account is the strongest way of taking it back, and
  * the key then sets `webhooks.set_by` to NULL, which would leave a webhook an
  * intruder set sending with nobody named for a reset to reach. The board's
- * owner or an administrator can switch one on again through the API.
+ * owner or an administrator can switch one on again through the API. One they
+ * set that was already switched off without a hold is held the same way, left
+ * off, so that switching it on gives it a new secret; once committed both are
+ * told, a WARN each and one mail to each owner of their boards (card 2923).
+ * The disable before it normally leaves none to find.
  *
  * The mail settings, the App URL and the backup destinations they last
  * changed are removed, before the account goes (card 2397,
@@ -978,14 +983,15 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 		// The webhooks they set, switched off while they still name them. By id,
 		// for the log line, as a reset names them (the review, O5). Recorded as
 		// a hold, as a reset records it (card 2752's code review, CS4): switched
-		// on again, each is given a new secret.
-		const webhookIds = (
-			sqlite
-				.prepare("UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND active = 1 RETURNING id")
-				.all(stamp(), userId) as { id: number }[]
-		)
-			.map((row) => row.id)
-			.sort((a, b) => a - b);
+		// on again, each is given a new secret. One already switched off with no
+		// hold is held too, left off (card 2923); only those that were on are
+		// counted. Told once committed, a WARN for each group and the boards'
+		// owners mailed; the account is gone by then, so it is mailed nothing.
+		// The one writer of an ending (`holdWebhooksOfSetter`, the code review's E4).
+		const webhookIds = holdWebhooksOfSetter(userId, {
+			log: `${user.username}'s account was deleted by ${actor.username}`,
+			mail: ENDING_IN_MAIL.deleted
+		}).switchedOff.map((hook) => hook.id);
 		const webhooksSwitchedOff = webhookIds.length;
 		// What they set that sends mail or backups somewhere, while the setter
 		// rows still name them; the key would take only those rows (card 2397).

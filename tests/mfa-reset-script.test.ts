@@ -23,7 +23,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { tellSwitchedOff, type SwitchedOff } from '$lib/server/webhooks';
+// The script's own copy of the server's Webhooks lines (card 2923's code review, E8): importing it runs nothing.
+import { webhookLines } from '../scripts/mfa-reset.mjs';
 import { db, sqlite } from '$lib/server/db';
 import { enrolmentLinks, inviteTokens, reportSchedules, settingSetters, settings, signInChallenges, users } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -232,6 +235,12 @@ describe('scripts/mfa-reset.mjs', () => {
 			heldBecause: 'key ended'
 		});
 		const alreadyOffRow = sqlite.prepare('SELECT * FROM webhooks WHERE id = ?').get(alreadyOff.id);
+		// Card 2923 (case 11): a webhook the holder set that was switched off with no hold, as by a PUT, which both hold.
+		const pausedHook = makeWebhook(makeBoard({ owner: holder, name: 'Paused board' }).board, {
+			url: 'https://paused.example.test/in?token=t',
+			setBy: holder,
+			active: false
+		});
 		const keysOfHolder = sqlite.prepare('SELECT id, name, created_at AS createdAt FROM api_keys WHERE user_id = ? ORDER BY id').all(holder.id) as {
 			id: number;
 			name: string;
@@ -249,19 +258,20 @@ describe('scripts/mfa-reset.mjs', () => {
 		const twinsHookRow = sqlite.prepare('SELECT * FROM webhooks WHERE id = ?').get(twinsHook.id);
 
 		// What the server's own reset leaves of the same database.
-		const reset = inTransaction(() => resetTwoStep(holder.id, 'host-reset'));
+		const reset = inTransaction(() => resetTwoStep(holder.id, 'host-reset', { cause: { log: 'a test', mail: 'a test' } }));
 		// Card 2894 (case 3, E23): the holder's schedule paused by each, its stamp masked; the twin's as it was.
 		expect(reset.reportScheduleIds).toEqual([schedule.id]);
 		// Card 2915: both keys ended, the one already ended among them, and the webhook switched off, its stamp masked.
 		expect([reset.apiKeys, reset.webhookIds]).toEqual([2, [hook.id]]);
-		const expected = dumpOf(sqlite, { paused: [schedule.id], held: [hook.id] });
+		// Card 2923: the one already off held by both, its stamp masked; counted in neither.
+		const expected = dumpOf(sqlite, { paused: [schedule.id], held: [hook.id, pausedHook.id] });
 
 		// The username as typed, with spaces round it: trimmed, as sign-in trims it (decision 12).
 		const ran = run(['  holder  ']);
 
 		expect(ran.status, ran.stderr).toBe(0);
 		expect(ran.stderr).toBe('');
-		expect(fileDump({ paused: [schedule.id], held: [hook.id] })).toEqual(expected);
+		expect(fileDump({ paused: [schedule.id], held: [hook.id, pausedHook.id] })).toEqual(expected);
 		const copied = new Database(file, { readonly: true, fileMustExist: true });
 		try {
 			const [paused] = schedulesIn(copied, holder.id);
@@ -277,6 +287,10 @@ describe('scripts/mfa-reset.mjs', () => {
 			expect(copied.prepare('SELECT * FROM api_keys WHERE user_id = ? ORDER BY id').all(twin.id)).toEqual(twinsKeys);
 			expect(copied.prepare('SELECT * FROM webhooks WHERE id = ?').get(twinsHook.id)).toEqual(twinsHookRow);
 			expect(copied.prepare('SELECT * FROM webhooks WHERE id = ?').get(alreadyOff.id)).toEqual(alreadyOffRow);
+			expect(copied.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(pausedHook.id)).toEqual({
+				active: 0,
+				heldBecause: 'setter access ended'
+			});
 		} finally {
 			copied.close();
 		}
@@ -290,6 +304,13 @@ describe('scripts/mfa-reset.mjs', () => {
 		// 2894's code review, CS1); and the settings the holder is recorded as having set (S1).
 		expect(ran.stdout).toContain(`Ended 2 API key(s); the 1 still working: ${live[0].name} (made ${live[0].createdAt.slice(0, 10)}).`);
 		expect(ran.stdout).toContain(`Switched off 1 webhook(s) they set up: Ops board, to hooks.example.test (made ${hook.createdAt.slice(0, 10)}).`);
+		// Card 2923 (S2): the one held listed apart, by board, host and day; and the owners are the operator's to tell.
+		expect(ran.stdout).toContain(
+			`Held 1 webhook(s) they set up that were already switched off: Paused board, to paused.example.test (made ${pausedHook.createdAt.slice(0, 10)}); ` +
+				'switched on, each is given a new secret.'
+		);
+		expect(ran.stdout).toContain("Their boards' owners were not mailed: tell them.");
+		expect(ran.stdout).not.toContain('token=t');
 		expect(ran.stdout).toContain(
 			"Give them the names: they make new keys once signed in, and the board's owner or an administrator switches back on " +
 				'any webhook they recognise, which gives it a new secret.'
@@ -308,12 +329,44 @@ describe('scripts/mfa-reset.mjs', () => {
 		expect(isStamp(links[0].createdAt)).toBe(true);
 		expect(Math.abs(parseStamp(links[0].expiresAt)!.getTime() - (Date.now() + ENROLMENT_LINK_LIFETIME_MS))).toBeLessThan(60_000);
 
-		// One line more in the log, CRITICAL, the account's, with its counts and no token.
+		// Four lines more in the log (card 2923, S6): the server's three Webhooks lines, in its words, with no account,
+		// before the CRITICAL line, the account's, with its counts and no token.
 		const copy = new Database(file, { readonly: true, fileMustExist: true });
 		const lines = copy.prepare('SELECT * FROM system_logs ORDER BY id').all() as Row[];
 		copy.close();
-		expect(lines).toHaveLength(logsBefore + 1);
-		const line = lines.at(-1)!;
+		expect(lines).toHaveLength(logsBefore + 4);
+		const cause = "holder's two-step sign-in was reset on the server's host";
+		expect(lines.slice(logsBefore).map((row) => [row.level, row.context, row.user_id, row.ip, row.meta, row.message])).toEqual([
+			[
+				'WARN',
+				'Webhooks',
+				null,
+				null,
+				null,
+				`Webhook ${hook.id} on board ${hook.boardId} switched off: the account that set it up (user ${holder.id}) had its access ended (${cause}). ` +
+					'It stays off until an owner of the board or an administrator switches it on.'
+			],
+			[
+				'WARN',
+				'Webhooks',
+				null,
+				null,
+				null,
+				`Webhook ${pausedHook.id} on board ${pausedHook.boardId}, already switched off, is now held: the account that set it up (user ${holder.id}) ` +
+					`had its access ended (${cause}). Switched on again by an owner of the board or an administrator, it is given a new secret.`
+			],
+			[
+				'WARN',
+				'Webhooks',
+				null,
+				null,
+				null,
+				"The owners of the boards of the 2 webhook(s) switched off or held above were not mailed, as this ran on the server's host, " +
+					'which sends no mail. The lines above name them.'
+			],
+			['CRITICAL', 'AUTH', holder.id, null, expect.any(String), expect.any(String)]
+		]);
+		const line = lines.find((row) => row.level === 'CRITICAL')!;
 		expect(line).toMatchObject({ level: 'CRITICAL', context: 'AUTH', user_id: holder.id, ip: null });
 		expect(isStamp(line.timestamp)).toBe(true);
 		expect(line.message).toBe(
@@ -344,8 +397,8 @@ describe('scripts/mfa-reset.mjs', () => {
 			reportScheduleIds: [schedule.id]
 		});
 		expect(JSON.stringify(lines)).not.toContain(token);
-		// The keys and webhooks ended are on stdout only, never in the log (CS1).
-		for (const text of [live[0].name, 'Ops board', 'hooks.example.test']) expect(JSON.stringify(lines)).not.toContain(text);
+		// The keys and webhooks ended are on stdout only, never in the log (CS1); the one held too (card 2923).
+		for (const text of [live[0].name, 'Ops board', 'hooks.example.test', 'Paused board', 'paused.example.test']) expect(JSON.stringify(lines)).not.toContain(text);
 	});
 
 	// Card 2915 (case 6, S3): the host keeps the keys and webhooks only when told, and the line says what it kept.
@@ -356,12 +409,15 @@ describe('scripts/mfa-reset.mjs', () => {
 		// The code review's CR4: a key that has ended beside the live one, kept as a row, and neither counted nor named.
 		const ended = makeApiKeyRow(holder, { expiresAt: stamp(new Date(Date.now() - 24 * 60 * 60 * 1000)) });
 		const endedName = (sqlite.prepare('SELECT name FROM api_keys WHERE id = ?').get(ended.id) as { name: string }).name;
+		// Card 2923 (case 13): one already switched off with no hold, which a keep leaves unheld.
+		const pausedHook = makeWebhook(makeBoard({ owner: holder, name: 'Paused board' }).board, { url: 'https://paused.example.test/in', setBy: holder, active: false });
 		writeCopy();
 		const [schedule] = schedulesIn(sqlite, holder.id);
 		const keysBefore = sqlite.prepare('SELECT * FROM api_keys ORDER BY id').all();
 		const hookBefore = sqlite.prepare('SELECT * FROM webhooks WHERE id = ?').get(hook.id);
+		const pausedBefore = sqlite.prepare('SELECT * FROM webhooks WHERE id = ?').get(pausedHook.id);
 
-		const reset = inTransaction(() => resetTwoStep(holder.id, 'host-reset', { apiKeys: false }));
+		const reset = inTransaction(() => resetTwoStep(holder.id, 'host-reset', { apiKeys: false, cause: { log: 'a test', mail: 'a test' } }));
 		expect(reset).toMatchObject({ apiKeys: 0, webhooks: 0, apiKeysKept: true, liveApiKeysKept: 1, webhooksKept: 1, keptWebhookIds: [hook.id] });
 		const expected = dumpOf(sqlite, { paused: [schedule.id] });
 
@@ -374,9 +430,13 @@ describe('scripts/mfa-reset.mjs', () => {
 		try {
 			expect(copied.prepare('SELECT * FROM api_keys ORDER BY id').all()).toEqual(keysBefore);
 			expect(copied.prepare('SELECT * FROM webhooks WHERE id = ?').get(hook.id)).toEqual(hookBefore);
+			expect(copied.prepare('SELECT * FROM webhooks WHERE id = ?').get(pausedHook.id)).toEqual(pausedBefore);
+			// No Webhooks line: nothing was switched off or held.
+			expect(copied.prepare("SELECT COUNT(*) AS n FROM system_logs WHERE context = 'Webhooks'").get()).toEqual({ n: 0 });
 		} finally {
 			copied.close();
 		}
+		expect(ran.stdout).not.toContain('Held ');
 		expect(ran.stdout).toContain(`They keep 1 API key(s): ${key.name} (made ${key.createdAt.slice(0, 10)}).`);
 		expect(ran.stdout).toContain(`They keep 1 webhook(s) they set up: Ops board, to hooks.example.test (made ${hook.createdAt.slice(0, 10)}).`);
 		expect(ran.stdout).toContain('Kept, as --keep-api-keys asked: a password reset ends them.');
@@ -393,6 +453,65 @@ describe('scripts/mfa-reset.mjs', () => {
 		const meta = JSON.parse(line.meta as string);
 		expect(meta).toEqual(twoStepResetMeta(holder.id, 'host', reset));
 		expect(meta).toMatchObject({ apiKeysEnded: 0, apiKeyIds: [], webhooksSwitchedOff: 0, apiKeysKept: true, liveApiKeysKept: 1, webhooksKept: 1, keptWebhookIds: [hook.id] });
+	});
+
+	// Card 2923's code review (E8): the script's copy of the server's Webhooks lines, fed the same webhooks, says the same
+	// words: one of each group, and more than 20 of each, the not-mailed line after them.
+	it.each([
+		{ row: 'one of each', done: 1, held: 1 },
+		{ row: 'more than 20 of each', done: 22, held: 21 }
+	])("T37: the script's webhookLines and the server's tellSwitchedOff, told not to mail, write the same lines ($row)", ({ done, held }) => {
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			const hook = (id: number): SwitchedOff => ({ id, boardId: 100 + (id % 3), setBy: 7, setByKey: null, setWithKey: true, url: `https://x.example.test/${id}`, hold: 'setter access ended' });
+			const doneHooks = Array.from({ length: done }, (_, i) => hook(i + 1));
+			const heldHooks = Array.from({ length: held }, (_, i) => hook(i + 101));
+			const cause = "holder's two-step sign-in was reset on the server's host";
+			const before = (sqlite.prepare('SELECT COUNT(*) FROM system_logs').pluck().get() as number) ?? 0;
+
+			tellSwitchedOff(doneHooks, cause, { mail: false, because: "this ran on the server's host, which sends no mail" }, heldHooks);
+
+			const server = (sqlite.prepare("SELECT message FROM system_logs WHERE context = 'Webhooks' ORDER BY id").pluck().all() as string[]).slice(-3);
+			expect(sqlite.prepare('SELECT COUNT(*) FROM system_logs').pluck().get()).toBe(before + 3);
+			const asRows = (hooks: SwitchedOff[]) => hooks.map((each) => ({ id: each.id, board_id: each.boardId, set_by: each.setBy }));
+			expect(webhookLines(asRows(doneHooks), asRows(heldHooks), cause)).toEqual(server);
+		} finally {
+			quiet.mockRestore();
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+	});
+
+	// Card 2923 (case 12, S2): a holder whose only webhook was already off is told it was held, not that they had none.
+	it('T36: a holder whose only webhook was already switched off: stdout lists it as held, never that they had no webhook, and the not-mailed line is written', () => {
+		const holder = seedAccount('holder');
+		const paused = makeWebhook(makeBoard({ owner: holder, name: 'Paused board' }).board, { url: 'https://paused.example.test/in', setBy: holder, active: false });
+		writeCopy();
+
+		const ran = run(['holder']);
+
+		expect(ran.status, ran.stderr).toBe(0);
+		expect(ran.stdout).toContain(
+			`Held 1 webhook(s) they set up that were already switched off: Paused board, to paused.example.test (made ${paused.createdAt.slice(0, 10)}); ` +
+				'switched on, each is given a new secret.'
+		);
+		expect(ran.stdout).toContain("Their boards' owners were not mailed: tell them.");
+		expect(ran.stdout).not.toMatch(/They had no [^.]*webhook/);
+		const copy = new Database(file, { readonly: true, fileMustExist: true });
+		try {
+			expect(copy.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(paused.id)).toEqual({ active: 0, heldBecause: 'setter access ended' });
+			expect(copy.prepare("SELECT message FROM system_logs WHERE context = 'Webhooks' ORDER BY id").pluck().all()).toEqual([
+				`Webhook ${paused.id} on board ${paused.boardId}, already switched off, is now held: the account that set it up (user ${holder.id}) ` +
+					"had its access ended (holder's two-step sign-in was reset on the server's host). Switched on again by an owner of the board or an " +
+					'administrator, it is given a new secret.',
+				"The owners of the boards of the 1 webhook(s) switched off or held above were not mailed, as this ran on the server's host, which " +
+					'sends no mail. The line above names it.'
+			]);
+		} finally {
+			copy.close();
+		}
 	});
 
 	// Card 2915 (case 8, S2): a lone -- ends the options, so a username starting with "-" can be named.

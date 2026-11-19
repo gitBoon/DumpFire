@@ -51,6 +51,7 @@ import { deleteUser } from '$lib/server/deletes';
 import { userDeleteWarning } from '$lib/api';
 import { api, type ApiOptions, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
+import { effects } from './helpers/effects';
 import { failingWrite } from './helpers/failing-write';
 import {
 	FIXTURE_PASSWORD,
@@ -61,6 +62,7 @@ import {
 	makeComment,
 	makeDependency,
 	makeMilestone,
+	makeSmtp,
 	makeTeam,
 	makeUser,
 	makeWebhook,
@@ -426,7 +428,12 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 			'UPDATE work_dependencies SET created_by_user_id = NULL WHERE created_by_user_id = ?',
 			'UPDATE card_dependencies SET created_by_user_id = NULL WHERE created_by_user_id = ?',
 			'UPDATE task_requests SET requester_email = (SELECT email FROM users WHERE id = ?) WHERE requester_user_id = ?',
-			"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND active = 1 RETURNING id",
+			// Card 2923: one already switched off without a hold held in the same statement, read first (a read, not counted).
+			// A write is recorded to its first 160 characters (helpers/failing-write.ts).
+			(
+				"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND (active = 1 OR held_because IS NULL) " +
+				'RETURNING id, board_id AS boardId, url, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
+			).slice(0, 160),
 			'DELETE FROM users WHERE id = ?'
 		]);
 		expect(run.effects).toEqual([]);
@@ -458,8 +465,21 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 		process.env.LOG_LEVEL = 'INFO';
 		const s = full('the columns');
 		expect(sqlite.prepare('SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ?').get(s.leaver.id)).toEqual({ n: 2 });
+		// Card 2923 (case 10): with mail set up, the board's owner is told once the delete is committed.
+		makeSmtp();
+		const sent = effects();
 
-		await remove(s);
+		try {
+			await remove(s);
+			await sent.settle();
+		} finally {
+			sent.restore();
+		}
+		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([[s.owner.email, 'A webhook on your board was switched off']]);
+		// The kind of action and no account (card 2923's code review, S5).
+		expect(sent.emails[0].html).toContain('What caused it: the account that set it up was deleted by an administrator.');
+		expect(sent.emails[0].html).not.toContain('leaver');
+		expect(sent.emails[0].inTransaction).toBe(false);
 
 		expect(sqlite.prepare('SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ?').get(s.leaver.id)).toEqual({ n: 0 });
 		expect(sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(s.hooks.leavers)).toEqual({

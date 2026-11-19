@@ -450,7 +450,7 @@ describe('what an account change ends', () => {
 		pendingFor(user.id, 2);
 		pendingFor(other.id, 1);
 
-		const ended = inTransaction(() => endAccountAccess(user.id, { apiKeys: false }));
+		const ended = inTransaction(() => endAccountAccess(user.id, { apiKeys: false, cause: { log: 'a test', mail: 'a test' } }));
 
 		expect(ended).toMatchObject({ challenges: 2, enrolmentLinks: 1 });
 		expect(pendingOf(user.id)).toEqual({ challenges: 0, links: 0 });

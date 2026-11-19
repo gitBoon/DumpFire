@@ -18,13 +18,15 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { db, sqlite } from './db';
 import { afterCommit, inTransaction } from './db/transaction';
-import { users, sessions, apiKeys, webhooks, reportSchedules, mfaFactors, mfaRecoveryCodes, type Session, type User } from './db/schema';
+import { users, sessions, apiKeys, reportSchedules, mfaFactors, mfaRecoveryCodes, type Session, type User } from './db/schema';
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { error, type Cookies } from '@sveltejs/kit';
 import { getRequestEvent } from '$app/server';
 import { endUnusedInvites } from './invites';
 import { endPendingSignIns, holdsFactor, matchFactors, spendRecoveryCode, spendStep, type FactorMatch } from './mfa-store';
 import { raiseSignal } from './sign-in-challenges';
+// A cycle of functions only (webhooks.ts imports `keyEnded`): neither uses the other at module load (card 2923, decision 13).
+import { holdWebhooksOfSetter, type EndingCause } from './webhooks';
 import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
@@ -990,12 +992,26 @@ export const namingIds = (ids: number[]): string =>
  * the webhook is given a new secret, and until then nobody else may make a
  * webhook to its receiver on that board.
  *
- * It mails nobody: a board's owners are not told here that a webhook on their
- * board was switched off (card 2923).
+ * Under `apiKeys`, a webhook the account set that was already switched off
+ * without a hold (by a `PUT`, or by a restore kept apart) is held too (card
+ * 2923, decision 1): `held_because` 'setter access ended', `held_at` now,
+ * left off, so that switching it on gives it a new secret, which whoever held
+ * the account may know. One already off with another hold keeps it (decision
+ * 4). The holder's own change that keeps the keys holds nothing (decision 3).
+ * One statement for both, after a read of those already off, in
+ * `holdWebhooksOfSetter` (webhooks.ts), which `deleteUser` calls too (card
+ * 2923's code review, E4). `webhooks` and `webhookIds` count only those that
+ * were on.
+ *
+ * Once committed, both groups are told (`tellSwitchedOff`, card 2923): one
+ * WARN under Webhooks for those switched off and one for those held, naming
+ * the action and who made it (`cause.log`), and one mail to each owner of
+ * their boards, listing both apart, naming the kind of action and nobody
+ * (`cause.mail`, the code review's S5). Every caller gives both.
  *
  * It throws if no transaction is open.
  */
-export function endAccountAccess(userId: number, opts: { apiKeys: boolean }): AccessEnded {
+export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause: EndingCause }): AccessEnded {
 	if (!sqlite.inTransaction) {
 		throw new Error(
 			'endAccountAccess must be called inside the transaction that sets the password: wrap the change ' +
@@ -1009,20 +1025,11 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean }): Ac
 	// The ids of the keys deleted, in order (card 2915's code review, CS2): a log line's meta names them.
 	const apiKeyIds = opts.apiKeys ? ids(db.delete(apiKeys).where(eq(apiKeys.userId, userId)).returning({ id: apiKeys.id }).all()) : [];
 	const apiKeysEnded = apiKeyIds.length;
-	const webhookIds = opts.apiKeys
-		? ids(
-				db
-					.update(webhooks)
-					// Recorded as a hold (the code review of card 2752, CS4): switched
-					// on again, it is given a new secret, which whoever held the
-					// account may know; and its receiver is the owner's to send to.
-					.set({ active: false, heldBecause: 'setter access ended', heldAt: stamp() })
-					.where(and(eq(webhooks.setBy, userId), eq(webhooks.active, true)))
-					.returning({ id: webhooks.id })
-					.all()
-			)
-		: [];
-	// Always (card 2894): every caller is a way of taking the account back.
+	// Recorded as a hold (the code review of card 2752, CS4): switched on again,
+	// each is given a new secret, which whoever held the account may know; and
+	// its receiver is the owner's to send to. Those already off with no hold are
+	// held too, and both are told once committed (card 2923; `holdWebhooksOfSetter`).
+	const webhookIds = opts.apiKeys ? holdWebhooksOfSetter(userId, opts.cause).switchedOff.map((hook) => hook.id) : [];	// Always (card 2894): every caller is a way of taking the account back.
 	const reportScheduleIds = ids(
 		db
 			.update(reportSchedules)

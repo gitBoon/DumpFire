@@ -14,6 +14,7 @@ import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { pathId, readBody } from '$lib/server/request-body';
 import { createLogger } from '$lib/server/logger';
+import { ENDING_IN_MAIL } from '$lib/server/webhooks';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
@@ -189,7 +190,9 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 			// The settings the account set that are in force, read as their removal would read them
 			// (card 2915, S1): the message names them to review. Removing them is card 2922.
 			const set = settingsHeldBy(target.id).get(target.id) ?? null;
-			const reset = resetTwoStep(target.id, 'admin-reset');
+			const reset = resetTwoStep(target.id, 'admin-reset', {
+				cause: { log: `${target.username}'s two-step sign-in was reset by ${actor.username}`, mail: ENDING_IN_MAIL.twoStepReset }
+			});
 			// The webhooks, read after, by the switch-off's own ids (S5): the list is exactly what was
 			// switched off, which the switch-off leaves in place to be read.
 			const switchedOff = webhooksByIds(reset.webhookIds);

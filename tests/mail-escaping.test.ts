@@ -450,6 +450,12 @@ describe('every mail in notifications.ts', () => {
 			link: false,
 			send: () => notifications.notifyWebhooksSwitchedOff([{ boardId: board.id, id: 1, host: MARKER, why: MARKER }], MARKER)
 		},
+		// Card 2923 (S5): the already-off webhooks held when access ended, listed apart in the same mail.
+		{
+			name: 'notifyWebhooksSwitchedOff (the held list)',
+			link: false,
+			send: () => notifications.notifyWebhooksSwitchedOff([], MARKER, [{ boardId: board.id, id: 1, host: MARKER, why: MARKER }])
+		},
 		{
 			name: 'notifyWebhookCreated',
 			link: false,

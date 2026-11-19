@@ -130,7 +130,9 @@
 	 * with no key left too: revoking the key that set a webhook up switches it
 	 * off (card 2893), but one set up before keys were recorded goes on while
 	 * the account holds a working key from then, and the server switches every
-	 * one off with `endApiKeys` all the same.
+	 * one off with `endApiKeys` all the same. And since card 2923 it holds
+	 * those already switched off, and mails their boards' owners: said in the
+	 * last sentence, for both cases.
 	 */
 	function whatTheBoxEnds(keys: number, hooks: number): string {
 		const ends =
@@ -143,7 +145,11 @@
 			ends,
 			'Do this if anyone else may have used your account.',
 			keys > 0 ? `Anything that uses ${keys === 1 ? 'the key' : 'the keys'} stops working until it is given a new key.` : '',
-			hooks > 0 ? "A webhook switched off sends nothing until the board's owner or an administrator switches it on again." : ''
+			hooks > 0 ? "A webhook switched off sends nothing until the board's owner or an administrator switches it on again." : '',
+			// Card 2923 (S9): the owners are mailed, and one already off is held, which the box's change brings about too.
+			hooks > 0
+				? "The boards' owners are mailed about them, and about any you set up that are already switched off, which can then be switched on only with a new secret."
+				: "Any webhook you set up that is already switched off can then be switched on only with a new secret, and its board's owners are mailed about it."
 		]
 			.filter(Boolean)
 			.join(' ');

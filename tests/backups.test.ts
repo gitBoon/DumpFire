@@ -78,10 +78,12 @@ import {
 	sealOf,
 	sealVerifies,
 	secretsKeptSentence,
+	secretsToEnter,
 	secretsToEnterSentence,
 	settingsChanges,
 	strayInternalObjects,
-	unsealedBecause
+	unsealedBecause,
+	withHeldApart
 } from '$lib/server/backup-secrets';
 import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
 import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
@@ -129,8 +131,10 @@ import {
 	makeDecision,
 	makeParticipant,
 	makeSession,
+	makeSmtp,
 	makeUser,
 	makeWebhook,
+	startedSinceAlreadyOffHeld,
 	resetDb,
 	stepUp,
 	stepUpCode,
@@ -1950,6 +1954,10 @@ describe('the running database’s system log, at start', () => {
 		expect(hooks.indexOf('\nswitchOffHeldWebhooksAtStart();')).toBeGreaterThan(hooks.indexOf('\nremoveSettingsOfNonAdministrators();'));
 		expect(hooks.indexOf('\nswitchOffHeldWebhooksAtStart();')).toBeGreaterThan(hooks.indexOf('\nvoid recheckStoredImages();'));
 		expect(hooks.indexOf('\nstartSchedulers();')).toBeGreaterThan(hooks.indexOf('\nswitchOffHeldWebhooksAtStart();'));
+		// And the already-off webhooks of disabled or missing setters held once, straight after, before the schedulers
+		// start (card 2923, S3).
+		expect(hooks.indexOf('\nholdAlreadyOffWebhooksAtStart();')).toBeGreaterThan(hooks.indexOf('\nswitchOffHeldWebhooksAtStart();'));
+		expect(hooks.indexOf('\nstartSchedulers();')).toBeGreaterThan(hooks.indexOf('\nholdAlreadyOffWebhooksAtStart();'));
 	});
 
 	it('cannot keep the server from starting: a failure is said at WARN, and nothing is thrown', () => {
@@ -2052,19 +2060,22 @@ const configWith = (destinations: unknown[]) =>
  * above, and on a board "Hooks" three webhooks: signed and on, signed and off,
  * and on with no secret. The board belongs to its first superadmin.
  */
-function armSecrets(database: Database.Database): { on: number; off: number; unsigned: number; boardId: number } {
+function armSecrets(database: Database.Database): { on: number; off: number; unsigned: number; boardId: number; owner: number } {
 	const owner = (database.prepare("SELECT id FROM users WHERE role = 'superadmin' ORDER BY id").get() as { id: number }).id;
 	const boardId = Number(database.prepare("INSERT INTO boards (name, created_by) VALUES ('Hooks', ?)").run(owner).lastInsertRowid);
 	const set = database.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
 	for (const [key, value] of Object.entries(MAIL)) set.run(key, value);
 	set.run('smtp_pass', SECRETS.mailPassword);
 	set.run('backup_config', configWith(DESTINATIONS));
-	const hook = database.prepare("INSERT INTO webhooks (board_id, url, secret, events, active) VALUES (?, ?, ?, '[]', ?)");
+	// Set up by the board's owner, as a webhook made since setters were recorded is (card 2923's code review: one with
+	// no setter that is off is held at a restore, and is given a new secret, which these cases are not about).
+	const hook = database.prepare("INSERT INTO webhooks (board_id, url, secret, events, active, set_by) VALUES (?, ?, ?, '[]', ?, ?)");
 	return {
-		on: Number(hook.run(boardId, 'https://hooks.example.test/on', SECRETS.webhookOn, 1).lastInsertRowid),
-		off: Number(hook.run(boardId, 'https://hooks.example.test/off', SECRETS.webhookOff, 0).lastInsertRowid),
-		unsigned: Number(hook.run(boardId, 'https://hooks.example.test/unsigned', '', 1).lastInsertRowid),
-		boardId
+		on: Number(hook.run(boardId, 'https://hooks.example.test/on', SECRETS.webhookOn, 1, owner).lastInsertRowid),
+		off: Number(hook.run(boardId, 'https://hooks.example.test/off', SECRETS.webhookOff, 0, owner).lastInsertRowid),
+		unsigned: Number(hook.run(boardId, 'https://hooks.example.test/unsigned', '', 1, owner).lastInsertRowid),
+		boardId,
+		owner
 	};
 }
 
@@ -2102,6 +2113,8 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 	let hooks: ReturnType<typeof armSecrets>;
 
 	beforeEach(() => {
+		// A server started since card 2923's release, whose backups say so (its code review, S2).
+		startedSinceAlreadyOffHeld();
 		hooks = armSecrets(sqlite);
 	});
 
@@ -2163,8 +2176,10 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		const hook = live.prepare("INSERT INTO webhooks (id, board_id, url, secret, events, active, set_by) VALUES (?, ?, ?, ?, '[]', ?, ?)");
 		const setter = live.prepare("INSERT OR IGNORE INTO users (id, username, email, password_hash) VALUES (?, 'setter' || ?, 'setter' || ? || '@example.test', 'x')");
 		for (const w of given.webhooks ?? []) {
-			if (w.setBy !== undefined) setter.run(w.setBy, w.setBy, w.setBy);
-			hook.run(w.id, hooks.boardId, w.url, w.secret, w.active ?? 1, w.setBy ?? null);
+			// By default the backup's setter, the board's owner there (card 2923's code review: armSecrets records it).
+			const setBy = w.setBy ?? hooks.owner;
+			setter.run(setBy, setBy, setBy);
+			hook.run(w.id, hooks.boardId, w.url, w.secret, w.active ?? 1, setBy);
 		}
 		return live;
 	};
@@ -3368,6 +3383,31 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		const result = restoreFromBackup(working, backup, { outside: 'off' });
 		expect(settingsOf(working)[WEBHOOK_SECRETS_LEFT_OUT_KEY]).toBeUndefined();
 		expect(result.secrets.toEnter).toEqual({ mailPassword: false, destinations: [], webhooks: hooksToEnter() });
+	});
+
+	// Card 2923's code review (E1): a webhook held for good is switched on with no secret, never "set its secret".
+	it('2923 R5: sets a webhook held for good apart from those to enter, and tells to switch it on with no secret, in the answer and at start', () => {
+		// A backup from before card 2923's release, restored as a working copy: every webhook the backup had off is held.
+		const backup = backupNow();
+		backup.prepare("DELETE FROM settings WHERE key = 'webhooks_already_off_held'").run();
+		const working = migratedDb();
+		const result = restoreFromBackup(working, backup, { outside: 'off' });
+
+		expect(result.secrets.toEnter).toEqual({ mailPassword: false, destinations: [], webhooks: [], heldWebhooks: hooksToEnter() });
+		const said = secretsToEnterSentence(result.secrets.toEnter);
+		expect(said).toBe(
+			`Nothing to enter for webhook(s) ${hooks.on} (board "Hooks"), ${hooks.off} (board "Hooks"), switched off for good: to keep one, ` +
+				"the board's owner or an administrator should switch it on with no secret; it is given a new one, returned once in that answer " +
+				'(PUT /api/v1/webhooks/{id} with active true alone).'
+		);
+		expect(said).not.toContain('sets each one');
+		// The start-up line's words, from the database as the restore left it.
+		expect(withHeldApart(working, { mailPassword: false, destinations: [], webhooks: hooksToEnter() })).toEqual(result.secrets.toEnter);
+		// At start, as a server whose restore left the list of webhooks without their secrets reads it.
+		working.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_SECRETS_LEFT_OUT_KEY, JSON.stringify(listed()));
+		const atStart = secretsToEnter(working).toEnter;
+		expect(atStart.webhooks).toEqual([]);
+		expect(secretsToEnterSentence({ ...atStart, mailPassword: false, destinations: [] }, true)).toBe(`${said?.slice(0, -1)}, or delete it if it is no longer wanted.`);
 	});
 
 	it('fills a Google Drive refresh token with the scope this server recorded for it, never the backup’s (card 2188, test 15)', () => {
@@ -5491,6 +5531,133 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 		expect(sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(hook)).toEqual({
 			active: 0,
 			heldBecause: 'setter cannot open'
+		});
+	});
+
+	// Card 2923 (case 17, S3), as its code review ruled (S2, S3, E2, S4): the restore holds already-off webhooks, after its
+	// carries, on the server's own database and on a working copy alike; only the server's own is told.
+	describe('the webhooks already off a restore holds (card 2923)', () => {
+		let eve: SessionUser;
+		let eves: number;
+		let board: number;
+		const rowOf = (id: number) => sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(id);
+		const warned = () => column<string>(sqlite, "SELECT message FROM system_logs WHERE context = 'Webhooks' AND level = 'WARN' ORDER BY id");
+		const schedulers = process.env.SCHEDULERS;
+		const level = process.env.LOG_LEVEL;
+
+		beforeEach(() => {
+			eve = makeUser({ username: 'eve' });
+			board = sqlite.prepare('SELECT board_id FROM webhooks WHERE id = ?').pluck().get(hook) as number;
+			// Bob's switched off by a PUT, and one an enabled account set, switched off the same way.
+			eves = sqlite
+				.prepare("INSERT INTO webhooks (board_id, url, events, secret, active, set_by) VALUES (?, 'https://eve.example.test/x', '[]', '', 0, ?) RETURNING id")
+				.pluck()
+				.get(board, eve.id) as number;
+			sqlite.prepare('UPDATE webhooks SET active = 0 WHERE id = ?').run(hook);
+			process.env.LOG_LEVEL = 'WARN';
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+		});
+		afterEach(() => {
+			vi.restoreAllMocks();
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+			if (schedulers === undefined) delete process.env.SCHEDULERS;
+			else process.env.SCHEDULERS = schedulers;
+		});
+
+		it("2923 case 17: from a backup made since the release, the server's restore holds the one of an account disabled here, not an enabled account's, and tells the owners with its sweep", async () => {
+			startedSinceAlreadyOffHeld();
+			makeSmtp();
+			const backup = backupNow();
+			disableBob();
+			process.env.SCHEDULERS = 'on';
+			const sent = effects();
+			try {
+				const result = restoreFromBackup(sqlite, backup, { by: 'chief' });
+				await sent.settle();
+
+				expect(result.errors).toEqual([]);
+				expect(result.webhooksSwitchedOff).toBe(0);
+				expect(rowOf(hook)).toEqual({ active: 0, heldBecause: 'setter access ended' });
+				expect(rowOf(eves)).toEqual({ active: 0, heldBecause: null });
+				// Told after the commit with the sweep, which switched nothing off: the held line alone, and the owners
+				// mailed, the schedulers running: bob, the board's only owner, is disabled, so its administrators.
+				expect(warned()).toEqual([
+					`Webhook ${hook} on board ${board}, already switched off, is now held: it was found switched off with no hold, as it may have been ` +
+						`when the access of the account that set it up (user ${bob.id}) ended (found after a restore by chief). ` +
+						'Switched on again by an owner of the board or an administrator, it is given a new secret.'
+				]);
+				expect(sent.emails.map((mail) => [mail.to, mail.subject]).sort()).toEqual(
+					[
+						[admin.email, 'A notice about webhooks on your boards'],
+						[chief.email, 'A notice about webhooks on your boards']
+					].sort()
+				);
+				for (const mail of sent.emails) expect(mail.html).toContain(`webhook ${hook} to <strong>hooks.example.test</strong>: already switched off; now held because`);
+			} finally {
+				sent.restore();
+			}
+		});
+
+		it('2923 R2: from a backup made before the release, the restore holds every webhook already off with no hold, whoever set it, and writes no flag', () => {
+			const backup = backupNow();
+			expect(backup.prepare("SELECT 1 FROM settings WHERE key = 'webhooks_already_off_held'").get()).toBeUndefined();
+			process.env.SCHEDULERS = 'off';
+
+			const result = restoreFromBackup(sqlite, backup, { by: 'chief' });
+
+			expect(result.errors).toEqual([]);
+			expect(rowOf(hook)).toEqual({ active: 0, heldBecause: 'setter access ended' });
+			expect(rowOf(eves)).toEqual({ active: 0, heldBecause: 'setter access ended' });
+			expect(sqlite.prepare("SELECT 1 FROM settings WHERE key = 'webhooks_already_off_held'").get()).toBeUndefined();
+			expect(warned()).toEqual([
+				`2 webhooks already switched off are now held (found after a restore by chief): webhook ${hook} on board ${board}: it was found switched off ` +
+					`with no hold, as it may have been when the access of the account that set it up (user ${bob.id}) ended; webhook ${eves} on board ${board}: ` +
+					`it was found switched off with no hold, as it may have been when the access of the account that set it up (user ${eve.id}) ended. ` +
+					'Each, switched on again by an owner of its board or an administrator, is given a new secret.',
+				'The owners of the boards of the 2 webhook(s) switched off or held above were not mailed, as the schedulers are off (SCHEDULERS=off). The line above names them.'
+			]);
+		});
+
+		it("2923 R4, R8: a working copy, restored over the server's own database, holds the same way before it switches every webhook off, and tells nobody", async () => {
+			startedSinceAlreadyOffHeld();
+			makeSmtp();
+			const backup = backupNow();
+			disableBob();
+			process.env.SCHEDULERS = 'on';
+			const sent = effects();
+			try {
+				const result = restoreFromBackup(sqlite, backup, { outside: 'off', by: 'chief' });
+				await sent.settle();
+
+				expect(result.errors).toEqual([]);
+				expect(result.webhooksSwitchedOff).toBe(0);
+				expect(rowOf(hook)).toEqual({ active: 0, heldBecause: 'setter access ended' });
+				expect(rowOf(eves)).toEqual({ active: 0, heldBecause: null });
+				// The `!working` guard: no sweep, no telling, no mail.
+				expect(warned()).toEqual([]);
+				expect(sent.emails).toEqual([]);
+			} finally {
+				sent.restore();
+			}
+		});
+
+		it('2923 R8: a hold that fails rolls the restore back, and nothing is changed', () => {
+			startedSinceAlreadyOffHeld();
+			const backup = backupNow();
+			disableBob();
+			const before = snapshotDb();
+			const prepare = sqlite.prepare.bind(sqlite);
+			vi.spyOn(sqlite, 'prepare').mockImplementation(((source: string) => {
+				if (source.includes("held_because = 'setter access ended'") && source.includes('? = 1')) throw new Error('disk I/O error');
+				return prepare(source);
+			}) as typeof sqlite.prepare);
+
+			expect(() => restoreFromBackup(sqlite, backup, { by: 'chief' })).toThrow(/The restore failed and nothing was changed: disk I\/O error/);
+
+			vi.restoreAllMocks();
+			expectUnchanged(before);
+			expect(rowOf(hook)).toEqual({ active: 0, heldBecause: null });
 		});
 	});
 });

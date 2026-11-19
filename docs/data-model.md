@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.88
+version: 1.89
 status: As-Built
-date: 2026-11-18
+date: 2026-11-19
 tags:
+  - card-2923
+  - ended-access-holds-webhooks
   - card-2915
   - two-step-reset-ends-keys
   - card-2671
@@ -55,7 +57,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), and how migrations and schema reconciliation bring every database to the model"
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -1572,7 +1574,7 @@ itself over it.
 
 | Column | Type | Written by | Meaning |
 |---|---|---|---|
-| `held_because` | text, NULL | `switchOffHeld` (card 2752), `endAccountAccess` and `deleteUser` (the code review's CS4), and `scripts/mfa-reset.mjs` in its own SQL (card 2915); carried by a restore (`carryHolds`, `fillSecretGaps`); cleared by `PUT /api/v1/webhooks/{id}` switching it on | Why the webhook was switched off for good: `'setter cannot open'`, `'no setter'`, `'setter access ended'` (a password reset, a two-step reset (card 2915), an invite used, or the account disabled or deleted), or card 2893's `'key ended'`. NULL for one that is on, and for one switched off by a `PUT` or a working copy |
+| `held_because` | text, NULL | `switchOffHeld` (card 2752), `endAccountAccess` and `deleteUser` (the code review's CS4), `scripts/mfa-reset.mjs` in its own SQL (card 2915), and `holdUnheldOfGoneSetters` (card 2923: the first start of its release and a restore); carried by a restore (`carryHolds`, `fillSecretGaps`); cleared by `PUT /api/v1/webhooks/{id}` switching it on | Why the webhook was switched off for good: `'setter cannot open'`, `'no setter'`, `'setter access ended'` (a password reset, a two-step reset (card 2915), an invite used, the holder's own change that ends their keys, or the account disabled or deleted; since card 2923 also one already off when that happened, or found off with its setter disabled or not recorded), or card 2893's `'key ended'`. NULL for one that is on, and for one switched off without a hold (a `PUT`, a restore kept apart or a working copy) until its setter's access ends |
 | `held_at` | text, NULL | with `held_because` | The moment, in the stored form (`YYYY-MM-DD HH:MM:SS`, UTC) |
 | `set_by_key` | integer, NULL, `REFERENCES api_keys(id) ON DELETE SET NULL`, `idx_webhooks_set_by_key` | both v1 writers, with `set_by` (`keyOfWrite`, card 2893): the create, and a `PUT` that changes the address or secret or switches it on; a change of events alone keeps it | The API key that last set the address or secret, or switched the webhook on. Read by `holdOf`: gone, ended (`keyEnded`) or another account's holds it, `'key ended'`; counted for each key by `GET /api/account/api-keys` (`webhooks`) |
 | `set_with_key` | integer, NULL (0/1) | with `set_by_key` | 1: written with a credential, a key's id in `set_by_key` or none (a session), which holds it; 0: written with no credential at all, only a test's call; NULL: set before keys were recorded, held once the setter has no working key made before `webhook_keys_recorded_at`. `set_with_key = 1 AND set_by_key IS NULL` reads "its key was deleted, or it was not set with a key" |
@@ -1586,7 +1588,16 @@ the other server. The setting `webhooks_before_keys_announced` (card 2893, D6) i
 start told the boards' owners of the webhooks set up before keys were recorded, written by
 `announceWebhooksBeforeKeys` only once every mail went; with it there, the start says nothing
 more. The rehearsal notes the new settings row as one a migration put there; 0071 rewrites and
-takes no row, so nothing is declared in `tests/rehearsal/one-offs.ts`.
+takes no row, so nothing is declared in `tests/rehearsal/one-offs.ts`. The setting
+`webhooks_already_off_held` (card 2923, S3; its code review, S2, E3; no migration) is the moment,
+as an ISO 8601 string, the start held every webhook already switched off without a hold, whoever
+set it (`holdAlreadyOffWebhooksAtStart`, `WEBHOOKS_ALREADY_OFF_HELD` in `webhooks.ts`), written
+with an `INSERT OR IGNORE` in the same transaction as the hold. With it there, a start holds only
+those whose setter is disabled or not recorded. A restore of a backup without it (one from before
+the release) holds every one itself, on the server's database and on a working copy, and does not
+write it, so the next start does it again and writes it. A host going back to an image from before
+the release deletes the row, so that the next start of this release holds again what the older
+image left unheld.
 
 ```mermaid
 flowchart LR
@@ -1604,6 +1615,7 @@ stateDiagram-v2
     HeldOff --> HeldOff: a restore (carryHolds)
     HeldOff --> On: PUT active true by the owner or an administrator (both cleared, set_by the caller)
     Off --> On: PUT active true by the owner or an administrator
+    Off --> HeldOff: the setter's access ends, or found with its setter disabled or not recorded, or any once (card 2923, active stays 0)
 ```
 
 **The writers.** `switchOffHeld` runs `UPDATE webhooks SET active = 0, held_because = ?,
@@ -1616,10 +1628,26 @@ delivery calls `switchOffHeld` for its one webhook. `endAccountAccess` and `dele
 set, an invite used, a holder's own change that ends their keys, a disable (card 2671) and, since
 card 2915, a reset of the two-step sign-in (`resetTwoStep`, which passes `apiKeys: true`). The
 host's `scripts/mfa-reset.mjs` writes the same in its own SQL, `UPDATE webhooks SET active = 0,
-held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND active = 1 RETURNING id`,
-unless run with `--keep-api-keys`, and refuses a database whose `webhooks` lacks `held_because`
-or `held_at` (one from between migrations 0065 and 0071). None of these mails the board's owners
-(card 2923). A restore reads this server's holds before the
+held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND (active = 1 OR
+held_because IS NULL) RETURNING id, board_id, set_by`, unless run with `--keep-api-keys`, and
+refuses a database whose `webhooks` lacks `held_because` or `held_at` (one from between
+migrations 0065 and 0071). Since card 2923 all three take the same predicate, `active = 1 OR
+held_because IS NULL`, after a read of the account's webhooks that are off with no hold: one
+already switched off without a hold is held too, `active` staying 0 (a no-op for it), and one
+already held keeps its reason and time. `deleteUser`'s statement is `UPDATE webhooks SET active =
+0, held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND (active = 1 OR
+held_because IS NULL) RETURNING id, board_id AS boardId, url, set_by AS setBy, set_by_key AS
+setByKey, set_with_key AS setWithKey`, `set_with_key` read back as a boolean. Since the code
+review (E4) that statement is one function's, `holdWebhooksOfSetter(userId, cause)` in
+`webhooks.ts`, which both `endAccountAccess` and `deleteUser` call. The server's callers mail the
+boards' owners of both groups once committed; the host's command mails nobody and logs that.
+`holdUnheldOfGoneSetters(database, { every })` in `webhooks.ts` runs `UPDATE webhooks SET active =
+0, held_because = 'setter access ended', held_at = ? WHERE active = 0 AND held_because IS NULL AND
+(? = 1 OR set_by IS NULL OR set_by IN (SELECT id FROM users WHERE disabled_at IS NOT NULL))
+RETURNING …`: with `every`, every one, once (the first start without `webhooks_already_off_held`,
+above, and a restore of a backup without it); else those of a disabled or missing setter, at every
+start and in every restore, a working copy included. A
+restore reads this server's holds before the
 clear, whatever the secret, and carries each onto the restored row of the same webhook (same id,
 board, address and setter: `carryHolds`); `fillSecretGaps` never switches on a restored webhook
 that is held off here or in the backup's row, and carries this server's hold.

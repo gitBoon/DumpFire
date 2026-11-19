@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.134
+version: 1.135
 status: As-Built
-date: 2026-11-18
+date: 2026-11-19
 tags:
+  - card-2923
   - card-2910
   - upload-limits
   - card-2671
@@ -245,8 +246,19 @@ request: `runMigrations()`, `endPlainSessions()` (card 2775: it deletes any sess
 image stored in plain, and runs before the clean-up so that each is counted),
 `cleanExpiredSessions()`, `startChallengeSweep()` (card 2769: it sweeps expired sign-in
 challenges now and every five minutes), `startSessionSweep()` (card 2883: it runs the clean-up
-of ended sessions every five minutes after that first run), `initLogMaintenance()` and
-`startSchedulers()`.
+of ended sessions every five minutes after that first run), `initLogMaintenance()`,
+`switchOffHeldWebhooksAtStart()` (card 2752), `holdAlreadyOffWebhooksAtStart()` (card 2923: it
+holds the webhooks already switched off without a hold, so that switching one on gives it a new
+secret; once, while the `webhooks_already_off_held` setting is absent, every one, whoever set it,
+and writes the setting; at every start, those whose setter is disabled or not recorded; one
+`WARN` when it held any, nobody mailed; it cannot throw) and `startSchedulers()`, in that order
+for the last three.
+
+```mermaid
+flowchart LR
+    Sweep["switchOffHeldWebhooksAtStart()<br/>webhooks on and held: switched off"] --> Hold["holdAlreadyOffWebhooksAtStart()<br/>off and unheld: every one once,<br/>then setter disabled or none"]
+    Hold --> Sched["startSchedulers()"]
+```
 
 ```mermaid
 flowchart TD

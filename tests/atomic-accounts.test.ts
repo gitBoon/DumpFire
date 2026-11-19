@@ -47,7 +47,7 @@
  * (`PASSWORD_THREADS=0`, card 2191), with the bcryptjs that passwords.ts
  * imports, so this mock sees every call.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
 const bcrypt = vi.hoisted(() => ({
 	/** For each password hashed, and each one checked: whether a transaction was open. */
@@ -97,7 +97,7 @@ import { endUnusedInvites, issueInvite } from '$lib/server/invites';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { knownBrowserCookie, rememberBrowser, rememberedNonce } from '$lib/server/known-browsers';
 import { CHALLENGE_COOKIE, tokenHashOf } from '$lib/server/sign-in-challenges';
-import { dispatchWebhook } from '$lib/server/webhooks';
+import { ENDING_IN_MAIL, dispatchWebhook } from '$lib/server/webhooks';
 import { PUT as changeOwnPassword } from '../src/routes/api/account/password/+server';
 import { load as loadAdminPage } from '../src/routes/admin/+page.server';
 import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.server';
@@ -1518,6 +1518,7 @@ describe('the invite page', () => {
 			emoji: '👤',
 			apiKeys: 2,
 			webhooks: 0,
+			webhooksAlreadyOff: 0,
 			reportSchedules: 0
 		});
 
@@ -1710,6 +1711,41 @@ describe('what taking an account back switches off (card 2168)', () => {
 	};
 	type Scene = ReturnType<typeof scene>;
 
+	/** The scene with mail set up (card 2923): the board's owners are mailed once access ends. */
+	const withMail = () => {
+		const s = scene();
+		makeSmtp();
+		return s;
+	};
+	const OWNERS_NOTICE = 'A notice about webhooks on your boards';
+	/** A webhook's hold, as stored (card 2923). */
+	const heldOf = (id: number) => sqlite.prepare('SELECT held_because FROM webhooks WHERE id = ?').pluck().get(id) as string | null;
+
+	/**
+	 * Card 2923: the board's owners' mail among what a successful write sent, once its commit is done: one, to the
+	 * target, who owns the board, naming `cause`; the webhook switched off listed, and apart the one already off,
+	 * now held; host only. The one already off is held as stored.
+	 */
+	function expectOwnersMail(s: Scene, sent: RecordedEffect[], cause: string) {
+		const mails = sent.flatMap((effect) => (effect.kind === 'email' && effect.subject === OWNERS_NOTICE ? [effect] : []));
+		expect(mails.map((mail) => mail.to)).toEqual([s.target.email]);
+		const [mail] = mails;
+		expect(mail.inTransaction).toBe(false);
+		// The kind of action, naming no account (card 2923's code review, S5): the target is not named, nor who acted.
+		expect(mail.html).toContain(`What caused it: ${cause}.`);
+		expect(mail.html).not.toContain('target');
+		expect(mail.html).not.toMatch(/\badmin\b/);
+		expect(mail.html).toContain(
+			`webhook ${s.hooks.theirs} to <strong>hooks.example.test</strong>, switched off because the account that set it up had its access ended.`
+		);
+		expect(mail.html).toContain(
+			`webhook ${s.hooks.alreadyOff} to <strong>hooks.example.test</strong>: already switched off; now held because the account that set it up had its access ended; ` +
+				'switched on, it is given a new secret.'
+		);
+		expect(mail.html).not.toContain('/theirs');
+		expect(heldOf(s.hooks.alreadyOff)).toBe('setter access ended');
+	}
+
 	/** The password set by `by`, with their own current password (card 2701), from `session`. */
 	const reset = (by: SessionUser, id: number, session = 'the-admin') =>
 		api('PUT', `/api/users/${id}/password`, { user: by, body: { password: NEW, currentPassword: FIXTURE_PASSWORD, ...codeOf(by) }, headers: from(session) });
@@ -1756,10 +1792,11 @@ describe('what taking an account back switches off (card 2168)', () => {
 
 	it("on an administrator's reset, switches off the webhooks the account set and pauses its report schedules, or does neither", async () => {
 		const run = await eachWriteInTurn({
-			build: scene,
+			// With mail set up (card 2923, case 5): the board's owners are mailed once the reset is committed.
+			build: withMail,
 			request: ({ admin, target }) => reset(admin, target.id),
 			apart: [...STEP_UP_APART],
-			afterSuccess: (s, res: ApiResult) => {
+			afterSuccess: (s, res: ApiResult, sent) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
 					success: true,
@@ -1769,6 +1806,7 @@ describe('what taking an account back switches off (card 2168)', () => {
 					reportSchedulesPaused: 1
 				});
 				expectTakenBack(s, { schedules: true });
+				expectOwnersMail(s, sent, ENDING_IN_MAIL.passwordReset);
 			}
 		});
 
@@ -1788,14 +1826,17 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'update webhooks set',
 			'update report_schedules set'
 		]);
-		expect(run.effects).toEqual([]);
+		// Card 2923 (case 5): the successful run mailed the board's owner, the target, once, with both lists, and sent
+		// nothing else; every failed write sent nothing (`eachWriteInTurn`).
+		expect(run.effects.map((effect) => (effect.kind === 'email' ? effect.subject : effect.kind))).toEqual([OWNERS_NOTICE]);
 	});
 
 	// Card 2915 (case 10, E11): the two-step reset takes the account back as the password set does, and the
 	// statements it makes are pinned whole, the App URL set for its link.
 	it("on an administrator's two-step reset, ends the account's keys, switches off the webhooks it set and pauses its report schedules, or does none of it", async () => {
 		const withKey = () => {
-			const s = scene();
+			// With mail set up (card 2923, case 7): the owners' mail goes beside the holder's notice.
+			const s = withMail();
 			makeApiKey(s.target, 'Deploy');
 			sqlite.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://dumpfire.example.test')").run();
 			return s;
@@ -1809,11 +1850,12 @@ describe('what taking an account back switches off (card 2168)', () => {
 					headers: from('the-admin')
 				}),
 			apart: [...STEP_UP_APART],
-			afterSuccess: (s, res: ApiResult) => {
+			afterSuccess: (s, res: ApiResult, sent) => {
 				expect(res.status, JSON.stringify(res.body)).toBe(200);
 				expect(res.body).toMatchObject({ success: true, apiKeysEnded: 1, webhooksSwitchedOff: 1, reportSchedulesPaused: 1 });
 				expect(db.select().from(apiKeys).where(eq(apiKeys.userId, s.target.id)).all()).toEqual([]);
 				expectTakenBack(s, { schedules: true });
+				expectOwnersMail(s, sent, ENDING_IN_MAIL.twoStepReset);
 			}
 		});
 
@@ -1834,7 +1876,13 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'delete from enrolment_links',
 			'insert into enrolment_links'
 		]);
-		expect(run.effects).toEqual([]);
+		// Card 2923 (case 7): the owners' mail beside the holder's notice, and nothing else; nothing from a failed write.
+		expect(run.effects.map((effect) => (effect.kind === 'email' ? [effect.to, effect.subject] : effect.kind)).sort()).toEqual(
+			[
+				['target@example.test', OWNERS_NOTICE],
+				['target@example.test', 'Your DumpFire two-step sign-in was reset']
+			].sort()
+		);
 	});
 
 	it('sends the next event to every webhook of the board but those switched off, and names what went in the log', async () => {
@@ -1887,7 +1935,8 @@ describe('what taking an account back switches off (card 2168)', () => {
 
 	it('when an invite is used, switches off the webhooks the account set and pauses its report schedules, or does neither', async () => {
 		const withInvite = () => {
-			const s = scene();
+			// With mail set up (card 2923, case 6): the board's owners are mailed once the invite's use is committed.
+			const s = withMail();
 			makeInvite(s.target, 'the-token');
 			return s;
 		};
@@ -1896,11 +1945,14 @@ describe('what taking an account back switches off (card 2168)', () => {
 		const run = await eachWriteInTurn({
 			build: withInvite,
 			request: use,
-			afterSuccess: (s, res: ActionResult) => {
+			afterSuccess: (s, res: ActionResult, sent) => {
 				expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
 				expectTakenBack(s, { schedules: true });
+				expectOwnersMail(s, sent, ENDING_IN_MAIL.invite);
 			}
 		});
+		// Card 2923 (case 6): that mail and nothing else; nothing from a failed write.
+		expect(run.effects.map((effect) => (effect.kind === 'email' ? effect.subject : effect.kind))).toEqual([OWNERS_NOTICE]);
 		expect(shape(run.writes)).toEqual([
 			'update users set',
 			'update invite_tokens set',
@@ -1921,7 +1973,14 @@ describe('what taking an account back switches off (card 2168)', () => {
 		await atInfo(async () => {
 			resetDb();
 			const s = withInvite();
-			await use();
+			// The owners' mail recorded, not sent (card 2923).
+			const sent = effects();
+			try {
+				await use();
+				await sent.settle();
+			} finally {
+				sent.restore();
+			}
 			expect(authLines('Password set with an invite%')).toEqual([
 				{
 					message:
@@ -1954,11 +2013,21 @@ describe('what taking an account back switches off (card 2168)', () => {
 			makeSession(s.target, 'my-laptop');
 			stepUpFactor(s.target);
 
+			// With mail set up (card 2923, case 2): the owners are mailed only of a change that ends the keys.
+			makeSmtp();
+			const sent = effects();
+			// Put back however the case ends, so that a failure here leaves no recorder for the cases after it.
+			onTestFinished(() => sent.restore());
+
 			// A change that keeps the keys keeps their webhooks, and pauses both
 			// schedules all the same: the flag does not split the pause.
 			const kept = await changeOwn(s.target, { currentPassword: OLD, newPassword: NEW, endApiKeys: false });
 			expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, reportSchedulesPaused: 2 });
 			expect(hookRow(s.hooks.theirs)).toEqual({ active: 1, setBy: s.target.id });
+			// Card 2923 (decision 3): nor is the one already off held, and nobody is mailed of webhooks.
+			expect(heldOf(s.hooks.alreadyOff)).toBeNull();
+			await sent.settle();
+			expect(sent.emails.filter((mail) => mail.subject === OWNERS_NOTICE)).toEqual([]);
 			for (const id of [s.schedules.theirs, second]) {
 				const paused = scheduleRow(id);
 				expect(paused.enabled).toBe(0);
@@ -1975,6 +2044,10 @@ describe('what taking an account back switches off (card 2168)', () => {
 			const ended = await changeOwn(s.target, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true }, kept.cookie!.value);
 			expect(ended.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 1, reportSchedulesPaused: 0 });
 			expectTakenBack(s, { schedules: true });
+			// Card 2923 (case 2): the change that ends the keys holds the one already off, and mails the owner, the
+			// holder, naming it.
+			await sent.settle();
+			expectOwnersMail(s, sent.all, ENDING_IN_MAIL.ownChange);
 
 			const lines = authLines('Password changed by user%');
 			expect(lines.map((line) => line.message)).toEqual([
@@ -2050,6 +2123,8 @@ describe('what taking an account back switches off (card 2168)', () => {
 			emoji: '👤',
 			apiKeys: 0,
 			webhooks: 1,
+			// Card 2923's code review (E9): the one it set that is already off, which setting a password holds.
+			webhooksAlreadyOff: 1,
 			reportSchedules: 1
 		});
 	});

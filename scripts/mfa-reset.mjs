@@ -25,9 +25,15 @@
  * sign-ins and enrolment links ended, its API keys deleted and the webhooks it
  * set that are on switched off with the hold 'setter access ended' (card
  * 2915: `endAccountAccess` with `apiKeys: true`, unless `--keep-api-keys`,
- * which is `resetTwoStep`'s `apiKeys: false`), its report schedules that are
+ * which is `resetTwoStep`'s `apiKeys: false`), and, with them, those it set
+ * that were already switched off without a hold held the same way, left off
+ * (card 2923), its report schedules that are
  * on paused (always, card 2894), and one enrolment link issued, `issued_by
- * 'host-reset'`, for seven days. A CRITICAL line goes to `system_logs` in the
+ * 'host-reset'`, for seven days. Before the CRITICAL line, the server's
+ * Webhooks WARN lines for those switched off and those held (`tellSwitchedOff`
+ * in webhooks.ts, copied as `webhookLines`), with no account, and one saying
+ * that their boards' owners were not mailed, as the host sends no mail (card
+ * 2923, S6): stdout says to tell them. A CRITICAL line goes to `system_logs` in the
  * same transaction, so there is no reset without its line; its meta has the
  * fields the route's has (`twoStepResetMeta` in mfa-store.ts), the ids of the
  * keys ended (ids only), the webhooks switched off and the schedules paused
@@ -54,7 +60,8 @@
  * says which it used. The link goes to stdout only, and never to the log; so
  * do the account's API keys and the webhooks it set that the reset ended, or,
  * on a keep, kept, each by its name (a webhook by its board and host) and the
- * day it was made (card 2894's code review, CS1; card 2915), the keys read
+ * day it was made (card 2894's code review, CS1; card 2915), and the
+ * already-off webhooks it held, listed apart (card 2923, S2), the keys read
  * before they are deleted and the webhooks by the switch-off's own ids (S5):
  * the host may read them, and passes them on to the holder. So do the
  * settings the account is recorded as having set (`setting_setters`, card
@@ -69,6 +76,7 @@
 import Database from 'better-sqlite3';
 import { createHash, randomBytes } from 'node:crypto';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** How long the link works for: `ENROLMENT_LINK_LIFETIME_MS` in mfa-store.ts. */
 const ENROLMENT_LINK_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
@@ -174,6 +182,63 @@ function hostOf(url) {
 
 /** The ids a log line names, or nothing for none: `namingIds` in auth.ts. @param {number[]} ids */
 const namingIds = (ids) => (ids.length === 0 ? '' : ` (${ids.length === 1 ? 'id' : 'ids'} ${ids.join(', ')})`);
+
+/** How many webhooks one Webhooks line names; the rest are counted: `SWITCHED_OFF_NAMED` in webhooks.ts. */
+const SWITCHED_OFF_NAMED = 20;
+
+/**
+ * The Webhooks WARN lines the server writes for webhooks switched off, and
+ * already-off webhooks held, as their setter's access ended, and the line
+ * that their boards' owners were not mailed: `tellSwitchedOff` in
+ * src/lib/server/webhooks.ts, word for word, with `HOLD_IN_WORDS['setter
+ * access ended']` and the reason the host gives for sending no mail (card
+ * 2923, S6). Never the address. None for neither group.
+ *
+ * @param {{ id: number, board_id: number, set_by: number | null }[]} done
+ * @param {{ id: number, board_id: number, set_by: number | null }[]} held
+ * @param {string} cause
+ * @returns {string[]}
+ */
+export function webhookLines(done, held, cause) {
+	if (done.length === 0 && held.length === 0) return [];
+	/** @param {{ set_by: number | null }} hook */
+	const words = (hook) =>
+		hook.set_by === null ? 'nobody is recorded as having set it up' : `the account that set it up (user ${hook.set_by}) had its access ended`;
+	/** @param {{ id: number, board_id: number, set_by: number | null }[]} hooks */
+	const named = (hooks) =>
+		hooks
+			.slice(0, SWITCHED_OFF_NAMED)
+			.map((hook) => `webhook ${hook.id} on board ${hook.board_id}: ${words(hook)}`)
+			.join('; ') + (hooks.length > SWITCHED_OFF_NAMED ? `; and ${hooks.length - SWITCHED_OFF_NAMED} more` : '');
+	/** @type {string[]} */
+	const lines = [];
+	if (done.length === 1) {
+		lines.push(
+			`Webhook ${done[0].id} on board ${done[0].board_id} switched off: ${words(done[0])} (${cause}). ` +
+				'It stays off until an owner of the board or an administrator switches it on.'
+		);
+	} else if (done.length > 1) {
+		lines.push(`${done.length} webhooks switched off (${cause}): ${named(done)}. Each stays off until an owner of its board or an administrator switches it on.`);
+	}
+	if (held.length === 1) {
+		lines.push(
+			`Webhook ${held[0].id} on board ${held[0].board_id}, already switched off, is now held: ${words(held[0])} (${cause}). ` +
+				'Switched on again by an owner of the board or an administrator, it is given a new secret.'
+		);
+	} else if (held.length > 1) {
+		lines.push(
+			`${held.length} webhooks already switched off are now held (${cause}): ${named(held)}. ` +
+				'Each, switched on again by an owner of its board or an administrator, is given a new secret.'
+		);
+	}
+	const all = done.length + held.length;
+	const tail = done.length > 0 && held.length > 0 ? 'The lines above name them.' : all === 1 ? 'The line above names it.' : 'The line above names them.';
+	lines.push(
+		`The owners of the boards of the ${all} webhook(s) ${held.length === 0 ? 'switched off' : 'switched off or held'} above were not mailed, ` +
+			`as this ran on the server's host, which sends no mail. ${tail}`
+	);
+	return lines;
+}
 
 /** A token's hash as it is stored: `sha256Hex` in mfa-crypto.ts. @param {string} text */
 function sha256Hex(text) {
@@ -386,7 +451,8 @@ function reset(database, username, keep) {
 
 			// endAccountAccess(id, { apiKeys: !keep }): sessions, unused invites (endUnusedInvites), then
 			// endPendingSignIns' challenges and links, then, unless kept, the keys deleted and the webhooks the
-			// account set that are on switched off with their hold (card 2915), then the report schedules that are
+			// account set that are on switched off with their hold (card 2915), and those already off without one
+			// held (card 2923), then the report schedules that are
 			// on paused, stamped, their ids in order (card 2894).
 			const sessions = database.prepare('DELETE FROM sessions WHERE user_id = ?').run(id).changes;
 			const invites = database.prepare('DELETE FROM invite_tokens WHERE user_id = ? AND used = 0').run(id).changes;
@@ -400,21 +466,37 @@ function reset(database, username, keep) {
 			let apiKeyIds = [];
 			/** @type {number[]} */
 			let webhookIds = [];
+			// Those already switched off without a hold that the statement below held (card 2923).
+			/** @type {{ id: number, board_id: number, set_by: number | null }[]} */
+			let switchedOffRows = [];
+			/** @type {{ id: number, board_id: number, set_by: number | null }[]} */
+			let heldRows = [];
 			if (!keep) {
 				// The ids of the keys deleted, in order, for the meta (card 2915's code review, CS2): ids only.
 				apiKeyIds = /** @type {{ id: number }[]} */ (database.prepare('DELETE FROM api_keys WHERE user_id = ? RETURNING id').all(id))
 					.map((row) => row.id)
 					.sort((a, b) => a - b);
 				// The hold endAccountAccess records (SETTER_ACCESS_ENDED, copied from webhooks.ts): switched on again
-				// by the board's owner or an administrator, the webhook is given a new secret.
-				webhookIds = /** @type {{ id: number }[]} */ (
+				// by the board's owner or an administrator, the webhook is given a new secret. One already switched off
+				// without a hold is held too, left off (card 2923), read first so that the two groups are told apart.
+				const alreadyOff = new Set(
+					/** @type {{ id: number }[]} */ (
+						database.prepare('SELECT id FROM webhooks WHERE set_by = ? AND active = 0 AND held_because IS NULL').all(id)
+					).map((row) => row.id)
+				);
+				const rows = /** @type {{ id: number, board_id: number, set_by: number | null }[]} */ (
 					database
-						.prepare('UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE set_by = ? AND active = 1 RETURNING id')
+						.prepare(
+							'UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE set_by = ? AND (active = 1 OR held_because IS NULL) ' +
+								'RETURNING id, board_id, set_by'
+						)
 						.all(SETTER_ACCESS_ENDED, stamp(now), id)
-				)
-					.map((row) => row.id)
-					.sort((a, b) => a - b);
+				).sort((a, b) => a.id - b.id);
+				switchedOffRows = rows.filter((row) => !alreadyOff.has(row.id));
+				heldRows = rows.filter((row) => alreadyOff.has(row.id));
+				webhookIds = switchedOffRows.map((row) => row.id);
 			}
+			const heldIds = heldRows.map((row) => row.id);
 			// The webhooks listed: those switched off, by their own ids (S5), or, kept, those the account set that
 			// are on, as `keysAndWebhooksOf` in second-step.ts lists them. For stdout alone, never the log.
 			const hooks = /** @type {{ id: number, board: string, url: string, created_at: string }[]} */ (
@@ -433,6 +515,17 @@ function reset(database, username, keep) {
 										`WHERE w.id IN (${webhookIds.map(() => '?').join(', ')}) ORDER BY w.id`
 								)
 								.all(...webhookIds)
+			).map((hook) => ({ id: hook.id, board: hook.board, host: hostOf(hook.url), createdAt: hook.created_at }));
+			// The webhooks held where they were already off (card 2923, S2), by their own ids as above. For stdout alone.
+			const held = /** @type {{ id: number, board: string, url: string, created_at: string }[]} */ (
+				heldIds.length === 0
+					? []
+					: database
+							.prepare(
+								'SELECT w.id, b.name AS board, w.url, w.created_at FROM webhooks w JOIN boards b ON b.id = w.board_id ' +
+									`WHERE w.id IN (${heldIds.map(() => '?').join(', ')}) ORDER BY w.id`
+							)
+							.all(...heldIds)
 			).map((hook) => ({ id: hook.id, board: hook.board, host: hostOf(hook.url), createdAt: hook.created_at }));
 			const keptWebhookIds = keep ? hooks.map((hook) => hook.id) : [];
 			const apiKeys = apiKeyIds.length;
@@ -483,6 +576,13 @@ function reset(database, username, keep) {
 					reportScheduleIds
 				})
 			);
+			// The server's Webhooks lines for the same switch-off and hold (card 2923, S6), before the CRITICAL line,
+			// with no account, as the server writes them; and that the owners were not mailed, as the host sends none.
+			for (const line of webhookLines(switchedOffRows, heldRows, `${name}'s two-step sign-in was reset on the server's host`)) {
+				database
+					.prepare('INSERT INTO system_logs (timestamp, level, context, message, meta, user_id, ip) VALUES (?, ?, ?, ?, ?, ?, ?)')
+					.run(stamp(now), 'WARN', 'Webhooks', line, null, null, null);
+			}
 			database
 				.prepare('INSERT INTO system_logs (timestamp, level, context, message, meta, user_id, ip) VALUES (?, ?, ?, ?, ?, ?, ?)')
 				.run(stamp(now), 'CRITICAL', 'AUTH', message, meta, id, null);
@@ -512,6 +612,7 @@ function reset(database, username, keep) {
 				apiKeys,
 				keys,
 				hooks,
+				held,
 				settings,
 				token
 			};
@@ -592,7 +693,8 @@ function main() {
 				);
 				console.log('Kept, as --keep-api-keys asked: a password reset ends them.');
 			}
-		} else if (done.apiKeys === 0 && done.hooks.length === 0) {
+		} else if (done.apiKeys === 0 && done.hooks.length === 0 && done.held.length === 0) {
+			// Both groups counted (card 2923, S2): one whose only webhooks were already off is not told they had none.
 			console.log('They had no API key and no webhook they set up.');
 		} else {
 			console.log(
@@ -601,13 +703,21 @@ function main() {
 					: `Ended ${done.apiKeys} API key(s); ` +
 							(done.keys.length === 0 ? 'none was still working.' : `the ${done.keys.length} still working: ${keyList}.`)
 			);
-			console.log(
-				done.hooks.length === 0 ? 'They had no webhook they set up.' : `Switched off ${done.hooks.length} webhook(s) they set up: ${hookList}.`
-			);
+			if (done.hooks.length > 0) console.log(`Switched off ${done.hooks.length} webhook(s) they set up: ${hookList}.`);
+			else if (done.held.length === 0) console.log('They had no webhook they set up.');
+			// The already-off webhooks held (card 2923, S2), by board, host and day: on stdout only, never the log.
+			if (done.held.length > 0) {
+				const heldList = done.held.map((hook) => `${printable(hook.board)}, to ${printable(hook.host)} (made ${day(hook.createdAt)})`).join('; ');
+				console.log(
+					`Held ${done.held.length} webhook(s) they set up that were already switched off: ${heldList}; switched on, each is given a new secret.`
+				);
+			}
 			console.log(
 				"Give them the names: they make new keys once signed in, and the board's owner or an administrator switches back on " +
 					'any webhook they recognise, which gives it a new secret.'
 			);
+			// The host sends no mail (card 2923, S2): the boards' owners are the operator's to tell.
+			if (done.hooks.length > 0 || done.held.length > 0) console.log("Their boards' owners were not mailed: tell them.");
 		}
 		// The settings the account is recorded as having set (card 2915, S1): recorded, not judged here.
 		const set = [
@@ -640,13 +750,19 @@ function main() {
 	}
 }
 
-try {
-	main();
-} catch (err) {
-	if (err instanceof Refused) {
-		console.error(err.message);
-		process.exit(err.code);
+// Run as a command only: imported (tests/mfa-reset-script.test.ts, card 2923's code review, E8, which compares
+// `webhookLines` with the server's lines), it does nothing.
+/** A path as compared here: resolved, and in one case on Windows, whose paths ignore it. @param {string} path */
+const samePath = (path) => (process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path));
+if (process.argv[1] !== undefined && samePath(process.argv[1]) === samePath(fileURLToPath(import.meta.url))) {
+	try {
+		main();
+	} catch (err) {
+		if (err instanceof Refused) {
+			console.error(err.message);
+			process.exit(err.code);
+		}
+		console.error(`Refused: ${/** @type {Error} */ (err)?.message ?? err}`);
+		process.exit(1);
 	}
-	console.error(`Refused: ${/** @type {Error} */ (err)?.message ?? err}`);
-	process.exit(1);
 }

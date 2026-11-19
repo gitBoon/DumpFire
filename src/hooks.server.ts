@@ -29,6 +29,7 @@ import {
 	endPlainInvites,
 	endPlainRequestLinks,
 	endPlainSessions,
+	holdAlreadyOffWebhooksAtStart,
 	maskLiveLog,
 	refuseUserlessBesideAnother,
 	removeSettingsOfNonAdministrators,
@@ -179,6 +180,13 @@ void recheckStoredImages();
 // removed, and before the schedulers start. A second start changes nothing,
 // and it cannot throw. See $lib/server/startup-checks.ts.
 switchOffHeldWebhooksAtStart();
+
+// Hold the webhooks already switched off without a hold (card 2923): once,
+// while the settings flag is absent, every one of them, whoever set it; at
+// every start, those whose setter is disabled or not recorded. Switched on,
+// each is given a new secret. One WARN line when any was held, and nobody
+// mailed. It cannot throw. See $lib/server/startup-checks.ts.
+holdAlreadyOffWebhooksAtStart();
 
 // Start the backup, report and snapshot schedulers, the decision reminder and
 // the attachment file sweep, or leave all five off. SCHEDULERS=on or =off

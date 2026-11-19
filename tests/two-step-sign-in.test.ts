@@ -739,7 +739,7 @@ describe('the second step (slice 2)', () => {
 
 	it('T30: a reset of two-step sign-in committed between the password and the code: no session', async () => {
 		const { challenge } = await passwordStep(user);
-		inTransaction(() => resetTwoStep(user.id));
+		inTransaction(() => resetTwoStep(user.id, 'admin-reset', { cause: { log: 'a test', mail: 'a test' } }));
 
 		const res = await verify(challenge, { code: codeFor(factor.secret) });
 
@@ -950,7 +950,7 @@ describe('the second step (slice 2)', () => {
 		}
 
 		// Slice 4: the set-up link's page, whose address holds the link and which posts nothing, names no address at all.
-		const link = inTransaction(() => resetTwoStep(enrollable().id)).token;
+		const link = inTransaction(() => resetTwoStep(enrollable().id, 'admin-reset', { cause: { log: 'a test', mail: 'a test' } })).token;
 		for (const [path, headers] of [
 			[`/enrol/${link}`, { accept: 'text/html' }],
 			[`/enrol/${link}/__data.json`, {}]

@@ -593,6 +593,7 @@ describe('a database with no users while another is beside it', () => {
 			'void announceWebhooksBeforeKeys();',
 			'void recheckStoredImages();',
 			'switchOffHeldWebhooksAtStart();',
+			'holdAlreadyOffWebhooksAtStart();',
 			'startSchedulers();',
 			'reportInstallation();'
 		]) {
@@ -617,6 +618,10 @@ describe('a database with no users while another is beside it', () => {
 		expect(at('switchOffHeldWebhooksAtStart();')).toBeGreaterThan(at('removeSettingsOfNonAdministrators();'));
 		expect(at('switchOffHeldWebhooksAtStart();')).toBeGreaterThan(at('void recheckStoredImages();'));
 		expect(at('startSchedulers();')).toBeGreaterThan(at('switchOffHeldWebhooksAtStart();'));
+		// The already-off webhooks of disabled or missing setters held once, after the start's sweep and before the
+		// schedulers start (card 2923, S3).
+		expect(at('holdAlreadyOffWebhooksAtStart();')).toBeGreaterThan(at('switchOffHeldWebhooksAtStart();'));
+		expect(at('startSchedulers();')).toBeGreaterThan(at('holdAlreadyOffWebhooksAtStart();'));
 	});
 });
 

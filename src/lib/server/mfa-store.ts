@@ -29,6 +29,7 @@ import { db, sqlite } from './db';
 import { apiKeys, enrolmentLinks, mfaFactors, mfaRecoveryCodes, settings, signInChallenges, users, webhooks, type MfaFactor } from './db/schema';
 import { afterCommit, inTransaction } from './db/transaction';
 import { endAccountAccess, keyEnded } from './auth';
+import type { EndingCause } from './webhooks';
 import { forgetPendingAdd } from './pending-authenticators';
 import { createLogger } from './logger';
 import { registerStampFunctions } from './db/timestamps';
@@ -490,7 +491,11 @@ export function twoStepResetMeta(targetUserId: number, resetBy: number | 'host',
  * with the hold 'setter access ended' (card 2915, decision 1), as an
  * administrator's password reset does: a reset answers a lost or stolen
  * authenticator, and a key skips the second factor, so one made by whoever
- * took the device would outlive the reset. `apiKeys: false` keeps them, and
+ * took the device would outlive the reset; those it set already switched off
+ * without a hold are held the same way, and the boards' owners are mailed of
+ * both once committed, with `cause` (card 2923), which every caller gives (its
+ * code review, E5): for the log, the reset and who made it; for the mail, its
+ * kind alone (`ENDING_IN_MAIL.twoStepReset`). `apiKeys: false` keeps them, and
  * exists only as the model of the host's `--keep-api-keys`
  * (scripts/mfa-reset.mjs), which tests/mfa-reset-script.test.ts (T21, T34)
  * compares against: nothing under src passes it (S4, a source scan in
@@ -507,7 +512,11 @@ export function twoStepResetMeta(targetUserId: number, resetBy: number | 'host',
  * Inside the caller's transaction, the one that checked the account may be
  * reset. It throws if no transaction is open.
  */
-export function resetTwoStep(userId: number, issuedBy: string = 'admin-reset', { apiKeys: endKeys = true }: { apiKeys?: boolean } = {}): TwoStepReset {
+export function resetTwoStep(
+	userId: number,
+	issuedBy: string = 'admin-reset',
+	{ apiKeys: endKeys = true, cause }: { apiKeys?: boolean; cause: EndingCause }
+): TwoStepReset {
 	if (!sqlite.inTransaction) {
 		throw new Error(
 			'resetTwoStep must be called inside the transaction that checks the account may be reset: wrap the ' +
@@ -531,7 +540,7 @@ export function resetTwoStep(userId: number, issuedBy: string = 'admin-reset', {
 		})
 		.where(eq(users.id, userId))
 		.run();
-	const ended = endAccountAccess(userId, { apiKeys: endKeys });
+	const ended = endAccountAccess(userId, { apiKeys: endKeys, cause });
 	// Where kept (the host's --keep-api-keys alone), what was kept, by the rule `keysAndWebhooksOf` lists them by.
 	const now = stamp();
 	const liveKept = endKeys

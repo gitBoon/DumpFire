@@ -119,11 +119,15 @@ import {
 	activeWebhooksRefused,
 	boardsOverWebhookCap,
 	holdOf,
+	holdUnheldOfGoneSetters,
 	hostOf,
 	keysBeforeRecorded,
 	MAX_WEBHOOKS_PER_BOARD,
+	SWITCHED_OFF_NAMED,
 	switchOffLostWebhooks,
-	webhooksLog
+	WEBHOOKS_ALREADY_OFF_HELD,
+	webhooksLog,
+	type SwitchedOff
 } from './webhooks';
 import { inTransaction } from './db/transaction';
 import { removeSettingsOfFormerAdministrators, settingsHeldBy } from './setting-setters';
@@ -892,6 +896,79 @@ export function switchOffHeldWebhooksAtStart(value: string | undefined = process
 		}
 		return null;
 	}
+}
+
+/** The `settings` key that says the already-off webhooks of disabled or missing setters were held (card 2923, S3). */
+export { WEBHOOKS_ALREADY_OFF_HELD };
+
+/**
+ * Hold, at every start, the webhooks already switched off without a hold that
+ * a former holder's secret may still sign (card 2923, S3, decisions 19 to 21;
+ * its code review, S2 and E3), `held_because` 'setter access ended', so that
+ * switching one on gives it a new secret:
+ *
+ * - **Once**, while the `settings` flag `webhooks_already_off_held` is absent
+ *   (the first start of the release, or after a host deleted the row on going
+ *   back to an older image): every one of them, whoever set it, since an
+ *   ending of access before the release, which left its setter enabled (a
+ *   password reset, an invite, a holder's own change), held none. The flag is
+ *   written in the same transaction.
+ * - **Every start after**: those whose setter is disabled or not recorded,
+ *   which only a change outside the writes that hold (a row edited on the
+ *   host) can leave; one statement, a no-op when there is none.
+ *
+ * After the commit, one WARN under Webhooks naming them, the first 20 and the
+ * rest counted, never the address, only when it held one, in a `try` of its
+ * own (the code review's E6): a failure of that line never reads as the hold
+ * failing. It mails nobody. Returns how many it held, and null when it could
+ * not be done. Called from hooks.server.ts, straight after
+ * `switchOffHeldWebhooksAtStart` and before the schedulers start. It never
+ * throws: a failure of the hold is said at WARN, no flag is written, and the
+ * next start tries again.
+ */
+export function holdAlreadyOffWebhooksAtStart(): number | null {
+	let found: { held: SwitchedOff[]; every: boolean };
+	try {
+		found = inTransaction(() => {
+			const every = !sqlite.prepare('SELECT 1 FROM settings WHERE key = ?').get(WEBHOOKS_ALREADY_OFF_HELD);
+			const held = holdUnheldOfGoneSetters(sqlite, { every });
+			if (every) sqlite.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(WEBHOOKS_ALREADY_OFF_HELD, new Date().toISOString());
+			return { held, every };
+		});
+	} catch (err) {
+		try {
+			webhooksLog.warn(
+				`The webhooks already switched off with no hold could not be held at start: ${(err as Error)?.message ?? err}. ` +
+					'The next start tries again.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+	const { held, every } = found;
+	if (held.length > 0) {
+		try {
+			const named = held
+				.slice(0, SWITCHED_OFF_NAMED)
+				.map(
+					(hook) =>
+						`webhook ${hook.id} on board ${hook.boardId} (${hook.setBy === null ? 'no setter recorded' : every ? `user ${hook.setBy}` : `user ${hook.setBy}, disabled`})`
+				)
+				.join('; ');
+			const more = held.length > SWITCHED_OFF_NAMED ? `; and ${held.length - SWITCHED_OFF_NAMED} more` : '';
+			webhooksLog.warn(
+				(every
+					? `${held.length} webhook(s) already switched off with no hold are now held, whoever set them up (found when the server started, once): `
+					: `${held.length} webhook(s) already switched off, whose setter is disabled or not recorded, are now held (found when the server started): `) +
+					`${named}${more}. Each, switched on again by an owner of its board or an administrator, is given a new secret. ` +
+					"Their boards' owners were not mailed."
+			);
+		} catch {
+			// The hold is committed; only its line was lost.
+		}
+	}
+	return held.length;
 }
 
 /** The `settings` key that says the webhooks set up before keys were recorded were announced (card 2893, D6). */

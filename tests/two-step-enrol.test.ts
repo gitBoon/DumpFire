@@ -495,7 +495,8 @@ function mailReady(): void {
 const links = () => db.select().from(enrolmentLinks).all();
 
 /** An administrator's reset of the account's two-step sign-in, and the token of the link it issued. */
-const resetByAdmin = (account = user): string => inTransaction(() => resetTwoStep(account.id)).token;
+const resetByAdmin = (account = user): string =>
+	inTransaction(() => resetTwoStep(account.id, 'admin-reset', { cause: { log: 'a test', mail: 'a test' } })).token;
 
 /** The link cookie a gate answer set, as its `Set-Cookie` line, if any. */
 const linkCookieSet = (res: Response) => res.headers.getSetCookie().find((cookie) => cookie.startsWith(`${ENROL_LINK_COOKIE}=`));

@@ -34,13 +34,14 @@ import {
 	sealKeyHere,
 	unsealedBecause,
 	type SecretsAccount,
-	type Unsealed
+	type Unsealed,
+	withHeldApart
 } from '../backup-secrets';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
 import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, type MfaRestore } from '../mfa-backup';
 import { createLogger } from '../logger';
 import { REPLACE_PLAIN_USED_INVITES, inHashForm } from '../invites';
-import { switchOffLostWebhooks, tellSwitchedOff, type SwitchedOff } from '../webhooks';
+import { holdUnheldOfGoneSetters, switchOffLostWebhooks, tellSwitchedOff, WEBHOOKS_ALREADY_OFF_HELD, type SwitchedOff } from '../webhooks';
 import { sqlite } from './index';
 
 const log = createLogger('AUTH');
@@ -386,6 +387,24 @@ function disabledHere(live: Database.Database): DisabledHere[] {
 			 WHERE u.disabled_at IS NOT NULL`
 		)
 		.all() as DisabledHere[];
+}
+
+/**
+ * Hold the restored webhooks already switched off without a hold (card 2923,
+ * S3; its code review, S2, S3), after the carries, so that switching one on
+ * gives it a new secret: every one of them, whoever set it, where the restored
+ * `settings` do not hold `webhooks_already_off_held` (a backup from before the
+ * release, whose endings of access held none); else those whose setter is
+ * disabled, carried here or in the backup, or not recorded
+ * (`holdUnheldOfGoneSetters`). The flag is not written here: the restored
+ * settings are the backup's, and the next start, finding none, holds every
+ * one still unheld and writes it. Inside the restore's transaction, so a
+ * failure rolls the restore back. Returns those held; the server's own
+ * restore tells them with its sweep, a working copy nobody.
+ */
+function holdRestoredAlreadyOff(live: Database.Database): SwitchedOff[] {
+	const every = !live.prepare('SELECT 1 FROM settings WHERE key = ?').get(WEBHOOKS_ALREADY_OFF_HELD);
+	return holdUnheldOfGoneSetters(live, { every });
 }
 
 /**
@@ -1123,7 +1142,14 @@ export function defaultOutside(
  * which switches every webhook off anyway. Only on the server's own
  * connection, which the hold rule reads (`canViewBoard`): a restore into any
  * other is not swept, and the start that opens it as the server's database
- * sweeps it. This server's `webhook_keys_recorded_at` (migration 0071) is
+ * sweeps it. On the same terms, after the sweep, the restored webhooks already
+ * switched off without a hold are held (`holdRestoredAlreadyOff`, card 2923,
+ * S3): all of them where the restored settings lack
+ * `webhooks_already_off_held`, else those whose setter is disabled or not
+ * recorded; told with the sweep, the held listed apart in the same mail. A
+ * working copy holds them the same way, before it switches every webhook off,
+ * and tells nobody (the code review's S3).
+ * This server's `webhook_keys_recorded_at` (migration 0071) is
  * read before the clear, and the earlier of it and the backup's is kept (card
  * 2893's code review, CS1).
  *
@@ -1177,6 +1203,8 @@ function restoreInOneSnapshot(
 	let decisionLinksCleared = 0;
 	// The webhooks switched off for good inside the transaction (card 2752), told after the commit.
 	let swept: SwitchedOff[] = [];
+	// And those already off that it held (card 2923, S3), told with them.
+	let held: SwitchedOff[] = [];
 	const sweptBecause = `found after a restore${options.by ? ` by ${options.by}` : ''}`;
 	let secrets: SecretsAccount = {
 		kept: { mailPassword: false, destinations: [], webhooks: [] },
@@ -1539,11 +1567,17 @@ function restoreInOneSnapshot(
 			// the commit.
 			if (live === sqlite && !working) {
 				swept = switchOffLostWebhooks('all', sweptBecause, { told: 'by the caller' });
+				// After the carries (carryDisabled, carryHolds): the restored webhooks already switched off without a
+				// hold held for good (card 2923, S3; its code review, S2): see `holdRestoredAlreadyOff`. Not caught.
+				held = holdRestoredAlreadyOff(live);
 			}
 
 			// A working copy: see above. Not caught, so that a failure here rolls
 			// the restore back like any other.
 			if (working) {
+				// Held as the server's own restore holds them, before every webhook is switched off below, so that
+				// only those the backup had off are held, and told to nobody (card 2923's code review, S3).
+				holdRestoredAlreadyOff(live);
 				const done = switchOffOutside(live);
 				// What the backup had on, as before card 2169: a webhook that
 				// had a secret is off in a backup made since, and is counted
@@ -1553,12 +1587,13 @@ function restoreInOneSnapshot(
 			// A working copy has removed its mail settings and destinations, so
 			// it says nothing of their secrets, kept or to enter: only of its
 			// webhooks, which stay, switched off.
+			// A webhook held for good is set apart from those to enter (card 2923's code review, E1), read after the holds.
 			secrets = working
 				? {
 						kept: { mailPassword: false, destinations: [], webhooks: filled.kept.webhooks },
-						toEnter: { mailPassword: false, destinations: [], webhooks: filled.unfilled.webhooks }
+						toEnter: withHeldApart(live, { mailPassword: false, destinations: [], webhooks: filled.unfilled.webhooks })
 					}
-				: { kept: filled.kept, toEnter: filled.unfilled };
+				: { kept: filled.kept, toEnter: withHeldApart(live, filled.unfilled) };
 		})();
 	} catch (e) {
 		failure = e;
@@ -1607,12 +1642,13 @@ function restoreInOneSnapshot(
 	// about a restore that succeeded, not a failed restore.
 	// The webhooks it switched off, each a WARN, and the boards' owners mailed
 	// only where the schedulers run (card 2752, S1, S2).
-	if (swept.length > 0) {
+	// Those already off that it held with them, listed apart (card 2923).
+	if (swept.length > 0 || held.length > 0) {
 		try {
 			const setting = schedulerSetting(process.env.SCHEDULERS, dev);
-			tellSwitchedOff(swept, sweptBecause, setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` });
+			tellSwitchedOff(swept, sweptBecause, setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` }, held);
 		} catch (e) {
-			errors.push(`The ${swept.length} webhook(s) the restore switched off could not all be said: ${messageOf(e)}`);
+			errors.push(`The ${swept.length + held.length} webhook(s) the restore switched off or held could not all be said: ${messageOf(e)}`);
 		}
 	}
 	if (unfinished.length > 0) {

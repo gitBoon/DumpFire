@@ -93,6 +93,7 @@ import { getDbPath, sqlite } from './db';
 // break above all, as a space (the log's own cleaner, card 2214).
 import { printable } from './logger';
 import { HOST_KEY_NOT_CONFIRMED, confirmedHostKey, hostKeyText } from './ssh-host-key';
+import { NEW_SECRET_REASONS } from './webhooks';
 
 /** The setting that lists the webhooks a backup left without their secrets. */
 export const WEBHOOK_SECRETS_LEFT_OUT_KEY = 'webhook_secrets_left_out';
@@ -210,6 +211,13 @@ export type SecretsToEnter = {
 	mailWayOut?: boolean;
 	destinations: { name: string; type: string; needs: string }[];
 	webhooks: { id: number; boardId: number; board: string | null }[];
+	/**
+	 * Of those with no secret, the ones held off for good for a reason that
+	 * gives a new secret on switch-on (`NEW_SECRET_REASONS`, card 2923's code
+	 * review, E1): nothing is to be entered for them, and a secret sent with
+	 * the switch-on is refused. Present only where there is one.
+	 */
+	heldWebhooks?: { id: number; boardId: number; board: string | null }[];
 };
 
 /** `RestoreResult.secrets`: what the restore kept, and what is to enter. */
@@ -1509,7 +1517,27 @@ export function secretsToEnter(database: Database.Database): { toEnter: SecretsT
 			if (row) toEnter.webhooks.push({ id: row.id, boardId: row.boardId, board: boardName(database, row.boardId) });
 		}
 	}
-	return { toEnter, problems };
+	return { toEnter: withHeldApart(database, toEnter), problems };
+}
+
+/**
+ * `toEnter` with the webhooks `database` holds off for good for a reason in
+ * `NEW_SECRET_REASONS` moved to `heldWebhooks` (card 2923's code review, E1):
+ * their secret is not entered, since switching one on gives it a new one and
+ * refuses a secret sent with it. Read as the rows are now, so the restore
+ * asks it after its own holds. Unchanged where there is none, or where the
+ * database has no hold column.
+ */
+export function withHeldApart(database: Database.Database, toEnter: SecretsToEnter): SecretsToEnter {
+	if (toEnter.webhooks.length === 0 || !hasColumns(database, 'webhooks', 'id', 'held_because')) return toEnter;
+	const heldBecause = database.prepare('SELECT held_because FROM webhooks WHERE id = ?').pluck();
+	const isHeld = (id: number) => {
+		const reason = heldBecause.get(id);
+		return typeof reason === 'string' && NEW_SECRET_REASONS.includes(reason);
+	};
+	const held = toEnter.webhooks.filter((hook) => isHeld(hook.id));
+	if (held.length === 0) return toEnter;
+	return { ...toEnter, webhooks: toEnter.webhooks.filter((hook) => !isHeld(hook.id)), heldWebhooks: [...(toEnter.heldWebhooks ?? []), ...held] };
 }
 
 // ─── The two sentences ───────────────────────────────────────────────────────
@@ -1559,8 +1587,20 @@ export function secretsToEnterSentence(toEnter: SecretsToEnter, atStart = false,
 					: 'sets each one and switches it on with PUT /api/v1/webhooks/{id}')
 		);
 	}
-	if (parts.length === 0) return null;
-	const said = `To enter again, because a backup does not hold them: ${parts.join('; ')}.`;
+	// Card 2923's code review (E1): a webhook held for good is never "set its secret and switch it on".
+	const held = toEnter.heldWebhooks ?? [];
+	const heldSaid =
+		held.length === 0
+			? null
+			: `Nothing to enter for webhook(s) ${held
+					.map((hook) => `${hook.id} (board ${hook.board === null ? hook.boardId : `"${printable(hook.board)}"`})`)
+					.join(', ')}, switched off for good: to keep one, the board's owner or an administrator should switch it on with no secret; ` +
+				'it is given a new one, returned once in that answer (PUT /api/v1/webhooks/{id} with active true alone)' +
+				(atStart ? ', or delete it if it is no longer wanted.' : '.');
+	if (parts.length === 0 && heldSaid === null) return null;
+	const said = [parts.length === 0 ? null : `To enter again, because a backup does not hold them: ${parts.join('; ')}.`, heldSaid]
+		.filter((part) => part !== null)
+		.join(' ');
 	if (unsealed === null) return said;
 	return `${said} None was kept from this server, because ${unsealed.seal === 'none' ? NO_SEAL_HERE : NOT_SEALED_HERE}.`;
 }

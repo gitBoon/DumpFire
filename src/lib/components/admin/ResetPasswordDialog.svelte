@@ -222,7 +222,7 @@
 				{#if resetTargetSchedules !== null && resetTargetSchedules > 0}
 					<p class="warning-text">They have {counted(resetTargetSchedules, 'report schedule')}, which {resetTargetSchedules === 1 ? 'is' : 'are'} paused.</p>
 				{/if}
-				<p>They are signed out everywhere, every API key they have stops working, any invite not yet used stops working, the webhooks they set up are switched off and their report schedules are paused.</p>
+				<p>They are signed out everywhere, every API key they have stops working, any invite not yet used stops working, the webhooks they set up are switched off and their report schedules are paused. Their boards' owners are mailed about them, and about any already switched off, which can now be switched on only with a new secret.</p>
 				<!-- The administrator's own password, which a reset asks for again (card 2701). -->
 				<CurrentPasswordField bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} onEnter={toNewPassword} />
 			{/if}

@@ -4214,16 +4214,17 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 		writes: 1,
 		why: 'Changes a webhook: its address, secret, events or on and off. Only an API key reaches it, as for POST; card 2703.'
 	},
-	'src/lib/server/auth.ts#endAccountAccess': {
+	'src/lib/server/webhooks.ts#holdWebhooksOfSetter': {
 		does: 'switches off only',
 		writes: 1,
 		why:
-			"An administrator's password set, an invite used, a holder's own change that ends their keys, a disable (card 2671) and a reset of the two-step sign-in (card 2915) switch off the webhooks the account set (card 2168), recording the hold 'setter access ended' (card 2752's code review, CS4)."
+			"An administrator's password set, an invite used, a holder's own change that ends their keys, a disable (card 2671), a reset of the two-step sign-in (card 2915) and a delete switch off the webhooks the account set (card 2168), recording the hold 'setter access ended' (card 2752's code review, CS4); " +
+			"those already switched off without a hold are held in the same statement, active left off (card 2923). The one writer of both, for endAccountAccess and deleteUser (card 2923's code review, E4)."
 	},
-	'src/lib/server/deletes.ts#deleteUser': {
+	'src/lib/server/webhooks.ts#holdUnheldOfGoneSetters': {
 		does: 'switches off only',
 		writes: 1,
-		why: "A deleted account’s webhooks are switched off while they still name it (card 2168), with the hold 'setter access ended' (card 2752’s code review, CS4)."
+		why: "Holds, 'setter access ended', webhooks already switched off without a hold, active left off: those whose setter is disabled or not recorded at every start and in every restore, every one once (card 2923, S3; its code review, S2, S3, E3)."
 	},
 	'src/lib/server/db/restore.ts#switchOffOutside': {
 		does: 'switches off only',
@@ -4260,7 +4261,29 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
  * callers' files may import it.
  */
 const WEBHOOK_WRITER_CALLERS: Record<string, readonly string[]> = {
-	'src/lib/server/backup-secrets.ts#fillSecretGaps': ['src/lib/server/db/restore.ts#restoreInOneSnapshot']
+	'src/lib/server/backup-secrets.ts#fillSecretGaps': ['src/lib/server/db/restore.ts#restoreInOneSnapshot'],
+	// Card 2923 (S3): the start-up pass and the restore (a working copy included, its code review's S3).
+	'src/lib/server/webhooks.ts#holdUnheldOfGoneSetters': [
+		'src/lib/server/startup-checks.ts#holdAlreadyOffWebhooksAtStart',
+		'src/lib/server/db/restore.ts#holdRestoredAlreadyOff'
+	],
+	// Card 2923's code review (E4): the endings of an account's access.
+	'src/lib/server/webhooks.ts#holdWebhooksOfSetter': ['src/lib/server/auth.ts#endAccountAccess', 'src/lib/server/deletes.ts#deleteUser']
+};
+
+/** The made-up files of the rule's own examples (card 2702), in place of auth.ts and deletes.ts. */
+const EXAMPLE_AUTH = 'src/lib/server/example-auth.ts';
+const EXAMPLE_DELETES = 'src/lib/server/example-deletes.ts';
+
+/**
+ * The rule's own examples (card 2702) were written as auth.ts's endAccountAccess and deletes.ts's deleteUser, each
+ * listed as switching off only, until card 2923's code review (E4) moved their one write into webhooks.ts
+ * (`holdWebhooksOfSetter`): the inventory as it is, with the two kept as examples, in made-up files of their own.
+ */
+const EXAMPLE_WRITERS: Record<string, WebhookWriter> = {
+	...WEBHOOK_WRITERS,
+	[`${EXAMPLE_AUTH}#endAccountAccess`]: { does: 'switches off only', writes: 1, why: "The rule's example of a Drizzle switch-off." },
+	[`${EXAMPLE_DELETES}#deleteUser`]: { does: 'switches off only', writes: 1, why: "The rule's example of a SQL switch-off." }
 };
 
 /**
@@ -4284,6 +4307,10 @@ const WEBHOOK_NAME_STRINGS: Record<string, { count: number; why: string }> = {
 	'src/lib/server/backup-secrets.ts#fillSecretGaps': {
 		count: 3,
 		why: "hasColumns(live, 'webhooks', …) three times: whether this server has the columns before a secret is refilled, the hold's of card 2752 among them."
+	},
+	'src/lib/server/backup-secrets.ts#withHeldApart': {
+		count: 1,
+		why: "hasColumns(database, 'webhooks', …): whether the database has the hold column before the webhooks held for good are set apart from those to enter (card 2923's code review, E1)."
 	},
 	'src/lib/server/backup-secrets.ts#secretsToEnter': {
 		count: 1,
@@ -5234,23 +5261,24 @@ describe('the webhooks table is written only by the writers listed, each as list
 			expect(judgeWebhookWrites(PAGE, page, WEBHOOK_WRITERS).findings).toEqual([unlisted(IN_SQL, 3, '(top level)', PAGE)]);
 
 			// A listed file: its writer as listed passes; a new function, a second write and a write that does more are found.
-			const AUTH = 'src/lib/server/auth.ts';
+			// Made-up files (card 2923's code review, E4): auth.ts and deletes.ts now hold no write of their own.
+			const AUTH = EXAMPLE_AUTH;
 			const endAccountAccess = (body: string[]) =>
 				["import { db } from './db'; import { eq } from 'drizzle-orm';", "import { webhooks } from './db/schema';", 'export function endAccountAccess(userId: number) {', ...body.map((each) => `\t${each}`), '}'];
 			const offOnly = 'db.update(webhooks).set({ active: false }).where(eq(webhooks.setBy, userId)).run();';
-			expect(judgeWebhookWrites(AUTH, endAccountAccess([offOnly]).join('\n'), WEBHOOK_WRITERS).findings).toEqual([]);
+			expect(judgeWebhookWrites(AUTH, endAccountAccess([offOnly]).join('\n'), EXAMPLE_WRITERS).findings).toEqual([]);
 			const added = [...endAccountAccess([offOnly]), 'export function reopenHooks(userId: number) {', '\tdb.update(webhooks).set({ active: true }).run();', '}'];
-			expect(judgeWebhookWrites(AUTH, added.join('\n'), WEBHOOK_WRITERS).findings).toEqual([unlisted('updates webhooks', 7, 'reopenHooks', AUTH)]);
-			expect(judgeWebhookWrites(AUTH, endAccountAccess([offOnly, offOnly]).join('\n'), WEBHOOK_WRITERS).findings).toEqual([
+			expect(judgeWebhookWrites(AUTH, added.join('\n'), EXAMPLE_WRITERS).findings).toEqual([unlisted('updates webhooks', 7, 'reopenHooks', AUTH)]);
+			expect(judgeWebhookWrites(AUTH, endAccountAccess([offOnly, offOnly]).join('\n'), EXAMPLE_WRITERS).findings).toEqual([
 				`${AUTH}#endAccountAccess writes the webhooks table 2 time(s), and WEBHOOK_WRITERS says 1 (card 2702)`
 			]);
 			const doesMore = (at: number, what = 'updates webhooks', file = AUTH, name = 'endAccountAccess') =>
 				`${file}:${at} ${what} in ${name}, which WEBHOOK_WRITERS lists as switching off only, and does more (card 2702)`;
 			const more = "db.update(webhooks).set({ active: false, url: 'https://x.test' }).run();";
-			expect(judgeWebhookWrites(AUTH, endAccountAccess([more]).join('\n'), WEBHOOK_WRITERS).findings).toEqual([doesMore(4)]);
-			const DELETES = 'src/lib/server/deletes.ts';
+			expect(judgeWebhookWrites(AUTH, endAccountAccess([more]).join('\n'), EXAMPLE_WRITERS).findings).toEqual([doesMore(4)]);
+			const DELETES = EXAMPLE_DELETES;
 			const onAgain = ['export function deleteUser(userId: number) {', "\tsqlite.prepare('UPDATE webhooks SET active = 1 WHERE set_by = ?').run(userId);", '}'].join('\n');
-			expect(judgeWebhookWrites(DELETES, onAgain, WEBHOOK_WRITERS).findings).toEqual([doesMore(2, IN_SQL, DELETES, 'deleteUser')]);
+			expect(judgeWebhookWrites(DELETES, onAgain, EXAMPLE_WRITERS).findings).toEqual([doesMore(2, IN_SQL, DELETES, 'deleteUser')]);
 
 			// Card 2752 (E11): a switch-off writer may record why and when beside active off, in either form, and the hold alone is more.
 			const HOOKS = 'src/lib/server/webhooks.ts';
@@ -5261,6 +5289,14 @@ describe('the webhooks table is written only by the writers listed, each as list
 					"const log = createLogger('Webhooks');",
 					'export function switchOffHeld(id: number, hold: string) {',
 					`\t${body}`,
+					'}',
+					// Card 2923: the file's other listed writer, as it is, so that only switchOffHeld is judged here.
+					'export function holdUnheldOfGoneSetters() {',
+					"\tsqlite.prepare(\"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE active = 0\").run('x');",
+					'}',
+					// Card 2923's code review (E4): its third, the endings' writer.
+					'export function holdWebhooksOfSetter(userId: number) {',
+					"\tsqlite.prepare(\"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ?\").run('x', userId);",
 					'}'
 				].join('\n');
 			const heldWith = (body: string) => judgeWebhookWrites(HOOKS, switchOffHeld(body), WEBHOOK_WRITERS).findings;
@@ -5290,8 +5326,8 @@ describe('the webhooks table is written only by the writers listed, each as list
 		});
 
 		// Code review K5, K6, K9, K12: whole made-up files, each a case of its own.
-		const AUTH = 'src/lib/server/auth.ts';
-		const DELETES = 'src/lib/server/deletes.ts';
+		const AUTH = EXAMPLE_AUTH;
+		const DELETES = EXAMPLE_DELETES;
 		const SECRETS = 'src/lib/server/backup-secrets.ts';
 		const RESTORE = 'src/lib/server/db/restore.ts';
 		const TSX = 'src/lib/server/example.tsx';
@@ -5403,7 +5439,7 @@ describe('the webhooks table is written only by the writers listed, each as list
 				found: [unlisted('updates webhooks', 3, 'Panel', TSX)]
 			}
 		])('judges $form (code review)', ({ file, source, found }) => {
-			expect(judgeWebhookWrites(file, source, WEBHOOK_WRITERS).findings).toEqual(found);
+			expect(judgeWebhookWrites(file, source, EXAMPLE_WRITERS).findings).toEqual(found);
 		});
 
 	});

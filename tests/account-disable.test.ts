@@ -230,6 +230,16 @@ describe('POST /api/users/[id]/disable', () => {
 		expect(authWarningsFrom()).toEqual([ADMIN_IP]);
 		expect(notices[0].html).not.toContain(ADMIN_IP);
 		expect(notices[0].html).not.toMatch(/ from \d/);
+
+		// Card 2923 (case 9): the board's owners told once committed. Bob, its only owner, disabled by then, is left
+		// out; the enabled administrator and superadmin are mailed in his place, naming the disable and who made it.
+		const owners = sent.emails.filter((email) => email.subject === 'A webhook on your board was switched off');
+		expect(owners.map((email) => email.to).sort()).toEqual([s.admin.email, s.chief.email].sort());
+		// The kind of action and no account (card 2923's code review, S5).
+		for (const email of owners) {
+			expect(email.html).toContain('What caused it: the account that set it up was disabled by an administrator.');
+			expect(email.html).not.toContain('bob');
+		}
 	});
 
 	it('case 2: the superadmin disabling an administrator removes the mail, the App URL, their destination and their failure address, names all four, and says the notice could not go', async () => {

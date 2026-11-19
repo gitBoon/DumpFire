@@ -1655,7 +1655,10 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 			'`Switch off the ${webhooksInWords(hooks)} I set up.`',
 			"'Do this if anyone else may have used your account.'",
 			"`Anything that uses ${keys === 1 ? 'the key' : 'the keys'} stops working until it is given a new key.`",
-			"\"A webhook switched off sends nothing until the board's owner or an administrator switches it on again.\""
+			"\"A webhook switched off sends nothing until the board's owner or an administrator switches it on again.\"",
+			// Card 2923 (S9): the owners mailed, and one already off held, with webhooks on and with none.
+			"\"The boards' owners are mailed about them, and about any you set up that are already switched off, which can then be switched on only with a new secret.\"",
+			"\"Any webhook you set up that is already switched off can then be switched on only with a new secret, and its board's owners are mailed about it.\""
 		]) {
 			expect(words, phrase).toContain(phrase);
 		}
@@ -1763,7 +1766,9 @@ describe('the admin page’s password dialog, src/lib/components/admin/ResetPass
 		expect(
 			around(
 				'They are signed out everywhere, every API key they have stops working, any invite not yet used stops working, ' +
-					'the webhooks they set up are switched off and their report schedules are paused.'
+					'the webhooks they set up are switched off and their report schedules are paused. ' +
+					// Card 2923 (S9).
+					"Their boards' owners are mailed about them, and about any already switched off, which can now be switched on only with a new secret."
 			).at(-1)
 		).toEqual({
 			condition: 'resettingOwnPassword',
@@ -1893,11 +1898,21 @@ describe('the invite page, src/routes/invite/[token]/+page.svelte', () => {
 	it('says, before the form is sent, that setting a password ends the account’s API keys, switches off its webhooks and pauses its report schedules', () => {
 		const notice = 'Setting a password here {whatItEnds} and signs it out everywhere else.';
 
-		expect(around(notice)).toEqual([
-			{ condition: 'data.valid', inElse: false },
-			{ condition: 'whatItEnds', inElse: false }
-		]);
+		// The notice shows for something ended, or for a webhook already off alone (card 2923's code review, E9).
+		const shown = { condition: 'whatItEnds || webhooksAlreadyOff > 0', inElse: false };
+		expect(around(notice)).toEqual([{ condition: 'data.valid', inElse: false }, shown, { condition: 'whatItEnds', inElse: false }]);
+		// Card 2923 (S9): where it switches webhooks off, that their boards' owners are mailed, of those already off too.
+		expect(
+			around("Their boards' owners are mailed about them, and about any already switched off, which can now be switched on only with a new secret.")
+		).toEqual([{ condition: 'data.valid', inElse: false }, shown, { condition: 'webhooks > 0', inElse: false }]);
+		// And, with none on and one already off, the Account page's words for that alone (card 2934, folded in: E9, S7).
+		expect(
+			around("Any webhook you set up that is already switched off can then be switched on only with a new secret, and its board's owners are mailed about it.")
+		).toEqual([{ condition: 'data.valid', inElse: false }, shown, { condition: 'webhooks > 0', inElse: true }]);
+		// The else of `webhooks > 0` is the `else if` for one already off (the walk names the block's first condition).
+		expect(source.replace(/\r\n/g, '\n')).toMatch(/\{:else if webhooksAlreadyOff > 0\}\n\s*<p>Any webhook you set up that is already switched off/);
 		const script = scriptOf(file).getText();
+		expect(script).toContain('let webhooksAlreadyOff = $derived(data.webhooksAlreadyOff ?? 0);');
 		expect(script).toContain('let apiKeys = $derived(data.apiKeys ?? 0);');
 		expect(script).toContain('let webhooks = $derived(data.webhooks ?? 0);');
 		expect(script).toContain('let reportSchedules = $derived(data.reportSchedules ?? 0);');

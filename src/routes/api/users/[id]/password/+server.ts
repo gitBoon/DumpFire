@@ -10,6 +10,7 @@ import { refuseOwnAccount, requireAdmin, requireManagedAccount, requireUser } fr
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { pathId, readBody, readText } from '$lib/server/request-body';
+import { ENDING_IN_MAIL } from '$lib/server/webhooks';
 import { createLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
@@ -99,7 +100,10 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 		// webhook the account set is switched off, and every report schedule of
 		// it paused. A webhook nobody is recorded as having set, one made before
 		// that was recorded, is left on, and is looked over by hand after a reset.
-		const access = endAccountAccess(userId, { apiKeys: true });
+		const access = endAccountAccess(userId, {
+			apiKeys: true,
+			cause: { log: `${target.username}'s password was reset by ${actor.username}`, mail: ENDING_IN_MAIL.passwordReset }
+		});
 		afterCommit(() =>
 			log.info(
 				`Password reset for user ${userId} ("${target.username}") by "${actor.username}" — ended ` +

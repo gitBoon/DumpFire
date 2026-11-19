@@ -2876,20 +2876,21 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.14.0, with its dated notes newest first, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.15.0, with its dated notes newest first, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.14.0');
+		expect(res.body.info.version).toBe('1.15.0');
 
 		// Card 2761 (E8): every dated note's heading, in the order the description gives them, newest first, in
 		// one list, in place of each note's test counting the notes before it. A new version's note is added at
 		// its head, and nothing else here moves.
 		const note = res.body.info.description as string;
 		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])).toEqual([
+			'**Changed on 2026-11-18 (version 1.15.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.14.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.13.1).**',
 			'**Changed on 2026-11-18 (version 1.13.0), breaking.**',
@@ -2911,6 +2912,23 @@ describe('what a route answers, against the schema the document gives for it', (
 		]);
 		// The newest is the version the document is.
 		expect(note.match(/\*\*Changed on [^*]+\*\*/)?.[0]).toContain(`(version ${res.body.info.version})`);
+
+		// The 1.15.0 note (card 2923): ending an account's access also holds its already-off webhooks and mails the
+		// board's owners; breaking, five points since its code review (S1, S2, S5, S6).
+		const held = note.slice(note.indexOf('**Changed on 2026-11-18 (version 1.15.0), breaking.**'), note.indexOf('**Changed on 2026-11-18 (version 1.14.0), breaking.**'));
+		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5]);
+		for (const words of [
+			"Ending an account's access also holds the webhooks it set that were switched off without a hold, and mails the board's owners (card 2923)",
+			"(1) a webhook switched off without a hold (by PUT, or by a restore kept apart) whose setter then has their password reset, has their two-step sign-in reset (on the server's host, unless run with --keep-api-keys), uses an invite, ends their keys on their own password change, is disabled or is deleted is held as setter access ended",
+			'so is every webhook already switched off without a hold, whoever set it, once, at the first start of this version and in a restore of a backup made before it, and one whose setter is disabled or not recorded at every start and in every restore, a restore kept apart included',
+			'pausedBecause gives the sentence where it was null, switching it on gives it a new secret and refuses a secret sent with it (400), and only the board owner or an administrator deletes it or makes a webhook to its receiver',
+			"(2) the board's owners are mailed of the webhooks such an ending switched off, and of those it held, listed apart, naming the kind of action and no account; a reset on the server's host mails nobody",
+			"(3) the setter access ended sentence now names the holder's own change that ends keys, and the webhooks held when already off",
+			'(4) a webhook switched off because nobody was recorded as its setter is now given a new secret too when switched on, and a secret sent with that switch-on is answered 400; its pausedBecause says so',
+			'(5) nothing else changed: no operation, field or schema.'
+		]) {
+			expect(held, words).toContain(words);
+		}
 
 		// The 1.14.0 note (card 2915): a two-step reset ends the account's keys and switches off its webhooks; breaking.
 		const resets = note.slice(note.indexOf('**Changed on 2026-11-18 (version 1.14.0), breaking.**'), note.indexOf('**Changed on 2026-11-18 (version 1.13.1).**'));
@@ -2993,8 +3011,8 @@ describe('what a route answers, against the schema the document gives for it', (
 	it('announces in the 1.13.0 note, breaking, that a disabled account has no access to anything, and holds the document to it (card 2671)', () => {
 		const note = spec.info.description as string;
 		const heading = '**Changed on 2026-11-18 (version 1.13.0), breaking.**';
-		// Third of the dated notes, after card 2915's 1.14.0 and card 2910's 1.13.1, and marked breaking.
-		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])[2]).toBe(heading);
+		// Fourth of the dated notes, after card 2923's 1.15.0, card 2915's 1.14.0 and card 2910's 1.13.1, and marked breaking.
+		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])[3]).toBe(heading);
 		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-18 (version 1.12.0), breaking.**'));
 		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5]);
 		for (const words of [
@@ -3014,9 +3032,13 @@ describe('what a route answers, against the schema the document gives for it', (
 		}
 
 		// The webhook's switch-off reason in the note as it was at 1.13.0; in pausedBecause word for word as webhooks.ts
-		// records it now, which card 2915 (1.14.0) made name a two-step reset too.
+		// records it now, which card 2915 (1.14.0) made name a two-step reset too, and card 2923 (1.15.0, E12, S3) the
+		// holder's own change that ends keys and one held when already off.
 		const sentence = 'This was switched off because the account that set it up had its password reset, used an invite, was disabled, or was deleted.';
-		const now = 'This was switched off because the account that set it up had its password or its two-step sign-in reset, used an invite, was disabled, or was deleted.';
+		const now =
+			'This was switched off because the account that set it up had its password or its two-step sign-in reset, ended its API keys when ' +
+			'changing its own password, used an invite, was disabled, or was deleted; one already switched off then, or found switched off with ' +
+			'its setter disabled or not recorded, is held the same way.';
 		expect(SWITCHED_OFF_BECAUSE['setter access ended'].startsWith(`${now} `)).toBe(true);
 		expect(changes).toContain(`"${sentence}"`);
 		expect(spec.components.schemas.Webhook.properties.pausedBecause.description).toContain(`"${SWITCHED_OFF_BECAUSE['setter access ended']}"`);
@@ -3024,8 +3046,23 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(webhook.description).toContain(
 			'A password reset, a two-step reset (since 1.14.0), an invite used, a disabled account (since 1.13.0) and a deleted account record theirs too (setter access ended).'
 		);
+		// Card 2923 (1.15.0): its own sentence after it, so the one above is kept whole.
+		expect(webhook.description).toContain(
+			'Since 1.15.0 they also hold one already switched off; every start and every restore, a restore kept apart included, hold one whose setter is disabled or not recorded; ' +
+				'and the first start of 1.15.0, and a restore of a backup made before it, hold every one already switched off with no hold, whoever set it.'
+		);
+		// Card 2923's code review (S1): every hold gives a new secret, no setter's included.
+		expect(webhook.description).toContain('Since 1.15.0 every webhook switched off for good is given a new secret when switched on, one with no recorded setter included.');
+		expect(spec.paths['/api/v1/webhooks/{webhookId}'].put.description).toContain(
+			'since 1.15.0 so is one switched off because nobody was recorded as its setter, which kept its secret before.'
+		);
 		expect(webhook.properties.pausedBecause.description).toContain(
-			`a two-step reset (since 1.14.0, card 2915), an invite used, a disable (since 1.13.0, card 2671) or a delete of its setter (since 1.11.0, the code review's CS4): "${now}`
+			`a two-step reset (since 1.14.0, card 2915), an invite used, a disable (since 1.13.0, card 2671) or a delete of its setter (since 1.11.0, the code review's CS4), ` +
+				`a holder's own change that ends keys and a webhook already switched off then (since 1.15.0, card 2923): "${now}`
+		);
+		expect(webhook.properties.pausedBecause.description).toContain(
+			"null for one that is sent, and for one switched off without a hold (by PUT, or by a restore kept apart) whose setter's access has not ended since, " +
+				"or ended keeping their keys (their own password change without ending them, or a reset on the server's host run with --keep-api-keys)."
 		);
 
 		// Each operation says so where it is.
@@ -3157,9 +3194,12 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(webhook.description).toContain('It stays off when the setter is given the board back. Only the board owner or an administrator switches it on again');
 		expect(webhook.description).not.toContain('is sent again with nothing else changed');
 		expect(webhook.properties.pausedBecause.description).toContain('"This was switched off because the account that set it up could no longer open this board.');
-		// Card 2671 added "was disabled" to the sentence, and card 2915 "or its two-step sign-in", word for word as webhooks.ts records it.
+		// Card 2671 added "was disabled" to the sentence, card 2915 "or its two-step sign-in", and card 2923 the holder's own change
+		// that ends keys and the webhooks held when already off, word for word as webhooks.ts records it.
 		expect(webhook.properties.pausedBecause.description).toContain(
-			'"This was switched off because the account that set it up had its password or its two-step sign-in reset, used an invite, was disabled, or was deleted.'
+			'"This was switched off because the account that set it up had its password or its two-step sign-in reset, ended its API keys when ' +
+				'changing its own password, used an invite, was disabled, or was deleted; one already switched off then, or found switched off with ' +
+				'its setter disabled or not recorded, is held the same way.'
 		);
 		expect(webhook.properties.pausedBecause.description).not.toContain('shown once');
 		// Card 2893: the key that ended, in the schema, its pausedBecause word for word, the not-sent reason and the PUT.

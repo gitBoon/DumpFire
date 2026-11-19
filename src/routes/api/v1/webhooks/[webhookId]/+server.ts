@@ -82,8 +82,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * setter knows the old one, and could sign deliveries with it. The new secret
  * is in the answer, which goes to the board's owner or an administrator, the
  * only callers who may switch it on; a `secret` sent with that switch-on is
- * refused 400 before anything is written. One held because nobody was
- * recorded as its setter keeps its secret.
+ * refused 400 before anything is written. Since card 2923's code review (S1)
+ * one held because nobody was recorded as its setter is given a new secret
+ * too: its secret may have been set since by an account whose access ended.
  *
  * Whoever becomes its setter has the API key they came in with recorded too
  * (`keyOfWrite`, card 2893), so that it is switched off when that key ends;
@@ -116,7 +117,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		if (!reveal && switchedOn) {
 			throw error(403, "Only the board's owner or an administrator can switch a webhook on. Ask the board's owner.");
 		}
-		// Switched off for a lost setter or an ended key: a new secret, never one sent (card 2752, D3).
+		// Switched off for good, for any reason: a new secret, never one sent (card 2752, D3; card 2923's code review, S1).
 		const givenNewSecret = switchedOn && hook.heldBecause !== null && NEW_SECRET_REASONS.includes(hook.heldBecause);
 		if (givenNewSecret && Object.hasOwn(body, 'secret')) {
 			throw error(400, NEW_SECRET_ON_SWITCH_ON);

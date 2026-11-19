@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.148
+version: 1.149
 status: As-Built
-date: 2026-11-18
+date: 2026-11-19
 tags:
+  - card-2923
+  - ended-access-holds-webhooks
   - card-2915
   - two-step-reset-ends-keys
   - card-2910
@@ -1860,6 +1862,7 @@ sequenceDiagram
     P-->>H: the form, or the one dead-link answer
     H->>P: POST password (hashed before the transaction)
     P->>DB: one transaction: usableInvite again, password set, used = 1 for the row read (by its digest), endAccountAccess
+    Note over P: committed, the webhooks' boards' owners mailed of those switched off and those held (card 2923)
     P-->>H: 303 to /login/enrol with a set-up challenge (grant invite), no session
 ```
 
@@ -3175,12 +3178,14 @@ outside a transaction):
 | Every invite not yet used | |
 | Every sign-in waiting for its second factor, and every enrolment link | |
 | Every API key of the account, deleted, one already ended included (card 2915) | |
-| Every webhook the account set that is on, switched off for good with the hold `'setter access ended'` (card 2915) | |
+| Every webhook the account set that is on, switched off for good with the hold `'setter access ended'` (card 2915); every one it set that was already switched off without a hold, held the same way, left off (card 2923); the boards' owners mailed of both once committed | |
 | Every report schedule of the account that is on, paused (`enabled = 0`, `updated_at` stamped; card 2894) | |
 | Then one new enrolment link | |
 
 The sessions, invites, pending sign-ins, links and keys end, the webhooks are switched off and
-the schedules are paused, through `endAccountAccess(userId, { apiKeys: true })`, and the link is
+the schedules are paused, through `endAccountAccess(userId, { apiKeys: true, cause })` (card 2923:
+for the log "<holder>'s two-step sign-in was reset by <administrator>", for the owners' mail "the
+account that set it up had its two-step sign-in reset by an administrator"), and the link is
 issued after it, since that deletes the account's links. **Why the schedules are paused** (card
 2894, D2): a schedule sends a board's activity whether or not anyone is signed in, so one made by
 whoever took the device and the password would outlive the reset. The holder turns back on the
@@ -3192,7 +3197,9 @@ after the reset, and could make webhooks. An administrator's password reset has 
 the holder's own password change offers one, because there it is the holder's own decision about
 their own keys. The webhooks go with the keys, as on every other ending (card 2168), held
 `'setter access ended'`, so switching one on again is the board's owner's or an administrator's
-and gives it a new secret. The cost is a script down until the holder makes a new key, once their
+and gives it a new secret; since card 2923 one the account set that was already switched off
+without a hold is held too, and the boards' owners are mailed of both, once the reset is committed.
+The cost is a script down until the holder makes a new key, once their
 new authenticator is set up. `resetTwoStep(userId, issuedBy, { apiKeys = true })` returns how many
 and which (`apiKeys`, the rows deleted; `webhooks`, `webhookIds`; `reportSchedules`,
 `reportScheduleIds`); `{ apiKeys: false }` keeps them, and exists only as the model of the host's
@@ -3291,7 +3298,8 @@ recognise once your new authenticator is set up. A webhook you recognise is swit
 the board's owner or an administrator, which gives it a new secret. If any is one you did not
 make, someone else had your password: change it, and tell an administrator."; nothing of keys
 where it ended none. Its third argument is `{ schedulesPaused, apiKeysEnded, webhooksSwitchedOff }`.
-The board's owners are not mailed that a webhook on their board was switched off: card 2923. Its footer: "If you did not ask for this, tell an administrator
+The board's owners are mailed separately, once the reset is committed, of the webhooks switched
+off and, apart, those already off that it held (card 2923). Its footer: "If you did not ask for this, tell an administrator
 straight away. Use only a link an administrator hands you directly." It holds no link and no
 token, and every text in it is escaped. The reset stands whether or not it goes.
 
@@ -3390,9 +3398,19 @@ apiKeys: false })` (card 2915).
   `keyEnded`) and the settings the account is recorded as having set (`setting_setters`). Then,
   after the pending sign-ins and links, `DELETE FROM api_keys WHERE user_id = ?` and `UPDATE
   webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND
-  active = 1 RETURNING id`, the hold copied from `webhooks.ts` (`SETTER_ACCESS_ENDED`), the webhooks
-  listed by those ids (S5). With `--keep-api-keys` neither statement runs, and the webhooks it set
-  that are on are listed with their ids. The superadmin is the account likeliest to hold
+  (active = 1 OR held_because IS NULL) RETURNING id, board_id, set_by` (card 2923: one already
+  switched off without a hold is held too, read first so the two groups are told apart), the hold
+  copied from `webhooks.ts` (`SETTER_ACCESS_ENDED`), the webhooks listed by those ids (S5). With
+  `--keep-api-keys` neither statement runs, and the webhooks it set that are on are listed with
+  their ids. **It sends no mail** (card 2923, S2, S6): before the `CRITICAL` row it writes the
+  server's `WARN` rows under `Webhooks`, `user_id` NULL, in `tellSwitchedOff`'s words (copied as
+  `webhookLines`), the cause `<name>'s two-step sign-in was reset on the server's host`, one for
+  those switched off and one for those held, and `The owners of the boards of the <n> webhook(s)
+  switched off or held above were not mailed, as this ran on the server's host, which sends no
+  mail. …`; stdout lists the held ones apart ("Held <n> webhook(s) they set up that were already
+  switched off: <board>, to <host> (made <day>); switched on, each is given a new secret.") and
+  ends "Their boards' owners were not mailed: tell them." A holder whose only webhooks were already
+  off is never told they had none. The superadmin is the account likeliest to hold
   integration keys, and the person at the host often knows whether the phone was stolen: that is
   who may keep them.
 - **The log row** is written in the same transaction, so there is no reset without it: `CRITICAL`
@@ -3963,6 +3981,7 @@ sequenceDiagram
     I->>I: MFA key loaded? Else 503 before any hash
     I->>I: hash the password on a worker
     I->>DB: one transaction: invite checked and used, password set, endAccountAccess, enrol challenge, grant invite
+    Note over I: committed, the webhooks' boards' owners mailed (card 2923)
     I-->>B: challenge cookie, 303 /login/enrol. No session, no remembered browser
     B->>E: QR, first code, codes, confirm
 ```
@@ -4607,9 +4626,10 @@ sequenceDiagram
     R->>R: refusals: own account 403, whose account, already disabled 409
     R->>S: one transaction, refusals asked again
     S->>S: disabled_at and disabled_by written
-    S->>S: endAccountAccess with apiKeys true
+    S->>S: endAccountAccess with apiKeys true, those already off held too (card 2923)
     S->>S: request links deleted, an administrator's settings removed
     S-->>R: counts, sole-owner teams, settings removed
+    S->>M: committed, the webhooks' boards' owners mailed, the disabled account left out (card 2923)
     R->>M: account-disabled notice, unless the mail settings went
     R-->>A: counts and noticeSent
 ```
@@ -4636,9 +4656,9 @@ In the one transaction (`disableAccount` in `src/lib/server/account-disable.ts`)
 
 | What | How |
 |------|-----|
-| Sessions, invites, pending sign-ins, enrolment links | `endAccountAccess(id, { apiKeys: true })`, as a reset ends them |
+| Sessions, invites, pending sign-ins, enrolment links | `endAccountAccess(id, { apiKeys: true, cause })`, as a reset ends them, the cause "<name>'s account was disabled by <admin>" (card 2923) |
 | API keys | Deleted, with that call |
-| The webhooks it set | Switched off for good, held `'setter access ended'`: "had its password or its two-step sign-in reset, used an invite, was disabled, or was deleted" (the two-step reset since card 2915) |
+| The webhooks it set | Switched off for good, held `'setter access ended'`: "had its password or its two-step sign-in reset, ended its API keys when changing its own password, used an invite, was disabled, or was deleted; …" (the two-step reset since card 2915, the rest since card 2923); those already switched off without a hold held the same way, and the boards' owners mailed of both once committed, the disabled account itself left out (card 2923) |
 | Its report schedules | Paused |
 | The links of the task requests it raised | Deleted (`request_links`); the request is mailed nothing more (`requesterMailAddress`), and the team still sees the address (S3) |
 | An administrator's mail settings, App URL and backup destinations | Removed where it set them (`removeSettingsSetBy`, why `'disabled'`) |
@@ -4717,11 +4737,12 @@ flowchart TD
     How -->|"an invite is used"| Invite["The invite is marked used<br/>Every other unused invite ends<br/>Every session ends, and the user is signed in afresh<br/>Every API key ends<br/>Every webhook the account set is switched off<br/>Every report schedule of the account is paused"]
     Two["a two-step reset<br/>(the admin page)"] --> Kept["Sessions, invites, pending sign-ins and links end<br/>Every API key ends, every webhook the account set is switched off<br/>(card 2915): counted in its message, listed in its mail<br/>Every report schedule of the account is paused"]
     Host["the host's command<br/>(scripts/mfa-reset.mjs)"] --> HostSQL["The same statements in its own SQL,<br/>not through endAccountAccess<br/>Keys and webhooks end unless --keep-api-keys,<br/>listed on stdout only"]
-    Own --> One["endAccountAccess(userId, { apiKeys }),<br/>in the transaction that sets the password"]
+    Own --> One["endAccountAccess(userId, { apiKeys, cause }),<br/>in the transaction that sets the password"]
     Reset --> One
     Invite --> One
     Kept --> One
-    One --> Order["Sessions, then invites, then pending sign-ins<br/>and enrolment links (card 2768), then under apiKeys the keys<br/>and the webhooks whose set_by is the account and are on,<br/>then always the schedules that are on"]
+    One --> Order["Sessions, then invites, then pending sign-ins<br/>and enrolment links (card 2768), then under apiKeys the keys<br/>and the webhooks whose set_by is the account and are on,<br/>or off with no hold (held, card 2923),<br/>then always the schedules that are on"]
+    Order --> Told["Once committed: a WARN for those switched off and one for those held,<br/>one mail to each owner of their boards (card 2923)"]
 ```
 
 | How the password is set | Sessions | Invites not yet used | API keys | Webhooks the account set | Its report schedules |
@@ -4764,8 +4785,12 @@ the key clears `set_by` (`deleteUser`).
 the account's sessions, its waiting invites and its keys, and switch off the webhooks it set,
 recording the hold `'setter access ended'` since card 2752's code review (CS4), as deleting the
 account does: switched on again by the board's owner or an administrator, each is given a new
-secret, and until then nobody else may make a webhook to its receiver on that board.
-They do not reach:
+secret, and until then nobody else may make a webhook to its receiver on that board. Since card
+2923 they hold, the same way and left off, every webhook the account set that was already
+switched off without a hold (a `PUT`, or a restore kept apart), so that one paused before the
+ending does not come back with a secret its former holder knew; and the boards' owners are
+mailed of both once the change is committed. The holder's own change that keeps the keys holds
+nothing. They do not reach:
 
 - **A webhook nobody is recorded as having set**: one registered before migration 0056, or
   one whose setter's account was deleted. A reset leaves it on. **Since card 2752 it is
@@ -4813,7 +4838,7 @@ was switched on in between. After taking an account back, look over once the web
 setter on the boards it could edit (no page lists them: `GET /api/v1/boards/{id}/webhooks`).
 Delete any that nobody recognises.
 
-- **One function.** `endAccountAccess(userId, { apiKeys })` in `src/lib/server/auth.ts`
+- **One function.** `endAccountAccess(userId, { apiKeys, cause })` in `src/lib/server/auth.ts`
   deletes the account's sessions, then its invites with `used = 0`, then its pending sign-ins and
   enrolment links, then, under `apiKeys`, its API keys and switches off the webhooks it set that
   are on, then pauses its report schedules that are on, always. The keys' and webhooks'
@@ -4824,8 +4849,15 @@ Delete any that nobody recognises.
   `apiKeys`: the reset and the invite `{ apiKeys: true }`, the holder's own change `{ apiKeys:
   endApiKeys }`, the two-step reset `{ apiKeys: true }` since card 2915 (`{ apiKeys: false }`
   before; `resetTwoStep`'s own `apiKeys: false` is the model of the host's `--keep-api-keys`
-  alone). It mails nobody: a board's owners are not told a webhook on their board was switched
-  off here (card 2923). Its `reportSchedules` option is gone
+  alone). Since card 2923 every caller names a `cause` too, and under `apiKeys` it first reads the
+  account's webhooks that are off with no hold, then makes one update, `WHERE set_by = id AND
+  (active = 1 OR held_because IS NULL)`, so those are held as well; `webhooks` and `webhookIds`
+  still count only those that were on. The read and the update are `holdWebhooksOfSetter(userId,
+  cause)` in `webhooks.ts`, which `deleteUser` calls too (the code review's E4). Once committed it
+  tells both groups (`tellSwitchedOff(switchedOff, cause.log, { mail: true }, held, cause.mail)`):
+  a `WARN` each, naming both accounts, and one mail to each owner of their boards, naming the kind
+  of action and no account (`ENDING_IN_MAIL`, the code review's S5). `cause` is required of every
+  caller, `resetTwoStep`'s included (E5). Its `reportSchedules` option is gone
   (card 2894): every caller paused schedules, so it pauses them always. All three password
   routes call it inside the transaction that writes the password, and it throws if no
   transaction is open. Ending a key
@@ -9347,7 +9379,10 @@ two-step sign-in (card 2915: `resetTwoStep`, and `scripts/mfa-reset.mjs` in its 
 invite used, a disabled account (card 2671) and a deleted account (`endAccountAccess`,
 `deleteUser`), which switch off the webhooks the account set, record `'setter access ended'` (the
 code review's CS4), so those are
-held the same way. Card 2893's `'key ended'` is written by `switchOffHeld` too (see
+held the same way; since card 2923 they hold the account's webhooks already switched off without
+a hold too, `active` left off, and `holdUnheldOfGoneSetters` holds those already off whose setter
+is disabled or not recorded, once at the first start of that release and after every restore of
+the server's own database. Card 2893's `'key ended'` is written by `switchOffHeld` too (see
 [A Webhook Switched Off When Its API Key Ends](#a-webhook-switched-off-when-its-api-key-ends-card-2893)).
 It is switched off:
 
@@ -9362,7 +9397,8 @@ It is switched off:
 | Every start, before the schedulers (`switchOffHeldWebhooksAtStart`) | `switchOffLostWebhooks('all')` | "found when the server started" |
 | After every restore as it is, in its transaction (`restoreFromBackup`) | `switchOffLostWebhooks('all')` | "found after a restore by Ann" |
 | At delivery, the backstop for a change none of these saw (`deliver`) | `switchOffHeld` on the one webhook | "found when an event was sent" |
-| A password reset, a two-step reset (card 2915), an invite used, the account disabled or deleted | `endAccountAccess`, `deleteUser`, the host's `scripts/mfa-reset.mjs` (`'setter access ended'`) | the reset's, the disable's or the delete's own log line |
+| A password reset, a two-step reset (card 2915), an invite used, the holder's own change that ends keys, the account disabled or deleted; those already off without a hold held too (card 2923) | `endAccountAccess`, `deleteUser`, the host's `scripts/mfa-reset.mjs` (`'setter access ended'`) | the caller's own line, and since card 2923 the `Webhooks` WARN: "Sam's password was reset by Ann", "Sam set their password with an invite", "Sam changed their password and ended their API keys", "Sam's two-step sign-in was reset by Ann", "Sam's account was disabled by Ann", "Sam's account was deleted by Ann"; the owners' mail names the kind of action and no account ("the account that set it up had its password reset by an administrator", …; the code review's S5); on the host, "Sam's two-step sign-in was reset on the server's host", not mailed |
+| Already off with no hold (card 2923; its code review, S2, S3, E3) | `holdUnheldOfGoneSetters`: every one, whoever set it, once, at the first start without the flag `webhooks_already_off_held` (`holdAlreadyOffWebhooksAtStart`, which writes it) and in a restore of a backup without it; those whose setter is disabled or not recorded at every start and in every restore after its carries, a working copy included | the start's one WARN when it held one, nobody mailed; after a restore, "found after a restore by Ann", told with its sweep; a working copy tells nobody |
 | An API key revoked on the Account page (card 2893) | `switchOffLostWebhooks({ setters })` | "API key #12 was revoked by Sam" |
 
 Each write's sweep runs inside the write's transaction: a write that fails leaves the share and
@@ -9397,8 +9433,9 @@ ended by a reset, an invite or a delete, or (from card 2893) its key ended, is g
 secret**, 64 hexadecimal characters, given in that answer and readable by the board's owner or
 an administrator: the former setter, or whoever held their account, knows the old one and could
 sign deliveries with it. A `secret` sent with that switch-on is refused `400`, with nothing
-written. One switched off because nobody was recorded as its setter keeps its secret; set a new
-one with it if the address is unknown.
+written. Since card 2923's code review (S1) one switched off because nobody was recorded as its
+setter is given a new secret too: its secret may have been set since, by a `PUT`, by an account
+whose access has ended, which a `'no setter'` hold does not record. It kept its secret before.
 
 **Deleting it** (the code review's CS1). A webhook switched off this way is deleted only by the
 board's owner or an administrator, as it is switched on only by them: an editor is refused `403`

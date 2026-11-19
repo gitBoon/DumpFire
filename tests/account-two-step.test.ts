@@ -530,7 +530,7 @@ describe('the Two-step sign-in section (card 2772, S3)', () => {
 		const other = makeUser();
 		giveFactor(other);
 		const reset = await started(other);
-		inTransaction(() => resetTwoStep(other.id));
+		inTransaction(() => resetTwoStep(other.id, 'admin-reset', { cause: { log: 'a test', mail: 'a test' } }));
 		expect(pendingAddOf(other.id)).toBeUndefined();
 		expect((await confirm(other, reset.token, reset.pendingId, codeFor(reset.secret))).status).toBe(401);
 	});

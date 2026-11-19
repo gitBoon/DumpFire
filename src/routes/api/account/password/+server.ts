@@ -20,6 +20,7 @@ import { readBody, readBoolean, readText } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
+import { ENDING_IN_MAIL } from '$lib/server/webhooks';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
@@ -118,7 +119,11 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 			// in, and the server cannot tell a routine change from a recovery.
 			// The Account page says so before the change; the holder turns back
 			// on the ones they recognise through the step-up (card 2751).
-			const ended = endAccountAccess(userId, { apiKeys: endApiKeys });
+			// The cause the log and the boards' owners are told, used only when the keys end (card 2923; S5: the mail names nobody).
+			const ended = endAccountAccess(userId, {
+				apiKeys: endApiKeys,
+				cause: { log: `${me.username} changed their password and ended their API keys`, mail: ENDING_IN_MAIL.ownChange }
+			});
 			afterCommit(() =>
 				log.info(
 					`Password changed by user — ended ${ended.sessions} session(s), ${ended.invites} invite(s) and ` +

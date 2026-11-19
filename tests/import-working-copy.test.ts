@@ -43,7 +43,7 @@ import { reportSchedules, webhooks } from '$lib/server/db/schema';
 import { getSmtpConfig, isSmtpConfigured } from '$lib/server/email';
 import { issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
 import { api, routeMethods } from './helpers/api';
-import { importConfirmation, makeUser, resetDb } from './helpers/fixtures';
+import { importConfirmation, makeUser, resetDb, startedSinceAlreadyOffHeld } from './helpers/fixtures';
 import { afterEachTimestampCheck } from './helpers/timestamps';
 
 const REAL_MIGRATIONS = join(process.cwd(), 'drizzle');
@@ -255,6 +255,9 @@ function seed(database: Database.Database): void {
 	set.run('theme', 'dark');
 	set.run('backup_config', JSON.stringify(BACKUP_CONFIG));
 	for (const [key, value] of Object.entries(MAIL_SETTINGS)) set.run(key, value);
+	// A backup of a server started since card 2923's release: its restore holds only the already-off webhooks of a
+	// disabled or missing setter, none here (its code review, S2).
+	startedSinceAlreadyOffHeld(database);
 }
 
 /** What switching the backup above off comes to. Only what was on is counted. */
@@ -396,7 +399,17 @@ describe('restoring as a working copy', () => {
 		// backup's two_step_released_at, written by migration 0066 (card 2769),
 		// and its api_key_deadline, written by migration 0069 (card 2772), and this
 		// server's webhook_keys_recorded_at, written by migration 0071 and kept (card 2752).
-		expect(Object.keys(settings).sort()).toEqual(['api_key_deadline', 'app_url', 'backup_config', 'request_form_secret', 'theme', 'two_step_released_at', 'webhook_keys_recorded_at']);
+		// And the backup's webhooks_already_off_held: one made since card 2923's release (its code review, S2).
+		expect(Object.keys(settings).sort()).toEqual([
+			'api_key_deadline',
+			'app_url',
+			'backup_config',
+			'request_form_secret',
+			'theme',
+			'two_step_released_at',
+			'webhook_keys_recorded_at',
+			'webhooks_already_off_held'
+		]);
 		expect(JSON.parse(settings['backup_config'])).toEqual(BACKUP_CONFIG_OFF);
 		expect(settings['app_url']).toBe(APP_URL);
 		expect(settings['theme']).toBe('dark');
@@ -469,7 +482,15 @@ describe('restoring as a working copy', () => {
 			expect(result.errors).toEqual([]);
 			expect(result.outside).toEqual({ ...SWITCHED_OFF, backupScheduleWasOn: false, backupDestinations: 0 });
 			// It went on to the mail settings, and the restore is committed.
-			expect(Object.keys(settingsIn(live)).sort()).toEqual(['api_key_deadline', 'app_url', 'request_form_secret', 'theme', 'two_step_released_at', 'webhook_keys_recorded_at']);
+			expect(Object.keys(settingsIn(live)).sort()).toEqual([
+				'api_key_deadline',
+				'app_url',
+				'request_form_secret',
+				'theme',
+				'two_step_released_at',
+				'webhook_keys_recorded_at',
+				'webhooks_already_off_held'
+			]);
 			expect(everythingElseIn(live)).toEqual(everythingElseIn(backup));
 		}
 	);
@@ -480,7 +501,7 @@ describe('restoring as a working copy', () => {
 		backup.exec(`
 			UPDATE report_schedules SET enabled = 0;
 			UPDATE webhooks SET active = 0;
-			DELETE FROM settings WHERE key NOT IN ('app_url', 'theme');
+			DELETE FROM settings WHERE key NOT IN ('app_url', 'theme', 'webhooks_already_off_held');
 		`);
 
 		const result = restoreFromBackup(live, backup, { outside: 'off' });
@@ -499,7 +520,9 @@ describe('restoring as a working copy', () => {
 			request_form_secret: expect.stringMatching(/^[0-9a-f]{64}$/),
 			theme: 'dark',
 			// This server's, written by migration 0071 and kept by a restore (card 2752).
-			webhook_keys_recorded_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+			webhook_keys_recorded_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+			// The backup's: one made since card 2923's release (its code review, S2).
+			webhooks_already_off_held: '2026-11-19T00:00:00.000Z'
 		});
 		// The settings as the backup has them, but for this server's 0071 moment, kept (card 2752).
 		for (const table of OUTSIDE_TABLES) {

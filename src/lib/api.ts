@@ -297,6 +297,7 @@ export function userDisableWarning(
 	const removed = settingsGo.length === 0 ? '' : ` This also removes what they set: ${settingsGo.join('; ')}.`;
 	return (
 		`Disable user "${username}"? They can no longer sign in. At once their sessions, invites, pending sign-ins, API keys and the links to the requests they made end, the webhooks they set up are switched off and their report schedules paused; none of this comes back if the account is enabled again.` +
+		` Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret.` +
 		` Nobody can assign them, share a board with them, include them in a decision or send them a request, and nothing is mailed to them but a notice that the account was disabled.` +
 		` Their name stays wherever it is shown, and their comments, password and authenticators are kept.${owner}${removed}`
 	);

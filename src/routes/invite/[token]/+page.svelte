@@ -14,10 +14,13 @@
 	 * are on, and how many of its report schedules are on. Setting a password
 	 * with an invite ends every key, switches off every such webhook and pauses
 	 * every such schedule (card 2168), and the page says so before the form is
-	 * sent.
+	 * sent; where it switches webhooks off, that their boards' owners are
+	 * mailed, of those already off too, which it holds (card 2923).
 	 */
 	let apiKeys = $derived(data.apiKeys ?? 0);
 	let webhooks = $derived(data.webhooks ?? 0);
+	/** Those it set that are already switched off with no hold, which setting a password holds (card 2923's code review, E9). */
+	let webhooksAlreadyOff = $derived(data.webhooksAlreadyOff ?? 0);
 	let reportSchedules = $derived(data.reportSchedules ?? 0);
 	/** What setting a password here ends, switches off and pauses, in words: empty for none. */
 	let whatItEnds = $derived(
@@ -55,9 +58,18 @@
 		</div>
 
 		{#if data.valid}
-			{#if whatItEnds}
+			{#if whatItEnds || webhooksAlreadyOff > 0}
 				<div class="keys-notice">
-					<p>Setting a password here {whatItEnds} and signs it out everywhere else.</p>
+					{#if whatItEnds}
+						<p>Setting a password here {whatItEnds} and signs it out everywhere else.</p>
+					{/if}
+					<!-- Card 2923 (S9): the boards' owners are told, and one already off is held; with none on, the
+					     Account page's words for that alone (its code review, E9 and S7). -->
+					{#if webhooks > 0}
+						<p>Their boards' owners are mailed about them, and about any already switched off, which can now be switched on only with a new secret.</p>
+					{:else if webhooksAlreadyOff > 0}
+						<p>Any webhook you set up that is already switched off can then be switched on only with a new secret, and its board's owners are mailed about it.</p>
+					{/if}
 				</div>
 			{/if}
 

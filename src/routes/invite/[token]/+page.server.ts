@@ -3,8 +3,9 @@ import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { apiKeys, inviteTokens, reportSchedules, users, webhooks } from '$lib/server/db/schema';
-import { and, eq, count } from 'drizzle-orm';
+import { and, eq, count, isNull } from 'drizzle-orm';
 import { endAccountAccess, namingIds } from '$lib/server/auth';
+import { ENDING_IN_MAIL } from '$lib/server/webhooks';
 import { CheckNotMade, LONGEST_PASSWORD, PASSWORD_TOO_LONG, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
 import { createLogger } from '$lib/server/logger';
 import { usableInvite } from '$lib/server/invites';
@@ -56,6 +57,12 @@ export const load: PageServerLoad = async ({ params }) => {
 		.from(reportSchedules)
 		.where(and(eq(reportSchedules.userId, invite.userId), eq(reportSchedules.enabled, true)))
 		.get();
+	// And those it set that are already switched off with no hold, which setting a password holds, and whose
+	// boards' owners it mails (card 2923's code review, E9 and S7): the page says so where none is on.
+	const alreadyOff = db.select({ count: count() })
+		.from(webhooks)
+		.where(and(eq(webhooks.setBy, invite.userId), eq(webhooks.active, false), isNull(webhooks.heldBecause)))
+		.get();
 
 	return {
 		valid: true,
@@ -63,6 +70,7 @@ export const load: PageServerLoad = async ({ params }) => {
 		emoji: user?.emoji || '👤',
 		apiKeys: keys?.count ?? 0,
 		webhooks: hooks?.count ?? 0,
+		webhooksAlreadyOff: alreadyOff?.count ?? 0,
 		reportSchedules: schedules?.count ?? 0
 	};
 };
@@ -140,7 +148,12 @@ export const actions: Actions = {
 			// session the account had, its other invites and its API keys, switches
 			// off the webhooks it set and pauses its report schedules (card 2168).
 			// This one is marked used first, so it is not among the invites deleted.
-			const ended = endAccountAccess(invite.userId, { apiKeys: true });
+			// The account's name, for the cause the boards' owners are told (card 2923): one read, no write.
+			const username = db.select({ username: users.username }).from(users).where(eq(users.id, invite.userId)).get()?.username ?? `user ${invite.userId}`;
+			const ended = endAccountAccess(invite.userId, {
+				apiKeys: true,
+				cause: { log: `${username} set their password with an invite`, mail: ENDING_IN_MAIL.invite }
+			});
 			afterCommit(() =>
 				log.info(
 					`Password set with an invite for user ${invite.userId} — ended ${ended.sessions} session(s), ` +

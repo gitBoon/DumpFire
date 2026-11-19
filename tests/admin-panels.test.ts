@@ -1826,6 +1826,10 @@ describe('disabling and enabling on the users panel, mounted (card 2671)', () =>
 		expect(title).toBe('Disable User');
 		expect(options).toEqual({ askPassword: true });
 		expect(message).toMatch(/^Disable user "ada"\? They can no longer sign in\./);
+		// Card 2923 (S9): the boards' owners are mailed, of those already off too.
+		expect(message).toContain(
+			"none of this comes back if the account is enabled again. Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret."
+		);
 		expect(message).toContain(
 			'This also removes what they set: the mail settings, so no mail is sent, invites and password resets included, until an administrator sets them again in Email / SMTP; ' +
 				'the backup destination "NAS"; their address from the backup failure address, so backup failures are not mailed to them.'
@@ -1906,7 +1910,9 @@ describe('the two-step sign-in reset on the users panel and its dialog, mounted 
 		expect(confirm.mock.calls[0][1]).toBe(
 			// Card 2894 (case 8, E24): the reset pauses the account's report schedules, and the confirm says so first;
 			// card 2915 (case 16): it ends their API keys and switches off their webhooks, said with no counts.
+			// Card 2923 (S9): and that the boards' owners are mailed, of those already off too.
 			"Reset bob's two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their API keys end, the webhooks they set up are switched off, their report schedules are paused, and you are given a link, once, to pass on to them yourself. " +
+				"Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret. " +
 				ASKS_FOR_PASSWORD
 		);
 		expect(confirm.mock.calls[0][3]).toEqual({ askPassword: true });

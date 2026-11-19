@@ -19,7 +19,11 @@
  * switched off for good (card 2752): `active` off, with why and when in
  * `held_because` and `held_at`, by `switchOffHeld` (a password or two-step
  * reset, an invite used and an account disabled or deleted record theirs too,
- * the code review's CS4; card 2915). It stays off
+ * the code review's CS4; card 2915; and since card 2923 they hold the account's
+ * webhooks already switched off without a hold too, as do the first start of
+ * the release and a restore for one whose setter is disabled or not recorded,
+ * `holdUnheldOfGoneSetters`, and the boards' owners are mailed of both
+ * groups). It stays off
  * when the setter is given the board back, and only the board's owner or an
  * administrator switches it on, with a key. It is switched off at the write
  * that takes the setter's access away (`switchOffLostWebhooks`, called by the
@@ -101,7 +105,7 @@ export function canSeeWebhookSecret(user: Actor, boardId: number): boolean {
  * `pausedBecause` (card 2325) goes with it: for a webhook switched off by a
  * hold, why it was, as history (card 2752, E14); for one that is on and held
  * now (`holdOf`), that nothing is sent; null otherwise, for one switched off
- * by a `PUT` or a password reset included. Worked out here, so it is there
+ * by a `PUT` included, until its setter's access ends (card 2923). Worked out here, so it is there
  * after a restart, when `lastDelivery` is null until the next event.
  */
 export function presentWebhook(hook: Webhook, reveal: boolean) {
@@ -250,15 +254,23 @@ export function keyOfWrite(credential: App.Locals['credential']): { setByKey: nu
  * Why a webhook was switched off for good, as `held_because` stores it (card
  * 2752): a hold (`Hold`), or `'setter access ended'`, written by a password
  * reset, a reset of the two-step sign-in (`resetTwoStep`, and
- * scripts/mfa-reset.mjs in raw SQL, card 2915), an invite used, the account
- * disabled (card 2671) or deleted
+ * scripts/mfa-reset.mjs in raw SQL, card 2915), an invite used, the holder's
+ * own change that ends their keys, the account disabled (card 2671) or deleted
  * (`endAccountAccess`, `deleteUser`; the code review's CS4), so that switching it on gives it a new
- * secret as a lost setter's does. `'key ended'` is card 2893's hold.
+ * secret as a lost setter's does. Since card 2923 each of those holds the
+ * account's webhooks already switched off without a hold too, active left
+ * off, and so do the first start of the release and a restore for one whose
+ * setter is disabled or not recorded (`holdUnheldOfGoneSetters`). `'key
+ * ended'` is card 2893's hold.
  */
 export type HeldBecause = Hold | 'setter access ended';
 
-/** The reasons whose switch-on gives the webhook a new secret: a known account held the old one (D3, S4; CS4). */
-export const NEW_SECRET_REASONS: readonly string[] = ['setter cannot open', 'setter access ended', 'key ended'];
+/**
+ * The reasons whose switch-on gives the webhook a new secret: a known account held the old one (D3, S4; CS4).
+ * Every reason since card 2923's code review (S1): one held for want of a setter may have had its secret set,
+ * by a `PUT`, by an account whose access has ended since, which its hold does not record.
+ */
+export const NEW_SECRET_REASONS: readonly string[] = ['setter cannot open', 'no setter', 'setter access ended', 'key ended'];
 
 /**
  * What `pausedBecause` says of a webhook switched off for each reason, word
@@ -274,9 +286,11 @@ export const SWITCHED_OFF_BECAUSE: Record<HeldBecause, string> = {
 		"the board's owner or an administrator, and update the receiver.",
 	'no setter':
 		'This was switched off because nobody is recorded as having set it up. Delete it unless you recognise the address; to keep ' +
-		'it, switch it on with your own key, which makes you its setter, and set a new secret.',
+		"it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, and update the receiver.",
 	'setter access ended':
-		"This was switched off because the account that set it up had its password or its two-step sign-in reset, used an invite, was disabled, or was deleted. The address " +
+		'This was switched off because the account that set it up had its password or its two-step sign-in reset, ended its API keys ' +
+		'when changing its own password, used an invite, was disabled, or was deleted; one already switched off then, or found ' +
+		'switched off with its setter disabled or not recorded, is held the same way. The address ' +
 		'was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which ' +
 		"makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, " +
 		'and update the receiver.',
@@ -355,8 +369,10 @@ export function receiverOf(address: string): string | null {
 }
 
 /**
- * A webhook this process switched off, as its WARN and its mail name it: with
- * the key it recorded and whether one was used (card 2893), for a key ended.
+ * A webhook this process switched off, or held where it was already off (card
+ * 2923), as its WARN and its mail name it: with the key it recorded and
+ * whether one was used (card 2893), for a key ended. `'setter access ended'`
+ * is `endAccountAccess`'s, `deleteUser`'s and `holdUnheldOfGoneSetters`'s.
  */
 export type SwitchedOff = {
 	id: number;
@@ -365,7 +381,9 @@ export type SwitchedOff = {
 	setByKey: number | null;
 	setWithKey: boolean | null;
 	url: string;
-	hold: Hold;
+	hold: HeldBecause;
+	/** Held by a pass that found it off with no hold (`holdUnheldOfGoneSetters`), not by an ending of its setter's access. */
+	found?: boolean;
 };
 
 /** A webhook row and its hold, as `SwitchedOff` names them. */
@@ -380,7 +398,8 @@ function switchedOff(hook: Webhook, hold: Hold): SwitchedOff {
  * given a new setter, between the read and the write is left alone, and two
  * callers switch it off once: only the caller whose write changed the row
  * logs and mails. The one writer of a hold for lost access ('setter access
- * ended' is `endAccountAccess`'s and `deleteUser`'s); switching on clears it
+ * ended' is `endAccountAccess`'s and `deleteUser`'s, which hold one already
+ * off too, and `holdUnheldOfGoneSetters`'s, card 2923); switching on clears it
  * (`PUT /api/v1/webhooks/{id}`).
  */
 export function switchOffHeld(hook: Pick<Webhook, 'id' | 'setBy'>, hold: Hold): boolean {
@@ -472,9 +491,16 @@ export function switchOffLostWebhooks(
  * that ended the key's id (card 2893, 4.3), never its prefix or its hash. A
  * key deleted, or a credential that was not a key, leaves no id to name.
  */
-const HOLD_IN_WORDS: Record<Hold, (hook: SwitchedOff) => string> = {
+const HOLD_IN_WORDS: Record<HeldBecause, (hook: SwitchedOff) => string> = {
 	'setter cannot open': (hook) => `the account that set it up (user ${hook.setBy}) can no longer open the board`,
 	'no setter': () => 'nobody is recorded as having set it up',
+	// Card 2923: ending an account's access, the start-up pass and a restore; `set_by` NULL for one found with no setter.
+	'setter access ended': (hook) =>
+		hook.setBy === null
+			? 'nobody is recorded as having set it up'
+			: hook.found
+				? `it was found switched off with no hold, as it may have been when the access of the account that set it up (user ${hook.setBy}) ended`
+				: `the account that set it up (user ${hook.setBy}) had its access ended`,
 	'key ended': (hook) =>
 		hook.setWithKey === null
 			? `the account that set it up (user ${hook.setBy}) has no working API key from before keys were recorded`
@@ -482,9 +508,15 @@ const HOLD_IN_WORDS: Record<Hold, (hook: SwitchedOff) => string> = {
 };
 
 /** Why, in the owners' mail: the hold in words, naming nobody. */
-const HOLD_IN_MAIL: Record<Hold, (hook: SwitchedOff) => string> = {
+const HOLD_IN_MAIL: Record<HeldBecause, (hook: SwitchedOff) => string> = {
 	'setter cannot open': () => 'the account that set it up can no longer open the board',
 	'no setter': () => 'nobody is recorded as having set it up',
+	'setter access ended': (hook) =>
+		hook.setBy === null
+			? 'nobody is recorded as having set it up'
+			: hook.found
+				? 'it was found switched off with no hold, as it may have been when the access of the account that set it up ended'
+				: 'the account that set it up had its access ended',
 	'key ended': (hook) =>
 		hook.setWithKey === null
 			? 'it was set up before keys were recorded, and the account that set it up has no working API key from then'
@@ -503,24 +535,54 @@ export const SWITCHED_OFF_NAMED = 20;
  * days). Then the boards' owners mailed (D4), one mail to each, and for a key
  * that ended its setter too, where they can still open the board (card 2893,
  * S13); or, where `telling` says not, one WARN that they were not, and why (S2).
+ *
+ * `held` (card 2923, S1): webhooks that were already switched off without a
+ * hold and are now held, by an ending of their setter's access, the start-up
+ * pass or a restore. One WARN of their own, in the same way, saying that
+ * switched on again each is given a new secret; and listed apart in the same
+ * mail to each owner, one mail per recipient for both groups. A held webhook
+ * never mails its setter.
+ *
+ * `mailCause` (card 2923's code review, S5): what the owners' mail says caused
+ * it, where that differs from the log's `cause`: an ending of an account's
+ * access names its kind and no account in the mail, and names both accounts in
+ * the log, which administrators read.
  */
-export function tellSwitchedOff(done: readonly SwitchedOff[], cause: string, telling: Telling): void {
-	if (done.length === 0) return;
+export function tellSwitchedOff(
+	done: readonly SwitchedOff[],
+	cause: string,
+	telling: Telling,
+	held: readonly SwitchedOff[] = [],
+	mailCause: string = cause
+): void {
+	if (done.length === 0 && held.length === 0) return;
+	const named = (hooks: readonly SwitchedOff[]) =>
+		hooks
+			.slice(0, SWITCHED_OFF_NAMED)
+			.map((hook) => `webhook ${hook.id} on board ${hook.boardId}: ${HOLD_IN_WORDS[hook.hold](hook)}`)
+			.join('; ') + (hooks.length > SWITCHED_OFF_NAMED ? `; and ${hooks.length - SWITCHED_OFF_NAMED} more` : '');
 	if (done.length === 1) {
 		const [hook] = done;
 		log.warn(
 			`Webhook ${hook.id} on board ${hook.boardId} switched off: ${HOLD_IN_WORDS[hook.hold](hook)} (${cause}). ` +
 				'It stays off until an owner of the board or an administrator switches it on.'
 		);
-	} else {
-		const named = done
-			.slice(0, SWITCHED_OFF_NAMED)
-			.map((hook) => `webhook ${hook.id} on board ${hook.boardId}: ${HOLD_IN_WORDS[hook.hold](hook)}`)
-			.join('; ');
-		const more = done.length > SWITCHED_OFF_NAMED ? `; and ${done.length - SWITCHED_OFF_NAMED} more` : '';
+	} else if (done.length > 1) {
 		log.warn(
-			`${done.length} webhooks switched off (${cause}): ${named}${more}. ` +
+			`${done.length} webhooks switched off (${cause}): ${named(done)}. ` +
 				'Each stays off until an owner of its board or an administrator switches it on.'
+		);
+	}
+	if (held.length === 1) {
+		const [hook] = held;
+		log.warn(
+			`Webhook ${hook.id} on board ${hook.boardId}, already switched off, is now held: ${HOLD_IN_WORDS[hook.hold](hook)} (${cause}). ` +
+				'Switched on again by an owner of the board or an administrator, it is given a new secret.'
+		);
+	} else if (held.length > 1) {
+		log.warn(
+			`${held.length} webhooks already switched off are now held (${cause}): ${named(held)}. ` +
+				'Each, switched on again by an owner of its board or an administrator, is given a new secret.'
 		);
 	}
 	if (telling.mail) {
@@ -532,14 +594,120 @@ export function tellSwitchedOff(done: readonly SwitchedOff[], cause: string, tel
 				why: HOLD_IN_MAIL[hook.hold](hook),
 				...(hook.hold === 'key ended' && hook.setBy !== null ? { setter: hook.setBy } : {})
 			})),
-			cause
+			mailCause,
+			// Never a setter's mail for a held one (S1).
+			held.map((hook) => ({ boardId: hook.boardId, id: hook.id, host: hostOf(hook.url), why: HOLD_IN_MAIL[hook.hold](hook) }))
 		);
 	} else {
+		const all = done.length + held.length;
+		const tail = done.length > 0 && held.length > 0 ? 'The lines above name them.' : all === 1 ? 'The line above names it.' : 'The line above names them.';
 		log.warn(
-			`The owners of the boards of the ${done.length} webhook(s) switched off above were not mailed, as ${telling.because}. ` +
-				(done.length === 1 ? 'The line above names it.' : 'The line above names them.')
+			`The owners of the boards of the ${all} webhook(s) ${held.length === 0 ? 'switched off' : 'switched off or held'} above were not mailed, ` +
+				`as ${telling.because}. ${tail}`
 		);
 	}
+}
+
+/**
+ * The `settings` key that says every webhook already switched off with no hold
+ * was held once, whoever set it (card 2923, S3; its code review, S2): written
+ * by the first start of the release (`holdAlreadyOffWebhooksAtStart`) and by a
+ * restore that held them (`restoreInOneSnapshot`), in the transaction that
+ * holds them.
+ */
+export const WEBHOOKS_ALREADY_OFF_HELD = 'webhooks_already_off_held';
+
+/** A webhook row as the hold statements return it, `set_with_key` as SQLite stores it (0, 1 or NULL). */
+type HeldRow = { id: number; boardId: number; url: string; setBy: number | null; setByKey: number | null; setWithKey: number | null };
+
+/**
+ * The rows a hold statement returned, as `SwitchedOff`, held `'setter access
+ * ended'`, by id: the one mapping of `set_with_key` to a boolean, NULL kept
+ * (E10; card 2923's code review, E4). `found` marks a webhook a pass found off
+ * with no hold, not one an ending of its setter's access held.
+ */
+function heldAsSwitchedOff(rows: readonly HeldRow[], found: boolean): SwitchedOff[] {
+	return rows
+		.map((row) => ({
+			...row,
+			setWithKey: row.setWithKey === null ? null : row.setWithKey !== 0,
+			hold: 'setter access ended' as const,
+			...(found ? { found: true } : {})
+		}))
+		.sort((a, b) => a.id - b.id);
+}
+
+/**
+ * What ended an account's access, for the two places it is told (card 2923's
+ * code review, S5): `log`, naming the accounts, for the WARN lines that
+ * administrators read; `mail`, the kind of action and no account, for the
+ * boards' owners.
+ */
+export type EndingCause = { log: string; mail: string };
+
+/** The owners' mail's words for each ending of an account's access (card 2923's code review, S5): its kind, naming nobody. */
+export const ENDING_IN_MAIL = {
+	ownChange: 'the account that set it up ended its own API keys when changing its password',
+	passwordReset: 'the account that set it up had its password reset by an administrator',
+	invite: 'the account that set it up set its password with an invite',
+	twoStepReset: 'the account that set it up had its two-step sign-in reset by an administrator',
+	disabled: 'the account that set it up was disabled by an administrator',
+	deleted: 'the account that set it up was deleted by an administrator'
+} as const;
+
+/**
+ * Switch off, for good, every webhook `userId` set that is on, and hold every
+ * one it set that was already switched off without a hold (card 2923), both
+ * as `'setter access ended'`, `active` off, `held_at` now: one statement,
+ * after a read of those already off so the two are told apart. One held for
+ * another reason keeps it. Inside the caller's transaction (it throws outside
+ * one); once committed, both groups are told with `cause` (`tellSwitchedOff`:
+ * a WARN each, and one mail to each owner of their boards). The one writer
+ * for an ending of an account's access on the server (card 2923's code
+ * review, E4): `endAccountAccess` and `deleteUser` call it; the host's
+ * scripts/mfa-reset.mjs keeps a copy in its own SQL.
+ */
+export function holdWebhooksOfSetter(userId: number, cause: EndingCause): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
+	if (!sqlite.inTransaction) throw new Error('holdWebhooksOfSetter holds inside the transaction that ends the access, and none is open');
+	const alreadyOff = new Set(
+		sqlite.prepare('SELECT id FROM webhooks WHERE set_by = ? AND active = 0 AND held_because IS NULL').pluck().all(userId) as number[]
+	);
+	const rows = sqlite
+		.prepare(
+			"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND (active = 1 OR held_because IS NULL) " +
+				'RETURNING id, board_id AS boardId, url, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
+		)
+		.all(stamp(), userId) as HeldRow[];
+	const switchedOff: SwitchedOff[] = [];
+	const held: SwitchedOff[] = [];
+	for (const hook of heldAsSwitchedOff(rows, false)) (alreadyOff.has(hook.id) ? held : switchedOff).push(hook);
+	if (rows.length > 0) afterCommit(() => tellSwitchedOff(switchedOff, cause.log, { mail: true }, held, cause.mail));
+	return { switchedOff, held };
+}
+
+/**
+ * Hold, for good, webhooks already switched off without a hold (card 2923, S3,
+ * decisions 19 to 21; its code review, S2, E3): `held_because` 'setter access
+ * ended', `held_at` now, `active` left off, so that switching one on gives it
+ * a new secret. By default those whose setter is disabled or not recorded,
+ * which every start and every restore asks; with `every`, all of them,
+ * whoever set them, which the first start of the release and a restore of a
+ * database without `webhooks_already_off_held` ask once, since an ending of
+ * access before the release held none of them. One statement on `database`,
+ * inside the caller's transaction; it neither opens one nor tells: its
+ * callers, `holdAlreadyOffWebhooksAtStart` (startup-checks.ts) and
+ * `restoreInOneSnapshot`, do both. Returns those it held, by id, each marked
+ * `found`.
+ */
+export function holdUnheldOfGoneSetters(database: typeof sqlite = sqlite, { every = false }: { every?: boolean } = {}): SwitchedOff[] {
+	const rows = database
+		.prepare(
+			"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? " +
+				'WHERE active = 0 AND held_because IS NULL AND (? = 1 OR set_by IS NULL OR set_by IN (SELECT id FROM users WHERE disabled_at IS NOT NULL)) ' +
+				'RETURNING id, board_id AS boardId, url, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
+		)
+		.all(stamp(), every ? 1 : 0) as HeldRow[];
+	return heldAsSwitchedOff(rows, true);
 }
 
 /** What the Share window says of a board's webhooks (card 2329). */

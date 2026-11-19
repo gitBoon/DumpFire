@@ -1,10 +1,12 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.84
+version: 1.85
 status: As-Built
-date: 2026-11-18
+date: 2026-11-19
 tags:
+  - card-2923
+  - ended-access-holds-webhooks
   - card-2915
   - two-step-reset-ends-keys
   - card-2671
@@ -940,8 +942,12 @@ the switch-off's own ids (`webhooksByIds`, S5), so the list is exactly what was 
 Every text is escaped (`tests/mail-escaping.test.ts`, with markup in the keys' and webhooks'
 names). The administrator's message gives the same counts and the day each was made, and no name
 (card 2894's code review, CS2), and is the channel that reaches the holder for certain (S16): this
-mail may not go, and the mailbox may be what was taken. The names are this mail's alone. The
-board's owners are not mailed that the reset switched a webhook off on their board: card 2923.
+mail may not go, and the mailbox may be what was taken. The names are this mail's alone. Since
+card 2923 the boards' owners are mailed too, separately, once the reset is committed: the
+webhooks it switched off, and apart those it held that were already off, with the cause "the
+account that set it up had its two-step sign-in reset by an administrator", naming nobody (see
+[When Nobody Who Can Open the Board Set It Up](#when-nobody-who-can-open-the-board-set-it-up), below). The holder, where they own the
+board, gets that mail beside this notice.
 
 ```mermaid
 sequenceDiagram
@@ -2850,9 +2856,28 @@ back changes nothing**: it stays off until the board's owner or an administrator
 ([Who May Change a Webhook](#who-may-change-a-webhook)), which makes them its setter and, for a
 setter who lost the board or had its access ended, gives it a new secret, given in that answer and
 readable by the board's owner or an administrator. A password reset, a reset of the two-step
-sign-in (card 2915), an invite used, a disabled account (card 2671) and a deleted account record
-their own hold, `'setter access ended'` (the code review's CS4), as they switch off the webhooks
-the account set; none of them mails the owners (card 2923). An event already
+sign-in (card 2915), an invite used, the holder's own change that ends their keys, a disabled
+account (card 2671) and a deleted account record their own hold, `'setter access ended'` (the
+code review's CS4), as they switch off the webhooks the account set (`endAccountAccess`,
+`deleteUser`, the host's `scripts/mfa-reset.mjs`). **Since card 2923 they hold the ones already
+off too**: a webhook the account set that was switched off without a hold (by a `PUT`, or by a
+restore kept apart) is given the same hold in the same statement, `active` left off, so switching
+it on gives it a new secret; one already off with another hold keeps it; the holder's own change
+that keeps the keys holds nothing. And they tell, once committed (`tellSwitchedOff`): a `WARN` for
+those switched off as above, and one for those held, `Webhook <id> on board <board>, already
+switched off, is now held: the account that set it up (user <id>) had its access ended
+(<cause>). Switched on again by an owner of the board or an administrator, it is given a new
+secret.` (the first 20 named and the rest counted where there are several), then the owners'
+mail below. One writer does both groups for every ending on the server, `holdWebhooksOfSetter`
+(card 2923's code review, E4); the host's command keeps a copy. Webhooks already off that no
+ending held are held by `holdUnheldOfGoneSetters` (its code review, S2, S3, E3): once, every one
+with no hold, whoever set it, at the first start of the release (`holdAlreadyOffWebhooksAtStart`,
+the `settings` flag `webhooks_already_off_held`, one `WARN`, nobody mailed) and in a restore of a
+backup without the flag; at every start and in every restore, those whose setter is disabled or
+not recorded (one `WARN` only when it held one). A restore holds them after its carries, told with
+its sweep under the same scheduler rule; a working copy holds them too, before it switches every
+webhook off, and tells nobody. Since the code review (S1) a webhook held for want of a setter is
+given a new secret at its switch-on too, as every hold is. An event already
 on its way when access was removed may still arrive, up to 10 seconds later: there are no
 retries and no queue.
 
@@ -2866,7 +2891,47 @@ webhooks on your boards were switched off"), naming each board, each webhook's i
 (never the path, the query or the secret), why, and the cause ("Sam was taken off the board by
 Ann", "found when the server started", …), with what to do. They are not subject to the
 recipients' mail switches. A start and a restore mail only where the schedulers run
-(`SCHEDULERS`); elsewhere one more `WARN` says the owners were not mailed, and why. And whenever
+(`SCHEDULERS`); elsewhere one more `WARN` says the owners were not mailed, and why.
+
+**When an account's access ends (card 2923).** The six writes that end an account's access with
+its keys mail the owners too, always, once committed: one mail to each recipient for the write,
+over the boards of both groups, each recipient told only of their own boards. The webhooks
+switched off are listed as above; the ones held where they were already off are listed apart,
+in fixed words, host only, every text escaped: "Board **B**: webhook *N* to **host**: already
+switched off; now held because the account that set it up had its access ended; switched on, it
+is given a new secret." A mail of switched-off webhooks alone keeps its subject; one that holds a
+held webhook is "A notice about webhooks on your boards", subject and heading. Held webhooks never
+mail their setter. The cause in the mail names the kind of action and no account (card 2923's
+code review, S5; `ENDING_IN_MAIL` in `webhooks.ts`): "the account that set it up ended its own API
+keys when changing its password", "… had its password reset by an administrator", "… set its
+password with an invite", "… had its two-step sign-in reset by an administrator", "… was disabled
+by an administrator" and "… was deleted by an administrator". The `WARN` lines, which
+administrators read, name both accounts: "<name> changed their password and ended their API
+keys", "<name>'s password was reset by <admin>", "<name> set their password with an invite",
+"<name>'s two-step sign-in was reset by <admin>", "<name>'s account was disabled by <admin>" and
+"<name>'s account was deleted by <admin>". The recipients are read when the mail is
+made, so a disabled or deleted account is not among them, and a board whose only owner it was is
+told through its enabled administrators. The host's `scripts/mfa-reset.mjs` sends no mail: it
+writes the same `WARN` lines and one saying the owners were not mailed, and prints both lists for
+its operator to pass on.
+
+```mermaid
+sequenceDiagram
+    participant C as Caller (reset, invite, own change, disable, delete)
+    participant E as endAccountAccess / deleteUser
+    participant DB as SQLite
+    participant T as tellSwitchedOff
+    participant M as Owners' mail
+    C->>E: in the write's transaction, with the cause
+    E->>DB: read the account's webhooks off with no hold
+    E->>DB: one UPDATE, active 0, held 'setter access ended'<br/>WHERE set_by = id AND (active = 1 OR held_because IS NULL)
+    C->>DB: COMMIT
+    E->>T: afterCommit, switched off and held
+    T->>T: WARN for each group
+    T->>M: notifyWebhooksSwitchedOff(items, cause, held), one mail per owner
+```
+
+And whenever
 someone who is neither an owner of the board nor an administrator makes a webhook on it, the
 same people get "A webhook was made on *board*", naming who made it, its id and its host.
 Neither mail carries a link.
@@ -2899,16 +2964,20 @@ webhook switched off by a hold it reads, word for word, the reason kept as recor
   secret, given in that answer and readable by the board's owner or an administrator, and update
   the receiver."
 - switched off by a password reset, a two-step reset (card 2915), an invite used, a disable (card
-  2671) or a delete of its setter (CS4): "This was switched off because the account that set it
-  up had its password or its two-step sign-in reset, used an invite, was disabled, or was deleted.
-  …", with the same advice.
+  2671) or a delete of its setter (CS4), a holder's own change that ends keys, or held when already
+  off (card 2923): "This was switched off because the account that set it up had its password or
+  its two-step sign-in reset, ended its API keys when changing its own password, used an invite,
+  was disabled, or was deleted; one already switched off then, or found switched off with its
+  setter disabled or not recorded, is held the same way. …", with the same advice.
 - switched off because nobody was recorded as its setter: "This was switched off because nobody
   is recorded as having set it up. Delete it unless you recognise the address; to keep it,
-  switch it on with your own key, which makes you its setter, and set a new secret."
+  switch it on with your own key, which makes you its setter and gives it a new secret, given in
+  that answer and readable by the board's owner or an administrator, and update the receiver."
+  (since card 2923's code review, S1: it said "and set a new secret", and kept its old one).
 
 For one still on and held by a change none of the writes saw, it begins "Nothing is sent: " until
 its next event switches it off. It is `null` for one that is sent, and for one switched off by a
-`PUT`, whoever set it. Editors and viewers see neither field, as they see no
+`PUT` whose setter's access has not ended since, or ended keeping their keys (card 2923). Editors and viewers see neither field, as they see no
 `lastDelivery`. No page lists webhooks, and `pausedBecause` is read through the API. A webhook
 switched off still counts toward the board's 10.
 
@@ -2918,8 +2987,9 @@ stateDiagram-v2
     Sending --> HeldOff: a write takes the setter's access away<br/>(or a start, a restore, a delivery finds it held)
     HeldOff --> HeldOff: the setter is given the board back
     HeldOff --> Sending: owner or admin switches it on<br/>(they become the setter, new secret unless no setter)
-    Sending --> HeldOff: the setter's password or two-step reset, invite,<br/>account disabled or deleted (setter access ended)
+    Sending --> HeldOff: the setter's password or two-step reset, invite,<br/>own change that ends keys, account disabled or deleted (setter access ended)
     Sending --> Off: switched off by a PUT
+    Off --> HeldOff: the setter's access ended, or found disabled or gone,<br/>or any, once, at the first start or a restore of an older backup
     Off --> Sending: owner or admin switches it on, and can open the board
     Off --> [*]: deleted
     HeldOff --> [*]: deleted
