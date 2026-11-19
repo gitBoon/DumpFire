@@ -9,6 +9,7 @@ import { isFailureAddress, settingsSetBy } from '$lib/server/setting-setters';
 import { TWO_STEP_RELEASED_AT, passwordSetUpEnds } from '$lib/server/mfa-store';
 import { stamp } from '$lib/timestamps';
 import { readableCountSql, readyReadableCounts } from '$lib/server/webhooks';
+import { uploadSpace } from '$lib/server/upload-space';
 import { boards, columns, cards, categories, users, teams, teamMembers } from '$lib/server/db/schema';
 import { count, eq, sql } from 'drizzle-orm';
 import { statSync } from 'node:fs';
@@ -174,6 +175,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 		teams: teamsWithMembers,
 		currentUser: locals.user,
 		dbSizeBytes,
+		// The uploads volume's free space, the line below which uploads are
+		// refused, and whether they are (card 2920). A look like an upload's:
+		// a change of state is said once in the log.
+		uploadsSpace: await uploadSpace(),
 		// Which way the import dialog opens: the choice the import route makes
 		// when it is given none.
 		importOutsideDefault: defaultOutside()

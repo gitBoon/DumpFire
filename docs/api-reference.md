@@ -1,11 +1,13 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.151
+version: 1.152
 status: As-Built
 date: 2026-11-19
 tags:
   - api
+  - card-2920
+  - uploads-disk-floor
   - card-2928
   - webhook-addresses-at-rest
   - card-2923
@@ -189,6 +191,7 @@ have at most 10: delete 1 before adding another.`).
 | `415` | The image upload only: the `Content-Type` is not `image/png`, `image/jpeg`, `image/gif` or `image/webp`, or the bytes are not the type it names. See [Attachments](#attachments) |
 | `429` | Rate limited: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts; for the image upload, also 30 uploads in the hour or 100 MB in the day for the key's user, every file they upload through the card window counted too (since 1.13.1), or 3 uploads of theirs, or 6 on the server, already in progress (since 1.13.1) |
 | `500` | DumpFire failed: `{ "message": "Internal Error" }`. Nothing of the fault is in the answer; it is written to DumpFire's system log, with the route and the key's user |
+| `507` | The image upload only (since 1.15.0, card 2920): the server's uploads volume has too little free space, or its free space cannot be read. See [Attachments](#attachments) |
 
 ### The Request Body
 
@@ -391,6 +394,27 @@ moment as `YYYY-MM-DD HH:MM:SS` in UTC, and the web application's own routes and
 exports answer that form; the API turns it into ISO 8601 as it answers. Until 2026-10-14
 some fields were answered in that form, which names no zone, and the same field could be in
 either.
+
+### Changes on 2026-11-19: uploads refused when the uploads volume is nearly full (card 2920)
+
+**Within 1.15.0 (point 8).** `POST /api/v1/cards/{cardId}/attachments` is answered **`507`**
+when the server's uploads volume has too little free space (less than 1 GB plus twice the
+database's size would be left after a 25 MB upload), or its free space cannot be read:
+`{"message": "Uploads are paused: the server has too little free disk space, or cannot read how
+much it has. Nothing was written. An administrator can see which on the admin page."}`. Asked
+before the body is read, after the `Content-Type` and before the place and the hour, so nothing
+is read, taken or counted, and the connection is closed (`Connection: close`); and at the write,
+should the disk fill while the body arrives, when the upload has been counted. OpenAPI stays
+`1.15.0` (unreleased); its note gains point (8), and "nothing else changed" is now (9).
+
+The web application's own upload, `POST /api/cards/:id/attachments`, answers the same `507` with
+the same words, at the same two points (before the form is read, after the session, the card
+and its access; and at the write). Not marked Breaking. The admin page's load
+(`/admin`) gains `uploadsSpace`, `{ state: 'room' | 'low' | 'unreadable', lowBecause: 'space' |
+'inodes' | 'full' | null, freeBytes, totalBytes, freeInodes, refusedBelowBytes }`, free and total
+`null` when unreadable, `freeInodes` `null` where the volume counts none. The 507 is given too when
+fewer than 1,000 inodes are free, when the free space is not read within 2 seconds, and for 5
+minutes after a write found the disk full unless the free space has grown since.
 
 ### Changes on 2026-11-19: settings held for review (card 2922)
 
@@ -5500,8 +5524,14 @@ Errors, in the order they are asked:
 3. `400` `Invalid card ID`.
 4. `404` `Card not found`; `403` `No edit access to this board`.
 5. `415` the `Content-Type` is not one of the four. Nothing has been read. Since 1.13.1 every
-   refusal up to here, and at 6 and 7, closes the connection (`Connection: close`), the gate's
+   refusal up to here, and at 5a, 6 and 7, closes the connection (`Connection: close`), the gate's
    `413` at 1 included.
+5a. `507` (since 1.15.0, card 2920): the server's uploads volume has too little free space (less
+   than 1 GB plus twice the database's size would be left after a 25 MB upload), or its free
+   space cannot be read: `{"message": "Uploads are paused: the server has too little free disk
+   space, or cannot read how much it has. Nothing was written. An administrator can see which on
+   the admin page."}`, the card window's words, with `Connection: close`. Nothing has been read,
+   taken or counted.
 6. `429` uploads in progress (since 1.13.1, card 2910): the key's user already has 3, through
    a key or the card window, or the server 6, with `Retry-After: 5`, `retryAfterSecs` 5 and
    `Connection: close`. Nothing has been read or counted. The place taken here is given back
@@ -5525,7 +5555,9 @@ Errors, in the order they are asked:
     is moving its images to the trash (`This card was closed more than 180 days ago, so its
     images are moved to the trash: reopen or restore it to attach one`; not asked when
     retention is `off`); `409` `This card already has 20 images`, counting every image row on
-    the card whichever tree attached it.
+    the card whichever tree attached it. And `507` with the words of 5a (since 1.15.0), without
+    `Connection: close`, when the file's write finds the disk full after all (something else
+    filled it while the body arrived).
 
 Nothing is written on any refusal: a file written before a refused row is removed, and the
 card's folder if this request made it. An upload counted against the hour or the day (7, 9)
@@ -5548,13 +5580,14 @@ sequenceDiagram
     G->>R: request, body held to 5 MB
     R->>R: card id 400, card 404, edit access 403
     R->>R: Content-Type one of four, else 415
+    R->>R: requireUploadRoom (upload-space.ts): free space below the floor, or unreadable, 507, Connection close
     R->>A: takeUploadPlace (3 per user, 6 on the server): 429, Connection close
     R->>A: takeUploadCount (30 an hour, per user): 429, Connection close
     R->>R: read the body (413 past 5 MB)
     R->>A: takeUploadBytes(bytes read) in writeAs (100 MB a day, per user): 429
     R->>I: checkImage: 415 type, 400 structure, trailing data, animation, size
     I-->>R: bytes without metadata, type, extension
-    R->>D: writeUploadFile uuid.ext
+    R->>D: writeUploadFile uuid.ext (no space left: removed, 507)
     R->>S: writeAs: key 401, card 404, edit 403, retention 409, 20 images 409
     S-->>R: row, api:attachment_added, live event (no webhook)
     R->>A: release the place, in finally, on every exit

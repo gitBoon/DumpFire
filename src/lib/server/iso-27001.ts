@@ -501,8 +501,14 @@ export const CHECKLIST: readonly IsoItem[] = [
 	organisational('A.8.6', 'annex-a', 'Capacity management', {
 		how:
 			'request body limits, and every upload\'s limits: for each account 30 an hour, 100 MB a day and 3 at once, 6 at once for the server, ' +
-			'and for each card 20 images and 20 other files.',
-		evidence: [{ path: 'src/lib/server/body-limits.ts' }, { path: 'src/lib/server/upload-allowance.ts' }, { path: 'src/lib/server/card-attachments.ts' }]
+			'and for each card 20 images and 20 other files; and a floor on the uploads volume\'s free space, 1 GB plus twice the database\'s size, ' +
+			'below which every upload is refused (507) and the admin page and the system log say so (card 2920).',
+		evidence: [
+			{ path: 'src/lib/server/body-limits.ts' },
+			{ path: 'src/lib/server/upload-allowance.ts' },
+			{ path: 'src/lib/server/card-attachments.ts' },
+			{ path: 'src/lib/server/upload-space.ts' }
+		]
 	}),
 	{
 		ref: 'A.8.7',

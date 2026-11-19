@@ -63,7 +63,10 @@ const spec = {
 			'every start holds, as setter access ended, each webhook with a secret that an owner or administrator disabled since the last start (the first time: any, and every webhook made before setters were recorded) could read and that was made before the disable; every restore does the same from the backup\'s own record of it; ' +
 			'the board\'s owners are mailed as in point (2), and the setter access ended sentence says so; ' +
 			'GET /api/v1/boards/{boardId}/webhooks and GET /api/v1/webhooks/{webhookId} ask again whether the API key still works, and who its account is now, before giving a secret, so a key ended or a role lowered meanwhile is answered as it is then (401, or no secret); ' +
-			'(8) nothing else changed: no operation, field or schema.\n\n' +
+			'(8) the upload of an image, POST /api/v1/cards/{cardId}/attachments, is answered 507 when the server\'s uploads volume has too little free space, or its free space cannot be read (card 2920): ' +
+			'asked before the body is read, after the Content-Type and before the place and the hour, so nothing is read or counted and the connection is closed; ' +
+			'and at the write, should the disk fill while the body is read, when the upload has been counted; ' +
+			'(9) nothing else changed: no operation, field or schema.\n\n' +
 			'**Changed on 2026-11-18 (version 1.14.0), breaking.** A reset of an account\'s two-step sign-in, by an administrator or on the server\'s host, ends the account\'s API keys and switches off the webhooks it set (card 2915): ' +
 			'(1) its keys answer 401, as after a password reset; ' +
 			'(2) the webhooks it set are switched off, active false, recording setter access ended, so switching one on again is the board owner\'s or an administrator\'s and gives it a new secret; ' +
@@ -5263,12 +5266,12 @@ const spec = {
 					'they may have 3 uploads in progress at once, either way, and the server 6 (since 1.13.1); ' +
 					'a card holds at most 20 images, ' +
 					'whichever way they were attached. Logs api:attachment_added to the activity feed and emits a live board update; no webhook is sent. ' +
-					'In order: the card is looked for (404) and the caller checked (403), the Content-Type is read (415), a place among the uploads in progress taken (429, nothing counted) and the upload counted against the hour (429), ' +
+					'In order: the card is looked for (404) and the caller checked (403), the Content-Type is read (415), the free space on the server\'s uploads volume asked (507, nothing counted, since 1.15.0), a place among the uploads in progress taken (429, nothing counted) and the upload counted against the hour (429), ' +
 					'all before a byte of the body is read, and each of these refusals closes the connection (since 1.13.1); then the body is read, given 120 seconds to arrive (408, since 1.13.1), ' +
 					'413 past 5 MB (what was read of a body that fails, is cut off or runs out of time is counted against the day, since 1.13.1), every byte read is counted against the day (429), ' +
 					'and the bytes are checked (415, 400), so a body the check refuses still counts against the day; ' +
 					'then, as the image is written, the key, the card and the caller are asked again (401, 404, 403), whether the card was closed more than IMAGE_RETENTION_DAYS ago, ' +
-					'so that its images are being moved to the trash (409), and the card\'s room for one more image (409). ' +
+					'so that its images are being moved to the trash (409), and the card\'s room for one more image (409), and the file is written (507 should the disk fill meanwhile, since 1.15.0). ' +
 					'Nothing is written on a refusal. An upload counted against the hour or the day stays counted when a later step refuses it.',
 				operationId: 'createAttachment',
 				parameters: [
@@ -5366,7 +5369,23 @@ const spec = {
 							}
 						}
 					},
-					'500': { $ref: '#/components/responses/InternalError' }
+					'500': { $ref: '#/components/responses/InternalError' },
+					'507': {
+						description:
+							'The server\'s uploads volume has too little free space (less than 1 GB plus twice the database\'s size would be left after a 25 MB upload, or fewer than 1,000 free inodes where the volume counts them), ' +
+							'or an upload\'s write found it full in the last 5 minutes and no more is free since, or its free space cannot be read within 2 seconds (since 1.15.0, card 2920). ' +
+							'Asked before the body is read, with nothing counted, and the connection closed (`Connection: close`); and at the write, should the disk fill while the body is read, when the upload has been counted. ' +
+							'Nothing was written. The same words as the card window\'s upload; an administrator sees the free space on the admin page.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: {
+									message:
+										'Uploads are paused: the server has too little free disk space, or cannot read how much it has. Nothing was written. An administrator can see which on the admin page.'
+								}
+							}
+						}
+					}
 				}
 			}
 		},

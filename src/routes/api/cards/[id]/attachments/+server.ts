@@ -16,6 +16,7 @@ import {
 	UploadAllowanceRefused
 } from '$lib/server/upload-allowance';
 import { removeUploadFile, writeUploadFile } from '$lib/server/uploads';
+import { refuseWhenFull, requireUploadRoom, UploadSpaceRefused } from '$lib/server/upload-space';
 import { pathId } from '$lib/server/request-body';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
@@ -34,7 +35,10 @@ import type { RequestHandler } from './$types';
  * its bytes stored as sent, its name cleaned and cut, its type normalised
  * (`attachment-names.ts`), its name on disk `<uuid>` alone, 20 of them a card
  * (`attachFile`, card 2910); it is only ever served as a download unless its
- * bytes are the image its type names (card 2754).
+ * bytes are the image its type names (card 2754). Before any of it, an upload
+ * is refused 507 when the uploads volume has too little free space, or its
+ * free space cannot be read, and so is a write that runs out of space
+ * (`upload-space.ts`, card 2920).
  */
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
@@ -52,13 +56,23 @@ function tooMany(refused: UploadAllowanceRefused, opts: { beforeBody?: boolean }
 }
 
 /**
+ * A refusal for want of space on the uploads volume (card 2920): 507, the
+ * same words on both routes. Before the form is read it closes the connection,
+ * as every refusal before the body does.
+ */
+function noRoom(refused: UploadSpaceRefused, opts: { beforeBody?: boolean } = {}): Response {
+	return json({ message: refused.message }, { status: 507, headers: opts.beforeBody ? { Connection: 'close' } : {} });
+}
+
+/**
  * A refusal made before the form is read, answered with `Connection: close`
- * (card 2910's code review, CS3): an allowance's 429, and the 401, 400, 404
- * and 403 of the session, the card's id, the card and its access. Anything
- * else is thrown on.
+ * (card 2910's code review, CS3): an allowance's 429, the 507 for space (card
+ * 2920), and the 401, 400, 404 and 403 of the session, the card's id, the card
+ * and its access. Anything else is thrown on.
  */
 function refusedBeforeBody(refused: unknown): Response {
 	if (refused instanceof UploadAllowanceRefused) return tooMany(refused, { beforeBody: true });
+	if (refused instanceof UploadSpaceRefused) return noRoom(refused, { beforeBody: true });
 	if (!isHttpError(refused)) throw refused;
 	// Each status written out, so that tests/error-shape.test.ts can read every answer's shape.
 	const headers = { Connection: 'close' };
@@ -112,9 +126,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * POST — upload a file attachment, as a form. In order (card 2910, D5):
  *
  *   1. the session (401), the card's id (400), the card (404) and edit
- *      access (403), before the form is read. Every refusal before the form
- *      is read, these and 2 and 3, closes the connection (card 2910's code
- *      review, CS3);
+ *      access (403), before the form is read; then the uploads volume's free
+ *      space (507, card 2920: too little, or it cannot be read), with nothing
+ *      taken or counted. Every refusal before the form is read, these and 2
+ *      and 3, closes the connection (card 2910's code review, CS3);
  *   2. a place in flight, the account's (3) and then the server's (6), taken
  *      before the form is read (429, `Retry-After: 5`, `Connection: close`):
  *      nothing read, nothing counted. The `try` whose `finally` gives it
@@ -147,8 +162,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  *      20 files other than images (409).
  *
  * A refusal at the row's write removes the file, and the card's folder if
- * this upload made it. What 3 and 5 took stays taken whatever is refused
- * after it; the place of 2 is given back however the upload ends.
+ * this upload made it. A file whose write runs out of space is removed by the
+ * write and answered 507, the words of 1 (card 2920). What 3 and 5 took stays
+ * taken whatever is refused after it; the place of 2 is given back however
+ * the upload ends.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	// Whether the form has begun to be read: every refusal before it closes the
@@ -161,6 +178,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		// Before the upload is read, so that a caller with no access is not sent
 		// 25 MB first. It is asked again below, with the row.
 		requireCard(locals.user, cardId, 'edit');
+		// Room on the uploads volume, before anything is taken or read (card 2920).
+		await requireUploadRoom();
 
 		const release = takeUploadPlace(locals.user);
 		try {
@@ -216,7 +235,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 				if (!checked.ok) throw checked.status === 415 ? error(415, checked.message) : error(400, checked.message);
 
 				const filename = `${randomUUID()}.${checked.extension}`;
-				const written = await writeUploadFile(cardId, filename, checked.bytes);
+				const written = await writeUploadFile(cardId, filename, checked.bytes).catch(refuseWhenFull);
 				try {
 					const attachment = writeAs(locals, (caller) =>
 						attachImage(
@@ -245,7 +264,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			// not written; and if the row cannot be written, because the card was
 			// deleted while the upload was being read or for any other reason, the
 			// file is removed again, and the folder if this request made it.
-			const written = await writeUploadFile(cardId, filename, bytes);
+			// A disk that filled while the form was read is answered 507 (card 2920).
+			const written = await writeUploadFile(cardId, filename, bytes).catch(refuseWhenFull);
 			try {
 				// The card may have gone, or the caller's access to it, since the check
 				// above: the body was awaited in between. So may their session: it is
@@ -273,8 +293,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	} catch (refused) {
 		// Every refusal before the form is read closes the connection: the
 		// session, the id, the card, the place and the hour (CS3). The day's is
-		// answered above, after the read, and anything after it is thrown on.
+		// answered above, after the read, and so is a write that ran out of
+		// space (card 2920); anything else after it is thrown on.
 		if (!reading) return refusedBeforeBody(refused);
+		if (refused instanceof UploadSpaceRefused) return noRoom(refused);
 		throw refused;
 	}
 };

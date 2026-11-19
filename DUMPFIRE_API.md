@@ -180,6 +180,7 @@ Every answer DumpFire's gate gives carries `X-Content-Type-Options: nosniff`, `X
 | `413` | The request body is over the size limit, 512 KB: `{ "message", "limitBytes" }`. See [The Request Body](#the-request-body) |
 | `429` | Rate limit exceeded: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts |
 | `500` | DumpFire failed: `{ "message": "Internal Error" }`. Nothing of the fault is in the answer; it is written to DumpFire's system log |
+| `507` | The image upload only (since 1.15.0, card 2920): the server's uploads volume has too little free space, or its free space cannot be read. Nothing was written |
 
 ### The Request Body
 
@@ -252,6 +253,10 @@ Three answers are not JSON. Each is made by SvelteKit before DumpFire's gate is 
 `/api/v1` with nothing after it is not under `/api/v1/`. DumpFire's gate takes it for a path of the web application's own, which a key does not open: it is answered `401` `{ "message": "Not authenticated" }`, or, to a browser, with a redirect to the login page. Send `/api/v1/` and a route.
 
 A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retries](#writes-failures-and-retries).
+
+### Changes on 2026-11-19
+
+**Uploads refused when the uploads volume is nearly full** (card 2920; within the unreleased 1.15.0, point 8 of its note, "nothing else changed" now point 9). `POST /api/v1/cards/{cardId}/attachments` is answered `507` `{ "message": "Uploads are paused: the server has too little free disk space, or cannot read how much it has. Nothing was written. An administrator can see which on the admin page." }` when the server's uploads volume has too little free space (less than 1 GB plus twice the database's size would be left after a 25 MB upload), or its free space cannot be read: before the body is read, after the `Content-Type` and before the place and the hour, so nothing is read or counted and the connection is closed (`Connection: close`); and at the write, should the disk fill while the body arrives, when the upload has been counted. The web application's own upload answers the same `507` in the same words.
 
 ### Changes on 2026-11-18
 

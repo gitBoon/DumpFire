@@ -14,6 +14,7 @@ import {
 	UploadAllowanceRefused
 } from '$lib/server/upload-allowance';
 import { removeUploadFile, writeUploadFile } from '$lib/server/uploads';
+import { refuseWhenFull, requireUploadRoom, UploadSpaceRefused } from '$lib/server/upload-space';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -43,6 +44,15 @@ function tooMany(refused: UploadAllowanceRefused, opts: { beforeBody?: boolean }
 }
 
 /**
+ * A refusal for want of space on the uploads volume (card 2920): 507, the
+ * card window's words. Before the body is read it closes the connection, as
+ * every refusal before the body does.
+ */
+function noRoom(refused: UploadSpaceRefused, opts: { beforeBody?: boolean } = {}): Response {
+	return json({ message: refused.message }, { status: 507, headers: opts.beforeBody ? { Connection: 'close' } : {} });
+}
+
+/**
  * POST /api/v1/cards/:cardId/attachments?name=<name> — Attach an image to a
  * card (card 2754). The body is the image itself, sent as `image/png`,
  * `image/jpeg`, `image/gif` or `image/webp`: no form, so that a client that
@@ -55,9 +65,11 @@ function tooMany(refused: UploadAllowanceRefused, opts: { beforeBody?: boolean }
  * 2754)"). In order:
  *
  *   1. the card (404) and edit access to its board (403);
- *   2. the declared type, one of the four (415): nothing is read. Every
- *      refusal before the body is read, these and 3 and 4, closes the
- *      connection (card 2910's code review, CS3);
+ *   2. the declared type, one of the four (415): nothing is read; then the
+ *      uploads volume's free space (507, card 2920: too little, or it cannot
+ *      be read), with nothing taken or counted. Every refusal before the body
+ *      is read, these and 3 and 4, closes the connection (card 2910's code
+ *      review, CS3);
  *   3. a place in flight, the key's user's (3) and then the server's (6),
  *      shared with the card window (429, `Retry-After: 5`, `Connection:
  *      close`): nothing is read or counted (card 2910, D6). The `try` whose
@@ -81,7 +93,9 @@ function tooMany(refused: UploadAllowanceRefused, opts: { beforeBody?: boolean }
  *      and the access again (404, 403), and room for one more image (409).
  *
  * A refusal at 8 removes the file, and the card's folder if this upload made
- * it. An allowance taken at 4 or 6 stays taken whatever is refused after it;
+ * it; a write at 8 that runs out of space is removed by the write and
+ * answered 507, the words of 2 (card 2920). An allowance taken at 4 or 6
+ * stays taken whatever is refused after it;
  * the place of 3 is given back however the upload ends.
  */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
@@ -97,6 +111,8 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 		if (declared === null) {
 			throw error(415, 'Send the image as the body, with Content-Type image/png, image/jpeg, image/gif or image/webp');
 		}
+		// Room on the uploads volume, before anything is taken or read (card 2920).
+		await requireUploadRoom();
 
 		const release = takeUploadPlace(locals.user);
 		try {
@@ -140,7 +156,8 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 
 			const name = url.searchParams.get('name');
 			const filename = `${randomUUID()}.${checked.extension}`;
-			const written = await writeUploadFile(cardId, filename, checked.bytes);
+			// A disk that filled while the body was read is answered 507 (card 2920).
+			const written = await writeUploadFile(cardId, filename, checked.bytes).catch(refuseWhenFull);
 			try {
 				const attachment = writeAs(locals, (caller) =>
 					attachImage(
@@ -160,13 +177,15 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 		}
 	} catch (refused) {
 		// Every refusal before the body is read closes the connection: the key's
-		// user, the id, the card, the type, the place and the hour (CS3). The
-		// day's is answered above, after the read, and anything after it is
-		// thrown on.
+		// user, the id, the card, the type, the space (card 2920), the place and
+		// the hour (CS3). The day's is answered above, after the read, and so is
+		// a write that ran out of space; anything else after it is thrown on.
 		if (!reading) {
 			if (refused instanceof UploadAllowanceRefused) return tooMany(refused, { beforeBody: true });
+			if (refused instanceof UploadSpaceRefused) return noRoom(refused, { beforeBody: true });
 			if (isHttpError(refused)) return closing(refused);
 		}
+		if (refused instanceof UploadSpaceRefused) return noRoom(refused);
 		throw refused;
 	}
 };

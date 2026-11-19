@@ -18,6 +18,7 @@ import { getDbPath, sqlite } from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
 import { afterEachTimestampCheck } from './helpers/timestamps';
 import { requestOf, StandInRequest } from './helpers/stand-in-request';
+import { plentyOfSpace } from './helpers/free-space';
 
 // tests/harness.test.ts holds the list of every test file and the test that
 // compares it with the files on disk: it is what notices a test file that was
@@ -67,6 +68,12 @@ afterAll(() => {
 		// Left in the temp folder.
 	}
 });
+
+// No test depends on the real disk's free space (card 2920): every upload, and
+// the admin page, asks a stand-in that answers plenty of room. Installed by a
+// setter, not a spy, so that `vi.restoreAllMocks()` does not take it off. A
+// test of the floor installs its own and puts this one back.
+plentyOfSpace();
 
 // Nothing in a test may reach the network. A webhook is delivered with
 // `http.request` or `https.request` (card 2161), and it and a mail go to a

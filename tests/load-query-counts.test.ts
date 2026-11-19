@@ -51,7 +51,9 @@ import { defaultOutside } from '$lib/server/db/restore';
 import { activityLog, boardCategories, boards, cards, categories, columns, taskRequests, teamMembers, tokenUsage, users, type Card } from '$lib/server/db/schema';
 import { boardCategoriesFor, boardCategoryRule, recentActivityFor, subBoardsFor } from '$lib/server/list-access';
 import type { SessionUser } from '$lib/server/auth';
+import { LARGEST_UPLOAD_BYTES, setFreeSpaceReader, UPLOAD_SPACE_FLOOR_BYTES } from '$lib/server/upload-space';
 import { pageLoad } from './helpers/actions';
+import { PLENTY_FREE_BYTES, PLENTY_TOTAL_BYTES, plentyOfSpace } from './helpers/free-space';
 import { readBudget } from './helpers/reads';
 import {
 	addBoardMember,
@@ -188,9 +190,29 @@ describe('the admin page’s load (card 2297)', () => {
 			],
 			currentUser: admin,
 			dbSizeBytes: 0,
+			// Card 2920: the uploads volume, as the setup's stand-in answers it, and the line for an in-memory database.
+			uploadsSpace: {
+				state: 'room',
+				lowBecause: null,
+				freeBytes: PLENTY_FREE_BYTES,
+				totalBytes: PLENTY_TOTAL_BYTES,
+				freeInodes: null,
+				refusedBelowBytes: UPLOAD_SPACE_FLOOR_BYTES + LARGEST_UPLOAD_BYTES
+			},
 			importOutsideDefault: defaultOutside()
 		};
 		expect(JSON.stringify(data)).toBe(JSON.stringify(expected));
+	});
+
+	it('answers the uploads volume as low when less than the line is free (card 2920)', async () => {
+		const line = UPLOAD_SPACE_FLOOR_BYTES + LARGEST_UPLOAD_BYTES;
+		setFreeSpaceReader(async () => ({ freeBytes: line - 1, totalBytes: 4 * line }));
+		try {
+			const { data } = await loadCounted('/admin', makeUser({ role: 'admin' }));
+			expect(data.uploadsSpace).toEqual({ state: 'low', lowBecause: 'space', freeBytes: line - 1, totalBytes: 4 * line, freeInodes: null, refusedBelowBytes: line });
+		} finally {
+			plentyOfSpace();
+		}
 	});
 });
 

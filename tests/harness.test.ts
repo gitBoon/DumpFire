@@ -258,6 +258,8 @@ const TEST_FILES = [
 	'upstream-screens.svelte.test.ts',
 	'uploads-sweep.test.ts',
 	'uploads.test.ts',
+	// Card 2920: uploads refused 507 when the uploads volume is nearly full, or its free space cannot be read.
+	'upload-space.test.ts',
 	'user-delete.test.ts',
 	// Card 2754, slice S2b: a card's files listed and downloaded, and an image uploaded, through /api/v1 with a key.
 	'v1-attachments.test.ts',

@@ -52,6 +52,7 @@ import SettingsHeldPanel from '$lib/components/admin/SettingsHeldPanel.svelte';
 import SettingsHeldBanner from '$lib/components/SettingsHeldBanner.svelte';
 
 import AdminPage from '../src/routes/admin/+page.svelte';
+import AdminOverview from '$lib/components/admin/AdminOverview.svelte';
 import BackupRestorePanel from '$lib/components/admin/BackupRestorePanel.svelte';
 import FromAccountsDialog from '$lib/components/admin/people/FromAccountsDialog.svelte';
 import PersonDialog from '$lib/components/admin/people/PersonDialog.svelte';
@@ -1496,8 +1497,61 @@ const pageData = {
 	users: [{ ...chief, apiKeys: null, webhooks: null, reportSchedules: null }, bob],
 	teams: [{ id: 7, name: 'Ops', emoji: '🏢', members: [] }],
 	boards: [],
-	dbSizeBytes: 0
+	dbSizeBytes: 0,
+	// Card 2920: the uploads volume, with room.
+	uploadsSpace: { state: 'room', lowBecause: null, freeBytes: 40 * 1024 ** 3, totalBytes: 100 * 1024 ** 3, freeInodes: null, refusedBelowBytes: 1049 * 1024 ** 2 }
 };
+
+// Card 2920: the Database Overview's line for the uploads volume, in each of its three states.
+describe('the uploads volume on the Database Overview (card 2920)', () => {
+	const GiB = 1024 ** 3;
+	it.each([
+		{
+			row: 'room',
+			space: { state: 'room', lowBecause: null, freeBytes: 40 * GiB, totalBytes: 100 * GiB, freeInodes: null, refusedBelowBytes: 1.5 * GiB },
+			says: 'Uploads disk: 40.0 GB free of 100.0 GB. Uploads are refused when less than 1.5 GB is free.',
+			alert: false
+		},
+		{
+			row: 'low',
+			space: { state: 'low', lowBecause: 'space', freeBytes: 1.2 * GiB, totalBytes: 100 * GiB, freeInodes: null, refusedBelowBytes: 1.5 * GiB },
+			says: "Uploads are refused: 1.2 GB free of 100.0 GB, below 1.5 GB (1 GB plus twice the database's size, and room for a 25 MB upload). Free some space or grow the volume.",
+			alert: true
+		},
+		// The code review's C2: a full disk is 0 B free, not a figure not read.
+		{
+			row: 'low, nothing free',
+			space: { state: 'low', lowBecause: 'space', freeBytes: 0, totalBytes: 100 * GiB, freeInodes: null, refusedBelowBytes: 1.5 * GiB },
+			says: "Uploads are refused: 0 B free of 100.0 GB, below 1.5 GB (1 GB plus twice the database's size, and room for a 25 MB upload). Free some space or grow the volume.",
+			alert: true
+		},
+		// C1: too few inodes, and a write that found the disk full.
+		{
+			row: 'low, inodes',
+			space: { state: 'low', lowBecause: 'inodes', freeBytes: 40 * GiB, totalBytes: 100 * GiB, freeInodes: 12, refusedBelowBytes: 1.5 * GiB },
+			says: 'Uploads are refused: the uploads disk has 12 free inodes (file entries), below 1,000. Delete files or grow the volume.',
+			alert: true
+		},
+		{
+			row: 'low, a write found it full',
+			space: { state: 'low', lowBecause: 'full', freeBytes: 2 * GiB, totalBytes: 100 * GiB, freeInodes: null, refusedBelowBytes: 1.5 * GiB },
+			says: 'Uploads are refused: an upload found the uploads disk full. 2.0 GB free of 100.0 GB now; uploads are accepted again when more is free than before it filled, or 5 minutes after.',
+			alert: true
+		},
+		{
+			row: 'unreadable',
+			space: { state: 'unreadable', lowBecause: null, freeBytes: null, totalBytes: null, freeInodes: null, refusedBelowBytes: 1.5 * GiB },
+			says: 'Uploads are refused: the free space on the uploads disk could not be read. The system log says why.',
+			alert: true
+		}
+	])('11. says how much is free and whether uploads are refused: $row', ({ space, says, alert }) => {
+		const target = draw(AdminOverview, { data: { ...pageData, uploadsSpace: space } });
+
+		const line = target.querySelector<HTMLElement>('.space-line')!;
+		expect(line.textContent!.replace(/\s+/g, ' ').trim()).toBe(says);
+		expect(line.getAttribute('role')).toBe(alert ? 'alert' : null);
+	});
+});
 
 /** `user` as the admin load gives a disabled account's row, disabled by the superadmin (card 2671). */
 const disabledRow = <T extends object>(user: T) => ({ ...user, disabledAt: '2099-01-02 09:00:00', disabledByName: 'chief', disabledBySuperadmin: true });

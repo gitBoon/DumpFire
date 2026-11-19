@@ -1,10 +1,12 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.131
+version: 1.132
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2920
+  - uploads-disk-floor
   - card-2928
   - card-2939
   - service-account-key
@@ -1358,6 +1360,7 @@ Since card 2910 every file counts, image or not, whichever way it is sent: throu
 | "The upload did not arrive within 120 seconds. Nothing was written." | The file was still arriving two minutes after it began, over a very slow connection: try again from a faster one, or send a smaller file. What arrived still counts against the day |
 | "Send one file, as the only part of the form, named "file"" | The upload was not made by the card window: a script sent a form with more than one part |
 | "This card already has 20 files other than images" | A card holds at most 20 files that are not images, beside its 20 images. Images can still be attached. A card that already held more keeps them |
+| "Uploads are paused: the server has too little free disk space, or cannot read how much it has. Nothing was written. An administrator can see which on the admin page." | The disk the uploads are kept on is nearly full, or its free space could not be read (card 2920). Every upload is refused, for everyone, until there is room: see [Uploads Disk Space](#uploads-disk-space-card-2920) |
 
 The counts are kept in memory: restarting the server empties them. The first time an account is refused in an hour or a day, or for having too many uploads at once, the Audit page's Live Console shows one `[WARN] [UPLOADS]` line naming the account; further refusals in the same window add none. Deleting a file gives none of the day back: it sits in the trash for 30 days.
 
@@ -1476,6 +1479,25 @@ The page, the route that saves the switches (`/api/account/notifications`) and t
 ---
 
 ## System Health Monitoring
+
+### Uploads Disk Space (Card 2920)
+
+The admin page's **Database Overview** shows **Uploads Disk Free**, the free space on the disk the
+attachment files are kept on, and a line under the figures:
+
+| The line says | What it means |
+|---|---|
+| "Uploads disk: *free* free of *size*. Uploads are refused when less than *line* is free." | There is room. The line is 1 GB plus twice the database's size, and 25 MB for the upload itself |
+| "Uploads are refused: *free* free of *size*, below *line* (…). Free some space or grow the volume." (in red) | Every upload, through the card window or an API key, is refused until there is room. The rest of DumpFire works as before. A full disk shows `0 B` free |
+| "Uploads are refused: the uploads disk has *n* free inodes (file entries), below 1,000. Delete files or grow the volume." (in red) | The disk has bytes free but almost no room for new files (Linux counts these; Windows does not) |
+| "Uploads are refused: an upload found the uploads disk full. *free* free of *size* now; uploads are accepted again when more is free than before it filled, or 5 minutes after." (in red) | Something filled the disk while an upload arrived. Uploads stay refused for 5 minutes, or until more space is free than before, so the next ones are not read in full only to fail |
+| "Uploads are refused: the free space on the uploads disk could not be read. The system log says why." (in red) | The server could not read the disk's free space, or not within 2 seconds, so it refuses uploads rather than risk filling it. The Live Console has an `[ERROR] [UPLOADS]` line with the reason |
+
+The margin keeps room for a backup, which writes two copies of the database beside it, and for the
+database's own writes. The Audit page's Live Console shows one `[WARN] [UPLOADS] Uploads are
+refused: …` line when uploads start being refused, and one `[INFO] [UPLOADS] Uploads are accepted
+again: …` when there is room again; none for each refused upload. Making room is the host's work:
+see [Deployment](deployment.md#free-space-on-the-uploads-volume).
 
 ### Logs
 

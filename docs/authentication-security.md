@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.155
+version: 1.156
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2920
+  - uploads-disk-floor
   - card-2928
   - webhook-addresses-at-rest
   - card-2939
@@ -7375,6 +7377,7 @@ not an upload and is held by its own rules.
 
 | Control | What it does |
 |---|---|
+| **Room on the disk (card 2920)** | `requireUploadRoom()` in `src/lib/server/upload-space.ts`, asked on both routes after the card and its access (and a key's declared type) and before the place: `statfs` of the uploads volume, given 2 seconds and one read at a time, and `507` with `Connection: close` when what is free, less 25 MB, is below 1 GB plus twice the database's size, when fewer than 1,000 inodes are free where the volume counts them, or when the free space cannot be read in time (fail closed). Nothing is read, taken or counted. A write that still finds the disk full (`ENOSPC`, `EDQUOT`) is removed and answered the same `507` (`refuseWhenFull()`), and holds uploads refused for 5 minutes unless the free space grows past what was read before it. One `UPLOADS` line a change of state (WARN into low, ERROR into unreadable, INFO back to room); the admin page shows the figures. Per-account limits bound one person; this bounds the disk: [Deployment](deployment.md#free-space-on-the-uploads-volume) |
 | **Places in flight** | `takeUploadPlace()` in `src/lib/server/upload-allowance.ts` takes a place at the account (`upload-in-flight:user:<id>`, 3) and then at the server (`upload-in-flight:server`, 6), before the body is read, on both routes (`enterInFlight` in `src/lib/server/rate-limit.ts`). Either full is `429` with `Retry-After: 5` and nothing counted against the hour; a refusal of the server's place gives the account's back before it throws. It answers a release bound to the two places it took, each by a token of its own, which gives them back once however often it is called (the plan review's S1). Each route opens a `try` on the very next line and calls the release only in that `try`'s `finally`, so every exit gives the places back: a refusal, a `413`, a caller gone, a failed write |
 | **Places lapse** | Each place is stamped when it is taken, and the 5-minute sweep (`sweepRateLimits()`) drops any older than 10 minutes (`IN_FLIGHT_LAPSE_MS`), so a place a fault never gave back is gone within 15 minutes; its late release frees nothing, as its token is gone (S2) |
 | **The hour, before the body** | `takeUploadCount()`, 30 uploads an hour, asked straight after the place and before the form is read, for every file: `429` with `Retry-After`, "Nothing was read or written." The card window asked it after the form until card 2910 |
@@ -7397,7 +7400,8 @@ socket. So **every refusal before the body carries `Connection: close`**, and th
 the connection after its answer rather than draining the body into a connection kept alive:
 the session's `401`, the id's `400`, the card's `404` and `403`, a key's upload's `415`, the
 gate's `413` for a declared length over the limit, the places' and the hour's `429` (the code
-review's CS3). The day's `429`, given after the body, does not. `tests/uploads.test.ts` and
+review's CS3), and since card 2920 the `507` for want of room on the disk. The day's `429`, given
+after the body, does not, nor does the `507` of a write that finds the disk full. `tests/uploads.test.ts` and
 `tests/v1-attachments.test.ts` assert the header on the answer SvelteKit gives through the gate;
 whether a proxy in front passes it on and the card window shows the words before a 20 MB upload
 would finish is checked by hand on the production path ([Deployment](deployment.md), H8 of the

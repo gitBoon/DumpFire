@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.143
+version: 1.144
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2920
+  - uploads-disk-floor
   - card-2928
   - webhook-addresses-at-rest
   - card-2939
@@ -957,6 +959,63 @@ flowchart TD
     Backup["Your own backup of<br/>the uploads folder"] -.->|"The only way back<br/>after 30 days"| Live
 ```
 
+### Free space on the uploads volume
+
+Since card 2920 every upload, through the card window or an API key, first asks how much room is
+left on the disk the uploads folder is on, and is refused when what is free, less room for a
+25 MB upload, would fall below **1 GB plus twice the database's size**. The uploads folder is
+beside the database, on the same volume, and a backup writes two copies of the database beside it
+while it runs: the floor keeps that room, and room for the database's own writes, free of uploads.
+The figure is fixed in the code, not a setting (`src/lib/server/upload-space.ts`).
+
+```mermaid
+flowchart TD
+    U["An upload: the card, its access<br/>(a key's upload: its Content-Type)"] --> S{"statfs of the uploads folder<br/>(or the nearest folder above it that exists)"}
+    S -->|"cannot be read, or not within 2 s"| X["507, Connection: close<br/>ERROR once, until it reads again"]
+    S -->|"free - 25 MB below 1 GB + 2 x database,<br/>under 1,000 free inodes, or a write<br/>found it full in the last 5 minutes"| L["507, Connection: close<br/>WARN once, until there is room again"]
+    S -->|room| P["the place, the hour (card 2910),<br/>the body read, the day charged"]
+    P --> W{"the file written"}
+    W -->|"no space left (ENOSPC, EDQUOT)"| F["file removed; 507, the same words"]
+    W -->|written| OK["attached"]
+```
+
+- **What is read.** `fs.promises.statfs` (Node 18.15 and later; the image runs Node 22): free is the
+  space the server's own user may use (`bavail`, without the blocks Linux reserves for root), total
+  the volume's size. The folder is made at the first upload, so before then the folder above it is
+  read: the same volume. The read is given **2 seconds**; one that takes longer (a stalled network
+  volume) counts as unreadable, and only one read runs at a time, so a volume that does not answer
+  holds one of Node's threads, not one for every upload.
+- **Inodes.** Where the volume counts them (Linux; Windows does not), uploads are refused too when
+  fewer than **1,000** inodes are free: a disk with bytes free and no inode left fails every new
+  file. An upload takes at most two (its file and its card's folder), a backup at most eight.
+- **A write that finds the disk full** holds uploads refused for **5 minutes**, unless the free space
+  grows past what was read before that write; so the uploads after it are refused before their
+  bodies are read, and the log does not swing between refused and accepted at every upload.
+- **The refusal.** `507 Insufficient Storage`, `{ "message": "Uploads are paused: the server has too
+  little free disk space, or cannot read how much it has. Nothing was written. An administrator can
+  see which on the admin page." }`, the same words on both routes. Asked before the body is read,
+  after the card and its access, and before card 2910's place and hour: nothing is read, taken or
+  counted, and the connection is closed. A write that still finds no space (something else filled
+  the disk while the body arrived) is removed and answered the same, without `Connection: close`;
+  that upload has been counted, as any refusal after the read is.
+- **When the free space cannot be read**, uploads are refused all the same (fail closed): a guard
+  that let uploads through when it could not look would allow the full disk it is there to prevent.
+- **The log.** One line under `UPLOADS` each time the state changes, none while it stays:
+  `[WARN] Uploads are refused: <free> free on the uploads volume, below <line> (…). Free some space or grow the volume.`
+  (or `… an upload could not be written, as the uploads volume is full (ENOSPC) …`, or
+  `… <n> free inodes on the uploads volume, below 1000. Delete files or grow the volume.`),
+  `[ERROR] Uploads are refused: the free space on the uploads volume could not be read (<reason>).`,
+  and `[INFO] Uploads are accepted again: <free> free on the uploads volume.` The state is kept in
+  memory and judged at every upload and every opening of the admin page; a restart begins with
+  room, so the first look after it says again if the disk is short.
+- **The admin page.** The Database Overview shows **Uploads Disk Free** and a line: how much is free
+  of the whole, and below what uploads are refused; or, in red, that uploads are refused and why:
+  too little space (a full disk shows `0 B`), too few inodes, a write that found the disk full in
+  the last 5 minutes, or a free space that could not be read.
+- **To make room**: delete what is not needed on the volume (old copies, logs, images), or grow it.
+  The trash (below) is on the same volume and is emptied 30 days after each delete; files in it are
+  what Import Backup puts back, so empty it by hand only knowing that.
+
 ### The trash
 
 - **A deleted card's files are moved, not removed.** They go to `uploads/.trash/<card id>/`, beside a marker file `.trashed-at` that holds the date. Archiving or completing a card moves nothing at the time; only [image retention](#image-retention), long after, moves its images.
@@ -1053,6 +1112,19 @@ What each way of restoring does with the files:
 | **Import Backup**, in the admin panel | Files on disk are left where they are. For every attachment the restored database names whose file is missing from its card's folder and is in the trash, the file is moved back. The result on screen says how many were put back, and lists any that could not be |
 | **By hand**, replacing `dumpfire.db` with the server stopped | Nothing is moved. Files that a delete had put in the trash stay there. Move each back from `uploads/.trash/<card id>/` to `uploads/<card id>/`, or restore your own copy of the folder taken with that backup |
 | Either, more than 30 days after the cards were deleted | The trash no longer has the files. Only your own backup of the folder does |
+
+**Before copying a folder back onto the volume** (card 2920), compare its size with the volume's
+free space: the server cannot see a copy made on the host, and once it lands, uploads are refused
+if less than 1 GB plus twice the database's size, and 25 MB more, is left
+([Free space on the uploads volume](#free-space-on-the-uploads-volume)).
+
+```bash
+du -sh "$HOME/dumpfire-uploads"
+docker run --rm --network none -v dumpfire-data:/app/data:ro dumpfire:latest df -h /app/data
+```
+
+If the copy would leave less than that, make room or grow the volume first. After the copy, the
+admin page's Database Overview shows what is left.
 
 An attachment whose file is not on disk still shows on its card. Opening it answers 404, "File not found on disk".
 
@@ -7911,6 +7983,38 @@ to the old address, so set it again.
 | H20 | Export a backup and search it for a webhook's path and `dfsealed:` | Neither found | Either found |
 | H21 | Import that backup | Each webhook back with its address, on as it was | Listed to enter |
 | H22 | `node scripts/mfa-reset.mjs --keep-api-keys <setter>` | Lists each webhook "to <host>" | A path or an envelope |
+
+### The Release That Refuses Uploads When the Uploads Volume Is Nearly Full (Card 2920)
+
+Before an upload is read, the server checks the free space on the disk that holds the uploads. If
+what is free, less room for a 25 MB upload, would fall below 1 GB plus twice the database's size,
+the upload is refused, `507`, with "Uploads are paused: the server has too little free disk space,
+or cannot read how much it has. Nothing was written. An administrator can see which on the admin
+page.", in the card window and through an API key alike; and so is every upload while the free
+space cannot be read. The admin page's Database Overview shows the free space and the line; the system log says
+once when uploads start being refused and once when they are accepted again. See
+[Free space on the uploads volume](#free-space-on-the-uploads-volume).
+
+**Before the deploy (read-only):** check the volume has more than about 1 GB plus twice the
+database's size free:
+
+```bash
+docker exec dumpfire df -h /app/data
+docker exec dumpfire ls -l /app/data/dumpfire.db /app/data/dumpfire.db-wal
+```
+
+If not, uploads are refused from the first start until space is freed or the volume grown.
+
+Nothing to migrate and nothing to configure. **Going back to an older image** takes the check
+away; nothing is stored. **Published API:** OpenAPI stays `1.15.0` (unreleased), with note 8: the
+`507` on `POST /api/v1/cards/{cardId}/attachments`.
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | As an administrator, open Admin | Database Overview shows Uploads Disk Free and "Uploads are refused when less than … is free" | No line, or an error on the page |
+| H2 | On a test host whose uploads are on a small volume of their own (a loop or tmpfs mount, never the real disk), fill it below the line, then drop a file on a card | The card shows "Uploads are paused: …"; 507 with `Connection: close`; one `[WARN] [UPLOADS] Uploads are refused: …`; the admin line in red | Accepted, a 500, or a WARN for every refusal |
+| H3 | Free the space and upload again | Accepted; one `[INFO] [UPLOADS] Uploads are accepted again: …` | Still refused |
+| H4 | With an API key, send an image while below the line | 507, the same words | Any other status or words |
 
 ## Changing the Schema
 
