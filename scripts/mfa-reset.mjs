@@ -27,7 +27,10 @@
  * 2915: `endAccountAccess` with `apiKeys: true`, unless `--keep-api-keys`,
  * which is `resetTwoStep`'s `apiKeys: false`), and, with them, those it set
  * that were already switched off without a hold held the same way, left off
- * (card 2923), its report schedules that are
+ * (card 2923), and every webhook whose secret it could read as an
+ * administrator (every board) or a board's owner, that has a secret, whoever
+ * set it, unless it provably read nothing (card 2935: `readableBy` and
+ * `mayHaveRead`, copied word for word), its report schedules that are
  * on paused (always, card 2894), and one enrolment link issued, `issued_by
  * 'host-reset'`, for seven days. Before the CRITICAL line, the server's
  * Webhooks WARN lines for those switched off and those held (`tellSwitchedOff`
@@ -68,6 +71,12 @@
  * 2915, S1): recorded, since whether one is still at the recorded place needs
  * the server's own rules, which this does not copy.
  *
+ * `--hold-readable` (card 2935, P7) resets nothing: it holds only the webhooks
+ * whose secret the named account can read now (`holdReadableScope`, which is
+ * `readableNowScope` in webhooks.ts), writes the Webhooks lines and one AUTH WARN, and
+ * prints them, for an owner or administrator reset or enabled again before the
+ * card's release.
+ *
  * Exit code 0 when the account was reset; 1 when it was refused (run as root,
  * no database file, a database with no two-step sign-in tables, no report
  * schedules or no webhook holds, no such account, a disabled account, or the
@@ -97,11 +106,59 @@ const NEEDED_TABLES = ['mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges'
 /** What `held_because` records for a webhook whose setter's access ended: `'setter access ended'` in src/lib/server/webhooks.ts. */
 const SETTER_ACCESS_ENDED = 'setter access ended';
 
+/**
+ * `readableBy` in src/lib/server/webhooks.ts, word for word (card 2935; tests/mfa-reset-script.test.ts compares
+ * them): SQL true where the account `id`, of role `role`, can be given the secret of a webhook on board `board`.
+ * @param {string} id @param {string} role @param {string} [board]
+ */
+export function readableBy(id, role, board = 'board_id') {
+	return (
+		`(${role} IN ('admin', 'superadmin') OR ${board} IN (SELECT rb_b.id FROM boards AS rb_b WHERE rb_b.created_by = ${id}) ` +
+		`OR ${board} IN (SELECT rb_m.board_id FROM board_members AS rb_m WHERE rb_m.user_id = ${id} AND rb_m.role = 'owner'))`
+	);
+}
+
+/**
+ * `mayHaveRead` in src/lib/server/webhooks.ts, word for word (card 2935, P1): SQL true unless the account provably
+ * read no secret. Needs `stamp_of`, which `openDatabase` gives the connection.
+ * @param {string} id @param {string} [except]
+ */
+export function mayHaveRead(id, except = 'NULL') {
+	return (
+		`NOT ((SELECT mh_u.last_sign_in_at FROM users AS mh_u WHERE mh_u.id = ${id}) IS NULL ` +
+		`AND NOT EXISTS (SELECT 1 FROM api_keys AS mh_k WHERE mh_k.user_id = ${id}) ` +
+		`AND NOT EXISTS (SELECT 1 FROM invite_tokens AS mh_i WHERE mh_i.user_id = ${id} AND mh_i.used = 1 AND mh_i.token IS NOT ${except}) ` +
+		`AND coalesce(stamp_of((SELECT mh_c.created_at FROM users AS mh_c WHERE mh_c.id = ${id})) > ` +
+		"stamp_of((SELECT mh_s.value FROM settings AS mh_s WHERE mh_s.key = 'two_step_released_at')), 0))"
+	);
+}
+
+/** The account's role as the statements read it, in SQL. */
+const ROLE_OF_ID = '(SELECT role FROM users WHERE id = @id)';
+
+/**
+ * The reset's hold scope, `endingScope` in src/lib/server/webhooks.ts word for word (card 2935's code review, C7):
+ * what the account set, and, with `@readable` 1, every webhook with a secret it could read.
+ */
+export function resetScope() {
+	return `(set_by = @id OR (@readable = 1 AND secret <> '' AND ${readableBy('@id', ROLE_OF_ID)}))`;
+}
+
+/**
+ * `--hold-readable`'s scope, `readableNowScope` in src/lib/server/webhooks.ts word for word (C7): every webhook with
+ * a secret the account did not set and can read now, unless it provably read nothing.
+ */
+export function holdReadableScope() {
+	return `set_by IS NOT @id AND secret <> '' AND ${readableBy('@id', ROLE_OF_ID)} AND ${mayHaveRead('@id')}`;
+}
+
 const USAGE =
-	'Usage: node scripts/mfa-reset.mjs [--keep-api-keys] [--] <username>\n\n' +
+	'Usage: node scripts/mfa-reset.mjs [--keep-api-keys | --hold-readable] [--] <username>\n\n' +
 	'Resets the two-step sign-in of the account with that username, and prints the link that sets up a new one. ' +
-	"It ends the account's API keys and switches off the webhooks it set up, as a password reset does.\n\n" +
+	"It ends the account's API keys and switches off the webhooks it set up, as a password reset does; for an " +
+	'administrator, every webhook on the server that has a secret, and for a board owner every one on its boards, too.\n\n' +
 	'  --keep-api-keys  keeps them.\n' +
+	'  --hold-readable  resets nothing: holds only the webhooks whose secret the account could read, and lists them.\n' +
 	'  --               ends the options, so a username starting with "-" can be named.';
 
 /** A refusal: said on stderr, with the exit code it ends with. */
@@ -208,17 +265,23 @@ const SWITCHED_OFF_NAMED = 20;
  * access ended']` and the reason the host gives for sending no mail (card
  * 2923, S6). Never the address. None for neither group.
  *
- * @param {{ id: number, board_id: number, set_by: number | null }[]} done
- * @param {{ id: number, board_id: number, set_by: number | null }[]} held
+ * A row with `reader` (card 2935) is one whose secret that account could read, in the server's reader words.
+ *
+ * @param {{ id: number, board_id: number, set_by: number | null, reader?: number }[]} done
+ * @param {{ id: number, board_id: number, set_by: number | null, reader?: number }[]} held
  * @param {string} cause
  * @returns {string[]}
  */
 export function webhookLines(done, held, cause) {
 	if (done.length === 0 && held.length === 0) return [];
-	/** @param {{ set_by: number | null }} hook */
+	/** @param {{ set_by: number | null, reader?: number }} hook */
 	const words = (hook) =>
-		hook.set_by === null ? 'nobody is recorded as having set it up' : `the account that set it up (user ${hook.set_by}) had its access ended`;
-	/** @param {{ id: number, board_id: number, set_by: number | null }[]} hooks */
+		hook.reader !== undefined
+			? `an account that could read its secret as an owner of the board or an administrator (user ${hook.reader}) lost that access`
+			: hook.set_by === null
+				? 'nobody is recorded as having set it up'
+				: `the account that set it up (user ${hook.set_by}) had its access ended`;
+	/** @param {{ id: number, board_id: number, set_by: number | null, reader?: number }[]} hooks */
 	const named = (hooks) =>
 		hooks
 			.slice(0, SWITCHED_OFF_NAMED)
@@ -402,7 +465,82 @@ function openDatabase(path) {
 	// As the server's connection: wait for its write to end rather than fail at once, and keep the keys to users.
 	database.pragma('busy_timeout = 5000');
 	database.pragma('foreign_keys = ON');
+	// `stamp_of`, as `registerStampFunctions` in src/lib/server/db/timestamps.ts gives it, for `mayHaveRead` (card 2935).
+	database.function('stamp_of', { deterministic: true }, (value) => toStamp(value));
 	return database;
+}
+
+/**
+ * Webhooks by their ids, each by its board, the host of its receiver and the day it was made, in id order: for
+ * stdout alone, never the log. `listed` is the SELECT that reads them.
+ * @param {Database.Database} database @param {string} listed @param {number[]} ids
+ * @returns {{ id: number, board: string, host: string, createdAt: string }[]}
+ */
+function listedHooks(database, listed, ids) {
+	if (ids.length === 0) return [];
+	return /** @type {{ id: number, board: string, url: string, receiver: string | null, created_at: string }[]} */ (
+		database.prepare(listed + `WHERE w.id IN (${ids.map(() => '?').join(', ')}) ORDER BY w.id`).all(...ids)
+	).map((hook) => ({ id: hook.id, board: hook.board, host: hostOfHook(hook), createdAt: hook.created_at }));
+}
+
+/**
+ * `--hold-readable` (card 2935, P7): the hold of `holdReadableScope` alone (`readableNowScope` on the server, which
+ * no server write uses: the server holds what an account can no longer read, this what it can read now): every
+ * webhook with a secret, not set by the account, whose secret it can read now (`readableBy`), held as 'setter
+ * access ended', unless it provably read nothing (`mayHaveRead`). Nothing of the account changes. The server's
+ * Webhooks WARN lines and the not-mailed line go to `system_logs`, and one WARN under AUTH saying who was held for
+ * and how many, in one transaction. A disabled account is taken too: what it could read is read from its rows.
+ * @param {Database.Database} database @param {string} username
+ */
+function holdReadable(database, username) {
+	return database
+		.transaction(() => {
+			const account = /** @type {{ id: number, username: string } | undefined} */ (
+				database.prepare('SELECT id, username FROM users WHERE username = ?').get(username)
+			);
+			if (!account) throw new Refused(`Refused: there is no account with the username "${printable(username)}". Nothing was changed.`);
+			const id = account.id;
+			const now = stamp();
+			const scope = holdReadableScope();
+			const alreadyOff = new Set(
+				/** @type {{ id: number }[]} */ (database.prepare(`SELECT id FROM webhooks WHERE active = 0 AND held_because IS NULL AND ${scope}`).all({ id })).map(
+					(row) => row.id
+				)
+			);
+			const rows = /** @type {{ id: number, board_id: number, set_by: number | null, reader?: number }[]} */ (
+				database
+					.prepare(
+						`UPDATE webhooks SET active = 0, held_because = @hold, held_at = @at WHERE (active = 1 OR held_because IS NULL) AND ${scope} ` +
+							'RETURNING id, board_id, set_by'
+					)
+					.all({ id, hold: SETTER_ACCESS_ENDED, at: now })
+			)
+				.map((row) => ({ ...row, reader: id }))
+				.sort((a, b) => a.id - b.id);
+			const name = printable(account.username);
+			const insert = database.prepare('INSERT INTO system_logs (timestamp, level, context, message, meta, user_id, ip) VALUES (?, ?, ?, ?, ?, ?, ?)');
+			for (const line of webhookLines(
+				rows.filter((row) => !alreadyOff.has(row.id)),
+				rows.filter((row) => alreadyOff.has(row.id)),
+				`the webhooks whose secret ${name} could read were held on the server's host`
+			)) {
+				insert.run(now, 'WARN', 'Webhooks', line, null, null, null);
+			}
+			insert.run(
+				now,
+				'WARN',
+				'AUTH',
+				`Webhooks held for user ${id} ("${name}") on the server's host, with scripts/mfa-reset.mjs --hold-readable: ${rows.length} webhook(s) ` +
+					'whose secret the account could read; nothing else of the account was changed',
+				null,
+				id,
+				null
+			);
+			const receiver = database.prepare("SELECT 1 FROM pragma_table_info('webhooks') WHERE name = 'receiver'").get() ? 'w.receiver' : 'NULL';
+			const listed = `SELECT w.id, b.name AS board, w.url, ${receiver} AS receiver, w.created_at FROM webhooks w JOIN boards b ON b.id = w.board_id `;
+			return { id, name, held: listedHooks(database, listed, rows.map((row) => row.id)) };
+		})
+		.immediate();
 }
 
 /**
@@ -433,6 +571,10 @@ function reset(database, username, keep) {
 			const id = account.id;
 			const now = new Date();
 			const nowStamp = stamp(now);
+			// Whether the webhooks whose secret it could read go too (card 2935, `endAccountAccess`): unless kept, and
+			// unless it provably read nothing (P1), asked before its keys are deleted.
+			const readable =
+				!keep && /** @type {{ v: number }} */ (database.prepare(`SELECT ${mayHaveRead('@id')} AS v`).get({ id })).v === 1;
 
 			// Read before anything ends (card 2915): the live keys, `liveApiKeysOf` in second-step.ts, which the
 			// end statements below delete; for stdout alone, never the log. The host may read these names.
@@ -481,9 +623,9 @@ function reset(database, username, keep) {
 			/** @type {number[]} */
 			let webhookIds = [];
 			// Those already switched off without a hold that the statement below held (card 2923).
-			/** @type {{ id: number, board_id: number, set_by: number | null }[]} */
+			/** @type {{ id: number, board_id: number, set_by: number | null, reader?: number }[]} */
 			let switchedOffRows = [];
-			/** @type {{ id: number, board_id: number, set_by: number | null }[]} */
+			/** @type {{ id: number, board_id: number, set_by: number | null, reader?: number }[]} */
 			let heldRows = [];
 			if (!keep) {
 				// The ids of the keys deleted, in order, for the meta (card 2915's code review, CS2): ids only.
@@ -493,24 +635,32 @@ function reset(database, username, keep) {
 				// The hold endAccountAccess records (SETTER_ACCESS_ENDED, copied from webhooks.ts): switched on again
 				// by the board's owner or an administrator, the webhook is given a new secret. One already switched off
 				// without a hold is held too, left off (card 2923), read first so that the two groups are told apart.
+				// With every webhook whose secret it could read, that has one (card 2935, `holdWebhooksOfSetter`'s scope).
+				const scope = resetScope();
+				const params = { id, readable: readable ? 1 : 0 };
 				const alreadyOff = new Set(
 					/** @type {{ id: number }[]} */ (
-						database.prepare('SELECT id FROM webhooks WHERE set_by = ? AND active = 0 AND held_because IS NULL').all(id)
+						database.prepare(`SELECT id FROM webhooks WHERE active = 0 AND held_because IS NULL AND ${scope}`).all(params)
 					).map((row) => row.id)
 				);
-				const rows = /** @type {{ id: number, board_id: number, set_by: number | null }[]} */ (
+				const rows = /** @type {{ id: number, board_id: number, set_by: number | null, reader?: number }[]} */ (
 					database
 						.prepare(
-							'UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE set_by = ? AND (active = 1 OR held_because IS NULL) ' +
+							`UPDATE webhooks SET active = 0, held_because = @hold, held_at = @at WHERE (active = 1 OR held_because IS NULL) AND ${scope} ` +
 								'RETURNING id, board_id, set_by'
 						)
-						.all(SETTER_ACCESS_ENDED, stamp(now), id)
-				).sort((a, b) => a.id - b.id);
+						.all({ ...params, hold: SETTER_ACCESS_ENDED, at: stamp(now) })
+				)
+					.map((row) => (row.set_by === id ? row : { ...row, reader: id }))
+					.sort((a, b) => a.id - b.id);
 				switchedOffRows = rows.filter((row) => !alreadyOff.has(row.id));
 				heldRows = rows.filter((row) => alreadyOff.has(row.id));
-				webhookIds = switchedOffRows.map((row) => row.id);
+				// Those it set (P9): the meta and the line, as the route's.
+				webhookIds = switchedOffRows.filter((row) => row.reader === undefined).map((row) => row.id);
 			}
-			const heldIds = heldRows.map((row) => row.id);
+			const heldIds = heldRows.filter((row) => row.reader === undefined).map((row) => row.id);
+			// The webhooks of others whose secret it could read, switched off or held (card 2935): listed apart.
+			const otherIds = [...switchedOffRows, ...heldRows].filter((row) => row.reader !== undefined).map((row) => row.id).sort((a, b) => a - b);
 			// The webhooks listed: those switched off, by their own ids (S5), or, kept, those the account set that
 			// are on, as `keysAndWebhooksOf` in second-step.ts lists them. For stdout alone, never the log.
 			// Each listed by the host of its stored receiver (card 2928, migration 0073), where the database has the column.
@@ -524,9 +674,8 @@ function reset(database, username, keep) {
 						: database.prepare(listed + `WHERE w.id IN (${webhookIds.map(() => '?').join(', ')}) ORDER BY w.id`).all(...webhookIds)
 			).map((hook) => ({ id: hook.id, board: hook.board, host: hostOfHook(hook), createdAt: hook.created_at }));
 			// The webhooks held where they were already off (card 2923, S2), by their own ids as above. For stdout alone.
-			const held = /** @type {{ id: number, board: string, url: string, receiver: string | null, created_at: string }[]} */ (
-				heldIds.length === 0 ? [] : database.prepare(listed + `WHERE w.id IN (${heldIds.map(() => '?').join(', ')}) ORDER BY w.id`).all(...heldIds)
-			).map((hook) => ({ id: hook.id, board: hook.board, host: hostOfHook(hook), createdAt: hook.created_at }));
+			const held = listedHooks(database, listed, heldIds);
+			const others = listedHooks(database, listed, otherIds);
 			const keptWebhookIds = keep ? hooks.map((hook) => hook.id) : [];
 			const apiKeys = apiKeyIds.length;
 			const reportScheduleIds = /** @type {{ id: number }[]} */ (
@@ -613,6 +762,7 @@ function reset(database, username, keep) {
 				keys,
 				hooks,
 				held,
+				others,
 				settings,
 				token
 			};
@@ -628,11 +778,14 @@ function reset(database, username, keep) {
  * of which there must be exactly one, not empty. Every refusal is a usage
  * error, exit 2, before the database is opened.
  *
+ * `--hold-readable` (card 2935, P7) the same way, and never with `--keep-api-keys`.
+ *
  * @param {string[]} args
- * @returns {{ keep: boolean, username: string }}
+ * @returns {{ keep: boolean, holdOnly: boolean, username: string }}
  */
 function readArguments(args) {
 	let keep = false;
+	let holdOnly = false;
 	let options = true;
 	/** @type {string[]} */
 	const names = [];
@@ -643,6 +796,9 @@ function readArguments(args) {
 		} else if (options && arg === '--keep-api-keys') {
 			if (keep) throw new Refused(`--keep-api-keys was given twice.\n\n${USAGE}`, 2);
 			keep = true;
+		} else if (options && arg === '--hold-readable') {
+			if (holdOnly) throw new Refused(`--hold-readable was given twice.\n\n${USAGE}`, 2);
+			holdOnly = true;
 		} else if (options && arg.startsWith('-')) {
 			throw new Refused(`Unknown option "${printable(arg)}".\n\n${USAGE}`, 2);
 		} else {
@@ -650,18 +806,44 @@ function readArguments(args) {
 		}
 	}
 	if (names.length !== 1 || names[0] === '') throw new Refused(USAGE, 2);
-	return { keep, username: names[0] };
+	if (keep && holdOnly) throw new Refused(`--keep-api-keys and --hold-readable cannot be given together.\n\n${USAGE}`, 2);
+	return { keep, holdOnly, username: names[0] };
 }
 
 /** "a", "a and b", "a, b and c". @param {string[]} parts */
 const joined = (parts) => (parts.length <= 1 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`);
 
 function main() {
-	const { keep, username } = readArguments(process.argv.slice(2));
+	const { keep, holdOnly, username } = readArguments(process.argv.slice(2));
 
 	refuseRoot();
 	const path = resolve(process.env.DB_PATH || join(process.cwd(), 'dumpfire.db'));
 	const database = openDatabase(path);
+	if (holdOnly) {
+		try {
+			let found;
+			try {
+				found = holdReadable(database, username);
+			} catch (err) {
+				if (err instanceof Refused) throw err;
+				throw new Refused(`Refused: the webhooks could not be held, and nothing was changed: ${/** @type {Error} */ (err).message}`);
+			}
+			const day = (/** @type {string} */ at) => String(at).slice(0, 10);
+			if (found.held.length === 0) {
+				console.log(`No webhook was held for "${found.name}" (user ${found.id}): it could read the secret of none, or provably read none.`);
+			} else {
+				console.log(
+					`Held ${found.held.length} webhook(s) whose secret "${found.name}" (user ${found.id}) could read: ` +
+						`${found.held.map((hook) => `${printable(hook.board)}, to ${printable(hook.host)} (made ${day(hook.createdAt)})`).join('; ')}; ` +
+						'switched on, each is given a new secret.'
+				);
+				console.log("Their boards' owners were not mailed: tell them.");
+			}
+		} finally {
+			database.close();
+		}
+		return;
+	}
 	try {
 		let done;
 		try {
@@ -718,6 +900,15 @@ function main() {
 			);
 			// The host sends no mail (card 2923, S2): the boards' owners are the operator's to tell.
 			if (done.hooks.length > 0 || done.held.length > 0) console.log("Their boards' owners were not mailed: tell them.");
+		}
+		// The webhooks of others whose secret the account could read (card 2935), in full, by board: stdout only.
+		if (!keep && done.others.length > 0) {
+			console.log(
+				`Switched off or held ${done.others.length} webhook(s) set up by others whose secret they could read, as an owner of the board or an ` +
+					`administrator: ${done.others.map((hook) => `${printable(hook.board)}, to ${printable(hook.host)} (made ${day(hook.createdAt)})`).join('; ')}; ` +
+					'switched on, each is given a new secret.'
+			);
+			console.log("Those boards' owners were not mailed: tell them.");
 		}
 		// The settings the account is recorded as having set (card 2915, S1): recorded, not judged here.
 		const set = [

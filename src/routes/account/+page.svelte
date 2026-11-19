@@ -149,7 +149,11 @@
 			// Card 2923 (S9): the owners are mailed, and one already off is held, which the box's change brings about too.
 			hooks > 0
 				? "The boards' owners are mailed about them, and about any you set up that are already switched off, which can then be switched on only with a new secret."
-				: "Any webhook you set up that is already switched off can then be switched on only with a new secret, and its board's owners are mailed about it."
+				: "Any webhook you set up that is already switched off can then be switched on only with a new secret, and its board's owners are mailed about it.",
+			// Card 2935 (P8): in words, only where the account may have read a secret (P1).
+			data.holdsReadable
+				? "Every webhook whose secret you could read, as an administrator or a board's owner, is switched off too, whoever set it up, and can be switched on again only with a new secret; its board's owners are mailed."
+				: ''
 		]
 			.filter(Boolean)
 			.join(' ');

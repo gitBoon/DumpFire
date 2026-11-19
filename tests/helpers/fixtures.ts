@@ -735,9 +735,13 @@ export function makeSmtp(): void {
  * is one made since, and its restore holds only the already-off webhooks of a
  * disabled or missing setter (card 2923's code review, S2). Without it, a
  * backup is one from before the release, whose restore holds every one.
+ *
+ * And the moment card 2935's start pass covered (`webhooks_readable_by_disabled_held`, P4), so that the restore of a
+ * backup made of it does not run the pass itself (P12): a server started since that release too.
  */
 export function startedSinceAlreadyOffHeld(database: { prepare(source: string): { run(...args: unknown[]): unknown } } = sqlite): void {
 	database.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('webhooks_already_off_held', '2026-11-19T00:00:00.000Z')").run();
+	database.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('webhooks_readable_by_disabled_held', '2026-11-19 00:00:00')").run();
 }
 
 /** A person in the directory (card 2674): active, with no account and no job title unless told otherwise. */

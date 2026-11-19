@@ -434,6 +434,8 @@ export type TwoStepReset = {
 	/** The webhooks it set that were on, switched off with the hold 'setter access ended', and their ids, in order (card 2915). */
 	webhooks: number;
 	webhookIds: number[];
+	/** Webhooks of others whose secret it could read, switched off or held with its keys (card 2935): not in the meta, as the host's is not. */
+	readableWebhooks: number;
 	/** Whether the keys and webhooks were kept: only as the model of the host's `--keep-api-keys` (card 2915, S3). */
 	apiKeysKept: boolean;
 	/** Where they were kept, the live keys kept and the webhooks it set that are on, with their ids; 0 and none otherwise. */
@@ -574,6 +576,7 @@ export function resetTwoStep(
 		apiKeyIds: ended.apiKeyIds,
 		webhooks: ended.webhooks,
 		webhookIds: ended.webhookIds,
+		readableWebhooks: ended.readableWebhooks,
 		apiKeysKept: !endKeys,
 		liveApiKeysKept: liveKept,
 		webhooksKept: keptWebhookIds.length,

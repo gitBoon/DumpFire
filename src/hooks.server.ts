@@ -30,6 +30,7 @@ import {
 	endPlainRequestLinks,
 	endPlainSessions,
 	holdAlreadyOffWebhooksAtStart,
+	holdReadableWebhooksAtStart,
 	maskLiveLog,
 	refuseUserlessBesideAnother,
 	removeSettingsOfNonAdministrators,
@@ -198,6 +199,13 @@ switchOffHeldWebhooksAtStart();
 // each is given a new secret. One WARN line when any was held, and nobody
 // mailed. It cannot throw. See $lib/server/startup-checks.ts.
 holdAlreadyOffWebhooksAtStart();
+
+// Hold the webhooks whose secret a disabled owner or administrator could read
+// (card 2935): the first time, every disabled one's, and every webhook made
+// before setters were recorded; after that, those of accounts disabled since
+// the moment stored, which only an older image leaves. Told as the sweep above
+// tells. It cannot throw. See $lib/server/startup-checks.ts.
+holdReadableWebhooksAtStart();
 
 // Start the backup, report and snapshot schedulers, the decision reminder and
 // the attachment file sweep, or leave all five off. SCHEDULERS=on or =off

@@ -40,6 +40,9 @@
 	import {
 		answerBody,
 		failureMessage,
+		heldOfOthersWords,
+		NEVER_HAD_ACCESS,
+		readableWebhooksWords,
 		settingsGoneWords,
 		userDeleteWarning,
 		userDisableWarning,
@@ -384,12 +387,14 @@
 		} finally {
 			markAsking(userId, false);
 		}
+		// Card 2935 (P2): an administrator made a user could read every webhook's secret; those it can no longer read go.
+		const readable = isAdministrator(userId) ? ` ${DEMOTION_HOLDS}` : '';
 		if (held === null) {
-			ask(`Make ${username} a user? ${ASKS_FOR_PASSWORD}`);
+			ask(`Make ${username} a user?${readable} ${ASKS_FOR_PASSWORD}`);
 			return;
 		}
 		const said = held === 'unread' ? SETTINGS_UNREAD : `This removes what they set: ${settingsWords(held)}.`;
-		ask(`Make ${username} a user? ${said} ${ASKS_FOR_PASSWORD}`);
+		ask(`Make ${username} a user? ${said}${readable} ${ASKS_FOR_PASSWORD}`);
 	}
 
 	/**
@@ -458,6 +463,16 @@
 	 * owner row of theirs and no other owner in the team. For the
 	 * confirmation, which says the delete will be refused (card 2380).
 	 */
+	/** Whether the account is an administrator or the superadmin, by the page's list (card 2935): every webhook's secret was theirs to read. */
+	function isAdministrator(userId: number): boolean {
+		const role = data.users.find((u) => u.id === userId)?.role;
+		return role === 'admin' || role === 'superadmin';
+	}
+
+	/** What making an administrator a user does to the webhooks whose secret it could read (card 2935, P2), in words. */
+	const DEMOTION_HOLDS =
+		`As an administrator they could read every webhook's secret: every webhook that has a secret, other than on the boards they own and those they set up, is switched off, ${NEVER_HAD_ACCESS}, and can be switched on again only with a new secret; the boards' owners are mailed. Their API keys and sessions are as for any change of role.`;
+
 	function soleOwnerOf(userId: number): string[] {
 		return data.teams
 			.filter((team) => {
@@ -532,7 +547,7 @@
 		const failureAddress = data.users.find((u) => u.id === userId)?.failureAddress === true;
 		confirm(
 			'Disable User',
-			`${userDisableWarning(username, soleOwnerOf(userId), held, failureAddress)} ${ASKS_FOR_PASSWORD}`,
+			`${userDisableWarning(username, soleOwnerOf(userId), held, failureAddress, isAdministrator(userId))} ${ASKS_FOR_PASSWORD}`,
 			(proof: StepUpProof) => disableUser(userId, username, proof),
 			{ askPassword: true }
 		);
@@ -559,7 +574,11 @@
 		const ended =
 			`${username} was disabled: ended ${counted(result?.sessionsEnded, 'session')}, ${counted(result?.apiKeysEnded, 'API key')} ` +
 			`and ${counted(result?.requestLinksEnded, 'request link')}, switched off ${counted(result?.webhooksSwitchedOff, 'webhook')} ` +
-			`and paused ${counted(result?.reportSchedulesPaused, 'report schedule')}.`;
+			`and paused ${counted(result?.reportSchedulesPaused, 'report schedule')}.` +
+			// Card 2935: the webhooks of others whose secret they could read, where there were any.
+			(typeof result?.readableWebhooksHeld === 'number' && result.readableWebhooksHeld > 0
+				? ` ${heldOfOthersWords(result.readableWebhooksHeld)}.`
+				: '');
 		const removed = [settingsRemovedWords(username, gone), failureAddress ? `Their address was taken out of the backup failure address.` : null]
 			.filter((part) => part !== null)
 			.join(' ');
@@ -576,7 +595,7 @@
 
 	/** ✅ pressed (card 2671): the page's confirm lists what comes back and what does not, and asks for the caller's password; Confirm enables. */
 	function askEnableUser(userId: number, username: string) {
-		confirm('Enable User', `${userEnableWarning(username)} ${ASKS_FOR_PASSWORD}`, (proof: StepUpProof) => enableUser(userId, username, proof), {
+		confirm('Enable User', `${userEnableWarning(username, isAdministrator(userId))} ${ASKS_FOR_PASSWORD}`, (proof: StepUpProof) => enableUser(userId, username, proof), {
 			askPassword: true
 		});
 	}
@@ -672,7 +691,7 @@
 		if (inviteInFlight !== null || inviteLink !== null) return;
 		confirm(
 			'Reset Two-Step Sign-In',
-			`Reset ${username}'s two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their API keys end, the webhooks they set up are switched off, their report schedules are paused, and you are given a link, once, to pass on to them yourself. Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret. ${ASKS_FOR_PASSWORD}`,
+			`Reset ${username}'s two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their API keys end, the webhooks they set up are switched off, their report schedules are paused, and you are given a link, once, to pass on to them yourself. Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret.${readableWebhooksWords(isAdministrator(userId))} ${ASKS_FOR_PASSWORD}`,
 			(proof: StepUpProof) => resetTwoStepOf(userId, username, proof, control),
 			{ askPassword: true }
 		);

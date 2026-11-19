@@ -869,7 +869,7 @@ export function notifyBoardShared(boardId: number, boardName: string, userEmail:
  * it is left out of the owners and of the administrators alike, so a board
  * whose owners are all disabled is told through its enabled administrators.
  */
-function webhookRecipients(boardId: number): { id: number; email: string; username: string }[] {
+function webhookRecipients(boardId: number, notMailed: number | null = null): { id: number; email: string; username: string }[] {
 	const board = db.select({ createdBy: boards.createdBy }).from(boards).where(eq(boards.id, boardId)).get();
 	const ownerIds = new Set(
 		db.select({ userId: boardMembers.userId }).from(boardMembers)
@@ -882,11 +882,15 @@ function webhookRecipients(boardId: number): { id: number; email: string; userna
 		? []
 		: db.select({ id: users.id, email: users.email, username: users.username }).from(users)
 			.where(and(inArray(users.id, [...ownerIds]), isNull(users.disabledAt)))
-			.all();
+			.all()
+			// Nor as an owner (card 2935's code review, C11d): a board it alone owns is told through its administrators.
+			.filter((owner) => owner.id !== notMailed);
 	if (owners.length > 0) return owners;
+	// The account whose access ended or was lowered is never told of it as an administrator (card 2935, P14).
 	return db.select({ id: users.id, email: users.email, username: users.username }).from(users)
 		.where(and(inArray(users.role, ['admin', 'superadmin']), isNull(users.disabledAt)))
-		.all();
+		.all()
+		.filter((admin) => admin.id !== notMailed);
 }
 
 /**
@@ -894,7 +898,35 @@ function webhookRecipients(boardId: number): { id: number; email: string; userna
  * it was switched off. `setter`, for one whose key ended (card 2893, S13): the
  * account that set it up, told too where they can still open the board.
  */
-export type WebhookInMail = { boardId: number; id: number; host: string; why: string; setter?: number };
+export type WebhookInMail = {
+	boardId: number;
+	id: number;
+	host: string;
+	why: string;
+	setter?: number;
+	/** Switched off because its setter lost the board (card 2935, P13 L3): only then does the mail say it stays off if they are given it back. */
+	boardBack?: boolean;
+};
+
+/**
+ * The switched-off list's closing sentence (card 2935, P13 L3): that they stay off until an owner or an
+ * administrator switches them on, and, only where every one was switched off because its setter lost the board,
+ * that they stay off even if that account is given the board back.
+ */
+function webhooksStayOff(items: readonly WebhookInMail[]): string {
+	const one = items.length === 1;
+	const until = `${one ? 'It sends nothing, and stays off' : 'They send nothing, and stay off'} until an owner of the board or an administrator switches ${one ? 'it' : 'them'} on`;
+	return items.length > 0 && items.every((item) => item.boardBack)
+		? `${until}, even if the account that set ${one ? 'it' : 'them'} up is given the board back.`
+		: `${until}.`;
+}
+
+/**
+ * Said in every owners' mail of webhooks switched off or held (card 2935, P15): a receiver's own token in its address
+ * is not DumpFire's to change.
+ */
+export const ADDRESS_TOKEN_SENTENCE =
+	'An address that carries its own token (a Slack, Teams or Discord one, say) stays valid at the receiver whatever is done here: if the account may have seen it, make a new address there.';
 
 /**
  * Tell the owners of each board whose webhooks a write switched off for good
@@ -919,12 +951,17 @@ export type WebhookInMail = { boardId: number; id: number; host: string; why: st
  * notice about webhooks on your boards"; one of switched-off webhooks alone
  * keeps its title. A held webhook never mails its setter.
  */
-export function notifyWebhooksSwitchedOff(items: readonly WebhookInMail[], cause: string, held: readonly WebhookInMail[] = []): void {
+export function notifyWebhooksSwitchedOff(
+	items: readonly WebhookInMail[],
+	cause: string,
+	held: readonly WebhookInMail[] = [],
+	notMailed: number | null = null
+): void {
 	if (!isSmtpConfigured() || (items.length === 0 && held.length === 0)) return;
 	const byRecipient = new Map<number, { email: string; items: WebhookInMail[]; held: WebhookInMail[] }>();
 	const toldOf = new Map<number, Set<number>>();
 	for (const boardId of [...new Set([...items, ...held].map((item) => item.boardId))]) {
-		const recipients = webhookRecipients(boardId);
+		const recipients = webhookRecipients(boardId, notMailed);
 		toldOf.set(boardId, new Set(recipients.map((recipient) => recipient.id)));
 		for (const recipient of recipients) {
 			const entry = byRecipient.get(recipient.id) ?? { email: recipient.email, items: [], held: [] };
@@ -973,7 +1010,7 @@ export function notifyWebhooksSwitchedOff(items: readonly WebhookInMail[], cause
 			theirs.length === 0
 				? ''
 				: `<ul style="margin: 0 0 12px; padding-left: 20px; font-size: 13px; color: #334155;">${rows}</ul>
-			<p style="margin: 0 0 8px; font-size: 13px; color: #334155;">${one ? 'It sends nothing, and stays off' : 'They send nothing, and stay off'}, even if the account that set ${one ? 'it' : 'them'} up is given the board back.</p>`;
+			<p style="margin: 0 0 8px; font-size: 13px; color: #334155;">${webhooksStayOff(theirs)}</p>`;
 		const heldList = !notice
 			? ''
 			: `<p style="margin: 0 0 8px; font-size: 13px; color: #334155;">${theirsHeld.length === 1 ? 'This one was already switched off, and is now held' : 'These were already switched off, and are now held'}:</p>
@@ -983,7 +1020,8 @@ export function notifyWebhooksSwitchedOff(items: readonly WebhookInMail[], cause
 			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">What caused it: ${escapeHtml(cause)}.</p>
 			${switchedOff}
 			${heldList}
-			<p style="margin: 0; font-size: 13px; color: #475569;">What to do: delete each you do not recognise. To keep one, switch it on with your own API key (PUT /api/v1/webhooks/{id} with active true), which makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, to give its receiver.</p>
+			<p style="margin: 0 0 8px; font-size: 13px; color: #475569;">What to do: delete each you do not recognise. To keep one, switch it on with your own API key (PUT /api/v1/webhooks/{id} with active true), which makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, to give its receiver.</p>
+			<p style="margin: 0; font-size: 13px; color: #475569;">${ADDRESS_TOKEN_SENTENCE}</p>
 		</div>
 	`);
 		const subject = notice ? 'A notice about webhooks on your boards' : one ? 'A webhook on your board was switched off' : `${theirs.length} webhooks on your boards were switched off`;

@@ -193,7 +193,9 @@ describe('POST /api/users/[id]/disable', () => {
 			sessionsEnded: 2,
 			invitesEnded: 1,
 			apiKeysEnded: 1,
+			// Card 2935 (P9): the ones it set, and those of others whose secret it could read, apart.
 			webhooksSwitchedOff: 1,
+			readableWebhooksHeld: 0,
 			reportSchedulesPaused: 1,
 			requestLinksEnded: 2,
 			soleOwnerOf: ['Ops'],
@@ -237,7 +239,8 @@ describe('POST /api/users/[id]/disable', () => {
 		expect(owners.map((email) => email.to).sort()).toEqual([s.admin.email, s.chief.email].sort());
 		// The kind of action and no account (card 2923's code review, S5).
 		for (const email of owners) {
-			expect(email.html).toContain('What caused it: the account that set it up was disabled by an administrator.');
+			// Card 2935: the kind of action without a subject; the item says whose it was.
+			expect(email.html).toContain('What caused it: an account was disabled by an administrator.');
 			expect(email.html).not.toContain('bob');
 		}
 	});

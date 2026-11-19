@@ -162,6 +162,9 @@ describe('the admin page’s load (card 2297)', () => {
 				// The caller's own counts are not given; an ordinary user's are.
 				apiKeys: user.id === admin.id ? null : 0,
 				webhooks: user.id === admin.id ? null : 0,
+				// Card 2935: those it set already off, and those of others whose secret it could read, in the same one query.
+				webhooksAlreadyOff: user.id === admin.id ? null : 0,
+				webhooksReadable: user.id === admin.id ? null : 0,
 				reportSchedules: user.id === admin.id ? null : 0,
 				// Nobody holds a second factor (card 2773); the caller's own is not given.
 				twoStep: user.id === admin.id ? null : false,

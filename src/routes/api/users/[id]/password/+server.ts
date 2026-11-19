@@ -132,6 +132,8 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 		sessionsEnded: ended.sessions,
 		apiKeysEnded: ended.apiKeys,
 		webhooksSwitchedOff: ended.webhooks,
+		// Card 2935: the webhooks of others whose secret the account could read, switched off or held.
+		readableWebhooksHeld: ended.readableWebhooks,
 		reportSchedulesPaused: ended.reportSchedules
 	});
 };

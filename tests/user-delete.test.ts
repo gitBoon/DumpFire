@@ -429,10 +429,13 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 			'UPDATE card_dependencies SET created_by_user_id = NULL WHERE created_by_user_id = ?',
 			'UPDATE task_requests SET requester_email = (SELECT email FROM users WHERE id = ?) WHERE requester_user_id = ?',
 			// Card 2923: one already switched off without a hold held in the same statement, read first (a read, not counted).
-			// A write is recorded to its first 160 characters (helpers/failing-write.ts).
+			// Card 2935: the rows read in scope (the setter's, and those whose secret it could read), written by id; the
+			// stale `url` of the RETURNING pin replaced (P16). A write is recorded to its first 160 characters
+			// (helpers/failing-write.ts).
 			(
-				"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND (active = 1 OR held_because IS NULL) " +
-				'RETURNING id, board_id AS boardId, url, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
+				"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? " +
+				'WHERE id IN (SELECT value FROM json_each(?)) AND (active = 1 OR held_because IS NULL) ' +
+				'RETURNING id, board_id AS boardId, receiver, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
 			).slice(0, 160),
 			'DELETE FROM users WHERE id = ?'
 		]);
@@ -477,7 +480,8 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 		}
 		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([[s.owner.email, 'A webhook on your board was switched off']]);
 		// The kind of action and no account (card 2923's code review, S5).
-		expect(sent.emails[0].html).toContain('What caused it: the account that set it up was deleted by an administrator.');
+		// Card 2935: the kind of action without a subject; the item says whose it was.
+		expect(sent.emails[0].html).toContain('What caused it: an account was deleted by an administrator.');
 		expect(sent.emails[0].html).not.toContain('leaver');
 		expect(sent.emails[0].inTransaction).toBe(false);
 

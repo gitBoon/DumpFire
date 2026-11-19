@@ -565,6 +565,10 @@
 			{#if members.length > 0}
 				<div class="share-section">
 					<h3>👥 People</h3>
+					<!-- Card 2935 (P2): an owner could read this board's webhook secrets. -->
+					{#if canManage && members.some((m) => m.role === 'owner')}
+						<p class="share-hint">Making an owner an editor or a viewer, or removing them, switches off every webhook on this board that has a secret and that they did not set up, unless they can still read it as the board's creator or an administrator; each can then be switched on only with a new secret, and the board's owners are mailed.</p>
+					{/if}
 					<div class="share-list">
 						{#each members as member}
 							<div class="share-item">
@@ -946,6 +950,13 @@
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		margin-bottom: var(--space-sm);
+	}
+
+	/* Card 2935: what lowering or removing an owner does to the board's webhooks. */
+	.share-hint {
+		font-size: 0.75rem;
+		color: var(--text-tertiary);
+		margin: 0 0 var(--space-sm);
 	}
 
 	.share-list {

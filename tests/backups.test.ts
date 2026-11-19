@@ -785,7 +785,8 @@ describe('a restore', () => {
 		// its api_key_deadline, which migration 0069 wrote to it (card 2772),
 		// and this server's webhook_keys_recorded_at, which migration 0071 wrote
 		// here and a restore keeps (card 2752). And the key check the sealed form
-		// key records, and the scrub every restore marks pending (card 2898).
+		// key records, and the scrub every restore marks pending (card 2898). And the moment the restore's own run of the
+		// start pass covered, written by it for a backup that had none (card 2935, P12).
 		expect(column(live, 'SELECT key FROM settings ORDER BY key')).toEqual([
 			'api_key_deadline',
 			'app_url',
@@ -793,7 +794,8 @@ describe('a restore', () => {
 			'request_form_secret',
 			'secrets_scrub_pending',
 			'two_step_released_at',
-			'webhook_keys_recorded_at'
+			'webhook_keys_recorded_at',
+			'webhooks_readable_by_disabled_held'
 		]);
 		// The backup's own webhook_keys_recorded_at among them, and the earlier of the two kept.
 		expect(result.restored.settings).toBe(4);
@@ -2004,6 +2006,9 @@ describe('the running database’s system log, at start', () => {
 		// start (card 2923, S3).
 		expect(hooks.indexOf('\nholdAlreadyOffWebhooksAtStart();')).toBeGreaterThan(hooks.indexOf('\nswitchOffHeldWebhooksAtStart();'));
 		expect(hooks.indexOf('\nstartSchedulers();')).toBeGreaterThan(hooks.indexOf('\nholdAlreadyOffWebhooksAtStart();'));
+		// And those a disabled owner or administrator could read, after those, before the schedulers (card 2935).
+		expect(hooks.indexOf('\nholdReadableWebhooksAtStart();')).toBeGreaterThan(hooks.indexOf('\nholdAlreadyOffWebhooksAtStart();'));
+		expect(hooks.indexOf('\nstartSchedulers();')).toBeGreaterThan(hooks.indexOf('\nholdReadableWebhooksAtStart();'));
 	});
 
 	it('cannot keep the server from starting: a failure is said at WARN, and nothing is thrown', () => {
@@ -6751,5 +6756,56 @@ describe("a webhook's address, sealed at rest (card 2928)", () => {
 		restoreFromBackup(sqlite, opening(generateBackupData()));
 
 		expect(settingsStored(sqlite)[WEBHOOK_ADDRESS_MAC_KEY]).toBe(stored);
+	});
+});
+
+// ─── Card 2935 (P12): the restore runs the start pass itself ─────────────────
+
+describe("the restore's own run of the readable pass (card 2935, P12)", () => {
+	const FLAG = 'webhooks_readable_by_disabled_held';
+	const rowOf = (id: number) => sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(id);
+	const flagOf = () => sqlite.prepare('SELECT value FROM settings WHERE key = ?').pluck().get(FLAG) as string | undefined;
+	let hook: number;
+	let gone: SessionUser;
+
+	beforeEach(() => {
+		resetDb();
+		makeUser({ username: 'chief', role: 'superadmin' });
+		const olga = makeUser({ username: 'olga' });
+		const eve = makeUser({ username: 'eve' });
+		gone = makeUser({ username: 'gone', role: 'admin' });
+		const board = makeBoard({ owner: olga }).board;
+		// Its setter can open the board, so that no sweep of card 2752 holds it.
+		addBoardMember(board, eve, 'editor');
+		hook = makeWebhook(board, { setBy: eve, secret: 's3cret' }).id;
+		// An administrator of the backup disabled after the webhook was made.
+		sqlite.prepare("UPDATE users SET disabled_at = '2099-01-02 09:00:00' WHERE id = ?").run(gone.id);
+	});
+
+	it('a backup with no moment: the webhook its disabled administrator could read is held, before any secret is filled, and the moment written', () => {
+		const backup = opening(Buffer.from(sqlite.serialize()));
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(rowOf(hook)).toEqual({ active: 0, heldBecause: 'setter access ended' });
+		expect(flagOf()).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+	});
+
+	// Card 2935's code review (C3): always run, from the backup's own moment, whatever this server's says.
+	it.each([
+		{ row: 'a moment before its disable, this server’s later: run from it', backupMoment: '2099-01-01 00:00:00', here: '2099-06-01 00:00:00', held: true },
+		{ row: 'a moment before its disable, this server with none: run from it', backupMoment: '2099-01-01 00:00:00', here: null, held: true },
+		{ row: 'a moment after its disable: nothing to hold', backupMoment: '2099-06-01 00:00:00', here: '2099-06-01 00:00:00', held: false }
+	])('a backup with $row', ({ backupMoment, here, held }) => {
+		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(FLAG, backupMoment);
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		if (here === null) sqlite.prepare('DELETE FROM settings WHERE key = ?').run(FLAG);
+		else sqlite.prepare('UPDATE settings SET value = ? WHERE key = ?').run(here, FLAG);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(rowOf(hook)).toEqual(held ? { active: 0, heldBecause: 'setter access ended' } : { active: 1, heldBecause: null });
 	});
 });

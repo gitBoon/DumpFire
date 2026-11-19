@@ -19,7 +19,7 @@ import {
 import { pathId, readBody, readBoolean, readChoices, readText } from '$lib/server/request-body';
 import { readWebhookUrl } from '$lib/server/webhook-address';
 import type { SessionUser } from '$lib/server/auth';
-import { writeAs } from '$lib/server/write-as';
+import { readAs, writeAs } from '$lib/server/write-as';
 import { randomBytes } from 'node:crypto';
 import { TYPED_SECRET_LOOKS_SEALED, looksSealed, openedUrl, sealStored, webhookSecretAad, webhookUrlAad } from '$lib/server/stored-secrets';
 import type { RequestHandler } from './$types';
@@ -61,10 +61,19 @@ function requireWebhook(user: SessionUser | null, webhookId: number, need: Need)
  *
  * The signing secret and the address are included only for the board's owner
  * or an administrator (the address since card 2133).
+ *
+ * The key and its account are asked again, in the transaction that reads the
+ * webhook, before anything is revealed (card 2935, P5): a key ended, or a role
+ * lowered, after the gate let the request in is answered as it is now, as a
+ * write is (`writeAs`). Never a secret to an account whose access has ended.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
-	const { hook, reveal } = requireWebhook(locals.user, pathId(params.webhookId, 'webhook'), 'view');
-	return json(presentWebhook(hook, reveal));
+	const webhookId = pathId(params.webhookId, 'webhook');
+	const answer = readAs(locals, (caller) => {
+		const { hook, reveal } = requireWebhook(caller, webhookId, 'view');
+		return presentWebhook(hook, reveal);
+	});
+	return json(answer);
 };
 
 /**

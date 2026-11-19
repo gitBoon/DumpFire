@@ -85,7 +85,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 	// awaited, and a session can end meanwhile. Asked before the sessions end
 	// below, the session this request came by among them; nothing in this
 	// request asks it after that, when it has gone.
-	const { accountId, newSession, apiKeysEnded, webhooksSwitchedOff, reportSchedulesPaused } = await whilePasswordHolds(userId, hash, () =>
+	const { accountId, newSession, apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused } = await whilePasswordHolds(userId, hash, () =>
 		writeAs(locals, (caller) => {
 			const me = requireUser(caller);
 			const userId = me.id;
@@ -150,6 +150,8 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 				newSession: createSession(userId, { startedAt }),
 				apiKeysEnded: ended.apiKeys,
 				webhooksSwitchedOff: ended.webhooks,
+				// Card 2935: the webhooks of others whose secret the account could read, held with its keys.
+				readableWebhooksHeld: ended.readableWebhooks,
 				reportSchedulesPaused: ended.reportSchedules
 			};
 		}));
@@ -159,5 +161,5 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 	// which made the change, is remembered again (card 2194).
 	rememberBrowser(cookies, accountId, newHash, url);
 
-	return json({ success: true, apiKeysEnded, webhooksSwitchedOff, reportSchedulesPaused });
+	return json({ success: true, apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused });
 };

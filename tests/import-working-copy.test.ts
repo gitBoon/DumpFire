@@ -432,6 +432,7 @@ describe('restoring as a working copy', () => {
 		// server's webhook_keys_recorded_at, written by migration 0071 and kept (card 2752).
 		// And the backup's webhooks_already_off_held: one made since card 2923's release (its code review, S2).
 		// And the key check the sealed form key records, and the scrub every restore marks pending (card 2898).
+		// And the moment the restore's own run of the start pass covered (card 2935, P12).
 		expect(Object.keys(settings).sort()).toEqual([
 			'api_key_deadline',
 			'app_url',
@@ -442,7 +443,8 @@ describe('restoring as a working copy', () => {
 			'theme',
 			'two_step_released_at',
 			'webhook_keys_recorded_at',
-			'webhooks_already_off_held'
+			'webhooks_already_off_held',
+			'webhooks_readable_by_disabled_held'
 		]);
 		expect(JSON.parse(settings['backup_config'])).toEqual(BACKUP_CONFIG_OFF);
 		expect(settings['app_url']).toBe(APP_URL);
@@ -526,7 +528,9 @@ describe('restoring as a working copy', () => {
 				'theme',
 				'two_step_released_at',
 				'webhook_keys_recorded_at',
-				'webhooks_already_off_held'
+				'webhooks_already_off_held',
+				// Card 2935 (P12): the restore's own run of the start pass.
+				'webhooks_readable_by_disabled_held'
 			]);
 			expect(everythingElseIn(live)).toEqual(everythingElseIn(backup));
 		}
@@ -538,7 +542,7 @@ describe('restoring as a working copy', () => {
 		backup.exec(`
 			UPDATE report_schedules SET enabled = 0;
 			UPDATE webhooks SET active = 0;
-			DELETE FROM settings WHERE key NOT IN ('app_url', 'theme', 'webhooks_already_off_held');
+			DELETE FROM settings WHERE key NOT IN ('app_url', 'theme', 'webhooks_already_off_held', 'webhooks_readable_by_disabled_held');
 		`);
 
 		const result = restoreFromBackup(live, backup, { outside: 'off' });
@@ -563,7 +567,9 @@ describe('restoring as a working copy', () => {
 			// This server's, written by migration 0071 and kept by a restore (card 2752).
 			webhook_keys_recorded_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
 			// The backup's: one made since card 2923's release (its code review, S2).
-			webhooks_already_off_held: '2026-11-19T00:00:00.000Z'
+			webhooks_already_off_held: '2026-11-19T00:00:00.000Z',
+			// The backup's too: card 2935's pass ran there (P4), so the restore does not run it (P12).
+			webhooks_readable_by_disabled_held: '2026-11-19 00:00:00'
 		});
 		expect(readOpened('settings', 'request_form_secret', live)).toMatch(/^[0-9a-f]{64}$/);
 		// The settings as the backup has them, but for this server's 0071 moment, kept (card 2752).

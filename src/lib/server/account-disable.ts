@@ -28,7 +28,7 @@ import { db, sqlite } from './db';
 import { users, type User } from './db/schema';
 import { afterCommit } from './db/transaction';
 import { endAccountAccess, namingIds, type AccessEnded } from './auth';
-import { ENDING_IN_MAIL } from './webhooks';
+import { advanceReadableCovered, ENDING_IN_MAIL } from './webhooks';
 import { anyRemoved, removeFailureAddress, removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { createLogger } from './logger';
 import { stamp } from '$lib/timestamps';
@@ -152,6 +152,9 @@ export function disableAccount(target: User, actor: Actor, ip: string | null = n
 		apiKeys: true,
 		cause: { log: `${target.username}'s account was disabled by ${actor.username}`, mail: ENDING_IN_MAIL.disabled }
 	});
+	// This ending held what the account could read (card 2935): the start pass's moment moves past it (P4), so the
+	// next start does not hold again what an owner switches on with a new secret meanwhile.
+	advanceReadableCovered(disabledAt, target.id);
 	const requestLinksEnded = sqlite
 		.prepare('DELETE FROM request_links WHERE request_id IN (SELECT id FROM task_requests WHERE requester_user_id = ?)')
 		.run(target.id).changes;

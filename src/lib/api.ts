@@ -270,6 +270,32 @@ export function settingsGoneWords(named: SettingsGone): string {
 }
 
 /**
+ * What ending an account's access does to the webhooks whose secret it could read (card 2935, P8), in words, for the
+ * confirmations that show no number: every webhook on the server that has a secret, for an administrator; every one
+ * on the boards they own, for anyone else. Unless the account provably read nothing, which the server decides.
+ */
+export function readableWebhooksWords(administrator: boolean): string {
+	return administrator
+		? ` As an administrator they could read every webhook's secret: every webhook on the server that has a secret is switched off too, ${NEVER_HAD_ACCESS}, and can be switched on again only with a new secret; the boards' owners are mailed.`
+		: ` Every webhook on the boards they own that has a secret, whoever set it up, is switched off too, ${NEVER_HAD_ACCESS}, and can be switched on again only with a new secret; the boards' owners are mailed.`;
+}
+
+/**
+ * When the webhooks an account could read are left (card 2935, P1; its code review, C11b), in words: the server
+ * holds them unless it can show the account never had access to them.
+ */
+export const NEVER_HAD_ACCESS =
+	'unless the server can show they never had access to them (they never signed in, never held a key and were made after two-step sign-in came in)';
+
+/**
+ * How many webhooks set up by others, whose secret the account could read, an ending switched off or held (card
+ * 2935's code review, C11c): one form for the reset's toast, the disable's toast and the two-step reset's message.
+ */
+export function heldOfOthersWords(n: number): string {
+	return `${n} webhook${n === 1 ? '' : 's'} set up by others whose secret they could read ${n === 1 ? 'was' : 'were'} switched off or held`;
+}
+
+/**
  * What disabling an account ends, and what stays (card 2671, `disableAccount`):
  * named before it is pressed. `soleOwnerOf` the teams it is the only owner of,
  * which keep it as owner (D20); `held` the settings it saved that go with it,
@@ -280,7 +306,9 @@ export function userDisableWarning(
 	username: string,
 	soleOwnerOf: string[] = [],
 	held: SettingsGone | null | 'unread' = null,
-	failureAddress = false
+	failureAddress = false,
+	/** An administrator's or the superadmin's account (card 2935, P8): every webhook on the server, said in words. */
+	administrator = false
 ): string {
 	const owner =
 		soleOwnerOf.length === 0
@@ -298,6 +326,7 @@ export function userDisableWarning(
 	return (
 		`Disable user "${username}"? They can no longer sign in. At once their sessions, invites, pending sign-ins, API keys and the links to the requests they made end, the webhooks they set up are switched off and their report schedules paused; none of this comes back if the account is enabled again.` +
 		` Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret.` +
+		readableWebhooksWords(administrator) +
 		` Nobody can assign them, share a board with them, include them in a decision or send them a request, and nothing is mailed to them but a notice that the account was disabled.` +
 		` Their name stays wherever it is shown, and their comments, password and authenticators are kept.${owner}${removed}`
 	);
@@ -308,11 +337,15 @@ export function userDisableWarning(
  * 2671, D8, S10): named before it is pressed, with advice for an account that
  * may have been taken.
  */
-export function userEnableWarning(username: string): string {
+export function userEnableWarning(username: string, administrator = false): string {
 	return (
 		`Enable user "${username}" again? They can sign in with their own password and authenticator, and so have back their access to the boards and teams they are on, the boards they own, being a board's Product Owner or a decision's decider, being sent requests, and their mail.` +
 		' Their API keys, webhooks, report schedules and request links stay ended: they make or turn on again the ones they need.' +
-		' If the account may have been used by someone else, reset its password and its two-step sign-in once it is enabled.'
+		' If the account may have been used by someone else, reset its password and its two-step sign-in once it is enabled.' +
+		// Card 2935 (P15): an administrator's reset then switches off every webhook on the server with a secret again.
+		(administrator
+			? " As an administrator, that reset switches off again every webhook on the server that has a secret, whoever set it up, and the boards' owners are mailed."
+			: '')
 	);
 }
 

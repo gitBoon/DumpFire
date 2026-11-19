@@ -58,7 +58,7 @@
 		</div>
 
 		{#if data.valid}
-			{#if whatItEnds || webhooksAlreadyOff > 0}
+			{#if whatItEnds || webhooksAlreadyOff > 0 || data.holdsReadable}
 				<div class="keys-notice">
 					{#if whatItEnds}
 						<p>Setting a password here {whatItEnds} and signs it out everywhere else.</p>
@@ -69,6 +69,10 @@
 						<p>Their boards' owners are mailed about them, and about any already switched off, which can now be switched on only with a new secret.</p>
 					{:else if webhooksAlreadyOff > 0}
 						<p>Any webhook you set up that is already switched off can then be switched on only with a new secret, and its board's owners are mailed about it.</p>
+					{/if}
+					<!-- Card 2935 (P8): in words, never a number, and only where the account may have read a secret (P1). -->
+					{#if data.holdsReadable}
+						<p>Every webhook whose signing secret this account could read, as an administrator or a board's owner, is switched off too, and can be switched on again only with a new secret; its board's owners are mailed.</p>
 					{/if}
 				</div>
 			{/if}

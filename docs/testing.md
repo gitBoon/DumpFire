@@ -1,7 +1,7 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.277
+version: 1.278
 status: Living
 date: 2026-11-19
 tags:
@@ -2879,6 +2879,31 @@ comment naming the card), migration 0065 and the account changes move these:
 - `tests/page-failures.test.ts` (plan case T61): the admin page's `accountOf` passes
   `mfaWithoutFactor` through and leaves it undefined when absent, and the report shows it on a
   line of its own after the secrets' lines.
+
+#### Card 2935: the webhooks whose secret an owner or administrator could read
+
+- `tests/readable-webhooks.test.ts` (new, 49 tests with the code review's fix pass: C1's covered
+  disables, C2's moment, C4's message, C6's read transaction, C8, C9 and C11d among them): the reader split and its own counts (P9); an
+  exact `owner` row, an `editor` row, a team and another text; an administrator's every webhook
+  with a secret; an editor's ending (a guard); the WARN, the mail's items, cause and token
+  sentence; the closing sentence for a lost setter; the administrators' fallback leaving the
+  account out (P14); the count before equals the hold (P11); P1's fresh invite, the four ways an
+  administrator may have read, and both failed-closed release moments; the demotion, owner rows
+  lowered and removed, and demote-then-disable (P2); the delete's three cases (P6); each `GET`
+  asking the key again (P5); the start pass, the pre-0056 webhooks, an unknown 0056 moment, and an
+  account disabled after the stored moment (P3, P4); the answer's `readableWebhooksHeld` and the
+  admin page's one-query count.
+- `tests/mfa-reset-script.test.ts`: T37's reader row, T38a (the copied SQL word for word), T38
+  (the superadmin's host reset equal to `resetTwoStep`'s, every table), T38b (P1 on the host), T39
+  and T39b (`--hold-readable`, and its refusal beside `--keep-api-keys`).
+- `tests/backups.test.ts`: three cases of the restore's own run of the pass (P12), and the start
+  order pin; `tests/database-location.test.ts` the same pin; `tests/check-at-the-write.test.ts` the
+  writer inventory (`holdInScope`, and the callers of its three exported users); the settings lists
+  of `tests/backups.test.ts`, `tests/import-working-copy.test.ts` and `tests/migrations.test.ts`
+  (the flag the restore writes), the answers in `tests/atomic-accounts.test.ts`,
+  `tests/account-disable.test.ts` and `tests/step-up.test.ts`, the admin load in
+  `tests/load-query-counts.test.ts`, and the dialog pins in `tests/admin-panels.test.ts` and
+  `tests/page-failures.test.ts`. 157 files, 13,295 tests in all (`13290 passed | 5 skipped`).
 
 ### Writing an access-control test
 

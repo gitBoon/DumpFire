@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.87
+version: 1.88
 status: As-Built
 date: 2026-11-19
 tags:
@@ -2971,10 +2971,13 @@ webhook switched off by a hold it reads, word for word, the reason kept as recor
   the receiver."
 - switched off by a password reset, a two-step reset (card 2915), an invite used, a disable (card
   2671) or a delete of its setter (CS4), a holder's own change that ends keys, or held when already
-  off (card 2923): "This was switched off because the account that set it up had its password or
-  its two-step sign-in reset, ended its API keys when changing its own password, used an invite,
-  was disabled, or was deleted; one already switched off then, or found switched off with its
-  setter disabled or not recorded, is held the same way. …", with the same advice.
+  off (card 2923), or held because an owner or administrator who could read its secret lost that
+  access (card 2935): "This was switched off because the account that set it up, or an account
+  that could read its secret as the board's owner or an administrator, had its password or its
+  two-step sign-in reset, ended its API keys when changing its own password, used an invite, was
+  disabled, or was deleted, or, for one that could read it, lost that role; one already switched
+  off then, or found switched off with its setter disabled or not recorded, is held the same way.
+  Delete the webhook unless you recognise its address; …", with the same advice.
 - switched off because nobody was recorded as its setter: "This was switched off because nobody
   is recorded as having set it up. Delete it unless you recognise the address; to keep it,
   switch it on with your own key, which makes you its setter and gives it a new secret, given in
@@ -3070,6 +3073,51 @@ sequenceDiagram
     W-->>O: Make Private: "Making this board private stops N webhooks …"
     O->>W: Make Private
     W->>R: PATCH isPublic false, then read the list again
+```
+
+### When an Owner or Administrator Who Could Read Its Secret Loses That Access (card 2935)
+
+A webhook's secret is given to its board's owner and to every administrator, so ending such an
+account's access with its keys, or lowering its role (an administrator made a user, an owner made
+an editor or a viewer or taken off the board), holds every webhook whose secret it could read and
+can no longer, that has a secret, whoever set it (`holdWebhooksOfSetter` with `readable`,
+`holdNoLongerReadable`), unless the account provably read nothing. They are told in the same mail
+as the webhooks the account set, one per recipient per write, in the same two lists (switched off;
+already off and now held). What changes in the mail:
+
+- **The cause names the kind of action and no subject** (`ENDING_IN_MAIL`): "an account had its
+  password reset by an administrator", "an account set its password with an invite", "an
+  administrator was made an ordinary user", "an owner of the board was made an editor or a viewer,
+  or taken off the board", and so on. Each webhook's line says whether the account set it up ("the
+  account that set it up had its access ended") or could read its secret ("an owner of the board or
+  an administrator who could read its secret lost that access").
+- **The closing sentence** of the switched-off list is "It sends nothing, and stays off until an
+  owner of the board or an administrator switches it on", and adds "even if the account that set it
+  up is given the board back" only where every one was switched off because its setter lost the
+  board.
+- **A sentence on addresses that carry a token**: "An address that carries its own token (a Slack,
+  Teams or Discord one, say) stays valid at the receiver whatever is done here: if the account may
+  have seen it, make a new address there."
+- **The account whose access changed is never mailed through the administrators' fallback** (a
+  board whose owners are all disabled is told through its other enabled administrators).
+- **The start pass and a restore** hold webhooks a disabled owner or administrator could read
+  ("its secret may have been read by an owner of the board or an administrator who is disabled now,
+  or before setters were recorded") and are told as the start's sweep and the restore's are: the
+  owners mailed only where the schedulers run.
+- **The host command** (`scripts/mfa-reset.mjs`, and `--hold-readable`) mails nobody: it writes the
+  same Webhooks lines and prints the webhooks by board, for the host to tell the owners.
+
+```mermaid
+sequenceDiagram
+    participant A as Administrator
+    participant S as Server
+    participant DB as Database
+    participant M as Mail
+    A->>S: reset an administrator's password
+    S->>DB: one transaction: keys ended, setter's and readable webhooks held
+    DB-->>S: committed
+    S->>S: Webhooks WARN lines (reader's user id, no address)
+    S->>M: one mail per board owner, both lists, the cause naming nobody
 ```
 
 ### When the API Key That Set It Up Ends (card 2893)

@@ -97,9 +97,16 @@ export function timestampColumns(database: Database.Database): TimestampColumn[]
  * calls `is_stamp` the same way.
  */
 export function registerStampFunctions(database: Database.Database): void {
+	// Once per connection (card 2935's code review, C8): defining a function again expires every statement the
+	// connection has prepared, which a caller holding one would then find unusable.
+	if (stampsGiven.has(database)) return;
 	database.function('is_stamp', { deterministic: true }, (value: unknown) => (isStamp(value) ? 1 : 0));
 	database.function('stamp_of', { deterministic: true }, (value: unknown) => toStamp(value, 'lower'));
+	stampsGiven.add(database);
 }
+
+/** The connections `registerStampFunctions` has given its two functions. */
+const stampsGiven = new WeakSet<Database.Database>();
 
 /**
  * Bring every value in every timestamp column to the stored form, where it can

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.153
+version: 1.154
 status: As-Built
 date: 2026-11-19
 tags:
@@ -4936,7 +4936,7 @@ In the one transaction (`disableAccount` in `src/lib/server/account-disable.ts`)
 |------|-----|
 | Sessions, invites, pending sign-ins, enrolment links | `endAccountAccess(id, { apiKeys: true, cause })`, as a reset ends them, the cause "<name>'s account was disabled by <admin>" (card 2923) |
 | API keys | Deleted, with that call |
-| The webhooks it set | Switched off for good, held `'setter access ended'`: "had its password or its two-step sign-in reset, ended its API keys when changing its own password, used an invite, was disabled, or was deleted; …" (the two-step reset since card 2915, the rest since card 2923); those already switched off without a hold held the same way, and the boards' owners mailed of both once committed, the disabled account itself left out (card 2923) |
+| The webhooks it set | Switched off for good, held `'setter access ended'`: "the account that set it up, or an account that could read its secret as the board's owner or an administrator, had its password or its two-step sign-in reset, ended its API keys when changing its own password, used an invite, was disabled, or was deleted, or, for one that could read it, lost that role; …" (the two-step reset since card 2915, the rest since card 2923, the reader since card 2935); those already switched off without a hold held the same way, and, for an owner or administrator, every webhook of others whose secret it could read (card 2935); the boards' owners mailed of them once committed, the disabled account itself left out (card 2923) |
 | Its report schedules | Paused |
 | The links of the task requests it raised | Deleted (`request_links`); the request is mailed nothing more (`requesterMailAddress`), and the team still sees the address (S3) |
 | An administrator's mail settings, App URL and backup destinations | Removed where it set them (`removeSettingsSetBy`, why `'disabled'`) |
@@ -9755,9 +9755,68 @@ It is switched off:
 | A password reset, a two-step reset (card 2915), an invite used, the holder's own change that ends keys, the account disabled or deleted; those already off without a hold held too (card 2923) | `endAccountAccess`, `deleteUser`, the host's `scripts/mfa-reset.mjs` (`'setter access ended'`) | the caller's own line, and since card 2923 the `Webhooks` WARN: "Sam's password was reset by Ann", "Sam set their password with an invite", "Sam changed their password and ended their API keys", "Sam's two-step sign-in was reset by Ann", "Sam's account was disabled by Ann", "Sam's account was deleted by Ann"; the owners' mail names the kind of action and no account ("the account that set it up had its password reset by an administrator", …; the code review's S5); on the host, "Sam's two-step sign-in was reset on the server's host", not mailed |
 | Already off with no hold (card 2923; its code review, S2, S3, E3) | `holdUnheldOfGoneSetters`: every one, whoever set it, once, at the first start without the flag `webhooks_already_off_held` (`holdAlreadyOffWebhooksAtStart`, which writes it) and in a restore of a backup without it; those whose setter is disabled or not recorded at every start and in every restore after its carries, a working copy included | the start's one WARN when it held one, nobody mailed; after a restore, "found after a restore by Ann", told with its sweep; a working copy tells nobody |
 | An API key revoked on the Account page (card 2893) | `switchOffLostWebhooks({ setters })` | "API key #12 was revoked by Sam" |
+| An owner's or administrator's access ended with its keys (card 2935): the webhooks of others whose secret it could read, that have one | `holdWebhooksOfSetter(…, { readable })`, in the same statement as its own; `scripts/mfa-reset.mjs` in its own SQL | the ending's own cause; each line names the reader's id |
+| An administrator made a user, an `owner` member row lowered or removed (card 2935, P2) | `holdNoLongerReadable` | "Sam's role was changed to user by Ann", "Sam was made an editor of board 4 by Ann, from an owner", "Sam, an owner, was taken off board 4 by Ann" |
+| Every start, and a restore whose settings lack the moment (card 2935, P3, P4, P12) | `coverReadable` (`holdReadableWebhooksAtStart`, `holdRestoredReadable`) | "found when the server started", "found after a restore by Ann" |
 
 Each write's sweep runs inside the write's transaction: a write that fails leaves the share and
 the webhooks as they were, and nothing is said. The WARN and the mail come after the commit.
+
+#### The webhooks whose secret an owner or administrator could read (card 2935)
+
+Who may be given a webhook's secret is `canSeeWebhookSecret`: an administrator or the superadmin
+on every board, the board's creator, and an account with an exact `owner` member row; a team
+gives at most `editor`. The secret leaves the server only through the v1 API, which only an API
+key enters. Card 2923 held only the webhooks an ended account set, so a taken-over owner or
+administrator kept working secrets for every webhook it could read. Now:
+
+- **An ending with the keys** (a password set, an invite used, the holder's own change that ends
+  keys, a two-step reset by an administrator or on the host, a disable) holds, in the same
+  statement, every webhook whose secret the account could read, that has a secret, whoever set it.
+  The role and owner rows are read in SQL (`readableBy`), not through `getBoardRole`, since a
+  disable writes `disabled_at` first. A delete does so only while the account still holds a key or
+  the start pass never ran: otherwise its disable already did, and a disabled account reads nothing.
+- **An account that provably read nothing is left out** (`mayHaveRead`): never signed in
+  (`last_sign_in_at` NULL), no API key, no invite used but the one being used, and made after
+  `two_step_released_at`. Since that release every session is made by `finishSignIn`, which writes
+  `last_sign_in_at`, and a key needs a session. A release moment that is missing or unreadable
+  fails closed.
+- **A lowered role** (an administrator made a user; an `owner` row made `editor` or `viewer`, or
+  removed) holds what the account could read before and cannot now. Its keys and sessions are as
+  any role change leaves them.
+- **The start pass** keeps a moment in `webhooks_readable_by_disabled_held`. The first run holds
+  every webhook with a secret that a disabled owner or administrator could read and that was made
+  before its disable, and every one made before migration 0056 was applied here (setters recorded;
+  before `c6ed310` anyone who could view a board was given its secrets); where that moment is not
+  recorded, every one. Each later start covers only accounts disabled after the moment, which only
+  an older image leaves, since every disable here moves the moment past itself, once this process's
+  pass has committed and no other account was disabled since the moment (card 2935's code review,
+  C2). An account whose `disabled_at` names no moment is covered by the first run, which counts it
+  as disabled after every webhook, and by no later one; it does keep the moment from moving.
+- **A covered disable reads nothing.** A lowered role or a delete of an account whose disable is at
+  or before the stored moment, holding no key, holds nothing of others (C1, C2): its disable, or
+  the pass, already held what it could read, and what owners switched on since has a secret it
+  never saw.
+- **The two `GET` routes that give a secret** read the caller through `stillAuthenticated` in the
+  transaction that reads (`readAs`), as a write does: a key ended or a role lowered after the gate
+  is met as it is now.
+- **Not covered here:** a revoked or expired key's reads (a record of which key revealed each
+  secret is a card of its own), and a setter replaced while its secret is kept (card 2932).
+
+The blast radius is accepted: ending an administrator's access stops every webhook on the server
+that has a secret; each is switched on again with one `PUT`, which gives it a new secret.
+
+```mermaid
+flowchart TD
+    E["An ending with keys, or a lowered role"] --> P{"Provably read nothing, or a lowered role on a covered disable?"}
+    P -- yes --> N["None of others' (an ending still holds its own, card 2923)"]
+    P -- no --> R["readableBy: admin role, board creator, exact owner row"]
+    R --> S["An ending: every webhook with a secret it could read, not held<br/>A lowered role: only those it can no longer read"]
+    S --> H["'setter access ended', active 0, held_at now"]
+    H --> T["After the commit: WARN lines and one mail per owner"]
+    ST["Start, or a restore with an older moment"] --> C["coverReadable: disabled readers since the moment, and before 0056 once"]
+    C --> H
+```
 The delivery backstop answers not-sent whether or not its write succeeds; a failed write is an
 `ERROR`. A webhook nobody is recorded as having set up is switched off the same way.
 

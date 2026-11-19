@@ -194,6 +194,57 @@ export function inTransaction<T>(fn: () => NotAPromise<T>): T {
 	return result;
 }
 
+/** Rows changed on the connection since it opened (SQLite's `total_changes()`), to tell a read from a write. */
+function totalChanges(database: typeof sqlite): number {
+	return (database.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
+}
+
+/**
+ * Run `fn`, which only reads, in one transaction on the application's
+ * connection and return what it returns (card 2935's code review, C6): what
+ * it reads is one snapshot, and a check made first (whether the caller's key
+ * still works) holds for what it reads after.
+ *
+ * The outermost call is a plain, deferred `BEGIN`: no write lock is taken, so
+ * a read that gives a webhook's secret never waits on, or holds up, a write.
+ * Inside another transaction it is that transaction's savepoint, as
+ * `inTransaction` is. For read-only work alone: if `fn` changes a row, it is
+ * rolled back and an error thrown, so that the helper cannot carry a write
+ * past the write lock. `fn` must not be async, as for `inTransaction`.
+ * `database` is the application's connection but in a test of the lock,
+ * which hands a file's.
+ */
+export function inReadTransaction<T>(fn: () => NotAPromise<T>, database: typeof sqlite = sqlite): T {
+	if (database === sqlite && sqlite.inTransaction) return inTransaction(fn);
+	dropStrays();
+	const mark = queue.length;
+	const before = totalChanges(database);
+	let result: T;
+	depth++;
+	try {
+		const run = database.transaction((): T => {
+			const returned: unknown = fn();
+			if (isThenable(returned)) {
+				returned.then(undefined, () => {});
+				throw new TypeError('inReadTransaction was given a function that returns a promise: pass a function that is not async.');
+			}
+			if (totalChanges(database) !== before) {
+				throw new Error('inReadTransaction is for reads alone, and the function given it wrote: what it wrote was rolled back. Use inTransaction.');
+			}
+			return returned as T;
+		});
+		result = run.deferred();
+	} catch (err) {
+		queue.length = Math.min(queue.length, mark);
+		throw err;
+	} finally {
+		depth--;
+		flushPendingLogs();
+	}
+	for (const effect of queue.splice(0)) start(effect);
+	return result;
+}
+
 /**
  * Do `effect` once the write it follows from is committed.
  *

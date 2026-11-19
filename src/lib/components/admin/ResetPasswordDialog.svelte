@@ -21,7 +21,7 @@
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
 	import { invalidateAll } from '$app/navigation';
-	import { answerBody, failureMessage } from '$lib/api';
+	import { answerBody, failureMessage, heldOfOthersWords } from '$lib/api';
 	import { NO_ANSWER, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
@@ -82,6 +82,14 @@
 	 * keys: null until read again, and for an account the caller may not reset.
 	 */
 	let resetTargetWebhooks = $derived(resetKeysRead ? (resetTarget?.webhooks ?? null) : null);
+	/** Those it set that are already off with no hold, which the reset holds too (card 2923; card 2935, F6): read again as above. */
+	let resetTargetAlreadyOff = $derived(resetKeysRead ? (resetTarget?.webhooksAlreadyOff ?? null) : null);
+	/**
+	 * The webhooks of others whose secret that account could read, as an administrator (every board) or a board's
+	 * owner, which the reset switches off or holds (card 2935): the only dialog that shows the number (P8), read again
+	 * as it opens, by the hold's own rule (P11). 0 for an account that provably read nothing (P1).
+	 */
+	let resetTargetReadable = $derived(resetKeysRead ? (resetTarget?.webhooksReadable ?? null) : null);
 	let resetTargetSchedules = $derived(resetKeysRead ? (resetTarget?.reportSchedules ?? null) : null);
 
 	/** Open the dialog on an account, and read the key counts again for it. */
@@ -178,13 +186,16 @@
 				const apiKeysEnded = result?.apiKeysEnded;
 				const webhooksSwitchedOff = result?.webhooksSwitchedOff;
 				const reportSchedulesPaused = result?.reportSchedulesPaused;
+				// Card 2935: the webhooks of others whose secret they could read, said apart where there were any.
+				const readable = result?.readableWebhooksHeld;
+				const readableSaid = typeof readable === 'number' && readable > 0 ? `; ${heldOfOthersWords(readable)}` : '';
 				showToast(
 					typeof sessionsEnded === 'number' &&
 						typeof apiKeysEnded === 'number' &&
 						typeof webhooksSwitchedOff === 'number' &&
 						typeof reportSchedulesPaused === 'number'
 						? `Password reset: ${counted(sessionsEnded, 'session')} and ${counted(apiKeysEnded, 'API key')} ended, ` +
-								`${counted(webhooksSwitchedOff, 'webhook')} switched off and ${counted(reportSchedulesPaused, 'report schedule')} paused`
+								`${counted(webhooksSwitchedOff, 'webhook')} switched off and ${counted(reportSchedulesPaused, 'report schedule')} paused${readableSaid}`
 						: 'Password reset'
 				);
 			}
@@ -218,6 +229,12 @@
 				{/if}
 				{#if resetTargetWebhooks !== null && resetTargetWebhooks > 0}
 					<p class="warning-text">They set up {counted(resetTargetWebhooks, 'webhook')}, which {resetTargetWebhooks === 1 ? 'is' : 'are'} switched off.</p>
+				{/if}
+				{#if resetTargetAlreadyOff !== null && resetTargetAlreadyOff > 0}
+					<p class="warning-text">They set up {counted(resetTargetAlreadyOff, 'webhook')} already switched off, which {resetTargetAlreadyOff === 1 ? 'is' : 'are'} held, to be switched on only with a new secret.</p>
+				{/if}
+				{#if resetTargetReadable !== null && resetTargetReadable > 0}
+					<p class="warning-text">They could read the secret of {counted(resetTargetReadable, 'other webhook')}, as {resetTarget?.role === 'admin' || resetTarget?.role === 'superadmin' ? 'an administrator' : "a board's owner"}: {resetTargetReadable === 1 ? 'it is' : 'those are'} switched off too, to be switched on only with a new secret, and their boards' owners are mailed.</p>
 				{/if}
 				{#if resetTargetSchedules !== null && resetTargetSchedules > 0}
 					<p class="warning-text">They have {counted(resetTargetSchedules, 'report schedule')}, which {resetTargetSchedules === 1 ? 'is' : 'are'} paused.</p>

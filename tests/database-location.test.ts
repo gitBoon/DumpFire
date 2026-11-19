@@ -606,6 +606,7 @@ describe('a database with no users while another is beside it', () => {
 			'void recheckStoredImages();',
 			'switchOffHeldWebhooksAtStart();',
 			'holdAlreadyOffWebhooksAtStart();',
+			'holdReadableWebhooksAtStart();',
 			'startSchedulers();',
 			'reportInstallation();'
 		]) {
@@ -634,6 +635,9 @@ describe('a database with no users while another is beside it', () => {
 		// schedulers start (card 2923, S3).
 		expect(at('holdAlreadyOffWebhooksAtStart();')).toBeGreaterThan(at('switchOffHeldWebhooksAtStart();'));
 		expect(at('startSchedulers();')).toBeGreaterThan(at('holdAlreadyOffWebhooksAtStart();'));
+		// The webhooks a disabled owner or administrator could read held after those, before the schedulers (card 2935).
+		expect(at('holdReadableWebhooksAtStart();')).toBeGreaterThan(at('holdAlreadyOffWebhooksAtStart();'));
+		expect(at('startSchedulers();')).toBeGreaterThan(at('holdReadableWebhooksAtStart();'));
 	});
 });
 

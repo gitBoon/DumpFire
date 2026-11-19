@@ -24,9 +24,16 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { tellSwitchedOff, type SwitchedOff } from '$lib/server/webhooks';
+import { endingScope, mayHaveRead, readableBy, readableNowScope, tellSwitchedOff, type SwitchedOff } from '$lib/server/webhooks';
 // The script's own copy of the server's Webhooks lines (card 2923's code review, E8): importing it runs nothing.
-import { webhookLines } from '../scripts/mfa-reset.mjs';
+// And of the readable rule and its scopes (card 2935; its code review, C7).
+import {
+	holdReadableScope,
+	mayHaveRead as scriptMayHaveRead,
+	readableBy as scriptReadableBy,
+	resetScope,
+	webhookLines
+} from '../scripts/mfa-reset.mjs';
 import { db, sqlite } from '$lib/server/db';
 import { enrolmentLinks, inviteTokens, reportSchedules, settingSetters, settings, signInChallenges, users } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -462,13 +469,24 @@ describe('scripts/mfa-reset.mjs', () => {
 	// words: one of each group, and more than 20 of each, the not-mailed line after them.
 	it.each([
 		{ row: 'one of each', done: 1, held: 1 },
-		{ row: 'more than 20 of each', done: 22, held: 21 }
-	])("T37: the script's webhookLines and the server's tellSwitchedOff, told not to mail, write the same lines ($row)", ({ done, held }) => {
+		{ row: 'more than 20 of each', done: 22, held: 21 },
+		// Card 2935: webhooks of others whose secret the account could read, in the reader's words.
+		{ row: 'one of each, of others', done: 1, held: 1, reader: 9 }
+	])("T37: the script's webhookLines and the server's tellSwitchedOff, told not to mail, write the same lines ($row)", ({ done, held, reader }) => {
 		const level = process.env.LOG_LEVEL;
 		process.env.LOG_LEVEL = 'WARN';
 		const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		try {
-			const hook = (id: number): SwitchedOff => ({ id, boardId: 100 + (id % 3), setBy: 7, setByKey: null, setWithKey: true, receiver: 'https://x.example.test', hold: 'setter access ended' });
+			const hook = (id: number): SwitchedOff => ({
+				id,
+				boardId: 100 + (id % 3),
+				setBy: 7,
+				setByKey: null,
+				setWithKey: true,
+				receiver: 'https://x.example.test',
+				hold: 'setter access ended',
+				...(reader === undefined ? {} : { reader })
+			});
 			const doneHooks = Array.from({ length: done }, (_, i) => hook(i + 1));
 			const heldHooks = Array.from({ length: held }, (_, i) => hook(i + 101));
 			const cause = "holder's two-step sign-in was reset on the server's host";
@@ -478,7 +496,8 @@ describe('scripts/mfa-reset.mjs', () => {
 
 			const server = (sqlite.prepare("SELECT message FROM system_logs WHERE context = 'Webhooks' ORDER BY id").pluck().all() as string[]).slice(-3);
 			expect(sqlite.prepare('SELECT COUNT(*) FROM system_logs').pluck().get()).toBe(before + 3);
-			const asRows = (hooks: SwitchedOff[]) => hooks.map((each) => ({ id: each.id, board_id: each.boardId, set_by: each.setBy }));
+			const asRows = (hooks: SwitchedOff[]) =>
+				hooks.map((each) => ({ id: each.id, board_id: each.boardId, set_by: each.setBy, ...(typeof each.reader === 'number' ? { reader: each.reader } : {}) }));
 			expect(webhookLines(asRows(doneHooks), asRows(heldHooks), cause)).toEqual(server);
 		} finally {
 			quiet.mockRestore();
@@ -532,7 +551,7 @@ describe('scripts/mfa-reset.mjs', () => {
 
 	it.each([
 		{ case: 'T22', refusal: 'an unknown username', args: ['nobody'], database: 'seeded', status: 1, says: 'there is no account with the username "nobody". Nothing was changed.' },
-		{ case: 'T23', refusal: 'no argument', args: [], database: 'seeded', status: 2, says: 'Usage: node scripts/mfa-reset.mjs [--keep-api-keys] [--] <username>' },
+		{ case: 'T23', refusal: 'no argument', args: [], database: 'seeded', status: 2, says: 'Usage: node scripts/mfa-reset.mjs [--keep-api-keys | --hold-readable] [--] <username>' },
 		// Card 2915 (case 7, S2): options read strictly, before the database is opened.
 		{ case: 'T23', refusal: 'an unknown option', args: ['holder', '-k'], database: 'seeded', status: 2, says: 'Unknown option "-k".' },
 		{
@@ -541,7 +560,7 @@ describe('scripts/mfa-reset.mjs', () => {
 			args: [' --keep-api-keys'],
 			database: 'seeded',
 			status: 2,
-			says: 'Usage: node scripts/mfa-reset.mjs [--keep-api-keys] [--] <username>'
+			says: 'Usage: node scripts/mfa-reset.mjs [--keep-api-keys | --hold-readable] [--] <username>'
 		},
 		{
 			case: 'T23',
@@ -728,5 +747,117 @@ describe('scripts/mfa-reset.mjs', () => {
 				message: `The reset ended 1 sign-in(s) of user ${holder.id} ("holder") left at their second step; no notice was mailed`
 			})
 		]);
+	});
+
+	// ─── Card 2935: the webhooks whose secret the account could read ───
+
+	it('T38a (card 2935): the script copies readableBy and mayHaveRead word for word, and its two composed scopes (its code review, C7)', () => {
+		expect(scriptReadableBy('@id', '(r)')).toBe(readableBy('@id', '(r)'));
+		expect(scriptMayHaveRead('@id', '@except')).toBe(mayHaveRead('@id', '@except'));
+		expect(resetScope()).toBe(endingScope());
+		expect(holdReadableScope()).toBe(readableNowScope());
+	});
+
+	it('T38 (card 2935): the superadmin reset on the host holds every webhook with a secret, whoever set it, as resetTwoStep does; one with no secret and one held stay; the others are listed on stdout', () => {
+		const boss = makeUser({ username: 'boss', role: 'superadmin' });
+		const other = makeUser({ username: 'other' });
+		const { board } = makeBoard({ owner: other, name: 'Their board' });
+		const on = makeWebhook(board, { url: 'https://on.example.test/in', secret: 's1', setBy: other });
+		const off = makeWebhook(board, { url: 'https://off.example.test/in', secret: 's2', setBy: other, active: false });
+		const bare = makeWebhook(board, { url: 'https://bare.example.test/in', setBy: other });
+		const keyEnded = makeWebhook(board, { url: 'https://ended.example.test/in', secret: 's3', setBy: other, heldBecause: 'key ended' });
+		writeCopy();
+		const reset = inTransaction(() => resetTwoStep(boss.id, 'host-reset', { cause: { log: 'a test', mail: 'a test' } }));
+		// Its own counts are its own (P9): none it set.
+		expect([reset.webhooks, reset.webhookIds]).toEqual([0, []]);
+		const expected = dumpOf(sqlite, { held: [on.id, off.id] });
+
+		const ran = run(['boss']);
+
+		expect(ran.status, ran.stderr).toBe(0);
+		expect(fileDump({ held: [on.id, off.id] })).toEqual(expected);
+		const copied = new Database(file, { readonly: true, fileMustExist: true });
+		try {
+			const row = (id: number) => copied.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(id);
+			expect([row(on.id), row(off.id), row(bare.id), row(keyEnded.id)]).toEqual([
+				{ active: 0, heldBecause: 'setter access ended' },
+				{ active: 0, heldBecause: 'setter access ended' },
+				{ active: 1, heldBecause: null },
+				{ active: 0, heldBecause: 'key ended' }
+			]);
+		} finally {
+			copied.close();
+		}
+		expect(ran.stdout).toContain('Switched off or held 2 webhook(s) set up by others whose secret they could read');
+		expect(ran.stdout).toContain('Their board, to on.example.test');
+		expect(ran.stdout).toContain("Those boards' owners were not mailed: tell them.");
+		const logged = (fileDump({ logs: true }).system_logs as Row[]).filter((line) => line.context === 'Webhooks').map((line) => line.message);
+		expect(logged[0]).toContain(`an account that could read its secret as an owner of the board or an administrator (user ${boss.id}) lost that access`);
+	});
+
+	it('T38b (card 2935, P1): a superadmin who provably read nothing (made after the release, never signed in, no key, no invite) holds nothing of others', () => {
+		db.insert(settings).values({ key: 'two_step_released_at', value: stamp(new Date(Date.now() - 24 * 60 * 60 * 1000)) }).run();
+		makeUser({ username: 'fresh', role: 'superadmin' });
+		const other = makeUser({ username: 'other' });
+		const hook = makeWebhook(makeBoard({ owner: other }).board, { url: 'https://on.example.test/in', secret: 's1', setBy: other });
+		writeCopy();
+
+		const ran = run(['fresh']);
+
+		expect(ran.status, ran.stderr).toBe(0);
+		const copied = new Database(file, { readonly: true, fileMustExist: true });
+		try {
+			expect(copied.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(hook.id)).toEqual({ active: 1, heldBecause: null });
+		} finally {
+			copied.close();
+		}
+		expect(ran.stdout).not.toContain('set up by others');
+	});
+
+	it('T39 (card 2935, P7): --hold-readable holds only what the account can read, changes nothing else of it, logs and lists them', () => {
+		const owner = makeUser({ username: 'owner' });
+		const keyOf = makeApiKeyRow(owner);
+		const other = makeUser({ username: 'other' });
+		const { board } = makeBoard({ owner, name: 'Owned board' });
+		const theirs = makeWebhook(board, { url: 'https://theirs.example.test/in', secret: 's1', setBy: other });
+		const own = makeWebhook(board, { url: 'https://own.example.test/in', secret: 's2', setBy: owner });
+		const elsewhere = makeWebhook(makeBoard({ owner: other }).board, { url: 'https://elsewhere.example.test/in', secret: 's3', setBy: other });
+		writeCopy();
+		const before = fileDump();
+
+		const ran = run(['--hold-readable', 'owner']);
+
+		expect(ran.status, ran.stderr).toBe(0);
+		const after = fileDump({ held: [theirs.id] });
+		// Only the one webhook changed: the account's keys, sessions and everything else as they were.
+		expect({ ...after, webhooks: [] }).toEqual({ ...before, webhooks: [] });
+		const copied = new Database(file, { readonly: true, fileMustExist: true });
+		try {
+			const row = (id: number) => copied.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(id);
+			expect([row(theirs.id), row(own.id), row(elsewhere.id)]).toEqual([
+				{ active: 0, heldBecause: 'setter access ended' },
+				{ active: 1, heldBecause: null },
+				{ active: 1, heldBecause: null }
+			]);
+			expect(copied.prepare('SELECT COUNT(*) AS n FROM api_keys WHERE id = ?').get(keyOf.id)).toEqual({ n: 1 });
+		} finally {
+			copied.close();
+		}
+		expect(ran.stdout).toContain('Held 1 webhook(s) whose secret "owner"');
+		expect(ran.stdout).toContain('Owned board, to theirs.example.test');
+		const logs = fileDump({ logs: true }).system_logs as Row[];
+		expect(logs.some((line) => line.context === 'AUTH' && String(line.message).includes('--hold-readable: 1 webhook(s)'))).toBe(true);
+	});
+
+	it('T39b (card 2935, P7): --hold-readable with --keep-api-keys is a usage error, exit 2, nothing changed', () => {
+		makeUser({ username: 'owner' });
+		writeCopy();
+		const before = fileDump({ logs: true });
+
+		const ran = run(['--hold-readable', '--keep-api-keys', 'owner']);
+
+		expect(ran.status).toBe(2);
+		expect(ran.stderr).toContain('--keep-api-keys and --hold-readable cannot be given together.');
+		expect(fileDump({ logs: true })).toEqual(before);
 	});
 });

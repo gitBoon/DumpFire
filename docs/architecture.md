@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.136
+version: 1.137
 status: As-Built
 date: 2026-11-19
 tags:
@@ -257,13 +257,17 @@ of ended sessions every five minutes after that first run), `initLogMaintenance(
 holds the webhooks already switched off without a hold, so that switching one on gives it a new
 secret; once, while the `webhooks_already_off_held` setting is absent, every one, whoever set it,
 and writes the setting; at every start, those whose setter is disabled or not recorded; one
-`WARN` when it held any, nobody mailed; it cannot throw) and `startSchedulers()`, in that order
-for the last three.
+`WARN` when it held any, nobody mailed; it cannot throw), `holdReadableWebhooksAtStart()` (card
+2935: it holds the webhooks whose secret a disabled owner or administrator could read, the first
+time with every webhook made before setters were recorded, keeping the moment it covered in
+`webhooks_readable_by_disabled_held`; told as the sweep is; it cannot throw) and
+`startSchedulers()`, in that order for the last four.
 
 ```mermaid
 flowchart LR
     Sweep["switchOffHeldWebhooksAtStart()<br/>webhooks on and held: switched off"] --> Hold["holdAlreadyOffWebhooksAtStart()<br/>off and unheld: every one once,<br/>then setter disabled or none"]
-    Hold --> Sched["startSchedulers()"]
+    Hold --> Readable["holdReadableWebhooksAtStart()<br/>readable by an owner or administrator<br/>disabled since the moment stored"]
+    Readable --> Sched["startSchedulers()"]
 ```
 
 ```mermaid

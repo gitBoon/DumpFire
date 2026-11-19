@@ -66,7 +66,7 @@ import { logCardLeftGoal } from './milestones';
 import { moveToTrash, type UploadFile } from './uploads';
 import { removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { requireDisabledAccount } from './account-disable';
-import { ENDING_IN_MAIL, holdWebhooksOfSetter } from './webhooks';
+import { accountMayHaveRead, disableCovered, ENDING_IN_MAIL, holdWebhooksOfSetter } from './webhooks';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DELETE');
@@ -988,10 +988,18 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 		// counted. Told once committed, a WARN for each group and the boards'
 		// owners mailed; the account is gone by then, so it is mailed nothing.
 		// The one writer of an ending (`holdWebhooksOfSetter`, the code review's E4).
-		const webhookIds = holdWebhooksOfSetter(userId, {
-			log: `${user.username}'s account was deleted by ${actor.username}`,
-			mail: ENDING_IN_MAIL.deleted
-		}).switchedOff.map((hook) => hook.id);
+		// Those whose secret it could read too (card 2935, P6; its code review, C2c): while it still holds a key, or its
+		// disable is not covered (no moment stored, not disabled, or disabled after the moment or at one that cannot
+		// be read). Otherwise its disable held them, and a disabled account reads nothing. Not for one that provably
+		// read nothing (P1). The ids are those it set (P9).
+		const readable = (user.apiKeys > 0 || !disableCovered(userId)) && accountMayHaveRead(userId);
+		const webhookIds = holdWebhooksOfSetter(
+			userId,
+			{ log: `${user.username}'s account was deleted by ${actor.username}`, mail: ENDING_IN_MAIL.deleted },
+			{ readable }
+		)
+			.switchedOff.filter((hook) => hook.reader === undefined)
+			.map((hook) => hook.id);
 		const webhooksSwitchedOff = webhookIds.length;
 		// What they set that sends mail or backups somewhere, while the setter
 		// rows still name them; the key would take only those rows (card 2397).

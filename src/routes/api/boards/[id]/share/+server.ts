@@ -7,7 +7,7 @@ import { notifyBoardShared } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readBoolean, readChoice, readId } from '$lib/server/request-body';
 import { requireBoard, requireBoardOwner, requireUser } from '$lib/server/route-guards';
-import { switchOffLostWebhooks, webhookShareNotes } from '$lib/server/webhooks';
+import { ENDING_IN_MAIL, holdNoLongerReadable, switchOffLostWebhooks, webhookShareNotes } from '$lib/server/webhooks';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -141,6 +141,14 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 					.set({ role: shareRole })
 					.where(and(eq(boardMembers.boardId, boardId), eq(boardMembers.userId, targetId)))
 					.run();
+				// An owner made an editor or a viewer could read this board's webhook secrets (card 2935, P2): those it
+				// can no longer read are held, so each is given a new secret when switched on.
+				if (stored.role === 'owner' && shareRole !== 'owner') {
+					holdNoLongerReadable(targetId, [boardId], {
+						log: `${target.username} was made a${shareRole === 'editor' ? 'n editor' : ' viewer'} of board ${boardId} by ${user.username}, from an owner`,
+						mail: ENDING_IN_MAIL.ownerLowered
+					});
+				}
 			} else {
 				db.insert(boardMembers)
 					.values({ boardId, userId: targetId, role: shareRole })
@@ -248,6 +256,10 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 				? db.select({ name: users.username }).from(users).where(eq(users.id, targetId)).get()?.name
 				: db.select({ name: teams.name }).from(teams).where(eq(teams.id, targetId)).get()?.name;
 
+		// Whether the person removed was stored as an owner (card 2935, P2), read before the row goes.
+		const wasOwner =
+			type === 'user' &&
+			db.select({ role: boardMembers.role }).from(boardMembers).where(and(eq(boardMembers.boardId, boardId), eq(boardMembers.userId, targetId))).get()?.role === 'owner';
 		const removed = type === 'user'
 			? db.delete(boardMembers)
 				.where(and(eq(boardMembers.boardId, boardId), eq(boardMembers.userId, targetId)))
@@ -268,6 +280,14 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 				? `${removedName ?? `user ${targetId}`} was taken off the board by ${by}`
 				: `the team ${removedName ?? targetId}'s share was removed by ${by}`
 		);
+		// An owner taken off the board could read its webhook secrets (card 2935, P2): those it can no longer read are
+		// held, so each is given a new secret when switched on.
+		if (wasOwner) {
+			holdNoLongerReadable(targetId, [boardId], {
+				log: `${removedName ?? `user ${targetId}`}, an owner, was taken off board ${boardId} by ${by}`,
+				mail: ENDING_IN_MAIL.ownerLowered
+			});
+		}
 	});
 
 	return json({ success: true });

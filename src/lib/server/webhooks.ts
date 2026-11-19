@@ -59,7 +59,8 @@ import { canViewBoard, getBoardRole, roleOnBoard, type Actor } from './board-acc
 import { notifyWebhooksSwitchedOff } from './notifications';
 import { onTheWire } from './v1-json';
 import { addressRefusal, guardedLookup, hostOf, receiverOf } from './webhook-address';
-import { stamp } from '$lib/timestamps';
+import { stamp, toStamp } from '$lib/timestamps';
+import { registerStampFunctions } from './db/timestamps';
 import { openStored, openedUrl, webhookSecretAad, type Opened } from './stored-secrets';
 
 const log = createLogger('Webhooks');
@@ -319,13 +320,14 @@ export const SWITCHED_OFF_BECAUSE: Record<HeldBecause, string> = {
 	'no setter':
 		'This was switched off because nobody is recorded as having set it up. Delete it unless you recognise the address; to keep ' +
 		"it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, and update the receiver.",
+	// Card 2935: an account that could read its secret, as the board's owner or an administrator, too.
 	'setter access ended':
-		'This was switched off because the account that set it up had its password or its two-step sign-in reset, ended its API keys ' +
-		'when changing its own password, used an invite, was disabled, or was deleted; one already switched off then, or found ' +
-		'switched off with its setter disabled or not recorded, is held the same way. The address ' +
-		'was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which ' +
-		"makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, " +
-		'and update the receiver.',
+		'This was switched off because the account that set it up, or an account that could read its secret as the board\'s owner or an ' +
+		'administrator, had its password or its two-step sign-in reset, ended its API keys when changing its own password, used an ' +
+		'invite, was disabled, or was deleted, or, for one that could read it, lost that role; one already switched off then, or found ' +
+		'switched off with its setter disabled or not recorded, is held the same way. Delete the webhook unless you recognise its ' +
+		'address; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer ' +
+		"and readable by the board's owner or an administrator, and update the receiver.",
 	'key ended':
 		"This was switched off because the API key that set it up ended: it expired, passed its deadline, was deleted or is not the setter's; " +
 		'or, for a webhook set up before keys were recorded, the account that set it up has no working key from then. To keep it, ' +
@@ -398,6 +400,12 @@ export type SwitchedOff = {
 	hold: HeldBecause;
 	/** Held by a pass that found it off with no hold (`holdUnheldOfGoneSetters`), not by an ending of its setter's access. */
 	found?: boolean;
+	/**
+	 * Held because an account other than its setter could read its secret (card 2935): that account's id, where its
+	 * access ended or its role was lowered; `'found'` where the start pass or a restore found it readable by an account
+	 * disabled, or made before setters were recorded (P3, P4). Absent for the setter's own.
+	 */
+	reader?: number | 'found';
 };
 
 /** A webhook row and its hold, as `SwitchedOff` names them. */
@@ -509,12 +517,17 @@ const HOLD_IN_WORDS: Record<HeldBecause, (hook: SwitchedOff) => string> = {
 	'setter cannot open': (hook) => `the account that set it up (user ${hook.setBy}) can no longer open the board`,
 	'no setter': () => 'nobody is recorded as having set it up',
 	// Card 2923: ending an account's access, the start-up pass and a restore; `set_by` NULL for one found with no setter.
+	// Card 2935 (P13, L2): a reader's hold first, then no setter, then one found.
 	'setter access ended': (hook) =>
-		hook.setBy === null
-			? 'nobody is recorded as having set it up'
-			: hook.found
-				? `it was found switched off with no hold, as it may have been when the access of the account that set it up (user ${hook.setBy}) ended`
-				: `the account that set it up (user ${hook.setBy}) had its access ended`,
+		typeof hook.reader === 'number'
+			? `an account that could read its secret as an owner of the board or an administrator (user ${hook.reader}) lost that access`
+			: hook.reader === 'found'
+				? READER_FOUND
+				: hook.setBy === null
+					? 'nobody is recorded as having set it up'
+					: hook.found
+						? `it was found switched off with no hold, as it may have been when the access of the account that set it up (user ${hook.setBy}) ended`
+						: `the account that set it up (user ${hook.setBy}) had its access ended`,
 	'key ended': (hook) =>
 		hook.setWithKey === null
 			? `the account that set it up (user ${hook.setBy}) has no working API key from before keys were recorded`
@@ -526,16 +539,27 @@ const HOLD_IN_MAIL: Record<HeldBecause, (hook: SwitchedOff) => string> = {
 	'setter cannot open': () => 'the account that set it up can no longer open the board',
 	'no setter': () => 'nobody is recorded as having set it up',
 	'setter access ended': (hook) =>
-		hook.setBy === null
-			? 'nobody is recorded as having set it up'
-			: hook.found
-				? 'it was found switched off with no hold, as it may have been when the access of the account that set it up ended'
-				: 'the account that set it up had its access ended',
+		typeof hook.reader === 'number'
+			? 'an owner of the board or an administrator who could read its secret lost that access'
+			: hook.reader === 'found'
+				? READER_FOUND
+				: hook.setBy === null
+					? 'nobody is recorded as having set it up'
+					: hook.found
+						? 'it was found switched off with no hold, as it may have been when the access of the account that set it up ended'
+						: 'the account that set it up had its access ended',
 	'key ended': (hook) =>
 		hook.setWithKey === null
 			? 'it was set up before keys were recorded, and the account that set it up has no working API key from then'
 			: 'the API key that set it up ended'
 };
+
+/**
+ * Why a webhook the start pass or a restore held for a reader is held (card 2935, P3, P4), in the WARN and the mail
+ * alike: it names nobody.
+ */
+const READER_FOUND =
+	'its secret may have been read by an owner of the board or an administrator who is disabled now, or before setters were recorded';
 
 /** How many webhooks one WARN of `tellSwitchedOff` names; the rest are counted (card 2899's code review, F1). */
 export const SWITCHED_OFF_NAMED = 20;
@@ -567,7 +591,9 @@ export function tellSwitchedOff(
 	cause: string,
 	telling: Telling,
 	held: readonly SwitchedOff[] = [],
-	mailCause: string = cause
+	mailCause: string = cause,
+	/** The account whose access ended or was lowered (card 2935, P14; its code review, C11d): never mailed of its own change, as an owner or an administrator. */
+	notMailed: number | null = null
 ): void {
 	if (done.length === 0 && held.length === 0) return;
 	const named = (hooks: readonly SwitchedOff[]) =>
@@ -606,11 +632,13 @@ export function tellSwitchedOff(
 				id: hook.id,
 				host: hostOfHook(hook),
 				why: HOLD_IN_MAIL[hook.hold](hook),
+				...(hook.hold === 'setter cannot open' ? { boardBack: true } : {}),
 				...(hook.hold === 'key ended' && hook.setBy !== null ? { setter: hook.setBy } : {})
 			})),
 			mailCause,
 			// Never a setter's mail for a held one (S1).
-			held.map((hook) => ({ boardId: hook.boardId, id: hook.id, host: hostOfHook(hook), why: HOLD_IN_MAIL[hook.hold](hook) }))
+			held.map((hook) => ({ boardId: hook.boardId, id: hook.id, host: hostOfHook(hook), why: HOLD_IN_MAIL[hook.hold](hook) })),
+			notMailed
 		);
 	} else {
 		const all = done.length + held.length;
@@ -659,15 +687,143 @@ function heldAsSwitchedOff(rows: readonly HeldRow[], found: boolean): SwitchedOf
  */
 export type EndingCause = { log: string; mail: string };
 
-/** The owners' mail's words for each ending of an account's access (card 2923's code review, S5): its kind, naming nobody. */
+/**
+ * The owners' mail's words for each ending of an account's access (card 2923's code review, S5): its kind, naming
+ * nobody. Since card 2935 without a subject: each webhook in the mail says whether the account set it up or could
+ * read its secret. `demoted` and `ownerLowered` are the lowered roles of card 2935 (P2).
+ */
 export const ENDING_IN_MAIL = {
-	ownChange: 'the account that set it up ended its own API keys when changing its password',
-	passwordReset: 'the account that set it up had its password reset by an administrator',
-	invite: 'the account that set it up set its password with an invite',
-	twoStepReset: 'the account that set it up had its two-step sign-in reset by an administrator',
-	disabled: 'the account that set it up was disabled by an administrator',
-	deleted: 'the account that set it up was deleted by an administrator'
+	ownChange: 'an account ended its own API keys when changing its password',
+	passwordReset: 'an account had its password reset by an administrator',
+	invite: 'an account set its password with an invite',
+	twoStepReset: 'an account had its two-step sign-in reset by an administrator',
+	disabled: 'an account was disabled by an administrator',
+	deleted: 'an account was deleted by an administrator',
+	demoted: 'an administrator was made an ordinary user',
+	ownerLowered: 'an owner of the board was made an editor or a viewer, or taken off the board'
 } as const;
+
+/** `two_step_released_at` (`TWO_STEP_RELEASED_AT` in mfa-store.ts, written by migration 0066), named here so that this module imports nothing of mfa-store. */
+const TWO_STEP_RELEASED = 'two_step_released_at';
+
+/**
+ * SQL that is true where the account `id`, whose role is `role` (both SQL expressions), can be given the secret of a
+ * webhook on board `board` (card 2935, A2): an administrator or the superadmin on every board; the board's creator;
+ * an exact `owner` member row. Never through a team, which gives at most `editor` (board-access.ts). The one rule
+ * for the hold, the counts and the start pass (P11): the admin page passes its row's columns, a correlated subquery.
+ */
+export function readableBy(id: string, role: string, board = 'board_id'): string {
+	return (
+		`(${role} IN ('admin', 'superadmin') OR ${board} IN (SELECT rb_b.id FROM boards AS rb_b WHERE rb_b.created_by = ${id}) ` +
+		`OR ${board} IN (SELECT rb_m.board_id FROM board_members AS rb_m WHERE rb_m.user_id = ${id} AND rb_m.role = 'owner'))`
+	);
+}
+
+/**
+ * SQL that is true unless the account `id` (an SQL expression) provably read no secret (card 2935, P1): it has
+ * never signed in (`last_sign_in_at` NULL), holds no API key, has used no invite but `except` (the hash of the one
+ * being used now, an SQL expression), and was made after two-step sign-in was released here. Since that release
+ * every session is made by `finishSignIn`, which writes `last_sign_in_at`, and a key needs a session. A release
+ * moment that is missing or cannot be read fails closed: the account may have read. Needs `stamp_of` on the
+ * connection (`registerStampFunctions`). Every table aliased, so that `id` may name an outer row.
+ */
+export function mayHaveRead(id: string, except = 'NULL'): string {
+	return (
+		`NOT ((SELECT mh_u.last_sign_in_at FROM users AS mh_u WHERE mh_u.id = ${id}) IS NULL ` +
+		`AND NOT EXISTS (SELECT 1 FROM api_keys AS mh_k WHERE mh_k.user_id = ${id}) ` +
+		`AND NOT EXISTS (SELECT 1 FROM invite_tokens AS mh_i WHERE mh_i.user_id = ${id} AND mh_i.used = 1 AND mh_i.token IS NOT ${except}) ` +
+		`AND coalesce(stamp_of((SELECT mh_c.created_at FROM users AS mh_c WHERE mh_c.id = ${id})) > ` +
+		`stamp_of((SELECT mh_s.value FROM settings AS mh_s WHERE mh_s.key = '${TWO_STEP_RELEASED}')), 0))`
+	);
+}
+
+/**
+ * SQL for how many webhooks the account `id` (role `role`) could read the secret of and did not set, that have a
+ * secret and are not held, as the hold would take them (card 2935, P11): `set_by IS NOT`, so a webhook with no
+ * setter counts. 0 for an account that provably read nothing (P1). For a count shown before an action.
+ */
+export function readableCountSql(id: string, role: string): string {
+	// `mayHaveRead` asked once for the account, not once a webhook (card 2935's code review, C10).
+	return (
+		`(CASE WHEN ${mayHaveRead(id)} THEN (SELECT COUNT(*) FROM webhooks AS rc_w WHERE (rc_w.active = 1 OR rc_w.held_because IS NULL) ` +
+		`AND rc_w.set_by IS NOT ${id} AND rc_w.secret <> '' AND ${readableBy(id, role, 'rc_w.board_id')}) ELSE 0 END)`
+	);
+}
+
+/** The account's role, in SQL, as the hold statements read it for `@id`. */
+const ROLE_OF_ID = '(SELECT role FROM users WHERE id = @id)';
+
+/**
+ * The scope of an ending's hold (card 2935; the code review's C7), over a `webhooks` row, for `@id` and
+ * `@readable`: what the account set, and, with `@readable` 1, every webhook with a secret it could read.
+ * scripts/mfa-reset.mjs builds the same text, which tests/mfa-reset-script.test.ts compares.
+ */
+export function endingScope(): string {
+	return `(set_by = @id OR (@readable = 1 AND secret <> '' AND ${readableBy('@id', ROLE_OF_ID)}))`;
+}
+
+/**
+ * The scope of the host's `--hold-readable` (card 2935, P7; the code review's C7), for `@id`: every webhook with a
+ * secret the account did not set and can read now, unless it provably read nothing. The server holds this scope at
+ * no write of its own; the script builds the same text, which tests/mfa-reset-script.test.ts compares.
+ */
+export function readableNowScope(): string {
+	return `set_by IS NOT @id AND secret <> '' AND ${readableBy('@id', ROLE_OF_ID)} AND ${mayHaveRead('@id')}`;
+}
+
+/** Give the server's connection `stamp_of`, which `readableCountSql` needs, for a query that embeds it (the admin page's). */
+export function readyReadableCounts(): void {
+	registerStampFunctions(sqlite);
+}
+
+/** Whether the account may have read a webhook's secret (P1), asked of the database as it is now. */
+export function accountMayHaveRead(userId: number, exceptInvite: Buffer | null = null, database: typeof sqlite = sqlite): boolean {
+	registerStampFunctions(database);
+	return (database.prepare(`SELECT ${mayHaveRead('@id', '@except')} AS v`).get({ id: userId, except: exceptInvite }) as { v: number }).v === 1;
+}
+
+/** How many webhooks of others the account could read the secret of now (P11): `readableCountSql` for one account. */
+export function webhooksReadableBy(userId: number): number {
+	registerStampFunctions(sqlite);
+	return (sqlite.prepare(`SELECT ${readableCountSql('@id', '(SELECT role FROM users WHERE id = @id)')} AS n`).get({ id: userId }) as { n: number }).n;
+}
+
+/**
+ * The one statement that holds for an ending, a lowered role and the start pass (card 2935; card 2923's code review,
+ * E4): a read of the webhooks in `scope` already off with no hold, then one `UPDATE` of those on or off with no hold
+ * in `scope`, `'setter access ended'`, `held_at` now; told apart by the read. `scope` is SQL over the `webhooks` row
+ * with the named `params`; `mark` gives each row its reader. Neither opens a transaction nor tells.
+ */
+function holdInScope(
+	database: typeof sqlite,
+	scope: string,
+	params: Record<string, unknown>,
+	mark: (row: SwitchedOff) => SwitchedOff['reader']
+): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
+	registerStampFunctions(database);
+	// Read in the scope, then written by id in a statement of literals alone, so that the writer inventory reads it
+	// as switching off only (card 2702): the same rows, in the same transaction.
+	const found = database
+		.prepare(`SELECT id, active FROM webhooks WHERE (active = 1 OR held_because IS NULL) AND ${scope}`)
+		.all(params) as { id: number; active: number }[];
+	// The write runs whether or not a row was found, as every ending's statements do (the pinned write sequences).
+	const alreadyOff = new Set(found.filter((row) => row.active === 0).map((row) => row.id));
+	const rows = database
+		.prepare(
+			"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? " +
+				'WHERE id IN (SELECT value FROM json_each(?)) AND (active = 1 OR held_because IS NULL) ' +
+				'RETURNING id, board_id AS boardId, receiver, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
+		)
+		.all(stamp(), JSON.stringify(found.map((row) => row.id))) as HeldRow[];
+	const switchedOff: SwitchedOff[] = [];
+	const held: SwitchedOff[] = [];
+	for (const hook of heldAsSwitchedOff(rows, false)) {
+		const reader = mark(hook);
+		const told = reader === undefined ? hook : { ...hook, reader };
+		(alreadyOff.has(hook.id) ? held : switchedOff).push(told);
+	}
+	return { switchedOff, held };
+}
 
 /**
  * Switch off, for good, every webhook `userId` set that is on, and hold every
@@ -676,27 +832,167 @@ export const ENDING_IN_MAIL = {
  * after a read of those already off so the two are told apart. One held for
  * another reason keeps it. Inside the caller's transaction (it throws outside
  * one); once committed, both groups are told with `cause` (`tellSwitchedOff`:
- * a WARN each, and one mail to each owner of their boards). The one writer
- * for an ending of an account's access on the server (card 2923's code
- * review, E4): `endAccountAccess` and `deleteUser` call it; the host's
- * scripts/mfa-reset.mjs keeps a copy in its own SQL.
+ * a WARN each, and one mail to each owner of their boards). The one place
+ * an ending of an account's access holds on the server (card 2923's code
+ * review, E4), through `holdInScope`: `endAccountAccess` and `deleteUser` call
+ * it; the host's scripts/mfa-reset.mjs keeps a copy in its own SQL.
+ *
+ * With `readable` (card 2935), the same statement takes too every webhook whose secret the account could read
+ * (`readableBy`, its role and owner rows as stored now, read in SQL, so a disable that wrote `disabled_at` first
+ * still finds them) that has a secret, whoever set it: each marked `reader`. The caller decides `readable`: an
+ * ending with the keys, of an account that may have read (`accountMayHaveRead`, P1), asked before the keys go.
+ * `readable` counts those, not set by the account. The account itself is never mailed through the administrators'
+ * fallback (P14).
  */
-export function holdWebhooksOfSetter(userId: number, cause: EndingCause): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
+export function holdWebhooksOfSetter(
+	userId: number,
+	cause: EndingCause,
+	{ readable }: { readable: boolean }
+): { switchedOff: SwitchedOff[]; held: SwitchedOff[]; readable: number } {
 	if (!sqlite.inTransaction) throw new Error('holdWebhooksOfSetter holds inside the transaction that ends the access, and none is open');
-	const alreadyOff = new Set(
-		sqlite.prepare('SELECT id FROM webhooks WHERE set_by = ? AND active = 0 AND held_because IS NULL').pluck().all(userId) as number[]
-	);
-	const rows = sqlite
+	const scope = endingScope();
+	// Bound as 1 or 0 (P13, L6).
+	const { switchedOff, held } = holdInScope(sqlite, scope, { id: userId, readable: readable ? 1 : 0 }, (hook) => (hook.setBy === userId ? undefined : userId));
+	if (switchedOff.length + held.length > 0) {
+		afterCommit(() => tellSwitchedOff(switchedOff, cause.log, { mail: true }, held, cause.mail, userId));
+	}
+	return { switchedOff, held, readable: [...switchedOff, ...held].filter((hook) => hook.reader !== undefined).length };
+}
+
+/**
+ * Hold the webhooks whose secret `userId` could read before a lowered role and cannot now (card 2935, P2): an
+ * administrator made an ordinary user (`boardIds` 'all'), or an `owner` member row lowered or removed (that board).
+ * Called after the change is written, in its transaction: what it can still read (a board it made, another owner
+ * row, an administrator's role) is left, as is what it set and what has no secret; nothing for an account that
+ * provably read nothing (P1). Same reason and mail as an ending; its keys and sessions are the caller's. Returns how
+ * many it took.
+ */
+export function holdNoLongerReadable(userId: number, boardIds: readonly number[] | 'all', cause: EndingCause): number {
+	if (!sqlite.inTransaction) throw new Error('holdNoLongerReadable holds inside the transaction that lowers the role, and none is open');
+	// A disabled account whose disable is covered read nothing since (card 2935's code review, C1): its disable, or
+	// the start pass, held what it could read, and what owners switched on since has a secret it never saw.
+	if (disableCovered(userId)) return 0;
+	const boards = boardIds === 'all' ? '1' : 'board_id IN (SELECT value FROM json_each(@boards))';
+	const scope =
+		`set_by IS NOT @id AND secret <> '' AND ${boards} ` +
+		`AND NOT ${readableBy('@id', '(SELECT role FROM users WHERE id = @id)')} AND ${mayHaveRead('@id')}`;
+	const params: Record<string, unknown> = { id: userId, ...(boardIds === 'all' ? {} : { boards: JSON.stringify(boardIds) }) };
+	const { switchedOff, held } = holdInScope(sqlite, scope, params, () => userId);
+	if (switchedOff.length + held.length > 0) {
+		afterCommit(() => tellSwitchedOff(switchedOff, cause.log, { mail: true }, held, cause.mail, userId));
+	}
+	return switchedOff.length + held.length;
+}
+
+/**
+ * The `settings` key that holds the moment up to which the start pass has covered the webhooks readable by
+ * disabled owners and administrators (card 2935, P4): written by the pass and a restore that ran it, and advanced by
+ * every disable on this image (`advanceReadableCovered`), whose own ending held what it could read.
+ */
+export const WEBHOOKS_READABLE_COVERED = 'webhooks_readable_by_disabled_held';
+
+/** The moment `database`'s flag names, in the stored form, or null: absent, or a moment it cannot read (fail closed: the pass runs in full). */
+export function readableCoveredAt(database: typeof sqlite = sqlite): string | null {
+	const row = database.prepare('SELECT value FROM settings WHERE key = ?').get(WEBHOOKS_READABLE_COVERED) as { value: string | null } | undefined;
+	return row ? toStamp(row.value) : null;
+}
+
+/**
+ * Whether the account is disabled and its disable is covered (card 2935's code review, C1, C2): its `disabled_at`
+ * names a moment, a moment is stored, and the disable is at or before it. Then what it could read was held when it
+ * was disabled, or by the pass, and it has read nothing since. False for an enabled account, and wherever the answer
+ * is not known (fail closed: hold).
+ */
+export function disableCovered(userId: number, database: typeof sqlite = sqlite): boolean {
+	const moment = readableCoveredAt(database);
+	if (moment === null) return false;
+	registerStampFunctions(database);
+	const row = database.prepare('SELECT stamp_of(disabled_at) AS at FROM users WHERE id = ?').get(userId) as { at: string | null } | undefined;
+	return row !== undefined && row.at !== null && row.at <= moment;
+}
+
+/**
+ * Whether this process's start pass has run to its commit (card 2935's code review, C2a): only then may a disable
+ * move the stored moment past itself, since only then are the disables before it known to be covered.
+ */
+let readablePassDone = false;
+
+/** Say that this process's start pass, or a restore's, has committed (C2a). */
+export function markReadablePassDone(): void {
+	readablePassDone = true;
+}
+
+/** For tests: this process as one whose start pass has not run. */
+export function forgetReadablePassDone(): void {
+	readablePassDone = false;
+}
+
+/**
+ * Advance the flag's moment to `at`, the `disabled_at` of the account `userId` whose disable has just held what it
+ * could read (P4), where it names an earlier one; and only (card 2935's code review, C2) once this process's start
+ * pass has committed, and where no other account was disabled between the moment and `at`, or at a moment that
+ * cannot be read: such a disable was not covered, and the moment stays before it for the next start.
+ */
+export function advanceReadableCovered(at: string, userId: number): void {
+	if (!readablePassDone) return;
+	registerStampFunctions(sqlite);
+	sqlite
 		.prepare(
-			"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ? AND (active = 1 OR held_because IS NULL) " +
-				'RETURNING id, board_id AS boardId, receiver, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
+			'UPDATE settings SET value = @at WHERE key = @key AND stamp_of(value) < stamp_of(@at) AND NOT EXISTS (' +
+				'SELECT 1 FROM users AS o WHERE o.id <> @id AND o.disabled_at IS NOT NULL AND (stamp_of(o.disabled_at) IS NULL OR ' +
+				'(stamp_of(o.disabled_at) > stamp_of(settings.value) AND stamp_of(o.disabled_at) <= stamp_of(@at))))'
 		)
-		.all(stamp(), userId) as HeldRow[];
-	const switchedOff: SwitchedOff[] = [];
-	const held: SwitchedOff[] = [];
-	for (const hook of heldAsSwitchedOff(rows, false)) (alreadyOff.has(hook.id) ? held : switchedOff).push(hook);
-	if (rows.length > 0) afterCommit(() => tellSwitchedOff(switchedOff, cause.log, { mail: true }, held, cause.mail));
-	return { switchedOff, held };
+		.run({ at, key: WEBHOOKS_READABLE_COVERED, id: userId });
+}
+
+/**
+ * When migration 0056 (the setters, card 2168) was applied here, from the runner's own record
+ * (`__drizzle_migrations.created_at`), or null: no row, no such column, or a value that names no moment.
+ */
+export function setterRecordedSince(database: typeof sqlite = sqlite): string | null {
+	try {
+		const row = database.prepare("SELECT created_at AS at FROM __drizzle_migrations WHERE hash = '0056_add_webhook_set_by.sql'").get() as
+			| { at: unknown }
+			| undefined;
+		return row ? toStamp(row.at) : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The start pass and a restore's (card 2935, P3, P4, P12): hold every webhook with a secret, not held, that an
+ * owner or administrator disabled after `since` could read and did not set (its own are the setter rules', card
+ * 2752's sweep), and that was made on or before that disable (a moment
+ * it cannot read counts as before); and, where `since` is null (the first run), every one made before migration
+ * 0056 was applied here, or, where that is not known, every one (fail closed). `listed` are webhooks a backup left
+ * without their secret, counted as having one. Each marked `reader: 'found'`. Then the flag is written as now.
+ * Inside the caller's transaction; tells nobody.
+ */
+export function coverReadable(database: typeof sqlite, { since, listed = [] }: { since: string | null; listed?: readonly number[] }): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
+	registerStampFunctions(database);
+	// The steady state (card 2935's code review, C9): a moment stored, so nothing before setters were recorded is
+	// pending, and no account disabled after it or at a moment that cannot be read. Nothing to hold, and the moment
+	// is left as it is: writing it again changes nothing that is read, since no disable lies between.
+	if (
+		since !== null &&
+		!database
+			.prepare('SELECT 1 FROM users WHERE disabled_at IS NOT NULL AND (stamp_of(disabled_at) IS NULL OR stamp_of(disabled_at) > ?) LIMIT 1')
+			.get(since)
+	) {
+		return { switchedOff: [], held: [] };
+	}
+	const scope =
+		"(secret <> '' OR id IN (SELECT value FROM json_each(@listed))) AND (" +
+		'EXISTS (SELECT 1 FROM users AS d WHERE d.disabled_at IS NOT NULL AND webhooks.set_by IS NOT d.id AND (@since IS NULL OR stamp_of(d.disabled_at) > @since) ' +
+		'AND (stamp_of(webhooks.created_at) IS NULL OR stamp_of(d.disabled_at) IS NULL OR stamp_of(webhooks.created_at) <= stamp_of(d.disabled_at)) ' +
+		`AND ${readableBy('d.id', 'd.role', 'webhooks.board_id')} AND ${mayHaveRead('d.id')}) ` +
+		'OR (@since IS NULL AND (@before IS NULL OR stamp_of(webhooks.created_at) IS NULL OR stamp_of(webhooks.created_at) < @before)))';
+	const found = holdInScope(database, scope, { since, before: since === null ? setterRecordedSince(database) : null, listed: JSON.stringify(listed) }, () => 'found');
+	database
+		.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value')
+		.run(WEBHOOKS_READABLE_COVERED, stamp());
+	return found;
 }
 
 /**

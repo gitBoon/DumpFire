@@ -91,6 +91,8 @@ export const POST: RequestHandler = async ({ params, request, locals, cookies, g
 		invitesEnded: access.invites,
 		apiKeysEnded: access.apiKeys,
 		webhooksSwitchedOff: access.webhooks,
+		// Card 2935: the webhooks of others whose secret the account could read, switched off or held.
+		readableWebhooksHeld: access.readableWebhooks,
 		reportSchedulesPaused: access.reportSchedules,
 		requestLinksEnded: disabled.requestLinksEnded,
 		soleOwnerOf: disabled.soleOwnerOf,

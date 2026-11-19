@@ -15,7 +15,7 @@ import { writeAs } from '$lib/server/write-as';
 import { endUnusedInvites } from '$lib/server/invites';
 import { endPendingSignIns } from '$lib/server/mfa-store';
 import { anyRemoved, removeSettingsSetBy, settingsHeldBy } from '$lib/server/setting-setters';
-import { switchOffLostWebhooks } from '$lib/server/webhooks';
+import { ENDING_IN_MAIL, holdNoLongerReadable, switchOffLostWebhooks } from '$lib/server/webhooks';
 import { mayManageAccount } from '$lib/account-rule';
 import { createLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
@@ -213,6 +213,15 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 			// longer open is switched off for good, in this write (card 2752, D2).
 			if (roleChanged) {
 				switchOffLostWebhooks({ setters: [target.id] }, `${target.username}'s role was changed to ${row.role} by ${actor.username}`);
+			}
+			// An administrator made an ordinary user could read every webhook's secret, and can now read only those on
+			// the boards it owns: the others with a secret are held, so each is given a new secret when switched on
+			// (card 2935, P2). Its keys and sessions are as above.
+			if (roleChanged && (target.role === 'admin' || target.role === 'superadmin') && row.role !== 'admin' && row.role !== 'superadmin') {
+				holdNoLongerReadable(target.id, 'all', {
+					log: `${target.username}'s role was changed to ${row.role} by ${actor.username}`,
+					mail: ENDING_IN_MAIL.demoted
+				});
 			}
 
 			// An administrator made a user loses what they set that sends mail or

@@ -1795,6 +1795,18 @@ describe('the admin page’s password dialog, src/lib/components/admin/ResetPass
 		expect(page.getText()).toContain(
 			'let resetTargetSchedules = $derived(resetKeysRead ? (resetTarget?.reportSchedules ?? null) : null);'
 		);
+		// Card 2935 (P8, F6): the only dialog that shows how many webhooks of others go, and those already off it set,
+		// each read again as it opens.
+		expect(page.getText()).toContain('let resetTargetReadable = $derived(resetKeysRead ? (resetTarget?.webhooksReadable ?? null) : null);');
+		expect(page.getText()).toContain('let resetTargetAlreadyOff = $derived(resetKeysRead ? (resetTarget?.webhooksAlreadyOff ?? null) : null);');
+		expect(
+			around(
+				"They could read the secret of {counted(resetTargetReadable, 'other webhook')}, as {resetTarget?.role === 'admin' || resetTarget?.role === 'superadmin' ? 'an administrator' : \"a board's owner\"}: {resetTargetReadable === 1 ? 'it is' : 'those are'} switched off too, to be switched on only with a new secret, and their boards' owners are mailed."
+			).slice(-2)
+		).toEqual([
+			{ condition: 'resettingOwnPassword', inElse: true },
+			{ condition: 'resetTargetReadable !== null && resetTargetReadable > 0', inElse: false }
+		]);
 	});
 
 	it('reads the counts again when the dialog opens, and shows none until it has', () => {
@@ -1835,7 +1847,13 @@ describe('the admin page’s password dialog, src/lib/components/admin/ResetPass
 			"`Password reset: ${counted(sessionsEnded, 'session')} and ${counted(apiKeysEnded, 'API key')} ended, ` +"
 		);
 		expect(resetting.getText()).toContain(
-			"`${counted(webhooksSwitchedOff, 'webhook')} switched off and ${counted(reportSchedulesPaused, 'report schedule')} paused`"
+			"`${counted(webhooksSwitchedOff, 'webhook')} switched off and ${counted(reportSchedulesPaused, 'report schedule')} paused${readableSaid}`"
+		);
+		// Card 2935: the webhooks of others whose secret they could read, said apart where there were any.
+		expect(resetting.getText()).toContain('const readable = result?.readableWebhooksHeld;');
+		expect(resetting.getText()).toContain(
+			// Card 2935's code review (C11c): in the one form the disable's toast and the two-step reset's message use.
+			"const readableSaid = typeof readable === 'number' && readable > 0 ? `; ${heldOfOthersWords(readable)}` : '';"
 		);
 		for (const count of ['sessionsEnded', 'apiKeysEnded', 'webhooksSwitchedOff', 'reportSchedulesPaused']) {
 			expect(resetting.getText()).toContain(`const ${count} = result?.${count};`);
@@ -1898,9 +1916,16 @@ describe('the invite page, src/routes/invite/[token]/+page.svelte', () => {
 	it('says, before the form is sent, that setting a password ends the account’s API keys, switches off its webhooks and pauses its report schedules', () => {
 		const notice = 'Setting a password here {whatItEnds} and signs it out everywhere else.';
 
-		// The notice shows for something ended, or for a webhook already off alone (card 2923's code review, E9).
-		const shown = { condition: 'whatItEnds || webhooksAlreadyOff > 0', inElse: false };
+		// The notice shows for something ended, or for a webhook already off alone (card 2923's code review, E9), or for
+		// webhooks of others whose secret the account could read (card 2935, P8).
+		const shown = { condition: 'whatItEnds || webhooksAlreadyOff > 0 || data.holdsReadable', inElse: false };
 		expect(around(notice)).toEqual([{ condition: 'data.valid', inElse: false }, shown, { condition: 'whatItEnds', inElse: false }]);
+		// Card 2935 (P8): in words, never a number, only where the account may have read a secret (P1, decided by the load).
+		expect(
+			around(
+				"Every webhook whose signing secret this account could read, as an administrator or a board's owner, is switched off too, and can be switched on again only with a new secret; its board's owners are mailed."
+			)
+		).toEqual([{ condition: 'data.valid', inElse: false }, shown, { condition: 'data.holdsReadable', inElse: false }]);
 		// Card 2923 (S9): where it switches webhooks off, that their boards' owners are mailed, of those already off too.
 		expect(
 			around("Their boards' owners are mailed about them, and about any already switched off, which can now be switched on only with a new secret.")

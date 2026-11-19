@@ -26,7 +26,7 @@ import { endUnusedInvites } from './invites';
 import { endPendingSignIns, holdsFactor, matchFactors, spendRecoveryCode, spendStep, type FactorMatch } from './mfa-store';
 import { raiseSignal } from './sign-in-challenges';
 // A cycle of functions only (webhooks.ts imports `keyEnded`): neither uses the other at module load (card 2923, decision 13).
-import { holdWebhooksOfSetter, type EndingCause } from './webhooks';
+import { accountMayHaveRead, holdWebhooksOfSetter, type EndingCause } from './webhooks';
 import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
@@ -923,8 +923,13 @@ export type AccessEnded = {
 	/** Links to set up an authenticator (card 2768). */
 	enrolmentLinks: number;
 	apiKeys: number;
-	/** Webhooks the account set that were on, switched off. */
+	/** Webhooks the account set that were on, switched off (card 2935, P9: only those it set). */
 	webhooks: number;
+	/**
+	 * Webhooks of others whose secret the account could read, switched off or held with its keys (card 2935): 0
+	 * without `apiKeys`, and for an account that provably read nothing (P1).
+	 */
+	readableWebhooks: number;
 	/** The account's report schedules that were on, paused. */
 	reportSchedules: number;
 	/** The ids of the API keys deleted, in order (card 2915's code review, CS2). */
@@ -1009,15 +1014,24 @@ export const namingIds = (ids: number[]): string =>
  * their boards, listing both apart, naming the kind of action and nobody
  * (`cause.mail`, the code review's S5). Every caller gives both.
  *
+ * Under `apiKeys`, every webhook whose secret the account could read as an
+ * administrator (every board) or a board's owner, whoever set it, that has a
+ * secret is held the same way (card 2935), unless the account provably read
+ * nothing (`accountMayHaveRead`, P1), asked before its keys are deleted, with
+ * `exceptInvite`, the invite being used now, left out. Those are counted in
+ * `readableWebhooks`; `webhooks` and `webhookIds` stay the ones it set (P9).
+ *
  * It throws if no transaction is open.
  */
-export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause: EndingCause }): AccessEnded {
+export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause: EndingCause; exceptInvite?: Buffer }): AccessEnded {
 	if (!sqlite.inTransaction) {
 		throw new Error(
 			'endAccountAccess must be called inside the transaction that sets the password: wrap the change ' +
 				'and this call in inTransaction.'
 		);
 	}
+	// Asked before anything ends (card 2935, P1): the keys deleted below are part of the answer.
+	const readable = opts.apiKeys && accountMayHaveRead(userId, opts.exceptInvite ?? null);
 	const sessionsEnded = db.delete(sessions).where(eq(sessions.userId, userId)).run().changes;
 	const invitesEnded = endUnusedInvites(userId);
 	const pending = endPendingSignIns(userId);
@@ -1029,7 +1043,10 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause
 	// each is given a new secret, which whoever held the account may know; and
 	// its receiver is the owner's to send to. Those already off with no hold are
 	// held too, and both are told once committed (card 2923; `holdWebhooksOfSetter`).
-	const webhookIds = opts.apiKeys ? holdWebhooksOfSetter(userId, opts.cause).switchedOff.map((hook) => hook.id) : [];	// Always (card 2894): every caller is a way of taking the account back.
+	// With those whose secret it could read (card 2935); the ids are those it set (P9).
+	const hold = opts.apiKeys ? holdWebhooksOfSetter(userId, opts.cause, { readable }) : null;
+	const webhookIds = hold ? hold.switchedOff.filter((hook) => hook.reader === undefined).map((hook) => hook.id) : [];
+	// Always (card 2894): every caller is a way of taking the account back.
 	const reportScheduleIds = ids(
 		db
 			.update(reportSchedules)
@@ -1045,6 +1062,7 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause
 		enrolmentLinks: pending.enrolmentLinks,
 		apiKeys: apiKeysEnded,
 		webhooks: webhookIds.length,
+		readableWebhooks: hold?.readable ?? 0,
 		reportSchedules: reportScheduleIds.length,
 		apiKeyIds,
 		webhookIds,

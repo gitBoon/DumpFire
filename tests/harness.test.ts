@@ -214,6 +214,8 @@ const TEST_FILES = [
 	'plan-table.test.ts',
 	'pricing.test.ts',
 	'public-requests.test.ts',
+	// Card 2935: ending or lowering an owner's or administrator's access holds the webhooks whose secret it could read.
+	'readable-webhooks.test.ts',
 	'report-mail.test.ts',
 	'report-access.test.ts',
 	'report-recipients.test.ts',

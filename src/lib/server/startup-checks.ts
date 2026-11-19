@@ -123,7 +123,11 @@ import { parseAllowInside } from './webhook-address';
 import {
 	activeWebhooksRefused,
 	boardsOverWebhookCap,
+	coverReadable,
 	holdOf,
+	markReadablePassDone,
+	readableCoveredAt,
+	tellSwitchedOff,
 	holdUnheldOfGoneSetters,
 	hostOfHook,
 	keysBeforeRecorded,
@@ -1300,6 +1304,45 @@ export function holdAlreadyOffWebhooksAtStart(): number | null {
 		}
 	}
 	return held.length;
+}
+
+/**
+ * Hold, at every start, the webhooks whose secret an owner or administrator disabled since the last start could
+ * read (card 2935, P3, P4; `coverReadable`): the first run (no `webhooks_readable_by_disabled_held`, or one that
+ * names no moment) every disabled one, and every webhook with a secret made before migration 0056 was applied here
+ * (every one, where that moment is not recorded); each later start those disabled after the stored moment, which
+ * only an older image can leave, since every disable here moves the moment past itself. The moment is written as
+ * now in the same transaction. Told after the commit as the start sweep tells (A11): the boards' owners mailed only
+ * where the schedulers run. Returns how many it switched off or held, or null when it could not: a WARN, and the
+ * next start tries again. Called from hooks.server.ts after `holdAlreadyOffWebhooksAtStart`, before the schedulers.
+ */
+export function holdReadableWebhooksAtStart(value: string | undefined = process.env.SCHEDULERS, isDev: boolean = dev): number | null {
+	let found: { switchedOff: SwitchedOff[]; held: SwitchedOff[] };
+	try {
+		found = inTransaction(() => coverReadable(sqlite, { since: readableCoveredAt(sqlite) }));
+		// Committed: from here a disable may move the moment past itself (card 2935's code review, C2a).
+		markReadablePassDone();
+	} catch (err) {
+		try {
+			webhooksLog.warn(
+				`The webhooks whose secret a disabled owner or administrator could read could not be held at start: ${(err as Error)?.message ?? err}. ` +
+					'The next start tries again.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+	const { switchedOff, held } = found;
+	if (switchedOff.length + held.length > 0) {
+		try {
+			const setting = schedulerSetting(value, isDev);
+			tellSwitchedOff(switchedOff, 'found when the server started', setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` }, held);
+		} catch {
+			// The hold is committed; only its telling was lost.
+		}
+	}
+	return switchedOff.length + held.length;
 }
 
 /** The `settings` key that says the webhooks set up before keys were recorded were announced (card 2893, D6). */

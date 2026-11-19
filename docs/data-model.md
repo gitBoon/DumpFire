@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.91
+version: 1.92
 status: As-Built
 date: 2026-11-19
 tags:
@@ -1613,6 +1613,22 @@ the release) holds every one itself, on the server's database and on a working c
 write it, so the next start does it again and writes it. A host going back to an image from before
 the release deletes the row, so that the next start of this release holds again what the older
 image left unheld.
+
+The setting `webhooks_readable_by_disabled_held` (card 2935, P4; no migration) is the moment, in the
+stored form, up to which the start pass has held the webhooks whose secret a disabled owner or
+administrator could read (`holdReadableWebhooksAtStart`, `coverReadable` and
+`WEBHOOKS_READABLE_COVERED` in `webhooks.ts`). Absent, or naming no moment, the pass runs in full:
+every disabled owner's or administrator's readable webhooks made before its disable, and every
+webhook with a secret made before migration 0056 was applied here (from `__drizzle_migrations`);
+present, only accounts disabled after it. The pass writes it as now where anything lay after it
+(none disabled since: nothing held, nothing written, the code review's C9); a disable on this image
+moves it to its `disabled_at` (`advanceReadableCovered`), since that ending held what the account
+could read, once this process's pass has committed and only where no other account was disabled
+in between or at an unreadable moment (C2). Every restore runs the pass itself from the restored
+settings' own moment, before any secret is filled (P12, C3). `held_because`
+`'setter access ended'` is written since card 2935 also for a webhook of another account whose
+secret the ended or lowered owner or administrator could read, whoever set it: the stored value is
+the same, so an older image still gives it a new secret when switched on.
 
 ```mermaid
 flowchart LR

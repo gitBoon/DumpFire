@@ -577,15 +577,17 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			expect(db.select().from(apiKeys).where(eq(apiKeys.userId, other.id)).all()).toEqual(othersKeys);
 			expect(hookOf(othersHook.id)).toEqual({ active: true, heldBecause: null, heldAt: null });
 			// S5: the count the message says, the answer's and the mail's list of webhooks are the one switch-off's.
-			// Card 2923 (E2): the holder's notice selected by its subject; beside it, the board's owners' mail, one, to the
-			// holder, who owns the board, naming the reset and who made it.
+			// Card 2923 (E2): the holder's notice selected by its subject; beside it, the board's owners' mail, one: since
+			// card 2935's code review (C11d) not to the holder, the board's only owner, whose access the reset ended, but to
+			// its administrator.
 			const [mail] = sent.emails.filter((email) => email.subject === HOLDER_NOTICE);
 			expect(sent.emails.filter((email) => email.subject !== HOLDER_NOTICE).map((email) => [email.to, email.subject])).toEqual([
-				[holder.email, 'A webhook on your board was switched off']
+				[admin.email, 'A webhook on your board was switched off']
 			]);
 			// The kind of action and no account (card 2923's code review, S5): neither the holder nor the administrator is named.
 			const owners = sent.emails.find((email) => email.subject !== HOLDER_NOTICE)!.html;
-			expect(owners).toContain('What caused it: the account that set it up had its two-step sign-in reset by an administrator.');
+			// Card 2935: the kind of action without a subject; the item says whose it was.
+			expect(owners).toContain('What caused it: an account had its two-step sign-in reset by an administrator.');
 			for (const name of [/\bholder\b/, /\bada\b/]) expect(owners).not.toMatch(name);
 			const listed = mail.html.match(/<li>[^<]*, to [^<]*: made [^<]*<\/li>/g) ?? [];
 			expect(listed).toEqual([`<li>Sales, to hooks.example.test: made ${ended.hookMade} UTC</li>`]);
@@ -775,13 +777,15 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			if (says === null) expect(res.body.message).not.toContain('report schedule');
 			for (const text of ['Deploy', 'Sales', 'hooks.example.test', ...(oldName === null ? [] : [oldName])]) expect(res.body.message).not.toContain(text);
 			if (refused) {
-				expect(sent.emails).toEqual([]);
+				// The holder's notice refused; the owners' mail goes to the administrator (card 2935's code review, C11d).
+				expect(sent.emails.map((email) => email.to)).toEqual(hooks === 0 ? [] : [admin.email]);
 				return;
 			}
 			// Card 2923 (E2): the holder's notice by its subject, and beside it, where a webhook was switched off, the
-			// board's owners' mail, to the holder, who owns the board.
+			// board's owners' mail: since card 2935's code review (C11d) not to the holder, its only owner, whose
+			// access the reset ended, but to the administrator.
 			expect(sent.emails.filter((email) => email.subject === HOLDER_NOTICE)).toHaveLength(1);
-			expect(sent.emails.filter((email) => email.subject !== HOLDER_NOTICE).map((email) => email.to)).toEqual(hooks === 0 ? [] : [holder.email]);
+			expect(sent.emails.filter((email) => email.subject !== HOLDER_NOTICE).map((email) => email.to)).toEqual(hooks === 0 ? [] : [admin.email]);
 			const [mail] = sent.emails.filter((email) => email.subject === HOLDER_NOTICE);
 			if (says === null) {
 				expect(mail.html).not.toContain('report schedule');

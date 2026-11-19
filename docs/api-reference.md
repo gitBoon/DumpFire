@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.149
+version: 1.150
 status: As-Built
 date: 2026-11-19
 tags:
@@ -393,6 +393,30 @@ some fields were answered in that form, which names no zone, and the same field 
 either.
 
 ### Changes on 2026-11-18
+
+**Breaking, within 1.15.0 (point 7): ending or lowering an owner's or administrator's access holds
+every webhook whose secret it could read** (card 2935). A webhook's secret is given only to the
+board's owner (its creator, or an exact `owner` member row) and to an administrator or the
+superadmin (every board), through `GET /api/v1/boards/{boardId}/webhooks`, `GET
+/api/v1/webhooks/{webhookId}` and the `PUT` that switches one on. So when such an account's access
+ends with its keys (a password reset, a two-step reset, on the server's host too unless run with
+`--keep-api-keys`, an invite used, its own password change that ends keys, a disable, or a delete,
+unless the account's disable already covered it and it held no key), or an administrator is made
+an ordinary user, or an owner of
+a board is made an editor or a viewer or taken off it, every webhook whose secret it could read and
+can no longer, that has a secret and is not already held, is switched off (or held, where already
+off) as `setter access ended`, whoever set it: switched on again it is given a new secret, a
+`secret` sent with that switch-on is `400`, and only the board's owner or an administrator deletes
+it or makes a webhook to its receiver. An account that provably read nothing (never signed in, no
+API key, no invite used but the one being used, made after two-step sign-in was released here) is
+left out. Every start holds each webhook with a secret that an owner or administrator disabled
+since the last start could read (the first time, any, and every webhook made before setters were
+recorded), and every restore does the same from the backup's own record of it. The two `GET` routes
+that give a secret ask again whether the key still works, and who its account is now, before
+giving it (a key ended meanwhile is `401`). The `setter access ended` sentence now names an account
+that could read the secret. The boards' owners are mailed as for any ending. Internal answers,
+additive: the password set, the own change, the disable and the two-step reset answer
+`readableWebhooksHeld`; `webhooksSwitchedOff` still counts only the webhooks the account set.
 
 **Breaking: ending an account's access also holds the webhooks it set that were already switched
 off, and mails the boards' owners** (card 2923; OpenAPI document version `1.15.0`, with a dated
@@ -5763,11 +5787,14 @@ flowchart TD
   was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it
   on with your own key, which makes you its setter and gives it a new secret, given in that
   answer and readable by the board's owner or an administrator, and update the receiver.",
-  "This was switched off because the account that set it up had its password or its two-step
-  sign-in reset, ended its API keys when changing its own password, used an invite, was
-  disabled, or was deleted; one already switched off then, or found switched off with its setter
-  disabled or not recorded, is held the same way. …" (the same advice; since 1.15.0, card 2923,
-  also for one switched off by a `PUT` before its setter's access ended) or "This was switched off because nobody is
+  "This was switched off because the account that set it up, or an account that could read its
+  secret as the board's owner or an administrator, had its password or its two-step sign-in
+  reset, ended its API keys when changing its own password, used an invite, was disabled, or was
+  deleted, or, for one that could read it, lost that role; one already switched off then, or
+  found switched off with its setter disabled or not recorded, is held the same way. Delete the
+  webhook unless you recognise its address; …" (the same advice; since 1.15.0, card 2923, also
+  for one switched off by a `PUT` before its setter's access ended, and card 2935, for one whose
+  secret an owner or administrator who lost that access could read) or "This was switched off because nobody is
   recorded as having set it up. Delete it unless you recognise the address; to keep it, switch
   it on with your own key, which makes you its setter and gives it a new secret, given in that
   answer and readable by the board's owner or an administrator, and update the receiver." (since

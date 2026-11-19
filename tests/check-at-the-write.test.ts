@@ -4217,12 +4217,12 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 		writes: 1,
 		why: 'Changes a webhook: its address, secret, events or on and off. Only an API key reaches it, as for POST; card 2703.'
 	},
-	'src/lib/server/webhooks.ts#holdWebhooksOfSetter': {
+	'src/lib/server/webhooks.ts#holdInScope': {
 		does: 'switches off only',
 		writes: 1,
 		why:
 			"An administrator's password set, an invite used, a holder's own change that ends their keys, a disable (card 2671), a reset of the two-step sign-in (card 2915) and a delete switch off the webhooks the account set (card 2168), recording the hold 'setter access ended' (card 2752's code review, CS4); " +
-			"those already switched off without a hold are held in the same statement, active left off (card 2923). The one writer of both, for endAccountAccess and deleteUser (card 2923's code review, E4)."
+			"those already switched off without a hold are held in the same statement, active left off (card 2923); with them every webhook whose secret the account could read as an owner or administrator, and the same for a lowered role and the start pass (card 2935). The one statement of all of them (card 2923's code review, E4)."
 	},
 	'src/lib/server/webhooks.ts#holdUnheldOfGoneSetters': {
 		does: 'switches off only',
@@ -4308,8 +4308,14 @@ const WEBHOOK_WRITER_CALLERS: Record<string, readonly string[]> = {
 		'src/lib/server/startup-checks.ts#holdAlreadyOffWebhooksAtStart',
 		'src/lib/server/db/restore.ts#holdRestoredAlreadyOff'
 	],
+	// Card 2935: the one hold statement (`holdInScope`, not exported, so reachable from no other file) is held to its
+	// three exported callers below, each pinned to its own callers.
 	// Card 2923's code review (E4): the endings of an account's access.
 	'src/lib/server/webhooks.ts#holdWebhooksOfSetter': ['src/lib/server/auth.ts#endAccountAccess', 'src/lib/server/deletes.ts#deleteUser'],
+	// Card 2935 (P2): the two writes that lower an owner's or an administrator's role.
+	'src/lib/server/webhooks.ts#holdNoLongerReadable': ['src/routes/api/users/[id]/+server.ts#PUT', 'src/routes/api/boards/[id]/share/+server.ts#POST', 'src/routes/api/boards/[id]/share/+server.ts#DELETE'],
+	// Card 2935 (P4, P12): the start pass and the restore.
+	'src/lib/server/webhooks.ts#coverReadable': ['src/lib/server/startup-checks.ts#holdReadableWebhooksAtStart', 'src/lib/server/db/restore.ts#holdRestoredReadable'],
 	// Card 2898 (E15): the start alone seals, seals again and forgets the stored secrets.
 	'src/lib/server/stored-secrets.ts#sealPlainSecrets': ['src/lib/server/startup-checks.ts#sealStoredSecretsAtStart'],
 	'src/lib/server/stored-secrets.ts#resealStoredSecrets': ['src/lib/server/startup-checks.ts#startWithMfaKey'],
@@ -5372,10 +5378,13 @@ describe('the webhooks table is written only by the writers listed, each as list
 					'export function holdUnheldOfGoneSetters() {',
 					"\tsqlite.prepare(\"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE active = 0\").run('x');",
 					'}',
-					// Card 2923's code review (E4): its third, the endings' writer.
-					'export function holdWebhooksOfSetter(userId: number) {',
-					"\tsqlite.prepare(\"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ?\").run('x', userId);",
-					'}'
+					// Card 2923's code review (E4), card 2935: its third, the one hold statement, and its three callers.
+					'function holdInScope(scope: string) {',
+					"\tsqlite.prepare(\"UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = ? WHERE set_by = ?\").run('x', scope);",
+					'}',
+					"export function holdWebhooksOfSetter() { holdInScope('a'); }",
+					"export function holdNoLongerReadable() { holdInScope('b'); }",
+					"export function coverReadable() { holdInScope('c'); }"
 				].join('\n');
 			const heldWith = (body: string) => judgeWebhookWrites(HOOKS, switchOffHeld(body), WEBHOOK_WRITERS).findings;
 			expect(heldWith("db.update(webhooks).set({ active: false, heldBecause: hold, heldAt: '2026-11-18 00:00:00' }).where(eq(webhooks.id, id)).run();")).toEqual([]);

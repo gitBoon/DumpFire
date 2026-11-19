@@ -5,7 +5,7 @@ import { webhooks } from '$lib/server/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { pathId, readBody, readChoices, readText } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
-import { writeAs } from '$lib/server/write-as';
+import { readAs, writeAs } from '$lib/server/write-as';
 import { canSeeWebhookSecret, hostOfHook, keyOfWrite, presentWebhook, receiverOf, refuseWebhookOverCap, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import { readWebhookUrl } from '$lib/server/webhook-address';
 import { notifyWebhookCreated } from '$lib/server/notifications';
@@ -23,15 +23,21 @@ const HELD_OFF_RECEIVER =
  * or an administrator. Everyone else gets `hasSecret`, and no `url`. Both used
  * to be returned to anyone who could view the board: the address until card
  * 2133.
+ *
+ * The key and its account are asked again, in the transaction that reads the
+ * webhooks, before anything is revealed (card 2935, P5), as a write asks them.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
-	const boardId = requireBoard(locals.user, pathId(params.boardId, 'board'), 'view').id;
-	const reveal = canSeeWebhookSecret(locals.user!, boardId);
-
-	const hooks = db.select().from(webhooks)
-		.where(eq(webhooks.boardId, boardId))
-		.all()
-		.map((h) => presentWebhook(h, reveal));
+	const requested = pathId(params.boardId, 'board');
+	const hooks = readAs(locals, (asked) => {
+		const caller = requireUser(asked);
+		const boardId = requireBoard(caller, requested, 'view').id;
+		const reveal = canSeeWebhookSecret(caller, boardId);
+		return db.select().from(webhooks)
+			.where(eq(webhooks.boardId, boardId))
+			.all()
+			.map((h) => presentWebhook(h, reveal));
+	});
 
 	return json(hooks);
 };

@@ -4397,7 +4397,9 @@ describe('restoring a backup taken before the latest migrations', () => {
 			{ key: 'smtp_host', value: 'mail.example.test' },
 			{ key: 'theme', value: 'dark' },
 			// This server's moment keys began to be recorded on webhooks, kept by a restore (card 2752).
-			{ key: 'webhook_keys_recorded_at', value: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) }
+			{ key: 'webhook_keys_recorded_at', value: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) },
+			// The moment the restore's own run of the readable pass covered, for a backup with none (card 2935, P12).
+			{ key: 'webhooks_readable_by_disabled_held', value: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) }
 		]);
 		expect(result.restored['settings']).toBe(2);
 		// The form key opens to 32 random bytes as hex (card 2898).
@@ -5096,7 +5098,9 @@ describe('restoring a backup taken before the latest migrations', () => {
 				{ key: 'secrets_scrub_pending' },
 				{ key: 'smtp_host' },
 				{ key: 'stored_images_rechecked' },
-				{ key: 'theme' }
+				{ key: 'theme' },
+				// The moment the restore's own run of the readable pass covered (card 2935, P12).
+				{ key: 'webhooks_readable_by_disabled_held' }
 			]);
 		});
 

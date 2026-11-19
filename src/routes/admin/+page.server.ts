@@ -8,6 +8,7 @@ import { defaultOutside } from '$lib/server/db/restore';
 import { isFailureAddress, settingsHeldBy } from '$lib/server/setting-setters';
 import { TWO_STEP_RELEASED_AT, passwordSetUpEnds } from '$lib/server/mfa-store';
 import { stamp } from '$lib/timestamps';
+import { readableCountSql, readyReadableCounts } from '$lib/server/webhooks';
 import { boards, columns, cards, categories, users, teams, teamMembers } from '$lib/server/db/schema';
 import { count, eq, sql } from 'drizzle-orm';
 import { statSync } from 'node:fs';
@@ -70,6 +71,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const held = settingsHeldBy();
 	const now = Date.now();
 	const mayReset = (target: { id: number; role: string }) => target.id !== caller.id && mayManageAccount(caller, target);
+	// `stamp_of`, which the readable count below reads (card 2935, P1).
+	readyReadableCounts();
 	const allUsers = db.select({
 		id: users.id,
 		username: users.username,
@@ -91,6 +94,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 		backupConfig: sql<string | null>`(SELECT "value" FROM "settings" WHERE "settings"."key" = 'backup_config')`,
 		apiKeys: sql<number>`(SELECT COUNT(*) FROM "api_keys" WHERE "api_keys"."user_id" = "users"."id")`,
 		webhooks: sql<number>`(SELECT COUNT(*) FROM "webhooks" WHERE "webhooks"."set_by" = "users"."id" AND "webhooks"."active" = 1)`,
+		// And those it set that are already off with no hold, which an ending holds too (card 2923; card 2935, F6).
+		webhooksAlreadyOff: sql<number>`(SELECT COUNT(*) FROM "webhooks" WHERE "webhooks"."set_by" = "users"."id" AND "webhooks"."active" = 0 AND "webhooks"."held_because" IS NULL)`,
+		// The webhooks of others whose secret the account could read, as an ending of its access would hold them
+		// (card 2935, P11): the hold's own predicate, one correlated subquery in this one query.
+		webhooksReadable: sql<number>`${sql.raw(readableCountSql('"users"."id"', '"users"."role"'))}`,
 		reportSchedules: sql<number>`(SELECT COUNT(*) FROM "report_schedules" WHERE "report_schedules"."user_id" = "users"."id" AND "report_schedules"."enabled" = 1)`,
 		// Whether the account holds a second factor (card 2773): the panel offers
 		// its reset, and refuses its invite, which would not work. By the same
@@ -118,6 +126,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 				failureAddress: isFailureAddress(backupConfig, user.email),
 				apiKeys: counted ? user.apiKeys : null,
 				webhooks: counted ? user.webhooks : null,
+				webhooksAlreadyOff: counted ? user.webhooksAlreadyOff : null,
+				webhooksReadable: counted ? user.webhooksReadable : null,
 				reportSchedules: counted ? user.reportSchedules : null,
 				twoStep: counted ? user.twoStep === 1 : null,
 				passwordSetUpUntil: shown && until !== null && until.getTime() > now ? stamp(until) : null,

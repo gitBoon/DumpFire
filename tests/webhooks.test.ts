@@ -2270,15 +2270,16 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 	/**
 	 * `pausedBecause` for a webhook switched off by a password or two-step reset (card 2915), an invite used, a disable
 	 * (card 2671) or a delete of its setter (the code review's CS4); reworded by card 2923 (E12, S3) to name the holder's
-	 * own change that ends keys and one held when already off.
+	 * own change that ends keys and one held when already off; by card 2935 to name an account that could read its secret
+	 * as the board's owner or an administrator, and one that lost that role.
 	 */
 	const ACCESS_ENDED =
-		'This was switched off because the account that set it up had its password or its two-step sign-in reset, ended its API keys ' +
-		'when changing its own password, used an invite, was disabled, or was deleted; one already switched off then, or found ' +
-		'switched off with its setter disabled or not recorded, is held the same way. The address ' +
-		'was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it on with your own key, which ' +
-		"makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, " +
-		'and update the receiver.';
+		"This was switched off because the account that set it up, or an account that could read its secret as the board's owner or an " +
+		'administrator, had its password or its two-step sign-in reset, ended its API keys when changing its own password, used an ' +
+		'invite, was disabled, or was deleted, or, for one that could read it, lost that role; one already switched off then, or found ' +
+		'switched off with its setter disabled or not recorded, is held the same way. Delete the webhook unless you recognise its ' +
+		'address; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer ' +
+		"and readable by the board's owner or an administrator, and update the receiver.";
 	/**
 	 * `pausedBecause` for a webhook switched off because nobody is recorded as having set it up; since card 2923's code
 	 * review (S1) it is given a new secret too.

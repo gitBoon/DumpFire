@@ -53,7 +53,7 @@
  */
 import type { SessionUser } from './auth';
 import { stillAuthenticated } from './auth';
-import { inTransaction } from './db/transaction';
+import { inReadTransaction, inTransaction } from './db/transaction';
 import type { ActivitySource } from './logActivity';
 
 /**
@@ -160,6 +160,18 @@ export function inWrite(): void {
 				'writeAs(locals, (caller) => …), handing it caller.'
 		);
 	}
+}
+
+/**
+ * Run `read` in one transaction, handed the caller as their account is now,
+ * asked first as `writeAs` asks (card 2935, P5): for a read that gives what
+ * only an account still let in may have, a webhook's secret, so that a key
+ * ended or a role lowered after the gate is met as it is now, and the rows read
+ * are read under the same answer. It writes nothing of its own.
+ */
+export function readAs<T>(locals: App.Locals, read: (caller: SessionUser | null) => NotAPromise<T>): T {
+	// A deferred read transaction (card 2935's code review, C6): no write lock for a read.
+	return inReadTransaction<T>(() => read(stillAuthenticated(locals)));
 }
 
 /**

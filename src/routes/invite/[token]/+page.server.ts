@@ -5,7 +5,7 @@ import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { apiKeys, inviteTokens, reportSchedules, users, webhooks } from '$lib/server/db/schema';
 import { and, eq, count, isNull } from 'drizzle-orm';
 import { endAccountAccess, namingIds } from '$lib/server/auth';
-import { ENDING_IN_MAIL } from '$lib/server/webhooks';
+import { ENDING_IN_MAIL, webhooksReadableBy } from '$lib/server/webhooks';
 import { CheckNotMade, LONGEST_PASSWORD, PASSWORD_TOO_LONG, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
 import { createLogger } from '$lib/server/logger';
 import { usableInvite } from '$lib/server/invites';
@@ -64,8 +64,13 @@ export const load: PageServerLoad = async ({ params }) => {
 		.where(and(eq(webhooks.setBy, invite.userId), eq(webhooks.active, false), isNull(webhooks.heldBecause)))
 		.get();
 
+	// Whether setting a password here holds webhooks of others whose secret the account could read (card 2935, P8):
+	// said in words, never a number, and only where it provably read nothing is not so (P1).
+	const holdsReadable = webhooksReadableBy(invite.userId) > 0;
+
 	return {
 		valid: true,
+		holdsReadable,
 		username: user?.username || '',
 		emoji: user?.emoji || '👤',
 		apiKeys: keys?.count ?? 0,
@@ -150,9 +155,11 @@ export const actions: Actions = {
 			// This one is marked used first, so it is not among the invites deleted.
 			// The account's name, for the cause the boards' owners are told (card 2923): one read, no write.
 			const username = db.select({ username: users.username }).from(users).where(eq(users.id, invite.userId)).get()?.username ?? `user ${invite.userId}`;
+			// The invite being used is left out of whether the account may have read a secret (card 2935, P1).
 			const ended = endAccountAccess(invite.userId, {
 				apiKeys: true,
-				cause: { log: `${username} set their password with an invite`, mail: ENDING_IN_MAIL.invite }
+				cause: { log: `${username} set their password with an invite`, mail: ENDING_IN_MAIL.invite },
+				exceptInvite: invite.tokenHash
 			});
 			afterCommit(() =>
 				log.info(

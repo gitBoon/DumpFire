@@ -454,7 +454,9 @@ export const webhooks = sqliteTable('webhooks', {
 	// disabled or deleted: endAccountAccess, deleteUser, scripts/mfa-reset.mjs;
 	// the code review's CS4; and, for one already off whose setter is disabled
 	// or not recorded, holdUnheldOfGoneSetters at the first start of card 2923's
-	// release and after a restore), and card 2893's 'key ended'. Set only with
+	// release and after a restore; card 2935: also for one whose secret an owner
+	// or administrator whose access ended, or whose role was lowered, could
+	// read, whoever set it, and the start pass's), and card 2893's 'key ended'. Set only with
 	// `active` off; carried by a restore onto the same webhook (carryHolds,
 	// fillSecretGaps); cleared only when the board's owner or an administrator
 	// switches it on. NULL for one that is on, and for one switched off without

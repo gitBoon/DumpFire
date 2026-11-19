@@ -59,7 +59,14 @@ import { toasts } from '$lib/stores/toast';
 import Toast from '$lib/components/Toast.svelte';
 import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, STEP_UP_CODE_SPENT, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, type StepUpProof } from '$lib/step-up-words';
 import { CODE, codeFieldIn, proofOf } from './helpers/step-up-code';
-import { userEnableWarning } from '$lib/api';
+import { readableWebhooksWords, userEnableWarning } from '$lib/api';
+
+/**
+ * What the confirmation of making an administrator a user says of the webhooks whose secret it could read (card
+ * 2935, P2), word for word as UsersPanel.svelte says it.
+ */
+const DEMOTION_HOLDS =
+	"As an administrator they could read every webhook's secret: every webhook that has a secret, other than on the boards they own and those they set up, is switched off, unless the server can show they never had access to them (they never signed in, never held a key and were made after two-step sign-in came in), and can be switched on again only with a new secret; the boards' owners are mailed. Their API keys and sessions are as for any change of role.";
 
 // The page's data is read again after a write; here it is only counted. The
 // page's Toast listens for navigations, which there are none of here.
@@ -1912,9 +1919,12 @@ describe('the two-step sign-in reset on the users panel and its dialog, mounted 
 			// card 2915 (case 16): it ends their API keys and switches off their webhooks, said with no counts.
 			// Card 2923 (S9): and that the boards' owners are mailed, of those already off too.
 			"Reset bob's two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their API keys end, the webhooks they set up are switched off, their report schedules are paused, and you are given a link, once, to pass on to them yourself. " +
-				"Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret. " +
+				"Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret." +
+				// Card 2935 (P8): and the webhooks on the boards they own whose secret they could read, in words.
+				`${readableWebhooksWords(false)} ` +
 				ASKS_FOR_PASSWORD
 		);
+		expect(readableWebhooksWords(false)).toContain('Every webhook on the boards they own that has a secret, whoever set it up, is switched off too');
 		expect(confirm.mock.calls[0][3]).toEqual({ askPassword: true });
 		await confirm.mock.calls[0][2](proofOf(MINE));
 		await settle();
@@ -2075,7 +2085,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		expect(asked('GET /api/users/2')).toHaveLength(1);
 		expect(asked('PUT /api/users/2')).toEqual([]);
 		expect(confirm).toHaveBeenCalledTimes(1);
-		expect(confirm.mock.calls[0].slice(0, 2)).toEqual(['Change Role', `Make bob a user? This removes what they set: ${NAMED}. ${ASKS_FOR_PASSWORD}`]);
+		expect(confirm.mock.calls[0].slice(0, 2)).toEqual(['Change Role', `Make bob a user? This removes what they set: ${NAMED}. ${DEMOTION_HOLDS} ${ASKS_FOR_PASSWORD}`]);
 		// Card 2701: and for the caller's password, which the change sends.
 		expect(confirm.mock.calls[0][3]).toEqual({ askPassword: true });
 		await confirm.mock.calls[0][2](proofOf(MINE));
@@ -2103,7 +2113,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		choose(again, 'user');
 		changeButton(again).click();
 		await settle();
-		expect(confirm.mock.calls[1].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${ASKS_FOR_PASSWORD}`]);
+		expect(confirm.mock.calls[1].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${DEMOTION_HOLDS} ${ASKS_FOR_PASSWORD}`]);
 		expect(asked('PUT /api/users/2')).toHaveLength(2);
 		expect(asked('GET /api/users/2')).toHaveLength(1);
 	});
@@ -2138,7 +2148,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 
 		expect(asked('PUT /api/users/2')).toEqual([]);
 		expect(confirm.mock.calls.map((call) => call[0])).toEqual(['Change Role', 'Delete User']);
-		expect(confirm.mock.calls[0][1]).toBe(`Make bob a user? This removes what they set: ${NAMED}. ${ASKS_FOR_PASSWORD}`);
+		expect(confirm.mock.calls[0][1]).toBe(`Make bob a user? This removes what they set: ${NAMED}. ${DEMOTION_HOLDS} ${ASKS_FOR_PASSWORD}`);
 		expect(confirm.mock.calls[1][1]).toMatch(/ What they set goes too: the mail settings, /);
 	});
 
@@ -2154,7 +2164,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		await settle();
 
 		// Card 2701: the change asks for the caller's password all the same, naming nothing.
-		expect(confirm.mock.calls[1].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${ASKS_FOR_PASSWORD}`]);
+		expect(confirm.mock.calls[1].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${DEMOTION_HOLDS} ${ASKS_FOR_PASSWORD}`]);
 		await confirm.mock.calls[1][2](proofOf(MINE));
 		await settle();
 		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'user', currentPassword: MINE, currentCode: CODE }]);
@@ -2178,7 +2188,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		await settle();
 
 		expect(asked('PUT /api/users/2')).toEqual([]);
-		expect(confirm.mock.calls[0].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${UNREAD} ${ASKS_FOR_PASSWORD}`]);
+		expect(confirm.mock.calls[0].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${UNREAD} ${DEMOTION_HOLDS} ${ASKS_FOR_PASSWORD}`]);
 		expect(confirm.mock.calls[1][1]).toMatch(/^Delete user "bob" for good\? The account is disabled already, /);
 		expect(confirm.mock.calls[1][1].endsWith(` ${UNREAD} ${ASKS_FOR_PASSWORD}`)).toBe(true);
 		await confirm.mock.calls[0][2](proofOf(MINE));

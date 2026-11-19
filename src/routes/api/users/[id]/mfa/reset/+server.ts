@@ -15,6 +15,7 @@ import { writeAs } from '$lib/server/write-as';
 import { pathId, readBody } from '$lib/server/request-body';
 import { createLogger } from '$lib/server/logger';
 import { ENDING_IN_MAIL } from '$lib/server/webhooks';
+import { heldOfOthersWords } from '$lib/api';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
@@ -60,6 +61,14 @@ function endedWords(ended: { apiKeys: NoticeKey[]; webhooks: NoticeWebhook[] }, 
 	if (hooks === 0) return ` Their ${keyWords}, and they had no webhook they set up${where}`;
 	if (keys === 0) return ` They had no API key, and the ${hookWords} ${hookWas} switched off${where}`;
 	return ` Their ${keyWords} and the ${hookWords} switched off${where}`;
+}
+
+/**
+ * The webhooks of others whose secret the account could read that the reset switched off or held (card 2935's code
+ * review, C4), as the reset and disable toasts say them (`heldOfOthersWords` in $lib/api.ts): nothing for none.
+ */
+function readableHeldWords(n: number): string {
+	return n > 0 ? ` ${heldOfOthersWords(n)}.` : '';
 }
 
 /**
@@ -121,7 +130,11 @@ function settingsWords(set: SettingsRemoved | null): string {
  *
  *     { success, enrolmentUrl | null, mailSent, mailProblem?, factorsRemoved,
  *       recoveryCodesRemoved, sessionsEnded, challengesEnded, invitesEnded,
- *       apiKeysEnded, webhooksSwitchedOff, reportSchedulesPaused, message }
+ *       apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused, message }
+ *
+ * `readableWebhooksHeld` (card 2935) counts the webhooks of others whose
+ * secret the account could read, switched off or held; the message says how
+ * many in both its branches where there were any (its code review, C4).
  *
  * `apiKeysEnded` counts every key row ended, one already ended included, as
  * the password reset's does; the message counts the live ones (card 2915).
@@ -245,6 +258,8 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 		invitesEnded: reset.invites,
 		apiKeysEnded: reset.apiKeys,
 		webhooksSwitchedOff: reset.webhooks,
+		// Card 2935: the webhooks of others whose secret the account could read, switched off or held.
+		readableWebhooksHeld: reset.readableWebhooks,
 		reportSchedulesPaused: reset.reportSchedules
 	};
 	// The schedules paused and the keys and webhooks ended are said in both of the message's branches (card
@@ -252,8 +267,10 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 	// set, only where the link is given: the caller who may no longer manage the account, or whose session
 	// has ended, is told nothing more of it than the counts (the code review's CS2).
 	const pausedSaid = pausedWords(reset.reportSchedules);
-	const shownSaid = `${pausedSaid}${endedWords(ended, mailSent, true)}${settingsWords(set)}`;
-	const withheldSaid = `${pausedSaid}${endedWords(ended, mailSent, false)}`;
+	// The webhooks of others whose secret they could read, by count, in both branches (card 2935's code review, C4).
+	const readableSaid = readableHeldWords(reset.readableWebhooks);
+	const shownSaid = `${pausedSaid}${endedWords(ended, mailSent, true)}${readableSaid}${settingsWords(set)}`;
+	const withheldSaid = `${pausedSaid}${endedWords(ended, mailSent, false)}${readableSaid}`;
 	const told = mailSent ? ` ${target.username} was sent a notice that holds no link.` : '';
 	const notGiven = enrolmentLinkNotGiven(locals.credential, actor.id, target.id, sha256Hex(reset.token));
 

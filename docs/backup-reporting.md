@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.54
+version: 1.55
 status: As-Built
 date: 2026-11-19
 tags:
@@ -117,6 +117,25 @@ again. The file's log is described, never quoted: its first and last times are n
 both are real times, and a log in it that cannot be read is said to be one that could not be
 counted, with the restore going ahead (card 2899's code review). See
 [Restoring from Backup](admin-guide.md#restoring-from-backup).
+
+A restore also judges the backup's webhooks against its own disabled owners and administrators
+(card 2935, P12; its code review, C3). Every restore runs the start pass itself, after this
+server's holds and disabled accounts are carried and before any secret is filled, from the
+restored `settings`' own `webhooks_readable_by_disabled_held` moment: every webhook with a secret
+(one the backup left without its secret counted as having one) that an owner or administrator
+disabled after that moment could read and did not set, made before its disable, is held as
+`setter access ended`; with no moment at all, every disabled one's, and every webhook with a
+secret made before setters were recorded too. Where anything lay after the moment it is written as
+now; where no account was disabled after it, nothing is held or written. The server's own restore
+tells them with its sweep (the owners mailed where the schedulers run); a working copy tells
+nobody.
+
+```mermaid
+flowchart LR
+    Carry["carryDisabled, carryHolds"] --> Cover["coverReadable from the restored moment: hold, write the moment"]
+    Cover --> Fill["fillSecretGaps"]
+    Fill --> Sweep["switchOffLostWebhooks('all'), told with the held ones"]
+```
 
 ### Image Retention
 

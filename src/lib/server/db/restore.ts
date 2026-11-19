@@ -48,7 +48,15 @@ import { NoKeyToSeal, SECRETS_SCRUB_PENDING, WEBHOOK_ADDRESS_MAC_KEY, addressToB
 import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, type MfaRestore } from '../mfa-backup';
 import { createLogger } from '../logger';
 import { REPLACE_PLAIN_USED_INVITES, inHashForm } from '../invites';
-import { holdUnheldOfGoneSetters, switchOffLostWebhooks, tellSwitchedOff, WEBHOOKS_ALREADY_OFF_HELD, type SwitchedOff } from '../webhooks';
+import {
+	coverReadable,
+	holdUnheldOfGoneSetters,
+	readableCoveredAt,
+	switchOffLostWebhooks,
+	tellSwitchedOff,
+	WEBHOOKS_ALREADY_OFF_HELD,
+	type SwitchedOff
+} from '../webhooks';
 import { sqlite } from './index';
 
 const log = createLogger('AUTH');
@@ -427,6 +435,26 @@ function disabledHere(live: Database.Database): DisabledHere[] {
 function holdRestoredAlreadyOff(live: Database.Database): SwitchedOff[] {
 	const every = !live.prepare('SELECT 1 FROM settings WHERE key = ?').get(WEBHOOKS_ALREADY_OFF_HELD);
 	return holdUnheldOfGoneSetters(live, { every });
+}
+
+/**
+ * The start pass run by the restore itself (card 2935, P12; its code review, C3), after the carries and before any
+ * secret is filled, always: from the restored `settings`' own moment, every webhook a disabled owner or
+ * administrator of the restored data could read and that was made before its disable (or, with no moment, as the
+ * first start does: every disabled one's, and every one made before setters were recorded), a webhook the backup
+ * left without its secret counted as having one (`listed`); the moment then written as now where anything lay after
+ * it (`coverReadable`). Never skipped for what this server's own moment says: the restored data's disables are the
+ * backup's. Inside the restore's transaction: a failure rolls the restore back. Returns those held, told with the
+ * sweep by the server's own restore, and to nobody by a working copy.
+ */
+function holdRestoredReadable(live: Database.Database, listed: readonly number[]): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
+	if (!hasSettingsTable(live)) return { switchedOff: [], held: [] };
+	return coverReadable(live, { since: readableCoveredAt(live), listed });
+}
+
+/** Whether `live` has a `settings` table to hold the pass's moment in. */
+function hasSettingsTable(live: Database.Database): boolean {
+	return !!live.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'").get();
 }
 
 /**
@@ -1252,6 +1280,8 @@ function restoreInOneSnapshot(
 	let swept: SwitchedOff[] = [];
 	// And those already off that it held (card 2923, S3), told with them.
 	let held: SwitchedOff[] = [];
+	// And those a disabled owner or administrator could read (card 2935, P12), told with them.
+	let readable: { switchedOff: SwitchedOff[]; held: SwitchedOff[] } = { switchedOff: [], held: [] };
 	const sweptBecause = `found after a restore${options.by ? ` by ${options.by}` : ''}`;
 	let secrets: SecretsAccount = {
 		kept: { mailPassword: false, destinations: [], webhooks: [] },
@@ -1631,6 +1661,9 @@ function restoreInOneSnapshot(
 			carryHolds(live, holdsHere);
 			// With the secrets the restore left out itself, beside an address that does not open here (card 2928, R6).
 			const listedAll = [...listed.filter((entry) => !(sealedInRestore.secretsLeftOut ?? []).some((left) => left.id === entry.id)), ...(sealedInRestore.secretsLeftOut ?? [])];
+			// The webhooks a disabled owner or administrator of the backup could read, before any secret is filled
+			// (card 2935, P12): see `holdRestoredReadable`. Not caught.
+			readable = holdRestoredReadable(live, listedAll.map((entry) => entry.id));
 			const filled = fillSecretGaps(live, sealVerified ? here : nothingHere(), listedAll, { writeMarker: !working, addressListed: addressListed.listed });
 			// The addresses kept and to enter beside the secrets' (card 2928), each only where there is one.
 			if (addressesFilled.kept.length > 0) filled.kept.webhookAddresses = addressesFilled.kept;
@@ -1730,12 +1763,21 @@ function restoreInOneSnapshot(
 	// The webhooks it switched off, each a WARN, and the boards' owners mailed
 	// only where the schedulers run (card 2752, S1, S2).
 	// Those already off that it held with them, listed apart (card 2923).
-	if (swept.length > 0 || held.length > 0) {
+	// With those a disabled owner or administrator could read (card 2935, P12), on the server's own restore alone.
+	const readableTold = options.outside === 'off' ? { switchedOff: [], held: [] } : readable;
+	if (swept.length > 0 || held.length > 0 || readableTold.switchedOff.length + readableTold.held.length > 0) {
 		try {
 			const setting = schedulerSetting(process.env.SCHEDULERS, dev);
-			tellSwitchedOff(swept, sweptBecause, setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` }, held);
+			tellSwitchedOff(
+				[...swept, ...readableTold.switchedOff],
+				sweptBecause,
+				setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` },
+				[...held, ...readableTold.held]
+			);
 		} catch (e) {
-			errors.push(`The ${swept.length + held.length} webhook(s) the restore switched off or held could not all be said: ${messageOf(e)}`);
+			// The readable ones counted too (card 2935's code review, C12).
+			const all = swept.length + held.length + readableTold.switchedOff.length + readableTold.held.length;
+			errors.push(`The ${all} webhook(s) the restore switched off or held could not all be said: ${messageOf(e)}`);
 		}
 	}
 	if (unfinished.length > 0) {
