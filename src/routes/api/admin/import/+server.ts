@@ -132,8 +132,8 @@ import { dirname } from 'node:path';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 import { resetFormSecretCache } from '$lib/server/request-tokens';
-import { KNOWN_BROWSER_SECRET_KEY, resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
-import { WEBHOOK_ADDRESS_MAC_KEY } from '$lib/server/stored-secrets';
+import { resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
+import { SIGNING_KEY_SETTINGS } from '$lib/server/stored-secrets';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { reportBoardLoops } from '$lib/server/startup-checks';
 import { recheckStoredImages } from '$lib/server/image-recheck';
@@ -608,9 +608,11 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 					// tables the restore is about to replace, which does not include the
 					// migration record — see restorableTables. Not the key remembered
 					// browsers are signed with, which no backup holds (card 2194; the
-					// review's I3): the restore forgets it anyway. Nor the key webhook
-					// address matches are made with (card 2928, R14), which the restore
-					// keeps and no copy holds.
+					// review's I3): the restore forgets it anyway. Nor any other
+					// signing key (card 2943, R8): the key webhook address matches are
+					// made with (card 2928, R14) and the backup seal key, which the
+					// restore keeps and no copy holds, and the request form's key,
+					// which the restore makes anew.
 					const safetyBackup: Record<string, unknown[]> = {};
 					const runningTables = restorableTables(sqlite);
 
@@ -618,7 +620,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 						try {
 							safetyBackup[table] =
 								table === 'settings'
-									? sqlite.prepare('SELECT * FROM "settings" WHERE key <> ? AND key <> ?').all(KNOWN_BROWSER_SECRET_KEY, WEBHOOK_ADDRESS_MAC_KEY)
+									? sqlite
+											.prepare(`SELECT * FROM "settings" WHERE key NOT IN (${SIGNING_KEY_SETTINGS.map(() => '?').join(', ')})`)
+											.all(...SIGNING_KEY_SETTINGS)
 									: sqlite.prepare(`SELECT * FROM "${table}"`).all();
 						} catch {}
 					}

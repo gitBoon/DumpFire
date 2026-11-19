@@ -24,7 +24,7 @@ import { db, sqlite } from './db';
 import { settings } from './db/schema';
 import { inTransaction } from './db/transaction';
 import { sha256Hex } from './mfa-crypto';
-import { openStored, sealStored, settingAad } from './stored-secrets';
+import { newSigningKeyText, openStored, sealStored, settingAad } from './stored-secrets';
 import { MAIL_PROBLEM_WORDS } from './email';
 
 // ─── Request tokens ──────────────────────────────────────────────────────────
@@ -171,9 +171,11 @@ let cachedSecret: string | null = null;
 
 /**
  * The stored key opened (card 2898), or undefined where there is none, or
- * where it does not open: no key signs then, and nothing verifies. A key
- * held in plain, before the start seals it, is used as it is. A read, and
- * nothing else.
+ * where it does not open: no key signs then, and nothing verifies. The text
+ * opened is the key, whatever its form: one held in plain, or of the form
+ * before card 2943, is made anew by the start before the server listens
+ * (`replaceSigningKeysAtStart`), never sealed in place. A read, and nothing
+ * else.
  */
 function storedSecret(): string | undefined {
 	const stored = db.select().from(settings).where(eq(settings.key, REQUEST_FORM_SECRET_KEY)).get()?.value;
@@ -207,7 +209,8 @@ function storedSecret(): string | undefined {
  */
 export function writeFormSecret(database: Database.Database = sqlite): void {
 	if (database.prepare('SELECT 1 FROM settings WHERE key = ?').get(REQUEST_FORM_SECRET_KEY) !== undefined) return;
-	const made = randomBytes(32).toString('hex');
+	// Of the current form, `v2:` and 64 hex (card 2943, R8): a key of any other is made anew at start.
+	const made = newSigningKeyText();
 	database
 		.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING')
 		.run(REQUEST_FORM_SECRET_KEY, sealStored(made, settingAad(REQUEST_FORM_SECRET_KEY), database));

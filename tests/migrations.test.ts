@@ -4409,8 +4409,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 			{ key: 'webhooks_readable_by_disabled_held', value: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) }
 		]);
 		expect(result.restored['settings']).toBe(2);
-		// The form key opens to 32 random bytes as hex (card 2898).
-		expect(readOpened('settings', 'request_form_secret', live)).toMatch(/^[0-9a-f]{64}$/);
+		// The form key opens to `v2:` and 32 random bytes as hex (cards 2898 and 2943).
+		expect(readOpened('settings', 'request_form_secret', live)).toMatch(/^v2:[0-9a-f]{64}$/);
 		// The rest of the backup is in, and committed.
 		expect(live.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
 		// The backup's three, and each board's Options column, which it was made before.

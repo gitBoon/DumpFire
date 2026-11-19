@@ -958,9 +958,9 @@ describe('the form signing key (card 2750)', () => {
 		sqlite.prepare("DELETE FROM settings WHERE key = 'request_form_secret'").run();
 		ensureFormSecret();
 		const made = keyRows();
-		// Stored sealed (card 2898), 32 random bytes as hex once opened.
+		// Stored sealed (card 2898), `v2:` and 32 random bytes as hex once opened (card 2943).
 		expect(made).toEqual([{ value: expect.stringMatching(/^dfsealed:1:/) }]);
-		expect(readOpened('settings', 'request_form_secret')).toMatch(/^[0-9a-f]{64}$/);
+		expect(readOpened('settings', 'request_form_secret')).toMatch(/^v2:[0-9a-f]{64}$/);
 
 		// A second start, or a second process that lost the race, writes nothing over it.
 		ensureFormSecret();

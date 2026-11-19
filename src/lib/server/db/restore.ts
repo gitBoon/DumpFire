@@ -44,7 +44,7 @@ import {
 	withHeldApart
 } from '../backup-secrets';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
-import { NoKeyToSeal, SECRETS_SCRUB_PENDING, WEBHOOK_ADDRESS_MAC_KEY, addressToBind, checkpointTruncate, markScrubPending, receiverColumn, sealedForRestore } from '../stored-secrets';
+import { BACKUP_SEAL_KEY_MADE_AT, NoKeyToSeal, SECRETS_SCRUB_PENDING, WEBHOOK_ADDRESS_MAC_KEY, addressToBind, checkpointTruncate, markScrubPending, receiverColumn, sealedForRestore } from '../stored-secrets';
 import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, type MfaRestore } from '../mfa-backup';
 import { createLogger } from '../logger';
 import { REPLACE_PLAIN_USED_INVITES, inHashForm } from '../invites';
@@ -854,7 +854,8 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
  * for the webhooks it could not fill (`fillSecretGaps`). Nor the backup's
  * seal, which is about the file and not the data, nor any key to seal with
  * that a backup holds (the review's S1): this server keeps its own, and
- * puts it back itself (`keepSealKey`).
+ * puts it back itself (`keepSealKey`), with its record, `backup_seal_key_made_at`
+ * (card 2943, R3).
  *
  * Nor any row of two-step sign-in's four tables, nor the backup's
  * `mfa_key_check` (card 2768): a pending sign-in and an enrolment link are
@@ -904,6 +905,8 @@ export function rowsToRestore(
 				WEBHOOK_ADDRESS_MAC_KEY,
 				BACKUP_SEAL,
 				BACKUP_SEAL_KEY,
+				// The seal key's record, this server's own (card 2943, R3).
+				BACKUP_SEAL_KEY_MADE_AT,
 				MFA_KEY_CHECK_SETTING,
 				// This server's own: set by the restore itself (card 2898's code review, S1).
 				SECRETS_SCRUB_PENDING
@@ -1560,7 +1563,12 @@ function restoreInOneSnapshot(
 
 			// This server's key for sealing its backups, as it was before the
 			// clear: see above. Not caught: a restore that lost it is rolled back.
-			if (sealKey !== null) keepSealKey(live, sealKey.stored);
+			// Its record only beside it, and neither where the key is not kept
+			// (card 2943, R3).
+			if (sealKey !== null) {
+				keepSealKey(live, sealKey.stored);
+				if (sealKey.madeAt !== null) keepSetting(live, BACKUP_SEAL_KEY_MADE_AT, sealKey.madeAt);
+			}
 			// And its webhook address key (card 2928, R14), the same way.
 			if (macKeyHere !== null) keepSetting(live, WEBHOOK_ADDRESS_MAC_KEY, macKeyHere.stored);
 

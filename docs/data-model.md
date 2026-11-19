@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.93
+version: 1.94
 status: As-Built
 date: 2026-11-19
 tags:
@@ -3345,8 +3345,12 @@ flowchart LR
   a restore "as it is" that leaves listed webhooks without a secret writes it again, trimmed
   to those, and the start-up line reads it. Two more rows of `settings` are about backups
   (the review's S1): `backup_seal_key`, this server's key for sealing its backups (32 random
-  bytes as 64 hex characters, made by the first backup, in no backup, and kept by a restore
-  from the running database in place of anything a backup brings), and `backup_seal`, in a
+  bytes as 64 hex characters, made by the start or the first backup, in no backup, and kept by a restore
+  from the running database in place of anything a backup brings; since card 2943 stored as
+  `v2:` and the 64 hex inside its seal, and made anew by a start that finds it in plain, of
+  the older form or missing), with its record `backup_seal_key_made_at` (card 2943: an ISO
+  time written with every key made, information only, in no copy, and kept by a restore only
+  beside the key), and `backup_seal`, in a
   backup's copy only, the HMAC-SHA256 with that key of every other row of the copy. A restore
   never brings either in, and fills this server's secrets only into a backup whose seal it
   can make again. See
@@ -3354,7 +3358,8 @@ flowchart LR
 - **The live database keeps its secrets sealed** (card 2898, no migration): `webhooks.secret`,
   `settings.smtp_pass`, the secret fields of `settings.backup_config`'s destinations (and a
   service account's `private_key` inside its JSON), `known_browser_secret`,
-  `request_form_secret` and `backup_seal_key` each hold `''` for none or an envelope,
+  `request_form_secret` and `backup_seal_key` (each of these three opening to `v2:` and 64 hex
+  since card 2943) each hold `''` for none or an envelope,
   `dfsealed:1:<key id>:<nonce>:<ciphertext>`: AES-256-GCM under a key derived from the MFA key
   file, bound to the webhook's id, board and address, the mail connection, the destination's
   place, or the setting's name. A value held in plain (written by an older image) is used as it

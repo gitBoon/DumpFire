@@ -462,6 +462,10 @@ describe('PUT /api/account/password', () => {
 		for (const owner of [me, other]) db.insert(reportSchedules).values({ userId: owner.id, name: 'Weekly', scope: 'all' }).run();
 		// The factor the code is made from (card 2771).
 		stepUpFactor(me);
+		// The remembered-browser key a running server has once any browser was remembered: made here, so that the
+		// request's own writes are the ones failed in turn. Its first making is after the commit and never fails the
+		// request (rememberBrowser); a cache kept across tests hid it until resetDb forgot it (card 2943's fix pass, C11).
+		rememberBrowser({ set: () => {} } as unknown as Cookies, other.id, 'any hash', null);
 		return { me, other };
 	};
 

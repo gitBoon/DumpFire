@@ -38,7 +38,7 @@ import {
 import { db, sqlite } from '$lib/server/db';
 import { mfaFactors, settings, signInChallenges, webhooks } from '$lib/server/db/schema';
 import { readMfaKeyCheck } from '$lib/server/mfa-store';
-import { MfaKeyError, checkMfaKeyAtStart } from '$lib/server/startup-checks';
+import { MfaKeyError, checkMfaKeyAtStart, sealStoredSecretsAtStart } from '$lib/server/startup-checks';
 import { mailPasswordAad, openStored, sealValue, settingAad, webhookSecretAad, webhookUrlAad } from '$lib/server/stored-secrets';
 import { eq } from 'drizzle-orm';
 import { stamp } from '$lib/timestamps';
@@ -716,6 +716,26 @@ describe('changing the MFA key at start (card 2773)', () => {
 			expect(openStored(row.url, webhookUrlAad(hook.id, hook.boardId, hook.receiver), current()).value).toBe(hook.address);
 			expect(openStored(row.secret, webhookSecretAad(hook.id, hook.boardId, hook.address), current()).value).toBe('the webhook secret 30');
 			expect(lines.warn.filter((line) => line.includes('Rotated 0 second factor(s) and 2 stored secret(s)'))).toHaveLength(1);
+		});
+
+		it('2943 case 59: rotating carries the backup seal key of the v2 form and its record byte for byte, and the start after it makes no key and writes no key-change record (the fix pass, C3(b))', () => {
+			const raw = randomBytes(32);
+			const old = keyFromBytes(raw);
+			const text = `v2:${'9c'.repeat(32)}`;
+			const madeAt = '2026-11-19T01:02:03.000Z';
+			putSetting('backup_seal_key', sealValue(text, settingAad('backup_seal_key'), old));
+			putSetting('backup_seal_key_made_at', madeAt);
+			putSetting(MFA_KEY_CHECK_SETTING, old.check);
+
+			const lines = consoleLines(() => {
+				checkMfaKeyAtStart(mfaKeyLoad(), undefined, undefined, previousOf(raw));
+				sealStoredSecretsAtStart(sqlite, () => {});
+			});
+
+			expect(settingNow('backup_seal_key')).toMatch(new RegExp(`^dfsealed:1:${current().id}:`));
+			expect(openStored(settingNow('backup_seal_key'), settingAad('backup_seal_key'), current())).toEqual({ kind: 'opened', value: text });
+			expect(settingNow('backup_seal_key_made_at')).toBe(madeAt);
+			expect(lines.error.filter((line) => line.includes('[CRITICAL]'))).toEqual([]);
 		});
 
 		it("2928 case 31: a start with another key, and nothing sealed but a webhook's address, is refused", () => {

@@ -21,7 +21,7 @@ vi.mock('$lib/server/stored-secrets', async (importOriginal) => {
 });
 
 import Database from 'better-sqlite3';
-import { randomBytes } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,12 +30,17 @@ import { settings, systemLogs, webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { currentMfaKey, keyFromBytes, type MfaKey } from '$lib/server/mfa-key';
 import { sealWith } from '$lib/server/mfa-crypto';
-import { destinationPlace, mailChanges, mailConnection, secretsToEnter } from '$lib/server/backup-secrets';
+import { destinationPlace, mailChanges, mailConnection, sealKeyHere, secretsToEnter } from '$lib/server/backup-secrets';
 import { sealStoredSecretsAtStart } from '$lib/server/startup-checks';
 import { maskSecretsInLog } from '$lib/server/secret-paths';
 import { generateBackupData } from '$lib/server/backup';
 import {
+	BACKUP_SEAL_KEY_MADE_AT,
 	SECRETS_SCRUB_PENDING,
+	forgetStoredSecrets,
+	storedSecretsAtStart,
+	replaceSigningKeysAtStart,
+	replacedSigningKeysLine,
 	anythingSealed,
 	destinationSecretAad,
 	isSealed,
@@ -379,10 +384,11 @@ describe('destinations', () => {
 		const counts = sealPlainSecrets(sqlite);
 
 		// The fixtures' addresses are stored sealed already (card 2928).
-		expect(counts).toEqual({ mail: 1, destinationFields: 2, webhooks: 1, webhookAddresses: 0, signingKeys: 1, unreadableConfigs: 0, secretsBesideNoAddress: [] });
+		// No signing key of the three is sealed in place (card 2943, R8): the start makes each anew instead.
+		expect(counts).toEqual({ mail: 1, destinationFields: 2, webhooks: 1, webhookAddresses: 0, signingKeys: 0, unreadableConfigs: 0, secretsBesideNoAddress: [] });
 		expect(isSealed(setting('smtp_pass'))).toBe(true);
 		expect(readOpened('settings', 'smtp_pass')).toBe('mail password in plain');
-		expect(readOpened('settings', 'known_browser_secret')).toBe('b'.repeat(64));
+		expect(setting('known_browser_secret')).toBe('b'.repeat(64));
 		expect(readOpened('webhooks', hook.id)).toBe('webhook secret in plain');
 		expect(readOpened('webhooks', unsigned.id)).toBe('');
 		// The form key was sealed already, and is as it was.
@@ -547,7 +553,7 @@ describe('the start step: service account JSON brought to the one rule (card 293
 });
 
 describe('the start step: signing keys and the scrub', () => {
-	it('22: a signing key that does not open is replaced at the start step, the WARN saying what that breaks and holding no value', () => {
+	it('22: a signing key that does not open is replaced at the start step, the CRITICAL key-change record saying what that breaks and holding no value', () => {
 		const theirs = sealValue('c'.repeat(64), settingAad('known_browser_secret'), otherKey());
 		putSetting('known_browser_secret', theirs);
 
@@ -555,11 +561,164 @@ describe('the start step: signing keys and the scrub', () => {
 
 		const now = setting('known_browser_secret')!;
 		expect(now).not.toBe(theirs);
-		expect(readOpened('settings', 'known_browser_secret')).toMatch(/^[0-9a-f]{64}$/);
-		const said = lines.filter((line) => line.includes('Replaced the remembered-browser key'));
-		expect(said.length).toBeGreaterThan(0);
-		expect(said[0]).toContain('forgets every remembered browser');
+		// Of the current form (card 2943, R4).
+		expect(readOpened('settings', 'known_browser_secret')).toMatch(/^v2:[0-9a-f]{64}$/);
+		// Named in the start's one CRITICAL key-change record, kept for good (card 2943's fix pass, C4).
+		const said = lines.filter((line) => line.startsWith('[CRITICAL] [STARTUP] Key change recorded'));
+		expect(said).toHaveLength(1);
+		expect(said[0]).toContain("the remembered-browser key (the one stored could not be opened with this server's MFA key)");
+		expect(said[0]).toContain('Every remembered browser is forgotten once.');
 		expect(lines.filter((line) => line.includes('c'.repeat(16)) || line.includes(now.slice(11)))).toEqual([]);
+	});
+
+	// ─── Card 2943: the signing keys every older copy holds, made anew at start ───
+
+	const SEAL_KEY = 'backup_seal_key';
+	const CURRENT_FORM = /^v2:[0-9a-f]{64}$/;
+	const AN_ISO_TIME = /^\d{4}-\d\d-\d\dT/;
+	/** A start, as hooks.server.ts makes it, the background scrub left untried. */
+	const start = () => linesOf(() => sealStoredSecretsAtStart(sqlite, () => {}));
+	/** The CRITICAL key-change record lines among `lines`, as the system log keeps them (R6). */
+	const recordLines = (lines: string[]) => lines.filter((line) => line.startsWith('[CRITICAL] [STARTUP] Key change recorded'));
+
+	it.each([
+		{ row: 'with no record', record: null },
+		{ row: 'with a well-formed record, which is no input (R1)', record: '2026-11-01T00:00:00.000Z' }
+	])('50: a backup seal key held in plain is made anew at start $row: sealed, of the current form, a new record, and one CRITICAL record line holding no value (card 2943)', ({ record }) => {
+		const old = 'ab'.repeat(32);
+		putSetting(SEAL_KEY, old);
+		if (record !== null) putSetting(BACKUP_SEAL_KEY_MADE_AT, record);
+
+		const lines = start();
+
+		expect(isSealed(setting(SEAL_KEY))).toBe(true);
+		const now = readOpened('settings', SEAL_KEY)!;
+		expect(now).toMatch(CURRENT_FORM);
+		expect(now).not.toContain(old);
+		expect(setting(BACKUP_SEAL_KEY_MADE_AT)).toMatch(AN_ISO_TIME);
+		expect(setting(BACKUP_SEAL_KEY_MADE_AT)).not.toBe(record);
+		const said = recordLines(lines);
+		expect(said).toHaveLength(1);
+		expect(said[0]).toContain('the backup seal key (the one stored was in plain)');
+		// A straight apostrophe, as the docs and SEAL_KEY_NOT_TRUSTED have it (card 2943's fix pass, C5).
+		expect(said[0]).toContain("Backups sealed before now are taken as another server's");
+		expect(lines.filter((line) => line.includes(old) || line.includes(now.slice(3)))).toEqual([]);
+	});
+
+	it('51: a seal key sealed in place as plain hex, the form before v2, is made anew though its record is well formed; a second start writes and says nothing (R1)', () => {
+		putSetting(SEAL_KEY, sealValue('cd'.repeat(32), settingAad(SEAL_KEY), key()));
+		putSetting(BACKUP_SEAL_KEY_MADE_AT, '2026-11-19T00:00:00.000Z');
+
+		const lines = start();
+
+		expect(readOpened('settings', SEAL_KEY)).toMatch(CURRENT_FORM);
+		expect(readOpened('settings', SEAL_KEY)).not.toContain('cd'.repeat(32));
+		expect(recordLines(lines)).toEqual([expect.stringContaining('the backup seal key (the one stored was of an older form)')]);
+		const stored = setting(SEAL_KEY);
+		const madeAt = setting(BACKUP_SEAL_KEY_MADE_AT);
+
+		const again = start();
+
+		expect(setting(SEAL_KEY)).toBe(stored);
+		expect(setting(BACKUP_SEAL_KEY_MADE_AT)).toBe(madeAt);
+		expect(recordLines(again)).toEqual([]);
+	});
+
+	it('52: with no backup seal key stored, the start makes one of the current form with its record, says so, and the step marks the scrub (R5, R14)', () => {
+		expect(setting(SEAL_KEY)).toBeUndefined();
+
+		const lines = start();
+
+		expect(readOpened('settings', SEAL_KEY)).toMatch(CURRENT_FORM);
+		expect(setting(BACKUP_SEAL_KEY_MADE_AT)).toMatch(AN_ISO_TIME);
+		expect(recordLines(lines)).toEqual([expect.stringContaining('the backup seal key (none was stored)')]);
+		// The scrub, marked by the step itself in the start's transaction (the start then scrubs the file at once).
+		sqlite.prepare('DELETE FROM settings WHERE key IN (?, ?)').run(SEAL_KEY, SECRETS_SCRUB_PENDING);
+		expect(sqlite.transaction(() => replaceSigningKeysAtStart(sqlite, key()))()).toEqual([{ setting: SEAL_KEY, because: 'none' }]);
+		expect(setting(SECRETS_SCRUB_PENDING)).toMatch(AN_ISO_TIME);
+	});
+
+	it("53: production's first start: the three signing keys and the mail password in plain, no record: each key made anew once and none sealed in place, the mail password sealed, the Sealed line counting no signing key, one record line naming the three (R7(a))", () => {
+		putSetting('smtp_host', 'mail.example.test');
+		putSetting('smtp_user', 'sender');
+		putSetting('smtp_pass', 'mail password 53');
+		const old = { [SEAL_KEY]: 'ab'.repeat(32), [KNOWN_BROWSER_SECRET_KEY]: 'bc'.repeat(32), request_form_secret: 'cd'.repeat(32) };
+		for (const [name, value] of Object.entries(old)) putSetting(name, value);
+
+		const lines = start();
+
+		for (const [name, value] of Object.entries(old)) {
+			expect(readOpened('settings', name), name).toMatch(CURRENT_FORM);
+			expect(readOpened('settings', name), name).not.toContain(value);
+		}
+		expect(readOpened('settings', 'smtp_pass')).toBe('mail password 53');
+		const sealedLines = lines.filter((line) => line.includes('[WARN] [STARTUP] Sealed '));
+		expect(sealedLines).toHaveLength(1);
+		expect(sealedLines[0]).toContain('Sealed 1 stored secret(s) held in plain (the mail password, ');
+		expect(sealedLines[0]).toContain(' 0 signing key(s);');
+		const said = recordLines(lines);
+		expect(said).toHaveLength(1);
+		for (const words of [
+			'the backup seal key (the one stored was in plain)',
+			'the remembered-browser key (the one stored was in plain)',
+			'the request-form key (the one stored was in plain)',
+			// A straight apostrophe (C5).
+			"Backups sealed before now are taken as another server's"
+		]) {
+			expect(said[0]).toContain(words);
+		}
+		const stored = Object.keys(old).map((name) => setting(name));
+		start();
+		expect(Object.keys(old).map((name) => setting(name))).toEqual(stored);
+	});
+
+	it("54: a sealed seal key that does not open, with no record: made anew once, of the current form with its record, said once, in the CRITICAL record with the reason that it did not open (R4, R7(d); the fix pass's C4)", () => {
+		putSetting(SEAL_KEY, sealValue(`v2:${'ef'.repeat(32)}`, settingAad(SEAL_KEY), otherKey()));
+
+		const lines = start();
+
+		expect(readOpened('settings', SEAL_KEY)).toMatch(CURRENT_FORM);
+		expect(setting(BACKUP_SEAL_KEY_MADE_AT)).toMatch(AN_ISO_TIME);
+		expect(lines.filter((line) => line.includes(replacedSigningKeysLine(['the backup seal key'])))).toEqual([]);
+		expect(recordLines(lines)).toEqual([expect.stringContaining("the backup seal key (the one stored could not be opened with this server's MFA key)")]);
+	});
+
+	it.each([
+		{ row: "'v2:' and 64 upper-case hex", text: `v2:${'AB'.repeat(32)}`, aad: SEAL_KEY },
+		{ row: '63 hex', text: `v2:${'a'.repeat(63)}`, aad: SEAL_KEY },
+		{ row: '65 hex', text: `v2:${'a'.repeat(65)}`, aad: SEAL_KEY },
+		{ row: 'a trailing line break', text: `v2:${'ab'.repeat(32)}\n`, aad: SEAL_KEY },
+		{ row: 'a leading space', text: ` v2:${'ab'.repeat(32)}`, aad: SEAL_KEY },
+		{ row: "a value sealed under the remembered-browser key's additional data", text: `v2:${'ab'.repeat(32)}`, aad: 'known_browser_secret' }
+	])('57: a seal key of $row is no key before the start, and the start makes it anew exactly once (the fix pass, C2)', ({ text, aad }) => {
+		putSetting(SEAL_KEY, sealValue(text, settingAad(aad), key()));
+		putSetting(BACKUP_SEAL_KEY_MADE_AT, '2026-11-19T00:00:00.000Z');
+		expect(sealKeyHere(sqlite)).toBeNull();
+
+		const lines = start();
+
+		expect(readOpened('settings', SEAL_KEY)).toMatch(CURRENT_FORM);
+		expect(sealKeyHere(sqlite)).not.toBeNull();
+		expect(recordLines(lines).filter((line) => line.includes('the backup seal key ('))).toHaveLength(1);
+		const stored = setting(SEAL_KEY);
+		expect(recordLines(start())).toEqual([]);
+		expect(setting(SEAL_KEY)).toBe(stored);
+	});
+
+	it('58: a seal key that does not open, forgotten on the operator\'s word, takes its record with it, and the next start makes a new one because none was stored (the fix pass, C3(a))', () => {
+		putSetting(SEAL_KEY, sealValue(`v2:${'ab'.repeat(32)}`, settingAad(SEAL_KEY), otherKey()));
+		putSetting(BACKUP_SEAL_KEY_MADE_AT, '2026-11-19T00:00:00.000Z');
+		const items = storedSecretsAtStart(sqlite).filter((item) => item.setting === SEAL_KEY);
+		expect(items).toHaveLength(1);
+
+		forgetStoredSecrets(sqlite, items);
+
+		expect(setting(SEAL_KEY)).toBeUndefined();
+		expect(setting(BACKUP_SEAL_KEY_MADE_AT)).toBeUndefined();
+		const lines = start();
+		expect(readOpened('settings', SEAL_KEY)).toMatch(CURRENT_FORM);
+		expect(setting(BACKUP_SEAL_KEY_MADE_AT)).toMatch(AN_ISO_TIME);
+		expect(recordLines(lines)).toEqual([expect.stringContaining('the backup seal key (none was stored)')]);
 	});
 
 	describe('21: on a database file', () => {
@@ -876,7 +1035,7 @@ describe('the two signing keys, stored sealed', () => {
 		const cookie = remembered(user, 'hash-40');
 		const row = setting(KNOWN_BROWSER_SECRET_KEY)!;
 		expect(isSealed(row)).toBe(true);
-		expect(readOpened('settings', KNOWN_BROWSER_SECRET_KEY)).toMatch(/^[0-9a-f]{64}$/);
+		expect(readOpened('settings', KNOWN_BROWSER_SECRET_KEY)).toMatch(/^v2:[0-9a-f]{64}$/);
 		expect(rememberedNonce(sending(cookie), { id: user.id, passwordHash: 'hash-40' })).not.toBeNull();
 
 		// Row 2: sealed under another key, as a row written by hand would be.
@@ -887,7 +1046,7 @@ describe('the two signing keys, stored sealed', () => {
 
 		const again = remembered(user, 'hash-40');
 		expect(setting(KNOWN_BROWSER_SECRET_KEY)).not.toBe(tampered);
-		expect(readOpened('settings', KNOWN_BROWSER_SECRET_KEY)).toMatch(/^[0-9a-f]{64}$/);
+		expect(readOpened('settings', KNOWN_BROWSER_SECRET_KEY)).toMatch(/^v2:[0-9a-f]{64}$/);
 		expect(rememberedNonce(sending(again), { id: user.id, passwordHash: 'hash-40' })).not.toBeNull();
 	});
 
@@ -898,10 +1057,72 @@ describe('the two signing keys, stored sealed', () => {
 		writeFormSecret();
 
 		expect(isSealed(setting('request_form_secret'))).toBe(true);
-		expect(readOpened('settings', 'request_form_secret')).toMatch(/^[0-9a-f]{64}$/);
+		expect(readOpened('settings', 'request_form_secret')).toMatch(/^v2:[0-9a-f]{64}$/);
 		const token = issueFormToken();
 		resetFormSecretCache();
 		expect(verifyFormToken(token)).toBe(true);
+	});
+
+	/** A cookie for `user` signed by hand with `secret`, as `rememberBrowser` signs one (MAC domain 2). */
+	function signedWith(secret: string, user: { id: number }, passwordHash: string): { name: string; value: string } {
+		const issuedAt = Math.floor(Date.now() / 1000);
+		const nonce = '5a'.repeat(16);
+		const mac = createHmac('sha256', secret).update(`known-browser:2:${user.id}:${issuedAt}:${nonce}:${passwordHash}`).digest('hex');
+		return { name: `dumpfire_known_${user.id}`, value: `${issuedAt}.${nonce}.${mac}` };
+	}
+
+	it('55: the remembered-browser and form keys, sealed in the form before v2, are made anew at start and never sealed in place; a form token made before stops holding; a second start changes nothing (card 2943, R8)', () => {
+		const user = makeUser();
+		const older = '12'.repeat(32);
+		putSetting(KNOWN_BROWSER_SECRET_KEY, sealValue(older, settingAad(KNOWN_BROWSER_SECRET_KEY), key()));
+		putSetting('request_form_secret', sealValue('34'.repeat(32), settingAad('request_form_secret'), key()));
+		resetKnownBrowserSecretCache();
+		resetFormSecretCache();
+		const token = issueFormToken();
+		expect(verifyFormToken(token)).toBe(true);
+
+		const lines = linesOf(() => sealStoredSecretsAtStart(sqlite, () => {}));
+
+		expect(readOpened('settings', KNOWN_BROWSER_SECRET_KEY)).toMatch(/^v2:[0-9a-f]{64}$/);
+		expect(readOpened('settings', KNOWN_BROWSER_SECRET_KEY)).not.toContain(older);
+		expect(readOpened('settings', 'request_form_secret')).toMatch(/^v2:[0-9a-f]{64}$/);
+		// A cookie signed with the old key holds under neither key (the fix pass's C1 refuses it before the start too: case 56).
+		expect(rememberedNonce(sending(signedWith(older, user, 'hash-55')), { id: user.id, passwordHash: 'hash-55' })).toBeNull();
+		expect(verifyFormToken(token)).toBe(false);
+		const said = lines.filter((line) => line.startsWith('[CRITICAL] [STARTUP] Key change recorded'));
+		expect(said).toHaveLength(1);
+		expect(said[0]).toContain('the remembered-browser key (the one stored was of an older form)');
+		expect(said[0]).toContain('the request-form key (the one stored was of an older form)');
+		expect(said[0]).toContain('Every remembered browser is forgotten once.');
+		const stored = [setting(KNOWN_BROWSER_SECRET_KEY), setting('request_form_secret')];
+
+		const again = linesOf(() => sealStoredSecretsAtStart(sqlite, () => {}));
+
+		expect([setting(KNOWN_BROWSER_SECRET_KEY), setting('request_form_secret')]).toEqual(stored);
+		expect(again.filter((line) => line.includes('Key change recorded'))).toEqual([]);
+	});
+
+	it.each([
+		{ row: 'in plain', stored: (text: string) => text },
+		{ row: 'sealed, of the form before v2', stored: (text: string) => sealValue(text, settingAad(KNOWN_BROWSER_SECRET_KEY), key()) }
+	])('56: a remembered-browser key $row is no key at run time: a cookie signed with it does not hold, and the next remember makes it anew, of the v2 form, with one CRITICAL record (the fix pass, C1, C4)', ({ stored }) => {
+		const user = makeUser();
+		const older = '78'.repeat(32);
+		putSetting(KNOWN_BROWSER_SECRET_KEY, stored(older));
+		resetKnownBrowserSecretCache();
+
+		const before = setting(KNOWN_BROWSER_SECRET_KEY);
+		expect(rememberedNonce(sending(signedWith(older, user, 'hash-56')), { id: user.id, passwordHash: 'hash-56' })).toBeNull();
+		// A check writes nothing.
+		expect(setting(KNOWN_BROWSER_SECRET_KEY)).toBe(before);
+
+		const lines = linesOf(() => remembered(user, 'hash-56'));
+
+		expect(readOpened('settings', KNOWN_BROWSER_SECRET_KEY)).toMatch(/^v2:[0-9a-f]{64}$/);
+		const said = lines.filter((line) => line.startsWith('[CRITICAL] [AUTH] Key change recorded: made by a sign-in'));
+		expect(said).toHaveLength(1);
+		expect(said[0]).toContain('the remembered-browser key (the one stored was not trusted at run time');
+		expect(said[0]).not.toContain(older);
 	});
 });
 

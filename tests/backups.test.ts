@@ -73,6 +73,8 @@ import {
 	settingAad,
 	webhookSecretAad,
 	webhookUrlAad,
+	BACKUP_SEAL_KEY_MADE_AT,
+	SIGNING_KEY_SETTINGS,
 	WEBHOOK_ADDRESS_MAC_KEY
 } from '$lib/server/stored-secrets';
 import { currentMfaKey, keyFromBytes } from '$lib/server/mfa-key';
@@ -93,6 +95,7 @@ import {
 	NOT_SEALED_HERE,
 	NO_SEAL_HERE,
 	SAVE_BEFORE_TEST,
+	SEAL_KEY_NOT_TRUSTED,
 	SECRET_FIELDS,
 	SECRET_MASK,
 	SERVICE_ACCOUNT_NOT_A_KEY,
@@ -146,7 +149,7 @@ import {
 	resetFormSecretCache,
 	verifyFormToken
 } from '$lib/server/request-tokens';
-import { maskLiveLog, reportInstallation, reportNoSuperadmin } from '$lib/server/startup-checks';
+import { maskLiveLog, reportInstallation, reportNoSuperadmin, sealStoredSecretsAtStart } from '$lib/server/startup-checks';
 import { dispatchWebhook } from '$lib/server/webhooks';
 import { api, routeMethods } from './helpers/api';
 import { effects } from './helpers/effects';
@@ -851,8 +854,8 @@ describe('a restore', () => {
 			// the one there is the restore made, in its transaction (card 2750).
 			const formKey = column<string>(live, `SELECT value FROM settings WHERE key = '${REQUEST_FORM_SECRET_KEY}'`);
 			expect(formKey).toHaveLength(1);
-			// Sealed (card 2898), 32 random bytes as hex once opened.
-			expect(readOpened('settings', REQUEST_FORM_SECRET_KEY, live)).toMatch(/^[0-9a-f]{64}$/);
+			// Sealed (card 2898), `v2:` and 32 random bytes as hex once opened (card 2943).
+			expect(readOpened('settings', REQUEST_FORM_SECRET_KEY, live)).toMatch(/^v2:[0-9a-f]{64}$/);
 		});
 
 		it('counts none for a backup with no requests', () => {
@@ -1256,20 +1259,27 @@ describe('a restore', () => {
 	// The review's I3. The safety copy the import writes beside the database
 	// held every setting, and so the key remembered browsers are signed with,
 	// which no backup holds (card 2194).
-	it('writes a safety copy that leaves out the key remembered browsers are signed with, and keeps every other setting', async () => {
+	it('writes a safety copy that leaves out every signing key, and keeps every other setting', async () => {
 		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(KNOWN_BROWSER_SECRET_KEY, 'the-key-that-was-here');
 		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('app_url', 'https://here.example.test');
 		// Nor the key webhook address matches are made with (card 2928, case 45, R14).
 		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(WEBHOOK_ADDRESS_MAC_KEY, 'the-address-key-that-was-here');
+		// Nor the backup seal key, nor the request form's (card 2943, R8; card test 2): every signing key.
+		backupSealKey(sqlite);
+		const sealKey = sealKeyHere(sqlite)!;
+		const formKey = column<string>(sqlite, `SELECT value FROM settings WHERE key = '${REQUEST_FORM_SECRET_KEY}'`)[0];
 
 		const res = await importDb(migratedDb());
 
 		expect(res.status).toBe(200);
 		const safety = readFileSync(join(res.dir, '.pre-restore-safety.json'), 'utf8');
-		expect(safety).not.toContain(KNOWN_BROWSER_SECRET_KEY);
+		const keys = (JSON.parse(safety) as { settings: { key: string }[] }).settings.map((row) => row.key);
+		for (const setting of SIGNING_KEY_SETTINGS) expect(keys, setting).not.toContain(setting);
 		expect(safety).not.toContain('the-key-that-was-here');
-		expect(safety).not.toContain(WEBHOOK_ADDRESS_MAC_KEY);
 		expect(safety).not.toContain('the-address-key-that-was-here');
+		expect(safety).not.toContain(sealKey.stored);
+		expect(safety).not.toContain(sealKey.key);
+		expect(safety).not.toContain(formKey);
 		const settings = (JSON.parse(safety) as { settings: { key: string; value: string }[] }).settings;
 		expect(settings).toContainEqual(expect.objectContaining({ key: 'app_url', value: 'https://here.example.test' }));
 	});
@@ -2295,7 +2305,8 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		live.prepare("INSERT INTO boards (id, name, created_by) VALUES (?, 'Hooks here', 90)").run(hooks.boardId);
 		const set = live.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
 		const key = given.key === undefined ? backupSealKey(sqlite).toString('hex') : given.key;
-		if (key !== null) set.run(BACKUP_SEAL_KEY, key);
+		// Stored as a server stores it (card 2943, R2): sealed, of the form `v2:` and 64 hex. One in plain is no key.
+		if (key !== null) set.run(BACKUP_SEAL_KEY, sealValue(`v2:${key}`, settingAad(BACKUP_SEAL_KEY), currentMfaKey()!));
 		// This server's webhook address key too, where it is this server (card 2928, R14).
 		if (given.key === undefined) set.run(WEBHOOK_ADDRESS_MAC_KEY, webhookAddressMacKey(sqlite).toString('hex'));
 		for (const [key, value] of Object.entries(given.mail ?? {})) set.run(key, value);
@@ -2755,31 +2766,42 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 
 		it('is made with a key this server keeps, which is in no backup, and which a restore keeps', () => {
 			const backup = backupNow();
-			const key = settingsOf(sqlite)[BACKUP_SEAL_KEY];
-			expect(key).toMatch(/^[0-9a-f]{64}$/);
+			// `v2:` and 64 hex once opened (card 2943, R1).
+			const opened = settingsOf(sqlite)[BACKUP_SEAL_KEY];
+			expect(opened).toMatch(/^v2:[0-9a-f]{64}$/);
+			const key = opened.slice('v2:'.length);
 			for (const bytes of [generateBackupData(), Buffer.from(backup.serialize())]) {
 				expect(bytes.includes(Buffer.from(key)), 'the key').toBe(false);
 				expect(bytes.includes(Buffer.from(BACKUP_SEAL_KEY)), 'its setting').toBe(false);
+				// Nor its record (card 2943, R3), though the running database has it.
+				expect(bytes.includes(Buffer.from(BACKUP_SEAL_KEY_MADE_AT)), 'its record').toBe(false);
 			}
+			expect(settingsOf(sqlite)[BACKUP_SEAL_KEY_MADE_AT]).toMatch(/^\d{4}-/);
 
 			// A backup that brings a key of its own, sealed with this server's
 			// (the worst there could be): the key here is the one kept.
-			const bringing = resealed(backupNow(), (made) =>
-				made.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(BACKUP_SEAL_KEY, 'f'.repeat(64))
-			);
+			const bringing = resealed(backupNow(), (made) => {
+				made.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(BACKUP_SEAL_KEY, 'f'.repeat(64));
+				// And a record of its own (card 2943, R7(c)).
+				made.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(BACKUP_SEAL_KEY_MADE_AT, '2020-01-01T00:00:00.000Z');
+			});
 			const result = restoreFromBackup(sqlite, bringing);
 
 			expect(result.sealVerified).toBe(true);
-			expect(settingsOf(sqlite)[BACKUP_SEAL_KEY]).toBe(key);
+			expect(settingsOf(sqlite)[BACKUP_SEAL_KEY]).toBe(opened);
 			expect(settingsOf(sqlite)[BACKUP_SEAL]).toBeUndefined();
 			// And a backup made before the restore still verifies after it.
 			expect(restoreFromBackup(sqlite, backup).sealVerified).toBe(true);
-			// A server with no key yet is given none by the backup either.
+			// A server with no key yet is given none by the backup either, nor a record (card 2943, R7(c)): a
+			// restore makes no key, whatever a start does (R5).
 			const fresh = migratedDb();
 			restoreFromBackup(fresh, bringing);
 			expect(settingsOf(fresh)[BACKUP_SEAL_KEY]).toBeUndefined();
+			expect(settingsOf(fresh)[BACKUP_SEAL_KEY_MADE_AT]).toBeUndefined();
 			// And the seal is written into a copy only, never into the running database.
 			expect(() => sealCopy(sqlite, Buffer.from(key, 'hex'))).toThrow('never the running database');
+			// The record kept beside the key is this server's, not the backup's.
+			expect(settingsOf(sqlite)[BACKUP_SEAL_KEY_MADE_AT]).not.toBe('2020-01-01T00:00:00.000Z');
 		});
 
 		it('fills every secret into an unchanged backup on the server that made it', () => {
@@ -6480,6 +6502,136 @@ describe('the secrets the server keeps, sealed at rest (card 2898)', () => {
 
 		expect(settingsStored(sqlite)[BACKUP_SEAL_KEY]).toBe(stored);
 		expect(unsealedBecause(backup, sealKeyHere(sqlite)!.key)).toBeNull();
+	});
+});
+
+// ─── Card 2943: the backup seal key's form and its record ───────────────────
+
+describe("the backup seal key's form and its record (card 2943)", () => {
+	const CURRENT_FORM = /^v2:[0-9a-f]{64}$/;
+	const AN_ISO_TIME = /^\d{4}-\d\d-\d\dT/;
+	const EARLIER = '2020-01-01T00:00:00.000Z';
+	const otherKey = () => keyFromBytes(randomBytes(32));
+	const storedKey = () => settingsStored(sqlite)[BACKUP_SEAL_KEY];
+	const record = () => settingsStored(sqlite)[BACKUP_SEAL_KEY_MADE_AT];
+	const put = (database: Database.Database, key: string, value: string) =>
+		database.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, value);
+	/** The key as card 2898's release left it: sealed in place as plain hex, with no record. */
+	const asCard2898LeftIt = (hex: string) => {
+		put(sqlite, BACKUP_SEAL_KEY, sealValue(hex, settingAad(BACKUP_SEAL_KEY), currentMfaKey()!));
+		sqlite.prepare('DELETE FROM settings WHERE key = ?').run(BACKUP_SEAL_KEY_MADE_AT);
+	};
+	/** A start, its lines kept off the console. */
+	const start = () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		sealStoredSecretsAtStart(sqlite, () => {});
+	};
+	/** The BACKUP CRITICAL key-change records written while `fn` runs (the fix pass's C4), each at its level. */
+	const notTrusted = (fn: () => void): string[] => {
+		const from = (sqlite.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM system_logs').get() as { n: number }).n;
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		fn();
+		return column<string>(sqlite, `SELECT level || ' ' || message FROM system_logs WHERE id > ${from} AND context = 'BACKUP' AND message LIKE 'Key change recorded%'`);
+	};
+
+	it.each([
+		{ row: 'none stored: one is made, with its record, and nothing is said', stored: 'none' },
+		{ row: 'one that does not open: replaced, with a new record and one CRITICAL key-change record (F3, C4)', stored: 'unopenable' }
+	])('4: backupSealKey writes the current form and its record: $row (R4)', ({ stored }) => {
+		sqlite.prepare('DELETE FROM settings WHERE key IN (?, ?)').run(BACKUP_SEAL_KEY, BACKUP_SEAL_KEY_MADE_AT);
+		if (stored === 'unopenable') {
+			put(sqlite, BACKUP_SEAL_KEY, sealValue(`v2:${'ab'.repeat(32)}`, settingAad(BACKUP_SEAL_KEY), otherKey()));
+			put(sqlite, BACKUP_SEAL_KEY_MADE_AT, EARLIER);
+		}
+
+		const said = notTrusted(() => backupSealKey(sqlite));
+
+		expect(readOpened('settings', BACKUP_SEAL_KEY, sqlite)).toMatch(CURRENT_FORM);
+		expect(record()).toMatch(AN_ISO_TIME);
+		expect(record()).not.toBe(EARLIER);
+		expect(said).toEqual(stored === 'none' ? [] : [`CRITICAL ${SEAL_KEY_NOT_TRUSTED}`]);
+		// A second call uses the key as it is, and writes nothing.
+		const now = [storedKey(), record()];
+		expect(notTrusted(() => backupSealKey(sqlite))).toEqual([]);
+		expect([storedKey(), record()]).toEqual(now);
+	});
+
+	it("4b: a seal key written in plain while the server runs is no key: nothing is checked with it, a restore keeps neither it nor its record, and the next backup replaces it with one CRITICAL key-change record (R2, R3, C4)", () => {
+		const backup = opening(generateBackupData());
+		const hex = sealKeyHere(sqlite)!.key;
+		// The same key's bytes, written in plain, as a row written by hand would be, with a record beside it.
+		put(sqlite, BACKUP_SEAL_KEY, hex);
+		put(sqlite, BACKUP_SEAL_KEY_MADE_AT, EARLIER);
+		expect(sealKeyHere(sqlite)).toBeNull();
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.unsealed).toEqual({ seal: 'none', check: null });
+		expect(storedKey()).toBeUndefined();
+		expect(record()).toBeUndefined();
+
+		put(sqlite, BACKUP_SEAL_KEY, hex);
+		const said = notTrusted(() => backupSealKey(sqlite));
+		expect(said).toEqual([`CRITICAL ${SEAL_KEY_NOT_TRUSTED}`]);
+		expect(SEAL_KEY_NOT_TRUSTED).toContain('the backup seal key (the one stored was not trusted at run time');
+		expect(SEAL_KEY_NOT_TRUSTED).not.toContain(hex);
+		expect(readOpened('settings', BACKUP_SEAL_KEY, sqlite)).toMatch(CURRENT_FORM);
+		expect(sealKeyHere(sqlite)!.key).not.toBe(hex);
+	});
+
+	it("5: a backup sealed under a key of the older form, which a start then makes anew, is another server's: nothing filled, the new key and its record kept, and a start after the restore makes nothing (card test 1)", () => {
+		const old = 'cd'.repeat(32);
+		const backup = opening(generateBackupData());
+		sealCopy(backup, Buffer.from(old, 'hex'));
+		asCard2898LeftIt(old);
+		expect(sealVerifies(backup, old)).toBe(true);
+
+		start();
+		const made = sealKeyHere(sqlite)!;
+		const madeAt = record();
+		expect(made.key).not.toBe(old);
+		expect(madeAt).toMatch(AN_ISO_TIME);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.unsealed).toEqual({ seal: 'failed', check: null });
+		expect(result.secrets.kept).toEqual(NOTHING_KEPT);
+		expect(storedKey()).toBe(made.stored);
+		expect(record()).toBe(madeAt);
+		start();
+		expect(storedKey()).toBe(made.stored);
+		expect(record()).toBe(madeAt);
+	});
+
+	it('5b: after the start makes the key anew, a backup this server makes verifies and fills (R7(b))', () => {
+		startedSinceAlreadyOffHeld();
+		armSecrets(sqlite);
+		asCard2898LeftIt('cd'.repeat(32));
+		start();
+
+		const result = restoreFromBackup(sqlite, opening(generateBackupData()));
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.secrets.kept.mailPassword).toBe(true);
+	});
+
+	it("6: a whole database copy holding an older key in plain and a record of its own, with no seal: neither is brought in, this server's key and record are kept, and nothing is filled", () => {
+		backupSealKey(sqlite);
+		const here = sealKeyHere(sqlite)!;
+		const madeAt = record();
+		const copy = opening(Buffer.from(sqlite.serialize()));
+		put(copy, BACKUP_SEAL_KEY, 'ef'.repeat(32));
+		put(copy, BACKUP_SEAL_KEY_MADE_AT, EARLIER);
+
+		const result = restoreFromBackup(sqlite, copy);
+
+		expect(result.unsealed).toEqual({ seal: 'none', check: null });
+		expect(result.secrets.kept).toEqual(NOTHING_KEPT);
+		expect(storedKey()).toBe(here.stored);
+		expect(record()).toBe(madeAt);
 	});
 });
 

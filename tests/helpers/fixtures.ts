@@ -76,6 +76,7 @@ import {
 } from '$lib/server/auth';
 import { forgetUnreadablePrefsWarnings } from '$lib/server/notifications';
 import { ensureFormSecret } from '$lib/server/request-tokens';
+import { resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { sealValue, webhookUrlAad } from '$lib/server/stored-secrets';
 import { currentMfaKey } from '$lib/server/mfa-key';
 import { receiverOf } from '$lib/server/webhook-address';
@@ -165,6 +166,9 @@ export function resetDb(): void {
 	// And the form signing key, which a start makes, so that no check made by
 	// a test is the first to need it: none makes it now (card 2750).
 	ensureFormSecret();
+	// And the remembered-browser key held in memory, which the wipe deleted
+	// (card 2943's fix pass, C11): each test starts as a server does.
+	resetKnownBrowserSecretCache();
 }
 
 export type Role = 'user' | 'admin' | 'superadmin';

@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.57
+version: 1.58
 status: As-Built
 date: 2026-11-19
 tags:
@@ -701,7 +701,7 @@ flowchart TD
   `password` and `privateKey`, S3 `secretAccessKey`, Google Drive `clientSecret` and
   `refreshToken`, a service account's key inside `serviceAccountJson`, OneDrive
   `clientSecret`; every one of them on every destination, whatever its type), deletes the
-  `backup_seal_key` row, leaves out a destination of a type this version does not know and a
+  `backup_seal_key` row and its record, `backup_seal_key_made_at` (card 2943), leaves out a destination of a type this version does not know and a
   `backup_config` that is not JSON, and sets each webhook's secret to `''` with the webhook
   switched off and listed, as `[{"id":3,"active":true}]`, in `webhook_secrets_left_out`. A
   webhook is switched off because the file can become a database without a restore, and one
@@ -779,9 +779,22 @@ sequenceDiagram
   left out; the second review's B1), so the seal written before the second `VACUUM INTO` holds for the
   file after it. It is stored as its form number, a colon and the 64 hex characters (`2:…`); a
   restore takes a seal of any other form as none. The key is the `backup_seal_key` setting of the running database, made by the
-  first backup (`backupSealKey()`): the one thing a backup writes there. `withoutSecrets(from,
+  start, or by the first backup where a Reset cleared it (`backupSealKey()`): the one thing a
+  backup may write there, with its record, `backup_seal_key_made_at`. `withoutSecrets(from,
   to, key)` takes it, this server's unless a test gives another. Measured on made-up copies on
   a development machine: 0.2 s for 59 MB and 115,000 rows, 0.56 s for 177 MB and 345,000.
+- **The seal key is the server's only while it is sealed and of the `v2` form** (card 2943).
+  It is stored as the envelope of `v2:` and 64 hex. The first start of the release makes it
+  anew, because the key before it was stored in plain until card 2898 and is in every whole
+  copy of the database made before then, and so does any start that finds it in plain, of the
+  older form, or missing. A key in any other form at run time is no key: a restore fills nothing
+  for it, and `backupSealKey()` replaces it with one `[CRITICAL] [BACKUP]` key-change record,
+  "Key change recorded: made by a backup, …", kept for good with the system log's CRITICAL lines. **Every backup made
+  before the key is made anew is restored as another server's**: everything restores, the
+  secrets and addresses it left out are listed to enter, and it takes no second factors for
+  accounts not on this server. `clearSecrets()` deletes the record from every copy with the key,
+  and a restore keeps this server's record only beside the key it keeps. See
+  [The Signing Keys Made Anew Once](authentication-security.md#the-signing-keys-made-anew-once-card-2943).
 - **The server answers nothing while it runs.** Every step is synchronous, from the first
   `VACUUM INTO` to the read: see "How long the server stops answering" under
   [Backup Destinations](deployment.md#backup-destinations) in the deployment guide for the

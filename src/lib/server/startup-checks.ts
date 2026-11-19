@@ -116,8 +116,8 @@ import { createLogger, isLogged, printable } from './logger';
 import { maskOldWebhookAddresses, maskSecretsInLog } from './secret-paths';
 import { NOT_IN_HASH_FORM, REPLACE_PLAIN_USED_INVITES } from './invites';
 import { SESSION_NOT_IN_HASH_FORM, httpsOnlyCookie, keyEnded } from './auth';
-import { END_PLAIN_REQUEST_LINKS } from './request-tokens';
-import { signInsOneAtATime } from './known-browsers';
+import { END_PLAIN_REQUEST_LINKS, resetFormSecretCache } from './request-tokens';
+import { resetKnownBrowserSecretCache, signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
 import { quotedName, secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './backup-secrets';
@@ -166,14 +166,16 @@ import {
 	forgetStoredSecrets,
 	normaliseServiceAccounts,
 	recordKeyCheck,
+	replaceSigningKeysAtStart,
 	replaceUnopenableSigningKeys,
-	replacedSigningKeysLine,
 	resealStoredSecrets,
 	sealPlainSecrets,
 	sealedTotal,
+	signingKeysMadeLine,
 	storedSecretsAtStart,
 	type SealedCounts,
 	type ServiceAccountNormalised,
+	type SigningKeyMade,
 	type StoredSecret
 } from './stored-secrets';
 
@@ -850,7 +852,8 @@ function namedSecrets(secrets: readonly { where: string }[]): string {
  * where there is one (S13), which holds them in plain; and, on the first such
  * start alone (the `stored_secrets_first_sealed` setting, E8), the stale
  * temporary copies a backup leaves beside the database deleted (S13). A
- * replaced signing key is a WARN of its own, saying what it breaks.
+ * replaced signing key is named, with what it breaks, in the start's one
+ * CRITICAL key-change record line (card 2943's fix pass, C4).
  *
  * Then the scrub (`scrubStoredSecrets`). A marker this start set (by its
  * sealing, a change of key or a forget) is scrubbed now, before the server
@@ -866,6 +869,16 @@ function namedSecrets(secrets: readonly { where: string }[]): string {
  * deletes the stale backup copies; and each plain secret beside an address
  * that is '' or does not open blanked, off and listed. After it, at every
  * start, a crashed import's `.restore-temp` upload is deleted.
+ *
+ * Card 2943 adds, in the same transaction and before the sweep: the backup
+ * seal key, the remembered-browser key and the request-form key made anew
+ * where one is in plain or of the form before `v2:` (and the seal key where
+ * none is stored), never sealed in place (`replaceSigningKeysAtStart`), with
+ * one CRITICAL key-change record line after the commit, which names a key
+ * replaced because it did not open too (its fix pass, C4). A second instance
+ * started meanwhile waits on the IMMEDIATE transaction for better-sqlite3's
+ * default busy timeout (5 seconds; none is set): within it, it finds nothing
+ * left to make; past it, the transaction fails and the start is refused.
  */
 export function sealStoredSecretsAtStart(
 	database: Database.Database = sqlite,
@@ -873,16 +886,17 @@ export function sealStoredSecretsAtStart(
 ): void {
 	const key = currentMfaKey();
 	let counts: SealedCounts;
-	let replaced: string[];
+	let replaced: SigningKeyMade[];
 	let firstSealing = false;
 	let normalised: ServiceAccountNormalised[];
 	let firstOfRelease = false;
 	let logMaskFailed: string | null = null;
 	let forgottenBesideNoAddress: number[] = [];
+	let keysMade: SigningKeyMade[] = [];
 	try {
 		if (key === null) throw new Error('no MFA key is loaded');
-		[counts, replaced, firstSealing, normalised, firstOfRelease, forgottenBesideNoAddress] = database
-			.transaction((): [SealedCounts, string[], boolean, ServiceAccountNormalised[], boolean, number[]] => {
+		[counts, replaced, firstSealing, normalised, firstOfRelease, forgottenBesideNoAddress, keysMade] = database
+			.transaction((): [SealedCounts, SigningKeyMade[], boolean, ServiceAccountNormalised[], boolean, number[], SigningKeyMade[]] => {
 				recordKeyCheck(database, key);
 				const insertOnce = (setting: string) =>
 					database.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING').run(setting, new Date().toISOString()).changes === 1;
@@ -903,6 +917,10 @@ export function sealStoredSecretsAtStart(
 				// the file with this start's scrub, but it is no first sealing.
 				const normalisedNow = normaliseServiceAccounts(database);
 				if (normalisedNow.length > 0) markScrubPending(database);
+				// Card 2943 (R1, R5, R8): the three signing keys every older copy holds, made anew where one is in
+				// plain or of an older form, and the backup seal key where there is none; never sealed in place. Before
+				// the sweep, which leaves them. Marks the scrub itself; no first sealing.
+				const madeNow = replaceSigningKeysAtStart(database, key);
 				const sealedNow = sealPlainSecrets(database, key);
 				const replacedNow = replaceUnopenableSigningKeys(database, key);
 				let first = false;
@@ -914,7 +932,7 @@ export function sealStoredSecretsAtStart(
 				// never sealed against it, and never left in plain: blanked, the webhook off and listed, as a backup
 				// leaves one out, at every start that finds one.
 				const forgotten = sealedNow.secretsBesideNoAddress.length > 0 ? forgetSecretsBesideNoAddress(database, sealedNow.secretsBesideNoAddress) : [];
-				return [sealedNow, replacedNow, first, normalisedNow, first2928, forgotten];
+				return [sealedNow, replacedNow, first, normalisedNow, first2928, forgotten, madeNow];
 			})
 			.immediate();
 	} catch (err) {
@@ -978,8 +996,14 @@ export function sealStoredSecretsAtStart(
 		);
 	}
 	if (normalised.length > 0) warnOnConsoleAlways(serviceAccountsNormalisedLine(normalised));
-	if (replaced.length > 0) {
-		warnOnConsoleAlways(replacedSigningKeysLine(replaced));
+	// Card 2943 (R6; its fix pass, C4): every key made anew at this start, one that did not open included, in one
+	// key-change record, CRITICAL so that the system log keeps it for good (card 2899).
+	const madeAtStart = [...keysMade, ...replaced];
+	if (madeAtStart.length > 0) {
+		log.critical(signingKeysMadeLine(madeAtStart));
+		// Nothing of this process may go on with a key it held before: forgotten, and read again at first use.
+		resetFormSecretCache();
+		resetKnownBrowserSecretCache();
 	}
 
 	const marker = database.prepare('SELECT value FROM settings WHERE key = ?').get(SECRETS_SCRUB_PENDING) as { value: string } | undefined;

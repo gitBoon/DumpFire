@@ -304,6 +304,54 @@ export function mailConnectionIn(database: Database.Database): Record<string, st
 export const WEBHOOK_ADDRESS_MAC_KEY = 'webhook_address_mac_key';
 export const SIGNING_KEY_SETTINGS = ['known_browser_secret', 'request_form_secret', 'backup_seal_key', WEBHOOK_ADDRESS_MAC_KEY] as const;
 const STORED_SETTINGS: readonly string[] = [MAIL_PASSWORD, ...SIGNING_KEY_SETTINGS];
+
+// ─── The signing keys' form (card 2943) ─────────────────────────────────────
+
+/** backup-secrets.ts's `BACKUP_SEAL_KEY`: imports run the other way. */
+const SEAL_KEY_SETTING = 'backup_seal_key';
+
+/**
+ * The signing keys whose stored text says its form, inside the seal (card
+ * 2943, R1 and R8): `v2:` and 64 lower-case hex. Each was stored in plain
+ * before card 2898, so every copy of the database made before then holds it;
+ * one of any other form is never sealed in place, and is replaced at start
+ * (`replaceSigningKeysAtStart`). The form is inside the envelope, bound to the
+ * setting's name as before, so nobody without the MFA key can write a key of
+ * it: the decision rests on nothing a row written by hand can forge.
+ */
+export const V2_SIGNING_KEYS = ['known_browser_secret', 'request_form_secret', SEAL_KEY_SETTING] as const;
+
+/** A signing key's stored text of the current form, the 64 hex captured. */
+const V2_TEXT = /^v2:([0-9a-f]{64})$/;
+
+/** Whether `setting` is one of `V2_SIGNING_KEYS`. */
+const isV2Setting = (setting: string): boolean => (V2_SIGNING_KEYS as readonly string[]).includes(setting);
+
+/** A new signing key's text, as it is sealed (card 2943): `v2:` and 32 random bytes as hex. */
+export function newSigningKeyText(): string {
+	return `v2:${randomBytes(32).toString('hex')}`;
+}
+
+/** The 64 hex of a signing key read by `openStored`, where it opened and is of the current form; null for anything else, a key in plain included (R2). */
+export function currentSigningKeyHex(opened: Opened): string | null {
+	return opened.kind === 'opened' ? (V2_TEXT.exec(opened.value)?.[1] ?? null) : null;
+}
+
+/**
+ * When this server's backup seal key was made (card 2943): an ISO time,
+ * written by every writer of the key (R4). Information only, never an input
+ * to whether the key is kept (R1); deleted from every copy (`clearSecrets`),
+ * never brought in by a restore and kept by one only beside the key it keeps
+ * (R3), and forgotten with the key.
+ */
+export const BACKUP_SEAL_KEY_MADE_AT = 'backup_seal_key_made_at';
+
+/** Record, in `database`, that its backup seal key was made now (R4). Opens no transaction. */
+export function recordSealKeyMade(database: Database.Database): void {
+	database
+		.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value')
+		.run(BACKUP_SEAL_KEY_MADE_AT, new Date().toISOString());
+}
 const BACKUP_CONFIG = 'backup_config';
 /** backup-secrets.ts's `WEBHOOK_SECRETS_LEFT_OUT_KEY`. */
 const WEBHOOK_SECRETS_LEFT_OUT = 'webhook_secrets_left_out';
@@ -679,10 +727,11 @@ const SIGNING_KEY_WORDS: Record<string, string> = {
 };
 
 /**
- * The one WARN said when signing keys that do not open are replaced, `words`
- * naming each (`SIGNING_KEY_WORDS`): at start (`replaceUnopenableSigningKeys`),
- * and when a backup replaces the webhook address key (card 2928's code
- * review, C14). Never a value.
+ * The one WARN said when a backup replaces the webhook address key that does
+ * not open (card 2928's code review, C14), `words` naming it
+ * (`SIGNING_KEY_WORDS`). Never a value. At start, a key that does not open is
+ * named in the CRITICAL key-change record instead (`signingKeysMadeLine`,
+ * card 2943's fix pass, C4).
  */
 export function replacedSigningKeysLine(words: readonly string[]): string {
 	return (
@@ -854,7 +903,10 @@ export const sealedTotal = (counts: SealedCounts) => counts.mail + counts.destin
  * Seal, in `database`, every stored secret held in plain, under `key`, and
  * count them by kind: the mail password, each destination's secret fields on
  * every entry whatever its type, a service account's key, each webhook's
- * secret, and the three signing keys. Empty values and values already sealed
+ * secret, and the webhook address key. Never the three signing keys of
+ * `V2_SIGNING_KEYS` (card 2943, R8): one of those held in plain is replaced by
+ * `replaceSigningKeysAtStart`, never sealed in place, and a direct call leaves
+ * it as it is. Empty values and values already sealed
  * are left. A `backup_config` that is not JSON is counted as unreadable and
  * nothing in it is sealed; no text of it is kept (S12). The key check is not
  * recorded here: the caller records it in the same transaction. Opens no
@@ -896,6 +948,8 @@ export function sealPlainSecrets(database: Database.Database = sqlite, key: MfaK
 			}
 		}
 		for (const setting of SIGNING_KEY_SETTINGS) {
+			// Never sealed in place (card 2943, R8): one held in plain is in every older copy, and is replaced at start.
+			if (isV2Setting(setting)) continue;
 			const value = settingIn(database, setting);
 			if (value !== null && value !== '' && !looksSealed(value)) {
 				setSetting(setting, sealValue(value, settingAad(setting), key));
@@ -1010,7 +1064,10 @@ export function resealStoredSecrets(
  */
 export function forgetStoredSecrets(database: Database.Database, items: readonly StoredSecret[]): void {
 	for (const item of items) {
-		if (item.kind === 'mail' || item.kind === 'setting') database.prepare('DELETE FROM settings WHERE key = ? AND value = ?').run(item.setting!, item.value);
+		if (item.kind !== 'mail' && item.kind !== 'setting') continue;
+		const deleted = database.prepare('DELETE FROM settings WHERE key = ? AND value = ?').run(item.setting!, item.value).changes;
+		// The backup seal key's record goes with it (card 2943, R4).
+		if (deleted === 1 && item.setting === SEAL_KEY_SETTING) database.prepare('DELETE FROM settings WHERE key = ?').run(BACKUP_SEAL_KEY_MADE_AT);
 	}
 
 	const inConfig = items.filter((item) => item.kind === 'destination');
@@ -1107,21 +1164,103 @@ export const WEBHOOK_ADDRESSES_LEFT_OUT = 'webhook_addresses_left_out';
 
 /**
  * Replace each signing key `database` holds sealed that does not open with
- * `key` by a new one, 32 random bytes as hex, sealed (decision 9, S14), and
- * answer the words of each replaced. Opens no transaction.
+ * `key` by a new one, 32 random bytes as hex (after `v2:` for one of
+ * `V2_SIGNING_KEYS`), sealed (decision 9, S14), and
+ * answer each replaced, with the reason `unopenable`, for the start's
+ * key-change record line (card 2943's fix pass, C4). One of `V2_SIGNING_KEYS`
+ * is made of the current form, `v2:` and 64 hex, and the backup seal key's
+ * record is written with it (card 2943, R4). Opens no transaction.
  */
-export function replaceUnopenableSigningKeys(database: Database.Database, key: MfaKey): string[] {
-	const replaced: string[] = [];
+export function replaceUnopenableSigningKeys(database: Database.Database, key: MfaKey): SigningKeyMade[] {
+	const replaced: SigningKeyMade[] = [];
 	if (!hasColumns(database, 'settings', 'key', 'value')) return replaced;
 	for (const setting of SIGNING_KEY_SETTINGS) {
 		const value = settingIn(database, setting);
 		if (!looksSealed(value) || openWith(key, value, settingAad(setting)) !== null) continue;
-		database
+		const text = isV2Setting(setting) ? newSigningKeyText() : randomBytes(32).toString('hex');
+		const changed = database
 			.prepare('UPDATE settings SET value = ? WHERE key = ? AND value = ?')
-			.run(sealValue(randomBytes(32).toString('hex'), settingAad(setting), key), setting, value);
-		replaced.push(SIGNING_KEY_WORDS[setting]);
+			.run(sealValue(text, settingAad(setting), key), setting, value).changes;
+		if (changed === 1 && setting === SEAL_KEY_SETTING) recordSealKeyMade(database);
+		replaced.push({ setting, because: 'unopenable' });
 	}
 	return replaced;
+}
+
+/** A signing key made anew, and why (card 2943). */
+export type SigningKeyMade = {
+	setting: (typeof SIGNING_KEY_SETTINGS)[number];
+	because: 'none' | 'plain' | 'older' | 'unopenable' | 'not trusted at run time';
+};
+
+/** How each reason is said in the record line. */
+const MADE_BECAUSE: Record<SigningKeyMade['because'], string> = {
+	none: 'none was stored',
+	plain: 'the one stored was in plain',
+	older: 'the one stored was of an older form',
+	unopenable: "the one stored could not be opened with this server's MFA key",
+	'not trusted at run time': "the one stored was not trusted at run time: in plain, of an older form, or not opening with this server's MFA key"
+};
+
+/**
+ * At start (card 2943, R1, R5, R8), in the start's transaction and before
+ * `sealPlainSecrets`: make anew, sealed under `key` and of the current form,
+ * each of `V2_SIGNING_KEYS` that is stored in plain or opens to another form,
+ * and the backup seal key where none is stored (or '' is). Each is in every
+ * copy of the database made before card 2898 sealed it, so it is never sealed
+ * in place and never trusted. One that does not open is left to
+ * `replaceUnopenableSigningKeys`, which follows, so it is replaced once.
+ *
+ * The backup seal key's record is written with it (R4), and any key made
+ * marks the scrub (R14): the old text may be in the file's free pages, or a
+ * row deleted by hand was. Answers each key made, and why. The caller records
+ * the key check first, in the same transaction, and writes the record line
+ * (`signingKeysMadeLine`). Opens no transaction.
+ */
+export function replaceSigningKeysAtStart(database: Database.Database, key: MfaKey): SigningKeyMade[] {
+	const made: { setting: (typeof V2_SIGNING_KEYS)[number]; because: SigningKeyMade['because'] }[] = [];
+	if (!hasColumns(database, 'settings', 'key', 'value')) return made;
+	for (const setting of V2_SIGNING_KEYS) {
+		const opened = openStored(settingIn(database, setting), settingAad(setting), key);
+		let because: SigningKeyMade['because'];
+		if (opened.kind === 'empty') {
+			// The two others are made where they are first needed (`writeFormSecret`, `rememberBrowser`).
+			if (setting !== SEAL_KEY_SETTING) continue;
+			because = 'none';
+		} else if (opened.kind === 'plain') because = 'plain';
+		else if (opened.kind === 'opened' && currentSigningKeyHex(opened) === null) because = 'older';
+		else continue;
+		database
+			.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value')
+			.run(setting, sealValue(newSigningKeyText(), settingAad(setting), key));
+		if (setting === SEAL_KEY_SETTING) recordSealKeyMade(database);
+		made.push({ setting, because });
+	}
+	if (made.length > 0) markScrubPending(database);
+	return made;
+}
+
+/**
+ * The one CRITICAL line for signing keys made anew (card 2943, R6, and its fix
+ * pass, C4): a key-change record, kept for good with the system log's
+ * CRITICAL lines (card 2899), naming each key and why, and what each makes
+ * happen once. Never a value. `where` says what made them: the start
+ * (`replaceSigningKeysAtStart` and `replaceUnopenableSigningKeys` together),
+ * or a backup or a sign-in at run time. Worded as a record, true for every
+ * reason.
+ */
+export function signingKeysMadeLine(made: readonly SigningKeyMade[], where = 'at this start'): string {
+	const each = made.map(({ setting, because }) => `${SIGNING_KEY_WORDS[setting]} (${MADE_BECAUSE[because]})`).join('; ');
+	const settings = new Set<string>(made.map(({ setting }) => setting));
+	const effects = [
+		settings.has(SEAL_KEY_SETTING)
+			? "Backups sealed before now are taken as another server's: a restore of one fills no secret or webhook address, takes no second factors for accounts not on this server, and lists each to enter again."
+			: '',
+		settings.has('known_browser_secret') ? 'Every remembered browser is forgotten once.' : '',
+		settings.has('request_form_secret') ? 'Open request forms, decision revisions and comment keys are made again once: a page open now is reloaded.' : '',
+		settings.has(WEBHOOK_ADDRESS_MAC_KEY) ? 'A restore of an older backup fills no webhook address, each listed to enter again.' : ''
+	].filter((effect) => effect !== '');
+	return `Key change recorded: made ${where}, each stored encrypted under the MFA key: ${each}. ${effects.join(' ')}`;
 }
 
 // ─── A restore ───────────────────────────────────────────────────────────────

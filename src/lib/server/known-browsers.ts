@@ -41,7 +41,7 @@ import type { Cookies } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
 import { db } from './db';
 import { settings } from './db/schema';
-import { openStored, sealStored, settingAad } from './stored-secrets';
+import { currentSigningKeyHex, newSigningKeyText, openStored, sealStored, settingAad, signingKeysMadeLine } from './stored-secrets';
 import { inTransaction } from './db/transaction';
 import { httpsOnlyCookie } from './auth';
 import { FREE_WRONG_SIGN_INS, wrongSignInsAt } from './rate-limit';
@@ -80,34 +80,38 @@ function knownBrowserSecret(make: boolean): string | null {
 	const aad = settingAad(KNOWN_BROWSER_SECRET_KEY);
 	const existing = db.select().from(settings).where(eq(settings.key, KNOWN_BROWSER_SECRET_KEY)).get();
 	if (existing) {
-		// Stored sealed (card 2898); one held in plain, from before, as it is.
+		// Stored sealed (card 2898), of the form `v2:` and 64 hex (card 2943). Only a key of that form is this
+		// server's (its fix pass, C1): one held in plain, of an older form or that does not open is no key.
 		const opened = openStored(existing.value, aad);
-		if (opened.kind === 'opened' || opened.kind === 'plain') {
+		if (currentSigningKeyHex(opened) !== null) {
 			cachedSecret = opened.value;
 			return cachedSecret;
 		}
-		// One that does not open is no key: no cookie holds, and the next
-		// remember replaces it with a new one (E16), forgetting every browser.
+		// No cookie holds, and the next remember replaces it with a new one
+		// (E16), forgetting every browser, with the key-change record.
 		if (!make) return null;
 		// The key check and the key in one transaction (card 2898's code review, E10).
-		inTransaction(() =>
+		// Of the current form, `v2:` and 64 hex (card 2943, R8).
+		const replaced = inTransaction(() =>
 			db.update(settings)
-				.set({ value: sealStored(randomBytes(32).toString('hex'), aad) })
+				.set({ value: sealStored(newSigningKeyText(), aad) })
 				.where(and(eq(settings.key, KNOWN_BROWSER_SECRET_KEY), eq(settings.value, existing.value)))
-				.run()
+				.run().changes
 		);
+		// Every replacement leaves a lasting record (card 2943's fix pass, C4).
+		if (replaced === 1) log.critical(signingKeysMadeLine([{ setting: KNOWN_BROWSER_SECRET_KEY, because: 'not trusted at run time' }], 'by a sign-in'));
 	} else {
 		if (!make) return null;
 		inTransaction(() =>
 			db.insert(settings)
-				.values({ key: KNOWN_BROWSER_SECRET_KEY, value: sealStored(randomBytes(32).toString('hex'), aad) })
+				.values({ key: KNOWN_BROWSER_SECRET_KEY, value: sealStored(newSigningKeyText(), aad) })
 				.onConflictDoNothing()
 				.run()
 		);
 	}
 	// Read back rather than trust what was written: another process may have got there first.
 	const opened = openStored(db.select().from(settings).where(eq(settings.key, KNOWN_BROWSER_SECRET_KEY)).get()?.value, aad);
-	if (opened.kind !== 'opened' && opened.kind !== 'plain') return null;
+	if (currentSigningKeyHex(opened) === null) return null;
 	cachedSecret = opened.value;
 	return cachedSecret;
 }

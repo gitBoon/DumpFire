@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.157
+version: 1.158
 status: As-Built
 date: 2026-11-19
 tags:
@@ -6300,8 +6300,11 @@ session's expiry moves on every time it is used.
   copy an import writes before it replaces anything (`.pre-restore-safety.json`, beside the
   database, which in the image is `/app/data`, on the volume since card 2776, readable by its
   owner alone, never read back by the server and never sent anywhere) holds every
-  table as it was, sessions, secrets and the seal's key included, and is not deleted; it leaves out only the key remembered browsers are signed with, as a
-  backup does, since the restore forgets that key anyway: see [How Large an Import Can Be](deployment.md#how-large-an-import-can-be).
+  table as it was, sessions and secrets included, and is not deleted; it leaves out every
+  signing key (card 2943, R8): the key remembered browsers are signed with, the request form's
+  key, the key webhook address matches are made with (card 2928) and the backup seal key, none
+  of which any backup holds, since the restore makes the first two anew and keeps this server's
+  other two: see [How Large an Import Can Be](deployment.md#how-large-an-import-can-be).
 
 #### Second Factors in a Backup, the Export and a Restore (card 2768)
 
@@ -6494,13 +6497,11 @@ flowchart TD
   `backup_seal` setting, stored as the seal's form number, a colon and 64 hex characters
   (`2:…`), and the file stays one `.db`. A seal of any other form, the bare 64 characters
   included, is one this build cannot check, and is taken as no seal. The key is 32 random bytes kept as the
-  `backup_seal_key` setting, made by the first backup the server takes (`backupSealKey()`);
-  `clearSecrets()` deletes it from every copy, and a restore never brings one in and puts this
-  server's back after it clears `settings`, so that the backups made before a restore still
-  verify after it. A restore never changes the key, so every backup this server has sealed
-  goes on verifying; to revoke every old seal at once, delete `backup_seal_key` (the command
-  in the rollback note of [the update that brings migration 0055](deployment.md#the-update-that-brings-migration-0055-secrets-out-of-backups-and-request-mail-to-the-accounts-address)),
-  and the next backup makes a new key. The HMAC is taken over a logical dump, the same from the same rows whatever
+  `backup_seal_key` setting, made by the start, or by the first backup where a Reset cleared it
+  (`backupSealKey()`); `clearSecrets()` deletes it from every copy, and a restore never brings
+  one in and puts this server's back after it clears `settings`, so that the backups made
+  before a restore still verify after it. A restore never changes the key, so every backup this
+  server has sealed goes on verifying until the key is made anew (below, card 2943). The HMAC is taken over a logical dump, the same from the same rows whatever
   file they are in (`sealOf()`): the structure (every row of `sqlite_master`, by type and name,
   as written, SQLite's own included: the index it makes for a UNIQUE column, `sqlite_stat1`
   once ANALYZE has run, and anything named as SQLite's own put there by hand); then every table
@@ -6632,6 +6633,75 @@ flowchart TD
   `PUT /api/v1/webhooks/{id}` and `{ "secret": "…", "active": true }`.
 
 Covered by `tests/backups.test.ts` and `tests/import-working-copy.test.ts`.
+
+#### The Signing Keys Made Anew Once (card 2943)
+
+Until card 2898 the backup seal key, the remembered-browser key and the request-form key were
+stored in plain, so every whole copy of the database made before then (a cold copy, a volume
+snapshot, an old `.pre-restore-safety.json`) holds them. Whoever holds such a copy could seal
+a backup of their own making that this server takes as its own and fills its mail password,
+destination credentials and webhook secrets and addresses into (an added superadmin then
+holds them); second factors can be carried over only where the stolen file itself held them.
+They could also make remembered-browser cookies and request-form tokens. Card 2898 sealed the
+keys in place, which ends none of that, so card 2943 makes them anew, once, and never trusts
+an old one.
+
+```mermaid
+flowchart TD
+    Start["Start: sealStoredSecretsAtStart,<br/>one IMMEDIATE transaction,<br/>key check recorded first"] --> Each{"Each of the three keys,<br/>opened under the MFA key"}
+    Each -- "sealed, v2: and 64 hex" --> Keep["Kept as it is"]
+    Each -- "in plain, of the older form,<br/>or (seal key) none stored" --> New["Made anew: v2: and 32 random bytes,<br/>sealed, bound to the setting's name;<br/>seal key: backup_seal_key_made_at;<br/>scrub marked"]
+    Each -- "does not open" --> Unopen["replaceUnopenableSigningKeys:<br/>made anew of the v2 form,<br/>named in the same record line"]
+    New --> Line["After commit: one CRITICAL<br/>key-change record line"]
+    Keep --> Sweep["sealPlainSecrets: never seals the three in place"]
+    Line --> Sweep
+    Unopen --> Sweep
+```
+
+- **The form is inside the seal.** Each of the three (`V2_SIGNING_KEYS` in
+  `src/lib/server/stored-secrets.ts`) is stored as the envelope of `v2:` and 64 lower-case hex,
+  bound to its setting's name. Nobody without the MFA key can write such a value, so whether a
+  key is kept rests on nothing a row written by hand can forge (the plan review's R1).
+- **At start** (`replaceSigningKeysAtStart()`, before `sealPlainSecrets()`, which no longer seals
+  the three in place): a key stored in plain, or that opens to any other text, is made anew, and
+  so is a backup seal key where none is stored. One that does not open is made anew, of the
+  current form, by `replaceUnopenableSigningKeys()`, as before. Each key made
+  marks the scrub. After the commit, one `[CRITICAL] [STARTUP]` line, kept for good with the
+  system log's CRITICAL lines: "Key change recorded: made at this start, each stored encrypted
+  under the MFA key: the backup seal key (the one stored was in plain); …", naming each key and
+  why (in plain, of an older form, none was stored, or could not be opened with this server's
+  MFA key, which since the fix pass's C4 is named here and no longer in a WARN of its own) and
+  what each makes happen once: backups
+  sealed before then are taken as another server's; every remembered browser is forgotten;
+  open request forms, decision revisions and comment keys are made again (none of them is
+  stored, so nothing durable breaks). Never a value. The form and remembered-browser keys this
+  process held in memory are forgotten.
+- **At run time** a backup seal key that is not sealed and of the `v2` form is no key
+  (`sealKeyHere()` null): a restore fills nothing for it, and keeps neither it nor its record.
+  The next backup (`backupSealKey()`) makes a new one with one `[CRITICAL] [BACKUP]` record,
+  "Key change recorded: made by a backup, each stored encrypted under the MFA key: the backup
+  seal key (the one stored was not trusted at run time: …)". The remembered-browser key is held
+  to the same rule (the fix pass's C1): one in plain, of an older form or not opening is no key,
+  so no cookie holds, and the next remember makes it anew with one `[CRITICAL] [AUTH]` record,
+  "Key change recorded: made by a sign-in, …". The form key is written of the `v2` form by its
+  maker, and its reader signs with the text as opened (a form token lives two hours, and the
+  start has made an older key anew before the server listens).
+- **A crash between the commit and the line** loses the line, never the record: the key and
+  `backup_seal_key_made_at` are in the commit, and the time is kept there.
+- **The record**, `backup_seal_key_made_at` (an ISO time), is written by every writer of the
+  seal key, is information only (never a reason to keep or replace it), is deleted from every
+  copy by `clearSecrets()`, is never brought in by a restore and is put back by one only beside
+  the key it keeps, and is deleted with the key by `FORGET_UNOPENABLE_SECRETS`.
+- **Changing the key again later**: with the container stopped, delete the `backup_seal_key`
+  row; the next start makes a new one, with its line, its record and the scrub. Every backup
+  made before is then another server's.
+- **What it does not undo.** A forged backup restored before the release stays restored: see
+  [the release note](deployment.md#the-release-that-makes-the-signing-keys-anew-card-2943) for
+  what to read before it.
+
+Covered by `tests/stored-secrets.test.ts` (cases 22 and 50 to 58), `tests/mfa-secrets.test.ts`
+(2943 case 59, a key change carrying the seal key and its record) and `tests/backups.test.ts`
+(the backup seal key's form and its record).
 
 ### Where a Mailed Link's Address Comes From
 

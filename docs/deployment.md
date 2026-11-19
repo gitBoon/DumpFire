@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.145
+version: 1.146
 status: As-Built
 date: 2026-11-19
 tags:
@@ -1630,7 +1630,7 @@ docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/
 
 `dumpfire.db*` takes the database and whichever of its `-wal` and `-shm` files exist. Returning it removes those two first, so that none is left beside the database that the copy does not have.
 
-The cold copy is the whole database, every account's password hash and session included, so `-m 700` keeps the folder readable by you alone (`mkdir -p` leaves the mode of a folder that is there already as it was: check it with `ls -ld "$HOME/dumpfire-cold"`). Once the update is complete and the next backup after it has been taken and checked, delete it: `rm -r "$HOME/dumpfire-cold"`.
+The cold copy is the whole database, every account's password hash and session included, so `-m 700` keeps the folder readable by you alone (`mkdir -p` leaves the mode of a folder that is there already as it was: check it with `ls -ld "$HOME/dumpfire-cold"`). Once the update is complete and the next backup after it has been taken and checked, delete it: `rm -rf "$HOME/dumpfire-cold"`.
 
 ### Reading the Log
 
@@ -7881,7 +7881,7 @@ What the older image writes is sealed again at the next start on this one.
 
 | # | Do | Expect | Fault if |
 |---|---|---|---|
-| H1 | Run the queries above, then start the new image | One `Sealed N stored secret(s) …` line, N matching; the safety file named if one exists | No line, a count that differs, or secret text in the log |
+| H1 | Run the queries above, then start the new image | One `Sealed N stored secret(s) …` line, N matching the plain values found, **not counting** `known_browser_secret`, `request_form_secret` or `backup_seal_key`, which card 2943 makes anew instead of sealing (its `0 signing key(s)`); the safety file named if one exists. With nothing else in plain, no Sealed line at all: the keys' line is K2 of [the card 2943 note](#the-release-that-makes-the-signing-keys-anew-card-2943) | A count that differs, or secret text in the log |
 | H2 | Run the first query again | Every row `sealed`; `key_check` 1; no `secrets_scrub_pending` row | Any `plain`, or the marker left |
 | H3 | Restart | No sealing line | A second |
 | H4 | Admin, Mail: send a test mail; save with the password masked | The mail arrives; the row is byte for byte as before | Mail fails, or the row changed |
@@ -7895,6 +7895,133 @@ What the older image writes is sealed again at the next start on this one.
 | H12 | Import Backup of the H7 backup | Mail password, destination and webhook kept and working | Any listed to enter |
 | H13 | Admin › Vacuum | Succeeds; `dumpfire.db-wal` is empty after | A log left with frames |
 | H14 | Stopped: point `MFA_KEY_FILE` at a new, empty key's file with nothing else changed; start | Refused: "None of the N stored secret(s) opens with this MFA key … FORGET_UNOPENABLE_SECRETS=1"; nothing changed. Put the right key back | It starts, or anything is forgotten |
+
+### The Release That Makes the Signing Keys Anew (Card 2943)
+
+> ⚠️ **Card 2898 never ships without card 2943.** Card 2898 seals the signing keys in place,
+> and every whole copy of the database made before it holds them in plain. Card 2943 makes them
+> anew at the same first start. An image carrying both is fine; one with card 2898 and without
+> card 2943 is not to be deployed.
+
+No migration, no API version. Until card 2898 the server stored three signing keys in plain:
+the key it seals its backups with (`backup_seal_key`), the key remembered browsers are signed
+with and the request form's key. Every cold copy, volume snapshot and old
+`.pre-restore-safety.json` made before this release holds them. With the backup seal key,
+whoever holds such a copy can make a backup file this server takes as its own and fills its
+mail password, destination credentials and webhook secrets and addresses into. **The first start
+of this release makes each of the three anew**, sealed under the MFA key with its form (`v2:`
+and 64 hex) inside the seal, and any later start does the same for a key it finds in plain, of
+the older form or (the seal key) missing. See
+[The Signing Keys Made Anew Once](authentication-security.md#the-signing-keys-made-anew-once-card-2943).
+
+```mermaid
+flowchart TD
+    R["Before: read the import lines and the<br/>superadmins and administrators (read-only)"] --> S["Stop the old container"]
+    S --> D["Start the new image"]
+    D --> F["First start: the three keys made anew,<br/>one CRITICAL 'Key change recorded' line"]
+    F --> B["Run Now: a backup sealed with the new key"]
+    B --> C["Release known good:<br/>rm -rf the cold copy, delete the safety copy"]
+```
+
+**Before the deploy** (read-only, on the host, against the live database). A forged backup
+restored before this release is not undone by it, so read who imported what and who holds the
+two highest roles now:
+
+```sql
+SELECT timestamp, message FROM system_logs WHERE level = 'CRITICAL' AND context = 'IMPORT' ORDER BY id;
+SELECT id, username, role, created_at FROM users WHERE role IN ('superadmin', 'admin') ORDER BY role, id;
+```
+
+Every import line should be one you made, and every account one you know. If not, stop and
+treat the server as compromised (change every secret at its service) before deploying.
+
+**Stop the old container before starting the new one.** The keys are made in one IMMEDIATE
+transaction before the server listens. A second instance on the same database waits for it
+(better-sqlite3's default busy timeout, 5 seconds), then finds the keys already made and makes
+nothing; past the timeout it is refused and does not start.
+
+**The first start** writes one line, on the console and in the system log, where it is kept for
+good with the other CRITICAL lines:
+
+`[CRITICAL] [STARTUP] Key change recorded: made at this start, each stored encrypted under the
+MFA key: the backup seal key (the one stored was in plain); the remembered-browser key (the one
+stored was in plain); the request-form key (the one stored was in plain). Backups sealed before
+now are taken as another server's: …`
+
+The reason is "the one stored was of an older form" where card 2898 has already sealed a key in
+place, and "none was stored" for a seal key no backup ever made. Card 2898's own "Sealed N stored
+secret(s)" line, written at the same start, counts **0 signing key(s)**: the three are made
+anew, never sealed in place. A restart writes neither line. Read it back (read-only):
+
+```sql
+SELECT key, substr(value, 1, 9) AS form FROM settings WHERE key IN ('backup_seal_key', 'backup_seal_key_made_at');
+```
+
+`backup_seal_key` reads `dfsealed:`, and `backup_seal_key_made_at` holds the moment as an ISO
+time: information only, never a reason the server keeps or replaces the key.
+
+**What changes once, at that start:**
+
+- **Every backup made before it is another server's**, **the one taken just before the deploy
+  included**: Import Backup restores everything, then lists the mail password, each
+  destination's credentials and each webhook's secret and address to enter again ("None was kept
+  from this server, because this backup was not made by this server, or was changed since."), and
+  gives no second factor to an account not on this server. Have the mail password and the
+  destinations' credentials to hand for as long as such a backup might be restored. The
+  replacement is automatic: you do not choose when older backups stop counting as this server's.
+  Run **▶ Run Now** after the deploy so a backup sealed with the new key exists at once.
+- **Every remembered browser is forgotten**: each person meets sign-in's ordinary throttling
+  until they next sign in.
+- **Open request forms, decision revisions and comment keys are made again**: a page open
+  across the deploy is refused once and reloaded. Nothing stored depends on them.
+- **The import's safety copy** leaves out every signing key from now on.
+
+**Going back to an older image, and forward again.** The older image (from before card 2898; no
+image carries card 2898 without this card) cannot open the sealed keys:
+- **The seal key.** It does not take the sealed text for a key, and writes a new plain one at
+  its first backup. Backups made under this release then fill nothing there.
+- **The remembered-browser and form keys.** It signs with the sealed text as it stands, and
+  replaces neither. So remembered browsers and open forms start again once, there.
+
+On the way forward, the start makes anew each key the older image replaced or made in plain, and
+its key-change line names each by the reason "the one stored was in plain": usually the backup
+seal key alone, once the older image has taken a backup. Those backups are another server's
+here. A key the older image left sealed is kept, and is not named. Cookies and forms the older
+image signed with that key's sealed text do not hold here, so remembered browsers and open forms
+start again once more.
+
+**Changing the backup seal key again later**: with the container stopped, delete its row, then
+start; the start makes a new one, with the line, its record and a scrub of the file.
+
+```bash
+docker stop dumpfire
+docker run --rm --network none -v dumpfire-data:/app/data dumpfire:latest node -e "
+const db = require('better-sqlite3')('/app/data/dumpfire.db', { fileMustExist: true });
+console.log('keys removed:', db.prepare('DELETE FROM settings WHERE key = ?').run('backup_seal_key').changes);
+db.close();
+"
+docker start dumpfire
+```
+
+**Once the release is known good**, delete the copies that still hold the old keys and every
+other secret in plain: the cold copy (`rm -rf "$HOME/dumpfire-cold"`) and the import's safety copy
+(`docker exec <container> rm -f /app/data/.pre-restore-safety.json`). Returning the cold copy
+brings the old keys back; the next start makes them anew again.
+
+K1 to K6 restore backups, so they run on an instance that is not production, with a database
+of its own and a made-up mail password saved, first on the older image and then updated; K7
+and K8 run on production too.
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| K1 | On the older image: ▶ Run Now once, then Export Backup, kept as file A | A file | |
+| K2 | Stop it; start the new image on the same volume | One `[CRITICAL] [STARTUP] Key change recorded` line naming the three keys, with no hex in it | No line, two, or a value |
+| K3 | Restart | No such line | The line again |
+| K4 | Export Backup as file B; Import Backup of B as it is | Nothing to enter: "Kept from this server…" | The mail password listed |
+| K5 | Import Backup of A as it is | "To enter again" names the mail password and ends "None was kept from this server, because this backup was not made by this server, or was changed since." | "Kept from this server" |
+| K6 | Restart | No key-change line (the key and its record were kept across K5) | The line |
+| K7 | Search `.pre-restore-safety.json` for `backup_seal_key`, `known_browser_secret` and `request_form_secret` | None found | Any found |
+| K8 | The read-only query above | `dfsealed:` and an ISO time | Plain hex, or no time |
 
 ### The Release That Brings Service Account JSON to One Rule (Card 2939)
 
@@ -8316,7 +8443,7 @@ The limit is not the only ceiling. An import does this, in order:
 
 1. Reads the whole upload into memory.
 2. Writes it to `dumpfire.db.restore-temp` beside the database, in `/app/data` in the image, readable by its owner alone (card 2776; it was `.restore-temp.db` in the server's working directory, `/app`), and opens that.
-3. Writes a safety copy of the running database, every table as one JSON text, to `.pre-restore-safety.json` in the same folder, readable by its owner alone. It leaves out the `known_browser_secret` row of `settings`, the key remembered browsers are signed with, which no backup holds either. An invite's `token`, a 32-byte hash since card 2849, is written there as `{"type":"Buffer","data":[…]}`: the hash's bytes, never a token.
+3. Writes a safety copy of the running database, every table as one JSON text, to `.pre-restore-safety.json` in the same folder, readable by its owner alone. It leaves out every signing key's row of `settings` (card 2943): `known_browser_secret`, the key remembered browsers are signed with; `request_form_secret`, the request form's key; `webhook_address_mac_key`, the key webhook address matches are made with (card 2928); and `backup_seal_key`, the key backups are sealed with. No backup holds any of them either. An invite's `token`, a 32-byte hash since card 2849, is written there as `{"type":"Buffer","data":[…]}`: the hash's bytes, never a token.
 4. Replaces the rows.
 
 A file it cannot write in steps 2 and 3 ends the import before anything is replaced (card 2925). The page says so in words that name no path: "The import could not write its working copy beside the database (there is no space left on the disk). Nothing was changed.", or "Restore failed: The import could not write the safety copy of this server's data beside the database (…). Nothing was changed.", the reason being no space, the server not allowed to write there, a read-only disk, its folder missing (a database held in memory), something else in the way, the file in use, or the error's code. A copy written part-way is removed; a file the import could not even open is left alone. The safety copy is written as `.pre-restore-safety.json.tmp` and renamed over the one an earlier import left, so a safety copy that cannot be written leaves the earlier one as it was. The `CRITICAL` line in the system log keeps the error itself, path included. The import never makes the database's folder: if it is missing (the volume is not where it was), the page says "The import could not write its working copy beside the database. Nothing was changed.", and the server needs looking at before anything else. Only a database held in memory, which the tests use, has its folder (the working directory) made when it is missing.
@@ -8328,7 +8455,7 @@ Two limits outside DumpFire end an upload before it is read:
 - **The server's own time limit for a request.** Node gives a request five minutes, its `server.requestTimeout` default of 300 seconds, to arrive in full, and the image does not change it. An upload that takes longer is cut off and the import never starts. Behind nginx, which reads the whole upload before it passes it on, the server is handed it in a moment, whatever the caller's connection. With no proxy, or behind one that passes the upload on as it arrives (Cloudflare Tunnel, Caddy, nginx with `proxy_request_buffering off`), the server receives it at the caller's speed, and an import that takes more than five minutes to upload cannot be done that way: upload it from somewhere closer to the server. A card's upload has a shorter limit of its own: its body is given 120 seconds once its read begins (card 2910's code review), so a slow sender holds its place among the uploads in flight for at most that.
 - **Cloudflare's own limit on a request's body.** Behind Cloudflare, a Cloudflare Tunnel included, Cloudflare refuses a request whose body is over its plan's limit before it reaches the server: 100 MB on the Free and Pro plans. A backup larger than that cannot be imported through it; import it through an address that does not pass through Cloudflare.
 
-Both files are written beside the database, which in the image is `/app/data`: **on the volume** (card 2776). They were written to the working directory, `/app`, inside the container, which the server, running as `node`, cannot write. They need that much free space on the volume. `dumpfire.db.restore-temp` is deleted when the import ends, and when its write fails part-way (card 2925); one left by an import that was stopped (the server out of memory) has no `.db` at its end, so the start-up guard never takes it for a database hidden on the volume, and it can be removed. `.pre-restore-safety.json` is not: it stays until the next import replaces it, now across a container being recreated, and it holds everything the database held, password hashes and live sessions included, but for the key remembered browsers are signed with: as much as the database file beside it, and it rides in any copy of the volume. Once the import is known to be good, remove it:
+Both files are written beside the database, which in the image is `/app/data`: **on the volume** (card 2776). They were written to the working directory, `/app`, inside the container, which the server, running as `node`, cannot write. They need that much free space on the volume. `dumpfire.db.restore-temp` is deleted when the import ends, and when its write fails part-way (card 2925); one left by an import that was stopped (the server out of memory) has no `.db` at its end, so the start-up guard never takes it for a database hidden on the volume, and it can be removed. `.pre-restore-safety.json` is not: it stays until the next import replaces it, now across a container being recreated, and it holds everything the database held, password hashes and live sessions included, but for the four signing keys (step 3): as much as the database file beside it, and it rides in any copy of the volume. Once the import is known to be good, remove it:
 
 ```bash
 docker exec <container> rm -f /app/data/.pre-restore-safety.json

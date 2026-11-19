@@ -581,7 +581,7 @@ describe('restoring as a working copy', () => {
 			// The backup's too: card 2935's pass ran there (P4), so the restore does not run it (P12).
 			webhooks_readable_by_disabled_held: '2026-11-19 00:00:00'
 		});
-		expect(readOpened('settings', 'request_form_secret', live)).toMatch(/^[0-9a-f]{64}$/);
+		expect(readOpened('settings', 'request_form_secret', live)).toMatch(/^v2:[0-9a-f]{64}$/);
 		// The settings as the backup has them, but for this server's 0071 moment, kept (card 2752).
 		for (const table of OUTSIDE_TABLES) {
 			expect(withoutKeysRecorded(withoutFormKey(contentsOf(live)[table]))).toEqual(withoutFormKey(contentsOf(backup)[table]));
@@ -1262,9 +1262,9 @@ describe('through the route', () => {
 		// A new one is made as the restore commits (card 2750), not at first
 		// use, so no check that only reads is the first to need it.
 		const made = settingsIn(sqlite)['request_form_secret'];
-		// Sealed (card 2898), 32 random bytes as hex once opened.
+		// Sealed (card 2898), `v2:` and 32 random bytes as hex once opened (card 2943).
 		expect(made).toMatch(/^dfsealed:1:/);
-		expect(readOpened('settings', 'request_form_secret')).toMatch(/^[0-9a-f]{64}$/);
+		expect(readOpened('settings', 'request_form_secret')).toMatch(/^v2:[0-9a-f]{64}$/);
 		expect(verifyFormToken(before)).toBe(false);
 
 		// A token made now is signed with it: a process starting now agrees

@@ -1149,9 +1149,9 @@ describe('a browser that has signed in here before', () => {
 
 		const cookie = await rememberedAt();
 		const [made] = keys();
-		// Stored sealed (card 2898), 32 random bytes as hex once opened.
+		// Stored sealed (card 2898), `v2:` and 32 random bytes as hex once opened (card 2943).
 		expect(made.value).toMatch(/^dfsealed:1:/);
-		expect(readOpened('settings', KNOWN_BROWSER_SECRET_KEY)).toMatch(/^[0-9a-f]{64}$/);
+		expect(readOpened('settings', KNOWN_BROWSER_SECRET_KEY)).toMatch(/^v2:[0-9a-f]{64}$/);
 		await rememberedAt(user, B);
 		expect(keys()).toEqual([made]);
 

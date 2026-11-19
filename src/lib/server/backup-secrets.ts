@@ -105,9 +105,14 @@ import { NEW_SECRET_REASONS } from './webhooks';
 import { SERVICE_ACCOUNT_SHOWN, readServiceAccountJson, serviceAccountKey } from './service-account-json';
 import { driveProblem, driveSet } from './onedrive-address';
 import {
+	BACKUP_SEAL_KEY_MADE_AT,
 	WEBHOOK_ADDRESSES_LEFT_OUT,
 	WEBHOOK_ADDRESS_KEY_WORDS,
 	WEBHOOK_ADDRESS_MAC_KEY,
+	currentSigningKeyHex,
+	newSigningKeyText,
+	recordSealKeyMade,
+	signingKeysMadeLine,
 	addressToBind,
 	replacedSigningKeysLine,
 	looksSealed,
@@ -697,8 +702,10 @@ export function clearSecrets(copy: Database.Database, macKey: Buffer | null = nu
 		// The key this server seals its backups with (S1): whoever held it could
 		// seal a backup of their own making, and have this server fill it. And
 		// any seal already in the copy, which `sealCopy` writes afresh. And the
-		// key the copy's address matches are made with (card 2928, R14).
-		copy.prepare('DELETE FROM settings WHERE key IN (?, ?, ?)').run(BACKUP_SEAL_KEY, BACKUP_SEAL, WEBHOOK_ADDRESS_MAC_KEY);		const stored = settingOf(copy, 'backup_config');
+		// key the copy's address matches are made with (card 2928, R14). And the
+		// seal key's record, which is this server's (card 2943, R3).
+		copy.prepare('DELETE FROM settings WHERE key IN (?, ?, ?, ?)').run(BACKUP_SEAL_KEY, BACKUP_SEAL, WEBHOOK_ADDRESS_MAC_KEY, BACKUP_SEAL_KEY_MADE_AT);
+		const stored = settingOf(copy, 'backup_config');
 		if (stored !== null) {
 			const cleared = clearedConfig(stored);
 			if (cleared === null) copy.prepare("DELETE FROM settings WHERE key = 'backup_config'").run();
@@ -1006,29 +1013,44 @@ export function sealOf(database: Database.Database, key: Buffer): string {
 }
 
 /**
- * This server's key for sealing its backups, made the first time one is asked
- * for: 32 random bytes, kept in `live`'s settings as `backup_seal_key`. No
- * backup holds it (`clearSecrets`), and a restore keeps this server's in
- * place of anything a backup brings (`restoreFromBackup`). A key that is not
- * 64 hex characters is replaced, as one never made is.
+ * This server's key for sealing its backups: 32 random bytes, kept in
+ * `live`'s settings as `backup_seal_key`, made by the start (card 2943, R5),
+ * or here where none is stored, after a Reset. No backup holds it
+ * (`clearSecrets`), and a restore keeps this server's in place of anything a
+ * backup brings (`restoreFromBackup`).
  *
  * Stored sealed under the MFA key (card 2898), bound to its setting's name,
- * and opened here; one held in plain, from before, is used as it is until the
- * next start seals it. One that does not open is replaced, as one never made
- * is (decision 9): backups made before then no longer verify.
+ * as `v2:` and 64 hex (card 2943, R1), and opened here. Only a key of that
+ * form, sealed, is this server's (R2): one held in plain, of an older form or
+ * that does not open is no key, and is replaced, with one CRITICAL key-change
+ * record line (`SEAL_KEY_NOT_TRUSTED`, its fix pass's C4; F3), as one never
+ * made is: backups made before then no longer verify. Every key made writes
+ * its record (`backup_seal_key_made_at`, R4) in the same transaction.
  */
 export function backupSealKey(live: Database.Database = sqlite): Buffer {
-	const opened = sealKeyOpened(settingOf(live, BACKUP_SEAL_KEY));
+	const stored = settingOf(live, BACKUP_SEAL_KEY);
+	const opened = sealKeyOpened(stored);
 	if (opened !== null) return Buffer.from(opened, 'hex');
-	const made = randomBytes(32).toString('hex');
-	// The key check and the key in one transaction (card 2898's code review, E10).
+	const made = newSigningKeyText();
+	// The key check, the key and its record in one transaction (card 2898's code review, E10).
 	live.transaction(() => {
 		live
 			.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value')
 			.run(BACKUP_SEAL_KEY, sealStored(made, settingAad(BACKUP_SEAL_KEY), live));
+		recordSealKeyMade(live);
 	})();
-	return Buffer.from(made, 'hex');
+	// Said once the key is written, so that the record names a change that happened.
+	if (stored !== null && stored !== '') log.critical(SEAL_KEY_NOT_TRUSTED);
+	return Buffer.from(made.slice('v2:'.length), 'hex');
 }
+
+/**
+ * The key-change record a backup writes, at CRITICAL so that the system log
+ * keeps it for good, when the seal key it finds is not this server's own
+ * form (card 2943, R2 and F3; its fix pass, C4): in plain, of an older form,
+ * or not opening with the MFA key. Never a value.
+ */
+export const SEAL_KEY_NOT_TRUSTED = signingKeysMadeLine([{ setting: BACKUP_SEAL_KEY, because: 'not trusted at run time' }], 'by a backup');
 
 /**
  * This server's key for the match a backup carries of each webhook address it
@@ -1070,22 +1092,27 @@ export function keepSetting(live: Database.Database, key: string, stored: string
 	live.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, stored);
 }
 
-/** The key, 64 hex characters, from its setting as stored: opened, or as it is when plain; null for none, one that does not open, or one that is not 64 hex. */
+/**
+ * The key, 64 hex characters, from its setting as stored: only one sealed and
+ * opened of the current form, `v2:` and 64 hex (card 2943, R1, R2); null for
+ * none, one in plain, one of an older form, or one that does not open.
+ */
 function sealKeyOpened(stored: string | null): string | null {
-	const opened = openStored(stored, settingAad(BACKUP_SEAL_KEY));
-	return (opened.kind === 'opened' || opened.kind === 'plain') && HEX_32.test(opened.value) ? opened.value : null;
+	return currentSigningKeyHex(openStored(stored, settingAad(BACKUP_SEAL_KEY)));
 }
 
 /**
  * This server's key as `live` holds it, or null where it has none yet, or
- * none that opens: `stored`, the setting as it is stored (sealed, card 2898),
- * which a restore puts back unchanged, and `key`, the 64 hex characters a
- * backup's seal is checked with (S5, E1). Reads, and writes nothing.
+ * none that is its own (sealed, opening, of the current form: card 2943,
+ * R2): `stored`, the setting as it is stored (sealed, card 2898), which a
+ * restore puts back unchanged, `key`, the 64 hex characters a backup's seal
+ * is checked with (S5, E1), and `madeAt`, its record as stored, or null,
+ * which a restore puts back beside it (R3). Reads, and writes nothing.
  */
-export function sealKeyHere(live: Database.Database): { stored: string; key: string } | null {
+export function sealKeyHere(live: Database.Database): { stored: string; key: string; madeAt: string | null } | null {
 	const stored = settingOf(live, BACKUP_SEAL_KEY);
 	const key = sealKeyOpened(stored);
-	return stored !== null && key !== null ? { stored, key } : null;
+	return stored !== null && key !== null ? { stored, key, madeAt: settingOf(live, BACKUP_SEAL_KEY_MADE_AT) } : null;
 }
 
 /**
