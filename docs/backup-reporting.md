@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.61
+version: 1.62
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-2997
+  - passwords-replaced
   - card-2996
   - account-endings
   - card-2995
@@ -46,7 +48,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "Scheduled backup system with multi-destination support, a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -225,6 +227,37 @@ flowchart LR
     Rule4 --> Mfa4["restoreMfaRows: none to an ended account"]
     Mfa4 --> Apply4["carryDisabled, then applyAccountEndings<br/>inert, before record, disabled, lowered"]
     Apply4 --> Hold4["after the fill: holdNoLongerReadableIn"]
+```
+
+A restore never brings back a password replaced on this server (card 2997). Every password change here
+(the holder's own, an administrator's reset, an invite used, Reset Everything) adds a `password` row
+to the same record, with the fingerprint of the hash it replaced, never the hash; a backup carries
+those rows too, and `carryAccountEndings` takes them as `backup`, outside the 100 rows for one account.
+After `applyAccountEndings`, `applyPasswordRulings` asks the one matcher of every restored account but
+one ruled deleted or before record. One whose backup hash the record names as replaced (or, from a
+backup whose seal did not verify, the same account holding another hash than this server's) gets this
+server's hash where it is the same account here and that hash is usable (`here`); otherwise a hash
+nothing matches, no leave to enrol on it, its keys ended and its schedules paused (`reset`). A
+superadmin is never locked out: the same account keeps this server's hash, even one replaced too, and
+one not here keeps the backup's, unless the importer is the same superadmin here with a usable hash
+(`superadmin`, or `reset` then, where any row names its hash). The backup hash of an account that is
+not a superadmin, discarded because the seal did not verify, is recorded as replaced, so the same
+backup cannot give it back once the account is gone; such a belt is written once. A working copy does the same. The answer gives `passwordsKept: {
+here, reset, superadmin }` where any is above 0 and a sentence of each in `accountsKeptLines`, which
+the panel shows; the `[CRITICAL] [IMPORT]` line says `keeping N of the backup's password(s) out of use`
+(`here` and `reset`) and `leaving N superadmin account(s) with a password to change at once`, its
+details carrying `passwordsKept`, naming no account. A password replaced before this release was never
+fingerprinted, so a backup made before that change can still bring it back.
+
+```mermaid
+flowchart LR
+    Apply5["applyAccountEndings<br/>a password belt before each DUMMY_HASH"] --> Ask5["applyPasswordRulings:<br/>passwordReplacedHere for each restored account"]
+    Ask5 -->|"same account, this server's hash usable"| Here5["this server's hash: here"]
+    Ask5 -->|"not here, or nothing usable here"| Reset5["DUMMY_HASH, keys ended: reset"]
+    Ask5 -->|"a superadmin"| Super5["kept or left, never locked out: superadmin"]
+    Here5 --> Words5["passwordsKept, accountsKeptLines, CRITICAL line"]
+    Reset5 --> Words5
+    Super5 --> Words5
 ```
 
 ### Image Retention

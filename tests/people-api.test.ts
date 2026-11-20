@@ -35,7 +35,7 @@ import { addFromAccounts, createGroup, createPerson, deleteGroup, deletePerson, 
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
 import { api, type ApiResult } from './helpers/api';
-import { FIXTURE_PASSWORD_HASH, makeApiKey, makeSession, makeUser, resetDb, sessionCredential, stepUp } from './helpers/fixtures';
+import { makeApiKey, makeSession, makeUser, newFixtureHash, resetDb, sessionCredential, stepUp } from './helpers/fixtures';
 import { gate, gateApiRoutes } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
@@ -361,7 +361,7 @@ describe('the service refuses a key what the People page alone does', () => {
 describe('GET /api/v1/people and GET /api/v1/people-groups', () => {
 	/** An account with an id no other row here has, so that it can be looked for in an answer's text. */
 	const anAccount = () => {
-		sqlite.prepare("INSERT INTO users (id, username, email, password_hash, role) VALUES (4242, 'zed', 'zed@example.test', ?, 'user')").run(FIXTURE_PASSWORD_HASH);
+		sqlite.prepare("INSERT INTO users (id, username, email, password_hash, role) VALUES (4242, 'zed', 'zed@example.test', ?, 'user')").run(newFixtureHash());
 		return 4242;
 	};
 

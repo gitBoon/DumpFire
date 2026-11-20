@@ -5802,7 +5802,12 @@ const USERS_ENDING_FIELDS = ['role', 'disabledAt', 'disabledBy', 'passwordHash']
  */
 const USERS_ENDING_WRITES: Record<string, { count: number; why: string }> = {
 	'src/lib/server/account-ending-bodies.ts#disableAccountSteps': { count: 1, why: "The disable's body (R5): disabled_at and disabled_by, recorded `disabled` in the same transaction." },
-	'src/lib/server/account-ending-bodies.ts#makeInert': { count: 1, why: 'An inert account (R5, R6): DUMMY_HASH, which nothing matches, by the start pass of the record.' },
+	'src/lib/server/account-ending-bodies.ts#giveDummyHash': {
+		count: 1,
+		why:
+			"DUMMY_HASH and no enrol leave, the module's one such write (card 2997's code review, FP10): for makeInert (R5, R6), the hash it discards recorded first as replaced, " +
+			"a belt row (N1); and for the start's password pass (endReplacedPasswordsPresent, S1a, R3, R4), over a hash the record already names, so no row, then endAccountAccess."
+	},
 	'src/lib/server/account-ending-bodies.ts#changeAccountRole': { count: 1, why: "The role change's body (R5), its fields the route's: recorded `role`, with the role after." },
 	'src/lib/server/account-disable.ts#enableAccount': { count: 1, why: 'The enable: both columns cleared, recorded `enabled`; refused for an account the record names deleted.' },
 	'src/routes/api/users/[id]/+server.ts#PUT': {
@@ -5811,23 +5816,96 @@ const USERS_ENDING_WRITES: Record<string, { count: number; why: string }> = {
 			'The username and emoji alone (:166, the plan\'s :160), and an email change with no role change, or a role sent as the one it has (:234, the plan\'s :210): ' +
 			'no disable or password is among the fields readAccountFields gives, and a role that changes goes through changeAccountRole.'
 	},
-	'src/routes/api/account/password/+server.ts#PUT': { count: 1, why: "The holder's own password change, with the current password (card 2701): not an ending; card 2997's to record." },
-	'src/routes/api/users/[id]/password/+server.ts#PUT': { count: 1, why: "An administrator's password set, which ends the account's access (endAccountAccess): card 2997's to record." },
-	'src/routes/invite/[token]/+page.server.ts#default': { count: 1, why: 'An invite used to set a password, which ends the account\'s access (endAccountAccess): card 2997\'s to record.' },
+	'src/routes/api/account/password/+server.ts#PUT': {
+		count: 1,
+		why: "The holder's own password change, with the current password (card 2701): the hash it replaces recorded first, `password`, in the same transaction (card 2997, W1)."
+	},
+	'src/routes/api/users/[id]/password/+server.ts#PUT': {
+		count: 1,
+		why: "An administrator's password set, which ends the account's access (endAccountAccess): the hash it replaces recorded first, `password` (card 2997, W2)."
+	},
+	'src/routes/invite/[token]/+page.server.ts#default': {
+		count: 1,
+		why: "An invite used to set a password, which ends the account's access (endAccountAccess): the hash it replaces recorded first, `password` (card 2997, W3)."
+	},
 	'src/lib/server/db/restore.ts#carryDisabled': { count: 1, why: "The restore's carry of this server's disables (card 2671): disabled_at and disabled_by, onto the same accounts restored." },
-	'src/lib/server/db/restore.ts#applyAccountEndings': { count: 3, why: "The restore's application of the record (card 2996): an inert or before-record account, a disabled one, a lowered role." }
+	'src/lib/server/db/restore.ts#applyAccountEndings': { count: 3, why: "The restore's application of the record (card 2996): an inert or before-record account, a disabled one, a lowered role." },
+	'src/lib/server/db/restore.ts#applyPasswordRulings': {
+		count: 2,
+		why:
+			"Card 2997 (S1b, section 13.1): the restore's password step, over a restored hash the record already names as replaced, so no row, or any, R2, from an unsealed backup, " +
+			"recorded first as a belt (the code review's FP6): this server's own hash for the same account, or DUMMY_HASH and no enrol leave, then endRestoredAccess."
+	}
 };
 
 /** Card 2996 (R9 vi): the writers of `password_hash` among them. */
 const PASSWORD_HASH_WRITERS = [
 	'src/lib/server/account-ending-bodies.ts#changeAccountRole',
-	'src/lib/server/account-ending-bodies.ts#makeInert',
+	// Card 2997 (code review, FP10): makeInert's and the start's password pass's DUMMY_HASH, one write.
+	'src/lib/server/account-ending-bodies.ts#giveDummyHash',
 	'src/lib/server/db/restore.ts#applyAccountEndings',
+	// Card 2997 (S1b): the restore's password step, this server's hash or DUMMY_HASH over a hash already recorded as replaced.
+	'src/lib/server/db/restore.ts#applyPasswordRulings',
 	'src/routes/api/account/password/+server.ts#PUT',
 	'src/routes/api/users/[id]/+server.ts#PUT',
 	'src/routes/api/users/[id]/password/+server.ts#PUT',
 	'src/routes/invite/[token]/+page.server.ts#default'
 ];
+
+/**
+ * Card 2997 (test aa, section 5): each writer of `password_hash` by its class. `records`: calls `recordPasswordReplaced`
+ * before its write, in the same function and transaction, so the hash it replaces is recorded (W1, W2, W3, W7).
+ * `restore`: the restore's own application of the record, over a hash already recorded or with a belt row written for
+ * it (W8, W10). `start`: the start's password pass, `DUMMY_HASH` over a hash already recorded (W11; since the code
+ * review's FP10 written by `giveDummyHash`, classed `records` with makeInert, so none is listed). `not a writer`:
+ * listed by the scan because its `.set` is not an object literal, and never given a password (W14).
+ */
+const PASSWORD_HASH_CLASSES: Record<string, { kind: 'records' | 'restore' | 'start' | 'not a writer'; why: string }> = {
+	'src/routes/api/account/password/+server.ts#PUT': { kind: 'records', why: 'W1, the holder’s own change: the hash it replaces recorded `here`, just before the update.' },
+	'src/routes/api/users/[id]/password/+server.ts#PUT': { kind: 'records', why: 'W2, an administrator’s reset: the hash it replaces recorded `here`, just before the update.' },
+	'src/routes/invite/[token]/+page.server.ts#default': { kind: 'records', why: 'W3, an invite used: the hash it replaces (a placeholder’s row is harmless) recorded `here`, just before the update.' },
+	'src/lib/server/account-ending-bodies.ts#giveDummyHash': {
+		kind: 'records',
+		why:
+			'W7 and W11 in one write (FP10): makeInert’s DUMMY_HASH, the hash it discards recorded as a `belt` row first (N1; nothing for a superadmin, R6); ' +
+			'the start’s password pass, `belt: false`, over a present hash the record already names as replaced: nothing new to record.'
+	},
+	'src/lib/server/db/restore.ts#applyAccountEndings': {
+		kind: 'restore',
+		why: 'W8, an inert or before-record account given DUMMY_HASH: a `belt` row of the restored hash written before it (N1), never for a superadmin.'
+	},
+	'src/lib/server/db/restore.ts#applyPasswordRulings': {
+		kind: 'restore',
+		why: 'W10, this server’s own hash for the same account, or DUMMY_HASH, over a restored hash the record already names, or one R2 discards, recorded first as a `belt` row (FP6).'
+	},
+	'src/lib/server/account-ending-bodies.ts#changeAccountRole': { kind: 'not a writer', why: 'W14: the route’s fields, which readAccountFields gives with no password; listed because `.set(updates)` is not written out.' },
+	'src/routes/api/users/[id]/+server.ts#PUT': { kind: 'not a writer', why: 'W14: readAccountFields gives no password; listed because its `.set` is not an object literal.' }
+};
+
+/**
+ * Card 2997 (test aa): the functions that may call `recordPasswordReplaced`, each once: the four writers that record
+ * (W1, W2, W3, W7), the restore's belts (W8, and R2's in W10, the code review's FP6) and Reset Everything, which
+ * records every account's hash but the superadmin's before the clear (W12, decision 5). `scripts/` holds none, and writes no `password_hash` (R19): a host
+ * script that ever writes a password must call `recordPasswordReplaced` before its write, and be listed here and in
+ * PASSWORD_HASH_CLASSES as `records`.
+ */
+const RECORD_PASSWORD_REPLACED_CALLERS = [
+	'src/lib/server/account-ending-bodies.ts#giveDummyHash',
+	'src/lib/server/db/restore.ts#applyAccountEndings',
+	// The code review's FP6: the backup's hash R2 discards, a belt.
+	'src/lib/server/db/restore.ts#applyPasswordRulings',
+	'src/routes/api/account/password/+server.ts#PUT',
+	'src/routes/api/admin/reset/+server.ts#POST',
+	'src/routes/api/users/[id]/password/+server.ts#PUT',
+	'src/routes/invite/[token]/+page.server.ts#default'
+];
+
+/**
+ * Card 2997 (R19, test aa): the writes of `password_hash` found under `scripts/`, by `file#function`, which must be
+ * none. One rule, asked of the walk and of the made-up script beside the rule's own examples (its code review, FP13).
+ */
+const scriptPasswordWrites = (readings: readonly KeyReading[]): string[] =>
+	readings.flatMap(({ passwordWriters }) => passwordWriters).filter((key) => key.startsWith('scripts/'));
 
 /**
  * Card 2996 (R9 ii): the `UPDATE users SET ${...}` built at run time, by `file#function`, with how many and why. Each
@@ -5847,6 +5925,9 @@ const RECORD_ACCOUNT_ENDING_CALLERS = [
 	'src/lib/server/account-ending-bodies.ts#disableAccountSteps',
 	'src/lib/server/account-ending-bodies.ts#endRecordedAccountsPresent',
 	'src/lib/server/account-disable.ts#enableAccount',
+	// Card 2997 (S1a): the writer of a `password` row, a thin wrapper over it; its own callers are pinned by
+	// RECORD_PASSWORD_REPLACED_CALLERS (test aa).
+	'src/lib/server/account-endings.ts#recordPasswordReplaced',
 	'src/lib/server/db/restore.ts#applyAccountEndings',
 	'src/lib/server/deletes.ts#deleteUser',
 	'src/routes/api/admin/reset/+server.ts#POST',
@@ -5892,6 +5973,10 @@ type KeyReading = {
 	dynamicSets: string[];
 	/** Card 2996: the callers of `recordAccountEnding`. */
 	recorders: string[];
+	/** Card 2997: the callers of `recordPasswordReplaced`. */
+	passwordRecorders: string[];
+	/** Card 2997: each such call and each write of `password_hash`, by `file#function`, where in the file it starts. */
+	passwordSteps: { key: string; at: number; step: 'records' | 'writes' }[];
 };
 
 /**
@@ -5911,7 +5996,12 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 	const tree = ts.createSourceFile(file, file.endsWith('.svelte') ? scriptsOf(source) : source, ts.ScriptTarget.Latest, true, kind);
 	const at = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
 	const keyOf = (node: ts.Node) => `${file}#${writerNameOf(node)}`;
-	const reading: KeyReading = { deletes: [], clears: [], enders: [], findings: [], userWrites: [], passwordWriters: [], dynamicSets: [], recorders: [] };
+	const reading: KeyReading = { deletes: [], clears: [], enders: [], findings: [], userWrites: [], passwordWriters: [], dynamicSets: [], recorders: [], passwordRecorders: [], passwordSteps: [] };
+	/** Card 2997: a write of `password_hash` at `node`, kept with where it starts. */
+	const writesPassword = (node: ts.Node) => {
+		reading.passwordWriters.push(keyOf(node));
+		reading.passwordSteps.push({ key: keyOf(node), at: node.getStart(tree), step: 'writes' });
+	};
 
 	/** The text a string, a template or a `+` chain of them builds, a substitution or other piece read as `\u0000`. */
 	const textOf = (node: ts.Expression): string => {
@@ -5974,7 +6064,7 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 			const columns = found[1].split(',').map((part) => part.trim().split(/\s*=/)[0].replace(/["`[\]]/g, '').toLowerCase());
 			if (!columns.some((column) => USERS_ENDING_COLUMNS.includes(column))) continue;
 			reading.userWrites.push(keyOf(node));
-			if (columns.includes('password_hash')) reading.passwordWriters.push(keyOf(node));
+			if (columns.includes('password_hash')) writesPassword(node);
 			if (!(keyOf(node) in USERS_ENDING_WRITES)) {
 				reading.findings.push(`${file}:${at(node)} updates users (${columns.filter((c) => USERS_ENDING_COLUMNS.includes(c)).join(', ')}) in ${writerNameOf(node)}, which is not on USERS_ENDING_WRITES (card 2996)`);
 			}
@@ -6050,7 +6140,7 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 						: [null];
 				if (fields.some((field) => field === null || USERS_ENDING_FIELDS.includes(field))) {
 					reading.userWrites.push(keyOf(node));
-					if (fields.some((field) => field === null || field === 'passwordHash')) reading.passwordWriters.push(keyOf(node));
+					if (fields.some((field) => field === null || field === 'passwordHash')) writesPassword(node);
 					if (!(keyOf(node) in USERS_ENDING_WRITES)) {
 						const named = fields.filter((field) => field === null || USERS_ENDING_FIELDS.includes(field)).map((field) => field ?? 'fields not written out here');
 						reading.findings.push(`${file}:${at(node)} .update(users) setting ${named.join(', ')} in ${writerNameOf(node)}, which is not on USERS_ENDING_WRITES (card 2996)`);
@@ -6075,6 +6165,11 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 		// Card 2996 (R9 v): each call of the record's one writer, by its `file#function`.
 		if (ts.isCallExpression(node) && ts.isIdentifier(bare(node.expression)) && (bare(node.expression) as ts.Identifier).text === 'recordAccountEnding') {
 			reading.recorders.push(keyOf(node));
+		}
+		// Card 2997 (test aa): each call of the password record's writer, by its `file#function` and where it starts.
+		if (ts.isCallExpression(node) && ts.isIdentifier(bare(node.expression)) && (bare(node.expression) as ts.Identifier).text === 'recordPasswordReplaced') {
+			reading.passwordRecorders.push(keyOf(node));
+			reading.passwordSteps.push({ key: keyOf(node), at: node.getStart(tree), step: 'records' });
 		}
 		ts.forEachChild(node, visit);
 	};
@@ -6135,6 +6230,40 @@ describe('every delete of an API key or an account, and the record of ended keys
 		expect(readings.flatMap(({ deletes }) => deletes).filter((key) => key.startsWith('scripts/') && !key.endsWith('#reset'))).toEqual([]);
 	});
 
+	it('(aa) card 2997: every writer of password_hash is in exactly one of section 5’s classes; recordPasswordReplaced is called by exactly its callers, each once, and every writer that records calls it before its write in the same function; scripts/ writes no password_hash', () => {
+		// Every function the walk finds writing password_hash has one class, and every classed function writes it.
+		const writers = [...new Set(readings.flatMap(({ passwordWriters }) => passwordWriters))].sort();
+		expect(writers).toEqual([...PASSWORD_HASH_WRITERS].sort());
+		expect(Object.keys(PASSWORD_HASH_CLASSES).sort()).toEqual([...PASSWORD_HASH_WRITERS].sort());
+		for (const [key, { why }] of Object.entries(PASSWORD_HASH_CLASSES)) expect(why, key).not.toBe('');
+		// The callers of the password record's writer, each once.
+		expect(readings.flatMap(({ passwordRecorders }) => passwordRecorders).sort()).toEqual([...RECORD_PASSWORD_REPLACED_CALLERS].sort());
+		// A writer that records calls it in the same function, before every write of password_hash there.
+		const steps = readings.flatMap(({ passwordSteps }) => passwordSteps);
+		const recording = Object.entries(PASSWORD_HASH_CLASSES).filter(([, { kind }]) => kind === 'records').map(([key]) => key);
+		expect(recording.sort()).toEqual([
+			'src/lib/server/account-ending-bodies.ts#giveDummyHash',
+			'src/routes/api/account/password/+server.ts#PUT',
+			'src/routes/api/users/[id]/password/+server.ts#PUT',
+			'src/routes/invite/[token]/+page.server.ts#default'
+		]);
+		for (const key of recording) {
+			const records = steps.filter((step) => step.key === key && step.step === 'records').map((step) => step.at);
+			const writes = steps.filter((step) => step.key === key && step.step === 'writes').map((step) => step.at);
+			expect(records, `${key} calls recordPasswordReplaced`).toHaveLength(1);
+			expect(writes.length, `${key} writes password_hash`).toBeGreaterThan(0);
+			expect(Math.min(...writes), `${key} records before its write`).toBeGreaterThan(records[0]);
+		}
+		// The restore's and the start's classes are their own files' (W8, W10, W11).
+		for (const [key, { kind }] of Object.entries(PASSWORD_HASH_CLASSES)) {
+			if (kind === 'restore') expect(key.startsWith('src/lib/server/db/restore.ts#'), key).toBe(true);
+			if (kind === 'start') expect(key, key).toBe('src/lib/server/account-ending-bodies.ts#endReplacedPasswordsPresent');
+		}
+		// R19: no host script writes a password, or records one; one that ever does must call recordPasswordReplaced first.
+		expect(scriptPasswordWrites(readings)).toEqual([]);
+		expect(readings.flatMap(({ passwordRecorders }) => passwordRecorders).filter((key) => key.startsWith('scripts/'))).toEqual([]);
+	});
+
 	describe('the rule itself', () => {
 		const EXAMPLE = 'src/lib/server/example.ts';
 		/** `code` as line 4 of a made-up module, in `wipe`. */
@@ -6147,6 +6276,30 @@ describe('every delete of an API key or an account, and the record of ended keys
 				'}'
 			].join('\n');
 		const findingsOf = (code: string) => judgeKeyWrites(EXAMPLE, inWipe(code)).findings;
+
+		it('(aa) card 2997: an unlisted password write in a made-up function is a finding by file and line, even after recordPasswordReplaced, and that call is collected as one no list holds', () => {
+			const code = "recordPasswordReplaced(sqlite, id); db.update(users).set({ passwordHash: 'x' }).where(eq(users.id, id)).run();";
+			const reading = judgeKeyWrites(EXAMPLE, inWipe(code));
+			expect(reading.findings).toEqual([`${EXAMPLE}:4 .update(users) setting passwordHash in wipe, which is not on USERS_ENDING_WRITES (card 2996)`]);
+			expect(reading.passwordWriters).toEqual([`${EXAMPLE}#wipe`]);
+			expect(reading.passwordRecorders).toEqual([`${EXAMPLE}#wipe`]);
+			expect(RECORD_PASSWORD_REPLACED_CALLERS).not.toContain(`${EXAMPLE}#wipe`);
+			expect(PASSWORD_HASH_CLASSES).not.toHaveProperty([`${EXAMPLE}#wipe`]);
+		});
+
+		it('(aa2) card 2997 (code review, FP13): a made-up host script writing password_hash in SQL is caught by the scripts/ rule, which the same source under src is not', () => {
+			const script = [
+				"import Database from 'better-sqlite3';",
+				'export function setPassword(path, id, hash) {',
+				'\tconst sqlite = new Database(path);',
+				"\tsqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, id);",
+				'}'
+			].join('\n');
+			const reading = judgeKeyWrites('scripts/x.mjs', script);
+			expect(reading.passwordWriters).toEqual(['scripts/x.mjs#setPassword']);
+			expect(scriptPasswordWrites([reading])).toEqual(['scripts/x.mjs#setPassword']);
+			expect(scriptPasswordWrites([judgeKeyWrites(EXAMPLE, script)])).toEqual([]);
+		});
 
 		it('(g): a fixture holding DELETE FROM api_key_revocations is a finding by file and line', () => {
 			expect(findingsOf("sqlite.prepare('DELETE FROM api_key_revocations WHERE key_id = 1').run();")).toEqual([

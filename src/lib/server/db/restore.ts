@@ -45,7 +45,7 @@ import {
 } from '../backup-secrets';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
 import { BACKUP_SEAL_KEY_MADE_AT, NoKeyToSeal, SECRETS_SCRUB_PENDING, WEBHOOK_ADDRESS_MAC_KEY, addressToBind, checkpointTruncate, markScrubPending, receiverColumn, sealedForRestore } from '../stored-secrets';
-import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, type MfaRestore } from '../mfa-backup';
+import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, sameMoment, type MfaRestore } from '../mfa-backup';
 import { createLogger } from '../logger';
 import { REPLACE_PLAIN_USED_INVITES, inHashForm } from '../invites';
 import {
@@ -88,8 +88,10 @@ import {
 	accountWatermarkOf,
 	credentialOf,
 	hasAccountRecord,
+	passwordReplacedHere,
 	raiseUserCounterOverSeed,
 	recordAccountEnding,
+	recordPasswordReplaced,
 	type AccountRuling
 } from '../account-endings';
 import { DUMMY_HASH } from '../dummy-hash';
@@ -288,7 +290,17 @@ export type RestoreResult = {
 	 * 1,000,000 seed rows or other rows, or more than 100 for one account. Counted, naming no account; 0 where it was taken.
 	 */
 	accountRecordLeftOut: number;
+	/**
+	 * The restored accounts holding a password this server's record of account endings says was replaced here (card
+	 * 2997, `applyPasswordRulings`), counted only, never named: `here`, the same account here, given back the password it
+	 * has on this server; `reset`, given a password nothing matches, needing one set or an invite; `superadmin`, a
+	 * superadmin left with the password it holds, so that the superadmin can still sign in. All 0 where none.
+	 */
+	passwordsKept: PasswordsKept;
 };
+
+/** The restored passwords a restore kept out of use (card 2997): see `RestoreResult.passwordsKept`. */
+export type PasswordsKept = { here: number; reset: number; superadmin: number };
 
 /** The keys a restore left out (card 2995): see `RestoreResult.apiKeysLeftOut`. */
 export type ApiKeysLeftOut = { count: number; keyIds: number[]; workingCopy: number };
@@ -311,6 +323,7 @@ export type CommittedRestore = Pick<
 	| 'apiKeysLeftOut'
 	| 'accountsKept'
 	| 'accountRecordLeftOut'
+	| 'passwordsKept'
 >;
 
 /**
@@ -712,14 +725,20 @@ type AccountsHere = {
 	held: Map<number, string>;
 	/** Its superadmins, by id and fingerprint: no backup row naming one is taken (R1). */
 	superadmins: { ids: number[]; credentials: string[] };
+	/**
+	 * Every account it holds, whatever its id, by id, with its `created_at` and its password hash (card 2997): the same
+	 * account restored is given back this server's password where the backup's is one replaced here (`applyPasswordRulings`).
+	 */
+	hashes: Map<number, { createdAt: string; passwordHash: string }>;
 };
 
 /**
- * W, and the id and `created_at` of every account this server holds with an id up to W, with its superadmins, read
- * before a restore clears `users` (card 2996), as `keysHeldHere` is read. None where the database has no record.
+ * W, and the id and `created_at` of every account this server holds with an id up to W, with its superadmins, and every
+ * account's `created_at` and password hash (card 2997), read before a restore clears `users` (card 2996), as
+ * `keysHeldHere` is read. None where the database has no record.
  */
 function accountsHeldHere(live: Database.Database): AccountsHere {
-	const none: AccountsHere = { held: new Map(), superadmins: { ids: [], credentials: [] } };
+	const none: AccountsHere = { held: new Map(), superadmins: { ids: [], credentials: [] }, hashes: new Map() };
 	if (!hasAccountRecord(live) || !columnNamesOf(live, 'users').includes('created_at')) return none;
 	const watermark = accountWatermarkOf(live);
 	const rows = live.prepare('SELECT id, created_at AS createdAt, role, password_hash AS passwordHash FROM users ORDER BY id').all() as {
@@ -731,7 +750,8 @@ function accountsHeldHere(live: Database.Database): AccountsHere {
 	const supers = rows.filter((row) => row.role === 'superadmin');
 	return {
 		held: new Map(rows.filter((row) => watermark === null || row.id <= watermark).map((row) => [row.id, row.createdAt])),
-		superadmins: { ids: supers.map((row) => row.id), credentials: supers.map((row) => credentialOf(row.passwordHash)).filter((c) => c !== '') }
+		superadmins: { ids: supers.map((row) => row.id), credentials: supers.map((row) => credentialOf(row.passwordHash)).filter((c) => c !== '') },
+		hashes: new Map(rows.map((row) => [row.id, { createdAt: row.createdAt, passwordHash: row.passwordHash }]))
 	};
 }
 
@@ -767,11 +787,13 @@ type CarriedRow = { id: number; created: string; ending: string; role: string; c
  * - `user_id` is a safe integer of at least 1 (0 on a watermark row) and at most the backup's own bound, its `users`
  *   counter or its largest account id, whichever is greater: exact, seed and watermark rows alike (R14);
  * - `ending` is one of this build's words;
- * - `account_created` is '' on a watermark row, '' or a moment on a `deleted` row, a moment on any other, and that
- *   moment no later than the restore's (R14);
+ * - `account_created` is '' on a watermark row, '' or a moment on a `deleted` row, a moment on any other (a
+ *   `password` row's included, card 2997), and that moment no later than the restore's (R14);
  * - `role` is `user` or `admin` on a `role` row, '' on any other;
- * - `credential` is '' or a SHA-256 in lower-case hex, and only on a `deleted` row;
- * - it names no superadmin, of the restored data or this server's, by id or by fingerprint (R1).
+ * - `credential` is '' or a SHA-256 in lower-case hex on a `deleted` row, always one on a `password` row (card 2997),
+ *   and '' on any other;
+ * - it names no superadmin, of the restored data or this server's, by id or by fingerprint (R1); but for a `password`
+ *   row, which is carried whoever it names (card 2997, R7), since a backup's never counts for a superadmin.
  *
  * `ended_at` is read as a moment; one that names none, or one later than the restore, is taken as the backup's own
  * latest moment that is not, among the rows it takes and its accounts' creation times (R15; card 2996's code review,
@@ -779,8 +801,9 @@ type CarriedRow = { id: number; created: string; ending: string; role: string; c
  * natural key: its creation time in the stored form and the moment as the backup stated it (`stated_ended`), so that
  * importing the same backup again adds nothing whenever it runs (R4, FP3, FP5): the backup's own rows are all kept, so
  * that two endings in one second keep their order. More than 1,000,000 seed rows, more than 1,000,000 other rows, or
- * more than 100 rows for one account by id and creation time: none of it is added, and the rows it held are counted
- * (R14, FP3, FP7). Every row left out is counted in one `errors` line, a count and reasons, never quoting the backup.
+ * more than 100 rows for one account by id and creation time, its `password` rows not counted among the 100 (card 2997,
+ * R8: an account changes its password more often than it is ended): none of it is added, and the rows it held are
+ * counted (R14, FP3, FP7). Every row left out is counted in one `errors` line, a count and reasons, never quoting the backup.
  * The rows are read twice, as an iteration, never all at once (FP7). Then this server's `users` counter is raised over
  * every seed and watermark id (`raiseUserCounterOverSeed`). Not caught: a failure rolls the restore back. Returns how
  * many rows it added, and how many of the backup's it left out whole.
@@ -796,7 +819,7 @@ function carryAccountEndings(live: Database.Database, backup: Database.Database,
 			? (backup
 					.prepare(
 						"SELECT count(*) AS total, coalesce(sum(CASE WHEN account_created = '' AND ending = 'deleted' THEN 1 ELSE 0 END), 0) AS seed, " +
-							`coalesce((SELECT max(n) FROM (SELECT count(*) AS n FROM (${from}) WHERE ending IS NOT 'watermark' GROUP BY user_id, account_created)), 0) AS most ` +
+							`coalesce((SELECT max(n) FROM (SELECT count(*) AS n FROM (${from}) WHERE coalesce(ending, '') NOT IN ('watermark', 'password') GROUP BY user_id, account_created)), 0) AS most ` +
 							`FROM (${from})`
 					)
 					.get() as { total: number; seed: number; most: number })
@@ -841,7 +864,13 @@ function carryAccountEndings(live: Database.Database, backup: Database.Database,
 				const role = row.role ?? '';
 				if (ending === ACCOUNT_ENDING.role ? typeof role !== 'string' || !ENDED_ROLES.includes(role) : role !== '') return 'a role that is neither user nor admin';
 				const credential = row.credential ?? '';
-				if (typeof credential !== 'string' || (credential !== '' && (ending !== ACCOUNT_ENDING.deleted || !/^[0-9a-f]{64}$/.test(credential)))) {
+				// A fingerprint on a `deleted` row, or '' there; on a `password` row always one (card 2997: a row of a hash replaced).
+				const fingerprinted = ending === ACCOUNT_ENDING.deleted || ending === ACCOUNT_ENDING.password;
+				if (
+					typeof credential !== 'string' ||
+					(credential !== '' && (!fingerprinted || !/^[0-9a-f]{64}$/.test(credential))) ||
+					(ending === ACCOUNT_ENDING.password && credential === '')
+				) {
 					return 'a fingerprint that is not one the ending can have';
 				}
 				if (id > bound) return "an id above the backup's own account counter";
@@ -851,7 +880,8 @@ function carryAccountEndings(live: Database.Database, backup: Database.Database,
 				const said = stated && typeof row.stated_ended === 'string' && row.stated_ended !== '' ? row.stated_ended : row.ended_at;
 				const statedAt = toStamp(said) ?? `?${createHash('sha256').update(String(said)).digest('hex').slice(0, 32)}`;
 				const taken: CarriedRow = { id, created: created ?? '', ending, role: role as string, credential, endedAt: toStamp(row.ended_at), stated: statedAt };
-				if (!watermark && (superIds.has(id) || (credential !== '' && superCredentials.has(credential)))) {
+				// A `password` row is carried whoever it names (card 2997, R7): a backup's never counts for a superadmin.
+				if (!watermark && ending !== ACCOUNT_ENDING.password && (superIds.has(id) || (credential !== '' && superCredentials.has(credential)))) {
 					const { endedAt: _endedAt, ...key } = taken;
 					return heldAlready.get(key) === undefined ? 'a row naming the superadmin' : 'held';
 				}
@@ -911,6 +941,8 @@ function carryAccountEndings(live: Database.Database, backup: Database.Database,
  *   `DUMMY_HASH` for its password and no leave to set up on it; its keys ended `account deleted`.
  * - **Before record:** an exact `disabled` row written, `here`, so that from then on its exact rows govern and an
  *   enable by the superadmin sticks; disabled by the superadmin with `DUMMY_HASH` (R21); its keys ended `access ended`.
+ * - Either way, the hash `DUMMY_HASH` replaces is recorded as replaced, a `password` row, `belt`, unless it is a
+ *   superadmin (card 2997, N1).
  * - **Disabled:** where it is enabled, disabled at the latest `disabled` row's moment, by the superadmin; its password
  *   kept; its keys ended `access ended`.
  * - **Lowered:** given the role the record holds.
@@ -961,6 +993,11 @@ function applyAccountEndings(
 			if (!superadmin && (!deleted || !ruling.exactDeleted)) {
 				recordAccountEnding(live, ruling.id, deleted ? ACCOUNT_ENDING.deleted : ACCOUNT_ENDING.disabled, { at, origin: ORIGIN.belt });
 			}
+			// And the hash `DUMMY_HASH` replaces, recorded as replaced, `belt` (card 2997, N1, R17): so that an account the
+			// superadmin brings back into use, with a new password, is not given this one by the next restore of the same
+			// backup. Never of a superadmin (R6: a belt never counts for one). At the restore's moment, as the belt above
+			// (the code review's FP5, closing NF3); written once, so that importing the same backup again adds none.
+			if (!superadmin) recordPasswordReplaced(live, ruling.id, { origin: ORIGIN.belt, at });
 			inert.run({ at, by, dummy: DUMMY_HASH, id: ruling.id });
 			endRestoredAccess(ruling.id, deleted ? REVOKED_BECAUSE.accountDeleted : REVOKED_BECAUSE.accessEnded, reveals, keyIds);
 			if (deleted) kept.deleted++;
@@ -982,6 +1019,116 @@ function applyAccountEndings(
 		ruled.push({ id: ruling.id, was: ruling.role, ended });
 	}
 	return { kept, ruled, superadminEnded };
+}
+
+/**
+ * Keep every restored password this server replaced out of use (card 2997, section 13.1 of its plan), inside the
+ * restore's transaction, after `applyAccountEndings`: for each restored account but one card 2996 ruled `deleted` or
+ * `before record` (`ended`, already `DUMMY_HASH`), a superadmin by its role as restored now (R10):
+ *
+ * - **Replaced:** the record names its hash as replaced here (`passwordReplacedHere`, the one matcher). Acted on then,
+ *   or, where the backup's seal did not verify, wherever it is the same account here holding another hash than this
+ *   server's (R2: an edited or foreign backup can give a fresh hash of a leaked password). Otherwise left as the backup
+ *   has it.
+ * - **The same account here** (`here.hashes`, its creation time the same moment): this server's hash where that is
+ *   usable, a bcrypt string the record does not name, counted `here`; otherwise `DUMMY_HASH`, no leave to set up
+ *   two-step sign-in on it, and its access ended (`endRestoredAccess`, `access ended`), counted `reset` (R11); a
+ *   superadmin instead given this server's hash where that is bcrypt, else left, and counted `superadmin`.
+ * - **Not here:** `DUMMY_HASH`, no enrol leave and its access ended, counted `reset`. A superadmin not here, whatever
+ *   the first lookup said, is decided once every other account is (R9, and the code review's FP7): where `importer`, the
+ *   id the importing account had before the import, is now the same account here, an enabled superadmin, holding this
+ *   server's usable hash, so that somebody can still sign in as the superadmin, it is asked about as anyone else is
+ *   (`@super = 0`: any row names it), and given `DUMMY_HASH` likewise where a row does, counted `reset`; otherwise left
+ *   as the backup has it, counted `superadmin` only where its own exact `here` row names it.
+ *
+ * Where R2 discards the backup's hash of an account that is not a superadmin, as restored or here (the same account
+ * here, an unsealed backup, another hash than this server's), that hash is first recorded as replaced, a `password` row,
+ * `belt`, at the restore's moment (the code review's FP6): so that, once the account is gone from this server, the same
+ * backup cannot give it back. Written once (FP5); no other row is written, as a hash it replaces otherwise is recorded already and
+ * `DUMMY_HASH` has no fingerprint. Its keys' ids go to `keyIds` and their reveals to `reveals`, counted and held with
+ * the others. Not caught: a failure rolls the restore back.
+ */
+function applyPasswordRulings(
+	live: Database.Database,
+	here: AccountsHere,
+	options: {
+		sealVerified: boolean;
+		importer?: number;
+		ended: ReadonlyMap<number, 'deleted' | 'before record' | 'disabled'>;
+		/** The restore's moment, the stored form: R2's belts are stamped with it (FP6). */
+		at: string;
+		reveals: Reveal[];
+		keyIds: number[];
+	}
+): PasswordsKept {
+	const kept: PasswordsKept = { here: 0, reset: 0, superadmin: 0 };
+	if (!hasAccountRecord(live)) return kept;
+	type Restored = { id: number; createdAt: unknown; role: string; passwordHash: unknown; disabledAt: string | null };
+	const restoredAll = live.prepare('SELECT id, created_at AS createdAt, role, password_hash AS passwordHash, disabled_at AS disabledAt FROM users ORDER BY id');
+	const restoredOne = live.prepare('SELECT id, created_at AS createdAt, role, password_hash AS passwordHash, disabled_at AS disabledAt FROM users WHERE id = ?');
+	const keep = live.prepare('UPDATE users SET password_hash = @hash WHERE id = @id');
+	const reset = live.prepare('UPDATE users SET password_hash = @dummy, mfa_password_enrol = 0 WHERE id = @id');
+	const endRestoredAccess = restoredAccessEnder(live);
+	const resetOne = (id: number) => {
+		reset.run({ dummy: DUMMY_HASH, id });
+		endRestoredAccess(id, REVOKED_BECAUSE.accessEnded, options.reveals, options.keyIds);
+		kept.reset++;
+	};
+	/** This server's hash for the account, where it is the same account here. */
+	const mineOf = (account: Restored) => {
+		const mine = here.hashes.get(account.id);
+		return mine !== undefined && sameMoment(mine.createdAt, account.createdAt) ? mine.passwordHash : null;
+	};
+	/** Whether this server's hash is one to give back: bcrypt, and not named by the record (asked by the account's role). */
+	const usable = (account: Restored, mine: string) => credentialOf(mine) !== '' && !passwordReplacedHere(live, { ...account, passwordHash: mine });
+	/** Every superadmin not here with a hash that has a fingerprint, and whether its own exact row names that hash (R9, FP7). */
+	const notHereSupers: { account: Restored; replaced: boolean }[] = [];
+	for (const account of restoredAll.all() as Restored[]) {
+		const ruled = options.ended.get(account.id);
+		if (ruled === 'deleted' || ruled === 'before record') continue;
+		const superadmin = account.role === 'superadmin';
+		const replaced = credentialOf(account.passwordHash) !== '' && passwordReplacedHere(live, account);
+		const mine = mineOf(account);
+		if (superadmin && mine === null) {
+			if (credentialOf(account.passwordHash) !== '') notHereSupers.push({ account, replaced });
+			continue;
+		}
+		const discarded = !options.sealVerified && mine !== null && account.passwordHash !== mine;
+		if (!replaced && !discarded) continue;
+		// FP6: the backup's hash R2 throws away, recorded before it is overwritten; never of a superadmin (R6), of the
+		// restored data or this server's (card 2996's FP2: a forged backup that lowers this server's superadmin writes no
+		// belt on it).
+		if (discarded && !superadmin && !here.superadmins.ids.includes(account.id)) recordPasswordReplaced(live, account.id, { origin: ORIGIN.belt, at: options.at });
+		if (mine !== null) {
+			if (usable(account, mine)) {
+				keep.run({ hash: mine, id: account.id });
+				kept.here++;
+			} else if (!superadmin) {
+				resetOne(account.id);
+			} else {
+				if (credentialOf(mine) !== '') keep.run({ hash: mine, id: account.id });
+				kept.superadmin++;
+			}
+		} else {
+			resetOne(account.id);
+		}
+	}
+	if (notHereSupers.length > 0) {
+		// R9: the importer as restored, now that every other account is decided.
+		const importer = options.importer === undefined ? undefined : (restoredOne.get(options.importer) as Restored | undefined);
+		const mine = importer === undefined ? null : mineOf(importer);
+		const importerCanSignIn =
+			importer !== undefined && mine !== null && importer.role === 'superadmin' && importer.disabledAt === null && importer.passwordHash === mine && usable(importer, mine);
+		for (const { account, replaced } of notHereSupers) {
+			// FP7: with somebody able to sign in as the superadmin, asked as anyone else is, so that any row names it.
+			if (importerCanSignIn) {
+				if (passwordReplacedHere(live, { ...account, role: 'user' })) resetOne(account.id);
+			} else if (replaced) {
+				kept.superadmin++;
+			}
+		}
+	}
+	return kept;
 }
 
 /**
@@ -1974,6 +2121,13 @@ export function defaultOutside(
  * is held (`holdNoLongerReadableIn`). A working copy does the same.
  * `accountsKept` counts them, and names nobody.
  *
+ * No password replaced on this server comes back so either (card 2997):
+ * after the record's rulings, each restored account holding a hash the record
+ * names as replaced is given this server's own where it is the same account
+ * here, and otherwise one nothing matches, a superadmin left so that somebody
+ * can still sign in as one (`applyPasswordRulings`; `importer`, the id the
+ * importing account had before the import). `passwordsKept` counts them.
+ *
  * Throws a `RestoreError` in every case but a clean return. Its `committed`
  * says whether the database was changed: it is false, and the database is as
  * it was, for everything except foreign keys that could not be switched back
@@ -1982,7 +2136,7 @@ export function defaultOutside(
 export function restoreFromBackup(
 	live: Database.Database,
 	backup: Database.Database,
-	options: { outside?: Outside; key?: MfaKey | null; by?: string } = {}
+	options: { outside?: Outside; key?: MfaKey | null; by?: string; importer?: number } = {}
 ): RestoreResult {
 	// Every read of the backup, from its list and its seal (and the file's
 	// checks before it) to the rows copied, inside one read transaction on its
@@ -2004,7 +2158,7 @@ export function restoreFromBackup(
 function restoreInOneSnapshot(
 	live: Database.Database,
 	backup: Database.Database,
-	options: { outside?: Outside; key?: MfaKey | null; by?: string }
+	options: { outside?: Outside; key?: MfaKey | null; by?: string; importer?: number }
 ): RestoreResult {
 	const tables = restorableTables(live);
 	const errors: string[] = [];
@@ -2033,6 +2187,8 @@ function restoreInOneSnapshot(
 	let accountsKept: AccountsKept = { deleted: 0, beforeRecord: 0, disabled: 0, lowered: 0 };
 	// The rows of the backup's record of account endings left out whole, for its size (card 2996's code review, FP3, FP7).
 	let accountRecordLeftOut = 0;
+	// The restored passwords this server replaced, kept out of use (card 2997), counted only.
+	let passwordsKept: PasswordsKept = { here: 0, reset: 0, superadmin: 0 };
 	const sweptBecause = `found after a restore${options.by ? ` by ${options.by}` : ''}`;
 	let secrets: SecretsAccount = {
 		kept: { mailPassword: false, destinations: [], webhooks: [] },
@@ -2424,6 +2580,20 @@ function restoreInOneSnapshot(
 			const applied = applyAccountEndings(live, rulings, restoredAt, disabledReveals, disabledKeyIds);
 			accountsKept = applied.kept;
 
+			// Every restored password this server replaced kept out of use (card 2997, section 13.1): after the record's
+			// rulings, whose roles it asks (R10), and before card 2995's carry and the superadmin is asked about. Its keys are
+			// counted and their reveals held with the carry's. Not caught: a restore that could not do it is rolled back.
+			if (tables.includes('users') && hasAccountRecord(live)) {
+				passwordsKept = applyPasswordRulings(live, accountsNow, {
+					sealVerified,
+					importer: options.importer,
+					ended: endedByRecord,
+					at: restoredAt,
+					reveals: disabledReveals,
+					keyIds: disabledKeyIds
+				});
+			}
+
 			// The backup's record of ended API keys added to this server's, which the clear never touched, each row
 			// within the backup's own bounds; and the key counter raised over every seed row (card 2995, R6). Not
 			// caught: a restore that could not add them is rolled back.
@@ -2597,7 +2767,7 @@ function restoreInOneSnapshot(
 			throw new RestoreError(
 				'The backup was restored and committed, but foreign keys could not be switched back on. Restart the ' +
 					'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it.',
-				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, mfa, systemLogLeftOut, apiKeysLeftOut, accountsKept, accountRecordLeftOut } }
+				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, mfa, systemLogLeftOut, apiKeysLeftOut, accountsKept, accountRecordLeftOut, passwordsKept } }
 			);
 		}
 		throw new RestoreError(
@@ -2706,5 +2876,5 @@ function restoreInOneSnapshot(
 		}
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut, settingHoldsCarried, apiKeysLeftOut, accountsKept, accountRecordLeftOut };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut, settingHoldsCarried, apiKeysLeftOut, accountsKept, accountRecordLeftOut, passwordsKept };
 }

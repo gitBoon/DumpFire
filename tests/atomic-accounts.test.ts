@@ -99,7 +99,7 @@ import { knownBrowserCookie, rememberBrowser, rememberedNonce } from '$lib/serve
 import { CHALLENGE_COOKIE, tokenHashOf } from '$lib/server/sign-in-challenges';
 import { ENDING_IN_MAIL, dispatchWebhook } from '$lib/server/webhooks';
 import { RECORD_ACCOUNT_KEYS_ENDED_SQL } from '$lib/server/key-revocations';
-import { RECORD_ACCOUNT_ENDING_SQL } from '$lib/server/account-endings';
+import { RECORD_ACCOUNT_ENDING_SQL, RECORD_PASSWORD_REPLACED_SQL, credentialOf } from '$lib/server/account-endings';
 import { PUT as changeOwnPassword } from '../src/routes/api/account/password/+server';
 import { load as loadAdminPage } from '../src/routes/admin/+page.server';
 import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.server';
@@ -109,11 +109,11 @@ import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type Effects, type RecordedEffect } from './helpers/effects';
 import {
 	FIXTURE_PASSWORD,
-	FIXTURE_PASSWORD_HASH,
 	STEP_UP_APART,
 	STEP_UP_WRITES,
 	addBoardMember,
 	codeFor,
+	fixtureHashOf,
 	makeApiKey,
 	makeBoard,
 	makeCard,
@@ -121,6 +121,7 @@ import {
 	makeUser,
 	makeWebhook,
 	resetDb,
+	fixtureHashFor,
 	sessionHashOf,
 	sessionCredential,
 	stepUpCode,
@@ -137,8 +138,12 @@ bcrypt.open = () => sqlite.inTransaction;
 
 const OLD = 'the old password';
 const NEW = 'a new password';
-/** `OLD`, hashed once for every fixture that needs a password that can be checked. */
-const OLD_HASH = await makePasswordHash(OLD, 'known');
+/**
+ * The hash of `OLD` that `withPassword` gives the account with this id: the fixtures' pool of `OLD`, indexed by the id,
+ * made with the real bcryptjs past this file's mock, so that no two accounts in a test hold the same string (card 2997,
+ * N2; its code review, FP9).
+ */
+const oldHashOf = (id: number): string => fixtureHashFor(OLD, id);
 
 /** Whether `password` is the one `hash` was made from, checked as the routes check one. */
 const matches = async (password: string, hash: string) => (await checkPassword(password, hash, 'known')).matches;
@@ -188,6 +193,17 @@ const shape = (writes: string[]) =>
 
 const userRow = (id: number) => db.select().from(users).where(eq(users.id, id)).get()!;
 const hashOf = (id: number) => userRow(id).passwordHash;
+/** The account's `password` rows of the record of account endings (card 2997), in the order written. */
+const passwordRowsOf = (id: number) =>
+	sqlite.prepare("SELECT account_created AS created, role, credential, origin FROM account_endings WHERE user_id = ? AND ending = 'password' ORDER BY seq").all(id);
+/**
+ * Card 2997 (u, v, w): the first two writes of a password writer's transaction, past `skip` writes before it: the
+ * record's password statement whole (to the 160 characters a write is recorded with; the code review's FP5) and then
+ * the update of the password.
+ */
+const recordedThenWritten = (writes: string[], skip: number) => {
+	expect(writes.slice(skip, skip + 2)).toEqual([RECORD_PASSWORD_REPLACED_SQL.slice(0, 160), expect.stringMatching(/^update "users" set "password_hash" = \?/)]);
+};
 const sessionsOf = (id: number) =>
 	db
 		.select({ hash: sessions.tokenHash })
@@ -256,7 +272,7 @@ function withCodeSpent(before: ReturnType<typeof snapshotDb>): ReturnType<typeof
 
 /** Give a user a password that can be checked: `OLD`. */
 function withPassword(user: SessionUser): SessionUser {
-	db.update(users).set({ passwordHash: OLD_HASH }).where(eq(users.id, user.id)).run();
+	db.update(users).set({ passwordHash: oldHashOf(user.id) }).where(eq(users.id, user.id)).run();
 	return user;
 }
 
@@ -516,6 +532,8 @@ describe('PUT /api/account/password', () => {
 		// 2701 and 2771).
 		expect(shape(run.writes)).toEqual([
 			...STEP_UP_WRITES,
+			// Card 2997 (W1): the hash being replaced recorded first, `password`.
+			'insert into account_endings',
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
@@ -528,6 +546,20 @@ describe('PUT /api/account/password', () => {
 		]);
 		expect(run.effects).toEqual([]);
 		expectHashedOutsideTransaction();
+	});
+
+	it('(u) card 2997: the own change records the hash it replaces, `password` with its fingerprint, before it writes the new one, in its one transaction, or neither', async () => {
+		const run = await eachWriteInTurn({
+			build: signedInTwice,
+			request: ({ me }) => changeOwn(me, { currentPassword: OLD, newPassword: NEW }),
+			apart: [...STEP_UP_APART],
+			afterSuccess: ({ me, other }, res: OwnResult) => {
+				expect(res.status).toBe(200);
+				expect(passwordRowsOf(me.id)).toEqual([{ created: userRow(me.id).createdAt, role: '', credential: credentialOf(oldHashOf(me.id)), origin: 'here' }]);
+				expect(passwordRowsOf(other.id)).toEqual([]);
+			}
+		});
+		recordedThenWritten(run.writes, STEP_UP_WRITES.length);
 	});
 
 	it('ends every API key of the account too when asked, or does none of it', async () => {
@@ -552,6 +584,8 @@ describe('PUT /api/account/password', () => {
 
 		expect(shape(run.writes)).toEqual([
 			...STEP_UP_WRITES,
+			// Card 2997 (W1): the hash being replaced recorded first, `password`.
+			'insert into account_endings',
 			'update users set',
 			// The once-only seed of the reads made before they were recorded, before the keys go (card 2947's code
 			// review, FP2): written here because no sweep has run on this database.
@@ -837,6 +871,8 @@ describe('PUT /api/users/:id/password', () => {
 		// transaction (cards 2701 and 2771).
 		expect(shape(run.writes)).toEqual([
 			...STEP_UP_WRITES,
+			// Card 2997 (W2): the hash being replaced recorded first, `password`.
+			'insert into account_endings',
 			'update users set',
 			// The once-only seed of the reads made before they were recorded, before the keys go (card 2947's code
 			// review, FP2): written here because no sweep has run on this database.
@@ -859,6 +895,21 @@ describe('PUT /api/users/:id/password', () => {
 		]);
 		expect(run.effects).toEqual([]);
 		expectHashedOutsideTransaction();
+	});
+
+	it('(v) card 2997: the administrator\'s reset records the hash it replaces, `password` with its fingerprint, before it writes the new one, in its one transaction, or neither', async () => {
+		const run = await eachWriteInTurn({
+			build: scene,
+			request: ({ admin, target }) => reset(admin, target.id),
+			apart: [...STEP_UP_APART],
+			afterSuccess: ({ admin, target }, res: ApiResult) => {
+				expect(res.status).toBe(200);
+				expect(passwordRowsOf(target.id)).toEqual([{ created: userRow(target.id).createdAt, role: '', credential: credentialOf(oldHashOf(target.id)), origin: 'here' }]);
+				// The administrator's own password was checked, not replaced.
+				expect(passwordRowsOf(admin.id)).toEqual([]);
+			}
+		});
+		recordedThenWritten(run.writes, STEP_UP_WRITES.length);
 	});
 
 	it('by the superadmin, of an administrator, ends that administrator\'s sessions and keys as well', async () => {
@@ -965,7 +1016,7 @@ describe('PUT /api/users/:id/password', () => {
 		// of its own), the hash read, and read again in the transaction that would
 		// set it: the stored hash held, then the user.
 		expect(reads.inTransaction).toEqual([true, false, true, true, false, true, true, true]);
-		expect(hashOf(s.target.id)).toBe(OLD_HASH);
+		expect(hashOf(s.target.id)).toBe(oldHashOf(s.target.id));
 		expect(sessionsOf(s.target.id)).toEqual([sessionHashOf('target-laptop'), sessionHashOf('target-phone')]);
 	});
 });
@@ -1578,6 +1629,8 @@ describe('the invite page', () => {
 		// happened. This invite is marked used before the waiting ones are
 		// deleted, so it is not among them.
 		expect(shape(run.writes)).toEqual([
+			// Card 2997 (W3): the hash being replaced recorded first, `password`.
+			'insert into account_endings',
 			'update users set',
 			'update invite_tokens set',
 			// The once-only seed of the reads made before they were recorded, before the keys go (card 2947's code
@@ -1605,6 +1658,21 @@ describe('the invite page', () => {
 		]);
 		expect(run.effects).toEqual([]);
 		expectHashedOutsideTransaction();
+	});
+
+	it('(w) card 2997: the invite used records the hash it replaces, `password` with that hash\'s fingerprint, before it writes the new one, in its one transaction, or neither', async () => {
+		const run = await eachWriteInTurn({
+			build: invitedWithAccess,
+			request: () => use(),
+			afterSuccess: ({ invitee, bystander }, res: ActionResult) => {
+				expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
+				// The fingerprint of the hash the invitee held before, which the new one replaced.
+				expect(passwordRowsOf(invitee.id)).toEqual([{ created: userRow(invitee.id).createdAt, role: '', credential: credentialOf(fixtureHashOf(invitee)), origin: 'here' }]);
+				expect(credentialOf(fixtureHashOf(invitee))).not.toBe(credentialOf(hashOf(invitee.id)));
+				expect(passwordRowsOf(bystander.id)).toEqual([]);
+			}
+		});
+		recordedThenWritten(run.writes, 0);
 	});
 
 	it('refuses every other invite of the account once one is used, as two written before this rule would be', async () => {
@@ -1664,7 +1732,7 @@ describe('the invite page', () => {
 		expect(res.cookies).toEqual({});
 		// Not hashed for, and the superadmin's password, session and key are as they were.
 		expect(bcrypt.inTransaction).toEqual([]);
-		expect(hashOf(chief.id)).toBe(OLD_HASH);
+		expect(hashOf(chief.id)).toBe(oldHashOf(chief.id));
 		expect(sessionsOf(chief.id)).toEqual([sessionHashOf('chief-laptop')]);
 		expect((await meWithKey(key)).status).toBe(200);
 	});
@@ -1713,7 +1781,7 @@ describe('the invite page', () => {
 		expect(res.cookies).toEqual({});
 		// Looked at before the transaction, and read again inside it.
 		expect(reads.inTransaction).toEqual([false, true]);
-		expect(hashOf(invitee.id)).toBe(FIXTURE_PASSWORD_HASH);
+		expect(hashOf(invitee.id)).toBe(fixtureHashOf(invitee));
 		expect(sessionsOf(invitee.id)).toEqual([]);
 	});
 
@@ -1750,7 +1818,7 @@ describe('the invite page', () => {
 		// None of those was hashed for, and the invite is still good.
 		expect(bcrypt.inTransaction).toEqual([]);
 		expect(invite().used).toBe(false);
-		expect(hashOf(invitee.id)).toBe(FIXTURE_PASSWORD_HASH);
+		expect(hashOf(invitee.id)).toBe(fixtureHashOf(invitee));
 	});
 
 	it('refuses a password over 1,024 characters with the invite still good, and sets one of 1,024 (card 2888)', async () => {
@@ -1937,6 +2005,8 @@ describe('what taking an account back switches off (card 2168)', () => {
 		// and clear the count, apart from the transaction (cards 2701 and 2771).
 		expect(shape(run.writes)).toEqual([
 			...STEP_UP_WRITES,
+			// Card 2997 (W2): the hash being replaced recorded first, `password`.
+			'insert into account_endings',
 			'update users set',
 			// The once-only seed of the reads made before they were recorded, before the keys go (card 2947's code
 			// review, FP2): written here because no sweep has run on this database.
@@ -2093,6 +2163,8 @@ describe('what taking an account back switches off (card 2168)', () => {
 		// Card 2923 (case 6): that mail and nothing else; nothing from a failed write.
 		expect(run.effects.map((effect) => (effect.kind === 'email' ? effect.subject : effect.kind))).toEqual([OWNERS_NOTICE]);
 		expect(shape(run.writes)).toEqual([
+			// Card 2997 (W3): the hash being replaced recorded first, `password`.
+			'insert into account_endings',
 			'update users set',
 			'update invite_tokens set',
 			// The once-only seed of the reads made before they were recorded, before the keys go (card 2947's code
@@ -2598,7 +2670,7 @@ describe('PUT /api/users/:id', () => {
 
 				// An email change is not a password change: nobody is signed out.
 				expect(sessionsOf(target.id)).toEqual([sessionHashOf('my-laptop')]);
-				expect(hashOf(target.id)).toBe(OLD_HASH);
+				expect(hashOf(target.id)).toBe(oldHashOf(target.id));
 			}
 		});
 
@@ -2951,7 +3023,7 @@ describe('wrong current passwords', () => {
 		const after = await expectRefused(() => send(route, me, OLD), 401);
 		expect(after.body).toEqual({ message: 'Not authenticated' });
 		expect(bcrypt.inTransaction).toEqual([]);
-		expect(hashOf(me.id)).toBe(OLD_HASH);
+		expect(hashOf(me.id)).toBe(oldHashOf(me.id));
 	});
 
 	// The review's L1. A current password is checked in the first lane, ahead
@@ -2971,7 +3043,7 @@ describe('wrong current passwords', () => {
 		expect(six.map((res) => res.status)).toEqual([403, 403, 403, 403, 403, 429]);
 		expect(six[5].body.message).toBe(PASSWORDS_BUSY);
 		expect(bcrypt.inTransaction).toHaveLength(5);
-		expect(hashOf(me.id)).toBe(OLD_HASH);
+		expect(hashOf(me.id)).toBe(oldHashOf(me.id));
 
 		// The places are given back once each is answered.
 		expect((await send(route, me, 'not it')).status).toBe(403);
@@ -3019,7 +3091,7 @@ describe('wrong current passwords', () => {
 		expect(await third.json()).toEqual(SIGNED_OUT);
 		// Ended: the gate refuses the next request from it, whatever it carries.
 		expect((await change(FIRST, OLD)).status).toBe(401);
-		expect(hashOf(me.id)).toBe(OLD_HASH);
+		expect(hashOf(me.id)).toBe(oldHashOf(me.id));
 
 		// The account's other browser is not held up. Changing the password
 		// there signs every other one out, which is how the owner of an account

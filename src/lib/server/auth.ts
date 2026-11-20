@@ -29,7 +29,7 @@ import { raiseSignal } from './sign-in-challenges';
 import { accountMayHaveRead, holdWebhooksOfSetter, revealedToAccount, type EndingCause } from './webhooks';
 import { holdSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { REVOKED_BECAUSE, endApiKeys, keyRecorded } from './key-revocations';
-import { deletedHere } from './account-endings';
+import { deletedHere, passwordReplacedHere } from './account-endings';
 import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
@@ -628,8 +628,16 @@ export function createSession(userId: number, opts: { startedAt?: Stamp } = {}):
 	// password change, makes its session here (card 2671, S5): a disabled
 	// account gets none, whichever way it got this far. Nor does one the record
 	// of account endings names as deleted (card 2996, R16), whatever a host edit
-	// has done to its row since.
-	if (account.disabledAt !== null || deletedHere(sqlite, { id: userId, ...account })) throw new AccountDisabled(userId);
+	// has done to its row since. Nor one, but the superadmin, holding a password
+	// the record says was replaced here (card 2997, decision 7): an older
+	// image's import, a host file rollback or a host edit brought it back.
+	if (
+		account.disabledAt !== null ||
+		deletedHere(sqlite, { id: userId, ...account }) ||
+		(account.role !== 'superadmin' && passwordReplacedHere(sqlite, { id: userId, ...account }))
+	) {
+		throw new AccountDisabled(userId);
+	}
 	const started = parseStamp(createdAt)!.getTime();
 	const now = Date.now();
 	if (started + sessionLimitsFor(account.role).totalMs <= now) {
@@ -1083,9 +1091,10 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause
 	const webhookIds = hold ? hold.switchedOff.filter((hook) => hook.reader === undefined).map((hook) => hook.id) : [];
 	// With its keys (card 2922): the mail settings, App URL and backup destinations it set held for the superadmin's
 	// review, its lines told once committed; and every link of the requests it made ended, as a disable ends them
-	// (card 2671): a mailed link is a key to the thread that whoever held the account may hold.
+	// (card 2671): a mailed link is a key to the thread that whoever held the account may hold. Its lines name nobody
+	// where `cause.unnamed` (the record's passes; card 2997's code review, FP1).
 	const settingsHeld = opts.apiKeys
-		? holdSettingsSetBy({ id: userId, username: usernameOf(userId) }, opts.cause).inForce
+		? holdSettingsSetBy({ id: userId, username: usernameOf(userId) }, { log: opts.cause.log, unnamed: opts.cause.unnamed }).inForce
 		: { mail: false, appUrl: false, destinations: [] };
 	const requestLinksEnded = opts.apiKeys
 		? sqlite.prepare('DELETE FROM request_links WHERE request_id IN (SELECT id FROM task_requests WHERE requester_user_id = ?)').run(userId).changes

@@ -1,6 +1,7 @@
 import { error, json } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
+import { recordPasswordReplaced } from '$lib/server/account-endings';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { endAccountAccess, namingIds, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
@@ -91,6 +92,9 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 	const ended = await whilePasswordHolds(callerId, hash, () => writeAs(locals, (caller) => {
 		const { actor, target } = requireTarget(caller);
 
+		// The hash being replaced is recorded first, in this transaction (card 2997, decision 1): a reset is meant to
+		// shut out whoever held the old password, and no restore brings it back.
+		recordPasswordReplaced(sqlite, userId);
 		db.update(users).set({ passwordHash }).where(eq(users.id, userId)).run();
 
 		// A reset is meant to take an account back from whoever held its password

@@ -825,7 +825,9 @@ export const ENDING_IN_MAIL = {
 	disabled: 'an account was disabled by an administrator',
 	deleted: 'an account was deleted by an administrator',
 	demoted: 'an administrator was made an ordinary user',
-	ownerLowered: 'an owner of the board was made an editor or a viewer, or taken off the board'
+	ownerLowered: 'an owner of the board was made an editor or a viewer, or taken off the board',
+	/** Card 2997 (R4): the start's pass, for an account found holding a password this server had replaced. */
+	passwordReplaced: 'an account was found holding a password that had been replaced on this server, and was signed out'
 } as const;
 
 /** `two_step_released_at` (`TWO_STEP_RELEASED_AT` in mfa-store.ts, written by migration 0066), named here so that this module imports nothing of mfa-store. */

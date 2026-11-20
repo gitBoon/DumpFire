@@ -21,7 +21,8 @@ import { db, sqlite } from '$lib/server/db';
 import Database from 'better-sqlite3';
 import { generateBackupData } from '$lib/server/backup';
 import { restorableTables, restoreFromBackup } from '$lib/server/db/restore';
-import { RECORD_ACCOUNT_ENDING_SQL } from '$lib/server/account-endings';
+import { RECORD_ACCOUNT_ENDING_SQL, RECORD_PASSWORD_REPLACED_SQL, credentialOf } from '$lib/server/account-endings';
+import { DUMMY_HASH } from '$lib/server/passwords';
 import {
 	activityLog,
 	apiKeys,
@@ -58,6 +59,7 @@ import {
 	FIXTURE_PASSWORD,
 	addBoardMember,
 	assignCard,
+	fixtureHashOf,
 	makeAttachment,
 	makeBoard,
 	makeCard,
@@ -324,6 +326,38 @@ describe('POST /api/admin/reset', () => {
 		for (const account of others) expect(account).toMatchObject({ disabledAt: expect.any(String), disabledBy: e.admin.id });
 	});
 
+	it('(y) card 2997: a reset records the password hash of every account but the superadmin as replaced, and an import after it of a backup taken before brings those accounts back disabled with DUMMY_HASH, the superadmin with its hash as the backup has it', async () => {
+		const e = everything();
+		const accounts = Object.values(e.before.users).map((user) => ({ id: user.id as number, role: user.role as string, created: user.created_at as string }));
+		const others = accounts.filter((account) => account.role !== 'superadmin');
+		expect(others).toHaveLength(2);
+		const backup = new Database(generateBackupData());
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const res = await reset(e);
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		// The answer is unchanged: no count of passwords of its own.
+		expect(Object.keys(res.body).sort()).toEqual(['accountsRecorded', 'apiKeysRecorded', 'redirect', 'success', 'trash']);
+
+		// One `password` row for each account but the superadmin, the fingerprint of the hash it held, written here.
+		expect(
+			sqlite.prepare("SELECT user_id AS id, account_created AS created, role, credential, origin FROM account_endings WHERE ending = 'password' ORDER BY seq").all()
+		).toEqual(others.map((account) => ({ id: account.id, created: account.created, role: '', credential: credentialOf(fixtureHashOf(account.id)), origin: 'here' })));
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		// The one `errors` line is the fixture's hand-made ending of account 900, which names no account here (card 2997,
+		// NF6), pinned so that a change to it is seen.
+		expect(result.errors).toEqual([
+			"1 row(s) of the backup's record of account endings were left out, as they can name no account here: 1 with an id above the backup's own account counter. The rest of the record was added to this server's."
+		]);
+		expect(result.accountsKept).toMatchObject({ disabled: 2 });
+		expect(result.passwordsKept).toEqual({ here: 0, reset: 2, superadmin: 0 });
+		const restored = (id: number) =>
+			sqlite.prepare('SELECT disabled_at AS disabledAt, password_hash AS passwordHash FROM users WHERE id = ?').get(id) as { disabledAt: string | null; passwordHash: string };
+		for (const account of others) expect(restored(account.id), account.role).toEqual({ disabledAt: expect.any(String), passwordHash: DUMMY_HASH });
+		expect(restored(e.admin.id)).toEqual({ disabledAt: null, passwordHash: fixtureHashOf(e.admin) });
+	});
+
 	it('test 6: leaves the record of account endings out of the tables a restore and a reset clear (card 2996)', () => {
 		expect(restorableTables(sqlite)).not.toContain('account_endings');
 		expect(restorableTables(sqlite)).toContain('users');
@@ -382,7 +416,7 @@ describe('POST /api/admin/reset', () => {
 				expect(Object.values(after.account_endings).slice(0, kept.length)).toEqual(kept);
 				const accounts = Object.values(e.before.users).filter((user) => user.role !== 'superadmin');
 				expect(
-					sqlite.prepare("SELECT user_id AS id, account_created AS created, ending, origin FROM account_endings WHERE seq > 1 ORDER BY seq").all()
+					sqlite.prepare("SELECT user_id AS id, account_created AS created, ending, origin FROM account_endings WHERE seq > 1 AND ending = 'disabled' ORDER BY seq").all()
 				).toEqual(accounts.map((user) => ({ id: user.id, created: user.created_at, ending: 'disabled', origin: 'here' })));
 				expect(
 					sqlite.prepare("SELECT message FROM system_logs WHERE context = 'TEST'").all()
@@ -449,15 +483,18 @@ describe('POST /api/admin/reset', () => {
 		expect(run.writes.at(-1)).toBe(upsert);
 		expect(run.writes.at(-2)).toMatch(/^INSERT INTO settings \(key, value\) VALUES/);
 		expect(run.writes.at(-3)).toBe(upsert);
-		// Before the clear, every account but the superadmin recorded as disabled (card 2996, n, R19), then every key
-		// recorded as ended and deleted (card 2995, R5): the only writes to the kept tables.
-		expect(run.writes.slice(STEP_UP_WRITES.length, STEP_UP_WRITES.length + 4)).toEqual([
+		// Before the clear, every account but the superadmin recorded as disabled (card 2996, n, R19), then each one's
+		// password hash recorded as replaced (card 2997, y, decision 5), then every key recorded as ended and deleted
+		// (card 2995, R5): the only writes to the kept tables.
+		expect(run.writes.slice(STEP_UP_WRITES.length, STEP_UP_WRITES.length + 6)).toEqual([
 			RECORD_ACCOUNT_ENDING_SQL.slice(0, 160),
 			RECORD_ACCOUNT_ENDING_SQL.slice(0, 160),
+			RECORD_PASSWORD_REPLACED_SQL.slice(0, 160),
+			RECORD_PASSWORD_REPLACED_SQL.slice(0, 160),
 			expect.stringMatching(/^INSERT OR IGNORE INTO api_key_revocations \(key_id, key_hash, revoked_at, revoked_because\) SELECT id, key_hash, @at, @because FROM api_keys WHERE 1 = 1 /),
 			'DELETE FROM api_keys WHERE 1 = 1 RETURNING id'
 		]);
-		expect(run.writes.slice(STEP_UP_WRITES.length + 4, -3).sort()).toEqual(
+		expect(run.writes.slice(STEP_UP_WRITES.length + 6, -3).sort()).toEqual(
 			cleared()
 				.map((table) => `DELETE FROM "${table}"`)
 				.sort()

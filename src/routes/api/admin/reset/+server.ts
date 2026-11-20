@@ -2,7 +2,7 @@ import { error, isHttpError, json } from '@sveltejs/kit';
 import { sqlite } from '$lib/server/db';
 import { restorableTables } from '$lib/server/db/restore';
 import { REVOKED_BECAUSE, endApiKeys } from '$lib/server/key-revocations';
-import { ACCOUNT_ENDING, recordAccountEnding } from '$lib/server/account-endings';
+import { ACCOUNT_ENDING, recordAccountEnding, recordPasswordReplaced } from '$lib/server/account-endings';
 import { clearSessionCookie, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { readBody } from '$lib/server/request-body';
 import { resetFormSecretCache, writeFormSecret } from '$lib/server/request-tokens';
@@ -54,7 +54,8 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
  * the clear, in the record of account endings, which is kept too (card 2996,
  * R19): an import after a reset brings the accounts back disabled, and the
  * superadmin enables the ones wanted. The answer counts them,
- * `accountsRecorded`.
+ * `accountsRecorded`. The password hash of each is recorded as replaced too
+ * (card 2997, decision 5), so each comes back needing its password set.
  *
  * Attachment files are moved to the trash once the reset is committed. A file
  * that cannot be moved is named in the answer, which is still a success: the
@@ -112,6 +113,10 @@ export const POST: RequestHandler = async ({ request, locals, cookies, url }) =>
 			// after the reset brings each back disabled, and the superadmin enables the ones wanted. The record is kept.
 			const accounts = sqlite.prepare("SELECT id FROM users WHERE role <> 'superadmin' ORDER BY id").pluck().all() as number[];
 			for (const id of accounts) recordAccountEnding(sqlite, id, ACCOUNT_ENDING.disabled);
+			// And the fingerprint of each one's password hash, as replaced here (card 2997, decision 5): an import after
+			// the reset brings each back with a password nothing matches too. The superadmin's own is not recorded: in a
+			// restore it would do nothing, and the start would warn about it every five minutes.
+			for (const id of accounts) recordPasswordReplaced(sqlite, id);
 			const accountsRecorded = accounts.length;
 
 			// Every API key recorded as ended here, `reset`, and deleted, before the clear (card 2995, R5): a reset done

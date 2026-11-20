@@ -80,7 +80,7 @@ import { parseStamp, stamp } from '$lib/timestamps';
 import { action, pageLoad, type ActionResult } from './helpers/actions';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, makeWebhook, resetDb, stepUp, sessionHashOf } from './helpers/fixtures';
+import { fixtureHashOf, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, makeWebhook, resetDb, stepUp, sessionHashOf } from './helpers/fixtures';
 import { gate } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { codeFor, giveFactor, openReleaseWindow, passwordStep, verify, wrongCodeFor } from './helpers/two-step';
@@ -199,7 +199,7 @@ describe('setting up on the password (slice 3)', () => {
 			stage: 'secret_shown',
 			enrol_grant: 'password',
 			enrolment_link_hash: null,
-			password_hash: FIXTURE_PASSWORD_HASH
+			password_hash: fixtureHashOf(user)
 		});
 		expect(rows[0].key_id).toBeTruthy();
 		expect(rows[0].enrol_ciphertext).toBeTruthy();
@@ -285,7 +285,7 @@ describe('setting up on the password (slice 3)', () => {
 				'INSERT INTO sign_in_challenges (token_hash, short_id, user_id, purpose, stage, lane, password_hash, created_at, expires_at) ' +
 					"VALUES (?, 'other001', ?, 'verify', NULL, 'other', ?, datetime('now'), datetime('now', '+10 minutes'))"
 			)
-			.run('f'.repeat(64), user.id, FIXTURE_PASSWORD_HASH);
+			.run('f'.repeat(64), user.id, fixtureHashOf(user));
 		inTransaction(() => {
 			issueEnrolmentLink(user.id, 'release-mail');
 			issueInvite(user.id);
@@ -363,7 +363,7 @@ describe('setting up after an invite or the first-run set-up (slice 3)', () => {
 		const res = await action(`/invite/${invite}`, { form: { password: PASSWORD, confirmPassword: PASSWORD } });
 
 		expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
-		expect(userRow().passwordHash).not.toBe(FIXTURE_PASSWORD_HASH);
+		expect(userRow().passwordHash).not.toBe(fixtureHashOf(user));
 		expect(res.cookies[SESSION_COOKIE_NAME]).toBeUndefined();
 		expect(res.cookies[knownBrowserCookie(user.id)]).toBeUndefined();
 		expect(db.select().from(sessions).all()).toEqual([]);

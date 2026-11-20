@@ -18,6 +18,10 @@
  * The one rule is `accountRulings`, read by the restore and by the start's pass, and `deletedHere`, read by the gates
  * and the enable, is built on the same matcher (R3): so none of them can disagree on which account a row names.
  *
+ * Card 2997 adds `password`: a row saying that the account's password hash, by its fingerprint, was replaced
+ * (`recordPasswordReplaced`). The rule never reads one; `passwordReplacedHere`, one statement, is the only matcher of
+ * them, asked by the sign-in, `createSession`, the step-up, the start's pass and the restore.
+ *
  * This module imports only the database's types, the stored form of a moment, `createHash` and the one hash nothing
  * matches (dummy-hash.ts, R20): auth.ts, the restore and the routes all read it.
  */
@@ -35,7 +39,13 @@ export const ACCOUNT_ENDING = {
 	disabled: 'disabled',
 	enabled: 'enabled',
 	role: 'role',
-	watermark: 'watermark'
+	watermark: 'watermark',
+	/**
+	 * Card 2997: the account's password hash was replaced (its own change, an administrator's reset, an invite, Reset
+	 * Everything, or a belt's `DUMMY_HASH`), `credential` the fingerprint of the hash replaced, `role` ''. Never read by
+	 * `accountRulings` (decision 11); matched by `PASSWORD_REPLACED_SQL` alone.
+	 */
+	password: 'password'
 } as const;
 
 /** An ending a writer records. */
@@ -62,14 +72,22 @@ const CREDENTIAL_LABEL = 'dumpfire account credential v1';
 const BCRYPT_HASH = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
 
 /**
- * The fingerprint of a deleted account's password hash (R17): the SHA-256, in lower-case hex, of the label, a NUL and
- * the hash; '' for anything that is not a well-formed bcrypt string, and for `DUMMY_HASH`, which every inert account
- * holds. It tells an account brought back under another id or creation time by the hash it held; it is not a secret,
- * and it cannot be checked against a guessed password without the bcrypt hash, which the record never holds.
+ * The fingerprint of a deleted account's password hash (R17), and of a hash replaced (card 2997): the SHA-256, in
+ * lower-case hex, of the label, a NUL and the hash; '' for anything that is not a well-formed bcrypt string, and for
+ * `DUMMY_HASH`, which every inert account holds. It tells an account brought back under another id or creation time by
+ * the hash it held; it is not a secret, and it cannot be checked against a guessed password without the bcrypt hash,
+ * which the record never holds.
+ *
+ * The hash is fingerprinted in its `$2b$` form (card 2997, R1): bcryptjs verifies a password against `$2a$`, `$2b$` and
+ * `$2y$` alike for one hash, so the same hash with its prefix edited must have the same fingerprint, or an edited copy
+ * would escape the record.
  */
 export function credentialOf(passwordHash: unknown): string {
-	if (typeof passwordHash !== 'string' || passwordHash === DUMMY_HASH || !BCRYPT_HASH.test(passwordHash)) return '';
-	return createHash('sha256').update(`${CREDENTIAL_LABEL}\u0000${passwordHash}`).digest('hex');
+	if (typeof passwordHash !== 'string' || !BCRYPT_HASH.test(passwordHash)) return '';
+	// The canonical form compared with DUMMY_HASH too (the code review's FP11): its `$2a$` and `$2y$` forms have none.
+	const canonical = `$2b$${passwordHash.slice(4)}`;
+	if (canonical === DUMMY_HASH) return '';
+	return createHash('sha256').update(`${CREDENTIAL_LABEL}\u0000${canonical}`).digest('hex');
 }
 
 /** An account's creation time as the record holds it: the stored form where it names a moment, else its text as it is. */
@@ -83,10 +101,14 @@ export function storedCreated(createdAt: unknown): string {
 /** A row of the record, as the rule reads it; `belt` where it was a belt, counted as this server's own (FP2). */
 type RecordRow = { seq: number; accountCreated: string; ending: string; role: string; credential: string; endedAt: string; origin: string; belt?: boolean };
 
-/** The rows that may name the account `?` by its id and creation time (R11: a search on `(user_id, account_created)`); the watermark never (R12). */
+/**
+ * The rows that may name the account `?` by its id and creation time (R11: a search on `(user_id, account_created)`);
+ * the watermark never (R12), and no `password` row (card 2997, decision 11 as R15 corrects it): the rule never reads
+ * one, so it loads none, though its search still walks their index entries under the id.
+ */
 export const EXACT_ROWS_SQL =
 	'SELECT seq, account_created AS accountCreated, ending, role, credential, ended_at AS endedAt, origin FROM account_endings ' +
-	"WHERE user_id = ? AND ending <> 'watermark'";
+	"WHERE user_id = ? AND ending NOT IN ('watermark', 'password')";
 
 /** The seed rows of the id `?` (R11: a search on both columns of `(user_id, account_created)`). */
 export const SEED_ROWS_SQL = "SELECT ended_at AS endedAt FROM account_endings WHERE user_id = ? AND account_created = '' AND ending = 'deleted'";
@@ -317,6 +339,45 @@ export function deletedHere(database: Database.Database, account: AccountToRule)
 }
 
 /**
+ * Card 2997's one matcher (section 3.2, R3 of card 2996): whether a `password` row carries the fingerprint of the hash
+ * the account holds, so that the hash is one this server replaced. For anyone but a superadmin (`@super` 0) a row of
+ * any origin under any id counts: a bcrypt string is salted, so its fingerprint names one hash ever, and a renumbered
+ * account is caught. For a superadmin (`@super` 1) only this server's own exact row (`here`, its id and its creation
+ * time in the stored form, `@created`), never a belt's or a backup's (card 2996's R1, FP1, FP2). The literal
+ * `credential <> ''` lets the partial index `account_endings_credential` serve it (test f); `LIMIT 1` stops at the first.
+ */
+export const PASSWORD_REPLACED_SQL =
+	"SELECT 1 FROM account_endings WHERE credential = @credential AND credential <> '' AND ending = 'password' " +
+	"AND (@super = 0 OR (origin = 'here' AND user_id = @id AND account_created = @created)) LIMIT 1";
+
+const passwordStatements = new WeakMap<Database.Database, Database.Statement>();
+
+/**
+ * Whether the record says the hash this account holds was replaced on this server (card 2997): `PASSWORD_REPLACED_SQL`,
+ * one prepared statement per connection, as `deletedHere` is. A superadmin is one by its role as it is (R10). Asked by
+ * the sign-in on every attempt (a name that is no account with `DUMMY_HASH`, so that every path runs one lookup, R13),
+ * by `createSession`, by the step-up (R5), by the start's pass, and by the restore. It runs the statement even where the
+ * fingerprint is '' (`DUMMY_HASH`, or no bcrypt string), which then names nothing. False where the database has no
+ * record.
+ */
+export function passwordReplacedHere(database: Database.Database, account: AccountToRule): boolean {
+	let statement = passwordStatements.get(database);
+	if (statement === undefined) {
+		if (!hasAccountRecord(database)) return false;
+		statement = database.prepare(PASSWORD_REPLACED_SQL);
+		passwordStatements.set(database, statement);
+	}
+	return (
+		statement.get({
+			credential: credentialOf(account.passwordHash),
+			super: account.role === 'superadmin' ? 1 : 0,
+			id: account.id,
+			created: storedCreated(account.createdAt)
+		}) !== undefined
+	);
+}
+
+/**
  * Whether the account's disable is one the record of account endings ruled (card 2996's code review, FP15): it is
  * named deleted or as one this server had before it recorded endings, or the row its disable rests on is a belt or a
  * backup's, not an administrator's own disable here. Only the superadmin enables such an account.
@@ -354,20 +415,40 @@ export const RECORD_ACCOUNT_ENDING_SQL =
 	'VALUES (@userId, @accountCreated, @ending, @role, @credential, @endedAt, @endedAt, @origin)';
 
 /**
+ * The record's statement for a `password` row (card 2997's code review, FP5): `RECORD_ACCOUNT_ENDING_SQL`'s row, written
+ * only where it would add something a lookup can find. A belt is written once: not where any `password` row holds the
+ * fingerprint already, which names it for anyone but a superadmin, and a belt never counts for one (so that importing
+ * the same backup again, or a second R2 discard, adds nothing). A `here` row is left out only where this account's own
+ * exact `here` row holds it, since only that row counts for a superadmin (`PASSWORD_REPLACED_SQL`). The literal
+ * `credential <> ''` lets the partial index `account_endings_credential` serve the search. Exported for the pins.
+ */
+export const RECORD_PASSWORD_REPLACED_SQL =
+	'INSERT INTO account_endings (user_id, account_created, ending, role, credential, ended_at, stated_ended, origin) ' +
+	'SELECT @userId, @accountCreated, @ending, @role, @credential, @endedAt, @endedAt, @origin ' +
+	"WHERE NOT EXISTS (SELECT 1 FROM account_endings WHERE credential = @credential AND credential <> '' AND ending = 'password' " +
+	"AND (@origin = 'belt' OR (origin = 'here' AND user_id = @userId AND account_created = @accountCreated)))";
+
+/**
  * Record an ending of the account `userId` on `database`, in the transaction that makes it: its creation time, role
  * and password hash read from `users` on that connection (R20), so a `role` row holds the role after the change (call
  * it after the write) and a `deleted` row the fingerprint of the hash it held (call it before the delete), unless
  * `credential` gives the one a match was made on (R3). `at` is when, the stored form, now where it is not given.
  * `origin` is `belt` for a row the restore or the start's pass writes by the record's own rule (FP2), `here` otherwise.
  * Throws without writing where no transaction is open on `database`, where the account is not there, and for a
- * superadmin, of whom no ending is recorded (R1, R20).
+ * superadmin, of whom no ending is recorded (R1, R20), but for a `password` row of this server's own (card 2997,
+ * decision 6: the superadmin's leaked password is the worst case, and only its exact `here` row ever counts for it).
+ *
+ * A `password` row (card 2997, R14) holds the fingerprint of the hash being replaced, as a `deleted` row does (call it
+ * before the write), and no role; where that fingerprint is '' (`DUMMY_HASH`, or no bcrypt string) nothing is written,
+ * nor where a row already holding it would answer every lookup this one could (`RECORD_PASSWORD_REPLACED_SQL`, FP5).
+ * Returns whether a row was written.
  */
 export function recordAccountEnding(
 	database: Database.Database,
 	userId: number,
 	ending: AccountEnding,
 	extra: { at?: string; credential?: string; origin?: 'here' | 'belt' } = {}
-): void {
+): boolean {
 	if (!database.inTransaction) {
 		throw new Error('recordAccountEnding records inside the transaction of the change, and none is open on the connection it was given');
 	}
@@ -375,14 +456,43 @@ export function recordAccountEnding(
 		| { createdAt: unknown; role: string; passwordHash: unknown }
 		| undefined;
 	if (account === undefined) throw new Error(`No ending of user ${userId} can be recorded: the account is not there`);
-	if (account.role === 'superadmin') throw new Error('No ending of the superadmin is recorded: nobody may end, disable or lower that account');
-	database.prepare(RECORD_ACCOUNT_ENDING_SQL).run({
+	const origin = extra.origin ?? ORIGIN.here;
+	if (account.role === 'superadmin' && !(ending === ACCOUNT_ENDING.password && origin === ORIGIN.here)) {
+		throw new Error('No ending of the superadmin is recorded: nobody may end, disable or lower that account');
+	}
+	const fingerprinted = ending === ACCOUNT_ENDING.deleted || ending === ACCOUNT_ENDING.password;
+	const credential = fingerprinted ? (extra.credential ?? credentialOf(account.passwordHash)) : '';
+	if (ending === ACCOUNT_ENDING.password && credential === '') return false;
+	const written = database.prepare(ending === ACCOUNT_ENDING.password ? RECORD_PASSWORD_REPLACED_SQL :RECORD_ACCOUNT_ENDING_SQL).run({
 		userId,
 		accountCreated: storedCreated(account.createdAt),
 		ending,
 		role: ending === ACCOUNT_ENDING.role ? account.role : '',
-		credential: ending === ACCOUNT_ENDING.deleted ? (extra.credential ?? credentialOf(account.passwordHash)) : '',
+		credential,
 		endedAt: toStamp(extra.at) ?? stamp(),
-		origin: extra.origin ?? ORIGIN.here
+		origin
 	});
+	return written.changes > 0;
+}
+
+/**
+ * Record that the password hash the account `userId` holds is being replaced (card 2997): a `password` row with its
+ * fingerprint, `origin` `here` for a change made here, or `belt` for the record's own `DUMMY_HASH` over a real hash
+ * (N1). Call it before the write it records, in the same transaction, so that it reads the hash being replaced. Writes
+ * nothing for a hash whose fingerprint is '' (`DUMMY_HASH`, or no bcrypt string), and nothing for a superadmin's belt
+ * (R6: a belt never counts for a superadmin, so it returns rather than throws), nor a belt where a `password` row holds
+ * the fingerprint already (FP5: a belt is written once). `at` is the row's moment, the stored form, now where it is not
+ * given (the restore passes its own, as card 2996's belts carry it; FP5, closing NF3). Returns whether a row was written.
+ */
+export function recordPasswordReplaced(
+	database: Database.Database,
+	userId: number,
+	{ origin = ORIGIN.here, at }: { origin?: 'here' | 'belt'; at?: string } = {}
+): boolean {
+	// Outside a transaction, recordAccountEnding's own refusal is the answer.
+	if (origin === ORIGIN.belt && database.inTransaction) {
+		const role = database.prepare('SELECT role FROM users WHERE id = ?').pluck().get(userId);
+		if (role === 'superadmin') return false;
+	}
+	return recordAccountEnding(database, userId, ACCOUNT_ENDING.password, { origin, at });
 }

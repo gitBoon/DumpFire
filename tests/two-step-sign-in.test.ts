@@ -48,6 +48,7 @@ import {
 	resetKnownBrowserSecretCache
 } from '$lib/server/known-browsers';
 import { resetAllRateLimits, signInWait } from '$lib/server/rate-limit';
+import { recordPasswordReplaced } from '$lib/server/account-endings';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
 import { resetTwoStep, spendStep } from '$lib/server/mfa-store';
 import { newRecoveryCodes } from '$lib/server/recovery-codes';
@@ -84,7 +85,7 @@ import { action, pageLoad } from './helpers/actions';
 import { readOpened } from './helpers/reads';
 import { effects, type Effects } from './helpers/effects';
 import { gate } from './helpers/gate';
-import { FIXTURE_PASSWORD, FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, makeWebhook, resetDb, sessionHashOf, sessionRow } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, fixtureHashOf, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, makeWebhook, resetDb, sessionHashOf, sessionRow } from './helpers/fixtures';
 import { VERIFY_AT, codeFor, giveAuthenticator, giveFactor, openReleaseWindow, passwordStep, signInFully, verify, wrongCodeFor, type GivenFactor } from './helpers/two-step';
 
 /** Run while the password is being checked (T42): a password set meanwhile. */
@@ -109,11 +110,29 @@ vi.mock('$lib/server/email', async (importOriginal) => {
 	};
 });
 
+/**
+ * Card 2997 (q): what a sign-in asked, in order, while `events` is a list: each lookup of the record of account
+ * endings (`lookup:<id>`), and each password check (`check`), as it starts.
+ */
+const asked = vi.hoisted(() => ({ events: null as null | string[] }));
+
+vi.mock('$lib/server/account-endings', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/account-endings')>();
+	return {
+		...real,
+		passwordReplacedHere: (...args: Parameters<typeof real.passwordReplacedHere>) => {
+			asked.events?.push(`lookup:${args[1].id}`);
+			return real.passwordReplacedHere(...args);
+		}
+	};
+});
+
 vi.mock('$lib/server/passwords', async (importOriginal) => {
 	const real = await importOriginal<typeof import('$lib/server/passwords')>();
 	return {
 		...real,
 		checkPassword: async (...args: Parameters<typeof real.checkPassword>) => {
+			asked.events?.push('check');
 			const checked = await real.checkPassword(...args);
 			duringCheck.run?.();
 			return checked;
@@ -190,7 +209,8 @@ describe('sessions made without a second factor (decision 24)', () => {
 
 describe('remembered browsers (decision 24)', () => {
 	it('T7: a cookie signed under known-browser:1: is not remembered; one under known-browser:2: is', () => {
-		const user = { id: makeUser().id, passwordHash: FIXTURE_PASSWORD_HASH };
+		const made = makeUser();
+		const user = { id: made.id, passwordHash: fixtureHashOf(made) };
 
 		// This image's cookie, which also makes the secret.
 		let value = '';
@@ -319,7 +339,7 @@ describe('the second step (slice 2)', () => {
 			user_id: user.id,
 			purpose: 'verify',
 			lane: 'other',
-			password_hash: FIXTURE_PASSWORD_HASH,
+			password_hash: fixtureHashOf(user),
 			wrong_count: 0
 		});
 		expect(JSON.stringify(rows)).not.toContain(challenge);
@@ -387,7 +407,7 @@ describe('the second step (slice 2)', () => {
 		const known = res.cookies[knownBrowserCookie(user.id)];
 		expect(known.options).toMatchObject({ path: '/login', httpOnly: true, sameSite: 'strict' });
 		const sending = { get: (name: string) => (name === knownBrowserCookie(user.id) ? known.value : undefined) };
-		expect(rememberedNonce(sending, { id: user.id, passwordHash: FIXTURE_PASSWORD_HASH })).not.toBeNull();
+		expect(rememberedNonce(sending, { id: user.id, passwordHash: fixtureHashOf(user) })).not.toBeNull();
 
 		expect(challenges()).toEqual([]);
 		expect(res.deletedCookies).toContain(CHALLENGE_COOKIE);
@@ -852,7 +872,7 @@ describe('the second step (slice 2)', () => {
 				'INSERT INTO sign_in_challenges (token_hash, short_id, user_id, purpose, stage, lane, password_hash, created_at, expires_at) ' +
 					"VALUES (?, 'enrol001', ?, 'enrol', 'secret_shown', 'other', ?, ?, ?)"
 			)
-			.run('e'.repeat(64), other.id, FIXTURE_PASSWORD_HASH, stamp(), stamp(new Date(Date.now() + 600_000)));
+			.run('e'.repeat(64), other.id, fixtureHashOf(other), stamp(), stamp(new Date(Date.now() + 600_000)));
 
 		later(10 * 60_000);
 		await passwordStep(user);
@@ -1068,6 +1088,86 @@ describe('the second step (slice 2)', () => {
 		expect(lines.filter((line) => line.message.includes('the account is disabled')).map(({ level, message, userId }) => ({ level, message, userId }))).toEqual(
 			Array(5).fill({ level: 'WARN', message: `Sign-in refused at "${user.username}" (user ${user.id}) from IP 127.0.0.1: the account is disabled`, userId: user.id })
 		);
+	});
+
+	// ─── Card 2997: a password the record of account endings says was replaced here ───
+
+	it('(p) card 2997: the right password of an account whose hash is recorded replaced, and a wrong one, are each answered as a wrong one, counted as one, issue nothing; the right one says why at WARN, the wrong one is a bad password (code review, FP2)', async () => {
+		inTransaction(() => recordPasswordReplaced(sqlite, user.id));
+
+		// Three typed right, two typed wrong: five attempts, each counted.
+		const { result, lines } = await logged(async () => {
+			const answers = [];
+			for (let i = 0; i < 3; i++) answers.push((await passwordStep(user)).res);
+			for (let i = 0; i < 2; i++) answers.push((await passwordStep(user, { password: 'not the password' })).res);
+			return answers;
+		});
+		const other = makeUser();
+		const wrong = (await passwordStep(other, { password: 'not the password' })).res;
+
+		const shape = (res: typeof wrong) => ({ type: res.type, status: res.status, cookies: res.cookies, error: res.type === 'failure' ? res.data.error : null });
+		expect(shape(wrong)).toEqual({ type: 'failure', status: 400, cookies: {}, error: 'Invalid username/email or password' });
+		for (const res of result) {
+			expect(shape(res)).toEqual(shape(wrong));
+			expect(res).toMatchObject({ data: { identity: user.username } });
+		}
+		expect(challenges()).toEqual([]);
+		expect(sessionsOf(user.id)).toEqual([]);
+		// Five, each counted as a wrong password: the account's waits have begun.
+		expect(signInWait(`user:${user.id}`)).toBe(1000);
+		// The line tells a match from a guess; the answer and the count do not.
+		expect(lines.filter((line) => line.message.startsWith('Sign-in refused at')).map(({ level, message, userId }) => ({ level, message, userId }))).toEqual(
+			Array(3).fill({ level: 'WARN', message: `Sign-in refused at "${user.username}" (user ${user.id}) from IP 127.0.0.1: the password typed is one this server replaced`, userId: user.id })
+		);
+		expect(lines.filter((line) => line.message.startsWith('Failed login attempt')).map(({ level, message, userId }) => ({ level, message, userId }))).toEqual(
+			Array(2).fill({ level: 'WARN', message: `Failed login attempt at "${user.username}" (user ${user.id}) from IP 127.0.0.1 (bad password)`, userId: user.id })
+		);
+	});
+
+	it('(q) card 2997: the record is asked once on every attempt, before the password is checked: a wrong password, a right one, and a name that is no account; and at an account whose hash is recorded replaced, a wrong one and a right one, each with its own line and the same answer (code review, FP2)', async () => {
+		const seen: string[][] = [];
+		const answers: unknown[] = [];
+		const attempts = [
+			() => passwordStep(user, { password: 'not the password' }),
+			() => passwordStep(user),
+			() => passwordStep({ username: 'nobody-by-this-name' }),
+			// The same account, its hash now recorded as replaced here.
+			() => {
+				inTransaction(() => recordPasswordReplaced(sqlite, user.id));
+				return passwordStep(user, { password: 'not the password' });
+			},
+			() => passwordStep(user)
+		];
+		const { lines } = await logged(async () => {
+			try {
+				for (const attempt of attempts) {
+					asked.events = [];
+					const { res } = await attempt();
+					answers.push(res.type === 'failure' ? { status: res.status, cookies: res.cookies, error: res.data.error } : res.type);
+					seen.push(asked.events);
+				}
+			} finally {
+				asked.events = null;
+			}
+		});
+
+		expect(seen).toEqual([
+			[`lookup:${user.id}`, 'check'],
+			[`lookup:${user.id}`, 'check'],
+			['lookup:0', 'check'],
+			[`lookup:${user.id}`, 'check'],
+			[`lookup:${user.id}`, 'check']
+		]);
+		// At the replaced account, a guess and a match are answered alike, as the wrong password before them was.
+		const refused = { status: 400, cookies: {}, error: 'Invalid username/email or password' };
+		expect([answers[0], answers[3], answers[4]]).toEqual([refused, refused, refused]);
+		// And only the line tells them apart: the guess a bad password, the match the password this server replaced.
+		const ofUser = lines.filter((line) => line.userId === user.id && line.level === 'WARN').map((line) => line.message);
+		expect(ofUser).toEqual([
+			`Failed login attempt at "${user.username}" (user ${user.id}) from IP 127.0.0.1 (bad password)`,
+			`Failed login attempt at "${user.username}" (user ${user.id}) from IP 127.0.0.1 (bad password)`,
+			`Sign-in refused at "${user.username}" (user ${user.id}) from IP 127.0.0.1: the password typed is one this server replaced`
+		]);
 	});
 
 	it('card 2671, case 11: an account disabled while its password was checked: the expired words, and no challenge', async () => {

@@ -8,11 +8,15 @@
  * (`endRecordedAccountsPresent`), so that an account ended again at start is ended as completely as the application
  * ends one. Each records its ending (`recordAccountEnding`) in the transaction that makes it.
  *
+ * And the start's password pass (card 2997, `endReplacedPasswordsPresent`): an account holding a password the record
+ * says was replaced here is given one nothing matches and signed out, as a password reset signs it out.
+ *
  * Its own module, as api-key-revoke.ts is (card 2995's departure 7): the webhook-writer rule pins
  * `holdNoLongerReadable` to callers in other files than webhooks.ts.
  *
  * Each runs inside the caller's transaction on the server's connection and throws if there is none.
  */
+import type Database from 'better-sqlite3';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { users, type User } from './db/schema';
@@ -21,7 +25,7 @@ import { advanceReadableCovered, ENDING_IN_MAIL, holdNoLongerReadable, switchOff
 import { removeFailureAddress, removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { endUnusedInvites } from './invites';
 import { endPendingSignIns } from './mfa-store';
-import { ACCOUNT_ENDING, ORIGIN, accountRulings, raiseUserCounterOverSeed, recordAccountEnding, type AccountEnding } from './account-endings';
+import { ACCOUNT_ENDING, ORIGIN, accountRulings, passwordReplacedHere, raiseUserCounterOverSeed, recordAccountEnding, recordPasswordReplaced, type AccountEnding } from './account-endings';
 import { DUMMY_HASH } from './dummy-hash';
 import { stamp } from '$lib/timestamps';
 
@@ -73,14 +77,35 @@ export function disableAccountSteps(
 	return { disabledAt, removed, access, failureAddress };
 }
 
+/** The one statement of this module that gives an account `DUMMY_HASH`, prepared once per connection (`giveDummyHash`). */
+const dummyHashStatements = new WeakMap<Database.Database, Database.Statement>();
+
+/**
+ * Give the account `userId` `DUMMY_HASH`, which nothing matches, and no leave to set up two-step sign-in on its password:
+ * the one write of both in this module (card 2997's code review, FP10), for `makeInert` and the start's password pass.
+ * With `belt`, the hash it discards is first recorded as replaced, a `belt` row (N1; nothing for a superadmin, R6, or a
+ * hash already recorded, FP5); without, the hash is one the record names already (`endReplacedPasswordsPresent`).
+ */
+function giveDummyHash(userId: number, { belt }: { belt: boolean }): void {
+	if (belt) recordPasswordReplaced(sqlite, userId, { origin: ORIGIN.belt });
+	let statement = dummyHashStatements.get(sqlite);
+	if (statement === undefined) {
+		statement = sqlite.prepare('UPDATE users SET password_hash = ?, mfa_password_enrol = 0 WHERE id = ?');
+		dummyHashStatements.set(sqlite, statement);
+	}
+	statement.run(DUMMY_HASH, userId);
+}
+
 /**
  * Make an account inert (card 2996): `DUMMY_HASH` for its password, which nothing matches, and no leave to set up
  * two-step sign-in on it; with `secondSteps`, its second factors and recovery codes deleted (R6). For an account the
- * record of account endings names as deleted, or as one this server had before it recorded endings.
+ * record of account endings names as deleted, or as one this server had before it recorded endings. The hash it
+ * discards is recorded first as replaced, a `belt` row (card 2997, N1, decision 14), so that the account, once enabled
+ * again, is not given it back by the next restore; for a superadmin, or a hash already `DUMMY_HASH`, nothing (R6).
  */
 export function makeInert(userId: number, { secondSteps }: { secondSteps: boolean }): void {
 	requireTransaction('makeInert');
-	sqlite.prepare('UPDATE users SET password_hash = ?, mfa_password_enrol = 0 WHERE id = ?').run(DUMMY_HASH, userId);
+	giveDummyHash(userId, { belt: true });
 	if (secondSteps) {
 		sqlite.prepare('DELETE FROM mfa_factors WHERE user_id = ?').run(userId);
 		sqlite.prepare('DELETE FROM mfa_recovery_codes WHERE user_id = ?').run(userId);
@@ -212,6 +237,49 @@ export function endRecordedAccountsPresent(telling: Telling = { mail: true }): A
 			changeAccountRole(target, { role: ruling.lowerTo }, null, loweredAgain);
 			counts.lowered++;
 		}
+	}
+	return counts;
+}
+
+/** What the start's password pass did (`endReplacedPasswordsPresent`), counted only. */
+export type PasswordsEndedAgain = { reset: number; superadmin: number };
+
+/**
+ * End every present account holding a password the record of account endings says was replaced on this server (card
+ * 2997, section 3.6 as R3 and R4 rule it): one an older image's import, a host file rollback or a host edit brought
+ * back. Asked through the one matcher (`passwordReplacedHere`), each account by its role as it is (R10):
+ *
+ * - **Any account but a superadmin** it names: `DUMMY_HASH`, which nothing matches, and no leave to set up two-step
+ *   sign-in on its password; then what a password reset ends, with its API keys (`endAccountAccess`, R4): its sessions,
+ *   pending sign-ins and unused invites (an invite from a rolled-back file would set the password again), its keys
+ *   recorded and deleted, what it set or could read held. Its second factors stay: the account is not deleted. No row
+ *   is written: the hash is already recorded. Counted `reset`.
+ * - **A superadmin** it names (only by its exact `here` row): never touched, so that it can still sign in; counted
+ *   `superadmin`, for a WARN at every run until the password is changed.
+ *
+ * It mails the boards' owners only as `telling` says (card 2996's FP6), and every line it causes names no account
+ * (FP16). Inside the caller's transaction (its own, `endReplacedPasswordsAtStart`, R3); a second run finds nothing,
+ * since `credentialOf(DUMMY_HASH)` is ''.
+ */
+export function endReplacedPasswordsPresent(telling: Telling = { mail: true }): PasswordsEndedAgain {
+	requireTransaction('endReplacedPasswordsPresent');
+	const counts: PasswordsEndedAgain = { reset: 0, superadmin: 0 };
+	const cause: EndingCause = {
+		log: 'an account holding a password the record of account endings on this server says was replaced was found and signed out',
+		mail: ENDING_IN_MAIL.passwordReplaced,
+		telling,
+		unnamed: true
+	};
+	const present = db.select({ id: users.id, createdAt: users.createdAt, role: users.role, passwordHash: users.passwordHash }).from(users).all();
+	for (const account of present) {
+		if (!passwordReplacedHere(sqlite, account)) continue;
+		if (account.role === 'superadmin') {
+			counts.superadmin++;
+			continue;
+		}
+		giveDummyHash(account.id, { belt: false });
+		endAccountAccess(account.id, { apiKeys: true, cause });
+		counts.reset++;
 	}
 	return counts;
 }

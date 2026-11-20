@@ -60,8 +60,10 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { error, type Cookies } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
-import { db } from './db';
+import { db, sqlite } from './db';
 import { users } from './db/schema';
+import { passwordReplacedHere } from './account-endings';
+import { DUMMY_HASH } from './dummy-hash';
 import { getRequestEvent } from '$app/server';
 import { checkCurrentProof, refuseWrongPassword, sessionHashIn, type ProofCode, type SessionUser } from './auth';
 import { addressOf } from './client-address';
@@ -298,7 +300,11 @@ export async function confirmStepUp<U>(
 	const session = sessionHashIn(locals.credential);
 	if (!session) error(401, 'Not authenticated');
 
-	const account = db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, caller.id)).get();
+	const account = db
+		.select({ passwordHash: users.passwordHash, createdAt: users.createdAt, role: users.role })
+		.from(users)
+		.where(eq(users.id, caller.id))
+		.get();
 	if (!account) error(404, 'User not found');
 	if (!BCRYPT_HASH.test(account.passwordHash)) {
 		log.warn(
@@ -309,7 +315,13 @@ export async function confirmStepUp<U>(
 		error(403, { message: STEP_UP_NO_PASSWORD, stepUp: 'no-password' });
 	}
 
-	const proven = await checkCurrentProof(session, caller.id, password, code, account.passwordHash, action);
+	// A stored hash the record of account endings says was replaced here (card
+	// 2997, R5), for anyone but the superadmin: the proof is checked against the
+	// hash nothing matches instead, so that it is answered `STEP_UP_WRONG` and
+	// counted as a wrong password, in a wrong password's time. The hash answered
+	// stays the stored one.
+	const replaced = account.role !== 'superadmin' && passwordReplacedHere(sqlite, { id: caller.id, ...account });
+	const proven = await checkCurrentProof(session, caller.id, password, code, replaced ? DUMMY_HASH : account.passwordHash, action);
 	// Committed by now: the owner told of a right password with a wrong code,
 	// as at sign-in, whatever the answer (card 2771, D6). Never awaited.
 	if (proven.signalled) sendSecurityNotice(caller.id, 'wrong-code', { at: new Date(), address: requestAddress(), confirming: true });

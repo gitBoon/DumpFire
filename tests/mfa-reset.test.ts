@@ -70,7 +70,7 @@ import { api } from './helpers/api';
 import { action, pageLoad } from './helpers/actions';
 import { effects, type Effects } from './helpers/effects';
 import {
-	FIXTURE_PASSWORD_HASH,
+	fixtureHashOf,
 	inviteHashOf,
 	makeApiKey,
 	makeApiKeyRow,
@@ -244,7 +244,7 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			mfaPasswordEnrol: 0
 		});
 		// Kept: the password, the banner and the failed codes since the last sign-in. Ended: the key (card 2915).
-		expect(after.passwordHash).toBe(FIXTURE_PASSWORD_HASH);
+		expect(after.passwordHash).toBe(fixtureHashOf(holder));
 		expect(after.securityBanner).toBe('codes-failed');
 		expect(after.failedCodesSinceSignIn).toBe(5);
 		expect(db.select().from(apiKeys).where(eq(apiKeys.userId, holder.id)).all()).toEqual([]);
@@ -908,7 +908,7 @@ describe('an invite, for an account that holds a second factor', () => {
 		expect(res).toMatchObject({ type: 'failure', status: 400 });
 		expect((res as { data: { error: string } }).data.error).toMatch(DEAD);
 		expect(bcrypt.hashed).toBe(0);
-		expect(userRow(holder.id).passwordHash).toBe(FIXTURE_PASSWORD_HASH);
+		expect(userRow(holder.id).passwordHash).toBe(fixtureHashOf(holder));
 	});
 
 	it("T15: a factor added between the form's first look and its transaction: refused in the transaction, the password unchanged", async () => {
@@ -924,7 +924,7 @@ describe('an invite, for an account that holds a second factor', () => {
 		expect(bcrypt.hashed).toBe(1);
 		expect(res).toMatchObject({ type: 'failure', status: 400 });
 		expect((res as { data: { error: string } }).data.error).toMatch(DEAD);
-		expect(userRow(holder.id).passwordHash).toBe(FIXTURE_PASSWORD_HASH);
+		expect(userRow(holder.id).passwordHash).toBe(fixtureHashOf(holder));
 		expect(db.select().from(inviteTokens).where(eq(inviteTokens.tokenHash, inviteHashOf(token))).get()!.used).toBe(false);
 	});
 });

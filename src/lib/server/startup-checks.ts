@@ -146,7 +146,7 @@ import {
 import { inTransaction } from './db/transaction';
 import { raiseKeyCounterOverRecord } from './key-revocations';
 import { endRecordedKeysPresent } from './api-key-revoke';
-import { endRecordedAccountsPresent, type AccountsEndedAgain } from './account-ending-bodies';
+import { endRecordedAccountsPresent, endReplacedPasswordsPresent, type AccountsEndedAgain, type PasswordsEndedAgain } from './account-ending-bodies';
 import { removeSettingsOfFormerAdministrators, settingsHeldForReview, settingsSetBy } from './setting-setters';
 import {
 	FORGET_UNOPENABLE_SECRETS,
@@ -1451,12 +1451,18 @@ export const REVEAL_SWEEP_EVERY_MS = 5 * 60 * 1000;
  *
  * Before both, in a transaction of its own (card 2996): every account present that the record of account endings ends
  * or lowers is ended or lowered again through the application's own bodies, and the `users` counter raised over the
- * seed (`endRecordedAccountsAtStart`); one WARN under AUTH counts them and names nobody.
+ * seed (`endRecordedAccountsAtStart`); one WARN under AUTH counts them and names nobody. Then, in a transaction of its
+ * own too (card 2997, R3): every account present but the superadmin holding a password the record says was replaced
+ * here is given one nothing matches and signed out, its keys ended (`endReplacedPasswordsAtStart`); one WARN under AUTH
+ * counts them and names nobody, and a superadmin holding one is left with a WARN of its own. A failure of any of the
+ * passes rolls back that pass alone, with its own WARN; the others still commit, and the answer is null.
  */
 export function sweepEndedKeyReveals(value: string | undefined = process.env.SCHEDULERS, isDev: boolean = dev): number | null {
 	// The record of account endings first, in a transaction of its own (card 2996, decision 14), so that the keys it
-	// ends are recorded and their reveals held by the passes after it.
+	// ends are recorded and their reveals held by the passes after it. Then its password pass, on its own (card 2997, R3),
+	// before the key pass for the same reason.
 	const accountsAgain = endRecordedAccountsAtStart(value, isDev);
+	const passwordsAgain = endReplacedPasswordsAtStart(value, isDev);
 	const endedAgain = endRecordedKeysAtStart(value, isDev);
 	let found: ReturnType<typeof holdRevealsOfEndedKeys>;
 	try {
@@ -1492,7 +1498,60 @@ export function sweepEndedKeyReveals(value: string | undefined = process.env.SCH
 			// The hold is committed; only its telling was lost.
 		}
 	}
-	return endedAgain === null || accountsAgain === null ? null : switchedOff.length + held.length + endedAgain.count;
+	return endedAgain === null || accountsAgain === null || passwordsAgain === null ? null : switchedOff.length + held.length + endedAgain.count;
+}
+
+/**
+ * The password pass of `sweepEndedKeyReveals` (card 2997, section 3.6 as R3 and R4 rule it), in a transaction of its
+ * own, after card 2996's account pass and before the key pass: every account present but the superadmin holding a
+ * password the record of account endings says was replaced here, given one nothing matches and signed out
+ * (`endReplacedPasswordsPresent`). Told once committed, in one WARN under AUTH with counts and no name; a superadmin
+ * holding one is never touched, and a WARN of its own says so at every run until it is changed. The boards' owners are
+ * mailed about what it holds only where the schedulers run, as card 2996's pass mails. A failure rolls back this pass
+ * alone, with its own WARN, and the passes around it still commit. Returns the counts, or null where it could not. It
+ * never throws.
+ */
+function endReplacedPasswordsAtStart(value: string | undefined, isDev: boolean): PasswordsEndedAgain | null {
+	let done: PasswordsEndedAgain;
+	try {
+		const setting = schedulerSetting(value, isDev);
+		const telling: Telling = setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` };
+		done = inTransaction(() => endReplacedPasswordsPresent(telling));
+	} catch (err) {
+		try {
+			authLog.warn(
+				`The accounts holding a password the record of account endings says was replaced on this server could not be signed out: ${(err as Error)?.message ?? err}. ` +
+					'The next sweep, within five minutes, tries again.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+	if (done.reset > 0) {
+		try {
+			authLog.warn(
+				`${done.reset} account(s) held a password that the record of account endings says was replaced on this server ` +
+					'(an older image’s import, a host file rollback or a host edit): each was given a password nothing matches and signed out, ' +
+					'and needs its password set or an invite.',
+				{ reset: done.reset }
+			);
+		} catch {
+			// The ending is committed; only its line was lost.
+		}
+	}
+	if (done.superadmin > 0) {
+		try {
+			authLog.warn(
+				'The superadmin holds a password the record of account endings says was replaced on this server: it was left as it is, ' +
+					'so that the superadmin can sign in. Change it on the Account page.',
+				{ superadmin: done.superadmin }
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+	}
+	return done;
 }
 
 /**

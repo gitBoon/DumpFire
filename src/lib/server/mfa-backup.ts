@@ -193,8 +193,11 @@ export function readBackupMfaKeyCheck(backup: Database.Database): string | null 
 	return rows[0].value;
 }
 
-/** Whether two `created_at` name the same moment: false when either names none (`toStamp`). */
-function sameMoment(a: unknown, b: unknown): boolean {
+/**
+ * Whether two `created_at` name the same moment: false when either names none (`toStamp`). Shared with the restore's
+ * password rulings (card 2997's code review, FP10), which ask "the same account here" as this module does.
+ */
+export function sameMoment(a: unknown, b: unknown): boolean {
 	const left = toStamp(a);
 	const right = toStamp(b);
 	return left !== null && right !== null && left === right;

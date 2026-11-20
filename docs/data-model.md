@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.97
+version: 1.98
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-2997
+  - passwords-replaced
   - card-2996
   - account-endings
   - card-2995
@@ -68,7 +70,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
+description: "Complete database schema documentation with ER diagram, table descriptions, account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -1799,7 +1801,8 @@ clears it and refills it from the backup.
 Card 2996. One row for each ending of an account here (a delete, a disable, an enable, a role change,
 the role it was made with), so that no restore brings back an account deleted, disabled or demoted
 here. No foreign key: a row outlives its account. No unique index: every write here is one plain
-`INSERT`, and the restore's union asks `NOT EXISTS`.
+`INSERT`, and the restore's union asks `NOT EXISTS`. Card 2997 adds the word `password`, with no
+migration: a row of a password hash replaced here, so that no restore brings that password back.
 
 ```mermaid
 erDiagram
@@ -1809,9 +1812,9 @@ erDiagram
         integer seq PK "order of writing here"
         integer user_id "the account's row id; W on the watermark row"
         text account_created "the account's created_at, stored form; empty for a seed row and the watermark"
-        text ending "deleted, disabled, enabled, role, watermark"
+        text ending "deleted, disabled, enabled, role, watermark, password (card 2997)"
         text role "for role: user or admin, the role after; empty otherwise"
-        text credential "for deleted: the fingerprint of the password hash; empty otherwise"
+        text credential "for deleted: the fingerprint of the password hash; for password: of the hash replaced, never empty; empty otherwise"
         text ended_at "when, stored form"
         text stated_ended "the moment as its writer stated it, before any clamp"
         text origin "here, backup, or belt"
@@ -1823,9 +1826,9 @@ erDiagram
 | `seq` | integer, primary key (the rowid) | The order the rows were written in: two endings in one second keep it |
 | `user_id` | integer | The account's row id here; on the watermark row, W |
 | `account_created` | text, not an `*_at` column | The account's `created_at` in the stored form; `''` for a seed row, which names an id alone, and for the watermark. Not `*_at`, so the timestamp normaliser never reads `''` as unreadable, nor rewrites the record |
-| `ending` | text | `deleted`, `disabled`, `enabled`, `role`, or `watermark` (no ending of anyone) |
-| `role` | text, default `''` | On a `role` row, `user` or `admin`, the role after |
-| `credential` | text, default `''` | On a `deleted` row, SHA-256 hex of the label `dumpfire account credential v1`, a NUL and the bcrypt hash; `''` where the hash is not a well-formed bcrypt string or is `DUMMY_HASH`. Never the hash |
+| `ending` | text | `deleted`, `disabled`, `enabled`, `role`, `watermark` (no ending of anyone), or `password` (card 2997: the account's password hash was replaced here; `account_created` always names a moment) |
+| `role` | text, default `''` | On a `role` row, `user` or `admin`, the role after; `''` on a `password` row |
+| `credential` | text, default `''` | On a `deleted` row, SHA-256 hex of the label `dumpfire account credential v1`, a NUL and the bcrypt hash; `''` where the hash is not a well-formed bcrypt string or is `DUMMY_HASH`. On a `password` row the same fingerprint of the hash replaced, never `''` (no row is written where it would be). The hash is fingerprinted with its prefix made `$2b$` (card 2997, R1: `$2a$` and `$2y$` name the same hash to bcryptjs). Never the hash |
 | `ended_at` | text, `*_at` | When it was ended; a backup's row clamped to the backup's own latest moment no later than the restore. The seed's role rows are dated at the account's creation, its disables at their own moment, the earliest stamp (`0001-01-01 00:00:00`) where either names none or one after the migration (card 2996's code review, FP4) |
 | `stated_ended` | text, default `''`, not an `*_at` column | The moment as the row's writer stated it: `ended_at` for a row written here, the backup's own (or a digest of its text where it names no moment) for one a restore brought. The union's key, so that importing the same backup again adds nothing whenever it runs (FP5) |
 | `origin` | text, default `'here'` | `here`, written by this server; `backup`, brought by a restore; `belt`, written by the record's own rule in a restore or the start's pass (FP2: this server's own for any account but a superadmin, never evidence against one) |
@@ -1840,11 +1843,19 @@ held, and every present account's role and disable but the superadmin's); `recor
 (`deleteUser`, `disableAccountSteps`, `enableAccount`, `changeAccountRole`, `POST /api/users`, Reset
 Everything, and the belts of the restore's `applyAccountEndings` and the start's
 `endRecordedAccountsPresent`), which reads the account's role on the connection it is given and
-refuses the superadmin; and the restore's `carryAccountEndings`. Nothing deletes, updates or replaces
-a row; `tests/check-at-the-write.test.ts` holds src and scripts to it.
+refuses the superadmin; `recordPasswordReplaced` (card 2997: the holder's own change, an
+administrator's reset, an invite used, Reset Everything, and as `belt` `makeInert` and
+`applyAccountEndings` before each `DUMMY_HASH`), which writes a superadmin's own `password` row `here`
+and nothing for a belt on one; and the restore's `carryAccountEndings`, which takes a backup's
+`password` rows whoever they name and leaves them out of its 100 rows for one account. Nothing deletes,
+updates or replaces a row; `tests/check-at-the-write.test.ts` holds src and scripts to it.
 
 **Readers.** `accountRulings` (the restore and the start's pass), `deletedHere` (`createSession`,
-`keyHolder`, the enable) and `raiseUserCounterOverSeed`. `restorableTables` leaves the table out and
+`keyHolder`, the enable), `passwordReplacedHere` (card 2997: the sign-in, `createSession`, the
+step-up, the restore's `applyPasswordRulings` and the start's `endReplacedPasswordsPresent`; for a
+superadmin only its own exact `here` row) and `raiseUserCounterOverSeed`. `EXACT_ROWS_SQL`, the
+rule's load of an account's rows, leaves out `watermark` and `password` rows: the rule never reads a
+`password` row, so it never loads one. `restorableTables` leaves the table out and
 Reset's `KEPT` names it. A backup carries it like any other table: it holds ids, creation times and
 fingerprints, never a hash. A backup made before 0077 has none, and the restore applies this server's
 record alone.

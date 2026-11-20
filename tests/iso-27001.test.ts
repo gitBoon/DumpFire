@@ -148,6 +148,18 @@ describe('the checklist source', () => {
 		expect(item.how).toContain('(card 2996)');
 	});
 
+	it('(cc) card 2997: A.5.17 names the writer of a password replaced and the restore’s password step as evidence, and each exists', () => {
+		const item = CHECKLIST.find((entry) => entry.ref === 'A.5.17')!;
+		for (const symbol of ['recordPasswordReplaced', 'applyPasswordRulings']) {
+			const evidence = item.evidence.find((e) => e.symbol === symbol);
+			expect(evidence, symbol).toBeDefined();
+			expect(evidenceFault(evidence!), symbol).toBeNull();
+		}
+		expect(item.how).toContain('(card 2997)');
+		// The code review's FP8: no overclaim, the unsealed backup's residual for an account not here named with its card.
+		expect(item.how).toContain('can still give an account that is not on this server any password (card 3009)');
+	});
+
 	it('names every gap: a card or an accepted risk for each item short of met, and neither for a met one', () => {
 		const faults: string[] = [];
 		for (const item of APPLICATION_SIDE) {

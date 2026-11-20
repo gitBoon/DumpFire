@@ -260,7 +260,11 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Every route that sets a password refuses one over 1,024 characters, the most the step-up reads (card 2888). ' +
 			'Requester links end 90 days after their request is settled (card 2902). ' +
 			'The mail password, backup destination credentials, webhook secrets and the server\'s signing keys are sealed with AES-256-GCM under a key kept outside the database, each bound to where it is used (card 2898); ' +
-				'so is every webhook address, which can carry a receiver\'s token, and no backup holds one (card 2928).',
+				'so is every webhook address, which can carry a receiver\'s token, and no backup holds one (card 2928). ' +
+			'Every password change records a fingerprint of the hash it replaces, never the hash: no restore of an older backup, this server\'s or another\'s, brings such a password back into use, ' +
+				'but a superadmin\'s, left so that the superadmin can sign in and flagged at every start until it is changed; ' +
+				'the sign-in, sessions and the step-up refuse one found in place, and the start signs out any account holding one (card 2997). ' +
+				'A backup whose seal does not verify cannot change the password of an account that is on this server, but can still give an account that is not on this server any password (card 3009).',
 		evidence: [
 			{ path: 'src/lib/server/passwords.ts', symbol: 'BCRYPT_ROUNDS' },
 			{ path: 'src/lib/server/passwords.ts', symbol: 'LONGEST_PASSWORD' },
@@ -272,6 +276,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: 'src/lib/server/db/schema.ts', symbol: 'linkTokenHash' },
 			{ path: 'src/lib/server/request-tokens.ts', symbol: 'request_links' },
 			{ path: 'src/lib/server/request-access.ts', symbol: 'SETTLED_LINK_DAYS' },
+			{ path: 'src/lib/server/account-endings.ts', symbol: 'recordPasswordReplaced' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyPasswordRulings' },
 			{ path: AUTH_DOC, anchor: 'requester-links-stored-as-hashes-card-2870' },
 			{ path: AUTH_DOC, anchor: 'service-secrets-at-rest-card-2898' },
 			{ path: AUTH_DOC, anchor: 'isoiec-270012022' }

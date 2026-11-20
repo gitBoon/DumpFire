@@ -10,7 +10,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, relative, sep } from 'node:path';
 import { eq } from 'drizzle-orm';
-import { expect } from 'vitest';
+import { expect, vi } from 'vitest';
 import { db, sqlite } from '$lib/server/db';
 import { attachmentPath, cardDir, uploadsDir } from '$lib/server/uploads';
 import { isUpstreamColumnId } from '$lib/server/upstream';
@@ -93,6 +93,11 @@ import { stamp } from '$lib/timestamps';
 
 let seq = 0;
 const next = () => ++seq;
+/**
+ * The fixture accounts of this test so far, apart from `seq` (card 2997's code review, FP9): the pool index of
+ * `makeUser`'s and `newFixtureHash`'s hash is the n-th fixture account of the test, whatever else the test built first.
+ */
+let fixtureAccounts = 0;
 
 /**
  * The folder this test file's attachment files are in, trash included.
@@ -143,6 +148,8 @@ export function resetDb(): void {
 		sqlite.pragma('foreign_keys = ON');
 	}
 	seq = 0;
+	fixtureAccounts = 0;
+	fixtureHashes.clear();
 	resetUploads();
 	// What mail has done is kept in memory since the server started (card
 	// 2196): each test starts as a server does.
@@ -181,11 +188,66 @@ export type Role = 'user' | 'admin' | 'superadmin';
 export const FIXTURE_PASSWORD = 'the fixture password';
 
 /**
- * `FIXTURE_PASSWORD`, hashed at bcrypt's lowest cost, written out so that no
- * test pays for hashing it: a check takes about a millisecond, where the
- * application's cost takes about a quarter of a second.
+ * The real bcryptjs, whatever a test file mocks it as: making a fixture's hash
+ * is no hash the application made, and must not be counted as one.
  */
-export const FIXTURE_PASSWORD_HASH = '$2b$04$CoE84DzftN3VpDu24jdcXOhbB.z0eq1mRNo34GFDHvQlfr18dC7bu';
+const realBcrypt = await vi.importActual<typeof import('bcryptjs')>('bcryptjs');
+
+/**
+ * Distinct hashes of each password a test asks for, each made once with the
+ * real bcryptjs at bcrypt's lowest cost (about a millisecond, where the
+ * application's cost takes about a quarter of a second) and kept for the
+ * worker's life, grown as a test asks for more (card 2997, N2; its code
+ * review, FP9).
+ */
+const fixtureHashPools = new Map<string, string[]>();
+
+/**
+ * The `n`-th (from 1) of the worker's distinct hashes of `password`: the same
+ * string for the same `password` and `n` in every test of the worker, and a
+ * different one for each `n`. A test that hands each of its accounts its own
+ * `n` gives no two of them the same string, so that a record of one account's
+ * replaced or deleted hash names that account alone, as bcrypt's salt makes it
+ * in use.
+ */
+export function fixtureHashFor(password: string, n: number): string {
+	if (!Number.isSafeInteger(n) || n < 1) throw new Error(`fixtureHashFor takes a whole number from 1, and was given ${n}`);
+	let pool = fixtureHashPools.get(password);
+	if (pool === undefined) fixtureHashPools.set(password, (pool = []));
+	while (pool.length < n) pool.push(realBcrypt.hashSync(password, 4));
+	return pool[n - 1];
+}
+
+/**
+ * The hash of `FIXTURE_PASSWORD` for the next fixture account of this test:
+ * the pool's n-th for the test's n-th account, by its own counter, so that no
+ * two fixture accounts in one test hold the same string (card 2997, N2).
+ */
+const nextFixtureHash = (): string => fixtureHashFor(FIXTURE_PASSWORD, ++fixtureAccounts);
+
+/** The hash `makeUser` gave each account of this test, by id: emptied by `resetDb`. */
+const fixtureHashes = new Map<number, string>();
+
+/**
+ * The hash of `FIXTURE_PASSWORD` that `makeUser` gave this account: the one it
+ * holds unless the test changed it. Still answered once the account is
+ * deleted, so that a test can name the hash it held. Throws for an account
+ * `makeUser` did not make in this test.
+ */
+export function fixtureHashOf(user: Pick<SessionUser, 'id'> | number): string {
+	const id = typeof user === 'number' ? user : user.id;
+	const hash = fixtureHashes.get(id);
+	if (hash === undefined) throw new Error(`Account ${id} was not made by makeUser in this test`);
+	return hash;
+}
+
+/**
+ * A hash of `FIXTURE_PASSWORD` that no other account of this test holds, for
+ * a users row a test writes by hand.
+ */
+export function newFixtureHash(): string {
+	return nextFixtureHash();
+}
 
 /**
  * A user row, returned in the shape `locals.user` carries: `disabledAt: null`,
@@ -198,12 +260,13 @@ export const FIXTURE_PASSWORD_HASH = '$2b$04$CoE84DzftN3VpDu24jdcXOhbB.z0eq1mRNo
 export function makeUser(opts: { role?: Role; username?: string; disabled?: true | { by: Pick<SessionUser, 'id'> } } = {}): SessionUser {
 	const n = next();
 	const username = opts.username ?? `user${n}`;
+	const passwordHash = nextFixtureHash();
 	const row = db
 		.insert(users)
 		.values({
 			username,
 			email: `${username}@example.test`,
-			passwordHash: FIXTURE_PASSWORD_HASH,
+			passwordHash,
 			role: opts.role ?? 'user',
 			...(opts.disabled === undefined
 				? {}
@@ -211,6 +274,7 @@ export function makeUser(opts: { role?: Role; username?: string; disabled?: true
 		})
 		.returning()
 		.get();
+	fixtureHashes.set(row.id, passwordHash);
 	const user = {
 		id: row.id,
 		username: row.username,

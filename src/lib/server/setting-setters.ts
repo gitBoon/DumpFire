@@ -518,9 +518,11 @@ export type SettingsHeld = {
  * and one under BACKUP for the destinations, written from the rows copied
  * (its plan's R13, as scripts/mfa-reset.mjs writes them from its own copy),
  * naming the settings, whose they were and why; none where the account has
- * no row. `inForce` is what an answer says (`setIn`).
+ * no row. `inForce` is what an answer says (`setIn`). Where `cause.unnamed`
+ * (the record of account endings' passes, card 2996's FP16 and card 2997's
+ * code review, FP1), the lines name no account, in the words or the details.
  */
-export function holdSettingsSetBy(setter: Named, cause: { log: string }): SettingsHeld {
+export function holdSettingsSetBy(setter: Named, cause: { log: string; unnamed?: boolean }): SettingsHeld {
 	const rows = db.select().from(settingSetters).where(eq(settingSetters.userId, setter.id)).all();
 	const held: SettingsHeld = { rows: [], inForce: { mail: false, appUrl: false, destinations: [] } };
 	if (rows.length === 0) return held;
@@ -533,7 +535,7 @@ export function holdSettingsSetBy(setter: Named, cause: { log: string }): Settin
 	);
 	for (const row of rows) copy.run(row.setting, row.place, SETTER_ACCESS_ENDED, at, setter.id, setter.username);
 	held.rows = [...new Set(rows.map((row) => row.setting))].sort();
-	for (const [line, ofIt] of heldLines(setter, held.rows, cause.log)) afterCommit(() => line.warn(ofIt.message, ofIt.meta, ofIt.filedUnder));
+	for (const [line, ofIt] of heldLines(setter, held.rows, cause.log, cause.unnamed)) afterCommit(() => line.warn(ofIt.message, ofIt.meta, ofIt.filedUnder));
 	return held;
 }
 
@@ -542,15 +544,21 @@ export function holdSettingsSetBy(setter: Named, cause: { log: string }): Settin
  * settings and the App URL and one under BACKUP for the destinations, from
  * the settings the rows name, filed under nobody (the ending's own line names
  * who made it). scripts/mfa-reset.mjs writes the same words, which
- * tests/mfa-reset-script.test.ts holds equal.
+ * tests/mfa-reset-script.test.ts holds equal. `unnamed` (card 2997's code
+ * review, FP1): the words and the details name no account, as
+ * `removeSettingsSetBy(…, 'record')` words them.
  */
 export function heldLines(
 	setter: Named,
 	settings: readonly string[],
-	because: string
+	because: string,
+	unnamed = false
 ): [ReturnType<typeof createLogger>, { message: string; meta: Record<string, unknown>; filedUnder: { userId: null } }][] {
 	const lines: [ReturnType<typeof createLogger>, { message: string; meta: Record<string, unknown>; filedUnder: { userId: null } }][] = [];
-	const whose = `set by ${quoted(setter.username)} (user ${setter.id})`;
+	const whose = unnamed
+		? 'set by an account whose access the record of account endings on this server ended (found by its pass)'
+		: `set by ${quoted(setter.username)} (user ${setter.id})`;
+	const setterMeta = unnamed ? {} : { setter: setter.id };
 	const mail = settings.filter((s) => s === MAIL || s === APP_URL);
 	if (mail.length > 0) {
 		const what = mail.map((s) => (s === MAIL ? 'the mail settings' : 'the App URL')).join(' and ');
@@ -560,7 +568,7 @@ export function heldLines(
 				message:
 					`Held for the superadmin's review: ${what}, ${whose}, as ${because}. No mail is sent through held mail settings, and no ` +
 					'link begins with a held App URL, until the superadmin keeps or removes each under Settings held for review.',
-				meta: { setter: setter.id, held: mail },
+				meta: { ...setterMeta, held: mail },
 				filedUnder: { userId: null }
 			}
 		]);
@@ -574,7 +582,7 @@ export function heldLines(
 				message:
 					`Held for the superadmin's review: backup destination${destinations.length === 1 ? '' : 's'} ${list}, ${whose}, as ${because}. ` +
 					'No backup is sent to, pruned at, tested at or connected for a held destination until the superadmin keeps or removes it under Settings held for review.',
-				meta: { setter: setter.id, held: destinations.map((name) => DESTINATION + name) },
+				meta: { ...setterMeta, held: destinations.map((name) => DESTINATION + name) },
 				filedUnder: { userId: null }
 			}
 		]);

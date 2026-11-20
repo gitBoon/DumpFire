@@ -32,7 +32,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { sessions, users } from '$lib/server/db/schema';
+import { inTransaction } from '$lib/server/db/transaction';
+import { recordPasswordReplaced } from '$lib/server/account-endings';
 import {
+	AccountDisabled,
 	SECURE_SESSION_COOKIE_NAME,
 	SESSION_COOKIE_NAME,
 	SESSION_SWEEP_EVERY_MS,
@@ -653,5 +656,24 @@ describe('what keeps a session alive', () => {
 		await request(code);
 
 		expect(sessionRow(code)?.expiresAt !== held).toBe(moves);
+	});
+});
+
+describe('a password the record of account endings says was replaced here (card 2997)', () => {
+	it('(r) card 2997: createSession refuses an account but the superadmin whose hash is recorded replaced with AccountDisabled, writing nothing; a superadmin with its exact here row is let in', () => {
+		const ann = makeUser({ username: 'ann' });
+		const bob = makeUser({ username: 'bob' });
+		const chief = makeUser({ username: 'chief', role: 'superadmin' });
+		inTransaction(() => {
+			recordPasswordReplaced(sqlite, ann.id);
+			recordPasswordReplaced(sqlite, chief.id);
+		});
+
+		expect(() => createSession(ann.id)).toThrow(AccountDisabled);
+		expect(sessionRows()).toEqual([]);
+		// Another account, whose hash is not recorded, is let in; and so is the superadmin.
+		expect(() => createSession(bob.id)).not.toThrow();
+		expect(() => createSession(chief.id)).not.toThrow();
+		expect(sessionRows().map((row) => row.user_id)).toEqual([bob.id, chief.id]);
 	});
 });

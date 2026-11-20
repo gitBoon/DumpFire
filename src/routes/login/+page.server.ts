@@ -3,7 +3,8 @@ import { fail, redirect, type ActionFailure, type Cookies } from '@sveltejs/kit'
 import { eq } from 'drizzle-orm';
 import type { Actions, PageServerLoad } from './$types';
 import { getUserByUsername, getUserByEmail } from '$lib/server/auth';
-import { db } from '$lib/server/db';
+import { passwordReplacedHere, type AccountToRule } from '$lib/server/account-endings';
+import { db, sqlite } from '$lib/server/db';
 import { users } from '$lib/server/db/schema';
 import {
 	FIRST_LANE_CHECKS_PER_ACCOUNT,
@@ -27,6 +28,12 @@ import { addressOf, addressToCount } from '$lib/server/client-address';
 import { CheckNotMade, DUMMY_HASH, callerHasGone, checkPassword } from '$lib/server/passwords';
 
 const log = createLogger('AUTH');
+
+/**
+ * What the record of account endings is asked about for a name that is no account (card 2997, R13): a hash whose
+ * fingerprint is '', so that the lookup runs and names nothing, and every attempt costs one lookup and one check.
+ */
+const NO_ACCOUNT: AccountToRule = { id: 0, createdAt: '', role: 'user', passwordHash: DUMMY_HASH };
 
 /**
  * The answer when the password could not be checked (card 2191): about thirty
@@ -290,6 +297,16 @@ async function checkSignIn(
 	// nothing matches (card 2192), and its answer ignored: the one check is
 	// what a wrong password at an account costs, so the time taken does not
 	// tell which names are accounts.
+	//
+	// First, on every attempt, one lookup of the record of account endings
+	// (card 2997, decision 7, R13): whether the account's hash is one this server
+	// replaced (an older image's import, a host file rollback or a host edit
+	// brought it back). For any account but the superadmin it is, the password is
+	// still checked against the hash it holds (a replaced hash is always a bcrypt
+	// string), so that the time taken is any check's; every attempt at it is then
+	// answered and counted as a wrong password, and only the line tells a match
+	// from a guess (card 2997's code review, FP2).
+	const replaced = passwordReplacedHere(sqlite, user ?? NO_ACCOUNT) && user !== undefined && user.role !== 'superadmin';
 	let matches: boolean;
 	try {
 		({ matches } = await checkPassword(password, user?.passwordHash ?? DUMMY_HASH, remembered === null ? 'other' : 'known', {
@@ -312,6 +329,20 @@ async function checkSignIn(
 		log.warn(`Failed login attempt for a name that is no account (${typedLength} characters) from IP ${fromIp}`, undefined, {
 			ip: address
 		});
+		return fail(400, { error: 'Invalid username/email or password', identity });
+	}
+
+	// A password this server replaced (card 2997, decision 7): answered and
+	// counted exactly as a wrong password. Typed right, it is said in its own
+	// line, in the form of the disabled one, which names the account as every
+	// sign-in line does; typed wrong, in the bad-password line below (FP2).
+	if (replaced && matches) {
+		wrong(user.username);
+		log.warn(
+			`Sign-in refused at "${user.username.slice(0, 100)}" (user ${user.id}) from IP ${fromIp}: the password typed is one this server replaced`,
+			undefined,
+			{ userId: user.id, ip: address }
+		);
 		return fail(400, { error: 'Invalid username/email or password', identity });
 	}
 

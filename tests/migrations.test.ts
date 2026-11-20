@@ -5012,6 +5012,9 @@ describe('restoring a backup taken before the latest migrations', () => {
 			await routeMethods('/api/admin/import');
 			// The superadmin: an import is refused to an administrator.
 			const admin = makeUser({ role: 'superadmin' });
+			// Made before the backup's accounts, so never the same account as the backup's user 1 by sharing its second of
+			// creation: an unsealed backup's same account would keep this server's password and be counted (card 2997, R2).
+			sqlite.prepare("UPDATE users SET created_at = '2020-01-01 00:00:00' WHERE id = ?").run(admin.id);
 			// With their password confirmed first (card 2701), before `arrange`
 			// reads what there is: the session it is confirmed on is theirs.
 			const confirmed = importConfirmation(admin);

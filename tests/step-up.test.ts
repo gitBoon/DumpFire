@@ -69,7 +69,8 @@ import { google } from 'googleapis';
 import ts from 'typescript';
 import { DRIVE_FILE_SCOPE } from '$lib/drive-scope';
 import { db, sqlite } from '$lib/server/db';
-import { afterCommit } from '$lib/server/db/transaction';
+import { afterCommit, inTransaction } from '$lib/server/db/transaction';
+import { recordPasswordReplaced } from '$lib/server/account-endings';
 import {
 	apiKeys,
 	boardCategories,
@@ -125,8 +126,8 @@ import { api, type ApiResult } from './helpers/api';
 import { effects } from './helpers/effects';
 import {
 	FIXTURE_PASSWORD,
-	FIXTURE_PASSWORD_HASH,
 	addBoardMember,
+	fixtureHashOf,
 	importConfirmation,
 	makeApiKey,
 	makeBoard,
@@ -631,7 +632,7 @@ describe('each admin action asks for the current password (case 3)', () => {
 			done: (res, s) => {
 				expect(res.body).toMatchObject({ success: true });
 				expect(db.select({ hash: users.passwordHash }).from(users).where(eq(users.id, s.member.id)).get()!.hash).not.toBe(
-					FIXTURE_PASSWORD_HASH
+					fixtureHashOf(s.member)
 				);
 			}
 		},
@@ -801,7 +802,7 @@ describe('each admin action asks for the current password (case 3)', () => {
 				// Card 2935: the webhooks of others whose secret it could read, counted apart (none: the keys are kept).
 				// Card 2922: nothing held, as the keys are kept.
 				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0, readableWebhooksHeld: 0, reportSchedulesPaused: 0, settingsHeld: null });
-				expect(db.select({ hash: users.passwordHash }).from(users).where(eq(users.id, s.admin.id)).get()!.hash).not.toBe(FIXTURE_PASSWORD_HASH);
+				expect(db.select({ hash: users.passwordHash }).from(users).where(eq(users.id, s.admin.id)).get()!.hash).not.toBe(fixtureHashOf(s.admin));
 				// A new session, in place of the one the change ended.
 				expect(db.select().from(sessions).where(eq(sessions.userId, s.admin.id)).all()).toHaveLength(1);
 			}
@@ -1488,6 +1489,19 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 		expect(archivedLeft()).toBe(1);
 	});
 
+	it('(gg) card 2997 (R5): the right password and code of an account whose stored hash is recorded replaced is answered STEP_UP_WRONG and counted, and nothing is done', async () => {
+		const s = scene();
+		// The session first: createSession refuses an account whose hash is recorded replaced.
+		const confirmed = stepUp(s.admin);
+		const token = tokenOf(confirmed);
+		inTransaction(() => recordPasswordReplaced(sqlite, s.admin.id));
+
+		expect(answer(await api('POST', '/api/admin/purge-archived', confirmed))).toEqual({ status: 403, body: WRONG_ONE });
+		expect(countOf(token)).toBe(1);
+		expect(stub.compared).toBe(1);
+		expect(archivedLeft()).toBe(1);
+	});
+
 	it.each([
 		['the memory of the server forgotten, as a restart forgets it', () => {
 			forgetChecksInFlight();
@@ -1556,7 +1570,7 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 		expect(countOf(token)).toBeUndefined();
 		expect(db.select({ email: users.email, hash: users.passwordHash }).from(users).where(eq(users.id, s.member.id)).get()).toEqual({
 			email: 'member@example.test',
-			hash: FIXTURE_PASSWORD_HASH
+			hash: fixtureHashOf(s.member)
 		});
 	});
 
@@ -2233,7 +2247,7 @@ describe("the import's confirmation (cases 18 to 20)", () => {
 		[
 			'used',
 			(s: Scene, token: string) => {
-				const confirmation = issueImportConfirmation(sessionHashOf(token), s.chief.id, FIXTURE_PASSWORD_HASH);
+				const confirmation = issueImportConfirmation(sessionHashOf(token), s.chief.id, fixtureHashOf(s.chief));
 				takeImportConfirmation(confirmation, sessionHashOf(token));
 				return { [CONFIRMATION_HEADER]: confirmation };
 			}
@@ -2242,14 +2256,14 @@ describe("the import's confirmation (cases 18 to 20)", () => {
 			'expired, 61 seconds on',
 			(s: Scene, token: string) => {
 				vi.useFakeTimers({ toFake: ['Date'] });
-				const confirmation = issueImportConfirmation(sessionHashOf(token), s.chief.id, FIXTURE_PASSWORD_HASH);
+				const confirmation = issueImportConfirmation(sessionHashOf(token), s.chief.id, fixtureHashOf(s.chief));
 				vi.setSystemTime(Date.now() + 61 * 1000);
 				return { [CONFIRMATION_HEADER]: confirmation };
 			}
 		],
 		[
 			"another session's",
-			(s: Scene) => ({ [CONFIRMATION_HEADER]: issueImportConfirmation(sessionHashOf(makeSession(s.chief)), s.chief.id, FIXTURE_PASSWORD_HASH) })
+			(s: Scene) => ({ [CONFIRMATION_HEADER]: issueImportConfirmation(sessionHashOf(makeSession(s.chief)), s.chief.id, fixtureHashOf(s.chief)) })
 		]
 	])('refuses an import whose confirmation is %s 403, before a byte of the upload is read, and changes nothing', async (_what, confirming) => {
 		const s = scene();
@@ -2282,7 +2296,7 @@ describe("the import's confirmation (cases 18 to 20)", () => {
 		],
 		[
 			'the confirmation is another account’s, issued on this session',
-			(s: Scene, token: string) => ({ [CONFIRMATION_HEADER]: issueImportConfirmation(sessionHashOf(token), s.admin.id, FIXTURE_PASSWORD_HASH) })
+			(s: Scene, token: string) => ({ [CONFIRMATION_HEADER]: issueImportConfirmation(sessionHashOf(token), s.admin.id, fixtureHashOf(s.admin)) })
 		]
 	])('refuses an import when %s: 403, nothing restored', async (_what, confirming) => {
 		const s = scene();
@@ -2326,7 +2340,7 @@ describe("the import's confirmation (cases 18 to 20)", () => {
 			body: REFUSED
 		});
 		expect(read).not.toHaveBeenCalled();
-		expect(takeImportConfirmation(second.body.confirmation, sessionHashOf(token))).toEqual({ userId: s.chief.id, hash: FIXTURE_PASSWORD_HASH });
+		expect(takeImportConfirmation(second.body.confirmation, sessionHashOf(token))).toEqual({ userId: s.chief.id, hash: fixtureHashOf(s.chief) });
 	});
 });
 
@@ -2501,14 +2515,14 @@ describe("passwordHeld: the proof whilePasswordHolds holds while its write runs 
 		const seen: Record<string, boolean> = {};
 
 		seen.before = passwordHeld(pat.id);
-		await whilePasswordHolds(pat.id, FIXTURE_PASSWORD_HASH, () => {
+		await whilePasswordHolds(pat.id, fixtureHashOf(pat), () => {
 			seen.ownInside = passwordHeld(pat.id);
 			seen.otherInside = passwordHeld(sam.id);
 		});
 		seen.afterReturn = passwordHeld(pat.id);
 
 		await expect(
-			whilePasswordHolds(pat.id, FIXTURE_PASSWORD_HASH, () => {
+			whilePasswordHolds(pat.id, fixtureHashOf(pat), () => {
 				throw new Error('the write failed');
 			})
 		).rejects.toThrow('the write failed');
@@ -2531,8 +2545,8 @@ describe("passwordHeld: the proof whilePasswordHolds holds while its write runs 
 		const seen: Record<string, boolean> = {};
 		let inner: Promise<void> | undefined;
 
-		await whilePasswordHolds(pat.id, FIXTURE_PASSWORD_HASH, () => {
-			inner = whilePasswordHolds(sam.id, FIXTURE_PASSWORD_HASH, () => {
+		await whilePasswordHolds(pat.id, fixtureHashOf(pat), () => {
+			inner = whilePasswordHolds(sam.id, fixtureHashOf(sam), () => {
 				seen.innerSam = passwordHeld(sam.id);
 				seen.innerPat = passwordHeld(pat.id);
 			});
@@ -2549,7 +2563,7 @@ describe("passwordHeld: the proof whilePasswordHolds holds while its write runs 
 		const pat = makeUser({ username: 'pat' });
 		const seen: Record<string, boolean> = {};
 
-		await whilePasswordHolds(pat.id, FIXTURE_PASSWORD_HASH, () => {
+		await whilePasswordHolds(pat.id, fixtureHashOf(pat), () => {
 			seen.inWrite = passwordHeld(pat.id);
 			afterCommit(() => {
 				seen.inEffect = passwordHeld(pat.id);

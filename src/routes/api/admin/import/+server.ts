@@ -124,6 +124,7 @@ import {
 	type OutsideSwitchedOff,
 	type AccountsKept,
 	type ApiKeysLeftOut,
+	type PasswordsKept,
 	type RestoreResult,
 	type SystemLogLeftOut
 } from '$lib/server/db/restore';
@@ -438,8 +439,19 @@ function keysLeftOutSentence(left: ApiKeysLeftOut): string | null {
  * (card 2996, section 3.7 as section 11 rules it): one sentence for each kind there was any of, counts only, naming no
  * account. Empty where there were none, so that an import with none reads as it did. A `deleted` ruling may rest on a
  * backup's row, so no sentence says the account was deleted on this server (R18).
+ *
+ * Then the restored passwords kept out of use (card 2997, section 3.7, `passwords` passed in apart, R18): one sentence
+ * for each count above 0, counts only. Each is worded for every way `applyPasswordRulings` counts it: `here` and
+ * `reset` also count, where the backup's seal did not verify, the same account holding another password than this
+ * server's (R2); `reset` also counts the same account whose password here cannot be given back (R11) and a superadmin
+ * not here (R9); `superadmin` also counts the same account given back this server's password, replaced too (R12).
  */
-function accountsKeptLines(kept: AccountsKept | undefined): string[] {
+function accountsKeptLines(kept: AccountsKept | undefined, passwords?: PasswordsKept): string[] {
+	return [...endedLines(kept), ...passwordLines(passwords)];
+}
+
+/** Card 2996's sentences of `accountsKeptLines`. */
+function endedLines(kept: AccountsKept | undefined): string[] {
 	if (kept === undefined) return [];
 	return [
 		kept.deleted > 0
@@ -459,17 +471,47 @@ function accountsKeptLines(kept: AccountsKept | undefined): string[] {
 /** How many accounts the record kept ended or lowered, for the CRITICAL line (card 2996): 0 where none. */
 const accountsKeptCount = (kept: AccountsKept | undefined) => (kept === undefined ? 0 : kept.deleted + kept.beforeRecord + kept.disabled + kept.lowered);
 
+/** Card 2997's sentences of `accountsKeptLines`: the restored passwords kept out of use, counted, naming nobody. */
+function passwordLines(passwords: PasswordsKept | undefined): string[] {
+	if (passwords === undefined) return [];
+	return [
+		passwords.here > 0
+			? `${passwords.here} account(s) in the backup hold a password that was changed on this server after the backup was made, or, where the ` +
+				"backup's seal did not verify, any other than the one each has on this server: each keeps the password it has on this server, and the " +
+				'one in the backup does not work.'
+			: null,
+		passwords.reset > 0
+			? `${passwords.reset} account(s) in the backup hold a password that was replaced on this server, or, where the backup's seal did not ` +
+				'verify, any other than the one each has on this server, and have no password on this server that can be given back to them: none of ' +
+				'those passwords works, and each account needs its password set (🔑) or an invite (📧; for a superadmin, 🔑 by another superadmin) before it can sign in.'
+			: null,
+		passwords.superadmin > 0
+			? `${passwords.superadmin} superadmin account(s) were left with a password that was replaced on this server, or, where the backup's seal ` +
+				"did not verify, one other than this server's, so that a superadmin can still sign in: sign in and change it on the Account page at once."
+			: null
+	].filter((line): line is string => line !== null);
+}
+
+/** Whether a restore kept any password out of use or left a superadmin's (card 2997): the answer and the line say so only then. */
+const anyPasswordsKept = (passwords: PasswordsKept | undefined) => passwords !== undefined && passwords.here + passwords.reset + passwords.superadmin > 0;
+
 /**
  * The CRITICAL line's words for how it was restored (card 2995): as before where no key was left out, else with how
  * many keys ended here were left out, and a working copy's others. And how many accounts the record of account endings
- * kept ended or lowered (card 2996), only where there were any.
+ * kept ended or lowered (card 2996), only where there were any. And how many of the backup's passwords it kept out of
+ * use (card 2997), `here` and `reset`, and how many superadmins it left with a password to change, only where any: a
+ * superadmin's is left in use, so it is not counted among those kept out of it.
  */
-function restoredWords(outside: Outside, left: ApiKeysLeftOut | undefined, kept?: AccountsKept, recordLeftOut = 0): string {
+function restoredWords(outside: Outside, left: ApiKeysLeftOut | undefined, kept?: AccountsKept, recordLeftOut = 0, passwords?: PasswordsKept): string {
 	const how = outside === 'off' ? 'as a working copy' : 'as it is';
 	const accounts = accountsKeptCount(kept);
+	const keptOut = passwords === undefined ? 0 : passwords.here + passwords.reset;
+	const supers = passwords?.superadmin ?? 0;
 	// The backup's record of account endings left out whole for its size (card 2996's code review, FP3, FP7): counted.
 	const keeping =
 		(accounts > 0 ? `, keeping ${accounts} account(s) ended or lowered as the record of account endings says` : '') +
+		(keptOut > 0 ? `, keeping ${keptOut} of the backup's password(s) out of use` : '') +
+		(supers > 0 ? `, leaving ${supers} superadmin account(s) with a password to change at once` : '') +
 		(recordLeftOut > 0 ? `, the backup's record of account endings (${recordLeftOut} row(s)) left out for its size` : '');
 	if (left === undefined || (left.count === 0 && left.workingCopy === 0)) return `${how}${keeping}`;
 	const parts = [
@@ -532,6 +574,7 @@ function importedLine(
 		apiKeysLeftOut?: ApiKeysLeftOut;
 		accountsKept?: AccountsKept;
 		accountRecordLeftOut?: number;
+		passwordsKept?: PasswordsKept;
 	}
 ): { message: string; meta: Record<string, unknown> } {
 	const left = done.apiKeysLeftOut;
@@ -540,7 +583,9 @@ function importedLine(
 	// The accounts the record of account endings kept ended or lowered, counted, never named (card 2996): only where any.
 	const accountsMeta = {
 		...(accountsKeptCount(done.accountsKept) > 0 ? { accountsKept: done.accountsKept } : {}),
-		...((done.accountRecordLeftOut ?? 0) > 0 ? { accountRecordLeftOut: done.accountRecordLeftOut } : {})
+		...((done.accountRecordLeftOut ?? 0) > 0 ? { accountRecordLeftOut: done.accountRecordLeftOut } : {}),
+		// The restored passwords kept out of use, counted, never named (card 2997): only where any.
+		...(anyPasswordsKept(done.passwordsKept) ? { passwordsKept: done.passwordsKept } : {})
 	};
 	const logLeft = done.systemLogLeftOut;
 	const logPart =
@@ -555,7 +600,7 @@ function importedLine(
 		message:
 			`The database was replaced from an uploaded backup by ${caller.username} (user ${caller.id} before the import): ` +
 			`${file.size}, SHA-256 ${file.sha256}, ${sealWords(done.unsealed, done.sealKeyHere)}, ` +
-			`restored ${restoredWords(outside, left, done.accountsKept, done.accountRecordLeftOut)}. The system log was kept as it was; ${logPart}`,
+			`restored ${restoredWords(outside, left, done.accountsKept, done.accountRecordLeftOut, done.passwordsKept)}. The system log was kept as it was; ${logPart}`,
 		meta: {
 			by: { id: caller.id, username: caller.username },
 			ip: caller.ip,
@@ -713,7 +758,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 					}
 					writeImportFile(importPaths.safety, JSON.stringify(safetyBackup), "the safety copy of this server's data", importPaths.inMemory);
 
-					result = restoreFromBackup(sqlite, backupDb, { outside, by: importer.username });
+					result = restoreFromBackup(sqlite, backupDb, { outside, by: importer.username, importer: importer.id });
 				}
 			} finally {
 				backupDb.close();
@@ -860,8 +905,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 			const keyDeadlines = result.apiKeyDeadlines > 0 ? apiKeyDeadlinesSentence(result.apiKeyDeadlines, keyDeadline) : null;
 			// The backup's keys left out, ended here or a working copy's (card 2995), after the deadlines' sentence.
 			const keysLeftOut = keysLeftOutSentence(result.apiKeysLeftOut);
-			// And the accounts the record of account endings kept ended or lowered (card 2996), counted, naming nobody.
-			const accountsKept = accountsKeptLines(result.accountsKept);
+			// And the accounts the record of account endings kept ended or lowered (card 2996), and the restored passwords
+			// kept out of use (card 2997), counted, naming nobody.
+			const accountsKept = accountsKeptLines(result.accountsKept, result.passwordsKept);
 			const accountsKeptSaid = accountsKept.length > 0 ? accountsKept.join(' ') : null;
 			// And the personal decision links it cancelled (card 2697, Q15).
 			const decisionLinks = result.decisionLinksCleared > 0 ? decisionLinksSentence(result.decisionLinksCleared) : null;
@@ -906,6 +952,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				accountsKeptLines: accountsKept.length > 0 ? accountsKept : undefined,
 				// The rows of the backup's record of account endings left out whole for its size (FP3, FP7), 0 when none.
 				accountRecordLeftOut: result.accountRecordLeftOut,
+				// The restored passwords kept out of use, counted (card 2997): absent where none.
+				passwordsKept: anyPasswordsKept(result.passwordsKept) ? result.passwordsKept : undefined,
 				decisionLinksCleared: result.decisionLinksCleared,
 				attachmentsPutBack: files.putBack,
 				workingCopy: workingCopy ?? undefined,
@@ -1031,8 +1079,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				const keyDeadlines = done && done.apiKeyDeadlines > 0 ? apiKeyDeadlinesSentence(done.apiKeyDeadlines, keyDeadline) : null;
 				// The backup's keys left out, as a restore that succeeded says them (card 2995).
 				const keysLeftOut = done ? keysLeftOutSentence(done.apiKeysLeftOut) : null;
-				// The accounts the record of account endings kept ended or lowered, as a restore that succeeded says them (card 2996).
-				const accountsKept = done ? accountsKeptLines(done.accountsKept) : [];
+				// The accounts the record of account endings kept ended or lowered (card 2996), and the restored passwords kept
+				// out of use (card 2997), as a restore that succeeded says them.
+				const accountsKept = done ? accountsKeptLines(done.accountsKept, done.passwordsKept) : [];
 				const accountsKeptSaid = accountsKept.length > 0 ? accountsKept.join(' ') : null;
 				// The personal decision links it cancelled, as a restore that succeeded says them (card 2697, Q15).
 				const decisionLinks = done && done.decisionLinksCleared > 0 ? decisionLinksSentence(done.decisionLinksCleared) : null;
@@ -1069,6 +1118,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 						accountsKept: done?.accountsKept,
 						accountsKeptLines: accountsKept.length > 0 ? accountsKept : undefined,
 						accountRecordLeftOut: done?.accountRecordLeftOut,
+						passwordsKept: done && anyPasswordsKept(done.passwordsKept) ? done.passwordsKept : undefined,
 						decisionLinksCleared: done?.decisionLinksCleared,
 						secretsKept: secretsKept ?? undefined,
 						secretsToEnter: secretsToEnter ?? undefined,

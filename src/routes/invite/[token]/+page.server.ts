@@ -1,7 +1,8 @@
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
 import { afterCommit, inTransaction } from '$lib/server/db/transaction';
+import { recordPasswordReplaced } from '$lib/server/account-endings';
 import { apiKeys, inviteTokens, reportSchedules, users, webhooks } from '$lib/server/db/schema';
 import { and, eq, count, isNull } from 'drizzle-orm';
 import { endAccountAccess, namingIds } from '$lib/server/auth';
@@ -142,7 +143,11 @@ export const actions: Actions = {
 			const invite = usableInvite(token);
 			if (!invite) return null;
 
-			// Update user password
+			// Update user password. The hash being replaced is recorded first, in
+			// this transaction (card 2997, decision 1): an invite is how an account
+			// is taken back, and no restore brings the old password back. A
+			// placeholder's row is harmless (section 5, W3).
+			recordPasswordReplaced(sqlite, invite.userId);
 			db.update(users)
 				.set({ passwordHash })
 				.where(eq(users.id, invite.userId))

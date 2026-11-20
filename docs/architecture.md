@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.141
+version: 1.142
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-2997
+  - passwords-replaced
   - card-2996
   - account-endings
   - card-2995
@@ -51,7 +53,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "High-level and component-level architecture of the DumpFire Kanban board system, including disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "High-level and component-level architecture of the DumpFire Kanban board system, including the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -276,7 +278,12 @@ every id that record names, in a transaction of its own: a failure of either pas
 pass alone, with its own `WARN`. Since card 2996 it first of all ends again, in a transaction of
 its own, every account present that the record of account endings ends or lowers, through the
 disable's and the role change's own bodies (`endRecordedAccountsPresent`, account-ending-bodies.ts), with one
-`WARN` under AUTH of counts and no name),
+`WARN` under AUTH of counts and no name. Since card 2997 that pass is followed, before the key pass and in
+a transaction of its own (`endReplacedPasswordsAtStart`), by the password pass: every account present but
+a superadmin holding a password the record says was replaced here is given `DUMMY_HASH` and signed out,
+its keys ended (`endReplacedPasswordsPresent`), with one `WARN` under AUTH of counts; a superadmin holding
+one is left, with a `WARN` of its own at every run. So the order is the account pass, the password pass,
+the key pass, each rolled back alone on failure),
 `startEndedKeyRevealSweep()` (the same every five minutes, whatever `SCHEDULERS` says; a second
 call starts no second timer) and `startSchedulers()`, in that order for the last six.
 
@@ -3008,17 +3015,28 @@ sequenceDiagram
     participant R as restoreInOneSnapshot
     participant L as Live database (one transaction)
     participant B as Backup snapshot
-    R->>L: read accountsHeldHere (W, ids and created_at up to W, superadmins)
+    R->>L: read accountsHeldHere (W, ids and created_at up to W, superadmins, every account's created_at and hash)
     R->>L: clear, copy (account_endings kept)
     R->>B: read its account_endings and its users bound
     R->>L: carryAccountEndings: bounded rows added as backup, users counter raised
     R->>L: accountRulings for every restored account
     R->>L: restoreMfaRows(ended): none to an ended account, none named
-    R->>L: carryDisabled, then applyAccountEndings (belts, DUMMY_HASH, keys, schedules, roles)
-    R->>L: lacksSuperadmin (its own sentence where the record ended the superadmin)
+    R->>L: carryDisabled, then applyAccountEndings (belts, a password belt before each DUMMY_HASH, keys, schedules, roles)
+    R->>L: applyPasswordRulings (card 2997): this server's hash, DUMMY_HASH, or a superadmin left
+    R->>L: carryKeyRevocations, then lacksSuperadmin (its own sentence where the record ended the superadmin)
     R->>L: fill, then holdRevealedIn and holdNoLongerReadableIn
-    R->>L: COMMIT, and accountsKept counted to the import
+    R->>L: COMMIT, and accountsKept and passwordsKept counted to the import
 ```
+
+Since card 2997 the same transaction keeps every password replaced on this server out of use. After
+`applyAccountEndings`, `applyPasswordRulings` asks the record's one matcher, `passwordReplacedHere`,
+of every restored account but one ruled deleted or before record, by its role as restored. One whose
+backup hash the record names as replaced (or, where the backup's seal did not verify, the same
+account holding another hash than this server's) is given this server's hash where it is the same
+account here and that hash is usable, and otherwise `DUMMY_HASH` with its keys ended through
+`endRestoredAccess`; a superadmin is never given `DUMMY_HASH` unless the importer, the same superadmin
+here, can still sign in. It writes no row of its own, and is not caught: a failure rolls the restore
+back. `RestoreResult.passwordsKept` counts `here`, `reset` and `superadmin`.
 
 ### Log lines written during a transaction
 

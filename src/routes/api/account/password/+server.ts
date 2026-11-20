@@ -1,6 +1,7 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
+import { recordPasswordReplaced } from '$lib/server/account-endings';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import {
@@ -102,7 +103,10 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 			// Update password. The warning that someone else entered the old one
 			// goes with it, all three of its columns (card 2772, D6, A16, and the
 			// latest signal's moment, CS1): changing the password is the remedy
-			// it asks for.
+			// it asks for. The hash being replaced is recorded first, in this
+			// transaction (card 2997, decision 1), so that no restore brings it
+			// back and the sign-in refuses it.
+			recordPasswordReplaced(sqlite, userId);
 			db.update(users)
 				.set({ passwordHash: newHash, securityBanner: null, securityBannerAt: null, securitySignalLastAt: null })
 				.where(eq(users.id, userId))
