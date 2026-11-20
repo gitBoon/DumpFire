@@ -307,3 +307,93 @@ describe('the People page (S1)', () => {
 		expect(navigation.invalidateAll).toHaveBeenCalled();
 	});
 });
+
+// Card 3020 (R3, R6, R8): a person who is not active may hold a name and an address a backup whose seal did not verify
+// chose. Each character is built from its code point, so that none of them is written in this file as itself.
+describe('the People page, for a person who is not active (card 3020)', () => {
+	const RLO = String.fromCodePoint(0x202e);
+	const BEL = String.fromCodePoint(0x7);
+	const CYRILLIC_A = String.fromCodePoint(0x430);
+	/** Pat, left, with a direction override in the name and a control character and a look-alike in the address. */
+	const planted = {
+		...person,
+		id: 6,
+		fullName: `Pat ${RLO}eoD`,
+		email: `p${CYRILLIC_A}t${BEL}@example.test`,
+		status: 'left',
+		leftAt: '2026-11-20 09:00:00'
+	};
+	const shownName = 'Pat  eoD';
+	const shownAddress = 'p\\u{430}t\\u{7}@example.test';
+
+	/** The page with `people`, every person listed (the All filter). */
+	function drawPage(people: (Omit<typeof person, 'leftAt'> & { leftAt: string | null })[]) {
+		const target = document.createElement('div');
+		document.body.appendChild(target);
+		drawn.push({ component: mount(PeoplePage as never, { target, props: { data: { ...data, people, user: null } } as never }), target });
+		flushSync();
+		[...target.querySelectorAll<HTMLButtonElement>('.filter-btn')].find((b) => b.textContent!.trim() === 'All')!.click();
+		flushSync();
+		return target;
+	}
+	/** Each row's name, address and status cells, as shown. */
+	const rowsOf = (target: HTMLElement) =>
+		[...target.querySelectorAll('tbody tr')].map((row) => {
+			const cells = [...row.querySelectorAll('td')].map((cell) => cell.textContent!.trim());
+			return { name: cells[0], address: cells[1], status: cells[5] };
+		});
+
+	it('(ah) R3. shows their address through asciiShown and their name through printable, and so does PersonDialog; an active person as stored', async () => {
+		const target = drawPage([person, planted]);
+
+		expect(rowsOf(target)).toEqual([
+			{ name: 'Pat Doe', address: 'pat.doe@example.test', status: 'Active' },
+			{ name: shownName, address: shownAddress, status: 'Left 2026-11-20' }
+		]);
+		expect(target.textContent).not.toContain(RLO);
+		expect(target.textContent).not.toContain(CYRILLIC_A);
+
+		const dialog = document.createElement('div');
+		document.body.appendChild(dialog);
+		drawn.push({ component: mount(PersonDialog as never, { target: dialog, props: { data, person: planted, onClose: vi.fn() } as never }), target: dialog });
+		flushSync();
+		expect(dialog.querySelector('.address-on-file')!.textContent!.trim()).toBe(`Address on file: ${shownAddress}`);
+		// An active person's dialog has no such line.
+		const active = document.createElement('div');
+		document.body.appendChild(active);
+		drawn.push({ component: mount(PersonDialog as never, { target: active, props: { data, person, onClose: vi.fn() } as never }), target: active });
+		flushSync();
+		expect(active.querySelector('.address-on-file')).toBeNull();
+	});
+
+	it("(ah2) R8. shows a stored status of 'held' as held, not Active", async () => {
+		const target = drawPage([{ ...planted, status: 'held', leftAt: null }]);
+
+		expect(rowsOf(target)).toEqual([{ name: shownName, address: shownAddress, status: 'held' }]);
+	});
+
+	it("R6. Mark active asks for the password and a code in a danger confirmation naming them as shown, and sends them with { status: active } and the address shown (card 3020's code review, FP5); Mark left sends { status: left } alone", async () => {
+		const target = drawPage([person, planted]);
+		(answers['PUT /api/people/6'] ??= []).push({ status: 200, body: { ...planted, status: 'active' } });
+
+		target.querySelector<HTMLButtonElement>(`button[aria-label="Mark ${shownName} active"]`)!.click();
+		flushSync();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(dialog.querySelector('.confirm-message')!.textContent).toContain(`Mark ${shownName} active? Their decision mail and personal links go to ${shownAddress} again.`);
+		const confirm = dialog.querySelectorAll<HTMLButtonElement>('.confirm-actions button')[1];
+		expect(confirm.className).toContain('btn-confirm-danger');
+		expect(confirm.disabled).toBe(true);
+		expect(sent).toEqual([]);
+		typePassword(dialog, 'my password');
+		typeCode(dialog);
+		confirm.click();
+		await settle();
+
+		expect(sent).toEqual([{ what: 'PUT /api/people/6', body: { status: 'active', reviewedEmail: planted.email, currentPassword: 'my password', currentCode: CODE } }]);
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+
+		target.querySelector<HTMLButtonElement>('button[aria-label="Mark Pat Doe left"]')!.click();
+		await settle();
+		expect(sent.at(-1)).toEqual({ what: 'PUT /api/people/5', body: { status: 'left' } });
+	});
+});

@@ -4149,6 +4149,8 @@ type ListedSend = {
 	codeFromProof: boolean;
 	/** The body's keys whose value is the literal `false` (card 2751, D11), for `NOT_ASKED_WHEN_FALSE`. */
 	falseKeys: string[];
+	/** The body's keys whose value is a string literal, with its text (card 3020, R6), for `NOT_ASKED_WHEN_TEXT`. */
+	textKeys: Record<string, string>;
 };
 
 /** The routes an address may be, `${…}` read as `[id]` and the query left off; null where it is not plainly text. */
@@ -4250,15 +4252,41 @@ function falseKeysOf(given: ts.Expression | undefined): string[] {
 }
 
 /**
- * The keys of the object a `body: JSON.stringify({ … })` sends, or null where
- * it is not that; whether its `currentCode` is from the proof (card 2770); and
- * its keys sent as the literal `false` (card 2751).
+ * The keys of an object literal whose value is a string literal, as written,
+ * with its text (card 3020, R6): `'left'`, or a template with no `${…}`. A
+ * shorthand, a name, a conditional or any other expression is not, and is
+ * read as one that may hold any text.
  */
-function bodyKeysOf(body: ts.Expression | undefined): { keys: string[] | null; codeFromProof: boolean; falseKeys: string[] } {
-	if (body === undefined) return { keys: null, codeFromProof: false, falseKeys: [] };
+function textKeysOf(given: ts.Expression | undefined): Record<string, string> {
+	const found: Record<string, string> = {};
+	if (given === undefined) return found;
+	const node = bare(given);
+	if (!ts.isObjectLiteralExpression(node)) return found;
+	for (const property of node.properties) {
+		if (!ts.isPropertyAssignment(property)) continue;
+		const value = bare(property.initializer);
+		const key = keyOf(property);
+		if (key !== null && ts.isStringLiteralLike(value)) found[key] = value.text;
+	}
+	return found;
+}
+
+/**
+ * The keys of the object a `body: JSON.stringify({ … })` sends, or null where
+ * it is not that; whether its `currentCode` is from the proof (card 2770); its
+ * keys sent as the literal `false` (card 2751); and those sent as a string
+ * literal, with its text (card 3020).
+ */
+function bodyKeysOf(body: ts.Expression | undefined): { keys: string[] | null; codeFromProof: boolean; falseKeys: string[]; textKeys: Record<string, string> } {
+	if (body === undefined) return { keys: null, codeFromProof: false, falseKeys: [], textKeys: {} };
 	const node = bare(body);
-	if (!ts.isCallExpression(node) || node.expression.getText() !== 'JSON.stringify') return { keys: null, codeFromProof: false, falseKeys: [] };
-	return { keys: keysOf(node.arguments[0]), codeFromProof: codeFromProofIn(node.arguments[0]), falseKeys: falseKeysOf(node.arguments[0]) };
+	if (!ts.isCallExpression(node) || node.expression.getText() !== 'JSON.stringify') return { keys: null, codeFromProof: false, falseKeys: [], textKeys: {} };
+	return {
+		keys: keysOf(node.arguments[0]),
+		codeFromProof: codeFromProofIn(node.arguments[0]),
+		falseKeys: falseKeysOf(node.arguments[0]),
+		textKeys: textKeysOf(node.arguments[0])
+	};
 }
 
 /**
@@ -4297,12 +4325,14 @@ function listedSendsIn(file: string, source: string): ListedSend[] {
 				let bodyKeys: string[] | null = null;
 				let codeFromProof = false;
 				let falseKeys: string[] = [];
+				let textKeys: Record<string, string> = {};
 				let headerKeys: string[] = [];
 				if (node.expression.getText() === 'jsonRequest') {
 					methods = methodsOf(node.arguments[1]);
 					bodyKeys = node.arguments[2] === undefined ? [] : keysOf(node.arguments[2]);
 					codeFromProof = codeFromProofIn(node.arguments[2]);
 					falseKeys = falseKeysOf(node.arguments[2]);
+					textKeys = textKeysOf(node.arguments[2]);
 					headerKeys = ['Content-Type'];
 				} else {
 					const init = node.arguments[1] && bare(node.arguments[1]);
@@ -4315,15 +4345,15 @@ function listedSendsIn(file: string, source: string): ListedSend[] {
 							if (key === null) methods = null;
 							const value = ts.isPropertyAssignment(property) ? property.initializer : undefined;
 							if (key === 'method') methods = methodsOf(value);
-							if (key === 'body') ({ keys: bodyKeys, codeFromProof, falseKeys } = bodyKeysOf(value));
+							if (key === 'body') ({ keys: bodyKeys, codeFromProof, falseKeys, textKeys } = bodyKeysOf(value));
 							if (key === 'headers') headerKeys = headerKeysOf(value) ?? [];
 						}
 					}
 				}
-				if (routes === null || methods === null) found.push({ at, action: null, bodyKeys, headerKeys, codeFromProof, falseKeys });
+				if (routes === null || methods === null) found.push({ at, action: null, bodyKeys, headerKeys, codeFromProof, falseKeys, textKeys });
 				else
 					for (const method of methods)
-						for (const route of routes) found.push({ at, action: `${method} ${route}`, bodyKeys, headerKeys, codeFromProof, falseKeys });
+						for (const route of routes) found.push({ at, action: `${method} ${route}`, bodyKeys, headerKeys, codeFromProof, falseKeys, textKeys });
 			}
 			ts.forEachChild(node, visit);
 		};
@@ -4367,7 +4397,8 @@ const asSent = (key: string) => key.replace(/\[[^\]]+\]/g, '[id]');
  * read still fails closed.
  */
 const ASKS_ONLY_WITH: Readonly<Record<string, readonly string[]>> = {
-	'PUT /api/people/[id]': ['email', 'userId'],
+	// Card 3020 (R6): and `status`, which asks unless it is the literal 'left' (`NOT_ASKED_WHEN_TEXT`).
+	'PUT /api/people/[id]': ['email', 'userId', 'status'],
 	// Card 2751 (D2, D11): a schedule's change asks when it adds an address, turns it on or widens its filter.
 	'PUT /api/report-schedules/[id]': ['recipients', 'enabled', 'statusFilter']
 };
@@ -4379,6 +4410,17 @@ const ASKS_ONLY_WITH: Readonly<Record<string, readonly string[]>> = {
  */
 const NOT_ASKED_WHEN_FALSE: Readonly<Record<string, readonly string[]>> = {
 	'PUT /api/report-schedules/[id]': ['enabled']
+};
+
+/**
+ * Of `ASKS_ONLY_WITH`'s keys, those that ask nothing when sent as the one
+ * string literal named (card 3020, R6): Mark left, `{ status: 'left' }`, as
+ * the route asks for any `status` but the exact string `'left'`. A shorthand,
+ * a name, any other text or any other expression is read as one that may be
+ * `'active'`, and asks: failing closed.
+ */
+const NOT_ASKED_WHEN_TEXT: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+	'PUT /api/people/[id]': { status: 'left' }
 };
 
 /**
@@ -4408,9 +4450,13 @@ function unaskedIn(sends: ListedSend[]): string[] {
 		if (key === undefined) return [];
 		const onlyWith = ASKS_ONLY_WITH[key];
 		if (onlyWith !== undefined && send.bodyKeys !== null) {
-			// A key sent as the literal `false` that asks nothing so (card 2751) is as if it were not sent.
+			// A key sent as the literal `false` (card 2751), or as the one string literal (card 3020), that asks nothing so is as if it were not sent.
 			const whenFalse = NOT_ASKED_WHEN_FALSE[key] ?? [];
-			const asking = (field: string) => onlyWith.includes(field) && !(whenFalse.includes(field) && send.falseKeys.includes(field));
+			const whenText = NOT_ASKED_WHEN_TEXT[key] ?? {};
+			const asking = (field: string) =>
+				onlyWith.includes(field) &&
+				!(whenFalse.includes(field) && send.falseKeys.includes(field)) &&
+				!(Object.hasOwn(whenText, field) && Object.hasOwn(send.textKeys, field) && send.textKeys[field] === whenText[field]);
 			if (!send.bodyKeys.some(asking)) return [];
 		}
 		const faults: string[] = [];
@@ -4497,8 +4543,8 @@ describe('every page write of an action that asks for the password sends it, rea
 			"fetch('/api/admin/backup');",
 			"fetch(`/api/users/${id}`);",
 			"jsonRequest(`/api/boards/${boardId}`, 'DELETE', { currentPassword, currentCode });",
-			// Card 2697 (Q21): a person's status alone asks nothing; an address sent with the password.
-			"fetch(`/api/people/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });",
+			// Card 2697 (Q21): Mark left alone asks nothing (card 3020, R6: only as the literal 'left'); an address sent with the password.
+			"fetch(`/api/people/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'left' }) });",
 			"fetch(`/api/people/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, currentPassword, currentCode: proof.currentCode }) });",
 			"fetch(`/api/decisions/${d}/participants/${p}/account`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account, currentPassword, currentCode: proof?.currentCode || undefined }) });"
 		].join('\n');
@@ -4605,6 +4651,33 @@ describe('every page write of an action that asks for the password sends it, rea
 			])
 		);
 		expect(unaskedIn(listedSendsIn('src/lib/x.ts', passed.map(send).join('\n')))).toEqual([]);
+	});
+
+	// Card 3020 (R6): a person's status asks unless it is the literal 'left'; the People page's two sends as they are.
+	it("(h) card 3020 R6. reports a person's status sent as anything but the literal 'left' with no password, and lets through Mark left and Mark active with the proof", () => {
+		const send = (body: string) =>
+			"fetch(`/api/people/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(" + body + ') });';
+		const reported = ['{ status }', "{ status: 'active' }", "{ status: 'Left' }", "{ status: on ? 'left' : 'active' }", "{ status: 'left', email }", "{ fullName, status: 'held' }"];
+		const passed = [
+			"{ status: 'left' }",
+			'{ status: `left` }',
+			"{ fullName, jobTitle, status: 'left' }",
+			"{ status: 'active', currentPassword: proof.currentPassword, currentCode: proof.currentCode }",
+			'{ status, currentPassword, currentCode }'
+		];
+		const at = 'src/lib/x.ts › (top) › fetch(`/api/people/${id}`)';
+
+		expect(unaskedIn(listedSendsIn('src/lib/x.ts', reported.map(send).join('\n')))).toEqual(
+			reported.flatMap(() => [`${at}: no currentPassword for PUT /api/people/[id]`, `${at}: no currentCode for PUT /api/people/[id]`])
+		);
+		expect(unaskedIn(listedSendsIn('src/lib/x.ts', passed.map(send).join('\n')))).toEqual([]);
+		// And the People page as it is: Mark left with the literal alone, Mark active with the password and the code from the proof.
+		const page = sends.filter((sent) => sent.at.startsWith('src/routes/admin/people/+page.svelte') && sent.action === 'PUT /api/people/[id]');
+		expect(page.map((sent) => ({ at: sent.at.split(' › ')[1], bodyKeys: sent.bodyKeys, textKeys: sent.textKeys, codeFromProof: sent.codeFromProof }))).toEqual([
+			{ at: 'markLeft', bodyKeys: ['status'], textKeys: { status: 'left' }, codeFromProof: false },
+			{ at: 'askMarkActive', bodyKeys: ['status', 'reviewedEmail', 'currentPassword', 'currentCode'], textKeys: { status: 'active' }, codeFromProof: true }
+		]);
+		expect(unaskedIn(page)).toEqual([]);
 	});
 });
 

@@ -2,6 +2,8 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { parseStamp } from '$lib/timestamps';
 	import { failureMessage } from '$lib/api';
+	import { asciiShown, printable } from '$lib/printable';
+	import RequestMailHeld, { type HeldRequest } from '$lib/components/RequestMailHeld.svelte';
 
 	let { data } = $props();
 
@@ -14,6 +16,8 @@
 		requesterName: string;
 		requesterEmail: string | null;
 		requesterUserId: number | null;
+		/** Card 3020: its requester's mail is held, as a backup whose seal did not verify brought it in. */
+		mailHeld: boolean;
 		title: string;
 		description: string;
 		businessValue: string | null;
@@ -51,13 +55,22 @@
 	// Conversation modal state: `error` is the send's (card 2263), under the
 	// box; `readError` the thread's (card 2272), in the thread's place.
 	type ChatMessage = { id: number; requestId: number; senderType: string; senderName: string; message: string; createdAt: string };
-	let chatModal = $state<{ show: boolean; request: TaskRequest | null; messages: ChatMessage[]; newMsg: string; sending: boolean; error: string; readError: string }>({
-		show: false, request: null, messages: [], newMsg: '', sending: false, error: '', readError: ''
+	// `notMailed` is set once a reply on a request whose mail is held was answered `mailed: false` (card 3020, R12).
+	let chatModal = $state<{ show: boolean; request: TaskRequest | null; messages: ChatMessage[]; newMsg: string; sending: boolean; error: string; readError: string; notMailed: boolean }>({
+		show: false, request: null, messages: [], newMsg: '', sending: false, error: '', readError: '', notMailed: false
 	});
 	let chatPollInterval: ReturnType<typeof setInterval> | null = null;
 	let chatMessagesEl: HTMLDivElement | undefined = $state();
 
 	let showResolved = $state(false);
+
+	/** An administrator: shown the requests whose mail is held, to release each (card 3020, R2). */
+	const isAdmin = $derived(data.user?.role === 'admin' || data.user?.role === 'superadmin');
+	/** The requests whose mail is held, as GET /api/requests/held last answered; an administrator's alone. */
+	let heldRequests = $state<HeldRequest[]>([]);
+	/** The held list could not be read, said in its place. */
+	let heldUnread = $state(false);
+	const heldUnconfirmed = $derived(heldRequests.filter((held) => held.unconfirmed).length);
 
 	const pendingRequests = $derived(
 		requests.filter(r => r.status === 'pending').filter(r => {
@@ -81,8 +94,30 @@
 	);
 
 	onMount(async () => {
-		await loadRequests();
+		await Promise.all([loadRequests(), loadHeld()]);
 	});
+
+	/** Read the requests whose mail is held, for an administrator (card 3020, R2); nothing for anyone else. */
+	async function loadHeld() {
+		if (!isAdmin) return;
+		try {
+			const res = await fetch('/api/requests/held');
+			if (!res.ok) {
+				heldUnread = true;
+				return;
+			}
+			const body = await res.json();
+			heldRequests = Array.isArray(body.held) ? body.held : [];
+			heldUnread = false;
+		} catch {
+			heldUnread = true;
+		}
+	}
+
+	/** After a release, or one refused: both lists read again. */
+	async function heldChanged() {
+		await Promise.all([loadRequests(), loadHeld()]);
+	}
 
 	onDestroy(() => {
 		if (chatPollInterval) clearInterval(chatPollInterval);
@@ -208,7 +243,7 @@
 	};
 
 	async function openChat(req: TaskRequest) {
-		chatModal = { show: true, request: req, messages: [], newMsg: '', sending: false, error: '', readError: '' };
+		chatModal = { show: true, request: req, messages: [], newMsg: '', sending: false, error: '', readError: '', notMailed: false };
 		await readThread(req.id);
 		// Closed, or another request opened, while the thread was read: that window polls its own.
 		if (chatModal.request?.id !== req.id) return;
@@ -219,7 +254,7 @@
 
 	function closeChat() {
 		if (chatPollInterval) { clearInterval(chatPollInterval); chatPollInterval = null; }
-		chatModal = { show: false, request: null, messages: [], newMsg: '', sending: false, error: '', readError: '' };
+		chatModal = { show: false, request: null, messages: [], newMsg: '', sending: false, error: '', readError: '', notMailed: false };
 	}
 
 	/**
@@ -299,6 +334,9 @@
 				return;
 			}
 			if (chatModal.newMsg.trim() === message) chatModal.newMsg = '';
+			// Card 3020 (R12): a reply on a request whose mail is held is saved and mailed to nobody, and the window says so.
+			const answer = await res.json().catch(() => ({}));
+			chatModal.notMailed = req.mailHeld && answer?.mailed === false;
 		} catch {
 			if (chatModal.request?.id === req.id) chatModal.error = 'No answer from the server. The message may not have been sent.';
 			return;
@@ -326,6 +364,28 @@
 	</header>
 
 	<main class="inbox-content">
+	{#if isAdmin && (heldRequests.length > 0 || heldUnread)}
+		<!-- Card 3020 (R2, R11): every request whose requester mail is held, for an administrator to release. -->
+		<section class="mail-held-section" aria-labelledby="mail-held-heading">
+			<h2 id="mail-held-heading" class="section-label">⏸️ Mail held · {heldRequests.length}</h2>
+			{#if heldUnread}
+				<p class="inbox-error" role="alert">The requests whose mail is held could not be read: reload the page.</p>
+			{:else}
+				<p class="mail-held-desc">
+					Each of these came in with a backup whose seal did not verify, so its requester's address and card are only the file's
+					word. Nothing is mailed to its requester until an administrator releases it, after checking the address and the card.
+					{#if heldUnconfirmed > 0}
+						{heldUnconfirmed} unconfirmed request(s) cannot be released: each lapses 7 days after it was made.
+					{/if}
+				</p>
+				<ul class="mail-held-list">
+					{#each heldRequests as held (held.id)}
+						<RequestMailHeld {held} onReleased={heldChanged} />
+					{/each}
+				</ul>
+			{/if}
+		</section>
+	{/if}
 	<!-- Tabs -->
 	<div class="inbox-tabs">
 		<button class="tab" class:active={tab === 'all'} onclick={() => tab = 'all'}>
@@ -378,9 +438,13 @@
 						{/if}
 						<div class="request-bottom">
 							<span class="requester-info">
-								From: {req.requesterName}
+								<!-- Card 3020 (R3): an address a restore may have taken from a file, each character outside printable ASCII as its code point. -->
+								From: {printable(req.requesterName)}
 								{#if req.requesterEmail}
-									<span class="requester-email">({req.requesterEmail})</span>
+									<span class="requester-email">({asciiShown(req.requesterEmail)})</span>
+								{/if}
+								{#if req.mailHeld}
+									<RequestMailHeld />
 								{/if}
 							</span>
 							<div class="request-actions">
@@ -421,6 +485,9 @@
 									{req.targetEmoji} {req.targetName}
 								</span>
 								<span class="request-age">{timeAgo(req.createdAt)}</span>
+								{#if req.mailHeld}
+									<RequestMailHeld />
+								{/if}
 							</div>
 							<h3 class="request-title">{req.title}</h3>
 							{#if req.businessValue}
@@ -536,7 +603,10 @@
 					<h2>💬 Discussion</h2>
 					<p class="chat-title">{chatModal.request.title}</p>
 					{#if chatModal.request.requesterEmail}
-						<p class="chat-requester-info">With: {chatModal.request.requesterName} ({chatModal.request.requesterEmail})</p>
+						<p class="chat-requester-info">With: {printable(chatModal.request.requesterName)} ({asciiShown(chatModal.request.requesterEmail)})</p>
+					{/if}
+					{#if chatModal.request.mailHeld}
+						<RequestMailHeld />
 					{/if}
 				</div>
 				<button class="chat-close" onclick={closeChat}>✕</button>
@@ -577,12 +647,22 @@
 			{#if chatModal.error}
 				<p class="chat-error" role="alert">{chatModal.error}</p>
 			{/if}
+			{#if chatModal.notMailed}
+				<p class="chat-not-mailed" role="status">Mail held – the requester was not mailed</p>
+			{/if}
 		</div>
 	</div>
 {/if}
 
 <style>
 	.inbox-page { min-height: 100vh; padding-top: 64px; }
+	.mail-held-section {
+		margin-bottom: var(--space-lg); padding: var(--space-md) var(--space-lg);
+		border: 1px solid rgba(245, 158, 11, 0.35); border-radius: var(--radius-md);
+	}
+	.mail-held-desc { font-size: 0.8rem; color: var(--text-secondary); margin: var(--space-xs) 0 var(--space-sm); }
+	.mail-held-list { list-style: none; margin: 0; padding: 0; }
+	.chat-not-mailed { font-size: 0.8rem; color: #b45309; margin-top: var(--space-xs); }
 	.inbox-header {
 		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
 		height: 64px; border-bottom: 1px solid var(--glass-border);

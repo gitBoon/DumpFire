@@ -137,15 +137,34 @@ export function requestIdOfLink(token: unknown): number | null {
 	return row && given !== '' ? row.request_id : null;
 }
 
+/** The columns of a request row that `publicRequest` never sends. */
+type Unsent = 'retiredAccessToken' | 'mailHeldBecause' | 'mailReleasedAt' | 'mailReleasedBy' | 'mailReleasedByName';
+
 /**
  * A request row as it may be sent to a client: everything except the retired
  * token column, which is NULL from this image (card 2870) and held a key to
- * the thread before it.
+ * the thread before it; and the hold on its requester mail and its last
+ * release (card 3020), which name an administrator and why the mail is held:
+ * the team's lists give `mailHeld` in their place, and the answer a requester
+ * or an anonymous caller reads gives nothing of it.
  */
-export function publicRequest<T extends { retiredAccessToken?: string | null }>(
-	request: T
-): Omit<T, 'retiredAccessToken'> {
-	const { retiredAccessToken: _token, ...rest } = request;
+export function publicRequest<
+	T extends {
+		retiredAccessToken?: string | null;
+		mailHeldBecause?: string | null;
+		mailReleasedAt?: string | null;
+		mailReleasedBy?: number | null;
+		mailReleasedByName?: string | null;
+	}
+>(request: T): Omit<T, Unsent> {
+	const {
+		retiredAccessToken: _token,
+		mailHeldBecause: _held,
+		mailReleasedAt: _releasedAt,
+		mailReleasedBy: _releasedBy,
+		mailReleasedByName: _releasedByName,
+		...rest
+	} = request;
 	return rest;
 }
 

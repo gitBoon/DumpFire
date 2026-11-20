@@ -12,6 +12,19 @@
 	 * (card 2697's code review, part B, S1): it ends their personal decision
 	 * links and frees their address. A refusal of the password keeps the dialog
 	 * open, its words in it and the field cleared (`sentAsking`).
+	 *
+	 * Mark active asks for the password and a code too (card 3020, R6): it
+	 * lets the person be mailed about decisions again, at an address a backup
+	 * whose seal did not verify may have chosen. Its confirmation, a danger
+	 * button, names them through `printable` and shows the address through
+	 * `asciiShown`, and sends that address back as `reviewedEmail`, so that the
+	 * server refuses it if the address has changed since (its code review,
+	 * FP5). Mark left sends `{ status: 'left' }` alone and asks nothing.
+	 *
+	 * A person who is not active is shown with their name through `printable`
+	 * and their address through `asciiShown` (R3), and the status as stored:
+	 * one neither active nor left is shown as it is, through `asciiShown`, and
+	 * never as Active (R8).
 	 */
 	import type { PageData } from './$types';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
@@ -26,6 +39,7 @@
 	import { answerBody } from '$lib/api';
 	import { sent, sentAsking, showToast } from '$lib/admin/send';
 	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
+	import { asciiShown, printable } from '$lib/printable';
 	// Card 2922 (R7): the superadmin's banner while a setting is held for review.
 	import SettingsHeldBanner from '$lib/components/SettingsHeldBanner.svelte';
 
@@ -67,27 +81,79 @@
 		title: string;
 		message: string;
 		confirmText: string;
+		confirmDanger?: boolean;
 		askPassword?: boolean;
 		action: (proof: StepUpProof) => Promise<string | void>;
 	} | null>(null);
 
-	/** The person whose Mark left or Mark active is out: a second press meanwhile sends nothing. */
+	/** The person whose Mark left is out: a second press meanwhile sends nothing. Mark active is its confirmation's, which holds its own. */
 	let marking = $state<number | null>(null);
 
-	async function setStatus(person: Person, status: 'active' | 'left') {
+	/** A person's name as the page shows it: through `printable` for one who is not active (card 3020, R3). */
+	const nameOf = (person: Person) => (person.status === 'active' ? person.fullName : printable(person.fullName));
+	/** Their address as the page shows it: through `asciiShown` for one who is not active (R3). */
+	const addressOf = (person: Person) => (person.status === 'active' ? person.email : asciiShown(person.email));
+	/** Their status as stored (R8): Left with its day, Active, or any other value shown as it is. */
+	const statusOf = (person: Person) =>
+		person.status === 'left' ? `Left${person.leftAt ? ` ${person.leftAt.slice(0, 10)}` : ''}` : person.status === 'active' ? 'Active' : asciiShown(person.status);
+
+	/** Mark left: `{ status: 'left' }` alone, which asks nothing. */
+	async function markLeft(person: Person) {
 		if (marking !== null) return;
 		marking = person.id;
 		try {
 			const res = await sent(
-				() => fetch(`/api/people/${person.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }),
-				status === 'left' ? 'The person was not marked left' : 'The person was not marked active'
+				() => fetch(`/api/people/${person.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'left' }) }),
+				'The person was not marked left'
 			);
 			if (!res) return;
 			await invalidateAll();
-			showToast(status === 'left' ? `${person.fullName} marked left` : `${person.fullName} marked active`);
+			showToast(`${nameOf(person)} marked left`);
 		} finally {
 			marking = null;
 		}
+	}
+
+	/**
+	 * Mark active (card 3020, R6): a confirmation that names the person and
+	 * shows the address their mail goes to again, and asks for the password
+	 * and a code, sent with `{ status: 'active' }` and the address shown as
+	 * `reviewedEmail` (FP5).
+	 */
+	function askMarkActive(person: Person) {
+		const name = printable(person.fullName);
+		confirmAction = {
+			title: 'Mark Active',
+			message:
+				`Mark ${name} active? Their decision mail and personal links go to ${asciiShown(person.email)} again. ` +
+				'Check it is their address before you do. ' +
+				ASKS_FOR_PASSWORD,
+			confirmText: 'Mark active',
+			confirmDanger: true,
+			askPassword: true,
+			action: async (proof: StepUpProof) => {
+				const res = await sentAsking(
+					() =>
+						fetch(`/api/people/${person.id}`, {
+							method: 'PUT',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({
+								status: 'active',
+								reviewedEmail: person.email,
+								currentPassword: proof.currentPassword,
+								currentCode: proof.currentCode
+							})
+						}),
+					'The person was not marked active'
+				);
+				// A refusal of the password itself: the dialog stays, its words shown.
+				if (typeof res === 'string') return res;
+				confirmAction = null;
+				if (!res) return;
+				await invalidateAll();
+				showToast(`${name} marked active`);
+			}
+		};
 	}
 
 	/**
@@ -96,7 +162,7 @@
 	 */
 	function deletePersonMessage(person: Person): string {
 		return (
-			`Delete ${person.fullName} from the directory? This cannot be undone. ` +
+			`Delete ${nameOf(person)} from the directory? This cannot be undone. ` +
 			'Their group memberships go with them and their personal decision links stop working. ' +
 			'Decision records keep what they recorded of them (name, address, job title and groups), and the system log and backups still hold their name. ' +
 			'Mark left keeps them in the directory and can be undone. ' +
@@ -127,7 +193,7 @@
 				const answer = await answerBody(res);
 				const cleared = typeof answer?.linksCleared === 'number' ? answer.linksCleared : 0;
 				await invalidateAll();
-				showToast(cleared > 0 ? `${person.fullName} deleted; ${cleared} decision link${cleared === 1 ? '' : 's'} cleared` : `${person.fullName} deleted`);
+				showToast(cleared > 0 ? `${nameOf(person)} deleted; ${cleared} decision link${cleared === 1 ? '' : 's'} cleared` : `${nameOf(person)} deleted`);
 			}
 		};
 	}
@@ -211,8 +277,8 @@
 						<tbody>
 							{#each listed as person (person.id)}
 								<tr class:left={person.status === 'left'}>
-									<td class="name">{person.fullName}</td>
-									<td>{person.email}</td>
+									<td class="name">{nameOf(person)}</td>
+									<td>{addressOf(person)}</td>
 									<td>{person.jobTitle}</td>
 									<td>
 										{#each person.groupIds as id (id)}
@@ -220,15 +286,15 @@
 										{/each}
 									</td>
 									<td>{person.account ? person.account.username : '—'}</td>
-									<td>{person.status === 'left' ? `Left${person.leftAt ? ` ${person.leftAt.slice(0, 10)}` : ''}` : 'Active'}</td>
+									<td>{statusOf(person)}</td>
 									<td class="row-actions">
-										<button class="btn-ghost btn-xs" onclick={() => (editingPerson = { person })} aria-label="Edit {person.fullName}">Edit</button>
+										<button class="btn-ghost btn-xs" onclick={() => (editingPerson = { person })} aria-label="Edit {nameOf(person)}">Edit</button>
 										{#if person.status === 'active'}
-											<button class="btn-ghost btn-xs" aria-busy={marking === person.id ? 'true' : undefined} onclick={() => setStatus(person, 'left')} aria-label="Mark {person.fullName} left">Mark left</button>
+											<button class="btn-ghost btn-xs" aria-busy={marking === person.id ? 'true' : undefined} onclick={() => markLeft(person)} aria-label="Mark {nameOf(person)} left">Mark left</button>
 										{:else}
-											<button class="btn-ghost btn-xs" aria-busy={marking === person.id ? 'true' : undefined} onclick={() => setStatus(person, 'active')} aria-label="Mark {person.fullName} active">Mark active</button>
+											<button class="btn-ghost btn-xs" onclick={() => askMarkActive(person)} aria-label="Mark {nameOf(person)} active">Mark active</button>
 										{/if}
-										<button class="btn-ghost btn-xs danger" onclick={() => askDeletePerson(person)} aria-label="Delete {person.fullName}">Delete</button>
+										<button class="btn-ghost btn-xs danger" onclick={() => askDeletePerson(person)} aria-label="Delete {nameOf(person)}">Delete</button>
 									</td>
 								</tr>
 							{/each}
@@ -281,6 +347,7 @@
 		title={confirmAction.title}
 		message={confirmAction.message}
 		confirmText={confirmAction.confirmText}
+		confirmDanger={confirmAction.confirmDanger ?? true}
 		askPassword={confirmAction.askPassword ?? false}
 		onConfirm={async (proof: StepUpProof) => confirmAction?.action(proof)}
 		onCancel={() => (confirmAction = null)}

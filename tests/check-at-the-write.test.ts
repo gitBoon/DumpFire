@@ -696,6 +696,8 @@ const CURRENT_PASSWORD = [
 	'src/routes/api/admin/smtp/+server.ts PUT',
 	// Card 2922: a setting held for review kept or removed, the superadmin's alone.
 	'src/routes/api/admin/settings/held/+server.ts POST',
+	// Card 3020 (R4, R5): a request's held requester mail released, by an administrator.
+	'src/routes/api/requests/held/+server.ts POST',
 	// Card 2697, B2b (Q31): the administrator's participant actions, and a person's address or account.
 	'src/routes/api/decisions/[id]/participants/[participantId]/account/+server.ts PUT',
 	'src/routes/api/decisions/[id]/participants/[participantId]/address/+server.ts PUT',
@@ -1633,6 +1635,8 @@ describe('every write handler asks who the caller is at the write (card 2253)', 
 			'src/routes/api/requests/[id]/confirm/+server.ts POST',
 			'src/routes/api/requests/[id]/link/+server.ts POST',
 			'src/routes/api/requests/[id]/messages/+server.ts POST',
+			// Card 3020 (R4): a request's held requester mail released.
+			'src/routes/api/requests/held/+server.ts POST',
 			'src/routes/api/users/+server.ts POST',
 			'src/routes/api/users/[id]/+server.ts PUT',
 			'src/routes/api/users/[id]/+server.ts DELETE',

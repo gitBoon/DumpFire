@@ -17,6 +17,11 @@
   new person sends every field and the password. A refusal of the password
   keeps the dialog open, its words beside the field and the field cleared to
   type again.
+
+  For a person who is not active, the address on file is shown above the
+  field through `asciiShown` (card 3020, R3), each look-alike or hidden
+  character as its code point. Marking them active is the page's, not this
+  dialog's: it does not send `status`.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../../routes/admin/people/$types';
@@ -26,6 +31,7 @@
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
 	import { ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
+	import { asciiShown } from '$lib/printable';
 
 	type DirectoryPerson = PageData['people'][number];
 
@@ -142,6 +148,10 @@
 				<span>Full name</span>
 				<input type="text" class="form-input" bind:value={fullName} maxlength="200" />
 			</label>
+			{#if start && start.status !== 'active'}
+				<!-- Card 3020 (R3): a person who is not active may hold an address a backup whose seal did not verify chose; shown as it is. -->
+				<p class="dialog-hint address-on-file">Address on file: {asciiShown(start.email)}</p>
+			{/if}
 			<label class="dialog-field">
 				<span>Email</span>
 				<input type="email" class="form-input" bind:value={email} maxlength="254" oninput={forgetProofIfNotAsked} />

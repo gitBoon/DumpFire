@@ -38,7 +38,7 @@ import {
 import { db } from './db';
 import { afterCommit } from './db/transaction';
 import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams, taskRequests } from './db/schema';
-import { eq, and, inArray, isNull } from 'drizzle-orm';
+import { eq, and, asc, inArray, isNull } from 'drizzle-orm';
 import { createLogger } from './logger';
 import { issueRequestLinkNow, requestReplyUrl } from './request-tokens';
 import { requesterMailAddress } from './request-access';
@@ -1470,7 +1470,8 @@ interface RequesterProgressEvent {
 /**
  * Notify the original task requester about progress on their accepted request.
  *
- * Looks up the task_requests table for a request with resolvedCardId = cardId.
+ * Looks up the task_requests table for every accepted request with resolvedCardId = cardId
+ * whose mail is not held (card 3020, R10), and mails each requester apart.
  * Sends a styled email with event-specific content, to `requesterAddress` as
  * it is when the row is read: for a request made signed in, the account's
  * email as it is then (card 2171).
@@ -1504,27 +1505,22 @@ export function notifyRequesterProgress(event: RequesterProgressEvent): void {
 
 	const { cardId, action, baseUrl, actorUserId } = event;
 
-	// Find the originating task request for this card
-	const request = db.select({
+	// Every accepted request on this card whose mail is not held (card 3020, R10), in id order: a planted request held by
+	// a restore of a backup whose seal did not verify is passed by, and hides no other requester's mail.
+	const requests = db.select({
 		id: taskRequests.id,
 		requesterEmail: taskRequests.requesterEmail,
 		requesterUserId: taskRequests.requesterUserId,
 		title: taskRequests.title,
-		status: taskRequests.status
+		status: taskRequests.status,
+		mailHeldBecause: taskRequests.mailHeldBecause
 	})
 	.from(taskRequests)
-	.where(and(eq(taskRequests.resolvedCardId, cardId), eq(taskRequests.status, 'accepted')))
-	.get();
+	.where(and(eq(taskRequests.resolvedCardId, cardId), eq(taskRequests.status, 'accepted'), isNull(taskRequests.mailHeldBecause)))
+	.orderBy(asc(taskRequests.id))
+	.all();
 
-	if (!request) return;
-	// The requester's address as it is now: the account's email for a request
-	// made signed in (card 2171). None, and nothing is sent; none either for a
-	// requester whose account is disabled (card 2671).
-	const address = requesterMailAddress(request);
-	if (address === null) return;
-
-	// Skip self-notifications — don't email the requester about their own actions
-	if (actorUserId && request.requesterUserId && actorUserId === request.requesterUserId) return;
+	if (requests.length === 0) return;
 
 	// For non-completion events, check if the card is already completed — stop sending updates
 	if (action !== 'completed') {
@@ -1532,26 +1528,44 @@ export function notifyRequesterProgress(event: RequesterProgressEvent): void {
 		if (card?.completedAt) return;
 	}
 
-	// Check notification preferences for internal users
-	if (request.requesterUserId) {
-		if (!shouldNotifyUser(request.requesterUserId, 'email_request_progress')) return;
+	// Each requester to mail, with their address as it is now.
+	const toMail: { id: number; title: string; address: string }[] = [];
+	for (const request of requests) {
+		// The requester's address as it is now: the account's email for a request
+		// made signed in (card 2171). None, and nothing is sent; none either for a
+		// requester whose account is disabled (card 2671), or a request whose mail is held (card 3020).
+		const address = requesterMailAddress(request);
+		if (address === null) continue;
+
+		// Skip self-notifications — don't email the requester about their own actions
+		if (actorUserId && request.requesterUserId && actorUserId === request.requesterUserId) continue;
+
+		// Check notification preferences for internal users
+		if (request.requesterUserId) {
+			if (!shouldNotifyUser(request.requesterUserId, 'email_request_progress')) continue;
+		}
+		toMail.push({ id: request.id, title: request.title, address });
 	}
+	if (toMail.length === 0) return;
 
 	// Every mail would fail, so none is made, and no link is issued for one (S5); held mail alike (card 2922, R12).
 	if (mailCannotSend()) return;
 
 	// Its link is the requester's own way in to their request, so with no
 	// address to make it from there is no mail. The move it reports is done.
-	if (noLinkAddress(baseUrl, `The progress mail to the requester of request ${request.id}`)) return;
+	const named = toMail.length === 1 ? `request ${toMail[0].id}` : `requests ${toMail.map((request) => request.id).join(', ')}`;
+	if (noLinkAddress(baseUrl, `The progress mail to the requester of ${named}`)) return;
 
 	// For a comment or a subtask tick, in the caller's transaction, as a
 	// savepoint of it, so a rollback takes the link with it. A move
 	// (`announceCardMoves`) and a card created complete (`announceCardCreated`)
 	// report from an effect after their commit, and the link then has a
-	// transaction of its own.
-	const token = issueRequestLinkNow(request.id, 'mail');
-	const replyUrl = requestReplyUrl(baseUrl, request.id, token);
-	afterCommit(() => sendRequesterProgress(event, request.id, request.title, address, replyUrl));
+	// transaction of its own. Each requester has a link and a mail of their own.
+	for (const request of toMail) {
+		const token = issueRequestLinkNow(request.id, 'mail');
+		const replyUrl = requestReplyUrl(baseUrl, request.id, token);
+		afterCommit(() => sendRequesterProgress(event, request.id, request.title, request.address, replyUrl));
+	}
 }
 
 /**

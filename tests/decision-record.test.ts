@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { db, sqlite } from '$lib/server/db';
 import { decisions, type Decision } from '$lib/server/db/schema';
 import { appendEvent, appendVersion, currentRound, SYSTEM_ACTOR } from '$lib/server/decision-record';
-import { issueLink, participantForLink } from '$lib/server/decision-links';
+import { issueLink, mayHoldLink, participantForLink } from '$lib/server/decision-links';
 import { awaitingRulingSql, decisionStatus, linkUsable, requireTransition, TRANSITIONS } from '$lib/server/decision-status';
 import { stamp } from '$lib/timestamps';
 import { linkHashOf, makeDecision, makeParticipant, makePerson, makeUser, resetDb } from './helpers/fixtures';
@@ -95,14 +95,20 @@ const NAMES_ALLOWED = [
 	'src/lib/server/db/restore.ts'
 ];
 
-/** The files that may hold `people_changes` as text: the model and its export alone (card 2681). */
-const PEOPLE_NAMES_ALLOWED = ['src/lib/server/db/schema.ts', 'src/lib/server/db/expected-schema.ts'];
+/**
+ * The files that may hold `people_changes` as text: the model and its export (card 2681), and the restore, whose
+ * `switchOffUnsealedPeople` records each person an unsealed restore marks left (card 3020, R13).
+ */
+const PEOPLE_NAMES_ALLOWED = ['src/lib/server/db/schema.ts', 'src/lib/server/db/expected-schema.ts', 'src/lib/server/db/restore.ts'];
 
 /** The files that may insert into a decision record table. */
 const INSERTS_ALLOWED = ['src/lib/server/decision-record.ts', 'src/lib/server/db/restore.ts'];
 
-/** The one file that may insert into `people_changes`, by its one insert, `recordChange` (card 2681, the code review's S1). */
-const PEOPLE_INSERTS_ALLOWED = ['src/lib/server/people.ts'];
+/**
+ * The two files that may insert into `people_changes`, each by its one insert: `recordChange` (card 2681, the code
+ * review's S1), and the restore's `switchOffUnsealedPeople` (card 3020, R13).
+ */
+const PEOPLE_INSERTS_ALLOWED = ['src/lib/server/people.ts', 'src/lib/server/db/restore.ts'];
 
 /** The files that may hold a record table's name as text, and that may insert into it, by its SQL name. */
 const namesAllowedFor = (sqlName: string) => (sqlName === PEOPLE_RECORD ? PEOPLE_NAMES_ALLOWED : NAMES_ALLOWED);
@@ -161,7 +167,7 @@ const GENERIC_WRITERS: Readonly<Record<string, string>> = {
 };
 
 type ScanFile = { file: string; source: string };
-type Scan = { findings: string[]; inserts: string[]; generic: string[]; settledInserts: string[]; settledUpdates: string[] };
+type Scan = { findings: string[]; inserts: string[]; peopleInserts: string[]; generic: string[]; settledInserts: string[]; settledUpdates: string[] };
 
 /**
  * What one `.update(<the settled-once table>)` chain writes (card 2678, S4):
@@ -222,6 +228,8 @@ function settledUpdateOf(update: ts.CallExpression, tree: ts.SourceFile): { fn: 
 function scanRecordWrites(files: ScanFile[]): Scan {
 	const findings: string[] = [];
 	const inserts: string[] = [];
+	// Card 3020 (R13): each insert into people_changes, by its file, so that each writer is held to its one insert.
+	const peopleInserts: string[] = [];
 	const generic: string[] = [];
 	const settledInserts: string[] = [];
 	const settledUpdates: string[] = [];
@@ -307,6 +315,7 @@ function scanRecordWrites(files: ScanFile[]): Scan {
 				for (const [, sqlName] of withTables.matchAll(SQL_INSERT)) {
 					if (insertsAllowedFor(sqlName.toLowerCase()).includes(file)) inserts.push(file);
 					else findings.push(`${at(node)} SQL INSERT into a record table`);
+					if (sqlName.toLowerCase() === PEOPLE_RECORD) peopleInserts.push(file);
 				}
 				if (SQL_DELETE_DECISIONS.test(withTables) && file !== DECISION_DELETES_ALLOWED) findings.push(`${at(node)} SQL DELETE FROM decisions`);
 				if (GENERIC_WRITE.test(withTables)) {
@@ -341,6 +350,7 @@ function scanRecordWrites(files: ScanFile[]): Scan {
 					if (method === 'insert' && target !== undefined && target in RECORD_TABLES) {
 						if (insertsAllowedFor(RECORD_TABLES[target]).includes(file)) inserts.push(file);
 						else findings.push(`${at(node)} .insert(${target})`);
+						if (RECORD_TABLES[target] === PEOPLE_RECORD) peopleInserts.push(file);
 					}
 					// Card 2678 (decision 7, S4): the settled-once table, inserted where a record table may be, never deleted, and
 					// updated only in the record module, by its pinned updates.
@@ -377,7 +387,7 @@ function scanRecordWrites(files: ScanFile[]): Scan {
 			visit(tree);
 		}
 	}
-	return { findings, inserts, generic: [...new Set(generic)].sort(), settledInserts, settledUpdates };
+	return { findings, inserts, peopleInserts, generic: [...new Set(generic)].sort(), settledInserts, settledUpdates };
 }
 
 /** The TypeScript in a file: all of a `.ts` or `.js` file, and each `<script>` of a `.svelte` file, with the line it starts on. */
@@ -403,7 +413,7 @@ function sourceFiles(): ScanFile[] {
 describe('the record is insert-only, by the source (decision 27)', () => {
 	it('has no update, delete, upsert or stray insert of a record table, and no delete of a decision, anywhere in src (1)', () => {
 		const files = sourceFiles();
-		const { findings, inserts, generic, settledInserts, settledUpdates } = scanRecordWrites(files);
+		const { findings, inserts, peopleInserts, generic, settledInserts, settledUpdates } = scanRecordWrites(files);
 
 		expect(findings).toEqual([]);
 		// Card 2678 (decision 7, S4): the question's one insert, and its three guarded updates, each to its pin, in the record module.
@@ -418,6 +428,8 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 		expect(inserts.filter((file) => file === 'src/lib/server/decision-record.ts')).toHaveLength(4);
 		// Card 2681 (the code review's S1): people_changes' one insert, recordChange's.
 		expect(inserts.filter((file) => file === 'src/lib/server/people.ts')).toHaveLength(1);
+		// Card 3020 (R13): people_changes' two inserts, one in each writer: recordChange's, and switchOffUnsealedPeople's.
+		expect([...peopleInserts].sort()).toEqual(['src/lib/server/db/restore.ts', 'src/lib/server/people.ts']);
 	});
 
 	it('finds each form on made-up source, and passes what is allowed (2)', () => {
@@ -485,7 +497,9 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 			['an update of people_changes in the people service', { file: PEOPLE, source: "db.update(peopleChanges).set({ kind: 'x' }).run();" }, '.update(peopleChanges)'],
 			['a delete of people_changes in the people service', { file: PEOPLE, source: 'db.delete(peopleChanges).run();' }, '.delete(peopleChanges)'],
 			['an insert of people_changes in the record module', { file: RECORD, source: 'db.insert(peopleChanges).values(v).run();' }, '.insert(peopleChanges)'],
-			['an insert of people_changes in the restore', { file: 'src/lib/server/db/restore.ts', source: 'db.insert(peopleChanges).values(v).run();' }, '.insert(peopleChanges)'],
+			// Card 3020 (R13): the restore may insert into people_changes, and still never update or delete a row of it.
+			['SQL UPDATE of people_changes in the restore', { file: 'src/lib/server/db/restore.ts', source: "live.prepare('UPDATE people_changes SET kind = ?').run(k);" }, 'SQL UPDATE'],
+			['SQL DELETE FROM people_changes in the restore', { file: 'src/lib/server/db/restore.ts', source: "live.prepare('DELETE FROM people_changes').run();" }, 'SQL DELETE FROM'],
 			['an insert of a decision event in the people service', { file: PEOPLE, source: 'db.insert(decisionEvents).values(v).run();' }, '.insert(decisionEvents)'],
 			['SQL DELETE FROM people_changes', { file: PEOPLE, source: "sqlite.prepare('DELETE FROM people_changes WHERE id = ?').run(id);" }, 'SQL DELETE FROM'],
 			['SQL UPDATE of people_changes, quoted', { file: PEOPLE, source: 'sqlite.prepare(\'UPDATE "people_changes" SET kind = ?\').run(k);' }, 'SQL UPDATE'],
@@ -538,6 +552,8 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 			// Card 2681: people_changes' one insert, in the people service, and its indexes' names.
 			{ file: PEOPLE, source: 'db.insert(peopleChanges).values(v).run();\ndb.select().from(peopleChanges).all();' },
 			{ file: SERVICE, source: "const i = 'idx_people_changes_actor_user_id';" },
+			// Card 3020 (R13): the restore's one insert, a person it marked left, by DumpFire.
+			{ file: 'src/lib/server/db/restore.ts', source: "live.prepare(\"INSERT INTO people_changes (subject, kind) VALUES ('person', 'updated')\").run();" },
 			// A writer of tables named at run time on GENERIC_WRITERS, and a const alias of an ordinary table.
 			{ file: 'src/lib/server/db/timestamps.ts', source: 'database.prepare(`UPDATE ${t} SET ${c} = 1`).run();' },
 			{ file: SERVICE, source: 'const t = decisionParticipants;\ndb.update(t).set({}).run();' },
@@ -702,6 +718,20 @@ describe('appendEvent', () => {
 });
 
 // ─── Personal links ──────────────────────────────────────────────────────────
+
+describe("mayHoldLink (card 3020's code review, FP12)", () => {
+	it('holds for an active person with no account, and not for the same person marked left or given a status neither active nor left', () => {
+		const open = makeDecision({ status: 'open', author: makeUser(), closesAt: '2099-01-01 00:00:00' });
+		const person = makePerson();
+		const participant = makeParticipant(open, { person });
+
+		expect(person.status).toBe('active');
+		expect(mayHoldLink(participant, person, false)).toBe(true);
+		// Defence in depth beside reachOf: a person an unsealed restore marked left holds no link.
+		expect(mayHoldLink(participant, { ...person, status: 'left' }, false)).toBe(false);
+		expect(mayHoldLink(participant, { ...person, status: 'held' }, false)).toBe(false);
+	});
+});
 
 describe('participantForLink', () => {
 	it('gives a live link’s participant and decision, and refuses a token never issued, a holder it no longer reaches and a link that has lapsed (7)', () => {

@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.144
+version: 1.145
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3020
+  - unsealed-request-addresses
   - card-3012
   - unsealed-backup-outside-reach
   - card-3009
@@ -57,7 +59,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "High-level and component-level architecture of the DumpFire Kanban board system, including the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -3111,12 +3113,41 @@ run in the one transaction, and the notice after it changes:
    through `failureConfigOf`), the last of card 3012's steps (FP12), counted only where the address
    the failure mail goes to changes (FP18).
 
+Since card 3020 two more steps follow, and close what card 3012 left open: a request's requester and
+the people directory of such a file.
+
+10. `holdUnsealedRequestMail`, after `keepNotifyEmailHere`, as it is or as a working copy. Before the
+    clear `requestRowsOf` reads every request with its card's `created_at` and `title` and the
+    card's board (through its column); the same query runs after the copy. A row is held here where
+    this server had the same id, the nine fields are `===` equal, and its requester account is NULL or
+    the same here (`restoredSameHere`, built once for this step and the next). Such a row takes this
+    server's `mail_held_because` and `mail_released_*` (R9), `mail_released_by` only where that
+    account is the same here and NULL otherwise, as ON DELETE SET NULL would leave it (its code
+    review, FP1); every other row with an address gets `restored from a backup whose seal did not
+    verify` (`HELD_FROM_UNSEALED_BACKUP`) whatever the file had; one with no address gets NULL. Every
+    row it holds that was not the same here is counted, whatever the file put in the column (FP2),
+    apart for an unconfirmed request (R11). Not caught. While the column is set, `requesterMailAddress` (`request-access.ts`) answers null, so no
+    path mails the requester or issues a link; `notifyRequesterProgress` loops over every unheld
+    accepted request on the card (R10).
+11. `switchOffUnsealedPeople`, the last of card 3020's steps, as it is or as a working copy. Before the
+    clear `peopleRowsOf` reads each person's address (as text, and its type), account, status and
+    `left_at`. Every active person this server did not hold as they are (the same id, the address text
+    on both sides and equal, the same `user_id`, and that account the same here), every person held
+    here whom this server has as left, and every person whose status is neither `active` nor `left`
+    (R8) is set `left`, with a `people_changes` row by DumpFire, source `restore` (R13), whose `before`
+    holds no file text (`personBefore`: a status other than active or left is `other`, and `leftAt`
+    only where it reads as a timestamp; FP6). Their places on
+    decisions are counted, not written: `reachOf` mails only an active person at the same address.
+    Not caught: a failure here rolls every step back.
+
 Every id step 8 held and still held for its reason after `carryHolds`, a row the file already held
-among them, is merged into `secrets.toEnter.heldWebhooks` (`{ id, boardId, board }`, FP19); those it
-newly held are counted, and a working copy leaves them out of the webhooks it counts as switched off
+among them, is merged into `secrets.toEnter.heldWebhooks` (`{ id, boardId, board }`, FP19); those
+`carryHolds` did not give this server's hold are counted, whatever the file put in `held_because`
+(card 3020's code review, FP2), and a working copy leaves them out of the webhooks it counts as switched off
 (`fillSecretGaps`' `listedOnLeftOff`, now ids: FP8). After the commit, `tellSwitchedOff` writes
 its `WARN` line and mails nobody. `RestoreResult.unsealedReach` counts each step (`webhooks`,
-`schedules`, `accountsAsHere`, `addressesGivenUp`, `notificationsOff`, `notifyEmail`) and names
+`schedules`, `accountsAsHere`, `addressesGivenUp`, `notificationsOff`, `notifyEmail`, and card 3020's
+`requestsMailHeld`, `requestsUnconfirmedHeld`, `peopleMailOff`, `decisionPlacesMailOff`) and names
 nothing; the import route turns it into one sentence in `settingsHeld`, the CRITICAL line's words and
 its details. A sealed restore runs none of it.
 
@@ -3126,7 +3157,7 @@ sequenceDiagram
     participant R as restoreInOneSnapshot
     participant L as Live database (one transaction)
     I->>R: restoreFromBackup(live, backup, { outside, importer })
-    R->>L: read before the clear: notifyEmailHere, accountsHeldHere (with notification_prefs)
+    R->>L: read before the clear: notifyEmailHere, accountsHeldHere (with notification_prefs), requestRowsOf and peopleRowsOf (card 3020)
     R->>L: clear, copy (webhook addresses and secrets sealed as read)
     R->>L: keepSuperadminsHere (card 3009), carryDisabled, applyAccountEndings
     R->>L: keepAccountsHere: placeholders apart, the same here take this server's email and choices, others' email_all false (card 3012)
@@ -3137,6 +3168,8 @@ sequenceDiagram
     R->>L: carryHolds (this server's reason only where both addresses open and are equal)
     R->>L: carrySettingHolds, holdUnsealedSettings (card 3009, kept as it is)
     R->>L: keepNotifyEmailHere (card 3012)
+    R->>L: holdUnsealedRequestMail: held unless held here as it is, this server's hold where it was (card 3020)
+    R->>L: switchOffUnsealedPeople: left, people_changes by DumpFire, the last of card 3020's steps
     R->>L: readable pass, fillSecretGaps, reveals, keys, sweep, holds, switchOffOutside (working copy)
     R->>L: secrets: withHeldApart, every id held for the reason into toEnter.heldWebhooks
     R->>L: COMMIT

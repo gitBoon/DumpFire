@@ -73,7 +73,8 @@ const spec = {
 			'once, at the first start of this version, every API key used before it counts as given the secret of each webhook with a secret its account can read or set that was made before the key\'s last use, and those of keys already ended are held then; ' +
 			'the board\'s owners are mailed as in point (2), told to treat the old secret as exposed and change it at the receiver now, and the setter access ended sentence says so; ' +
 			'(10) a webhook that comes in with a backup whose seal did not verify and has an address is switched off for good, whatever the file says of it, and its secret is discarded; pausedBecause says so, and switching it on gives it a new secret and refuses a secret sent with it (card 3012); ' +
-			'(11) nothing else changed: no operation, field or schema.\n\n' +
+			'(11) a person whose address and account came in with a backup whose seal did not verify, and are not the ones this server held for them, or whose status in it was neither active nor left, is listed with status left and leftAt the restore\'s moment, and one this server has as left stays left (card 3020); ' +
+			'(12) nothing else changed: no operation, field or schema.\n\n' +
 			'**Changed on 2026-11-18 (version 1.14.0), breaking.** A reset of an account\'s two-step sign-in, by an administrator or on the server\'s host, ends the account\'s API keys and switches off the webhooks it set (card 2915): ' +
 			'(1) its keys answer 401, as after a password reset; ' +
 			'(2) the webhooks it set are switched off, active false, recording setter access ended, so switching one on again is the board owner\'s or an administrator\'s and gives it a new secret; ' +
@@ -1557,7 +1558,13 @@ const spec = {
 					id: { type: 'integer' },
 					fullName: { type: 'string', description: 'Changed on the People page only' },
 					jobTitle: { type: 'string', description: 'An empty string when none was given. Never null.' },
-					status: { type: 'string', enum: ['active', 'left'], description: 'left for someone who has left: they are not mailed about a decision. Changed on the People page only.' },
+					status: {
+						type: 'string',
+						enum: ['active', 'left'],
+						description:
+							'left for someone who has left, or, since 1.15.0, whose address or account came in with a backup whose seal did not verify and was not the one this server held for them (card 3020): they are not mailed about a decision. ' +
+							'Changed on the People page only, and marking someone active asks for the password and a code.'
+					},
 					leftAt: { type: ['string', 'null'], format: 'date-time', description: 'When they were marked left; null while active' },
 					createdBy: { type: ['integer', 'null'], description: 'The administrator who added the person, or null once that account has been deleted' },
 					createdAt: { type: 'string', format: 'date-time' },

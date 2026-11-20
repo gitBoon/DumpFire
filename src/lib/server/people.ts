@@ -109,6 +109,12 @@ const KEY_RENAME_WORDS = 'A group is renamed on the People page: an API key cann
 const PAGE_ONLY_WORDS =
 	'Adding a person, deleting one and adding people from accounts are done on the People page, which asks for your password: an API key cannot';
 const GROUP_DELETE_WORDS = 'A group is deleted on the People page: an API key cannot delete one';
+/** Card 3020 (R6): Mark active, reached without the step-up. */
+const MARK_ACTIVE_WORDS =
+	'Marking a person active asks for your password and a code: their decision mail and personal links go to their address again. Nothing was changed.';
+/** Card 3020's code review (FP5): Mark active, the address reviewed not the person's now. */
+const MARK_ACTIVE_MOVED =
+	"This person's address has changed since the page was read: read it again and check the address before you mark them active. Nothing was changed.";
 
 /** A person as the routes answer one: the row, and the ids of their groups. */
 export type PersonAnswer = Person & { groupIds: number[] };
@@ -211,7 +217,9 @@ export function personCreateGuard(
  *
  * Every refusal is `personUpdateGuard`'s, asked first. Its internal route
  * asks for the caller's password between the two when the body carries
- * `email` or `userId` (card 2697, Q21).
+ * `email` or `userId` (card 2697, Q21), or `status` other than the exact
+ * string `'left'` (card 3020, R6), and only then passes `steppedUp: true`:
+ * marking a person active without it is refused 400, nothing written.
  *
  * Under an API key (card 2681) the body may carry `jobTitle` and `groupIds`
  * alone: `email`, `userId`, `status` and `fullName` are refused 403 whatever
@@ -219,10 +227,17 @@ export function personCreateGuard(
  * `keyPerson`'s, a change that changes nothing included (D20), and the line
  * logged says it came through the API, with the values it replaced (D7).
  */
-export function updatePerson(caller: SessionUser | null, at: { personId: number }, body: RequestBody, opts: ServiceOptions): PersonAnswer | KeyPerson {
+export function updatePerson(
+	caller: SessionUser | null,
+	at: { personId: number },
+	body: RequestBody,
+	opts: ServiceOptions & { steppedUp?: boolean }
+): PersonAnswer | KeyPerson {
 	inWrite();
 	refuseKeyFields(caller, body, opts);
-	const { actor, person, heldGroups, groupIds, groupsChange, updates, changed, account, linkChange, statusChange, status } = personUpdateGuard(caller, at, body);
+	const { actor, person, heldGroups, groupIds, groupsChange, updates, changed, account, linkChange, statusChange, status } = personUpdateGuard(caller, at, body, {
+		steppedUp: opts.steppedUp === true
+	});
 	const byKey = throughKey(opts);
 
 	if (Object.keys(updates).length === 0 && !groupsChange) return byKey ? keyPerson(person, heldGroups) : { ...person, groupIds: heldGroups };
@@ -303,15 +318,26 @@ export function updatePerson(caller: SessionUser | null, at: { personId: number 
  * (400), a new address another person holds (409), a group that is not one
  * (400), and an account that is not one or another person is linked to
  * (400, 409). `PUT /api/people/:id` asks it before the caller's password,
- * when the body carries `email` or `userId`, so that none of these costs a
- * check; `updatePerson` asks it first, so the rules are one. Answers what
- * the write then does: the columns that change, and whether the groups, the
- * account link and the status do.
+ * when the body carries `email` or `userId`, or `status` other than the
+ * exact string `'left'`, so that none of these costs a check; `updatePerson`
+ * asks it first, so the rules are one. Answers what the write then does: the
+ * columns that change, and whether the groups, the account link and the
+ * status do.
+ *
+ * Marking a person active (card 3020, R6) lets their decision mail and
+ * personal links go to their address again, an address a backup whose seal
+ * did not verify may have chosen: it is refused 400 unless `opts.steppedUp`,
+ * which the route passes only from its step-up branch. The belt beside the
+ * route's key check, so that no other caller marks someone active unasked.
+ * And it is tied to the address the administrator was shown (its code
+ * review, FP5): the body carries it as `reviewedEmail`, which writes nothing,
+ * is required, and must be the person's address now, or it is 409.
  */
 export function personUpdateGuard(
 	caller: SessionUser | null,
 	at: { personId: number },
-	body: RequestBody
+	body: RequestBody,
+	opts: { steppedUp: boolean }
 ): {
 	actor: SessionUser;
 	person: Person;
@@ -362,6 +388,12 @@ export function personUpdateGuard(
 	const account = linkChange && userId !== null ? requireLinkable(userId, person.id) : null;
 	if (linkChange) updates.userId = userId;
 	const statusChange = status !== undefined && status !== person.status;
+	if (statusChange && status === 'active') {
+		if (!opts.steppedUp) error(400, MARK_ACTIVE_WORDS);
+		// The address the confirmation showed: read only, never written (FP5).
+		const reviewed = readText(body, 'reviewedEmail', { required: true, max: 1000 });
+		if (reviewed !== person.email) error(409, MARK_ACTIVE_MOVED);
+	}
 	if (statusChange) {
 		updates.status = status;
 		updates.leftAt = status === 'left' ? stamp() : null;
@@ -726,10 +758,12 @@ function personFacts(row: Person, groupIds: readonly number[]): ChangeFacts {
 /**
  * Append one row to `people_changes`, in the write's own transaction (card
  * 2681, the code review's S1): who, by the page or a key, what about, what
- * kind of change, and what it was and became. The one insert into the table:
- * nothing updates or deletes a row (tests/decision-record.test.ts reads the
- * source for it). `source` is `'api'` whenever the write is a key's, by the
- * route's word or the credential (F2).
+ * kind of change, and what it was and became. The one insert into the table
+ * here; the only other is restore.ts's `switchOffUnsealedPeople`, by DumpFire
+ * with source `'restore'`, for each person an unsealed restore marks left
+ * (card 3020, R13). Nothing updates or deletes a row
+ * (tests/decision-record.test.ts reads the source for it). `source` is `'api'`
+ * whenever the write is a key's, by the route's word or the credential (F2).
  */
 function recordChange(
 	actor: SessionUser,

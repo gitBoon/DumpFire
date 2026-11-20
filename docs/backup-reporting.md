@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.64
+version: 1.65
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3020
+  - unsealed-request-addresses
   - card-3012
   - unsealed-backup-outside-reach
   - card-3009
@@ -52,7 +54,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, an unsealed import holding every webhook with an address, pausing schedules and keeping emails, choices and notifyEmail as here (unsealedReach, card 3012), the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "Scheduled backup system with multi-destination support, an unsealed import holding the requester mail of requests it did not hold as they are and marking left the people it did not hold (holdUnsealedRequestMail, switchOffUnsealedPeople, card 3020, and its L9 cost), an unsealed import holding every webhook with an address, pausing schedules and keeping emails, choices and notifyEmail as here (unsealedReach, card 3012), the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -346,10 +348,49 @@ mail address no longer reach outside as the file has them (card 3012). Inside th
   to changes, not where neither side had one.
 - **No owner mail.** After the commit, the notice of webhooks the restore switched off or held is
   written at `WARN` only: they "were not mailed, as the backup's seal did not verify".
+- **Requests** (`holdUnsealedRequestMail`, card 3020, after `keepNotifyEmailHere`, as it is or as a
+  working copy). Before the clear, `requestRowsOf` reads every request with its card's `created_at`
+  and `title` and the board of the card's column, and the same query runs after the copy. A restored
+  request **is held here** where this server had the same id, every one of `created_at`, `title`,
+  `requester_email`, `requester_user_id`, `status`, `resolved_card_id`, the card's `created_at` and
+  `title`, and the card's board is `===` equal, and `requester_user_id` is NULL or the same account
+  here. Such a row takes this server's `mail_held_because` and `mail_released_*` (R9), with
+  `mail_released_by` only where that account is the same here: otherwise NULL, the moment and the
+  name kept, as ON DELETE SET NULL would leave them, so that no row names an account the restore did
+  not bring back (card 3020's code review, FP1). Any other row
+  with an address (`requester_user_id` set, or `requester_email` neither NULL nor `''`) gets
+  `mail_held_because` = `restored from a backup whose seal did not verify`, over any text the file
+  had, and its `mail_released_*` emptied; one with no address gets NULL. Every row it holds is
+  counted, whatever the file put in `mail_held_because`, since the count is of this server's holds,
+  not the file's (FP2): in `requestsUnconfirmedHeld` where its status is `unverified`, which cannot
+  be released and lapses in 7 days, and in `requestsMailHeld` otherwise. While the column is set,
+  `requesterMailAddress` answers null and progress mail passes the request by, so nothing goes to the
+  requester until an administrator releases it (`POST /api/requests/held`, with password and code).
+  **A release record does not outlive such a restore (accepted, card 3020's code review, FP14).** A
+  later restore of a backup whose seal does not verify, in which the request is not as this server
+  held it, holds it again and empties `mail_released_*`: who released it and when then survives only
+  in the `INFO` line under `REQUESTS` written at the release.
+- **People** (`switchOffUnsealedPeople`, card 3020, the last of its steps, as it is or as a working
+  copy). Before the clear, `peopleRowsOf` reads each person's address (as text, with its type),
+  account, status and `left_at`. A restored person **is held here** where this server had the same id,
+  the address is text on both sides and `===` equal, `user_id` is `===` equal, and it is NULL or the
+  same account here. Every active person not held here, every person held here whom this server has as
+  left, and every person whose status is neither `active` nor `left` (read as text) is set `left`, with
+  the restore's moment as `left_at` (this server's where it has them left), and gets a
+  `people_changes` row: by `DumpFire`, source `restore`, `before` and `after` holding only the status
+  and `left_at`, written with `JSON.stringify`, no address or account. `before` holds none of the
+  file's text (FP6): the status only where it is `active` or `left`, else the word `other`, and
+  `leftAt` only where it reads as a timestamp, in this build's form, else `null`. No participant row is written
+  and no link is revoked (the restore has ended every link already): a participant is mailed only
+  where their person is active and holds the same address (`reachOf`), so their places on decisions
+  are mailed nothing. `peopleMailOff` counts the people marked, and `decisionPlacesMailOff` the
+  restored participant rows, not removed, of those people, counted in JavaScript.
 
 `RestoreResult.unsealedReach` counts them, naming nothing: `{ webhooks, schedules, accountsAsHere,
-addressesGivenUp, notificationsOff, notifyEmail }`, where `webhooks` is the rows newly held and still
-held for this reason after `carryHolds`; a working copy does not count them again among the webhooks it
+addressesGivenUp, notificationsOff, notifyEmail, requestsMailHeld, requestsUnconfirmedHeld,
+peopleMailOff, decisionPlacesMailOff }` (the last four card 3020's), where `webhooks` is the rows held and still
+held for this reason after `carryHolds`, whatever the file put in `held_because` (card 3020's code
+review, FP2); a working copy does not count them again among the webhooks it
 switched off. Every row held for this reason after `carryHolds`, one the file already held included, is
 added to `secrets.toEnter.heldWebhooks` (`{ id, boardId, board }`), so the to-enter sentence lists each
 as switched off for good; it names at most ten, then "and N more", each board name quoted and cut to 60
@@ -360,13 +401,21 @@ it would send outside was not taken as the file has it: N webhook(s) with an add
 their secrets discarded: …; N report schedule(s) were paused: …; N account(s) that are the same here
 keep the email address and notification choices they have on this server; N other account(s) that
 held one of those addresses were given one that receives no mail: …; N account(s) not the same here
-have their notification mail switched off until each signs in and switches it on; and the backup
-failure mail goes to this server's address, not the backup's.", each clause only where its count is
-above 0 (the whole sentence is in [api-reference.md](api-reference.md)). The `[CRITICAL] [IMPORT]`
+have their notification mail switched off until each signs in and switches it on; N request(s)
+came in with a requester or card this server did not hold as it is: …; N unconfirmed request(s) were
+held too: …; N person(s) in the people directory were marked left, …, so N place(s) on decisions are
+mailed nothing: …; and the backup failure mail goes to this server's address, not the backup's.", each
+clause only where its count is above 0 (the whole sentence is in [api-reference.md](api-reference.md)). The `[CRITICAL] [IMPORT]`
 line adds `keeping what a backup whose seal did not verify would send outside: …`, and its details
-carry `unsealedReach` where any count is above 0. Still open: a request's requester, a decision's
-participants and the people addresses of such a file are mailed as the file has them (card 3020), and
-invites and notices to an account not the same here go to the file's address (card 3021).
+carry `unsealedReach` where any count is above 0. Still open: invites and notices to an account not
+the same here go to the file's address (card 3021).
+
+**The cost of card 3020** (accepted, R20). A move between servers, or a forged file, holds every
+request with an address and marks every person left. The first unsealed restore of one of this
+server's own older backups holds only what changed since it was made, and also every request whose
+timestamps the backup holds in the form used before card 2095 normalised them (L9): those compare
+unequal, so they are held. That over-holding fails closed: an administrator reviews and releases each.
+Until marked active, account holders among the people marked left cannot answer their decisions.
 
 ```mermaid
 flowchart LR
@@ -375,7 +424,10 @@ flowchart LR
     Mfa6 --> Keep6["keepSuperadminsHere"]
     Keep6 --> Pw6["applyPasswordRulings:<br/>unsealed, then the carry"]
     Pw6 --> Hold6["holdUnsealedSettings"]
-    Hold6 --> Keys6["leaveOutRecordedKeys:<br/>unsealed keep list, earlier ends"]
+    Hold6 --> Notify6["keepNotifyEmailHere (3012)"]
+    Notify6 --> Req6["holdUnsealedRequestMail (3020):<br/>requestRowsOf before and after"]
+    Req6 --> People6["switchOffUnsealedPeople (3020):<br/>people_changes rows, its last step"]
+    People6 --> Keys6["leaveOutRecordedKeys:<br/>unsealed keep list, earlier ends"]
 ```
 
 ### Image Retention

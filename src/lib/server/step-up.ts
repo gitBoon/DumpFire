@@ -188,12 +188,17 @@ export const STEP_UP_ACTIONS = Object.freeze({
 	// Card 2922: a setting held for review put back in use, or removed with, for the mail, every mailed link on the server.
 	'POST /api/admin/settings/held':
 		"Keeps a held mail server, App URL or backup destination in use, or removes it, which for the mail ends every invite, set-up link and request link on the server",
+	// Card 3020 (R4, R5): a request's held requester mail released, which a backup whose seal did not verify brought in.
+	'POST /api/requests/held':
+		"Releases a request's held requester mail: progress, replies and its completion report go again to an address a backup whose seal did not verify chose",
 	// Card 2697 (Q9, Q21): what decides where a decision's record mail and personal links go, and who answers for a participant.
 	'PUT /api/decisions/[id]/participants/[participantId]/account':
 		"Changes which credential answers for a participant on a decision's record: an account, or a personal link mailed in its place",
 	'PUT /api/decisions/[id]/participants/[participantId]/address':
 		"Ends a participant's personal link and moves the address their record mail and next link go to",
-	'PUT /api/people/[id]': "With email or userId: changes where a person's decision mail and personal links go, or which account answers for them",
+	// Card 3020 (R6): and Mark active, which lets a person be mailed again; no new key.
+	'PUT /api/people/[id]':
+		"With email or userId, or marking a person active: changes where a person's decision mail and personal links go, or which account answers for them, or lets them be mailed again",
 	// Card 2697's code review, part B (S1): every other People write that sets or ends an address or an account.
 	'POST /api/people': "Adds a person with an address, and perhaps an account, that decide where a decision's record mail and personal links go",
 	'DELETE /api/people/[id]': "Deletes a person: ends every personal link they hold, and frees their address for another person",

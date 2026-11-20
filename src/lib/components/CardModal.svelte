@@ -38,6 +38,8 @@
 	import { costOf, costInputOf } from '$lib/pricing';
 	import { templateLabelIds } from '$lib/templates';
 	import { parseStamp } from '$lib/timestamps';
+	// Card 3020's code review (FP11): a requester's name may have come from a backup whose seal did not verify.
+	import { printable } from '$lib/printable';
 	import { failureMessage } from '$lib/api';
 	import { windowFields, type WindowEdits, type WindowField, type WindowFields } from '$lib/board/card-window.svelte';
 	import { onMount, untrack } from 'svelte';
@@ -1097,7 +1099,7 @@
 		{#if card?.requestOrigin}
 			<div class="request-origin-banner">
 				<span class="request-origin-icon">📨</span>
-				<span>Created from request by <strong>{card.requestOrigin.requesterName}</strong></span>
+				<span>Created from request by <strong>{printable(card.requestOrigin.requesterName)}</strong></span>
 			</div>
 		{/if}
 

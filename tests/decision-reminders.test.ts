@@ -102,7 +102,10 @@ vi.mock('$lib/server/email', async (importOriginal) => {
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
+import Database from 'better-sqlite3';
 import { db, sqlite } from '$lib/server/db';
+import { generateBackupData } from '$lib/server/backup';
+import { restoreFromBackup } from '$lib/server/db/restore';
 import type { SessionUser } from '$lib/server/auth';
 import {
 	decisionOptions,
@@ -1209,5 +1212,37 @@ describe('its timers and its place', () => {
 		await sent.settle();
 		expect(eventsOf(decision.id)).toHaveLength(written);
 		expect(sent.emails).toHaveLength(2);
+	});
+});
+
+// ─── Card 3020: after an unsealed restore (case (u)) ─────────────────────────
+
+describe('after a restore of a backup whose seal did not verify (card 3020)', () => {
+	it('(u) card 3020: contract, reminder: a consulted account holder whose address the file changed is marked left, and the reminder sends them nothing', async () => {
+		const { decision, participants, closesAt } = await opened();
+		const { p } = participants[0];
+		// A restore keeps a superadmin.
+		makeUser({ username: 'chief', role: 'superadmin' });
+		// The file gives the person, and the participant's snapshot, an address this server did not hold: the edit leaves a seal that does not verify.
+		const backup = new Database(generateBackupData());
+		try {
+			backup.prepare("UPDATE people SET email = 'planted@file.test' WHERE id = ?").run(p.personId);
+			backup.prepare("UPDATE decision_participants SET email = 'planted@file.test' WHERE id = ?").run(p.id);
+			const result = restoreFromBackup(sqlite, backup);
+			expect(result.sealVerified).toBe(false);
+			expect(result.unsealedReach).toMatchObject({ peopleMailOff: 1, decisionPlacesMailOff: 1 });
+		} finally {
+			backup.close();
+		}
+		// Mail and the App URL as this server had them, set up again after the restore.
+		const set = sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
+		for (const [key, value] of [['smtp_host', 'smtp.example.test'], ['smtp_from_address', 'dumpfire@example.test'], ['app_url', APP]]) set.run(key, value);
+		expect(db.select().from(people).where(eq(people.id, p.personId!)).get()).toMatchObject({ email: 'planted@file.test', status: 'left' });
+
+		const result = await runAt(new Date(`${plus(closesAt, -24 * HOUR).replace(' ', 'T')}Z`));
+
+		expect(result).toEqual({ recorded: 0, sent: 0 });
+		expect(remindersOf(decision.id)).toEqual([]);
+		expect(mailedTo()).toEqual([]);
 	});
 });

@@ -217,5 +217,9 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 		);
 	}
 
+	// The team's reply says whether its mail was handed on (card 3020, R12): false where the requester's mail is held, the
+	// account disabled, or mail or the link's address missing, so the inbox never reads a reply as mailed that was not.
+	// A requester's own post answers as it did.
+	if (sType === 'admin') return json({ ...newMsg, mailed: requester !== null && replyUrl !== null });
 	return json(newMsg);
 };

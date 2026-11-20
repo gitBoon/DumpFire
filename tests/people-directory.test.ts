@@ -12,10 +12,13 @@
  * section 6, by number.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { isHttpError } from '@sveltejs/kit';
 import { sqlite } from '$lib/server/db';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { updatePerson } from '$lib/server/people';
 import { STEP_UP_FIELD } from '$lib/server/step-up';
-import { STEP_UP_CODE_FIELD } from '$lib/step-up-words';
+import { writeAs } from '$lib/server/write-as';
+import { STEP_UP_CODE_FIELD, STEP_UP_MISSING } from '$lib/step-up-words';
 import { api, type ApiResult } from './helpers/api';
 import {
 	FIXTURE_PASSWORD,
@@ -25,6 +28,7 @@ import {
 	makeTeam,
 	makeUser,
 	resetDb,
+	sessionCredential,
 	shareBoardWithTeam,
 	sessionHashOf,
 	stepUpCode,
@@ -81,6 +85,16 @@ async function send(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unkn
 	} finally {
 		sqlite.prepare('DELETE FROM sessions WHERE id = ?').run(sessionHashOf(token));
 		sqlite.prepare('UPDATE mfa_factors SET last_step = ?, last_used_at = ? WHERE user_id = ?').run(spent.last_step, spent.last_used_at, admin.id);
+	}
+}
+
+/** `fn`'s refusal, as the status and the message, or what it answered. */
+function outcome<T>(fn: () => T): { status: number; message: string } | { answered: T } {
+	try {
+		return { answered: fn() };
+	} catch (thrown) {
+		if (isHttpError(thrown)) return { status: thrown.status, message: thrown.body.message };
+		throw thrown;
 	}
 }
 
@@ -301,7 +315,7 @@ describe('PUT /api/people/[id]', () => {
 		expect(groupsOf(ann)).toEqual([finance]);
 		expect(peopleLines().at(-1)!.message).toBe(`Person ${ann} "Ann Lee" marked left; 0 decision links cleared (by admin)`);
 
-		const active = await send('PUT', `/api/people/${ann}`, { status: 'active' });
+		const active = await send('PUT', `/api/people/${ann}`, { status: 'active', reviewedEmail: 'ann.lee@example.test' });
 
 		expect(active.status, JSON.stringify(active.body)).toBe(200);
 		expect(personRow(ann)).toMatchObject({ status: 'active', left_at: null, user_id: account.id });
@@ -331,6 +345,108 @@ describe('PUT /api/people/[id]', () => {
 
 	it('refuses, 400, a userId that is no account (9)', async () => {
 		await expectRefused(() => send('PUT', `/api/people/${ann}`, { userId: 999 }), 400, 'userId 999 is not an account');
+	});
+
+	// Card 3020 (R6): Mark active lets a person be mailed again, at an address a backup whose seal did not verify may have
+	// chosen, so it asks for the password and a code; Mark left asks nothing. The plan's cases (ag) to (ag4).
+	describe('Mark active asks for the password and a code (card 3020, R6)', () => {
+		const LEFT_AT = '2026-10-01 09:00:00';
+		/** The request as the administrator from a real session of theirs, with no password and no code. */
+		async function unasked(body: Record<string, unknown>): Promise<ApiResult> {
+			const token = makeSession(admin);
+			try {
+				return await api('PUT', `/api/people/${ann}`, { user: admin, body, headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` } });
+			} finally {
+				sqlite.prepare('DELETE FROM sessions WHERE id = ?').run(sessionHashOf(token));
+			}
+		}
+		const changes = () => sqlite.prepare("SELECT actor_user_id AS actorUserId, actor_name AS actorName, source, subject, subject_id AS subjectId, kind, before, after FROM people_changes ORDER BY id").all() as Row[];
+
+		beforeEach(() => {
+			sqlite.prepare("UPDATE people SET status = 'left', left_at = ? WHERE id = ?").run(LEFT_AT, ann);
+		});
+
+		it('(ag) Mark active with no password is 400 STEP_UP_MISSING, and the person is still left', async () => {
+			const before = snapshotDb();
+
+			const res = await unasked({ status: 'active', reviewedEmail: 'ann.lee@example.test' });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(400);
+			expect(res.body).toEqual({ message: STEP_UP_MISSING, stepUp: 'missing' });
+			expectUnchanged(before);
+			expect(personRow(ann)).toMatchObject({ status: 'left', left_at: LEFT_AT });
+			expect(peopleLines()).toEqual([]);
+		});
+
+		it('(ag2) Mark active with the password and a code makes them active, recorded in people_changes as any change is', async () => {
+			const res = await send('PUT', `/api/people/${ann}`, { status: 'active', reviewedEmail: 'ann.lee@example.test' });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(personRow(ann)).toMatchObject({ status: 'active', left_at: null });
+			expect(changes()).toEqual([
+				{
+					actorUserId: admin.id,
+					actorName: 'admin',
+					source: 'ui',
+					subject: 'person',
+					subjectId: ann,
+					kind: 'updated',
+					before: JSON.stringify({ status: 'left', leftAt: LEFT_AT }),
+					after: JSON.stringify({ status: 'active', leftAt: null })
+				}
+			]);
+			expect(peopleLines().at(-1)!.message).toBe(`Person ${ann} "Ann Lee" marked active (by admin)`);
+		});
+
+		it("(ag3) Mark left with { status: 'left' } alone still asks nothing", async () => {
+			sqlite.prepare("UPDATE people SET status = 'active', left_at = NULL WHERE id = ?").run(ann);
+
+			const res = await unasked({ status: 'left' });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(personRow(ann)).toMatchObject({ status: 'left', left_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) });
+		});
+
+		it("(ag5) card 3020's code review, FP5: Mark active with the password and a code, but with no reviewed address, 400, or an address that is not the person's now, 409; the person is still left, and reviewedEmail is never written", async () => {
+			const before = snapshotDb();
+
+			const missing = await send('PUT', `/api/people/${ann}`, { status: 'active' });
+			// The address changed after the page was read: the one shown is not the one their mail would go to.
+			const moved = await send('PUT', `/api/people/${ann}`, { status: 'active', reviewedEmail: 'eve@elsewhere.test' });
+			const cased = await send('PUT', `/api/people/${ann}`, { status: 'active', reviewedEmail: 'ANN.LEE@example.test' });
+
+			expect(missing.status, JSON.stringify(missing.body)).toBe(400);
+			expect(missing.body.message).toBe('reviewedEmail is required');
+			for (const res of [moved, cased]) {
+				expect(res.status, JSON.stringify(res.body)).toBe(409);
+				expect(res.body.message).toBe(
+					"This person's address has changed since the page was read: read it again and check the address before you mark them active. Nothing was changed."
+				);
+			}
+			expectUnchanged(before);
+			expect(personRow(ann)).toMatchObject({ status: 'left', left_at: LEFT_AT, email: 'ann.lee@example.test' });
+			expect(peopleLines()).toEqual([]);
+
+			// A rename with a reviewed address and no status: the key writes nothing and asks nothing.
+			const renamed = await unasked({ fullName: 'Ann Leigh', reviewedEmail: 'eve@elsewhere.test' });
+			expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+			expect(personRow(ann)).toMatchObject({ full_name: 'Ann Leigh', email: 'ann.lee@example.test', status: 'left' });
+		});
+
+		it('(ag4) updatePerson, left to active, with steppedUp false or not given, is refused 400 and writes nothing', () => {
+			const locals: App.Locals = { user: admin, credential: sessionCredential(makeSession(admin)) };
+			const before = snapshotDb();
+
+			for (const opts of [{ source: 'ui' as const, steppedUp: false }, { source: 'ui' as const }]) {
+				expect(outcome(() => writeAs(locals, (caller) => updatePerson(caller, { personId: ann }, { status: 'active' }, opts)))).toEqual({
+					status: 400,
+					message:
+						'Marking a person active asks for your password and a code: their decision mail and personal links go to their address again. Nothing was changed.'
+				});
+			}
+			expectUnchanged(before);
+			expect(peopleLines()).toEqual([]);
+		});
 	});
 
 	describe('and the decision links of the person (S6, S7, decision 5; card 2675 decision 12)', () => {

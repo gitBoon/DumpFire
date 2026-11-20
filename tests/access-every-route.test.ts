@@ -75,6 +75,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { hashSync } from 'bcryptjs';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
+import { HELD_FROM_UNSEALED_BACKUP } from '$lib/settings-held';
 import {
 	activityLog,
 	apiKeys,
@@ -1777,6 +1778,12 @@ const TABLE: Record<string, Case | Case[]> = {
 		)
 	],
 	'DELETE /api/requests/[id]': admin((w) => `/api/requests/${w.request.id}`),
+	// Card 3020 (R2, R4): the requests whose requester mail is held, listed and released by any administrator.
+	'GET /api/requests/held': admin(() => '/api/requests/held'),
+	'POST /api/requests/held': admin((w) => json('/api/requests/held', { requestId: w.request.id, address: 'rita@example.test', cardId: null, cardTitle: null, cardBoard: null }), {
+		// The owner's request held, as an unsealed restore holds one, so that the release is a write.
+		setup: (w) => void sqlite.prepare('UPDATE task_requests SET mail_held_because = ? WHERE id = ?').run(HELD_FROM_UNSEALED_BACKUP, w.request.id)
+	}),
 	'POST /api/requests/[id]/confirm': link((w) => json(`/api/requests/${w.unconfirmed.id}/confirm`, {}), {
 		withLink: (w) => json(`/api/requests/${w.unconfirmed.id}/confirm`, { token: UNCONFIRMED_LINK }),
 		unopenable: ['outsider']

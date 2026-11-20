@@ -45,6 +45,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	// The link's token resolved before the request is read (card 2870, S2).
 	const opens = linkCheck(token);
 	const request = requireRequest(locals.user, id, (row) => isAuthed(row) || opens(row), 'Access denied');
+	const authed = isAuthed(request);
 
 	return json({
 		id: request.id,
@@ -53,8 +54,10 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 		priority: request.priority,
 		status: request.status,
 		requesterName: request.requesterName,
-		requesterEmail: isAuthed(request) ? requesterAddress(request) : null, // only expose email to authenticated users
-		createdAt: request.createdAt
+		requesterEmail: authed ? requesterAddress(request) : null, // only expose email to authenticated users
+		createdAt: request.createdAt,
+		// Card 3020 (R18): to a signed-in reader only, whether the requester's mail is held.
+		...(authed ? { mailHeld: request.mailHeldBecause !== null } : {})
 	});
 };
 export const PATCH: RequestHandler = async ({ params, request, locals, url }) => {

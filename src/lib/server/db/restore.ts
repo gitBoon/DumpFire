@@ -358,7 +358,11 @@ export type RestoreResult = {
 	 * same here given this server's email address and notification choices; `addressesGivenUp`, the other accounts that
 	 * held one of those addresses and were given one that receives no mail (R7); `notificationsOff`, the accounts not the
 	 * same here whose notification mail it switched off (R6); `notifyEmail`, 1 where it gave the backup failure mail this
-	 * server's address (R5). All 0 for a sealed backup.
+	 * server's address (R5); `requestsMailHeld` and `requestsUnconfirmedHeld`, the restored requests with an address that
+	 * this server did not hold as they are, and whose requester mail it newly held, confirmed and unconfirmed apart (card
+	 * 3020, R11); `peopleMailOff`, the people it marked left, as this server did not hold their address and account or has
+	 * them as left, and `decisionPlacesMailOff`, those people's places on decisions, not removed (card 3020, R7, R8, R21).
+	 * All 0 for a sealed backup.
 	 */
 	unsealedReach: UnsealedReach;
 };
@@ -380,10 +384,29 @@ export type UnsealedReach = {
 	notificationsOff: number;
 	/** 1 where the backup failure mail's address was replaced with this server's (R5). */
 	notifyEmail: number;
+	/** Card 3020: confirmed requests whose requester mail this restore newly held. */
+	requestsMailHeld: number;
+	/** Card 3020 (R11): unconfirmed requests it newly held; they cannot be released and lapse after 7 days. */
+	requestsUnconfirmedHeld: number;
+	/** Card 3020: people it marked left. */
+	peopleMailOff: number;
+	/** Card 3020 (R21): participant rows, not removed, of those people: places on decisions. */
+	decisionPlacesMailOff: number;
 };
 
 /** A restore's `unsealedReach` before anything is counted. */
-export const NO_UNSEALED_REACH: UnsealedReach = { webhooks: 0, schedules: 0, accountsAsHere: 0, addressesGivenUp: 0, notificationsOff: 0, notifyEmail: 0 };
+export const NO_UNSEALED_REACH: UnsealedReach = {
+	webhooks: 0,
+	schedules: 0,
+	accountsAsHere: 0,
+	addressesGivenUp: 0,
+	notificationsOff: 0,
+	notifyEmail: 0,
+	requestsMailHeld: 0,
+	requestsUnconfirmedHeld: 0,
+	peopleMailOff: 0,
+	decisionPlacesMailOff: 0
+};
 
 /** The restored passwords a restore kept out of use (cards 2997 and 3009): see `RestoreResult.passwordsKept`. */
 export type PasswordsKept = {
@@ -569,7 +592,9 @@ function webhookHoldsHere(live: Database.Database): HoldHere[] {
  * and setter as one switched off here is switched off with the same hold,
  * whatever the backup had it as, so a restore never switches back on a
  * webhook held off here, the backup's setter being able to open the board or
- * not, its secret filled or not. Returns how many rows it changed.
+ * not, its secret filled or not. Returns the ids of the rows it changed, so that
+ * an unsealed restore counts only the webhooks this server did not hold (card
+ * 3020's code review, FP2).
  *
  * The addresses are compared opened (card 2928): the same text sealed twice is
  * two envelopes. Where either side's address is '' or does not open, the hold
@@ -581,13 +606,13 @@ function webhookHoldsHere(live: Database.Database): HoldHere[] {
  * one. Held either way: R3 decides only the words. Only where `sealVerified` is false (its code review, FP9): a sealed
  * backup's row held for that reason by an earlier restore takes this server's hold as any other does.
  */
-function carryHolds(live: Database.Database, holds: readonly HoldHere[], sealVerified: boolean): number {
-	if (holds.length === 0) return 0;
+function carryHolds(live: Database.Database, holds: readonly HoldHere[], sealVerified: boolean): Set<number> {
+	const carried = new Set<number>();
+	if (holds.length === 0) return carried;
 	const find = live.prepare(
 		`SELECT id, board_id AS boardId, url, ${receiverColumn(live)} AS receiver, held_because AS heldBecause FROM webhooks WHERE id = ? AND board_id = ? AND set_by IS ?`
 	);
 	const carry = live.prepare('UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE id = ?');
-	let carried = 0;
 	for (const hold of holds) {
 		const row = find.get(hold.id, hold.boardId, hold.setBy) as { id: number; boardId: number; url: string; receiver: string; heldBecause: string | null } | undefined;
 		if (row === undefined) continue;
@@ -595,7 +620,7 @@ function carryHolds(live: Database.Database, holds: readonly HoldHere[], sealVer
 		const restored = addressToBind(row);
 		if (here !== null && restored !== null && here !== restored) continue;
 		if (!sealVerified && row.heldBecause === HELD_FROM_UNSEALED_BACKUP && (here === null || restored === null)) continue;
-		carried += carry.run(hold.heldBecause, hold.heldAt, row.id).changes;
+		if (carry.run(hold.heldBecause, hold.heldAt, row.id).changes > 0) carried.add(row.id);
 	}
 	return carried;
 }
@@ -606,22 +631,22 @@ function carryHolds(live: Database.Database, holds: readonly HoldHere[], sealVer
  * `HELD_FROM_UNSEALED_BACKUP` over any reason the file gave, `held_at` the restore's moment, its secret discarded and
  * its `webhook_reveals` rows deleted, so that switching it on gives it a new secret (`NEW_SECRET_REASONS`). Every one
  * with no address the file has on is switched off, not held, and stays listed to enter. After the address fill (which
- * fills nothing here) and before `carryHolds`. Returns the ids it newly held, those on or not held just before it,
- * which are counted (R15), and every id it held, the file's own holds among them, which are listed (its code review,
- * FP19). Nothing where the live table lacks the columns. Not caught.
+ * fills nothing here) and before `carryHolds`. Returns every id it held, the file's own holds among them, which are
+ * listed (its code review, FP19); those `carryHolds` does not then give this server's hold are counted (R15), whatever
+ * the file put in `held_because` (card 3020's code review, FP2). Nothing where the live table lacks the columns. Not
+ * caught.
  */
-function holdUnsealedWebhooks(live: Database.Database, at: string): { newly: number[]; held: number[] } {
+function holdUnsealedWebhooks(live: Database.Database, at: string): { held: number[] } {
 	const present = live
 		.prepare("SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name IN ('url', 'active', 'secret', 'held_because', 'held_at')")
 		.pluck()
 		.get() as number;
-	if (present < 5) return { newly: [], held: [] };
-	const newly = live.prepare("SELECT id FROM webhooks WHERE url <> '' AND (active = 1 OR held_because IS NULL) ORDER BY id").pluck().all() as number[];
+	if (present < 5) return { held: [] };
 	const held = live.prepare("SELECT id FROM webhooks WHERE url <> '' ORDER BY id").pluck().all() as number[];
 	if (tableIn(live, 'webhook_reveals')) live.prepare("DELETE FROM webhook_reveals WHERE webhook_id IN (SELECT id FROM webhooks WHERE url <> '')").run();
 	live.prepare("UPDATE webhooks SET active = 0, secret = '', held_because = ?, held_at = ? WHERE url <> ''").run(HELD_FROM_UNSEALED_BACKUP, at);
 	live.prepare("UPDATE webhooks SET active = 0 WHERE url = '' AND active <> 0").run();
-	return { newly, held };
+	return { held };
 }
 
 /**
@@ -801,6 +826,220 @@ function keepNotifyEmailHere(live: Database.Database, before: string | null): nu
 	live.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(JSON.stringify({ ...was, notifyEmail: addressHere }));
 	// The failure mail goes only to a value that is set (`config.notifyEmail &&`, backup.ts): none for none is no change.
 	return was.notifyEmail || addressHere !== '' ? 1 : 0;
+}
+
+/**
+ * A request as `requestRowsOf` reads it (card 3020, R1), this server's or a restored one: the fields that decide "the
+ * same request here", with its card's and that card's board's, and its hold and last release (R9). Each as
+ * better-sqlite3 returns it.
+ */
+type RequestIdentity = {
+	id: number;
+	created_at: unknown;
+	title: unknown;
+	requester_email: unknown;
+	requester_user_id: unknown;
+	status: unknown;
+	resolved_card_id: unknown;
+	card_created_at: unknown;
+	card_title: unknown;
+	card_board_id: unknown;
+	mail_held_because: unknown;
+	mail_released_at: unknown;
+	mail_released_by: unknown;
+	mail_released_by_name: unknown;
+};
+
+/** The fields of `RequestIdentity` that must all be `===` equal for a restored request to be the one this server held (R1). */
+const SAME_REQUEST_FIELDS = [
+	'created_at',
+	'title',
+	'requester_email',
+	'requester_user_id',
+	'status',
+	'resolved_card_id',
+	'card_created_at',
+	'card_title',
+	'card_board_id'
+] as const satisfies readonly (keyof RequestIdentity)[];
+
+/**
+ * Every request in `live` by id, with its card's `created_at` and `title` and the board of that card's column (card
+ * 3020, R1), and its hold and last release: read before the clear for this server, and after the copy for the backup.
+ * Guarded on the tables and columns being there: none where `task_requests` or one of its columns is missing, and the
+ * card's three NULL where the card's tables or columns are. Reads.
+ */
+function requestRowsOf(live: Database.Database): Map<number, RequestIdentity> {
+	const requests = new Map<number, RequestIdentity>();
+	const needed = ['id', 'created_at', 'title', 'requester_email', 'requester_user_id', 'status', 'resolved_card_id'];
+	const holdColumns = ['mail_held_because', 'mail_released_at', 'mail_released_by', 'mail_released_by_name'];
+	if (!hasColumns(live, 'task_requests', [...needed, ...holdColumns])) return requests;
+	const withCard = hasColumns(live, 'cards', ['id', 'created_at', 'title', 'column_id']);
+	const withBoard = withCard && hasColumns(live, 'columns', ['id', 'board_id']);
+	const rows = live
+		.prepare(
+			'SELECT r.id, r.created_at, r.title, r.requester_email, r.requester_user_id, r.status, r.resolved_card_id, ' +
+				`${withCard ? 'c.created_at' : 'NULL'} AS card_created_at, ${withCard ? 'c.title' : 'NULL'} AS card_title, ` +
+				`${withBoard ? 'col.board_id' : 'NULL'} AS card_board_id, ` +
+				'r.mail_held_because, r.mail_released_at, r.mail_released_by, r.mail_released_by_name FROM task_requests r' +
+				(withCard ? ' LEFT JOIN cards c ON c.id = r.resolved_card_id' : '') +
+				(withBoard ? ' LEFT JOIN columns col ON col.id = c.column_id' : '') +
+				' ORDER BY r.id'
+		)
+		.all() as RequestIdentity[];
+	for (const row of rows) requests.set(row.id, row);
+	return requests;
+}
+
+/**
+ * Card 3020 (section 3.2; R1, R9, R11): on a restore of a backup whose seal did not verify, as it is or as a working
+ * copy, every restored request's hold decided by this server, never the file. A request is the same here where this
+ * server had the same id, every field of `SAME_REQUEST_FIELDS` is `===` equal, and its requester account, if any, is
+ * the same here (`sameHere`): it takes this server's `mail_held_because` and last release, the release naming its
+ * account only where that account is the same here, and otherwise keeping its moment and name with no account, as ON
+ * DELETE SET NULL would (its code review, FP1). Any other request with an address (an account, or a requester email
+ * neither NULL nor '') has its mail held (`HELD_FROM_UNSEALED_BACKUP`, over any text the file gave) and no release; one
+ * with no address has neither, since nothing can be mailed. Counts every request it holds that was not the same here,
+ * whatever the file put in `mail_held_because` (its code review, FP2): `unconfirmed` for a request awaiting
+ * confirmation, which cannot be released (R11), and `held` for any other. Names nobody. After `keepNotifyEmailHere`.
+ * Not caught.
+ */
+function holdUnsealedRequestMail(
+	live: Database.Database,
+	here: ReadonlyMap<number, RequestIdentity>,
+	sameHere: (id: number) => boolean
+): { held: number; unconfirmed: number } {
+	const counted = { held: 0, unconfirmed: 0 };
+	const restored = requestRowsOf(live);
+	if (restored.size === 0) return counted;
+	const write = live.prepare(
+		'UPDATE task_requests SET mail_held_because = ?, mail_released_at = ?, mail_released_by = ?, mail_released_by_name = ? WHERE id = ?'
+	);
+	for (const row of restored.values()) {
+		const ours = here.get(row.id);
+		const sameRequestHere =
+			ours !== undefined &&
+			SAME_REQUEST_FIELDS.every((field) => row[field] === ours[field]) &&
+			(row.requester_user_id === null || (typeof row.requester_user_id === 'number' && sameHere(row.requester_user_id)));
+		if (sameRequestHere) {
+			// Never an account the restore did not bring back as the same one (FP1): `PRAGMA foreign_key_check` stays empty.
+			const releasedBy = typeof ours.mail_released_by === 'number' && sameHere(ours.mail_released_by) ? ours.mail_released_by : null;
+			write.run(ours.mail_held_because, ours.mail_released_at, releasedBy, ours.mail_released_by_name, row.id);
+			continue;
+		}
+		const hasAddress = row.requester_user_id !== null || (row.requester_email !== null && row.requester_email !== '');
+		if (!hasAddress) {
+			write.run(null, null, null, null, row.id);
+			continue;
+		}
+		write.run(HELD_FROM_UNSEALED_BACKUP, null, null, null, row.id);
+		// Counted against this server, never the file (FP2): a hold the file wrote in is no hold here.
+		if (row.status === 'unverified') counted.unconfirmed++;
+		else counted.held++;
+	}
+	return counted;
+}
+
+/**
+ * A person as `peopleRowsOf` reads them (card 3020, R7, R8), this server's or a restored one: the fields that decide
+ * "the same person here", each as better-sqlite3 returns it, with the address's storage class, and the moment they
+ * left as text, which the record a marking writes takes from this server's row alone.
+ */
+type PersonIdentity = {
+	id: number;
+	email: unknown;
+	email_type: unknown;
+	user_id: unknown;
+	status: unknown;
+	left_at: unknown;
+	left_at_text: unknown;
+};
+
+/**
+ * Every person in `live` by id (card 3020, section 3.3): the address as text with its storage class, the account, the
+ * status and when they left. Read before the clear for this server, and after the copy for the backup. None where
+ * `people` or one of its columns is missing. Reads.
+ */
+function peopleRowsOf(live: Database.Database): Map<number, PersonIdentity> {
+	const people = new Map<number, PersonIdentity>();
+	if (!hasColumns(live, 'people', ['id', 'email', 'user_id', 'status', 'left_at', 'updated_at'])) return people;
+	const rows = live
+		.prepare(
+			'SELECT id, CAST(email AS TEXT) AS email, typeof(email) AS email_type, user_id, status, ' +
+				'left_at, CAST(left_at AS TEXT) AS left_at_text FROM people ORDER BY id'
+		)
+		.all() as PersonIdentity[];
+	for (const row of rows) people.set(row.id, row);
+	return people;
+}
+
+/**
+ * What a people_changes row says a restored person was (card 3020's code review, FP6): the status only where it is
+ * `'active'` or `'left'`, else the fixed word `'other'`, and the moment they left only where it reads as a timestamp, in
+ * this build's form. Never the file's own text.
+ */
+function personBefore(row: PersonIdentity): string {
+	const status = row.status === 'active' || row.status === 'left' ? row.status : 'other';
+	return JSON.stringify({ status, leftAt: toStamp(row.left_at) });
+}
+
+/**
+ * Card 3020 (section 3.3; R7, R8, R13): on a restore of a backup whose seal did not verify, as it is or as a working
+ * copy, every restored person this server did not hold, or has as left, marked left, so that no decision mail, reminder
+ * or personal link goes to the address the file gave them (`reachOf` skips anyone not active). A person is held here
+ * where this server had the same id, the address is text on both sides and `===` equal, the account (`user_id`) is
+ * `===` equal, and that account, if any, is the same here (`sameHere`). A person the file has as left stays as it has
+ * them. Any other is marked left: one the same here whom this server has as left with this server's `left_at`; one the
+ * same here and active on both sides is left alone; anyone else, a status that is neither active nor left among them
+ * (R8), with `left_at` the restore's moment `at`. Each marked has one `people_changes` row by DumpFire, source `restore`,
+ * saying the status and when they left, before (`personBefore`: never the file's text, its code review's FP6) and
+ * after: no address and no account id (R13). Nothing writes `email`,
+ * so its UNIQUE index cannot break, and no participant row is written: the restore has ended every link already.
+ * Counts the people marked, and their places on decisions (participant rows not removed), in JavaScript. The last of
+ * card 3020's steps. Not caught.
+ */
+function switchOffUnsealedPeople(
+	live: Database.Database,
+	here: ReadonlyMap<number, PersonIdentity>,
+	sameHere: (id: number) => boolean,
+	at: string
+): { people: number; places: number } {
+	const restored = peopleRowsOf(live);
+	const marked = new Set<number>();
+	if (restored.size === 0) return { people: 0, places: 0 };
+	const markLeft = live.prepare("UPDATE people SET status = 'left', left_at = ?, updated_at = ? WHERE id = ?");
+	const recorded = columnNamesOf(live, 'people_changes').length > 0;
+	const record = recorded
+		? live.prepare(
+				'INSERT INTO people_changes (created_at, actor_user_id, actor_name, source, subject, subject_id, kind, before, after) ' +
+					"VALUES (?, NULL, 'DumpFire', 'restore', 'person', ?, 'updated', ?, ?)"
+			)
+		: null;
+	for (const row of restored.values()) {
+		// Left in the file: kept as the file has them, held here or not.
+		if (row.status === 'left') continue;
+		const ours = here.get(row.id);
+		const samePersonHere =
+			ours !== undefined &&
+			row.email_type === 'text' &&
+			ours.email_type === 'text' &&
+			row.email === ours.email &&
+			row.user_id === ours.user_id &&
+			(row.user_id === null || (typeof row.user_id === 'number' && sameHere(row.user_id)));
+		let leftAt: { value: unknown; text: unknown };
+		if (samePersonHere && ours.status === 'left') leftAt = { value: ours.left_at, text: ours.left_at_text };
+		else if (samePersonHere && row.status === 'active') continue;
+		else leftAt = { value: at, text: at };
+		markLeft.run(leftAt.value, at, row.id);
+		record?.run(at, row.id, personBefore(row), JSON.stringify({ status: 'left', leftAt: leftAt.text }));
+		marked.add(row.id);
+	}
+	let places = 0;
+	if (marked.size > 0 && columnNamesOf(live, 'decision_participants').length > 0) {
+		const participants = live.prepare('SELECT person_id, removed_at FROM decision_participants').all() as { person_id: unknown; removed_at: unknown }[];
+		places = participants.filter((p) => p.removed_at === null && typeof p.person_id === 'number' && marked.has(p.person_id)).length;
+	}
+	return { people: marked.size, places };
 }
 
 /** Where this server's settings that reach outside are (card 3009, R4), in the places `setting_holds` names them by. */
@@ -1219,7 +1458,7 @@ function carryAccountEndings(live: Database.Database, backup: Database.Database,
 	let leftOutWhole = 0;
 	if (tableIn(backup, ACCOUNT_RECORD)) {
 		const columns = columnNamesOf(backup, ACCOUNT_RECORD);
-		const readable = ['user_id', 'account_created', 'ending', 'ended_at'].every((column) => columns.includes(column));
+		const readable = hasColumns(backup, ACCOUNT_RECORD, ['user_id', 'account_created', 'ending', 'ended_at']);
 		const from = fromTableStorage(backup, ACCOUNT_RECORD);
 		const sizes = readable
 			? (backup
@@ -1734,8 +1973,7 @@ type KeyHere = { id: number; keyHash: string; userId: number; expiresAt: string 
  * has no record.
  */
 function keysHeldHere(live: Database.Database): KeysHeldHere {
-	const keyColumns = columnNamesOf(live, 'api_keys');
-	const all = ['user_id', 'key_hash', 'expires_at', 'deadline_at'].every((column) => keyColumns.includes(column))
+	const all = hasColumns(live, 'api_keys', ['user_id', 'key_hash', 'expires_at', 'deadline_at'])
 		? (live
 				.prepare('SELECT id, key_hash AS keyHash, user_id AS userId, expires_at AS expiresAt, deadline_at AS deadlineAt FROM api_keys ORDER BY id')
 				.all() as KeyHere[])
@@ -1767,11 +2005,9 @@ type RecordRowFault = 'an id that is not a whole number from 1 to 2^53 - 1' | "a
 function carryKeyRevocations(live: Database.Database, backup: Database.Database, errors: string[], at: string): number {
 	let added = 0;
 	if (tableIn(backup, KEY_RECORD)) {
-		const columns = columnNamesOf(backup, KEY_RECORD);
-		const rows = ['key_id', 'key_hash'].every((column) => columns.includes(column))
-			? (backup.prepare(fromTableStorage(backup, KEY_RECORD)).all() as Record<string, unknown>[])
-			: [];
-		const unreadable = rows.length === 0 && !['key_id', 'key_hash'].every((column) => columns.includes(column));
+		const readable = hasColumns(backup, KEY_RECORD, ['key_id', 'key_hash']);
+		const rows = readable ? (backup.prepare(fromTableStorage(backup, KEY_RECORD)).all() as Record<string, unknown>[]) : [];
+		const unreadable = !readable;
 		// The backup's own bound: its key counter, or its largest key id, whichever is greater (card 2996's code review, FP11).
 		const bound = backupBound(backup, 'api_keys', 'api_keys');
 		const faults = new Map<RecordRowFault, number>();
@@ -2057,6 +2293,12 @@ type Stranded = { table: string; parent: string; rows: (number | null)[] };
 /** The columns of `table` in `database`: none when there is no such table. */
 const columnNamesOf = (database: Database.Database, table: string): string[] =>
 	(database.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[]).map((column) => column.name);
+
+/** Whether `table` in `database` has every one of `columns`: false when there is no such table (card 3020's code review, FP10). */
+function hasColumns(database: Database.Database, table: string, columns: readonly string[]): boolean {
+	const present = columnNamesOf(database, table);
+	return columns.every((column) => present.includes(column));
+}
 
 /**
  * Every row in `live` that refers, through a foreign key, to a row that is not
@@ -2455,12 +2697,7 @@ const MAIL_SETTINGS = [
  * rolls back.
  */
 export function switchOffOutside(database: Database.Database, options: { appUrl?: boolean } = {}): OutsideSwitchedOff {
-	const hasColumns = (table: string, ...columns: string[]) => {
-		const present = (database.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[]).map(
-			(c) => c.name
-		);
-		return columns.every((column) => present.includes(column));
-	};
+	const has = (table: string, ...columns: string[]) => hasColumns(database, table, columns);
 
 	const done: OutsideSwitchedOff = {
 		reportSchedules: 0,
@@ -2470,22 +2707,22 @@ export function switchOffOutside(database: Database.Database, options: { appUrl?
 		mailSettings: 0
 	};
 
-	if (hasColumns('report_schedules', 'enabled')) {
+	if (has('report_schedules', 'enabled')) {
 		done.reportSchedules = database
 			.prepare('UPDATE report_schedules SET enabled = 0 WHERE enabled != 0')
 			.run().changes;
 	}
-	if (hasColumns('webhooks', 'active')) {
+	if (has('webhooks', 'active')) {
 		done.webhooks = database.prepare('UPDATE webhooks SET active = 0 WHERE active != 0').run().changes;
 	}
 	// A working copy has no mail host, which would let every account marked
 	// for it set up two-step sign-in on its password alone (card 2769, R1):
 	// that leave is taken from every account instead (CS5). Its owners are
 	// given set-up links by an administrator.
-	if (hasColumns('users', 'mfa_password_enrol')) {
+	if (has('users', 'mfa_password_enrol')) {
 		database.prepare('UPDATE users SET mfa_password_enrol = 0 WHERE mfa_password_enrol != 0').run();
 	}
-	if (!hasColumns('settings', 'key', 'value')) return done;
+	if (!has('settings', 'key', 'value')) return done;
 
 	const stored = database.prepare("SELECT value FROM settings WHERE key = 'backup_config'").get() as
 		| { value: string }
@@ -2519,12 +2756,12 @@ export function switchOffOutside(database: Database.Database, options: { appUrl?
 	// place its account's again (setting-setters.ts), and that account's
 	// demotion would take it away. The App URL's rows stay, as the App URL
 	// does. Not counted: nothing reaches outside through them.
-	if (hasColumns('setting_setters', 'setting')) {
+	if (has('setting_setters', 'setting')) {
 		database.prepare("DELETE FROM setting_setters WHERE setting = 'mail' OR substr(setting, 1, 19) = 'backup_destination:'").run();
 	}
 	// And their holds for review, carried just before (card 2922, its plan's R17): a working copy has no mail
 	// settings or destinations to hold, and none of this server's is to be held there. The App URL's stay, as it does.
-	if (hasColumns('setting_holds', 'setting')) {
+	if (has('setting_holds', 'setting')) {
 		database.prepare("DELETE FROM setting_holds WHERE setting = 'mail' OR substr(setting, 1, 19) = 'backup_destination:'").run();
 	}
 	// A working copy of a backup whose seal did not verify (FP3): its App URL is only the file's word, so it goes as the
@@ -2532,8 +2769,8 @@ export function switchOffOutside(database: Database.Database, options: { appUrl?
 	if (options.appUrl === true) {
 		const removed = database.prepare("DELETE FROM settings WHERE key = 'app_url'").run().changes;
 		if (removed > 0) done.appUrl = removed;
-		if (hasColumns('setting_setters', 'setting')) database.prepare("DELETE FROM setting_setters WHERE setting = 'app_url'").run();
-		if (hasColumns('setting_holds', 'setting')) database.prepare("DELETE FROM setting_holds WHERE setting = 'app_url'").run();
+		if (has('setting_setters', 'setting')) database.prepare("DELETE FROM setting_setters WHERE setting = 'app_url'").run();
+		if (has('setting_holds', 'setting')) database.prepare("DELETE FROM setting_holds WHERE setting = 'app_url'").run();
 	}
 
 	return done;
@@ -3023,6 +3260,12 @@ function restoreInOneSnapshot(
 			const keysNow = keysHeldHere(live);
 			// And its accounts up to the account watermark, with its superadmins (card 2996): see `accountRulings`.
 			const accountsNow = accountsHeldHere(live);
+			// And its requests, with their cards and boards, where the seal did not verify (card 3020, R1): see
+			// `holdUnsealedRequestMail`.
+			const requestsNow = sealVerified ? new Map<number, RequestIdentity>() : requestRowsOf(live);
+			// And its people, with their addresses and accounts, where the seal did not verify (card 3020, R7): see
+			// `switchOffUnsealedPeople`.
+			const peopleNow = sealVerified ? new Map<number, PersonIdentity>() : peopleRowsOf(live);
 			// The rows of the keys `carryDisabled` deletes, for the hold below (R2).
 			const disabledReveals: Reveal[] = [];
 			// And those keys' ids, counted with the keys left out (card 2995, R13).
@@ -3385,15 +3628,16 @@ function restoreInOneSnapshot(
 			// on. Not caught.
 			// Card 3012 (R1, R2): before that, where the seal did not verify, every restored webhook with an address held, its
 			// secret discarded, and every one without switched off, as it is or as a working copy. Not caught.
-			const unsealedHeldNow = sealVerified ? { newly: [], held: [] } : holdUnsealedWebhooks(live, restoredAt);
-			carryHolds(live, holdsHere, sealVerified);
+			const unsealedHeldNow = sealVerified ? { held: [] } : holdUnsealedWebhooks(live, restoredAt);
+			const carriedHere = carryHolds(live, holdsHere, sealVerified);
 			// Only those still held for that reason once this server's holds are carried (R3): every one listed below (its
-			// code review, FP19), and those newly held counted (R15).
+			// code review, FP19), and those this server did not hold counted (R15), whatever the file put in `held_because`
+			// (card 3020's code review, FP2).
 			const stillUnsealed = new Set(
 				unsealedHeldNow.held.length === 0 ? [] : (live.prepare('SELECT id FROM webhooks WHERE held_because = ?').pluck().all(HELD_FROM_UNSEALED_BACKUP) as number[])
 			);
 			unsealedWebhooks = unsealedHeldNow.held.filter((id) => stillUnsealed.has(id));
-			unsealedCounted = new Set(unsealedHeldNow.newly.filter((id) => stillUnsealed.has(id)));
+			unsealedCounted = new Set(unsealedWebhooks.filter((id) => !carriedHere.has(id)));
 			unsealedReach = { ...unsealedReach, webhooks: unsealedCounted.size };
 			// This server's settings held for review carried over the backup's, a union (card 2922, R10), before any
 			// secret is filled, so that a destination or mail at a held place comes back held. And mail set up here
@@ -3408,6 +3652,22 @@ function restoreInOneSnapshot(
 			// Card 3012 (R5): and, as it is or as a working copy, the backup failure mail's address this server's, called on its
 			// own: the last of card 3012's steps (R14). Not caught.
 			if (!sealVerified && tables.includes('settings')) unsealedReach = { ...unsealedReach, notifyEmail: keepNotifyEmailHere(live, notifyEmailNow) };
+			// Card 3020 (R1, R9, R11): then, as it is or as a working copy, every restored request this server did not hold as it
+			// is, with an address, has its requester mail held, and every one it did takes this server's hold. Not caught.
+			// Card 3020 (R7, R8, R13): and, as it is or as a working copy, every restored person this server did not hold, or has
+			// as left, marked left, each recorded in people_changes: the last of card 3020's steps. Not caught. Both ask one
+			// `restoredSameHere` (its code review, FP10).
+			if (!sealVerified) {
+				const sameHere = restoredSameHere(live, accountsNow, trust);
+				if (tables.includes('task_requests')) {
+					const requests = holdUnsealedRequestMail(live, requestsNow, sameHere);
+					unsealedReach = { ...unsealedReach, requestsMailHeld: requests.held, requestsUnconfirmedHeld: requests.unconfirmed };
+				}
+				if (tables.includes('people')) {
+					const marked = switchOffUnsealedPeople(live, peopleNow, sameHere, restoredAt);
+					unsealedReach = { ...unsealedReach, peopleMailOff: marked.people, decisionPlacesMailOff: marked.places };
+				}
+			}
 			if (mailEverHere !== null && tables.includes('settings')) {
 				live.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run('mail_ever_configured_at', mailEverHere);
 			}

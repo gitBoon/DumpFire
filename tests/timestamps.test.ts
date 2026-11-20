@@ -167,8 +167,9 @@ describe('timestampColumns', () => {
 		// disabled (migration 0072, card 2671); and when a setting was held for review (migration 0074, card 2922); and
 		// when an API key was first given a webhook's secret (migration 0075, card 2947); and when an API key was ended
 		// here (migration 0076, card 2995); and when an account was ended here (migration 0077, card 2996: its creation
-		// time is held in `account_created`, not an `*_at` column, so that a seed row's '' is never read as unreadable).
-		expect(found).toHaveLength(85);
+		// time is held in `account_created`, not an `*_at` column, so that a seed row's '' is never read as unreadable);
+		// and when a request's held mail was last released (migration 0078, card 3020).
+		expect(found).toHaveLength(86);
 		expect(found).not.toContain('account_endings.account_created');
 		for (const column of [
 			'activity_log.created_at',
@@ -200,7 +201,9 @@ describe('timestampColumns', () => {
 			// Card 2995.
 			'api_key_revocations.revoked_at',
 			// Card 2996.
-			'account_endings.ended_at'
+			'account_endings.ended_at',
+			// Card 3020.
+			'task_requests.mail_released_at'
 		]) {
 			expect(found).toContain(column);
 		}

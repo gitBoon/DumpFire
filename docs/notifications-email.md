@@ -1,10 +1,12 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.90
+version: 1.91
 status: As-Built
-date: 2026-11-19
+date: 2026-11-20
 tags:
+  - card-3020
+  - unsealed-request-addresses
   - card-2947
   - webhook-reveals
   - card-2928
@@ -41,7 +43,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Complete guide to DumpFire's notification pipeline: the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
+description: "Complete guide to DumpFire's notification pipeline: requester mail held after an unsealed restore, progress mail to every unheld accepted request on a card, mailed false on a reply, and people marked left mailed nothing about decisions (card 3020), the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -1943,6 +1945,46 @@ flowchart TD
     Account -->|"no"| None["No address: nothing sent"]
     Who -->|"no"| Stored["requester_email: the address given,<br/>or the one deleteUser wrote"]
 ```
+
+**A request's mail held** (card 3020). A restore of a backup whose seal did not verify sets
+`task_requests.mail_held_because` (migration 0078) on each request it brought in with an address that
+this server did not hold as it is: the same id, made at the same moment, with the same title,
+requester address and account, status and card, the card with the same title and creation and on the
+same board, and the requester's account the same here. The requester's address and the card the mail
+would carry are only the file's word. `requesterMailAddress()` answers null for a held request before
+it reads any address, so nothing is sent to its requester and no link is issued: no progress or
+completion mail and no PDF report (`generateCardReport` is not called), no "Request accepted" or
+"Request declined", no reply, and no new link (`POST /api/requests/{id}/link` answers `202` as for
+any address). An administrator's reply on a held request is saved and answered `mailed: false`, and
+the inbox shows "Mail held – the requester was not mailed". An administrator releases it, with the
+password and a code, under **Mail held** in the Requests inbox (`POST /api/requests/held`); the release
+mails nothing, and the next mail carries a link. An unconfirmed held request cannot be released, as
+that would send a confirmation link to the file's address; it lapses 7 days after it was made.
+
+**Every accepted request on the card is mailed** (card 3020, R10). `notifyRequesterProgress()` used to
+read one accepted request on the card (`.get()`); it now reads every accepted request on it that is
+not held (`isNull(mail_held_because)` in the WHERE), in id order. The checks that do not depend on the
+request (mail set up, the card complete, no App URL for the link) run once; then, for each, the
+address, the self-skip, the preferences, a link of its own and a send after the commit. So a held row
+planted on a card hides no genuine requester's mail.
+
+```mermaid
+flowchart TD
+    Act["A comment, tick, move or completion on a card"] --> Rows["Every accepted request on it<br/>with mail_held_because NULL, id order"]
+    Rows --> Each{"For each: requesterMailAddress"}
+    Each -->|"an address, not the actor,<br/>preferences allow"| Send["A link of its own;<br/>mail after the commit"]
+    Each -->|"none"| Skip["Nothing sent"]
+    Held["A held request (card 3020)"] -.->|"left out by the WHERE,<br/>and the gate answers null"| Skip
+```
+
+**People marked left are mailed nothing about decisions** (card 3020). The same restore marks left
+each person in the people directory whose id, address and account this server did not hold (the
+account the same here), whom it has as left, or whose status is neither active nor left, recorded by
+DumpFire in `people_changes`. Every participant mail, the record mails, reminders and answer notices,
+asks `reachOf`, which mails a participant only where their person is active and holds the same
+address, so those people's places on decisions are mailed nothing (`mail_skipped`, reason `left`), and
+Resend is refused. Nothing in the decision record is rewritten. An administrator checks the address
+and marks the person active on the People page, with the password and a code.
 
 On card completion, a **PDF task report** is automatically generated and attached to the completion email. A request accepted straight into a Complete or Done column makes a card that is completed as it is created (see [Data Model](data-model.md#one-completion-however-a-card-arrives)), so the requester is sent "Request accepted" and then the completion email with its report (card 2134). A subtask ticked through the API mails the requester as one ticked on the page does (card 2108). No progress email goes to a requester who made the change themselves, and none but the completion email once the card is complete.
 

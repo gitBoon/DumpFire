@@ -964,6 +964,19 @@ export const taskRequests = sqliteTable('task_requests', {
 	resolvedCardId: integer('resolved_card_id').references(() => cards.id, { onDelete: 'set null' }),
 	desiredBoardId: integer('desired_board_id').references(() => boards.id, { onDelete: 'set null' }),
 	rejectReason: text('reject_reason'),
+	/**
+	 * Card 3020 (migration 0078): NULL for none, otherwise why the requester's
+	 * mail is held, in words. A restore of a backup whose seal did not verify
+	 * writes it for each request with an address this server did not hold as it
+	 * is (`holdUnsealedRequestMail`); while it is set `requesterMailAddress`
+	 * answers null and progress mail passes the request by. Cleared by an
+	 * administrator's release, recorded in the three columns below.
+	 */
+	mailHeldBecause: text('mail_held_because'),
+	mailReleasedAt: text('mail_released_at'),
+	mailReleasedBy: integer('mail_released_by').references(() => users.id, { onDelete: 'set null' }),
+	/** The releasing administrator's name as it was, since the account may be deleted. */
+	mailReleasedByName: text('mail_released_by_name'),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`),
@@ -974,7 +987,8 @@ export const taskRequests = sqliteTable('task_requests', {
 	index('idx_task_requests_requester_user_id').on(table.requesterUserId),
 	index('idx_task_requests_resolved_by').on(table.resolvedBy),
 	index('idx_task_requests_resolved_card_id').on(table.resolvedCardId),
-	index('idx_task_requests_desired_board_id').on(table.desiredBoardId)
+	index('idx_task_requests_desired_board_id').on(table.desiredBoardId),
+	index('idx_task_requests_mail_released_by').on(table.mailReleasedBy)
 ]);
 
 export type TaskRequest = typeof taskRequests.$inferSelect;
@@ -1294,7 +1308,8 @@ export const peopleGroupMembers = sqliteTable('people_group_members', {
  * Every change to the people directory and its groups, one row a change, by
  * the People page or an API key (card 2681, migration 0064): what it was and
  * what it became, so that an administrator can put a change back. Insert-only
- * in code (`recordChange` in people.ts, the one insert), and never pruned:
+ * in code (`recordChange` in people.ts, and `switchOffUnsealedPeople` in
+ * restore.ts for a person a restore marks left, card 3020), and never pruned:
  * the system log's PEOPLE line beside it is pruned with the log. `subject_id`
  * is a plain integer with no foreign key, so that a person's or a group's
  * delete leaves its rows. `before` and `after` are JSON of names, job titles,
@@ -1308,7 +1323,8 @@ export const peopleChanges = sqliteTable('people_changes', {
 		.default(sql`(datetime('now'))`),
 	actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
 	actorName: text('actor_name').notNull(),
-	source: text('source').notNull(), // 'ui' | 'api'
+	/** 'ui' | 'api', or 'restore' for a person an unsealed restore marked left, by DumpFire (card 3020, R13). */
+	source: text('source').notNull(),
 	subject: text('subject').notNull(), // 'person' | 'group'
 	subjectId: integer('subject_id').notNull(),
 	kind: text('kind').notNull(), // 'created' | 'updated' | 'deleted' | 'members_set'

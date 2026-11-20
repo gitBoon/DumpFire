@@ -115,10 +115,12 @@ export function hashOf(token: string): string {
 /**
  * Whether the participant may hold a link (S6, decision 9): not removed; no
  * account on the row, now or ever on this decision (`hadAccount`); and a
- * person who exists and has no account now.
+ * person who exists, is active and has no account now. Active is `reachOf`'s
+ * rule too, asked again here as defence in depth (card 3020's code review,
+ * FP12): a person an unsealed restore marked left holds no link.
  */
 export function mayHoldLink(p: DecisionParticipant, person: Person | null, hadAccount: boolean): boolean {
-	return p.removedAt === null && p.userId === null && !hadAccount && person !== null && person.userId === null;
+	return p.removedAt === null && p.userId === null && !hadAccount && person !== null && person.status === 'active' && person.userId === null;
 }
 
 /**

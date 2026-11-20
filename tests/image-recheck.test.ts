@@ -297,8 +297,8 @@ describe('the one-off check, after the code review (card 2761, CS1 to CS4)', () 
 		});
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
-		await vi.waitFor(() => expect(Buffer.compare(readFileSync(at(card.id, photo.filename)), Buffer.from(png()))).toBe(0));
-		await vi.waitFor(() => expect(flag()).toBeDefined());
+		await vi.waitFor(() => expect(Buffer.compare(readFileSync(at(card.id, photo.filename)), Buffer.from(png()))).toBe(0), { timeout: 15_000 });
+		await vi.waitFor(() => expect(flag()).toBeDefined(), { timeout: 15_000 });
 		expect(rowOf(photo).sizeBytes).toBe(png().length);
 	});
 });

@@ -2686,11 +2686,12 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'createPerson', args: [code('caller'), {}, code('body'), { source: 'ui' }] }
 	],
 	// Card 2697 (Q21): with neither email nor userId, the change as it was; with either, every refusal first
-	// as the step-up's guard, then the change, which asks its guard itself.
+	// as the step-up's guard, then the change, which asks its guard itself. Card 3020 (R6): Mark active asks too, and
+	// only the step-up branch says `steppedUp`, to the guard and to the change; the unasked branch says nothing of it.
 	'src/routes/api/people/[id]/+server.ts PUT': [
 		{ service: 'updatePerson', args: [code('caller'), { personId: code('id') }, code('body'), { source: 'ui' }] },
-		{ service: 'personUpdateGuard', args: [code('caller'), { personId: code('id') }, code('body')] },
-		{ service: 'updatePerson', args: [code('caller'), { personId: code('id') }, code('body'), { source: 'ui' }] }
+		{ service: 'personUpdateGuard', args: [code('caller'), { personId: code('id') }, code('body'), { steppedUp: true }] },
+		{ service: 'updatePerson', args: [code('caller'), { personId: code('id') }, code('body'), { source: 'ui', steppedUp: true }] }
 	],
 	'src/routes/api/people/[id]/+server.ts DELETE': [
 		{ service: 'personDeleteGuard', args: [code('caller'), { personId: code('id') }] },

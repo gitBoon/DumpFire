@@ -174,7 +174,7 @@ describe('the checklist source', () => {
 		expect(item.how).toContain('(card 3009)');
 	});
 
-	it('(z) card 3012: A.8.12 names what an unsealed backup is kept from sending outside, cites the three steps as evidence, each exists, and names the open card for the addresses it still mails', () => {
+	it('(z) card 3012: A.8.12 names what an unsealed backup is kept from sending outside, cites the three steps as evidence, and each exists', () => {
 		const item = CHECKLIST.find((entry) => entry.ref === 'A.8.12')!;
 		for (const symbol of ['holdUnsealedWebhooks', 'pauseUnsealedSchedules', 'keepAccountsHere']) {
 			const evidence = item.evidence.find((e) => e.symbol === symbol);
@@ -184,7 +184,30 @@ describe('the checklist source', () => {
 		expect(item.how).toContain('A restore of a backup whose seal did not verify sends nothing outside as the file has it');
 		expect(item.how).toContain('every webhook with an address is held with its secret discarded, every report schedule is paused');
 		expect(item.how).toContain('(card 3012)');
-		expect(item.how).toContain('(card 3020)');
+		// Card 3020 (S5 fallout): '(card 3020)' now names the rule that closed the gap, no longer the gap itself.
+		expect(item.how).toContain('so no decision mail goes to them (card 3020)');
+	});
+
+	it('(z) card 3020: A.8.12 states the rule for the requests and people of an unsealed backup, no longer lists card 3020 as open, and cites the four symbols, each of which exists', () => {
+		const item = CHECKLIST.find((entry) => entry.ref === 'A.8.12')!;
+		for (const [path, symbol] of [
+			['src/lib/server/db/restore.ts', 'holdUnsealedRequestMail'],
+			['src/lib/server/db/restore.ts', 'switchOffUnsealedPeople'],
+			['src/lib/server/request-access.ts', 'requesterMailAddress'],
+			['src/routes/api/requests/held/+server.ts', 'confirmStepUp']
+		]) {
+			const evidence = item.evidence.find((e) => e.path === path && e.symbol === symbol);
+			expect(evidence, `${path} ${symbol}`).toBeDefined();
+			expect(evidenceFault(evidence!), `${path} ${symbol}`).toBeNull();
+		}
+		expect(item.how).toContain(
+			'; requests whose requester or card this server did not hold as they are have their mail held until an administrator releases each, as reviewed, with a password and a code, ' +
+				'and people whose address and account it did not hold are marked left, so no decision mail goes to them (card 3020). '
+		);
+		const open = item.how.slice(item.how.indexOf('Still open:'));
+		expect(open).toMatch(/^Still open: a schedule covers boards added to its grouping later\. /);
+		expect(open).not.toContain('3020');
+		expect(item.how).not.toContain('are still mailed as it has them');
 	});
 
 	it('names every gap: a card or an accepted risk for each item short of met, and neither for a met one', () => {

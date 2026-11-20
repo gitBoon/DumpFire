@@ -2187,8 +2187,9 @@ describe('the rules that hold after opening', () => {
 		expect(sent.emails.map((mail) => mail.to)).toEqual(['linky@example.test']);
 		expect(outcome(() => resend(r.author, r.id, r.holder.id))).toEqual({ status: 409, message: 'Holder has left: they cannot be mailed about this decision' });
 
-		// Marked active again, as a deliberate act: the row's history still holds the account.
-		as(admin, (caller) => updatePerson(caller, { personId: r.holderPerson.id }, { status: 'active' }, UI));
+		// Marked active again, as a deliberate act: the row's history still holds the account. Card 3020 (R6): the route
+		// passes `steppedUp` once the password and a code are confirmed, which this service-level call stands for.
+		as(admin, (caller) => updatePerson(caller, { personId: r.holderPerson.id }, { status: 'active', reviewedEmail: r.holderPerson.email }, { ...UI, steppedUp: true }));
 		expect(outcome(() => resend(r.author, r.id, r.holder.id))).toEqual({
 			status: 409,
 			message: "Holder's account on this decision has been deleted: an administrator clears it before they can be mailed a personal link"

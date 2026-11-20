@@ -165,8 +165,14 @@ export function requesterAddress(request: Pick<TaskRequest, 'requesterUserId' | 
  * disabled, which is mailed nothing as an account holder. The address shown
  * to the team is `requesterAddress`'s, and stays: the team still knows who
  * asked. Read in the same one row.
+ *
+ * Card 3020: null, before anything else is asked, while the request's mail is
+ * held (`mailHeldBecause`, written by a restore of a backup whose seal did not
+ * verify for a request this server did not hold as it is): no mail, link or
+ * report goes to its requester until an administrator releases it.
  */
-export function requesterMailAddress(request: Pick<TaskRequest, 'requesterUserId' | 'requesterEmail'>): string | null {
+export function requesterMailAddress(request: Pick<TaskRequest, 'requesterUserId' | 'requesterEmail' | 'mailHeldBecause'>): string | null {
+	if (request.mailHeldBecause !== null) return null;
 	if (request.requesterUserId === null) return request.requesterEmail || null;
 	const account = db.select({ email: users.email, disabledAt: users.disabledAt }).from(users).where(eq(users.id, request.requesterUserId)).get();
 	return account === undefined || account.disabledAt !== null ? null : account.email;

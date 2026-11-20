@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.100
+version: 1.101
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3020
+  - unsealed-request-addresses
   - card-3012
   - unsealed-backup-outside-reach
   - card-3009
@@ -74,7 +76,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "Complete database schema documentation with ER diagram, table descriptions, webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
+description: "Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -362,6 +364,10 @@ erDiagram
         int resolved_by FK
         int resolved_card_id FK
         text reject_reason
+        text mail_held_because "0078, card 3020"
+        text mail_released_at "0078"
+        int mail_released_by FK "0078, SET NULL"
+        text mail_released_by_name "0078"
         text created_at
         text resolved_at
     }
@@ -1872,6 +1878,37 @@ Reset's `KEPT` names it. A backup carries it like any other table: it holds ids,
 fingerprints, never a hash. A backup made before 0077 has none, and the restore applies this server's
 record alone.
 
+### A request's requester mail held (migration 0078)
+
+Migration `0078_hold_request_mail.sql` (card 3020, 2026-11-20, written by hand, shipped alone) adds four
+nullable columns to `task_requests` and an index. Existing rows get NULL: nothing is held.
+
+| Column | Meaning |
+|---|---|
+| `mail_held_because` | NULL for none; otherwise why, in words. A restore of a backup whose seal did not verify writes `restored from a backup whose seal did not verify` (`HELD_FROM_UNSEALED_BACKUP`, `settings-held.ts`) on each request with an address that this server did not hold as it is, and this server's own value on one it did; the file's text is never kept. While set, `requesterMailAddress` answers null and progress mail passes the request by. |
+| `mail_released_at` | When an administrator last released a hold (`POST /api/requests/held`), normalised UTC |
+| `mail_released_by` | Who released it: `REFERENCES users(id) ON DELETE SET NULL`, `idx_task_requests_mail_released_by`. An unsealed restore carries this server's value only where that account is the same here, and otherwise writes NULL, keeping `mail_released_at` and `mail_released_by_name`, as the foreign key's SET NULL would (card 3020's code review, FP1) |
+| `mail_released_by_name` | Their name as it was, since the account may be deleted |
+
+**Writers.** `holdUnsealedRequestMail` in the restore (as it is or as a working copy, never a sealed
+restore, which brings the columns as the backup has them); the release, `UPDATE … SET
+mail_held_because = NULL, mail_released_at, mail_released_by, mail_released_by_name … WHERE id = ? AND
+mail_held_because IS NOT NULL`, with the password and a code. Reset deletes every request with them.
+**Readers.** `requesterMailAddress` (the gate every requester mail and link asks first),
+`notifyRequesterProgress`'s WHERE, `GET /api/requests/held`, and `mailHeld` on `GET /api/requests` and
+the signed-in `GET /api/requests/[id]`; `publicRequest` drops all four from the token holder's answers.
+`timestamps.test.ts` counts `mail_released_at` among the normalised columns (86). An older image
+ignores the columns: see the rollback in [deployment.md](deployment.md).
+
+```mermaid
+erDiagram
+    task_requests }o--o| cards : "resolved_card_id (the identity: created_at, title)"
+    cards }o--|| columns : "column_id (the identity: board_id)"
+    task_requests }o--o| users : "requester_user_id; mail_released_by (SET NULL)"
+    people ||--o{ decision_participants : "person_id (reachOf: active and the same address)"
+    people ||--o{ people_changes : "subject_id (source 'restore')"
+```
+
 ### A disabled account (migration 0072)
 
 Migration `0072_add_account_disabled.sql` (card 2671) adds two nullable columns to `users` and
@@ -2029,7 +2066,7 @@ erDiagram
 | `users` | `webhooks.set_by` (migration 0056, card 2168) | SET NULL. `deleteUser()` switches the user's webhooks off first, while they still name the user, with the hold `'setter access ended'` (card 2752's code review, CS4) |
 | `api_keys` | `webhooks.set_by_key` (migration 0071, card 2893) | SET NULL, with `set_with_key` left as it is: NULL with 1 reads "its key was deleted" |
 | `users` | `setting_setters.user_id` (migration 0059, card 2397) | CASCADE. `deleteUser()` removes first the mail settings, App URL and destinations still at a place the rows record (`removeSettingsSetBy`), and a demotion to user does the same; the key then takes only the rows |
-| `users` | `cards.createdBy`, `activity_log.userId`, `task_requests.requesterUserId`, `task_requests.resolvedBy`, `token_usage.reportedByUserId` | SET NULL |
+| `users` | `cards.createdBy`, `activity_log.userId`, `task_requests.requesterUserId`, `task_requests.resolvedBy`, `task_requests.mailReleasedBy` (0078), `token_usage.reportedByUserId` | SET NULL |
 | `users` | `cards.committed_by` (migration 0060, milestone 22) | SET NULL: the card keeps `committed_at`, and who committed it reads as not recorded. `deleteUser()` clears nothing of it by hand |
 | `users` | `cards.discarded_by` (migration 0060, milestone 22) | SET NULL, as `committed_by` |
 | `users` | `boards.product_owner_user_id` (migration 0061, card 2673) | SET NULL: the board has no Product Owner until someone sets one |
@@ -3323,13 +3360,15 @@ erDiagram
     `boards` is a reconciled table.
   - `people`: `full_name`, `email` (`NOT NULL`, `people_email_unique`, stored lower-case by
     the code), `job_title` (`DEFAULT ''`), `user_id` (SET NULL, unique index
-    `idx_people_user_id`), `status` (`DEFAULT 'active'`, or `'left'`), `left_at`,
+    `idx_people_user_id`), `status` (`DEFAULT 'active'`, or `'left'`; a restore of a backup whose
+    seal did not verify writes `'left'`, card 3020), `left_at`,
     `created_by` (SET NULL), `created_at`, `updated_at`.
   - `people_groups`: `name` (`people_groups_name_unique`), `description` (`DEFAULT ''`),
     `created_at`. `people_group_members`: `PRIMARY KEY(group_id, person_id)`, both CASCADE,
     `idx_people_group_members_person_id`.
   - `people_changes` (migration 0064, card 2681, below): `created_at`, `actor_user_id` (SET
-    NULL, `idx_people_changes_actor_user_id`) and `actor_name`, `source` (`ui` or `api`),
+    NULL, `idx_people_changes_actor_user_id`) and `actor_name`, `source` (`ui`, `api`, or
+    `restore` since card 3020),
     `subject` (`person` or `group`) and `subject_id` (a plain integer, no key;
     `idx_people_changes_subject_subject_id`), `kind`, `before` and `after` (JSON or NULL).
   - `decisions`: `board_id` (SET NULL), `board_name`, `title`, `status` (`DEFAULT 'draft'`),
@@ -3503,7 +3542,11 @@ flowchart LR
   `account: 'linked' | 'unlinked'`. A creation's `before` and a delete's `after` are NULL; a
   delete's `before` is the whole person or group, its groups or people read before the delete.
   `source` is `api` whenever the write is a key's, by the route's word or the credential
-  (`writingWithKey()`). `subject_id` has no key, so a person's or a group's delete leaves its
+  (`writingWithKey()`). Since card 3020 (R13) a restore of a backup whose seal did not verify is a
+  second writer: `switchOffUnsealedPeople` (`restore.ts`) appends one row for each person it marks
+  left, `actor_user_id` NULL, `actor_name` `DumpFire`, `source` `restore`, `subject` `person`, `kind`
+  `updated`, `before` and `after` `{"status", "leftAt"}` only, written with `JSON.stringify`, no address
+  or account (the insert-only scan allows that second file its one insert). `subject_id` has no key, so a person's or a group's delete leaves its
   rows; `actor_user_id` is SET NULL with `actor_name` beside it, as the decision record's are.
   **Retention:** the application only inserts; nothing updates, deletes or prunes a row
   (`tests/decision-record.test.ts`'s insert-only scan covers the table: one insert, in

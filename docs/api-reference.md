@@ -1,10 +1,12 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.159
+version: 1.160
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3020
+  - unsealed-request-addresses
   - card-3012
   - unsealed-backup-outside-reach
   - api
@@ -68,7 +70,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "REST API reference for DumpFire's external v1 API: authentication, point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -436,6 +438,87 @@ and its access; and at the write). Not marked Breaking. The admin page's load
 fewer than 1,000 inodes are free, when the free space is not read within 2 seconds, and for 5
 minutes after a write found the disk full unless the free space has grown since.
 
+### Changes on 2026-11-20: an unsealed backup's requesters and people are no longer mailed as the file has them (card 3020)
+
+**Within 1.15.0 (point 11).** A person whose address and account came in with a backup whose seal did
+not verify, and are not the ones this server held for them, or whose status in it was neither active
+nor left, is listed with `status` `left` and `leftAt` the restore's moment, and one this server has as
+left stays left. `Person.status` says so, and that marking someone active, on the People page only,
+asks for the password and a code. OpenAPI stays `1.15.0` (unreleased); its note gains point (11), and
+"nothing else changed" is now (12). The reply's `mailed`, below, is not in the v1 document, which has
+no `/api/requests` route. **Migration 0078** adds `task_requests.mail_held_because`,
+`mail_released_at`, `mail_released_by` and `mail_released_by_name` (see
+[data-model.md](data-model.md)); no environment variable.
+
+Internal (`/api`):
+
+- `POST /api/admin/import` (additive): `unsealedReach` gains `requestsMailHeld` (confirmed requests
+  whose requester mail this restore held and this server did not, whatever the file put in the
+  hold), `requestsUnconfirmedHeld` (unconfirmed ones, which
+  cannot be released and lapse 7 days after they were made), `peopleMailOff` (people it marked left)
+  and `decisionPlacesMailOff` (the participant rows, not removed, of those people), counts only, also
+  on a working copy and on the answer of a restore that committed and then failed. `settingsHeld`'s
+  sentence gains, after the notification clause and before the failure mail, each only where its
+  count is above 0: "N request(s) came in with a requester or card this server did not hold as it is:
+  mail to each requester, links and completion reports included, is held until an administrator
+  releases it under Mail held in the Requests inbox", "N unconfirmed request(s) were held too: they
+  cannot be released, and lapse 7 days after they were made", and "N person(s) in the people
+  directory were marked left, as this server did not hold their address and account, or has them as
+  left, so N place(s) on decisions are mailed nothing: an administrator marks each active on the
+  People page, with a password and a code, once the address is checked" (the "so N place(s)" part
+  only where above 0). The `[CRITICAL] [IMPORT]` line's words gain "N request(s)' requester mail
+  held; N unconfirmed request(s) held; N person(s) marked left; N place(s) on decisions mailed
+  nothing", each above 0 only. No address, name, request title or id.
+- **`GET /api/requests/held`** (new, administrators only, `403` otherwise; `Cache-Control:
+  no-store`): every request whose requester mail is held, whoever it was addressed to, id order:
+  `{ held: [{ id, title, status, unconfirmed, releasable, requesterName, address, card: { id, title,
+  board } | null, heldBecause, createdAt }], mayRelease: true }`. `address` is the requester's address
+  as stored (the account's for a request made by one), `null` where it has none; `releasable` is
+  `false` for an unconfirmed request and for one with no address. Every value is the file's text: show each address with its code points and each name with
+  `printable`, as the inbox does.
+- **`POST /api/requests/held`** (new; an administrator, with `currentPassword` and `currentCode`,
+  on `STEP_UP_ACTIONS`, forty-four): `{ requestId, address, cardId, cardTitle, cardBoard,
+  currentPassword, currentCode }`, the address and the card's id, title and board as the GET gave
+  them, the card's three `null` where it gave no card. `404` "Request not found"; `409` "That
+  request's mail is not held now: it was released since the list was read. Nothing was changed.";
+  `409` "An unconfirmed request cannot be released: it lapses 7 days after it was made. Nothing was
+  changed."; `409` "A request with no address cannot be released: it stays held. Nothing was
+  changed."; `409` "That request's address or card has changed since the list was read: read it
+  again and review it as it is now. Nothing was changed." where the address, the card, its title or
+  its board is not the one sent. Each is asked before the password and again in the write's
+  transaction.
+  Answers `{ success: true, released: requestId }`, records who released it and when in the row, and
+  mails nothing; one `INFO` line under `REQUESTS` names the request and the administrator, never the
+  address.
+- **`mailHeld`** (boolean) on each request of `GET /api/requests` and on the signed-in
+  `GET /api/requests/{id}`. The token holder's answers (`POST /api/requests`, a requester's
+  `GET /api/requests/{id}`) and `PATCH /api/requests/{id}`'s carry no `mailHeldBecause` and no
+  `mailReleased*`.
+- **A held request mails nothing**: no progress mail or completion report on its card, no accept or
+  decline (`PATCH /api/requests/{id}` accepts, makes the card and answers as before), no reply, and
+  `POST /api/requests/{id}/link` with its exact address is answered `202` with the usual words and
+  sends nothing. Progress mail on a card now goes to every accepted request on it that is not held,
+  each with its own link.
+- **The reply's `mailed`.** An administrator's or a team member's `POST /api/requests/{id}/messages`
+  answers the saved message with `mailed: true` only where a mail to the requester was handed on, and
+  `mailed: false` otherwise: the request held, no address, mail not set up, or no App URL for the
+  link. The inbox then shows "Mail held – the requester was not mailed" for a held request. A
+  requester's own post answers as before.
+- **`PUT /api/people/{id}` asks for the password and a code for Mark active**: a body with `status`
+  of any value other than the exact string `'left'` is on the step-up, as `email` and `userId` are
+  (`400` `STEP_UP_MISSING` without them). `{ "status": "left" }` alone asks nothing more. Left to
+  active without the step-up is refused `400` "Marking a person active asks for your password and a
+  code: their decision mail and personal links go to their address again. Nothing was changed."
+  Mark active also carries `reviewedEmail`, the address the confirmation showed, which is required
+  (`400` "reviewedEmail is required") and writes nothing: where it is not the person's address now,
+  `409` "This person's address has changed since the page was read: read it again and check the
+  address before you mark them active. Nothing was changed."
+- An unsealed restore marks left each person whose id, address and account this server did not hold
+  (the account the same here), whom it has as left, or whose status is neither active nor left, with
+  a `people_changes` row by DumpFire, source `restore`; and holds each request with an address that it
+  did not hold as it is (the request, its card and the card's board). A sealed restore does none of
+  it.
+
 ### Changes on 2026-11-20: an unsealed backup's webhooks, schedules and addresses no longer reach outside (card 3012)
 
 **Within 1.15.0 (point 10).** A webhook that comes in with a backup whose seal did not verify and
@@ -454,8 +537,9 @@ Internal (`/api`):
 
 - `POST /api/admin/import` (additive) gains `unsealedReach`, `{ webhooks, schedules, accountsAsHere,
   addressesGivenUp, notificationsOff, notifyEmail }`, counts only and absent where all are 0, also on
-  the answer of a restore that committed and then failed. `webhooks` counts those newly held and still
-  held for this reason after this server's own holds were carried; `schedules` the report schedules
+  the answer of a restore that committed and then failed. `webhooks` counts those held and still
+  held for this reason after this server's own holds were carried, whatever the file put in
+  `held_because` (card 3020's code review, FP2); `schedules` the report schedules
   paused (restored as it is only); `accountsAsHere` the accounts that are the same here given this
   server's email address and notification choices; `addressesGivenUp` the other accounts that held
   one of those addresses, or shared one apart from case with a lower-numbered account not the same
@@ -1586,7 +1670,7 @@ See [Step-up Before Destructive Actions](authentication-security.md#step-up-befo
 - **Card 2697's eight**, each with every refusal that needs no password made first:
   `PUT /api/decisions/{id}/participants/{participantId}/account` (`{ account, currentPassword }`)
   and `PUT …/address`, always; `PUT /api/people/{id}` when the body carries `email` or `userId`
-  (`{ "userId": null }` included); `POST /api/people`, `DELETE /api/people/{id}` (which now
+  (`{ "userId": null }` included), or, since card 3020, `status` other than `'left'` (Mark active); `POST /api/people`, `DELETE /api/people/{id}` (which now
   takes a JSON body) and `POST /api/people/from-accounts`, always (its code review's part B,
   S1: `email` is required on an add, so every add sets an address); and
   `DELETE /api/decisions/{id}` and `POST /api/decisions/{id}/withdraw` once the decision was

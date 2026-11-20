@@ -137,10 +137,15 @@ import { hashSync } from 'bcryptjs';
 import { DUMMY_HASH } from '$lib/server/dummy-hash';
 import { carryFactors, mfaWithoutFactorSentence, readMfaHere, sameAccountHere, type GrantTrust } from '$lib/server/mfa-backup';
 import { usableInvite } from '$lib/server/invites';
-import { shouldNotifyUser } from '$lib/server/notifications';
+import { notifyRequesterProgress, shouldNotifyUser } from '$lib/server/notifications';
+import { queueRecordMails } from '$lib/server/decision-mail';
+import { SYSTEM_ACTOR } from '$lib/server/decision-record';
+import { resendInvitation } from '$lib/server/decision-participant-writes';
+import { writeAs } from '$lib/server/write-as';
 import { NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import {
 	NO_SUPERADMIN_IN_BACKUP,
+	NO_UNSEALED_REACH,
 	RestoreError,
 	RestoreLeavesNoSuperadmin,
 	SIGNED_OUT,
@@ -1266,7 +1271,7 @@ describe('a restore', () => {
 			const res = await importAnswer(backup);
 
 			expect(res.status, res.message).toBe(200);
-			const reach = { webhooks: 1, schedules: 1, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1 };
+			const reach = { webhooks: 1, schedules: 1, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0 };
 			expect(res.body.unsealedReach).toEqual(reach);
 			expect(res.body.settingsHeld).toBe(REACH_KEEP);
 			expect(res.message).toContain(REACH_KEEP);
@@ -1286,7 +1291,7 @@ describe('a restore', () => {
 			});
 
 			expect(res.status, res.message).toBe(200);
-			expect(res.body.unsealedReach).toEqual({ webhooks: 1, schedules: 0, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1 });
+			expect(res.body.unsealedReach).toEqual({ webhooks: 1, schedules: 0, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0 });
 			expect(res.body.settingsHeld).toBe(REACH_OPENING + REACH_WEBHOOKS + REACH_ACCOUNTS);
 			expect(res.body.settingsHeld).not.toContain('report schedule');
 			expect(criticalSince(from).message).toContain(REACH_CRITICAL.replace(' 1 report schedule(s) paused;', ''));
@@ -1304,10 +1309,106 @@ describe('a restore', () => {
 
 			expect(failed.status, failed.message).toBe(500);
 			expect(failed.body.committed).toBe(true);
-			expect(failed.body.unsealedReach).toEqual({ webhooks: 1, schedules: 1, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1 });
+			expect(failed.body.unsealedReach).toEqual({ webhooks: 1, schedules: 1, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0 });
 			expect(failed.body.settingsHeld).toBe(REACH_KEEP);
 			expect(failed.message).toContain(REACH_KEEP);
 			expectNamesNone(failed.message);
+		});
+
+		// Card 3020 (x): the requests an unsealed backup brought in, held, and the people it marked left, said through the
+		// route in counts only, naming no address, name, title or id (card 2997's FP14).
+		/** This server's own backup, edited since, planting an accepted and an unconfirmed request and a person on an open decision. */
+		const plantingRequestsAndPeople = () => {
+			const decision = makeDecision({ status: 'open', closesAt: '2099-01-01 00:00:00' });
+			const backup = ownBackup({ edited: true });
+			const plant = backup.prepare(
+				"INSERT INTO task_requests (id, target_type, target_id, requester_name, requester_email, title, status) VALUES (?, 'user', ?, 'Eve of 3020', ?, 'Planted title of 3020', ?)"
+			);
+			plant.run(50, member.id, 'eve@planted-3020.test', 'accepted');
+			plant.run(51, member.id, 'una@planted-3020.test', 'unverified');
+			backup.prepare("INSERT INTO people (id, full_name, email, status) VALUES (900, 'Pia of 3020', 'pia@planted-3020.test', 'active')").run();
+			const participant = Number(
+				backup
+					.prepare(
+						"INSERT INTO decision_participants (id, decision_id, person_id, role, name, email, job_title, groups, included_at) SELECT 950, ?, id, 'consulted', full_name, email, '', '[]', '2026-11-01 09:00:00' FROM people WHERE id = 900"
+					)
+					.run(decision.id).lastInsertRowid
+			);
+			// The decision is this server's own; the plants are the requests, the person and their place.
+			return { backup, ids: [50, 51, 900, participant] };
+		};
+		const HELD_3020 =
+			REACH_OPENING +
+			'1 request(s) came in with a requester or card this server did not hold as it is: mail to each requester, links and completion reports ' +
+			'included, is held until an administrator releases it under Mail held in the Requests inbox; ' +
+			'1 unconfirmed request(s) were held too: they cannot be released, and lapse 7 days after they were made; ' +
+			'1 person(s) in the people directory were marked left, as this server did not hold their address and account, or has them as left, ' +
+			'so 1 place(s) on decisions are mailed nothing: an administrator marks each active on the People page, with a password and a code, once ' +
+			'the address is checked.';
+		const HELD_3020_CRITICAL =
+			", keeping what a backup whose seal did not verify would send outside: 1 request(s)' requester mail held; 1 unconfirmed request(s) held; " +
+			'1 person(s) marked left; 1 place(s) on decisions mailed nothing';
+		const REACH_3020 = { ...NO_UNSEALED_REACH, requestsMailHeld: 1, requestsUnconfirmedHeld: 1, peopleMailOff: 1, decisionPlacesMailOff: 1 };
+		/** None of the plants' addresses, names or titles, and none of their ids in any form a line names one by (card 2997's FP14). */
+		const expectNamesNoneOf3020 = (ids: number[], ...said: string[]) => {
+			for (const text of said) {
+				for (const planted of ['planted-3020', 'Eve of 3020', 'Pia of 3020', 'Planted title of 3020']) expect(text, planted).not.toContain(planted);
+				expect(text).not.toMatch(new RegExp(`(\\b(user|account|id|request|person|participant|decision)\\s*[#:=]?\\s*|#|"\\w*id"\\s*:\\s*"?)(${ids.join('|')})\\b`, 'i'));
+			}
+		};
+
+		it('(x) card 3020: kept as it is, the requests held and the person marked left are said in settingsHeld and the answer, the figures, and the CRITICAL words and details, counts only', async () => {
+			const { backup, ids } = plantingRequestsAndPeople();
+			const from = newestLine();
+
+			const res = await importAnswer(backup);
+
+			expect(res.status, res.message).toBe(200);
+			expect(res.body.unsealedReach).toEqual(REACH_3020);
+			expect(res.body.settingsHeld).toBe(HELD_3020);
+			expect(res.message).toContain(HELD_3020);
+			const line = criticalSince(from);
+			expect(line.message).toContain(HELD_3020_CRITICAL);
+			expect(JSON.parse(line.meta).unsealedReach).toEqual(REACH_3020);
+			expectNamesNoneOf3020(ids, res.message, res.body.settingsHeld, line.message, line.meta);
+		});
+
+		it('(x2) card 3020: a working copy says the same of its requests and people', async () => {
+			const { backup, ids } = plantingRequestsAndPeople();
+			const from = newestLine();
+
+			const res = await importing(async () => {
+				const sent = await api('POST', '/api/admin/import?outside=off', { user: chief, headers: confirmedImport(), body: backup.serialize() });
+				return { status: sent.status, message: sent.body.message as string, body: sent.body };
+			});
+
+			expect(res.status, res.message).toBe(200);
+			expect(res.body.unsealedReach).toEqual(REACH_3020);
+			expect(res.body.settingsHeld).toBe(HELD_3020);
+			const line = criticalSince(from);
+			expect(line.message).toContain(HELD_3020_CRITICAL);
+			expect(JSON.parse(line.meta).unsealedReach).toEqual(REACH_3020);
+			expectNamesNoneOf3020(ids, res.message, line.message, line.meta);
+		});
+
+		it('(x3) card 3020: a restore that committed and then failed says it too', async () => {
+			const { backup, ids } = plantingRequestsAndPeople();
+			const from = newestLine();
+			const real = sqlite.pragma.bind(sqlite) as Database.Database['pragma'];
+			vi.spyOn(sqlite, 'pragma').mockImplementation(((source: string, options?: Database.PragmaOptions) =>
+				/^foreign_keys\s*=\s*ON$/i.test(source) ? [] : real(source, options)) as typeof sqlite.pragma);
+
+			const failed = await importAnswer(backup);
+			vi.mocked(sqlite.pragma).mockRestore();
+
+			expect(failed.status, failed.message).toBe(500);
+			expect(failed.body.committed).toBe(true);
+			expect(failed.body.unsealedReach).toEqual(REACH_3020);
+			expect(failed.body.settingsHeld).toBe(HELD_3020);
+			expect(failed.message).toContain(HELD_3020);
+			const line = criticalSince(from);
+			expect(line.message).toContain(HELD_3020_CRITICAL);
+			expectNamesNoneOf3020(ids, failed.message, line.message, line.meta);
 		});
 
 		// Card 3009 (x): the words of an unsealed import, counts only: no username, id or key prefix (card 2997's FP14).
@@ -10371,7 +10472,7 @@ describe('an unsealed backup sends nothing outside as the file has it (card 3012
 		expect(result.secrets.toEnter.heldWebhooks).toEqual([{ id: 900, boardId: board.id, board: 'Hooks' }]);
 	});
 
-	it('(a2) R14, FP19: one the file holds off for a reason this build does not know, beside a plain secret, takes the new reason and loses its secret, not counted but listed; switched on through the route it is given a new secret, and a secret sent is refused', async () => {
+	it("(a2) R14, FP19: one the file holds off for a reason this build does not know, beside a plain secret, takes the new reason and loses its secret, counted (card 3020's code review, FP2) and listed; switched on through the route it is given a new secret, and a secret sent is refused", async () => {
 		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
 		const backup = ownBackup({ edited: true });
 		plantHook(backup, { id: 901, boardId: board.id, setBy: admin.id, active: 0, heldBecause: 'a reason from a later build' });
@@ -10380,8 +10481,8 @@ describe('an unsealed backup sends nothing outside as the file has it (card 3012
 
 		expect(result.errors).toEqual([]);
 		expect(hookRow(901)).toEqual({ active: 0, secret: '', heldBecause: HELD_FROM_UNSEALED_BACKUP, heldAt: expect.stringMatching(STAMP) });
-		// Already held in the file: not newly held, so not counted (R15); listed all the same (the code review's FP19).
-		expect(result.unsealedReach.webhooks).toBe(0);
+		// Held in the file but not here: counted against this server, not the file (card 3020's code review, FP2); listed (FP19).
+		expect(result.unsealedReach.webhooks).toBe(1);
 		expect(result.secrets.toEnter.heldWebhooks).toEqual([{ id: 901, boardId: board.id, board: 'Hooks' }]);
 
 		expect((await api('PUT', '/api/v1/webhooks/901', { user: member, body: { active: true, secret: 'mine' } })).status).toBe(400);
@@ -10391,6 +10492,18 @@ describe('an unsealed backup sends nothing outside as the file has it (card 3012
 		expect(on.body.secret).toMatch(/^[0-9a-f]{64}$/);
 		expect(hookRow(901)).toMatchObject({ active: 1, heldBecause: null });
 		expect(readOpened('webhooks', 901)).toBe(on.body.secret);
+	});
+
+	it("(a3) card 3020's code review, FP2: webhooks the file pre-fills with this build's own unsealed reason, held off, which this server did not hold, are each counted", () => {
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		const backup = ownBackup({ edited: true });
+		for (const id of [903, 904]) plantHook(backup, { id, boardId: board.id, setBy: admin.id, active: 0, heldBecause: HELD_FROM_UNSEALED_BACKUP });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect([hookRow(903), hookRow(904)]).toEqual([903, 904].map(() => expect.objectContaining({ active: 0, heldBecause: HELD_FROM_UNSEALED_BACKUP })));
+		expect(result.unsealedReach.webhooks).toBe(2);
 	});
 
 	it("(f) R2: one with no address the file has on comes in off, not held, and still listed to enter", () => {
@@ -10482,7 +10595,7 @@ describe('an unsealed backup sends nothing outside as the file has it (card 3012
 		expect(accountRow(96)).toEqual({ email: 'other@file.test', prefs: '{"email_all":false}' });
 		expect(failureMailNow()).toBe('ops@here.test');
 		// No schedule paused by the step: a working copy switches every one off itself.
-		expect(result.unsealedReach).toEqual({ webhooks: 1, schedules: 0, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1 });
+		expect(result.unsealedReach).toEqual({ webhooks: 1, schedules: 0, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0 });
 	});
 
 	it('(h2) FP8: a working copy of a backup made after card 2169 and before card 2928, its addresses plain, counts each webhook it holds once, and not again among those it switched off', () => {
@@ -10780,10 +10893,10 @@ describe('an unsealed backup sends nothing outside as the file has it (card 3012
 		expect(accountRow(member.id)).toEqual({ email: 'member@file.test', prefs: '{"email_all":true}' });
 		expect(accountRow(120)).toEqual({ email: 'other@file.test', prefs: '{}' });
 		expect(failureMailNow()).toBe('ops@file.test');
-		expect(result.unsealedReach).toEqual({ webhooks: 0, schedules: 0, accountsAsHere: 0, addressesGivenUp: 0, notificationsOff: 0, notifyEmail: 0 });
+		expect(result.unsealedReach).toEqual({ webhooks: 0, schedules: 0, accountsAsHere: 0, addressesGivenUp: 0, notificationsOff: 0, notifyEmail: 0, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0 });
 	});
 
-	it('(w) R14: a failure at the failure mail write, the last on the keep path, rolls every step back', () => {
+	it("(w) card 3012 R14: a failure at the failure mail write, the last of card 3012's steps on the keep path, rolls every step back", () => {
 		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
 		sqlite.prepare("INSERT INTO report_schedules (user_id, name, scope, enabled) VALUES (?, 'Weekly', 'all', 1)").run(member.id);
 		failureMailHere('ops@here.test');
@@ -10864,5 +10977,550 @@ describe('an unsealed backup sends nothing outside as the file has it (card 3012
 		expect(said).toContain('1009 (board "Hooks") and 2 more, switched off for good');
 		expect(said).not.toContain('1010');
 		expect(said).not.toContain('L'.repeat(60));
+	});
+});
+
+// ─── Card 3020: an unsealed backup's requests ────────────────────────────────
+
+describe('an unsealed backup holds the mail of each request this server did not hold as it is (card 3020, slice 1)', () => {
+	const REQUESTER = 'pat@example.test';
+	const MOMENT = '2026-11-01 09:00:00';
+	/** Request 5 here, accepted, from outside, on a real card; and a twin card, the same in all but its id, on the same board. */
+	const requestHere = () => {
+		const requests = makeBoard({ owner: member, name: 'Requests' });
+		const card = makeCard(requests.cols['To Do'], { title: 'The export' });
+		const twin = makeCard(requests.cols['To Do'], { title: 'The export' });
+		sqlite.prepare('UPDATE cards SET created_at = ? WHERE id IN (?, ?)').run(MOMENT, card.id, twin.id);
+		sqlite
+			.prepare(
+				"INSERT INTO task_requests (id, target_type, target_id, requester_name, requester_email, title, status, resolved_card_id, created_at) VALUES (5, 'user', ?, 'Pat', ?, 'Please add an export', 'accepted', ?, ?)"
+			)
+			.run(member.id, REQUESTER, card.id, MOMENT);
+		const elsewhere = makeBoard({ owner: member, name: 'Elsewhere' });
+		return { card, twin, elsewhere };
+	};
+	/** A request the file adds, at `id`, on `cardId`. */
+	const plantRequest = (
+		backup: Database.Database,
+		plant: { id: number; email?: string | null; status?: string; cardId?: number | null; heldBecause?: string | null }
+	) =>
+		backup
+			.prepare(
+				"INSERT INTO task_requests (id, target_type, target_id, requester_name, requester_email, title, status, resolved_card_id, mail_held_because) VALUES (?, 'user', ?, 'Eve', ?, 'Planted', ?, ?, ?)"
+			)
+			.run(plant.id, member.id, plant.email === undefined ? 'eve@file.test' : plant.email, plant.status ?? 'accepted', plant.cardId ?? null, plant.heldBecause ?? null);
+	const holdOf = (id: number) =>
+		sqlite
+			.prepare(
+				'SELECT mail_held_because AS heldBecause, mail_released_at AS releasedAt, mail_released_by AS releasedBy, mail_released_by_name AS releasedByName FROM task_requests WHERE id = ?'
+			)
+			.get(id);
+	const HELD = { heldBecause: HELD_FROM_UNSEALED_BACKUP, releasedAt: null, releasedBy: null, releasedByName: null };
+	const NOT_HELD = { heldBecause: null, releasedAt: null, releasedBy: null, releasedByName: null };
+	/** The addresses a comment's progress mail on `cardId` goes to, with mail set up after the restore. */
+	const commentMailsTo = async (cardId: number) => {
+		makeSmtp();
+		const sent = effects();
+		try {
+			notifyRequesterProgress({ cardId, action: 'comment', summary: 'Started on it', actorName: 'member', baseUrl: 'https://dumpfire.example.test', actorUserId: member.id });
+			await sent.settle();
+			return sent.emails.map((mail) => mail.to);
+		} finally {
+			sent.restore();
+		}
+	};
+
+	it('(g) card 3020: an edited own backup adds an accepted request with its own address on a real card: held, counted, and a comment then mails nothing', async () => {
+		const card = makeCard(makeBoard({ owner: member, name: 'Requests' }).cols['To Do'], { title: 'The export' });
+		const backup = ownBackup({ edited: true });
+		plantRequest(backup, { id: 50, cardId: card.id });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(holdOf(50)).toEqual(HELD);
+		// The request this server made before the backup, the same here, is not held.
+		expect(holdOf(1)).toEqual(NOT_HELD);
+		expect(result.unsealedReach).toMatchObject({ requestsMailHeld: 1, requestsUnconfirmedHeld: 0 });
+		expect(await commentMailsTo(card.id)).toEqual([]);
+	});
+
+	it('(g2) card 3020, R11: a planted unconfirmed request is held and counted apart, among the unconfirmed', () => {
+		const backup = ownBackup({ edited: true });
+		plantRequest(backup, { id: 51, status: 'unverified' });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(holdOf(51)).toEqual(HELD);
+		expect(result.unsealedReach).toMatchObject({ requestsMailHeld: 0, requestsUnconfirmedHeld: 1 });
+	});
+
+	const IDENTITY: [string, (backup: Database.Database, here: ReturnType<typeof requestHere>) => void][] = [
+		['its created_at', (backup) => backup.prepare("UPDATE task_requests SET created_at = '2026-01-02 03:04:05' WHERE id = 5").run()],
+		['its title', (backup) => backup.prepare("UPDATE task_requests SET title = 'Please add an export too' WHERE id = 5").run()],
+		['its requester_email', (backup) => backup.prepare("UPDATE task_requests SET requester_email = 'eve@file.test' WHERE id = 5").run()],
+		['its requester_user_id', (backup) => backup.prepare('UPDATE task_requests SET requester_user_id = ? WHERE id = 5').run(member.id)],
+		['its status', (backup) => backup.prepare("UPDATE task_requests SET status = 'pending' WHERE id = 5").run()],
+		['its resolved_card_id, to a twin card', (backup, here) => backup.prepare('UPDATE task_requests SET resolved_card_id = ? WHERE id = 5').run(here.twin.id)],
+		["its card's created_at", (backup, here) => backup.prepare("UPDATE cards SET created_at = '2026-01-02 03:04:05' WHERE id = ?").run(here.card.id)],
+		["its card's title", (backup, here) => backup.prepare("UPDATE cards SET title = 'Another export' WHERE id = ?").run(here.card.id)],
+		[
+			"its card's board, the card's column moved to another board",
+			(backup, here) => backup.prepare('UPDATE columns SET board_id = ? WHERE id = ?').run(here.elsewhere.board.id, here.card.columnId)
+		]
+	];
+
+	it.each(IDENTITY)('(h) card 3020, R1: request 5 held here, the file changing %s: held and counted', (_field, edit) => {
+		const here = requestHere();
+		const backup = ownBackup({ edited: true });
+		edit(backup, here);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(holdOf(5)).toEqual(HELD);
+		expect(result.unsealedReach).toMatchObject({ requestsMailHeld: 1, requestsUnconfirmedHeld: 0 });
+	});
+
+	it('(i) card 3020: control: request 5 identical here is not held or counted, and a comment mails its requester', async () => {
+		const { card } = requestHere();
+		const backup = ownBackup({ edited: true });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(holdOf(5)).toEqual(NOT_HELD);
+		expect(result.unsealedReach).toMatchObject({ requestsMailHeld: 0, requestsUnconfirmedHeld: 0 });
+		expect(await commentMailsTo(card.id)).toEqual([REQUESTER]);
+	});
+
+	it("(j) card 3020, R9: request 5 identical and held here, NULL in the file: this server's reason and release come back, not counted", () => {
+		requestHere();
+		const released = { at: '2026-11-19 09:00:00', by: admin.id, name: 'administrator' };
+		sqlite
+			.prepare('UPDATE task_requests SET mail_held_because = ?, mail_released_at = ?, mail_released_by = ?, mail_released_by_name = ? WHERE id = 5')
+			.run('held here for a reason of its own', released.at, released.by, released.name);
+		const backup = ownBackup({ edited: true });
+		backup.prepare('UPDATE task_requests SET mail_held_because = NULL, mail_released_at = NULL, mail_released_by = NULL, mail_released_by_name = NULL WHERE id = 5').run();
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(holdOf(5)).toEqual({ heldBecause: 'held here for a reason of its own', releasedAt: released.at, releasedBy: released.by, releasedByName: released.name });
+		expect(result.unsealedReach).toMatchObject({ requestsMailHeld: 0, requestsUnconfirmedHeld: 0 });
+	});
+
+	it("(j3) card 3020's code review, FP1: request 5 identical, released here by an account made after the backup: the release keeps its moment and name, names no account, and no row points at a missing one", async () => {
+		const { card } = requestHere();
+		const backup = ownBackup({ edited: true });
+		// After the backup: a new administrator releases request 5 here.
+		const later = makeUser({ username: 'later', role: 'admin' });
+		sqlite
+			.prepare("UPDATE task_requests SET mail_released_at = '2026-11-20 09:00:00', mail_released_by = ?, mail_released_by_name = 'later' WHERE id = 5")
+			.run(later.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(sqlite.prepare('SELECT id FROM users WHERE id = ?').get(later.id)).toBeUndefined();
+		expect(holdOf(5)).toEqual({ heldBecause: null, releasedAt: '2026-11-20 09:00:00', releasedBy: null, releasedByName: 'later' });
+		expect(sqlite.pragma('foreign_key_check(task_requests)')).toEqual([]);
+		expect(await commentMailsTo(card.id)).toEqual([REQUESTER]);
+	});
+
+	it('(j2) card 3020, R9: request 5 identical and not held here, the file holding it with text and a release: NULL, and its requester is mailed', async () => {
+		const { card } = requestHere();
+		const backup = ownBackup({ edited: true });
+		backup
+			.prepare("UPDATE task_requests SET mail_held_because = 'x', mail_released_at = '2026-11-19 09:00:00', mail_released_by = ?, mail_released_by_name = 'eve' WHERE id = 5")
+			.run(admin.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(holdOf(5)).toEqual(NOT_HELD);
+		expect(result.unsealedReach).toMatchObject({ requestsMailHeld: 0, requestsUnconfirmedHeld: 0 });
+		expect(await commentMailsTo(card.id)).toEqual([REQUESTER]);
+	});
+
+	it('(k) card 3020: request 5 identical, made by an account that is not the same here: held and counted', () => {
+		requestHere();
+		sqlite.prepare('UPDATE task_requests SET requester_user_id = ?, requester_email = NULL WHERE id = 5').run(member.id);
+		const backup = fromElsewhere(ownBackup({ edited: true }));
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(holdOf(5)).toEqual(HELD);
+		expect(result.unsealedReach).toMatchObject({ requestsMailHeld: 1, requestsUnconfirmedHeld: 0 });
+	});
+
+	it("(l) card 3020, R9: a planted request with no address, the file's text in its hold: NULL, not counted", () => {
+		const backup = ownBackup({ edited: true });
+		plantRequest(backup, { id: 52, email: null, heldBecause: 'x' });
+		plantRequest(backup, { id: 53, email: '', heldBecause: 'x' });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect([holdOf(52), holdOf(53)]).toEqual([NOT_HELD, NOT_HELD]);
+		expect(result.unsealedReach).toMatchObject({ requestsMailHeld: 0, requestsUnconfirmedHeld: 0 });
+	});
+
+	it("(m) card 3020, R9, and its code review's FP2: a forged file pre-fills the hold of every planted request, its own text or this build's reason; each with an address is given this server's reason and counted, confirmed and unconfirmed apart", () => {
+		const backup = ownBackup({ edited: true });
+		plantRequest(backup, { id: 54, heldBecause: 'x' });
+		plantRequest(backup, { id: 55, heldBecause: HELD_FROM_UNSEALED_BACKUP });
+		plantRequest(backup, { id: 56, status: 'unverified', heldBecause: HELD_FROM_UNSEALED_BACKUP });
+		plantRequest(backup, { id: 57, email: null, heldBecause: HELD_FROM_UNSEALED_BACKUP });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect([holdOf(54), holdOf(55), holdOf(56), holdOf(57)]).toEqual([HELD, HELD, HELD, NOT_HELD]);
+		expect(result.unsealedReach).toMatchObject({ requestsMailHeld: 2, requestsUnconfirmedHeld: 1 });
+	});
+
+	it("(v1) card 3020, R16: a backup sealed as this server's own brings (g)'s and (h)'s plants in as it has them: nothing held, nothing counted", () => {
+		const here = requestHere();
+		const backup = ownBackup();
+		plantRequest(backup, { id: 50, cardId: here.card.id });
+		plantRequest(backup, { id: 51, status: 'unverified', heldBecause: 'x' });
+		backup.prepare("UPDATE task_requests SET title = 'Please add an export too' WHERE id = 5").run();
+		backup.prepare("UPDATE cards SET title = 'Another export' WHERE id = ?").run(here.card.id);
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.errors).toEqual([]);
+		expect([holdOf(5), holdOf(50)]).toEqual([NOT_HELD, NOT_HELD]);
+		expect(holdOf(51)).toEqual({ ...NOT_HELD, heldBecause: 'x' });
+		expect(result.unsealedReach).toEqual(NO_UNSEALED_REACH);
+	});
+});
+
+// ─── Card 3020: an unsealed backup's people ──────────────────────────────────
+
+describe('an unsealed backup marks left each person this server did not hold as they are (card 3020, slice 2)', () => {
+	const STAMP = /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/;
+	/** When person 3 left, where this server has them as left. */
+	const LEFT_HERE = '2026-11-02 09:00:00';
+	/** Person 3 here, Ann at `ann@x.test`, with `user`'s account where given, active unless said. */
+	const annHere = (opts: { user?: SessionUser; status?: 'active' | 'left' } = {}) =>
+		sqlite
+			.prepare("INSERT INTO people (id, full_name, email, user_id, status, left_at) VALUES (3, 'Ann', 'ann@x.test', ?, ?, ?)")
+			.run(opts.user?.id ?? null, opts.status ?? 'active', opts.status === 'left' ? LEFT_HERE : null);
+	/** A person the file adds, at `id`, active unless said. */
+	const plantPerson = (backup: Database.Database, plant: { id: number; email?: string; status?: string; leftAt?: string | null }) =>
+		backup
+			.prepare("INSERT INTO people (id, full_name, email, status, left_at) VALUES (?, 'Eve', ?, ?, ?)")
+			.run(plant.id, plant.email ?? `eve${plant.id}@file.test`, plant.status ?? 'active', plant.leftAt ?? null);
+	/** A participant the file adds on `decisionId` for person `personId`, at the person's address, removed where said. */
+	const plantParticipant = (backup: Database.Database, decisionId: number, personId: number, removedAt: string | null = null) =>
+		Number(
+			backup
+				.prepare(
+					"INSERT INTO decision_participants (decision_id, person_id, role, name, email, job_title, groups, included_at, removed_at) SELECT ?, id, 'consulted', full_name, email, '', '[]', '2026-11-01 09:00:00', ? FROM people WHERE id = ?"
+				)
+				.run(decisionId, removedAt, personId).lastInsertRowid
+		);
+	const personOf = (id: number) =>
+		sqlite.prepare('SELECT email, user_id AS userId, status, left_at AS leftAt, updated_at AS updatedAt FROM people WHERE id = ?').get(id) as {
+			email: string;
+			userId: number | null;
+			status: string;
+			leftAt: string | null;
+			updatedAt: string;
+		};
+	const changesOf = (id: number) =>
+		sqlite
+			.prepare(
+				"SELECT created_at AS createdAt, actor_user_id AS actorUserId, actor_name AS actorName, source, subject, kind, before, after FROM people_changes WHERE subject = 'person' AND subject_id = ? ORDER BY id"
+			)
+			.all(id);
+	const restoreChanges = () => sqlite.prepare("SELECT COUNT(*) FROM people_changes WHERE source = 'restore'").pluck().get() as number;
+	/** The `people_changes` row of a person the restore marked left at `at`, who was `was`, now left at `leftAt`. */
+	const MARKED = (at: string, was: { status: string; leftAt: string | null }, leftAt: string) => ({
+		createdAt: at,
+		actorUserId: null,
+		actorName: 'DumpFire',
+		source: 'restore',
+		subject: 'person',
+		kind: 'updated',
+		before: JSON.stringify({ status: was.status, leftAt: was.leftAt }),
+		after: JSON.stringify({ status: 'left', leftAt })
+	});
+	/** (o)'s plant: an open decision here, and in the file person 900, active, on it once and once removed. */
+	const plantedOnADecision = () => {
+		const decision = makeDecision({ status: 'open', closesAt: '2099-01-01 00:00:00' });
+		const backup = ownBackup({ edited: true });
+		plantPerson(backup, { id: 900 });
+		const participantId = plantParticipant(backup, decision.id, 900);
+		plantParticipant(backup, decision.id, 900, '2026-11-01 10:00:00');
+		return { decision, backup, participantId };
+	};
+
+	it("(o) card 3020, R13: a planted active person on an open decision is marked left at the restore's moment, counted with their place, and recorded by DumpFire with no address", () => {
+		const { backup } = plantedOnADecision();
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		const eve = personOf(900);
+		expect(eve).toEqual({ email: 'eve900@file.test', userId: null, status: 'left', leftAt: expect.stringMatching(STAMP), updatedAt: eve.leftAt });
+		expect(result.unsealedReach).toMatchObject({ peopleMailOff: 1, decisionPlacesMailOff: 1 });
+		expect(changesOf(900)).toEqual([MARKED(eve.leftAt!, { status: 'active', leftAt: null }, eve.leftAt!)]);
+		expect(JSON.stringify(changesOf(900))).not.toContain('@');
+	});
+
+	it("(p) card 3020: person 3 here as ann@x.test, the file's person 3 as eve@x.test: marked left and counted", () => {
+		annHere();
+		const backup = ownBackup({ edited: true });
+		backup.prepare("UPDATE people SET email = 'eve@x.test' WHERE id = 3").run();
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(personOf(3)).toMatchObject({ email: 'eve@x.test', status: 'left', leftAt: expect.stringMatching(STAMP) });
+		expect(result.unsealedReach).toMatchObject({ peopleMailOff: 1, decisionPlacesMailOff: 0 });
+	});
+
+	it('(p2) card 3020, R7: person 3 with the same id and address, the file giving them another account: marked left and counted', () => {
+		annHere();
+		const backup = ownBackup({ edited: true });
+		backup.prepare('UPDATE people SET user_id = ? WHERE id = 3').run(member.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(personOf(3)).toMatchObject({ email: 'ann@x.test', userId: member.id, status: 'left', leftAt: expect.stringMatching(STAMP) });
+		expect(result.unsealedReach).toMatchObject({ peopleMailOff: 1 });
+	});
+
+	it('(p3) card 3020, R7: person 3 with the same id, address and account, the account not the same here: marked left and counted', () => {
+		annHere({ user: member });
+		const backup = fromElsewhere(ownBackup({ edited: true }));
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(personOf(3)).toMatchObject({ email: 'ann@x.test', userId: member.id, status: 'left', leftAt: expect.stringMatching(STAMP) });
+		expect(result.unsealedReach).toMatchObject({ peopleMailOff: 1 });
+	});
+
+	it('(q) card 3020: control: person 3 identical, their account the same here, active on both sides: untouched, not counted, nothing recorded', () => {
+		annHere({ user: member });
+		const was = personOf(3);
+		const backup = ownBackup({ edited: true });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(personOf(3)).toEqual(was);
+		expect(result.unsealedReach).toMatchObject({ peopleMailOff: 0, decisionPlacesMailOff: 0 });
+		expect(changesOf(3)).toEqual([]);
+	});
+
+	it("(r) card 3020: person 3 identical, left here and active in the file: left with this server's left_at, counted and recorded", () => {
+		annHere({ status: 'left' });
+		const backup = ownBackup({ edited: true });
+		backup.prepare("UPDATE people SET status = 'active', left_at = NULL WHERE id = 3").run();
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		const ann = personOf(3);
+		expect(ann).toMatchObject({ status: 'left', leftAt: LEFT_HERE, updatedAt: expect.stringMatching(STAMP) });
+		expect(result.unsealedReach).toMatchObject({ peopleMailOff: 1 });
+		expect(changesOf(3)).toEqual([MARKED(ann.updatedAt, { status: 'active', leftAt: null }, LEFT_HERE)]);
+	});
+
+	it('(s) card 3020: a planted person the file already has as left: untouched, not counted, nothing recorded', () => {
+		const backup = ownBackup({ edited: true });
+		plantPerson(backup, { id: 901, status: 'left', leftAt: '2026-10-01 00:00:00' });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(personOf(901)).toMatchObject({ status: 'left', leftAt: '2026-10-01 00:00:00' });
+		expect(result.unsealedReach).toMatchObject({ peopleMailOff: 0 });
+		expect(changesOf(901)).toEqual([]);
+	});
+
+	it("(s2) card 3020, R8: a planted person with status 'Active': marked left, counted, and recorded as 'other' (its code review, FP6)", () => {
+		const backup = ownBackup({ edited: true });
+		plantPerson(backup, { id: 902, status: 'Active' });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		const eve = personOf(902);
+		expect(eve).toMatchObject({ status: 'left', leftAt: expect.stringMatching(STAMP) });
+		expect(result.unsealedReach).toMatchObject({ peopleMailOff: 1 });
+		expect(changesOf(902)).toEqual([MARKED(eve.leftAt!, { status: 'other', leftAt: null }, eve.leftAt!)]);
+	});
+
+	it("(s3) card 3020's code review, FP6: people_changes.before holds no file text: a status not active or left is 'other', and leftAt is kept only where it reads as a timestamp", () => {
+		const backup = ownBackup({ edited: true });
+		plantPerson(backup, { id: 903, status: 'mail eve@evil.test <b>now</b>', leftAt: 'not a time: eve@evil.test' });
+		plantPerson(backup, { id: 904, status: 'paused', leftAt: '2026-10-05 08:00:00' });
+		plantPerson(backup, { id: 905, status: 'active', leftAt: 'call +44 20 7946 0000' });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.unsealedReach).toMatchObject({ peopleMailOff: 3 });
+		const before = (id: number) => (changesOf(id) as { before: string }[]).map((change) => JSON.parse(change.before));
+		expect([before(903), before(904), before(905)]).toEqual([
+			[{ status: 'other', leftAt: null }],
+			[{ status: 'other', leftAt: '2026-10-05 08:00:00' }],
+			[{ status: 'active', leftAt: null }]
+		]);
+		const recorded = JSON.stringify(sqlite.prepare("SELECT before, after FROM people_changes WHERE source = 'restore'").all());
+		for (const text of ['evil', '<b>', 'not a time', '7946', 'paused']) expect(recorded, text).not.toContain(text);
+	});
+
+	it("(t) card 3020: contract, record mail: after (o)'s restore, the invitation to that participant is recorded skipped as left and sends nothing, and Resend is refused", async () => {
+		const { decision, backup, participantId } = plantedOnADecision();
+		restoreFromBackup(sqlite, backup, { importer: chief.id });
+		// Mail and the App URL set up after the restore, so that nothing else stops the mail.
+		makeSmtp();
+		sqlite
+			.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://dumpfire.example.test') ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+			.run();
+		const eventsSince = (from: number) =>
+			sqlite.prepare('SELECT kind, participant_id AS participantId, detail FROM decision_events WHERE decision_id = ? AND id > ? ORDER BY id').all(decision.id, from);
+		const from = sqlite.prepare('SELECT coalesce(max(id), 0) FROM decision_events').pluck().get() as number;
+		const sent = effects();
+		try {
+			inTransaction(() => queueRecordMails(decision, 'invitation', { by: SYSTEM_ACTOR }));
+			let refused: unknown;
+			try {
+				writeAs({ user: chief } as App.Locals, (caller) => resendInvitation(caller, { decisionId: decision.id, participantId }, null, { source: 'ui' }));
+			} catch (error) {
+				refused = error;
+			}
+			await sent.settle();
+
+			expect(eventsSince(from)).toEqual([{ kind: 'mail_skipped', participantId, detail: '{"mail":"invitation","reason":"left"}' }]);
+			expect(refused).toMatchObject({ status: 409, body: { message: 'Eve has left: they cannot be mailed about this decision' } });
+			expect(sent.emails).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it("(w) card 3020: a failure at the people step, the last of card 3020's, rolls every step back", () => {
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		const config = (notifyEmail: string) => JSON.stringify({ schedule: 'disabled', retention: 7, destinations: [], notifyOnFailure: true, notifyEmail });
+		sqlite.prepare("INSERT INTO settings (key, value) VALUES ('backup_config', ?)").run(config('ops@here.test'));
+		annHere();
+		const backup = ownBackup({ edited: true });
+		// Every earlier step's plant: a webhook on with an address, an account's address and choices, a failure address, a request with an address.
+		backup
+			.prepare(
+				"INSERT INTO webhooks (id, board_id, url, secret, events, active, set_by, set_with_key) VALUES (903, ?, 'https://hooks.example.test/planted-903', 'the-files-secret', '[]', 1, ?, 0)"
+			)
+			.run(board.id, admin.id);
+		backup.prepare('UPDATE users SET email = ?, notification_prefs = ? WHERE id = ?').run('member@file.test', '{"email_all":true}', member.id);
+		backup.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(config('ops@file.test'));
+		backup
+			.prepare("INSERT INTO task_requests (id, target_type, target_id, requester_name, requester_email, title, status) VALUES (50, 'user', ?, 'Eve', 'eve@file.test', 'Planted', 'accepted')")
+			.run(member.id);
+		// And this step's: person 3 at another address, and a planted person.
+		backup.prepare("UPDATE people SET email = 'eve@x.test' WHERE id = 3").run();
+		plantPerson(backup, { id: 900 });
+		sqlite.exec(`
+			CREATE TEMP TRIGGER people_step_refused BEFORE UPDATE OF status ON people
+			WHEN NEW.status = 'left' AND OLD.status IS NOT 'left'
+			BEGIN SELECT RAISE(ABORT, 'the people step is refused'); END
+		`);
+		const before = snapshotDb();
+		try {
+			let thrown: unknown;
+			try {
+				restoreFromBackup(sqlite, backup, { importer: chief.id });
+			} catch (error) {
+				thrown = error;
+			}
+
+			expect(thrown).toBeInstanceOf(RestoreError);
+			expect((thrown as RestoreError).committed).toBe(false);
+			expect((thrown as RestoreError).message).toBe('The restore failed and nothing was changed: the people step is refused');
+			expectUnchanged(before);
+			expect(sqlite.prepare('SELECT id FROM task_requests ORDER BY id').pluck().all()).toEqual([1]);
+			expect(personOf(3)).toMatchObject({ email: 'ann@x.test', status: 'active' });
+			expect(personOf(900)).toBeUndefined();
+			expect(sqlite.prepare('SELECT COUNT(*) FROM people_changes').pluck().get()).toBe(0);
+			expect(sqlite.prepare('SELECT email, notification_prefs AS prefs FROM users WHERE id = ?').get(member.id)).toEqual({ email: member.email, prefs: '{}' });
+			expect(sqlite.prepare('SELECT COUNT(*) FROM webhooks').pluck().get()).toBe(0);
+			expect(JSON.parse(sqlite.prepare("SELECT value FROM settings WHERE key = 'backup_config'").pluck().get() as string).notifyEmail).toBe('ops@here.test');
+		} finally {
+			sqlite.exec('DROP TRIGGER IF EXISTS temp.people_step_refused');
+		}
+	});
+
+	it("(v2) card 3020, R16: a backup sealed as this server's own brings (o)'s, (p)'s, (p2)'s and (s2)'s plants in as it has them: nobody marked left, nothing counted or recorded", () => {
+		annHere();
+		sqlite.prepare("INSERT INTO people (id, full_name, email, status) VALUES (4, 'Bob', 'bob@x.test', 'active')").run();
+		const { backup } = plantedOnADecision();
+		backup.prepare("UPDATE people SET email = 'eve@x.test' WHERE id = 3").run();
+		backup.prepare('UPDATE people SET user_id = ? WHERE id = 4').run(member.id);
+		plantPerson(backup, { id: 902, status: 'Active' });
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.errors).toEqual([]);
+		expect([personOf(900).status, personOf(3), personOf(4).status, personOf(902).status]).toEqual([
+			'active',
+			expect.objectContaining({ email: 'eve@x.test', status: 'active', leftAt: null }),
+			'active',
+			'Active'
+		]);
+		expect(result.unsealedReach).toEqual(NO_UNSEALED_REACH);
+		expect(restoreChanges()).toBe(0);
+	});
+});
+
+// ─── Card 3020: a working copy of an unsealed backup ────────────────────────
+
+describe('a working copy of an unsealed backup holds its requests and marks its people left too (card 3020, slice 5)', () => {
+	it('(af) card 3020: a working copy of an unsealed file: the planted request is held and the planted person marked left, and a comment then mails nothing', async () => {
+		const card = makeCard(makeBoard({ owner: member, name: 'Requests' }).cols['To Do'], { title: 'The export' });
+		const backup = ownBackup({ edited: true });
+		backup
+			.prepare(
+				"INSERT INTO task_requests (id, target_type, target_id, requester_name, requester_email, title, status, resolved_card_id) VALUES (50, 'user', ?, 'Eve', 'eve@file.test', 'Planted', 'accepted', ?)"
+			)
+			.run(member.id, card.id);
+		backup.prepare("INSERT INTO people (id, full_name, email, status) VALUES (900, 'Eve', 'eve900@file.test', 'active')").run();
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id, outside: 'off' });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.outside).not.toBeNull();
+		expect(result.errors).toEqual([]);
+		expect(sqlite.prepare('SELECT mail_held_because FROM task_requests WHERE id = 50').pluck().get()).toBe(HELD_FROM_UNSEALED_BACKUP);
+		expect(sqlite.prepare('SELECT status FROM people WHERE id = 900').pluck().get()).toBe('left');
+		expect(sqlite.prepare("SELECT COUNT(*) FROM people_changes WHERE source = 'restore' AND subject_id = 900").pluck().get()).toBe(1);
+		expect(result.unsealedReach).toEqual({ ...NO_UNSEALED_REACH, requestsMailHeld: 1, peopleMailOff: 1 });
+		// Mail set up on the working copy afterwards, as its administrator might: the held requester is still mailed nothing.
+		makeSmtp();
+		const sent = effects();
+		try {
+			notifyRequesterProgress({ cardId: card.id, action: 'comment', summary: 'Started on it', actorName: 'member', baseUrl: 'https://dumpfire.example.test', actorUserId: member.id });
+			await sent.settle();
+			expect(sent.emails).toEqual([]);
+		} finally {
+			sent.restore();
+		}
 	});
 });

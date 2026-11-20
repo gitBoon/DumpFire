@@ -101,8 +101,10 @@ export const GET: RequestHandler = async ({ locals }) => {
 		// The requester's address as their mail goes to it: the account's email
 		// as it is now, for a request made signed in (card 2171).
 		const requesterEmail = requesterAddress(r);
+		// Card 3020 (R18): whether its requester's mail is held, never why or who released it.
+		const mailHeld = r.mailHeldBecause !== null;
 
-		return { ...publicRequest(r), requesterEmail, targetName, targetEmoji, resolvedBoardId, desiredBoardId, desiredBoardName, desiredBoardEmoji };
+		return { ...publicRequest(r), requesterEmail, mailHeld, targetName, targetEmoji, resolvedBoardId, desiredBoardId, desiredBoardName, desiredBoardEmoji };
 	});
 
 	return json(enriched);

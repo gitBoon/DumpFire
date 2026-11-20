@@ -36,6 +36,20 @@ vi.mock('$lib/server/email', async (importOriginal) => {
 	};
 });
 
+/** How many card reports were made (card 3020, (b)): the completion mail makes one for its PDF. */
+const reports = vi.hoisted(() => ({ cardReports: 0 }));
+
+vi.mock('$lib/server/reports', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/server/reports')>();
+	return {
+		...actual,
+		generateCardReport: (...args: Parameters<typeof actual.generateCardReport>) => {
+			reports.cardReports++;
+			return actual.generateCardReport(...args);
+		}
+	};
+});
+
 import { db, sqlite } from '$lib/server/db';
 import { requestLinks, requestMessages, taskRequests, type TaskRequest } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -44,6 +58,9 @@ import { sha256Hex } from '$lib/server/mfa-crypto';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { END_PLAIN_REQUEST_LINKS, MAIL_HELD, REQUEST_MAIL_LINKS_KEPT, issueFormToken, issueRequestLink } from '$lib/server/request-tokens';
 import { mailPlaceOf } from '$lib/server/setting-holds';
+import { notifyRequesterProgress } from '$lib/server/notifications';
+import { requesterMailAddress } from '$lib/server/request-access';
+import { HELD_FROM_UNSEALED_BACKUP } from '$lib/settings-held';
 import { endPlainRequestLinks } from '$lib/server/startup-checks';
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
@@ -59,6 +76,7 @@ beforeEach(() => {
 	mail.configured = true;
 	mail.noAddress = false;
 	mail.sent.length = 0;
+	reports.cardReports = 0;
 	staff = makeUser({ username: 'staff' });
 	A = makeBoard({ owner: staff, name: 'A' });
 });
@@ -483,5 +501,133 @@ describe('the sweep at start after an older image (endPlainRequestLinks)', () =>
 			else process.env.LOG_LEVEL = level;
 			vi.restoreAllMocks();
 		}
+	});
+});
+
+// ─── Card 3020: a request whose requester mail is held ───────────────────────
+
+describe('a request whose requester mail is held (card 3020, slice 1)', () => {
+	/** Hold request `id`'s mail, as a restore of a backup whose seal did not verify does. */
+	const hold = (id: number) => sqlite.prepare('UPDATE task_requests SET mail_held_because = ? WHERE id = ?').run(HELD_FROM_UNSEALED_BACKUP, id);
+	/** An accepted request on `cardId` from outside, at `address`. */
+	const acceptedOn = (cardId: number, address: string) =>
+		db
+			.insert(taskRequests)
+			.values({ targetType: 'user', targetId: staff.id, requesterName: 'Pat', requesterEmail: address, title: 'Please add an export', status: 'accepted', resolvedCardId: cardId })
+			.returning()
+			.get();
+	/** Long enough for a mail started after the answer to be built and handed on. */
+	const settled = () => new Promise((done) => setTimeout(done, 50));
+
+	it('(a) card 3020: a comment on the card of a held accepted anonymous request sends no mail and writes no link', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Please add an export' });
+		const request = pendingRequest('accepted', card.id);
+		hold(request.id);
+
+		const commented = await api('POST', `/api/cards/${card.id}/comments`, { user: staff, body: { content: 'Started on it' } });
+		await settled();
+
+		expect(commented.status).toBe(201);
+		expect(linkRows(request.id)).toEqual([]);
+		expect(mail.sent).toEqual([]);
+	});
+
+	it('(a2) card 3020, R10: a planted held request and a genuine one on the same card: the genuine requester is mailed with a link of their own, the held one gets nothing', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Please add an export' });
+		// The planted one first, with the lower id, as a restore would leave it.
+		const planted = acceptedOn(card.id, 'eve@example.test');
+		hold(planted.id);
+		const genuine = acceptedOn(card.id, REQUESTER);
+
+		expect((await api('POST', `/api/cards/${card.id}/comments`, { user: staff, body: { content: 'Started on it' } })).status).toBe(201);
+		await vi.waitFor(() => expect(mailedTokens(genuine.id)).toHaveLength(1));
+		await settled();
+
+		expect(mail.sent.map((sent) => sent.to)).toEqual([REQUESTER]);
+		expect(linkRows(genuine.id).map((row) => ({ tokenHash: row.tokenHash, source: row.source }))).toEqual([
+			{ tokenHash: sha256Hex(newestToken(genuine.id)), source: 'mail' }
+		]);
+		expect(linkRows(planted.id)).toEqual([]);
+		expect(mailedTokens(planted.id)).toEqual([]);
+	});
+
+	it('(b) card 3020: the held request’s card completed: no mail, and no card report made for its PDF', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Please add an export' });
+		const request = pendingRequest('accepted', card.id);
+		hold(request.id);
+
+		notifyRequesterProgress({ cardId: card.id, action: 'completed', summary: '', actorName: 'staff', baseUrl: 'https://dumpfire.example.test', actorUserId: staff.id });
+		await settled();
+
+		expect(reports.cardReports).toBe(0);
+		expect(mail.sent).toEqual([]);
+		expect(linkRows(request.id)).toEqual([]);
+	});
+
+	it('(c) card 3020, R11: a new link asked for a held unconfirmed request with its exact address answers 202 in the usual words, and mails no confirmation and writes no link', async () => {
+		const usual = pendingRequest('unverified');
+		const request = pendingRequest('unverified');
+		hold(request.id);
+
+		const control = await api('POST', `/api/requests/${usual.id}/link`, { body: { email: REQUESTER }, ip: '10.0.2.1' });
+		await afterTheAnswer();
+		const asked = await api('POST', `/api/requests/${request.id}/link`, { body: { email: REQUESTER }, ip: '10.0.2.2' });
+		await afterTheAnswer();
+		await settled();
+
+		expect(control.status).toBe(202);
+		expect(mailedTokens(usual.id)).toHaveLength(1);
+		expect({ status: asked.status, body: asked.body }).toEqual({ status: 202, body: control.body });
+		expect(mailedTokens(request.id)).toEqual([]);
+		expect(linkRows(request.id)).toEqual([]);
+		expect(mail.sent).toHaveLength(1);
+	});
+
+	it('(d) card 3020, R12: an administrator’s reply on a held request is saved and answers mailed false, with no link issued and no mail sent; one on a request not held answers mailed true', async () => {
+		const request = pendingRequest();
+		const mailed = await teamReply(request.id, 'Before the hold');
+		expect({ status: mailed.status, mailed: mailed.body.mailed }).toEqual({ status: 200, mailed: true });
+		await vi.waitFor(() => expect(mail.sent).toHaveLength(1));
+		hold(request.id);
+		const links = linkRows(request.id).length;
+
+		const replied = await teamReply(request.id, 'After the hold');
+		await settled();
+
+		expect(replied.status).toBe(200);
+		expect(replied.body).toMatchObject({ requestId: request.id, senderType: 'admin', message: 'After the hold', mailed: false });
+		expect(db.select().from(requestMessages).where(eq(requestMessages.requestId, request.id)).all().map((m) => m.message)).toContain('After the hold');
+		expect(linkRows(request.id)).toHaveLength(links);
+		expect(mail.sent).toHaveLength(1);
+	});
+
+	it('(e) card 3020: accepting a held pending request makes the card and mails nothing', async () => {
+		const request = pendingRequest();
+		hold(request.id);
+
+		const accepted = await api('PATCH', `/api/requests/${request.id}`, {
+			user: staff,
+			body: { action: 'accept', boardId: A.board.id, columnId: A.cols['To Do'].id }
+		});
+		await settled();
+
+		expect(accepted.status).toBe(200);
+		expect(requestRow(request.id)).toMatchObject({ status: 'accepted', resolvedCardId: expect.any(Number), mailHeldBecause: HELD_FROM_UNSEALED_BACKUP });
+		expect(mail.sent).toEqual([]);
+		expect(linkRows(request.id)).toEqual([]);
+	});
+
+	it('(f) card 3020: a held request made by an account has no mail address, though its account has one: the hold is asked before the account', () => {
+		const requester = makeUser({ username: 'asker' });
+		const request = db
+			.insert(taskRequests)
+			.values({ targetType: 'user', targetId: staff.id, requesterName: 'asker', requesterUserId: requester.id, title: 'Please add an export', status: 'pending' })
+			.returning()
+			.get();
+		expect(requesterMailAddress(requestRow(request.id))).toBe(requester.email);
+
+		hold(request.id);
+
+		expect(requesterMailAddress(requestRow(request.id))).toBeNull();
 	});
 });

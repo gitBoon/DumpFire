@@ -370,6 +370,25 @@ function unsealedReachSentence(reach: UnsealedReach | undefined): string | null 
 			: []),
 		...(reach.notificationsOff > 0
 			? [`${reach.notificationsOff} account(s) not the same here have their notification mail switched off until each signs in and switches it on`]
+			: []),
+		// Card 3020 (section 3.8): the requests whose requester mail the restore held, the confirmed and the unconfirmed apart (R11).
+		...(reach.requestsMailHeld > 0
+			? [
+					`${reach.requestsMailHeld} request(s) came in with a requester or card this server did not hold as it is: mail to each requester, links and ` +
+						'completion reports included, is held until an administrator releases it under Mail held in the Requests inbox'
+				]
+			: []),
+		...(reach.requestsUnconfirmedHeld > 0
+			? [`${reach.requestsUnconfirmedHeld} unconfirmed request(s) were held too: they cannot be released, and lapse 7 days after they were made`]
+			: []),
+		// Card 3020 (section 3.8, R21): the people the restore marked left, and their places on decisions, counted only.
+		...(reach.peopleMailOff > 0
+			? [
+					`${reach.peopleMailOff} person(s) in the people directory were marked left, as this server did not hold their address and account, ` +
+						'or has them as left' +
+						(reach.decisionPlacesMailOff > 0 ? `, so ${reach.decisionPlacesMailOff} place(s) on decisions are mailed nothing` : '') +
+						': an administrator marks each active on the People page, with a password and a code, once the address is checked'
+				]
 			: [])
 	];
 	const failureMail = reach.notifyEmail > 0 ? "the backup failure mail goes to this server's address, not the backup's" : null;
@@ -386,6 +405,10 @@ function unsealedReachWords(reach: UnsealedReach | undefined): string {
 		...(reach.accountsAsHere > 0 ? [`${reach.accountsAsHere} account(s)' email address kept as on this server`] : []),
 		...(reach.addressesGivenUp > 0 ? [`${reach.addressesGivenUp} other account(s)' address given up`] : []),
 		...(reach.notificationsOff > 0 ? [`${reach.notificationsOff} account(s)' notification mail switched off`] : []),
+		...(reach.requestsMailHeld > 0 ? [`${reach.requestsMailHeld} request(s)' requester mail held`] : []),
+		...(reach.requestsUnconfirmedHeld > 0 ? [`${reach.requestsUnconfirmedHeld} unconfirmed request(s) held`] : []),
+		...(reach.peopleMailOff > 0 ? [`${reach.peopleMailOff} person(s) marked left`] : []),
+		...(reach.decisionPlacesMailOff > 0 ? [`${reach.decisionPlacesMailOff} place(s) on decisions mailed nothing`] : []),
 		...(reach.notifyEmail > 0 ? ["the backup failure mail's address kept as on this server"] : [])
 	];
 	return `, keeping what a backup whose seal did not verify would send outside: ${parts.join('; ')}`;
