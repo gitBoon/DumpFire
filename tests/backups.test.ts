@@ -133,8 +133,11 @@ import { db, sqlite } from '$lib/server/db';
 // For the database file's path the import route asks for, stood in for in one case (card 2925).
 import * as connection from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
-import { credentialOf, passwordReplacedHere, recordPasswordReplaced } from '$lib/server/account-endings';
-import { endReplacedPasswordsPresent } from '$lib/server/account-ending-bodies';
+import { credentialOf, passwordReplacedHere, recordAccountEnding, recordPasswordReplaced, storedCreated } from '$lib/server/account-endings';
+import * as endingsModule from '$lib/server/account-endings';
+import { keyRecorded, raiseKeyCounterOverRecord } from '$lib/server/key-revocations';
+import { deleteUser } from '$lib/server/deletes';
+import { endRecordedAccountsPresent, endReplacedPasswordsPresent } from '$lib/server/account-ending-bodies';
 import { hashSync } from 'bcryptjs';
 import { DUMMY_HASH } from '$lib/server/dummy-hash';
 import { carryFactors, mfaWithoutFactorSentence, readMfaHere, sameAccountHere, type GrantTrust } from '$lib/server/mfa-backup';
@@ -146,6 +149,8 @@ import { resendInvitation } from '$lib/server/decision-participant-writes';
 import { writeAs } from '$lib/server/write-as';
 import { NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import {
+	MOST_OTHER_ROWS,
+	MOST_SEED_ROWS,
 	NO_SUPERADMIN_IN_BACKUP,
 	NO_UNSEALED_REACH,
 	RestoreError,
@@ -1586,7 +1591,8 @@ describe('a restore', () => {
 			);
 			const from = newestLine();
 
-			const res = await importAnswer(backup);
+			// Sealed after the edit (card 3013): an unsealed copy's record is counted and not taken, never left out for its size.
+			const res = await importAnswer(sealedFor(sqlite, backup));
 
 			expect(res.status, res.message).toBe(200);
 			expect(res.body.accountRecordLeftOut).toBe(101);
@@ -2073,11 +2079,13 @@ describe('a restore', () => {
 	function backupWhoseSuperadminCannotBeCopied(): Database.Database {
 		const backup = new Database(':memory:');
 		opened.push(backup);
+		// Each made at a moment no account here was (card 3013's code review, FP5): a restored account of the id and creation
+		// time of one here takes its role, and an unset creation time is the restore's own second.
 		backup.exec(`
-			CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, email TEXT, password_hash TEXT, role TEXT);
+			CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, email TEXT, password_hash TEXT, role TEXT, created_at TEXT);
 			INSERT INTO users VALUES
-				(1, 'bob', 'bob@example.test', 'x', 'user'),
-				(2, 'bob', 'ann@example.test', 'x', 'superadmin');
+				(1, 'bob', 'bob@example.test', 'x', 'user', '2020-01-01 09:00:00'),
+				(2, 'bob', 'ann@example.test', 'x', 'superadmin', '2020-01-01 09:00:00');
 		`);
 		expect(backupLacksSuperadmin(backup)).toBe(false);
 		return backup;
@@ -2945,7 +2953,11 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		for (const [key, value] of Object.entries(given.mail ?? {})) set.run(key, value);
 		if (given.destinations) set.run('backup_config', configWith(given.destinations));
 		const hook = live.prepare("INSERT INTO webhooks (id, board_id, url, secret, events, active, set_by) VALUES (?, ?, ?, ?, '[]', ?, ?)");
-		const setter = live.prepare("INSERT OR IGNORE INTO users (id, username, email, password_hash) VALUES (?, 'setter' || ?, 'setter' || ? || '@example.test', 'x')");
+		// Made at a moment no account of the backup was (card 3013's code review, FP5): another server's account of a backup
+		// account's id and creation time would give it its role, the backup's superadmin's included.
+		const setter = live.prepare(
+			"INSERT OR IGNORE INTO users (id, username, email, password_hash, created_at) VALUES (?, 'setter' || ?, 'setter' || ? || '@example.test', 'x', '2020-01-01 09:00:00')"
+		);
 		for (const w of given.webhooks ?? []) {
 			// By default the backup's setter, the board's owner there (card 2923's code review: armSecrets records it).
 			const setBy = w.setBy ?? hooks.owner;
@@ -6578,7 +6590,9 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 	const schedulesOfBob = () => sqlite.prepare('SELECT enabled FROM report_schedules WHERE user_id = ?').pluck().all(bob.id);
 
 	it('case 39: keeps an account disabled here disabled, though the backup was made before, its restored keys ended and its schedules paused', () => {
-		const backup = backupNow();
+		// Sealed as this server's own (card 3013, R23): from a copy whose seal did not verify only a disable the record attests
+		// is carried, and `disableBob` writes no record row.
+		const backup = sealedFor(sqlite, backupNow());
 		disableBob();
 
 		const result = restoreFromBackup(sqlite, backup);
@@ -6587,6 +6601,27 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 		expect(bobNow()).toEqual({ disabledAt: DISABLED_AT, disabledBy: admin.id });
 		expect(keysOfBob()).toBe(0);
 		expect(schedulesOfBob()).toEqual([0]);
+	});
+
+	it("case 39, unsealed (card 3013's code review, FP12): the file disables Bob, disabled here by a host edit: he stays disabled as here, counted for no change, and his keys are this server's own, none ended or recorded", () => {
+		// This server's own copy, its seal not verified: made before the disable here, and edited to disable Bob itself, by
+		// chief, at the same moment.
+		const backup = backupNow();
+		disableBob();
+		backup.prepare('UPDATE users SET disabled_at = ?, disabled_by = ? WHERE id = ?').run(DISABLED_AT, chief.id, bob.id);
+		const planted = generateApiKey();
+		backup.prepare("INSERT INTO api_keys (id, key_hash, key_prefix, name, user_id) VALUES (900, ?, ?, 'Planted', ?)").run(planted.keyHash, planted.keyPrefix, bob.id);
+		const keysHere = sqlite.prepare('SELECT id FROM api_keys WHERE user_id = ? ORDER BY id').pluck().all(bob.id);
+		const recordHere = sqlite.prepare('SELECT * FROM api_key_revocations ORDER BY key_id, key_hash').all();
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.sealVerified).toBe(false);
+		expect(bobNow()).toEqual({ disabledAt: DISABLED_AT, disabledBy: admin.id });
+		// Disabled in the file and here: only who disabled him differs, which is not counted (FP8).
+		expect(result.accountStateAsHere).toBe(0);
+		expect(sqlite.prepare('SELECT id FROM api_keys WHERE user_id = ? ORDER BY id').pluck().all(bob.id)).toEqual(keysHere);
+		expect(sqlite.prepare('SELECT * FROM api_key_revocations ORDER BY key_id, key_hash').all()).toEqual(recordHere);
 	});
 
 	it('case 39: does the same from a backup made before migration 0072, which has neither column', () => {
@@ -6601,6 +6636,9 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 			ALTER TABLE users_before_0072 RENAME TO users;
 		`);
 		expect((backup.pragma('table_info(users)') as { name: string }[]).map((c) => c.name)).not.toContain('disabled_at');
+		// Sealed as this server's own (card 3013, R23): from a copy whose seal did not verify only a disable the record attests
+		// is carried, and `disableBob` writes no record row.
+		sealedFor(sqlite, backup);
 		disableBob();
 
 		restoreFromBackup(sqlite, backup);
@@ -6610,7 +6648,9 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 	});
 
 	it('case 39: empties disabled_by where the account that disabled it is not among those restored', () => {
-		const backup = backupNow();
+		// Sealed as this server's own (card 3013, R23): from a copy whose seal did not verify only a disable the record attests
+		// is carried, and `disableBob` writes no record row.
+		const backup = sealedFor(sqlite, backupNow());
 		// Made after the backup, so the backup has no account of its id.
 		const later = makeUser({ username: 'later', role: 'admin' });
 		disableBob(later.id);
@@ -6624,6 +6664,9 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 	it('CS3: empties disabled_by where the backup holds an account of that id that is not the one that disabled it', () => {
 		const backup = backupNow();
 		backup.prepare("UPDATE users SET created_at = '2099-03-04 05:06:07' WHERE id = ?").run(admin.id);
+		// Sealed as this server's own (card 3013, R23): from a copy whose seal did not verify only a disable the record attests
+		// is carried, and `disableBob` writes no record row.
+		sealedFor(sqlite, backup);
 		disableBob(admin.id);
 
 		restoreFromBackup(sqlite, backup);
@@ -6636,6 +6679,10 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 		// In the backup, the superadmin is the account of admin's id, and chief's id is another account, an administrator.
 		backup.prepare("UPDATE users SET role = 'admin', created_at = '2099-03-04 05:06:07' WHERE id = ?").run(chief.id);
 		backup.prepare("UPDATE users SET role = 'superadmin' WHERE id = ?").run(admin.id);
+		// Sealed as this server's own (card 3013, R23): from a copy whose seal did not verify only a disable the record attests
+		// is carried, and `disableBob` writes no record row; and
+		// it would give chief's id this server's role.
+		sealedFor(sqlite, backup);
 		disableBob(chief.id);
 
 		const result = restoreFromBackup(sqlite, backup);
@@ -6645,7 +6692,9 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 	});
 
 	it('CS3: keeps disabled_by where the account that disabled it is restored as itself', () => {
-		const backup = backupNow();
+		// Sealed as this server's own (card 3013, R23): from a copy whose seal did not verify only a disable the record attests
+		// is carried, and `disableBob` writes no record row.
+		const backup = sealedFor(sqlite, backupNow());
 		disableBob(chief.id);
 
 		restoreFromBackup(sqlite, backup);
@@ -6674,6 +6723,10 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 	it("case 40: never carries onto a restored superadmin, and the restore is accepted", () => {
 		const backup = backupNow();
 		backup.prepare("UPDATE users SET role = 'superadmin' WHERE id = ?").run(bob.id);
+		// Sealed as this server's own (card 3013, R23): from a copy whose seal did not verify only a disable the record attests
+		// is carried, and `disableBob` writes no record row; and
+		// it would give Bob this server's role.
+		sealedFor(sqlite, backup);
 		disableBob();
 
 		const result = restoreFromBackup(sqlite, backup);
@@ -6864,7 +6917,9 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 
 		it('2923 R8: a hold that fails rolls the restore back, and nothing is changed', () => {
 			startedSinceAlreadyOffHeld();
-			const backup = backupNow();
+			// Sealed as this server's own (card 3013, R23): the hold it fails is reached through the carried disable, and from a
+			// copy whose seal did not verify only a disable the record attests is carried.
+			const backup = sealedFor(sqlite, backupNow());
 			disableBob();
 			const before = snapshotDb();
 			const prepare = sqlite.prepare.bind(sqlite);
@@ -8002,7 +8057,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		record(X.id, xHash, 'access ended', newer);
 		const here = recordOf();
 
-		const first = restoreFromBackup(sqlite, newer);
+		const first = restoreFromBackup(sqlite, sealedFor(sqlite, newer));
 
 		expect(first.errors).toEqual([]);
 		// This server's rows, row for row, and the backup's one more.
@@ -8056,7 +8111,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		record(940, 'd'.repeat(64), 'revoked', backup);
 		expect(counter()).toBeLessThan(900);
 
-		const result = restoreFromBackup(sqlite, backup);
+		const result = restoreFromBackup(sqlite, sealedFor(sqlite, backup));
 
 		expect(result.errors).toEqual([]);
 		expect(counter()).toBe(940);
@@ -8132,7 +8187,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		sqlite.prepare("DELETE FROM sqlite_sequence WHERE name = 'api_keys'").run();
 		expect(counter()).toBeUndefined();
 
-		const result = restoreFromBackup(sqlite, backup);
+		const result = restoreFromBackup(sqlite, sealedFor(sqlite, backup));
 
 		expect(result.errors).toEqual([]);
 		expect(counter()).toBe(900);
@@ -8149,7 +8204,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 			.run('f'.repeat(64));
 		const at = stamp();
 
-		const result = restoreFromBackup(sqlite, backup);
+		const result = restoreFromBackup(sqlite, sealedFor(sqlite, backup));
 
 		expect(result.errors).toEqual([
 			"3 row(s) of the backup's record of ended API keys were left out, as they can name no key: 1 with a hash that is neither empty nor a SHA-256, " +
@@ -8175,7 +8230,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		record(bound + 5, '', 'before record', backup);
 		const before = counter() as number;
 
-		const result = restoreFromBackup(sqlite, backup);
+		const result = restoreFromBackup(sqlite, sealedFor(sqlite, backup));
 
 		expect(result.errors).toEqual([
 			"2 row(s) of the backup's record of ended API keys were left out, as they can name no key: 1 with an id that is not a whole number from 1 to 2^53 - 1, " +
@@ -8337,6 +8392,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		const backup = opening(Buffer.from(sqlite.serialize()));
 		record(K.id + 50, 'a'.repeat(64), 'revoked', backup);
 		backup.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'api_keys'").run(K.id + 60);
+		sealedFor(sqlite, backup);
 		revokedHere(K.id);
 		const before = snapshotDb();
 		for (const trigger of [
@@ -8519,10 +8575,11 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		expect(sqlite.prepare('SELECT enabled FROM report_schedules WHERE user_id = ?').pluck().all(x.id)).toEqual([0]);
 		expect(() => createSession(x.id)).toThrow(AccountDisabled);
 		// An exact deleted row named it already: none is added (R3). The one row added is the hash DUMMY_HASH replaced,
-		// recorded as replaced (card 2997, N1).
-		expect(recordOf().slice(recorded)).toEqual([
-			{ id: x.id, created: createdOf(x.id), ending: 'password', role: '', credential: credentialOf(fixtureHashOf(x)), origin: 'belt' }
-		]);
+		// recorded as replaced (card 2997, N1); none from a copy whose seal does not verify (card 3013, D3), whose hash was
+		// the file's word, and which the start rules again from this server's own exact row.
+		expect(recordOf().slice(recorded)).toEqual(
+			sealed ? [{ id: x.id, created: createdOf(x.id), ending: 'password', role: '', credential: credentialOf(fixtureHashOf(x)), origin: 'belt' }] : []
+		);
 	});
 
 	it.each([{ outside: 'keep' as const }, { outside: 'off' as const }])(
@@ -8576,7 +8633,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		row(x.id, createdOf(x.id), 'disabled', { at: '2026-11-19 08:00:00' });
 		row(x.id, createdOf(x.id), 'enabled', { at: '2026-11-19 08:30:00', origin: 'backup' }, backup);
 
-		const result = restoreFromBackup(sqlite, backup);
+		const result = restoreFromBackup(sqlite, sealedFor(sqlite, backup));
 
 		expect(result.errors).toEqual([]);
 		expect(userOf(x.id)).toMatchObject({ disabledAt: '2026-11-19 08:00:00', disabledBy: chief.id });
@@ -8620,6 +8677,8 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		sqlite
 			.prepare("INSERT INTO users (id, username, email, password_hash, role, created_at) VALUES (?, 'later', 'later@example.test', ?, 'user', '2026-06-01 09:00:00')")
 			.run(zed.id, hashLike(6));
+		// Its `role` row, as account creation writes one (A13): the record attests the account held (card 3013, D8, R3).
+		row(zed.id, '2026-06-01 09:00:00', 'role', { role: 'user' });
 		row(zed.id + 1, '', 'watermark');
 
 		const result = restoreFromBackup(sqlite, opening(backup));
@@ -8694,7 +8753,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		row(x.id, xCreated, 'deleted', {}, newer);
 		const here = recordOf();
 
-		const first = restoreFromBackup(sqlite, newer);
+		const first = restoreFromBackup(sqlite, sealedFor(sqlite, newer));
 
 		expect(first.errors).toEqual([]);
 		expect(recordOf()).toEqual([...here, { id: x.id, created: xCreated, ending: 'deleted', role: '', credential: '', origin: 'backup' }]);
@@ -8729,7 +8788,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		for (const [id, created, ending, opts] of rows) row(id, created, ending, opts, backup);
 		const at = stamp();
 
-		const result = restoreFromBackup(sqlite, backup);
+		const result = restoreFromBackup(sqlite, sealedFor(sqlite, backup));
 
 		expect(result.errors).toEqual([
 			"11 row(s) of the backup's record of account endings were left out, as they can name no account here: 3 with an id that is not a whole number from 1 to 2^53 - 1, " +
@@ -8765,7 +8824,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 			const backup = opening(Buffer.from(sqlite.serialize()));
 			backup.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000001) INSERT INTO account_endings (user_id, account_created, ending, ended_at) ${rows}`);
 
-			const result = restoreFromBackup(sqlite, backup);
+			const result = restoreFromBackup(sqlite, sealedFor(sqlite, backup));
 
 			expect(result.errors).toEqual([
 				`The backup's record of account endings holds ${says}, more than any server writes, and none of its 1000001 row(s) was added to this server's.`
@@ -8782,7 +8841,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 				`SELECT ${owner.id}, '${createdOf(owner.id)}', 'disabled', '2026-11-19 09:00:00' FROM n`
 		);
 
-		const result = restoreFromBackup(sqlite, backup);
+		const result = restoreFromBackup(sqlite, sealedFor(sqlite, backup));
 
 		expect(result.errors).toEqual([
 			"The backup's record of account endings holds more than 100 rows for one account, more than any server writes, and none of its 101 row(s) was added to this server's."
@@ -8792,7 +8851,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		expect(userOf(owner.id)).toMatchObject({ disabledAt: null });
 		// One row fewer is taken whole.
 		backup.exec(`DELETE FROM account_endings WHERE seq = (SELECT max(seq) FROM account_endings)`);
-		expect(restoreFromBackup(sqlite, backup).accountRecordLeftOut).toBe(0);
+		expect(restoreFromBackup(sqlite, sealedFor(sqlite, backup)).accountRecordLeftOut).toBe(0);
 	});
 
 	it('FP7: a server at exactly the guard, 1,000,000 seed rows, restores its own backup and keeps every row', () => {
@@ -8802,7 +8861,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		const backup = opening(Buffer.from(sqlite.serialize()));
 		backup.prepare("UPDATE sqlite_sequence SET seq = 1000100 WHERE name = 'users'").run();
 
-		const result = restoreFromBackup(sqlite, backup);
+		const result = restoreFromBackup(sqlite, sealedFor(sqlite, backup));
 
 		expect(result.errors).toEqual([]);
 		expect(result.accountRecordLeftOut).toBe(0);
@@ -8817,7 +8876,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		row(940, '2026-01-01 09:00:00', 'deleted', {}, backup);
 		expect(counter()).toBeLessThan(900);
 
-		expect(restoreFromBackup(sqlite, backup).errors).toEqual([]);
+		expect(restoreFromBackup(sqlite, sealedFor(sqlite, backup)).errors).toEqual([]);
 		expect(counter()).toBe(900);
 		expect(makeUser({ username: 'next' }).id).toBe(901);
 
@@ -8828,7 +8887,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		again.prepare("INSERT OR REPLACE INTO sqlite_sequence (name, seq) VALUES ('users', 950)").run();
 		sqlite.exec('DELETE FROM account_endings');
 		sqlite.prepare("DELETE FROM sqlite_sequence WHERE name = 'users'").run();
-		expect(restoreFromBackup(sqlite, again).errors).toEqual([]);
+		expect(restoreFromBackup(sqlite, sealedFor(sqlite, again)).errors).toEqual([]);
 		expect(counter()).toBe(905);
 	});
 
@@ -8839,7 +8898,8 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		deletedHere(x.id);
 		const here = recordOf();
 
-		const result = restoreFromBackup(sqlite, backup);
+		// Sealed after the edit (card 3013): an unsealed copy writes no belt, and this test is of the older schema.
+		const result = restoreFromBackup(sqlite, sealedFor(sqlite, backup));
 
 		expect(result.errors).toEqual([]);
 		expect(result.accountsKept).toEqual({ ...NONE_KEPT, deleted: 1 });
@@ -8873,6 +8933,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		const x = holding('xavier');
 		const backup = opening(generateBackupData());
 		row(owner.id, createdOf(owner.id), 'role', { role: 'user' }, backup);
+		sealedFor(sqlite, backup);
 		deletedHere(x.id);
 		const before = snapshotDb();
 		for (const trigger of [
@@ -8972,7 +9033,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		const backup = generateBackupData();
 		const copy = opening(backup);
 		row(owner.id, createdOf(owner.id), 'disabled', { at: '2099-01-01 09:00:00' }, copy);
-		const bytes = Buffer.from(copy.serialize());
+		const bytes = Buffer.from(sealedFor(sqlite, copy).serialize());
 
 		expect(restoreFromBackup(sqlite, opening(bytes)).errors).toEqual([]);
 		const once = recordOf();
@@ -9254,7 +9315,7 @@ describe('a restore never brings back a password replaced on this server (card 2
 		const a = makeUser({ username: 'alma' });
 		const copy = opening(generateBackupData());
 		passwordRow(copy, a.id, createdOf(a.id), hashLike(2));
-		const bytes = Buffer.from(copy.serialize());
+		const bytes = Buffer.from(sealedFor(sqlite, copy).serialize());
 
 		expect(restoreFromBackup(sqlite, opening(bytes)).errors).toEqual([]);
 		const once = recordOf();
@@ -9292,7 +9353,7 @@ describe('a restore never brings back a password replaced on this server (card 2
 		put.run(a.id, '', 'password', '', credentialOf(hashLike(3)), '2026-11-20 09:00:00');
 		put.run(a.id, aCreated, 'password', 'boss-2997', credentialOf(hashLike(4)), '2026-11-20 09:00:00');
 
-		const result = restoreFromBackup(sqlite, backup);
+		const result = restoreFromBackup(sqlite, sealedFor(sqlite, backup));
 
 		expect(result.errors).toEqual([
 			"4 row(s) of the backup's record of account endings were left out, as they can name no account here: 2 with a fingerprint that is not one the ending can have, " +
@@ -9309,7 +9370,7 @@ describe('a restore never brings back a password replaced on this server (card 2
 		);
 		many.prepare("INSERT INTO account_endings (user_id, account_created, ending, ended_at) VALUES (?, ?, 'disabled', '2026-11-20 09:00:00')").run(a.id, aCreated);
 
-		const taken = restoreFromBackup(sqlite, many);
+		const taken = restoreFromBackup(sqlite, sealedFor(sqlite, many));
 
 		expect(taken.errors).toEqual([]);
 		expect(taken.accountRecordLeftOut).toBe(0);
@@ -9434,36 +9495,22 @@ describe('a restore never brings back a password replaced on this server (card 2
 		expect(userOf(chief.id)).toMatchObject({ disabledAt: null, passwordHash: fixtureHashOf(chief) });
 	});
 
-	it('(ee2) card 2997, code review FP6: the hash an unsealed backup gives the same account here, which R2 discards, is recorded; with the account gone, the same backup does not give it back', () => {
+	it('(ee2) card 2997, code review FP6, as card 3013 (D3) rules it: the hash an unsealed backup gives the same account here, which R2 discards, is not recorded', () => {
 		const a = makeUser({ username: 'alma' });
 		const copy = opening(Buffer.from(sqlite.serialize()));
 		// A hash of A's in the backup that this server never recorded: a fresh one.
 		const fresh = hashSync('a password of the forged copy', 4);
 		copy.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(fresh, a.id);
-		const bytes = Buffer.from(copy.serialize());
 
-		const first = restoreFromBackup(sqlite, opening(bytes));
+		const first = restoreFromBackup(sqlite, copy);
 
 		expect(first.sealVerified).toBe(false);
 		expect(first.errors).toEqual([]);
 		expect(first.passwordsKept).toEqual({ ...NONE, here: 1 });
 		expect(userOf(a.id)).toMatchObject({ passwordHash: fixtureHashOf(a) });
-		expect(recordOf().filter((entry) => entry.ending === 'password')).toEqual([
-			{ id: a.id, created: createdOf(a.id), ending: 'password', role: '', credential: credentialOf(fresh), origin: 'belt' }
-		]);
-
-		// A gone from this server, then the same backup again, sealed here so that the belt alone decides (card 3009's
-		// code review, FP11): its hash is caught by the belt. Card 3009's own rule for it unsealed is the next case.
-		goneHere(a.id);
-		const sealedAgain = opening(bytes);
-		sealCopy(sealedAgain, backupSealKey(sqlite));
-		const again = restoreFromBackup(sqlite, sealedAgain);
-
-		expect(again.sealVerified).toBe(true);
-		expect(again.errors).toEqual([]);
-		expect(again.passwordsKept).toEqual({ ...NONE, reset: 1 });
-		expect(userOf(a.id)).toMatchObject({ disabledAt: null, passwordHash: DUMMY_HASH, enrol: 0 });
-		expect(recordOf().filter((entry) => entry.ending === 'password')).toHaveLength(1);
+		// No `password` row: the hash was the file's choice, and a row of it would reset any account here holding it in
+		// every later restore. With A gone, card 3009's own rule keeps the same unsealed backup's hash out ((ee2b)).
+		expect(recordOf().filter((entry) => entry.ending === 'password')).toEqual([]);
 	});
 
 	it('(ee2b) card 3009 (FP11): the same unsealed backup again, A gone from this server: not the same account here, so its hash is not taken, counted unsealed, before the belt is asked', () => {
@@ -9535,6 +9582,8 @@ describe('a restore never brings back a password replaced on this server (card 2
 		// Card 2996 keeps no role for this server's superadmin (it records none), but the backup's seal did not verify, so
 		// card 3009's R2 keeps it the superadmin, as the same account here.
 		expect(sqlite.prepare('SELECT role FROM users WHERE id = ?').pluck().get(chief.id)).toBe('superadmin');
+		// Card 3013 (R1): nor can it raise an account that is the same here: Sam holds this server's role.
+		expect(sqlite.prepare('SELECT role FROM users WHERE id = ?').pluck().get(sam.id)).toBe('user');
 		// No row on this server's superadmin (card 2996's FP2): the record is as it was before the restore.
 		expect(recordOf()).toEqual(record);
 	});
@@ -11721,5 +11770,932 @@ describe("an unsealed backup sends no mail under the file's From (card 3029)", (
 		} finally {
 			sqlite.exec('DROP TRIGGER IF EXISTS temp.from_step_refused');
 		}
+	});
+});
+
+// ─── Card 3013: an unchecked backup adds nothing to this server's records ───
+
+describe("an unchecked backup adds nothing to this server's records and changes no account here (card 3013)", () => {
+	type Held = SessionUser & { key: { key: string; id: number } };
+	let ann: Held;
+	let bob: Held;
+	let cy: Held;
+	let sam: Held;
+	let dee: Held;
+	let ada: Held;
+	let zed: SessionUser;
+	/** The bcrypt hash Zed held when deleted here: his `deleted` row carries its fingerprint. */
+	let zedHash: string;
+
+	const v1 = async (key: string) => (await gate('GET', '/api/v1/me', { headers: { authorization: `Bearer ${key}` } })).status;
+	/** This server's record of ended API keys, every column, in its key's order. */
+	const revocationsOf = () =>
+		sqlite.prepare('SELECT key_id AS id, key_hash AS hash, revoked_at AS at, revoked_because AS because FROM api_key_revocations ORDER BY key_hash, key_id').all() as {
+			id: number;
+			hash: string;
+			at: string;
+			because: string;
+		}[];
+	/** The id counter of `name`, as `sqlite_sequence` holds it. */
+	const sequenceOf = (name: string) => sqlite.prepare('SELECT seq FROM sqlite_sequence WHERE name = ?').pluck().get(name) as number | undefined;
+	/** The keys here, by id, hash and owner. */
+	const keysHere = () => sqlite.prepare('SELECT id, key_hash AS hash, user_id AS userId FROM api_keys ORDER BY id').all() as { id: number; hash: string; userId: number }[];
+	const hashOf = (id: number) => sqlite.prepare('SELECT key_hash FROM api_keys WHERE id = ?').pluck().get(id) as string;
+	const disabledAtOf = (id: number) => sqlite.prepare('SELECT disabled_at FROM users WHERE id = ?').pluck().get(id) as string | null;
+	/** This server's own backup, opened and edited: its seal does not verify, and its installation is this one. */
+	const ownCopy = () => ownBackup({ edited: true });
+	/** A key the file holds at row `id`, of `userId`, carrying `hash` where given (else a new one), as the file chooses. */
+	const plantedKey = (backup: Database.Database, id: number, userId: number, hash?: string) => {
+		const made = generateApiKey();
+		backup
+			.prepare('INSERT INTO api_keys (id, key_hash, key_prefix, name, user_id) VALUES (?, ?, ?, ?, ?)')
+			.run(id, hash ?? made.keyHash, made.keyPrefix, `Planted ${id}`, userId);
+		return { id, key: made.plaintextKey };
+	};
+	/** The rows of `backup`'s record of ended API keys that are not watermark rows: what an unsealed import counts and does not take. */
+	const keyRowsIn = (backup: Database.Database) => backup.prepare("SELECT count(*) FROM api_key_revocations WHERE key_hash <> 'watermark'").pluck().get() as number;
+	const MOST = Number.MAX_SAFE_INTEGER;
+	/** This server's record of account endings, every column, in its order. */
+	const recordOf = () =>
+		sqlite
+			.prepare('SELECT seq, user_id AS id, account_created AS created, ending, role, credential, ended_at AS at, stated_ended AS stated, origin FROM account_endings ORDER BY seq')
+			.all() as { seq: number; id: number; created: string; ending: string; role: string; credential: string; at: string; stated: string; origin: string }[];
+	/** The rows of `backup`'s record of account endings that are not watermark rows: what an unsealed import counts and does not take. */
+	const accountRowsIn = (backup: Database.Database) => backup.prepare("SELECT count(*) FROM account_endings WHERE ending <> 'watermark'").pluck().get() as number;
+	const passwordOf = (id: number) => sqlite.prepare('SELECT password_hash FROM users WHERE id = ?').pluck().get(id) as string;
+	const roleOf = (id: number) => sqlite.prepare('SELECT role FROM users WHERE id = ?').pluck().get(id) as string;
+	/** Every account here, by id, with the columns an ending changes. */
+	const accountsHere = () =>
+		sqlite.prepare('SELECT id, role, disabled_at AS disabledAt, disabled_by AS disabledBy, password_hash AS passwordHash FROM users ORDER BY id').all() as {
+			id: number;
+			role: string;
+			disabledAt: string | null;
+			disabledBy: number | null;
+			passwordHash: string;
+		}[];
+	/** This server's watermark W at its largest account id, so that rule 2's halves reach every account here. */
+	const watermarkHere = () =>
+		sqlite
+			.prepare("INSERT INTO account_endings (user_id, account_created, ending, ended_at, origin) VALUES ((SELECT max(id) FROM users), '', 'watermark', ?, 'here')")
+			.run(stamp());
+	/** The two start passes over the accounts present, with mail off, in one transaction. */
+	const startPasses = () =>
+		inTransaction(() => {
+			endRecordedAccountsPresent({ mail: false, because: 'a test of card 3013' });
+			endReplacedPasswordsPresent({ mail: false, because: 'a test of card 3013' });
+		});
+	/** The start passes, which find nothing to do: the database is left exactly as it was. */
+	const startPassesChangeNothing = () => {
+		const before = snapshotDb();
+		startPasses();
+		expectUnchanged(before, 'the start passes after the restore');
+	};
+	/**
+	 * Whether `user` gets past the password step with its own password: the action redirects. It holds no factor, so it is
+	 * given the leave to set one up on its password alone, inside the release window, as card 2997's (g) does.
+	 */
+	const signsIn = async (user: SessionUser) => {
+		sqlite.prepare('UPDATE users SET mfa_password_enrol = 1 WHERE id = ?').run(user.id);
+		openReleaseWindow();
+		return (await passwordStep(user)).res.type === 'redirect';
+	};
+	/**
+	 * Card 3013's attack on the account side (R10), written into `copy`, with the key side (`hostileKeys`): for every
+	 * account but the superadmin, a `password` row of its own hash, an exact `deleted` row, a `deleted` row under a free id
+	 * carrying its fingerprint, a `disabled` row and a `role` `user` row; a seed row for every id; and a watermark at
+	 * 2^53 - 1. Then the users edits: Bob's `created_at` set to 2099 (R3), so he is no longer the same here; Ann disabled
+	 * (R2); Cy given Zed's hash (R4); and Sam raised to superadmin (R1).
+	 */
+	const hostile = (copy: Database.Database) => {
+		const put = copy.prepare("INSERT INTO account_endings (user_id, account_created, ending, role, credential, ended_at, origin) VALUES (?, ?, ?, ?, ?, '2026-11-19 09:00:00', 'here')");
+		const accounts = copy.prepare('SELECT id, created_at AS created, password_hash AS hash FROM users ORDER BY id').all() as { id: number; created: string; hash: string }[];
+		for (const account of accounts) {
+			put.run(account.id, '', 'deleted', '', '');
+			if (account.id === chief.id) continue;
+			const created = storedCreated(account.created);
+			const credential = credentialOf(account.hash);
+			if (credential !== '') put.run(account.id, created, 'password', '', credential);
+			put.run(account.id, created, 'deleted', '', '');
+			put.run(500_000 + account.id, created, 'deleted', '', credential);
+			put.run(account.id, created, 'disabled', '', '');
+			put.run(account.id, created, 'role', 'user', '');
+		}
+		put.run(MOST, '', 'watermark', '', '');
+		copy.prepare("UPDATE users SET created_at = '2099-01-01 09:00:00' WHERE id = ?").run(bob.id);
+		copy.prepare("UPDATE users SET disabled_at = '2026-11-19 09:00:00', disabled_by = ? WHERE id = ?").run(chief.id, ann.id);
+		copy.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(zedHash, cy.id);
+		copy.prepare("UPDATE users SET role = 'superadmin' WHERE id = ?").run(sam.id);
+		return hostileKeys(copy);
+	};
+	/**
+	 * Card 3013's attack on the key side (R10), written into `copy`: a hashed row for every key it holds, a seed row for
+	 * every key id, a watermark at 2^53 - 1, and the `users` and `api_keys` counters at 2^53 - 1.
+	 */
+	const hostileKeys = (copy: Database.Database) => {
+		const put = copy.prepare("INSERT OR IGNORE INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (?, ?, '2026-11-19 09:00:00', ?)");
+		for (const key of copy.prepare('SELECT id, key_hash AS hash FROM api_keys ORDER BY id').all() as { id: number; hash: string }[]) {
+			put.run(key.id, key.hash, 'revoked');
+			put.run(key.id, '', 'before record');
+		}
+		put.run(MOST, 'watermark', 'before record');
+		for (const name of ['users', 'api_keys']) {
+			copy.prepare('UPDATE sqlite_sequence SET seq = ? WHERE name = ?').run(MOST, name);
+			copy.prepare('INSERT INTO sqlite_sequence (name, seq) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = ?)').run(name, MOST, name);
+		}
+		return copy;
+	};
+	/** An account with one key, and a `role` row written as account creation writes one, so the record attests it (A13). */
+	const holding = (username: string, role: 'user' | 'admin' = 'user', withRole = true): Held => {
+		const account = makeUser({ username, role });
+		const key = makeApiKeyRow(account);
+		if (withRole) inTransaction(() => recordAccountEnding(sqlite, account.id, 'role'));
+		return { ...account, key };
+	};
+	/** Kim: the same here, enabled, with key K, and a later `disabled` row of this server's record, written by hand, that her row does not show. */
+	const kimDisabledByTheRecord = () => {
+		const kim = holding('kim', 'user', false);
+		const created = sqlite.prepare('SELECT created_at FROM users WHERE id = ?').pluck().get(kim.id);
+		sqlite
+			.prepare("INSERT INTO account_endings (user_id, account_created, ending, role, credential, ended_at, origin) VALUES (?, ?, 'disabled', '', '', ?, 'here')")
+			.run(kim.id, storedCreated(created), stamp());
+		return kim;
+	};
+
+	beforeEach(() => {
+		resetAllRateLimits();
+		ann = holding('ann');
+		bob = holding('bob');
+		cy = holding('cy');
+		sam = holding('sam');
+		dee = holding('dee', 'user', false);
+		ada = holding('ada', 'admin');
+		zed = makeUser({ username: 'zed' });
+		zedHash = passwordOf(zed.id);
+		// Zed disabled, then deleted here, so a `deleted` row carries his fingerprint.
+		inTransaction(() => disableAccount(db.select().from(users).all().find((u) => u.id === zed.id)!, chief));
+		expect(deleteUser(zed.id, chief)).not.toBeNull();
+		// Dee disabled here, so her disable is attested; her key is recorded and deleted with it.
+		inTransaction(() => disableAccount(db.select().from(users).all().find((u) => u.id === dee.id)!, chief));
+	});
+
+	it("(a) the account side: the file's record of account endings is counted and not taken; this server's record, every hash but not-the-same Bob's, and the counter are as they were, and none is ruled", () => {
+		const accountsBefore = accountsHere();
+		const copy = hostile(ownCopy());
+		const notTaken = accountRowsIn(copy);
+		const before = recordOf();
+		const counter = sequenceOf('users');
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors.filter((line) => /record/.test(line))).toEqual([]);
+		expect(notTaken).toBeGreaterThan(5 * (accountsBefore.length - 1));
+		expect(result.recordsNotTaken.accountEndings).toBe(notTaken);
+		expect(recordOf()).toEqual(before);
+		expect(result.accountsKept).toEqual({ deleted: 0, beforeRecord: 0, disabled: 0, lowered: 0 });
+		// Every account but Bob, whose creation time the file changed, is the same here, and keeps this server's hash; Bob is
+		// given one nothing matches (card 3009).
+		const hashes = (accounts: { id: number; passwordHash: string }[]) => accounts.filter(({ id }) => id !== bob.id).map(({ id, passwordHash }) => ({ id, passwordHash }));
+		expect(hashes(accountsHere())).toEqual(hashes(accountsBefore));
+		expect(passwordOf(bob.id)).toBe(DUMMY_HASH);
+		expect(sequenceOf('users')).toBe(counter);
+		startPassesChangeNothing();
+	});
+
+	it("(b) the key side: the file's record of ended keys is counted and not taken; this server's record, its keys of the same accounts and counter are as they were", async () => {
+		const keysBefore = keysHere();
+		const copy = hostile(ownCopy());
+		const notTaken = keyRowsIn(copy);
+		const accountRows = accountRowsIn(copy);
+		const before = revocationsOf();
+		const counter = sequenceOf('api_keys');
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(notTaken).toBeGreaterThan(2 * keysBefore.length);
+		expect(result.recordsNotTaken).toEqual({ accountEndings: accountRows, keyRevocations: notTaken });
+		expect(revocationsOf()).toEqual(before);
+		// Every key of an account that is the same here is kept; Bob's, whose creation time the file changed, is not, and is
+		// not recorded either.
+		expect(keysHere()).toEqual(keysBefore.filter((key) => key.userId !== bob.id));
+		for (const key of keysBefore) expect(keyRecorded(sqlite, { id: key.id, keyHash: key.hash })).toBe(false);
+		expect(sequenceOf('api_keys')).toBe(counter);
+		expect(await v1(ann.key.key)).toBe(200);
+	});
+
+	it("(c) card 3014 (R9): a planted key at an id this server held with another hash, and one at a seeded id, have their hashes recorded by no belt; a sealed backup restored next gives Bob and Cy their keys", async () => {
+		// A seed row of this server's at an id no key holds, the counter raised over it as every start raises it.
+		sqlite.prepare("INSERT INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (950, '', '2026-11-19 09:00:00', 'before record')").run();
+		raiseKeyCounterOverRecord(sqlite);
+		const sealed = generateBackupData();
+		const copy = ownCopy();
+		const bobHash = hashOf(bob.key.id);
+		const cyHash = hashOf(cy.key.id);
+		copy.prepare('DELETE FROM api_keys WHERE id IN (?, ?, ?)').run(ann.key.id, bob.key.id, cy.key.id);
+		// At Ann's key's id, which this server held with Ann's hash: Bob's hash, on Bob.
+		plantedKey(copy, ann.key.id, bob.id, bobHash);
+		// At the seeded id: Cy's hash, on Cy.
+		plantedKey(copy, 950, cy.id, cyHash);
+		const before = revocationsOf();
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(revocationsOf()).toEqual(before);
+		expect(revocationsOf().map((row) => row.hash)).not.toContain(bobHash);
+		expect(revocationsOf().map((row) => row.hash)).not.toContain(cyHash);
+		expect(keysHere().map((key) => key.id)).not.toContain(950);
+		expect(keysHere().map((key) => key.hash)).not.toContain(bobHash);
+
+		const recovered = restoreFromBackup(sqlite, opening(sealed), { importer: chief.id });
+
+		expect(recovered.sealVerified).toBe(true);
+		expect(recovered.errors).toEqual([]);
+		expect(await v1(bob.key.key)).toBe(200);
+		expect(await v1(cy.key.key)).toBe(200);
+		expect(await v1(ann.key.key)).toBe(200);
+	});
+
+	it("(d) the ender, unsealed: a key the file gives attested Dee carrying Ada's hash is ended unrecorded; Kim, the same here and disabled by the record's rule 3, has her key K recorded", () => {
+		const kim = kimDisabledByTheRecord();
+		const kHash = hashOf(kim.key.id);
+		const adaHash = hashOf(ada.key.id);
+		const copy = ownCopy();
+		copy.prepare('DELETE FROM api_keys WHERE id = ?').run(ada.key.id);
+		plantedKey(copy, 800, dee.id, adaHash);
+		const before = revocationsOf();
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(disabledAtOf(dee.id)).not.toBeNull();
+		expect(disabledAtOf(kim.id)).not.toBeNull();
+		expect(keysHere().map((key) => key.id)).not.toContain(800);
+		expect(keysHere().map((key) => key.id)).not.toContain(kim.key.id);
+		expect(revocationsOf().map((row) => row.hash)).not.toContain(adaHash);
+		expect(revocationsOf().filter((row) => !before.some((was) => was.id === row.id && was.hash === row.hash))).toEqual([
+			{ id: kim.key.id, hash: kHash, at: expect.any(String), because: 'access ended' }
+		]);
+	});
+
+	it('(j) R7: the record of a kept key cannot be written: the restore is rolled back, nothing committed, and the database is as it was', () => {
+		const kim = kimDisabledByTheRecord();
+		const copy = ownCopy();
+		const before = snapshotDb();
+		sqlite.exec(`CREATE TEMP TRIGGER refuse_3013 BEFORE INSERT ON api_key_revocations WHEN NEW.key_id = ${kim.key.id} BEGIN SELECT RAISE(ABORT, 'refused by 3013'); END`);
+		let thrown: unknown = null;
+		try {
+			restoreFromBackup(sqlite, copy, { importer: chief.id });
+		} catch (e) {
+			thrown = e;
+		} finally {
+			sqlite.exec('DROP TRIGGER IF EXISTS temp.refuse_3013');
+		}
+
+		expect(thrown).toBeInstanceOf(RestoreError);
+		expect((thrown as RestoreError).committed).toBe(false);
+		expect((thrown as RestoreError).message).toContain('refused by 3013');
+		expectUnchanged(before);
+	});
+
+	it(
+		'(q) R16: a sealed backup whose record of ended keys holds more than MOST_SEED_ROWS seed rows: none of it is added, and one line counts its rows',
+		() => {
+			const copy = ownCopy();
+			copy.exec(
+				`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${MOST_SEED_ROWS + 1}) ` +
+					"INSERT OR IGNORE INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) SELECT i, '', '2026-11-19 09:00:00', 'before record' FROM n"
+			);
+			const rows = copy.prepare('SELECT count(*) FROM api_key_revocations').pluck().get() as number;
+			expect(copy.prepare("SELECT count(*) FROM api_key_revocations WHERE key_hash = ''").pluck().get()).toBe(MOST_SEED_ROWS + 1);
+			sealedFor(sqlite, copy);
+			const before = revocationsOf();
+
+			const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(true);
+			expect(result.errors).toEqual([
+				`The backup's record of ended API keys holds more than 1,000,000 rows naming keys by number alone, more than any server writes, and none of its ${rows} row(s) was added to this server's.`
+			]);
+			expect(result.recordsNotTaken).toEqual({ accountEndings: 0, keyRevocations: 0 });
+			expect(revocationsOf()).toEqual(before);
+		},
+		180_000
+	);
+
+	it("(e) D3: an account the file puts at Zed's id with a garbled creation time and Bob's hash is ruled deleted and made inert, with no belt; Bob still signs in", async () => {
+		allowOtherTimestampForms();
+		const bobHash = passwordOf(bob.id);
+		const copy = ownCopy();
+		copy
+			.prepare("INSERT INTO users (id, username, email, password_hash, role, created_at) VALUES (?, 'zed-again', 'zed-again@example.test', ?, 'user', 'zzz')")
+			.run(zed.id, bobHash);
+		const before = recordOf();
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.accountsKept).toEqual({ deleted: 1, beforeRecord: 0, disabled: 0, lowered: 0 });
+		expect(accountsHere().find((account) => account.id === zed.id)).toMatchObject({ passwordHash: DUMMY_HASH, disabledAt: expect.any(String) });
+		// Neither a `deleted` belt carrying Bob's fingerprint nor a `password` row of his hash.
+		expect(recordOf()).toEqual(before);
+		// The start rules the account again from this server's own row, and records nothing of Bob's hash either.
+		startPasses();
+		expect(recordOf().filter((row) => row.credential === credentialOf(bobHash))).toEqual([]);
+		expect(passwordOf(bob.id)).toBe(bobHash);
+		expect(await signsIn(bob)).toBe(true);
+	});
+
+	it('(e-bis) R13: an account the file gives an earlier creation time than attested Ann held is before record and made inert, with no `disabled` and no `password` belt', () => {
+		watermarkHere();
+		const copy = ownCopy();
+		copy.prepare("UPDATE users SET created_at = '2026-01-01 09:00:00' WHERE id = ?").run(ann.id);
+		const before = recordOf();
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.accountsKept).toEqual({ deleted: 0, beforeRecord: 1, disabled: 0, lowered: 0 });
+		expect(accountsHere().find((account) => account.id === ann.id)).toMatchObject({ passwordHash: DUMMY_HASH, disabledAt: expect.any(String) });
+		expect(recordOf()).toEqual(before);
+	});
+
+	it("(f) card 2997's FP6 belt is gone: same-here Ann given Bob's hash by the file keeps her own, no `password` row is written, and Bob signs in after the start passes", async () => {
+		const annHash = passwordOf(ann.id);
+		const bobHash = passwordOf(bob.id);
+		const copy = ownCopy();
+		copy.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(bobHash, ann.id);
+		const before = recordOf();
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.passwordsKept.here).toBe(1);
+		expect(passwordOf(ann.id)).toBe(annHash);
+		expect(recordOf()).toEqual(before);
+		startPassesChangeNothing();
+		expect(passwordOf(bob.id)).toBe(bobHash);
+		expect(await signsIn(bob)).toBe(true);
+	});
+
+	it("(g) sealed control: a sealed backup's rows of each kind naming no account here, and its record of a key not here, are carried as before; attested Dee's restored key is recorded with no filter", () => {
+		const copy = ownCopy();
+		// Rows at Zed's id under a creation time no account here has: no account here is named.
+		const created = '2026-01-02 09:00:00';
+		const put = copy.prepare("INSERT INTO account_endings (user_id, account_created, ending, role, credential, ended_at, origin) VALUES (?, ?, ?, ?, ?, '2026-11-19 09:00:00', 'here')");
+		const credential = createHash('sha256').update('a hash of an account not here').digest('hex');
+		put.run(zed.id, created, 'deleted', '', credential);
+		put.run(zed.id, created, 'disabled', '', '');
+		put.run(zed.id, created, 'enabled', '', '');
+		put.run(zed.id, created, 'role', 'user', '');
+		put.run(zed.id, created, 'password', '', credential);
+		put.run(zed.id, '', 'deleted', '', '');
+		const keyHash = createHash('sha256').update('a key not here').digest('hex');
+		copy.prepare("INSERT INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (990, ?, '2026-11-19 09:00:00', 'revoked')").run(keyHash);
+		// A key the backup gives Dee, whom this server disabled: the carry of her disable ends it.
+		const deeKey = plantedKey(copy, 800, dee.id);
+		const deeKeyHash = copy.prepare('SELECT key_hash FROM api_keys WHERE id = 800').pluck().get() as string;
+		sealedFor(sqlite, copy);
+		const before = recordOf();
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.errors).toEqual([]);
+		expect(result.recordsNotTaken).toEqual({ accountEndings: 0, keyRevocations: 0 });
+		expect(
+			recordOf()
+				.slice(before.length)
+				.map((row) => ({ id: row.id, created: row.created, ending: row.ending, origin: row.origin }))
+		).toEqual(
+			[
+				[created, 'deleted'],
+				[created, 'disabled'],
+				[created, 'enabled'],
+				[created, 'role'],
+				[created, 'password'],
+				['', 'deleted']
+			].map(([at, ending]) => ({ id: zed.id, created: at, ending, origin: 'backup' }))
+		);
+		expect(revocationsOf()).toContainEqual({ id: 990, hash: keyHash, at: '2026-11-19 09:00:00', because: 'revoked' });
+		expect(keysHere().map((key) => key.id)).not.toContain(deeKey.id);
+		expect(keyRecorded(sqlite, { id: deeKey.id, keyHash: deeKeyHash })).toBe(true);
+	});
+
+	it("(h) a working copy of the attack, with (c)'s planted keys: neither record changes, and both are counted", () => {
+		sqlite.prepare("INSERT INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (950, '', '2026-11-19 09:00:00', 'before record')").run();
+		raiseKeyCounterOverRecord(sqlite);
+		const copy = ownCopy();
+		const bobHash = hashOf(bob.key.id);
+		const cyHash = hashOf(cy.key.id);
+		copy.prepare('DELETE FROM api_keys WHERE id IN (?, ?, ?)').run(ann.key.id, bob.key.id, cy.key.id);
+		plantedKey(copy, ann.key.id, bob.id, bobHash);
+		plantedKey(copy, 950, cy.id, cyHash);
+		hostile(copy);
+		const accountRows = accountRowsIn(copy);
+		const keyRows = keyRowsIn(copy);
+		const before = recordOf();
+		const keysBefore = revocationsOf();
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id, outside: 'off' });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors.filter((line) => /record/.test(line))).toEqual([]);
+		expect(result.recordsNotTaken).toEqual({ accountEndings: accountRows, keyRevocations: keyRows });
+		expect(recordOf()).toEqual(before);
+		expect(revocationsOf()).toEqual(keysBefore);
+	});
+
+	it("(k2) R1, FP5: Sam, lowered here, made a superadmin by another installation's file under his id and creation time, takes this server's role by that identity before the record is asked", () => {
+		sqlite.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(sam.id);
+		inTransaction(() => recordAccountEnding(sqlite, sam.id, 'role'));
+		sqlite.prepare("UPDATE users SET role = 'user' WHERE id = ?").run(sam.id);
+		inTransaction(() => recordAccountEnding(sqlite, sam.id, 'role'));
+		const copy = fromElsewhere(ownCopy());
+		copy.prepare("UPDATE users SET role = 'superadmin' WHERE id = ?").run(sam.id);
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		// Card 3013's code review (FP5): D6's role half is by id and creation time, so Sam, not the same here, is put back
+		// before the rulings, and the row filter finds nothing left to lower.
+		expect(result.accountStateAsHere).toBe(1);
+		expect(result.accountsKept.lowered).toBe(0);
+		expect(roleOf(sam.id)).toBe('user');
+		expect(superadminsOf(sqlite)).toEqual(['chief']);
+	});
+
+	it('(n) R3: a file that gives Bob a creation time in 2099 leaves no held account behind: a sealed recovery brings the real Bob back as he was, with no belt, and his key unrecorded', async () => {
+		watermarkHere();
+		const sealed = generateBackupData();
+		const kHash = hashOf(bob.key.id);
+		const copy = ownCopy();
+		copy.prepare("UPDATE users SET created_at = '2099-01-01 09:00:00' WHERE id = ?").run(bob.id);
+		expect(restoreFromBackup(sqlite, copy, { importer: chief.id }).sealVerified).toBe(false);
+		const before = recordOf();
+
+		const recovered = restoreFromBackup(sqlite, opening(sealed), { importer: chief.id });
+
+		expect(recovered.sealVerified).toBe(true);
+		expect(recovered.errors).toEqual([]);
+		expect(recovered.accountsKept).toEqual({ deleted: 0, beforeRecord: 0, disabled: 0, lowered: 0 });
+		expect(recordOf()).toEqual(before);
+		expect(accountsHere().find((account) => account.id === bob.id)).toMatchObject({ disabledAt: null });
+		expect(passwordOf(bob.id)).not.toBe(DUMMY_HASH);
+		expect(await signsIn(bob)).toBe(true);
+		expect(keyRecorded(sqlite, { id: bob.key.id, keyHash: kHash })).toBe(false);
+		expect(await v1(bob.key.key)).toBe(200);
+	});
+
+	it("(o) R4: same-here Cy given Zed's hash by the file is not ruled deleted by its fingerprint: he keeps this server's hash, and his key works and is not recorded", async () => {
+		const cyHash = passwordOf(cy.id);
+		const kHash = hashOf(cy.key.id);
+		const copy = ownCopy();
+		copy.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(zedHash, cy.id);
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.accountsKept).toEqual({ deleted: 0, beforeRecord: 0, disabled: 0, lowered: 0 });
+		expect(passwordOf(cy.id)).toBe(cyHash);
+		expect(keyRecorded(sqlite, { id: cy.key.id, keyHash: kHash })).toBe(false);
+		expect(await v1(cy.key.key)).toBe(200);
+	});
+
+	it("(i) R10, the card's outcome: after the attack, a sealed backup taken before it brings every account, key and both records back exactly as they were; every account signs in and every key works", async () => {
+		const sealed = generateBackupData();
+		const accountsBefore = accountsHere();
+		const keysBefore = keysHere();
+		const recordBefore = recordOf();
+		const revocationsBefore = revocationsOf();
+		expect(restoreFromBackup(sqlite, hostile(ownCopy()), { importer: chief.id }).sealVerified).toBe(false);
+
+		const recovered = restoreFromBackup(sqlite, opening(sealed), { importer: chief.id });
+
+		expect(recovered.sealVerified).toBe(true);
+		expect(recovered.errors).toEqual([]);
+		expect(recovered.accountsKept).toEqual({ deleted: 0, beforeRecord: 0, disabled: 0, lowered: 0 });
+		// Role, disabled_at, disabled_by and hash of every account; every key; both records.
+		expect(accountsHere()).toEqual(accountsBefore);
+		expect(keysHere()).toEqual(keysBefore);
+		expect(recordOf()).toEqual(recordBefore);
+		expect(revocationsOf()).toEqual(revocationsBefore);
+		for (const user of [ann, bob, cy, sam, ada]) expect(await v1(user.key.key)).toBe(200);
+		for (const user of [ann, bob, cy, sam, ada]) expect(await signsIn(user)).toBe(true);
+		startPassesChangeNothing();
+	});
+
+	it("(k) R1: same-here Sam, made a superadmin by the file, holds this server's role after the import, and is counted", () => {
+		const copy = ownCopy();
+		copy.prepare("UPDATE users SET role = 'superadmin' WHERE id = ?").run(sam.id);
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.accountStateAsHere).toBe(1);
+		// Put back before the rulings: the record has nothing left to lower.
+		expect(result.accountsKept).toEqual({ deleted: 0, beforeRecord: 0, disabled: 0, lowered: 0 });
+		expect(roleOf(sam.id)).toBe('user');
+		expect(superadminsOf(sqlite)).toEqual(['chief']);
+	});
+
+	it('(l) R2: same-here Ann, disabled by the file, is enabled as here and keeps her key, counted; a sealed recovery brings her back as this server had her, her key unrecorded', async () => {
+		const sealed = generateBackupData();
+		const annBefore = accountsHere().find((account) => account.id === ann.id);
+		const kHash = hashOf(ann.key.id);
+		const copy = ownCopy();
+		copy.prepare("UPDATE users SET disabled_at = '2026-11-19 09:00:00', disabled_by = ? WHERE id = ?").run(chief.id, ann.id);
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.accountStateAsHere).toBe(1);
+		expect(accountsHere().find((account) => account.id === ann.id)).toEqual(annBefore);
+		expect(keysHere().map((key) => key.id)).toContain(ann.key.id);
+		expect(await v1(ann.key.key)).toBe(200);
+
+		const recovered = restoreFromBackup(sqlite, opening(sealed), { importer: chief.id });
+
+		expect(recovered.sealVerified).toBe(true);
+		expect(recovered.errors).toEqual([]);
+		expect(accountsHere().find((account) => account.id === ann.id)).toEqual(annBefore);
+		expect(keyRecorded(sqlite, { id: ann.key.id, keyHash: kHash })).toBe(false);
+		expect(revocationsOf().map((row) => row.hash)).not.toContain(kHash);
+		expect(await v1(ann.key.key)).toBe(200);
+	});
+
+	it("(l2) R23's premise: another installation's file disables Ann under her id and creation time; she takes this server's state, enabled, with no password or key of hers, and a sealed recovery, which carries every disable, brings her back enabled with her key working and unrecorded", async () => {
+		const sealed = generateBackupData();
+		const annBefore = accountsHere().find((account) => account.id === ann.id);
+		const kHash = hashOf(ann.key.id);
+		const copy = fromElsewhere(ownCopy());
+		copy.prepare("UPDATE users SET disabled_at = '2026-11-19 09:00:00', disabled_by = ? WHERE id = ?").run(chief.id, ann.id);
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.accountStateAsHere).toBe(1);
+		expect(accountsHere().find((account) => account.id === ann.id)).toMatchObject({ disabledAt: null, disabledBy: null, passwordHash: DUMMY_HASH });
+		expect(keysHere().filter((key) => key.userId === ann.id)).toEqual([]);
+
+		const recovered = restoreFromBackup(sqlite, opening(sealed), { importer: chief.id });
+
+		expect(recovered.sealVerified).toBe(true);
+		expect(recovered.errors).toEqual([]);
+		expect(accountsHere().find((account) => account.id === ann.id)).toEqual(annBefore);
+		expect(keyRecorded(sqlite, { id: ann.key.id, keyHash: kHash })).toBe(false);
+		expect(await v1(ann.key.key)).toBe(200);
+	});
+
+	it.each([
+		{ how: 'a restore that commits', failsAfter: false },
+		{ how: 'a restore that commits and then fails', failsAfter: true }
+	])("(p) R5, R22, through the route, $how: the answer, the panel's lines, the message and the CRITICAL words and details count the accounts given this server's state and the records not taken, naming nobody and saying no problem", async ({ failsAfter }) => {
+		const copy = hostile(ownCopy());
+		const notTaken = { accountEndings: accountRowsIn(copy), keyRevocations: keyRowsIn(copy) };
+		expect(notTaken.accountEndings).toBeGreaterThan(0);
+		expect(notTaken.keyRevocations).toBeGreaterThan(0);
+		const from = sqlite.prepare('SELECT COALESCE(MAX(id), 0) FROM system_logs').pluck().get() as number;
+		await routeMethods('/api/admin/import');
+		const dir = mkdtempSync(join(tmpdir(), 'dumpfire-import-'));
+		tempDirs.push(dir);
+		vi.spyOn(process, 'cwd').mockReturnValue(dir);
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		// Committed, then the connection's foreign keys do not come back on: a RestoreError that committed (as card 2697's case 46).
+		if (failsAfter) {
+			const real = sqlite.pragma.bind(sqlite) as Database.Database['pragma'];
+			vi.spyOn(sqlite, 'pragma').mockImplementation(((source: string, options?: Database.PragmaOptions) =>
+				/^foreign_keys\s*=\s*ON$/i.test(source) ? [] : real(source, options)) as typeof sqlite.pragma);
+		}
+
+		let res: Awaited<ReturnType<typeof api>>;
+		try {
+			res = await api('POST', '/api/admin/import?outside=keep', { user: chief, headers: confirmedImport(), body: copy.serialize() });
+		} finally {
+			// Card 3013's code review (FP11): the spy is restored whatever the call did.
+			if (failsAfter) vi.mocked(sqlite.pragma).mockRestore();
+		}
+
+		const STATE =
+			"2 account(s) in the backup with the id and creation time of an account on this server took that account's role and enabled or " +
+			"disabled state exactly as it is here, not the backup's: the backup's seal did not verify, so neither is taken from it.";
+		const RECORDS =
+			`The backup's seal did not verify, so its record of ${notTaken.accountEndings} account ending(s) and of ${notTaken.keyRevocations} ended API key(s) ` +
+			"was not added to this server's: a file this server cannot check ends no account and no key here, and this server's own records are kept as they were.";
+		const WORDS =
+			`, giving 2 account(s) this server's role and enabled or disabled state, adding none of the backup's ${notTaken.accountEndings} account ending(s) ` +
+			`and ${notTaken.keyRevocations} ended API key(s) to this server's records, as its seal did not verify`;
+		const message = res.body.message as string;
+		expect(res.status, message).toBe(failsAfter ? 500 : 200);
+		expect(res.body.committed).toBe(failsAfter ? true : undefined);
+		// The answer's figures: counts only (R5, R22).
+		expect(res.body.recordsNotTaken).toEqual(notTaken);
+		expect(res.body.accountStateAsHere).toBe(2);
+		// The panel's lines, D6's before the records' (3.5), and the message that holds them.
+		const lines = res.body.accountsKeptLines as string[];
+		expect(lines.slice(-2)).toEqual([STATE, RECORDS]);
+		expect(message).toContain(`${STATE} ${RECORDS}`);
+		// The CRITICAL line, written at the commit: both clauses, and the counts in its details.
+		const line = sqlite.prepare("SELECT message, meta FROM system_logs WHERE context = 'IMPORT' AND level = 'CRITICAL' AND id > ? ORDER BY id").get(from) as {
+			message: string;
+			meta: string;
+		};
+		expect(line.message).toContain(WORDS);
+		const meta = JSON.parse(line.meta);
+		expect(meta.recordsNotTaken).toEqual(notTaken);
+		expect(meta.accountStateAsHere).toBe(2);
+		// Naming nobody the file planted or put back (the three texts above are whole, so they hold no id), and never a
+		// problem: an own backup after Reset Everything reads as clean.
+		const said = `${message} ${lines.join(' ')} ${line.message} ${line.meta}`;
+		expect(said).not.toMatch(/\b(ann|bob|cy|sam|dee|ada|zed)\b/i);
+		if (!failsAfter) {
+			expect(res.body.errors ?? []).toEqual([]);
+			expect(said).not.toMatch(/problem/i);
+		}
+	});
+
+	// Card 3013's code review fix pass (2026-11-20), FP1 to FP13.
+
+	/** The account of `id` as `disableAccount` takes it. */
+	const accountRow = (id: number) => db.select().from(users).all().find((u) => u.id === id)!;
+	/** An account here, every column a restore can change of it, with the key ids it holds. */
+	const stateOf = (id: number) => ({ ...accountsHere().find((account) => account.id === id), keys: keysHere().filter((key) => key.userId === id).map((key) => key.id) });
+
+	describe("FP1 (M1): a creation time planted by an unchecked file, then an administrator's action on the account it gave, does not let a sealed recovery end the real account", () => {
+		/** The attack: Sam given a creation time in 2099 by this server's own copy, edited; then imported. */
+		const planted = () => {
+			watermarkHere();
+			const sealed = generateBackupData();
+			const before = stateOf(sam.id);
+			const kHash = hashOf(sam.key.id);
+			const copy = ownCopy();
+			copy.prepare("UPDATE users SET created_at = '2099-01-01 09:00:00' WHERE id = ?").run(sam.id);
+			expect(restoreFromBackup(sqlite, copy, { importer: chief.id }).sealVerified).toBe(false);
+			return { sealed, before, kHash };
+		};
+		/** The sealed recovery: the real Sam, every column, his key unrecorded and working, and signing in. */
+		const recoversSam = async ({ sealed, before, kHash }: ReturnType<typeof planted>) => {
+			const recovered = restoreFromBackup(sqlite, opening(sealed), { importer: chief.id });
+			expect(recovered.sealVerified).toBe(true);
+			expect(recovered.errors).toEqual([]);
+			expect(recovered.accountsKept).toEqual({ deleted: 0, beforeRecord: 0, disabled: 0, lowered: 0 });
+			expect(stateOf(sam.id)).toEqual(before);
+			expect(keyRecorded(sqlite, { id: sam.key.id, keyHash: kHash })).toBe(false);
+			expect(await v1(sam.key.key)).toBe(200);
+			expect(await signsIn(sam)).toBe(true);
+		};
+
+		it('control: with no action on the planted account, the sealed recovery brings the real Sam back exactly', async () => {
+			await recoversSam(planted());
+		});
+
+		it.each([
+			{ action: 'disables it', act: () => inTransaction(() => disableAccount(accountRow(sam.id), chief)) },
+			{
+				action: 'sets it a password, which its user then changes',
+				act: () => {
+					// As the two password routes write it: the hash being replaced recorded, then the new one written.
+					for (const password of ['set by an administrator', 'changed by its user']) {
+						inTransaction(() => {
+							recordPasswordReplaced(sqlite, sam.id);
+							sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync(password, 4), sam.id);
+						});
+					}
+				}
+			}
+		])('an administrator $action: the record holds an exact row of the planted creation time, and still the sealed recovery brings the real Sam back exactly', async ({ act }) => {
+			const attack = planted();
+			act();
+			// The record now attests the planted account: the held-here half reaches the real one only without FP1.
+			expect(sqlite.prepare("SELECT count(*) FROM account_endings WHERE user_id = ? AND account_created = '2099-01-01 09:00:00'").pluck().get(sam.id)).toBeGreaterThan(0);
+			await recoversSam(attack);
+		});
+	});
+
+	it("FP2: applyAccountEndings, unsealed: a key the file gives Kim, disabled by the record's rule 3, carrying Ada's hash, is ended unrecorded; Kim's own key K is recorded", () => {
+		const kim = kimDisabledByTheRecord();
+		const kHash = hashOf(kim.key.id);
+		const adaHash = hashOf(ada.key.id);
+		const copy = ownCopy();
+		copy.prepare('DELETE FROM api_keys WHERE id = ?').run(ada.key.id);
+		plantedKey(copy, 801, kim.id, adaHash);
+		const before = revocationsOf();
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.accountsKept.disabled).toBe(1);
+		expect(disabledAtOf(kim.id)).not.toBeNull();
+		expect(keysHere().map((key) => key.id)).not.toContain(801);
+		expect(revocationsOf().map((row) => row.hash)).not.toContain(adaHash);
+		expect(revocationsOf().filter((row) => !before.some((was) => was.id === row.id && was.hash === row.hash))).toEqual([
+			{ id: kim.key.id, hash: kHash, at: expect.any(String), because: 'access ended' }
+		]);
+	});
+
+	it("FP2: applyPasswordRulings' reset, unsealed: same-here Bob, whose password here cannot be given back, is reset; a key the file gives him carrying Ada's hash is ended unrecorded, his own key recorded", () => {
+		sqlite.prepare("UPDATE users SET password_hash = 'not a bcrypt hash' WHERE id = ?").run(bob.id);
+		const kHash = hashOf(bob.key.id);
+		const adaHash = hashOf(ada.key.id);
+		const copy = ownCopy();
+		copy.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync('a password of the file', 4), bob.id);
+		copy.prepare('DELETE FROM api_keys WHERE id = ?').run(ada.key.id);
+		plantedKey(copy, 802, bob.id, adaHash);
+		const before = revocationsOf();
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.passwordsKept.reset).toBe(1);
+		expect(passwordOf(bob.id)).toBe(DUMMY_HASH);
+		expect(keysHere().filter((key) => key.userId === bob.id)).toEqual([]);
+		expect(revocationsOf().map((row) => row.hash)).not.toContain(adaHash);
+		expect(revocationsOf().filter((row) => !before.some((was) => was.id === row.id && was.hash === row.hash))).toEqual([
+			{ id: bob.key.id, hash: kHash, at: expect.any(String), because: 'access ended' }
+		]);
+	});
+
+	describe("FP4, FP5: another installation's file whose only superadmin is, by id and creation time, an account disabled here", () => {
+		/** The file's superadmin: Bob (with a `role` row here) or Bea (without), disabled here, raised and enabled by the file. */
+		const raisedOver = (withRole: boolean) => {
+			const target = withRole ? bob : holding('bea', 'user', false);
+			inTransaction(() => disableAccount(accountRow(target.id), chief));
+			const copy = fromElsewhere(ownCopy());
+			copy.prepare("UPDATE users SET role = 'superadmin', disabled_at = NULL, disabled_by = NULL WHERE id = ?").run(target.id);
+			return { target, copy };
+		};
+
+		it.each([{ withRole: true }, { withRole: false }])('refuses, naming the superadmin as disabled here, and changes nothing (a role row here: $withRole)', ({ withRole }) => {
+			const { copy } = raisedOver(withRole);
+			// The file's chief is not this server's: another creation time, and a user.
+			copy.prepare("UPDATE users SET role = 'user', created_at = '2020-01-01 09:00:00' WHERE id = ?").run(chief.id);
+			expect(backupLacksSuperadmin(copy)).toBe(false);
+			const before = snapshotDb();
+			let thrown: unknown = null;
+			try {
+				restoreFromBackup(sqlite, copy, { importer: chief.id });
+			} catch (e) {
+				thrown = e;
+			}
+
+			expect(thrown).toBeInstanceOf(RestoreLeavesNoSuperadmin);
+			expect((thrown as RestoreError).message).toContain('names as deleted, disabled or given a lower role here');
+			expect((thrown as RestoreError).message).not.toContain('none of them the superadmin');
+			expectUnchanged(before, 'the refused import');
+		});
+
+		it("control: the file keeps chief a superadmin: the import commits, the raised account (no `role` row here to lower it) takes this server's role and disable, and chief keeps his own password", () => {
+			const chiefHash = passwordOf(chief.id);
+			const { target, copy } = raisedOver(false);
+			const was = accountsHere().find((account) => account.id === target.id)!;
+
+			const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(accountsHere().find((account) => account.id === target.id)).toMatchObject({ role: 'user', disabledAt: was.disabledAt, disabledBy: was.disabledBy });
+			expect(superadminsOf(sqlite)).toEqual(['chief']);
+			expect(accountsHere().find((account) => account.id === chief.id)).toMatchObject({ role: 'superadmin', disabledAt: null, passwordHash: chiefHash });
+		});
+	});
+
+	describe('FP6: D6 keeps a superadmin disabled here by a host edit disabled', () => {
+		const hostDisable = (id: number) => sqlite.prepare("UPDATE users SET disabled_at = '2026-11-19 09:00:00', disabled_by = NULL WHERE id = ?").run(id);
+
+		it('a second superadmin, enabled by the file, stays disabled as here; the import commits and counts it', () => {
+			const sue = makeUser({ username: 'sue', role: 'superadmin' });
+			hostDisable(sue.id);
+			const was = accountsHere().find((account) => account.id === sue.id);
+			const copy = ownCopy();
+			copy.prepare('UPDATE users SET disabled_at = NULL, disabled_by = NULL WHERE id = ?').run(sue.id);
+
+			const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(result.accountStateAsHere).toBe(1);
+			expect(accountsHere().find((account) => account.id === sue.id)).toEqual(was);
+			expect(accountsHere().find((account) => account.id === chief.id)).toMatchObject({ role: 'superadmin', disabledAt: null });
+		});
+
+		it('the only superadmin, disabled here and enabled by the file: the restore refuses, failing closed, and changes nothing', () => {
+			hostDisable(chief.id);
+			const copy = ownCopy();
+			copy.prepare('UPDATE users SET disabled_at = NULL, disabled_by = NULL WHERE id = ?').run(chief.id);
+			const before = snapshotDb();
+			let thrown: unknown = null;
+			try {
+				restoreFromBackup(sqlite, copy, { importer: chief.id });
+			} catch (e) {
+				thrown = e;
+			}
+
+			expect(thrown).toBeInstanceOf(RestoreLeavesNoSuperadmin);
+			expect((thrown as RestoreError).message).toContain('names as deleted, disabled or given a lower role here');
+			expectUnchanged(before, 'the refused import');
+		});
+	});
+
+	it("FP7: a sealed restore whose file gives Bob and Ada each their creation time in another form of the same moment still carries Bob's disable by Ada, a host edit, keeping Ada as its disabler", () => {
+		allowOtherTimestampForms();
+		sqlite.prepare("UPDATE users SET disabled_at = '2026-11-19 09:00:00', disabled_by = ? WHERE id = ?").run(ada.id, bob.id);
+		const copy = ownCopy();
+		const isoForm = copy.prepare("UPDATE users SET created_at = strftime('%Y-%m-%dT%H:%M:%SZ', created_at) WHERE id = ?");
+		isoForm.run(bob.id);
+		isoForm.run(ada.id);
+		expect(copy.prepare('SELECT created_at FROM users WHERE id = ?').pluck().get(bob.id)).toMatch(/T.*Z$/);
+		copy.prepare('UPDATE users SET disabled_at = NULL, disabled_by = NULL WHERE id = ?').run(bob.id);
+		sealedFor(sqlite, copy);
+
+		const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(true);
+		expect(accountsHere().find((account) => account.id === bob.id)).toMatchObject({ disabledAt: '2026-11-19 09:00:00', disabledBy: ada.id });
+		expect(keysHere().filter((key) => key.userId === bob.id)).toEqual([]);
+	});
+
+	it("FP13 (sec N2): a throw from the record's rulings as a sealed restore reads the accounts disabled here fails closed: the restore refuses and nothing changes", () => {
+		const copy = sealedFor(sqlite, ownCopy());
+		const before = snapshotDb();
+		const rulings = vi.spyOn(endingsModule, 'accountRulings').mockImplementationOnce(() => {
+			throw new Error('refused by FP13');
+		});
+		let thrown: unknown = null;
+		let asked: number[] | undefined;
+		try {
+			restoreFromBackup(sqlite, copy, { importer: chief.id });
+		} catch (e) {
+			thrown = e;
+		} finally {
+			asked = rulings.mock.calls[0]?.[1].map((account) => account.id);
+			rulings.mockRestore();
+		}
+
+		// The first call is `disabledHere`'s, of the accounts disabled here: Dee alone.
+		expect(asked).toEqual([dee.id]);
+		expect(thrown).toBeInstanceOf(RestoreError);
+		expect((thrown as RestoreError).committed).toBe(false);
+		expect((thrown as RestoreError).message).toContain('refused by FP13');
+		expectUnchanged(before, 'the refused restore');
+	});
+
+	describe('FP11: what an unchecked file holds is counted whatever its columns', () => {
+		it('a record of account endings with no `ending` column: every row is counted, its watermark rows included', () => {
+			const copy = hostile(ownCopy());
+			const rows = copy.prepare('SELECT count(*) FROM account_endings').pluck().get() as number;
+			expect(rows).toBeGreaterThan(accountRowsIn(copy));
+			copy.exec(
+				'CREATE TABLE account_endings_without AS SELECT user_id, account_created, ended_at FROM account_endings; DROP TABLE account_endings; ' +
+					'ALTER TABLE account_endings_without RENAME TO account_endings;'
+			);
+			const before = recordOf();
+
+			const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(result.recordsNotTaken.accountEndings).toBe(rows);
+			expect(recordOf()).toEqual(before);
+		});
+
+		it('a record of ended API keys with no `key_hash` column: every row is counted, its watermark rows included', () => {
+			const copy = hostile(ownCopy());
+			const rows = copy.prepare('SELECT count(*) FROM api_key_revocations').pluck().get() as number;
+			expect(rows).toBeGreaterThan(keyRowsIn(copy));
+			copy.exec(
+				'CREATE TABLE api_key_revocations_without AS SELECT key_id, revoked_at, revoked_because FROM api_key_revocations; DROP TABLE api_key_revocations; ' +
+					'ALTER TABLE api_key_revocations_without RENAME TO api_key_revocations;'
+			);
+			const before = revocationsOf();
+
+			const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(result.recordsNotTaken.keyRevocations).toBe(rows);
+			expect(revocationsOf()).toEqual(before);
+		});
+
+		it(
+			'a sealed backup whose record of ended API keys holds more than MOST_OTHER_ROWS hashed rows: none of it is added, and one line counts its rows',
+			() => {
+				const copy = ownCopy();
+				copy.exec(
+					`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${MOST_OTHER_ROWS + 1}) ` +
+						"INSERT OR IGNORE INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) SELECT i, printf('%064x', i), '2026-11-19 09:00:00', 'revoked' FROM n"
+				);
+				const rows = copy.prepare('SELECT count(*) FROM api_key_revocations').pluck().get() as number;
+				expect(copy.prepare("SELECT count(*) FROM api_key_revocations WHERE key_hash NOT IN ('', 'watermark')").pluck().get()).toBeGreaterThan(MOST_OTHER_ROWS);
+				sealedFor(sqlite, copy);
+				const before = revocationsOf();
+
+				const result = restoreFromBackup(sqlite, copy, { importer: chief.id });
+
+				expect(result.sealVerified).toBe(true);
+				expect(result.errors).toEqual([
+					`The backup's record of ended API keys holds more than 1,000,000 rows naming keys by their hash, more than any server writes, and none of its ${rows} row(s) was added to this server's.`
+				]);
+				expect(revocationsOf()).toEqual(before);
+			},
+			180_000
+		);
 	});
 });

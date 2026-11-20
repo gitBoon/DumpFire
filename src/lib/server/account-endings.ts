@@ -231,8 +231,8 @@ export type AccountRuling = {
  * 1. **Deleted (inert):** an exact `deleted` row, or a `deleted` row carrying the fingerprint of its password hash
  *    (never for a superadmin).
  * 2. **Before record:** a seed row of its id, at most W, the account made no later than the row, with no exact `here`
- *    row; or (`heldHere`, the restore's) this server held the id just before, at most W, with a later creation time.
- *    Never for a superadmin, and never where its own creation time names no moment (rule 1 already took every row).
+ *    row; or (`heldHere`, the restore's) this server held the id just before, at most W, with a later creation time,
+ *    again with no exact `here` row (card 3013's code review, FP1). Never for a superadmin, and never where its own creation time names no moment (rule 1 already took every row).
  * 3. **Disabled:** the latest, by (ended_at, seq), of its exact `disabled` and `enabled` rows that count: every
  *    `here` one, and a `backup` one where it has no `here` row of the two, or a `backup` `disabled` where it has. A
  *    backup can add a disable to an account this server knows, never lift one.
@@ -244,7 +244,18 @@ export type AccountRuling = {
 export function accountRulings(
 	database: Database.Database,
 	accounts: readonly AccountToRule[],
-	options: { heldHere?: ReadonlyMap<number, unknown>; watermark?: number | null; superadminsHere?: ReadonlySet<number> } = {}
+	options: {
+		heldHere?: ReadonlyMap<number, unknown>;
+		watermark?: number | null;
+		superadminsHere?: ReadonlySet<number>;
+		/**
+		 * Card 3013 (D9, R1, R20): a restore of a backup whose seal did not verify. The rows that count for an account as
+		 * for a superadmin (`exactRowsOf`) are then decided by `superadminsHere` alone, not by the role the data gives it:
+		 * a file that raises an account lowered here cannot shield it from this server's own rows. The guards on the
+		 * fingerprint, seed and held-here halves still read either (card 2996, R1).
+		 */
+		rowsBySuperadminsHere?: boolean;
+	} = {}
 ): AccountRuling[] {
 	if (accounts.length === 0 || !hasAccountRecord(database)) return [];
 	const watermark = options.watermark !== undefined ? options.watermark : accountWatermarkOf(database);
@@ -263,7 +274,8 @@ export function accountRulings(
 		// this server's superadmin an administrator still cannot have it ruled by a fingerprint, a seed row or the held-here half.
 		const superadmin = account.role === 'superadmin' || options.superadminsHere?.has(account.id) === true;
 		const created = toStamp(account.createdAt);
-		const rows = exactRowsOf((exact.all(account.id) as RecordRow[]).sort((a, b) => a.seq - b.seq), account, superadmin);
+		const rowsAsSuperadmin = options.rowsBySuperadminsHere === true ? options.superadminsHere?.has(account.id) === true : superadmin;
+		const rows = exactRowsOf((exact.all(account.id) as RecordRow[]).sort((a, b) => a.seq - b.seq), account, rowsAsSuperadmin);
 		const here = rows.filter((row) => row.origin === ORIGIN.here);
 		const exactDeleted = rows.some((row) => row.ending === ACCOUNT_ENDING.deleted && sameCreated(row, account.createdAt));
 		const withinW = watermark === null || account.id <= watermark;
@@ -275,9 +287,16 @@ export function accountRulings(
 				const at = toStamp(row.endedAt);
 				return at === null || made <= at;
 			});
-		/** Rule 2's held-here half: this server held the id just before with a later creation time (one that names none fails closed). */
+		/**
+		 * Rule 2's held-here half: this server held the id just before with a later creation time (one that names none fails
+		 * closed). The restore's `heldHere` holds only accounts this server's record attests by an exact row (card 3013, D8,
+		 * R3), so a file cannot make one up by a creation time of its choosing. And, as the seed half, only for an account
+		 * with no exact `here` row of its own (card 3013's code review, FP1): a creation time a file planted, which an
+		 * administrator's later action here then wrote a row of, still cannot make the real account, whose own rows this
+		 * server holds, "before record".
+		 */
 		const heldLater = (made: string) => {
-			if (options.heldHere === undefined || !options.heldHere.has(account.id)) return false;
+			if (here.length > 0 || options.heldHere === undefined || !options.heldHere.has(account.id)) return false;
 			const heldCreated = toStamp(options.heldHere.get(account.id));
 			return heldCreated === null || heldCreated > made;
 		};

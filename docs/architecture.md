@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.146
+version: 1.147
 status: As-Built
 date: 2026-11-20
 tags:
@@ -59,7 +59,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "The restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -3022,20 +3022,30 @@ sequenceDiagram
     participant L as Live database (one transaction)
     participant B as Backup snapshot
     R->>B: the seal verdict, and installationOf(backup, installation id here): this, other or none (card 3009)
-    R->>L: read accountsHeldHere (W, ids and created_at up to W, superadmins, every account's created_at, username and hash)
+    R->>L: read accountsHeldHere (W, ids and created_at up to W held only where the record attests them, superadmins, every account's created_at, username, hash and role: card 3013)
     R->>L: read keysHeldHere (every key with its owner, expiry and deadline) and the settings' places (card 3009)
     R->>L: clear, copy (account_endings kept), keepSealKey, installation id put back
     R->>B: read its account_endings and its users bound
-    R->>L: carryAccountEndings: bounded rows added as backup, users counter raised
-    R->>L: accountRulings for every restored account
+    R->>L: unsealed only (card 3013): unsealedKeep = keysOfTheSameHere, then keepAccountStateHere (each account of this server's id and created_at takes its role and disabled state exactly, a superadmin's included, counted, and a superadmin it lowers or disables named if the restore then refuses)
+    R->>L: carryAccountEndings: bounded rows added as backup from a sealed file only (unsealed: counted, none taken, card 3013), users counter raised
+    R->>L: accountRulings for every restored account (unsealed: this server's hash for the same here, none for others, rows spared for this server's superadmins only: card 3013)
     R->>L: restoreMfaRows(ended, trust): none to an ended account, none named, sameAccountHere deciding the same account
-    R->>L: keepSuperadminsHere (unsealed, card 3009), carryDisabled, then applyAccountEndings (belts, a password belt before each DUMMY_HASH, keys, schedules, roles)
-    R->>L: applyPasswordRulings (card 2997, with card 3009's unsealed branch and superadmin carry first)
-    R->>L: carryKeyRevocations, then lacksSuperadmin (its own sentence where the record ended the superadmin)
+    R->>L: carryDisabled (attested only, when unsealed: card 3013), then applyAccountEndings (belts sealed only, a password belt before each DUMMY_HASH sealed only, keys recorded only if in unsealedKeep when unsealed, schedules, roles)
+    R->>L: applyPasswordRulings (card 2997, with card 3009's unsealed branch and superadmin carry first, no FP6 belt: card 3013)
+    R->>L: carryKeyRevocations (sealed: counted, then iterated within MOST_SEED_ROWS and MOST_OTHER_ROWS. Unsealed: counted, none taken. Card 3013), then lacksSuperadmin (its own sentence where the record ended the superadmin)
     R->>L: carrySettingHolds, holdUnsealedSettings (unsealed, kept outside: card 3009)
-    R->>L: fill, leaveOutRecordedKeys (unsealed: keysOfTheSameHere, takeEarlierEnds), then holdRevealedIn and holdNoLongerReadableIn
-    R->>L: COMMIT, and accountsKept, passwordsKept, apiKeysLeftOut, unsealedHeld and installation counted to the import
+    R->>L: fill, leaveOutRecordedKeys (unsealed: no hash belt (card 3014), unsealedKeep and takeEarlierEnds), then holdRevealedIn and holdNoLongerReadableIn
+    R->>L: COMMIT, and accountsKept, passwordsKept, apiKeysLeftOut, unsealedHeld, recordsNotTaken, accountStateAsHere and installation counted to the import
 ```
+
+Since card 3013 a restore whose seal does not verify adds nothing to either record and writes nothing
+into them from the file's word: `carryAccountEndings` and `carryKeyRevocations` count the file's rows
+and take none, no belt is written, and `endApiKeys` records only the keys of `unsealedKeep`
+(`recordOnly`, passed by `restoredAccessEnder` alone). `keepAccountStateHere` replaces card 3009's
+`keepSuperadminsHere` and runs before `carryAccountEndings`, so the rulings, `carryDisabled` and
+card 3009's superadmin carry all see this server's roles and disables. A sealed restore is unchanged
+but for the held-here map, which holds only accounts the record attests, and the key record's bounded
+read.
 
 Since card 2997 the same transaction keeps every password replaced on this server out of use. After
 `applyAccountEndings`, `applyPasswordRulings` asks the record's one matcher, `passwordReplacedHere`,
@@ -3057,11 +3067,14 @@ beside the seal key. Then, all in the one transaction and only for an unsealed b
 
 0. `rowsToRestore` reads no `invite_tokens` row of an unsealed backup, and of a sealed one only used
    rows stored as integers, written used (its code review, FP1).
-1. `restoreMfaRows` keeps factors, codes and sign-in history only for `sameAccountHere`, and counts,
+1. `keepAccountStateHere` (card 3013, in place of card 3009's `keepSuperadminsHere`), right after the
+   copy and before the rulings, `restoreMfaRows` and `carryDisabled`: each restored account of this
+   server's id and `created_at` (the same moment) takes this server's role and disabled state exactly,
+   a superadmin's included (a superadmin disabled here stays disabled); one not the same here still
+   gets no password, key or factor of this server's.
+2. `restoreMfaRows` keeps factors, codes and sign-in history only for `sameAccountHere`, and counts,
    never names, the accounts left with none (`notSameHere`, and `withoutFactorUnnamed` for those that
    are the same here: FP7), through `accountsWithoutFactor`.
-2. `keepSuperadminsHere`, before `carryDisabled`: each superadmin here restored as the same account is
-   an enabled superadmin again.
 3. `applyPasswordRulings`' unsealed branch: an account not the same here gets `DUMMY_HASH` and enrol 0
    (`unsealed`) and its schedules paused where outside is kept, whatever its hash (FP2); the file's
    superadmins not the same here are decided last, the lowest-id enabled one given the importer's hash,
@@ -3167,7 +3180,7 @@ sequenceDiagram
     I->>R: restoreFromBackup(live, backup, { outside, importer })
     R->>L: read before the clear: notifyEmailHere, accountsHeldHere (with notification_prefs), requestRowsOf and peopleRowsOf (card 3020), mailFromHere (card 3029)
     R->>L: clear, copy (webhook addresses and secrets sealed as read)
-    R->>L: keepSuperadminsHere (card 3009), carryDisabled, applyAccountEndings
+    R->>L: keepAccountStateHere (card 3013, right after the copy), carryDisabled, applyAccountEndings
     R->>L: keepAccountsHere: placeholders apart, the same here take this server's email and choices, others' email_all false (card 3012)
     R->>L: applyPasswordRulings (card 3009 pauses others' schedules)
     R->>L: pauseUnsealedSchedules: every enabled schedule (kept as it is only, card 3012)

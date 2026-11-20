@@ -45,6 +45,7 @@ import {
 import { RestoreError, restoreFromBackup } from '$lib/server/db/restore';
 import { accountRulings } from '$lib/server/account-endings';
 import { generateBackupData } from '$lib/server/backup';
+import { backupSealKey, sealCopy } from '$lib/server/backup-secrets';
 import { buildActivityReport } from '$lib/server/activity-report';
 import { api, routeMethods } from './helpers/api';
 import { importConfirmation, makeBoard, makeCard, makeSession, makeUser, resetDb, sessionHashOf } from './helpers/fixtures';
@@ -7727,6 +7728,9 @@ describe('0061, which adds the decision records model and a Product Owner on eac
 		expect(countsOf(live).decisions).toBe(1);
 		const backup = beforeIt();
 		expect(backup.prepare("SELECT name FROM sqlite_master WHERE name = 'decisions'").get()).toBeUndefined();
+		// Sealed as this server's own (card 3013, R1): from a copy whose seal did not verify, Ann, the same account here and
+		// no superadmin here, would keep this server's role, and the restore would leave no superadmin.
+		sealCopy(backup, backupSealKey(live));
 
 		const result = restoreFromBackup(live, backup);
 

@@ -1,7 +1,7 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.290
+version: 1.291
 status: Living
 date: 2026-11-20
 tags:
@@ -87,7 +87,7 @@ tags:
   - attachments
   - two-step-sign-in
   - invites
-description: "Card 3029's 19 tests and 7 in its code review fix pass (the From of an unsealed restore kept as this server's, the From handed to nodemailer as a name and an address, and an address a save would refuse read as none), and the suite at 165 files and 14,008 tests; Card 3020's 58 cases (requests held and people marked left by an unsealed restore, the held list and release, Mark active's step-up, OpenAPI (11), A.8.12) and its code review fix pass, and the suite at 165 files and 13,982 tests; How DumpFire's automated tests are built and run: card 3012's unsealed backup that sends nothing outside as the file has it (webhooks held, schedules paused, emails, notification choices and the failure mail kept as here); card 3009's unsealed backup that gives no account not the same here a password, key or factor, and holds its mail, App URL and destinations (the installation id, sameAccountHere, the carry, the key rule and the holds, and its code review's fix pass: no invite from an unsealed file, holds told by why they were held, a working copy's App URL removed; tests/backups.test.ts, tests/setting-holds.test.ts and the inventory, 13,851 in all), card 2997's restore that never brings back a password replaced here (a hash of its own for every fixture account, tests/account-endings.test.ts, tests/backups.test.ts and the gates' suites, 13,774 in all), card 2939's service account rule, start sweep and Test of saved destinations only (tests/backups.test.ts, tests/stored-secrets.test.ts, 13,166 in all with its code review), card 2938's backup copy keeping only a service account JSON's allowlisted fields and its stricter service account key rule (tests/backups.test.ts, 19 tests added with its code review, 13,120 in all), card 2923's held already-off webhooks and the owners' mail at every ending of an account's access (9 tests added, 13,029 in all), card 2925's import that cannot write one of its files (tests/backups.test.ts, 6 cases), card 2915's two-step reset ending the keys (tests/mfa-reset.test.ts T17 to T19, tests/mfa-reset-script.test.ts T21, T23, T33 to T35, and a source scan that nothing under src keeps keys at a reset), card 2910's every upload's limits (tests/uploads.test.ts and tests/v1-attachments.test.ts, the places given back on every exit, the gate's count and Connection: close, and the new tests/attachment-names.test.ts), card 2671's disabled accounts (tests/account-disable.test.ts and the cases in each gate's, picker's and mail's own suite, the delete tests on a disabled account, the OpenAPI 1.13.0 note), card 2899's import that keeps the system log (restore, route, working copy and panel cases), card 2914's task request rows (Q1 to Q5) and the request rows of access-every-route naming who cannot read, card 2911's milestone rows of not-found-not-forbidden, access-every-route without its stillForbids marker and 44 expected fails, and unopenableSays by caller, card 2894's pins of the report schedules paused by a password change and a two-step reset, the in-memory database fixture, the route and form-action helpers, the harness that sends a request through the gate, the table that says who may call every API route and the tests made from it, the tests that read the source to keep every API failure one shape and the OpenAPI document true, the helpers that prove a request is all or nothing, the faults the suite records without hiding, the components mounted under jsdom, the board page's state, refresh and card window run without a page, the split admin, dashboard, All Tasks and plan pages mounted whole, the expected schema, what each suite covers, the MFA key the tests use and how the two-step sign-in storage is tested (card 2768), how two-step sign-in itself is tested (card 2769: the two new files, tests/helpers/two-step.ts, action()'s Cookie header, the frozen Date, the source scans and why the older sign-in tests give the account a factor), the tests of invite tokens stored as hashes and the start-up sweep (card 2849), the tests of session codes stored as hashes, limits by role and the __Host- cookie (card 2775), the tests of report schedules and report mail behind the password and a code (card 2751, T1 to T21), the tests of requester links kept as hashes and the sweep after an older image (card 2870, T1 to T9), the tests of the card window's image upload, a JPEG's kept orientation and the one-off check of the images stored before (card 2761, cases 1 to 13), and how to rehearse the migration runner against a copy of a real database"
+description: "Card 3013's 24 tests and 17 in its code review fix pass (an unsealed backup adds nothing to either record of endings, writes no belt, records only kept keys, and gives this server's accounts of their id and creation time its role and disabled state exactly; the route's words; A.5.18), and the suite at 165 files and 14,049 tests; Card 3029's 19 tests and 7 in its code review fix pass (the From of an unsealed restore kept as this server's, the From handed to nodemailer as a name and an address, and an address a save would refuse read as none), and the suite at 165 files and 14,008 tests; Card 3020's 58 cases (requests held and people marked left by an unsealed restore, the held list and release, Mark active's step-up, OpenAPI (11), A.8.12) and its code review fix pass, and the suite at 165 files and 13,982 tests; How DumpFire's automated tests are built and run: card 3012's unsealed backup that sends nothing outside as the file has it (webhooks held, schedules paused, emails, notification choices and the failure mail kept as here); card 3009's unsealed backup that gives no account not the same here a password, key or factor, and holds its mail, App URL and destinations (the installation id, sameAccountHere, the carry, the key rule and the holds, and its code review's fix pass: no invite from an unsealed file, holds told by why they were held, a working copy's App URL removed; tests/backups.test.ts, tests/setting-holds.test.ts and the inventory, 13,851 in all), card 2997's restore that never brings back a password replaced here (a hash of its own for every fixture account, tests/account-endings.test.ts, tests/backups.test.ts and the gates' suites, 13,774 in all), card 2939's service account rule, start sweep and Test of saved destinations only (tests/backups.test.ts, tests/stored-secrets.test.ts, 13,166 in all with its code review), card 2938's backup copy keeping only a service account JSON's allowlisted fields and its stricter service account key rule (tests/backups.test.ts, 19 tests added with its code review, 13,120 in all), card 2923's held already-off webhooks and the owners' mail at every ending of an account's access (9 tests added, 13,029 in all), card 2925's import that cannot write one of its files (tests/backups.test.ts, 6 cases), card 2915's two-step reset ending the keys (tests/mfa-reset.test.ts T17 to T19, tests/mfa-reset-script.test.ts T21, T23, T33 to T35, and a source scan that nothing under src keeps keys at a reset), card 2910's every upload's limits (tests/uploads.test.ts and tests/v1-attachments.test.ts, the places given back on every exit, the gate's count and Connection: close, and the new tests/attachment-names.test.ts), card 2671's disabled accounts (tests/account-disable.test.ts and the cases in each gate's, picker's and mail's own suite, the delete tests on a disabled account, the OpenAPI 1.13.0 note), card 2899's import that keeps the system log (restore, route, working copy and panel cases), card 2914's task request rows (Q1 to Q5) and the request rows of access-every-route naming who cannot read, card 2911's milestone rows of not-found-not-forbidden, access-every-route without its stillForbids marker and 44 expected fails, and unopenableSays by caller, card 2894's pins of the report schedules paused by a password change and a two-step reset, the in-memory database fixture, the route and form-action helpers, the harness that sends a request through the gate, the table that says who may call every API route and the tests made from it, the tests that read the source to keep every API failure one shape and the OpenAPI document true, the helpers that prove a request is all or nothing, the faults the suite records without hiding, the components mounted under jsdom, the board page's state, refresh and card window run without a page, the split admin, dashboard, All Tasks and plan pages mounted whole, the expected schema, what each suite covers, the MFA key the tests use and how the two-step sign-in storage is tested (card 2768), how two-step sign-in itself is tested (card 2769: the two new files, tests/helpers/two-step.ts, action()'s Cookie header, the frozen Date, the source scans and why the older sign-in tests give the account a factor), the tests of invite tokens stored as hashes and the start-up sweep (card 2849), the tests of session codes stored as hashes, limits by role and the __Host- cookie (card 2775), the tests of report schedules and report mail behind the password and a code (card 2751, T1 to T21), the tests of requester links kept as hashes and the sweep after an older image (card 2870, T1 to T9), the tests of the card window's image upload, a JPEG's kept orientation and the one-off check of the images stored before (card 2761, cases 1 to 13), and how to rehearse the migration runner against a copy of a real database"
 ---
 
 # Testing
@@ -110,10 +110,10 @@ run exits 1. `npm test` leaves the choice to vitest, which allows `.only` unless
 environment variable `CI` is set: at a desk it can be used, and nothing in the image
 build sets `CI`, which is why the build's command carries the flag.
 
-The suite is 165 test files and 14,008 tests (card 3029's code review fix pass, 2026-11-20), and takes
-about three to four minutes. A run that passes on Windows reports `14003 passed | 5 skipped`:
+The suite is 165 test files and 14,049 tests (card 3013's code review fix pass, 2026-11-20), and takes
+about three to four minutes. A run that passes on Windows reports `14044 passed | 5 skipped`:
 the five are the POSIX-only cases below; on Linux, with three or more CPUs, none is skipped (card
-2860's Linux run reported `12354 passed`; card 2772's 137 more tests, card 2751's 29, card 2870's 11, card 2670's 17, the 55 of the cards since, to card 2891, card 2761's 17, card 2719's 81, card 2762's 7, card 2752's 45, card 2893's 29, card 2894's 14, card 2911's 10 more passing, card 2914's 6, card 2899's 12, card 2671's 127, card 2910's 56, card 2915's 26, card 2925's 6, card 2923's 19, card 2938's 19, the cards since to card 2935, card 2922's 57, card 2920's 20, card 2941's 50 and card 2943's 23, card 2947's 56, card 2995's 87, card 2996's 104, card 2997's 64 and card 3009's 82 new tests, 53 in its build and 29 in its code review's fix pass, 77 more passing as some replaced earlier cases, card 3012's 29 and 14 in its code review's fix pass, card 3020's 74 and 9 in its code review's fix pass, and card 3029's 19 and 7 in its code review's fix pass, were run on Windows only). Card 2911 took out card 2719's 44 `it.fails` tests and the meta case M2, and added 11 cases. The figures move with every card: the one rule is that nothing fails
+2860's Linux run reported `12354 passed`; card 2772's 137 more tests, card 2751's 29, card 2870's 11, card 2670's 17, the 55 of the cards since, to card 2891, card 2761's 17, card 2719's 81, card 2762's 7, card 2752's 45, card 2893's 29, card 2894's 14, card 2911's 10 more passing, card 2914's 6, card 2899's 12, card 2671's 127, card 2910's 56, card 2915's 26, card 2925's 6, card 2923's 19, card 2938's 19, the cards since to card 2935, card 2922's 57, card 2920's 20, card 2941's 50 and card 2943's 23, card 2947's 56, card 2995's 87, card 2996's 104, card 2997's 64 and card 3009's 82 new tests, 53 in its build and 29 in its code review's fix pass, 77 more passing as some replaced earlier cases, card 3012's 29 and 14 in its code review's fix pass, card 3020's 74 and 9 in its code review's fix pass, card 3029's 19 and 7 in its code review's fix pass, and card 3013's 24, were run on Windows only). Card 2911 took out card 2719's 44 `it.fails` tests and the meta case M2, and added 11 cases. The figures move with every card: the one rule is that nothing fails
 and nothing is skipped but the cases below.
 
 - **None is expected to fail.** A test of a fault that is known and not yet fixed states
@@ -2911,6 +2911,67 @@ comment naming the card), migration 0065 and the account changes move these:
 - `tests/page-failures.test.ts` (plan case T61): the admin page's `accountOf` passes
   `mfaWithoutFactor` through and leaves it undefined when absent, and the report shows it on a
   line of its own after the secrets' lines.
+
+#### Card 3013: an unsealed backup adds nothing to this server's records of endings, and changes no account here
+
+Built in six slices, each green on its own before the next; card 3014 folded in. 24 new tests, lettered as the plan's
+section 6, each shown failing once under a `// TEMP-PROOF` break of the source and restored byte-identical by hash.
+
+```mermaid
+flowchart LR
+    S1["S1: re-seal the carries'<br/>tests, no expectation changed"] --> S2["S2: the key side<br/>D2, D4, D5"]
+    S2 --> S3["S3: the account record side<br/>D1, D3, D8, D9"]
+    S3 --> S4["S4: account state<br/>D6, D7"]
+    S4 --> S5["S5: the route's words, (p)"]
+    S5 --> S6["S6: the documents, A.5.18 (r)"]
+```
+
+- **S1, re-seal only.** About 20 copies whose carry a test asserts, in the card 2995, 2996 and 2997 describes of
+  `tests/backups.test.ts`, are wrapped in `sealedFor(sqlite, …)` after their last edit; `tests/account-endings.test.ts`
+  gains a local `sealedFor` for (c) and FP5. No expectation changed. `backups.test.ts`'s system-log, (b) and (c) cases
+  and `timestamps.test.ts` stay unsealed as guards that a watermark-only file says nothing (R19).
+- **The describe** "an unchecked backup adds nothing to this server's records and changes no account here (card 3013)",
+  at the end of `tests/backups.test.ts`, with `hostile(copy)` (every planted row of the attack on both records, and the
+  users edits: Bob's creation time in 2099, Ann disabled, Cy given Zed's hash, Sam raised) and `hostileKeys(copy)`.
+  S2: (b) the key side counted and not taken; (c) card 3014's planted keys have no hash recorded; (d) the ender records
+  only kept keys; (j) a `RAISE(ABORT)` trigger on the kept key's record rolls the restore back; (q) a sealed record over
+  `MOST_SEED_ROWS` is left out whole. S3: (a) the account side; (e) and (e-bis) no belt; (f) card 2997's FP6 belt gone;
+  (g) the sealed control; (h) a working copy; (k2) the row filter; (n) the held-here map; (o) this server's hash.
+  S4: (i) the card's outcome, a sealed recovery restoring everything exactly; (k) Sam's role; (l) and (l2) the disabled
+  state by `(id, created)`. S5: (p) ×2 through the route, committed and committed-then-failed: `recordsNotTaken`,
+  `accountStateAsHere` (2), the two `accountsKeptLines` sentences, the message, the CRITICAL words and details, no name
+  and, committed, no problem.
+- `tests/api-key-revocations.test.ts` (d2) ×2, `endApiKeys` with `recordOnly` `[]` and one key.
+- `tests/check-at-the-write.test.ts` (d3): `RECORD_ONLY_CALLERS` is exactly `restore.ts#restoredAccessEnder`;
+  KEY_DELETERS' `why`, `RECORD_PASSWORD_REPLACED_CALLERS` (no `applyPasswordRulings`), USERS_ENDING_WRITES
+  (`keepAccountStateHere` in place of `keepSuperadminsHere`) and PASSWORD_HASH_CLASSES rewritten.
+- `tests/iso-27001.test.ts` (r): A.5.18's card 3013 sentence and its three restore symbols.
+- Fallout: test 7's unsealed row records nothing; (ee2)'s second half (sealing forged bytes) dropped (NF3); test 14's
+  later account gets its `role` row; (ii2) asserts Sam stays `user`; `tests/admin-reset.test.ts` (y) has no `errors` line
+  and counts the record not taken; `tests/mfa-storage.test.ts` gives its account a `role` row; the card 2671 describe's
+  raw copies and `tests/migrations.test.ts`'s 0061 restore are sealed as this server's own.
+- 165 files and 14,008 tests (`14003 passed | 5 skipped`) before the card; `14011`, `14020`, `14024`, `14026` and
+  `14027 passed | 5 skipped` after S2 to S6, 14,032 tests in all.
+- **The code review fix pass (FP1 to FP14), 17 new tests**, at the end of the card 3013 describe unless named. Each new
+  or changed test was shown failing once under one of 17 `// TEMP-PROOF` breaks and restored byte-identical by hash.
+  - FP1 (M1): the control, and two administrator actions on a planted creation time (a disable; a password set and
+    then changed). The sealed recovery brings the real Sam back exactly.
+  - FP2 ×2: `applyAccountEndings` and `resetOne` record no planted hash. (d3) pins the three
+    `restoredAccessEnder(live, …recordOnly)` constructions, and a new case reads a spread `endApiKeys(...args)` as
+    giving `recordOnly`.
+  - FP4 and FP5 ×3: the refusal's words, with and without a `role` row, and the control.
+  - FP6 ×2: a superadmin disabled by a host edit stays disabled, or the restore refuses.
+  - FP7: a sealed carry across another form of the same moment.
+  - FP13: a throw inside `disabledHere` fails closed.
+  - FP11 ×3: the no-`ending` and no-`key_hash` counts, and `MOST_OTHER_ROWS` for keys.
+  - FP12, in the card 2671 describe: case 39 unsealed, counted 0.
+  - Changed:
+    - (k2): D6 now puts Sam back.
+    - (p) ×2: the reworded sentence, and the spy restored in `finally`.
+    - (r): A.5.18's new sentence.
+    - Three older fixtures (`backupWhoseSuperadminCannotBeCopied` and `serverWith`'s setters) were given a creation
+      time no account here has.
+  - `14044 passed | 5 skipped`, 14,049 tests in all.
 
 #### Card 3029: an unsealed backup no longer sets the From on this server's mail
 

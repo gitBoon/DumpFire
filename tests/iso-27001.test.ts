@@ -148,6 +148,18 @@ describe('the checklist source', () => {
 		expect(item.how).toContain('(card 2996)');
 	});
 
+	it("(r) card 3013: A.5.18 says a backup whose seal does not verify adds nothing the file chose to either record and gives every account of an id and creation time here that account's role and disabled state exactly, and cites the three restore steps, each of which exists", () => {
+		const item = CHECKLIST.find((entry) => entry.ref === 'A.5.18')!;
+		for (const symbol of ['keepAccountStateHere', 'carryAccountEndings', 'carryKeyRevocations']) {
+			const evidence = item.evidence.find((e) => e.path === 'src/lib/server/db/restore.ts' && e.symbol === symbol);
+			expect(evidence, symbol).toBeDefined();
+			expect(evidenceFault(evidence!), symbol).toBeNull();
+		}
+		expect(item.how).toContain(
+			"(card 2996). A backup whose seal does not verify adds nothing the file chose to either record, and every account it holds under the id and creation time of an account here takes that account's role and enabled or disabled state exactly as here, a superadmin's included (card 3013)."
+		);
+	});
+
 	it('(cc) card 2997: A.5.17 names the writer of a password replaced and the restore’s password step as evidence, and each exists', () => {
 		const item = CHECKLIST.find((entry) => entry.ref === 'A.5.17')!;
 		for (const symbol of ['recordPasswordReplaced', 'applyPasswordRulings']) {

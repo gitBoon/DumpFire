@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.101
+version: 1.102
 status: As-Built
 date: 2026-11-20
 tags:
@@ -1811,7 +1811,8 @@ never a range, and halts where that would be more than 1,000,000 rows.
 `restorableTables` leaves the table out, as it leaves out the system log, and Reset Everything's
 `KEPT` names it: neither clears it. A backup carries it like any other table: it holds ids and
 hashes, never a key. A backup made before 0076 has none, and the restore applies this server's
-record alone. Going back to an older image leaves it unwritten there, and that image's restore
+record alone; so does a restore of a backup whose seal does not verify, which counts the file's rows and
+takes none (card 3013). Going back to an older image leaves it unwritten there, and that image's restore
 clears it and refills it from the backup.
 
 ### Every ending of an account on this server (`account_endings`, migration 0077)
@@ -1849,7 +1850,7 @@ erDiagram
 | `credential` | text, default `''` | On a `deleted` row, SHA-256 hex of the label `dumpfire account credential v1`, a NUL and the bcrypt hash; `''` where the hash is not a well-formed bcrypt string or is `DUMMY_HASH`. On a `password` row the same fingerprint of the hash replaced, never `''` (no row is written where it would be). The hash is fingerprinted with its prefix made `$2b$` (card 2997, R1: `$2a$` and `$2y$` name the same hash to bcryptjs). Never the hash |
 | `ended_at` | text, `*_at` | When it was ended; a backup's row clamped to the backup's own latest moment no later than the restore. The seed's role rows are dated at the account's creation, its disables at their own moment, the earliest stamp (`0001-01-01 00:00:00`) where either names none or one after the migration (card 2996's code review, FP4) |
 | `stated_ended` | text, default `''`, not an `*_at` column | The moment as the row's writer stated it: `ended_at` for a row written here, the backup's own (or a digest of its text where it names no moment) for one a restore brought. The union's key, so that importing the same backup again adds nothing whenever it runs (FP5) |
-| `origin` | text, default `'here'` | `here`, written by this server; `backup`, brought by a restore; `belt`, written by the record's own rule in a restore or the start's pass (FP2: this server's own for any account but a superadmin, never evidence against one) |
+| `origin` | text, default `'here'` | `here`, written by this server; `backup`, brought by a restore of a backup this server sealed (since card 3013 never from one whose seal does not verify); `belt`, written by the record's own rule in a restore or the start's pass (FP2: this server's own for any account but a superadmin, never evidence against one) |
 
 Three indexes: `account_endings_account (user_id, account_created, ending, stated_ended)` (the union's key, FP3), the partial
 `account_endings_credential (credential) WHERE credential <> ''` and the partial
@@ -1864,11 +1865,13 @@ Everything, and the belts of the restore's `applyAccountEndings` and the start's
 refuses the superadmin; `recordPasswordReplaced` (card 2997: the holder's own change, an
 administrator's reset, an invite used, Reset Everything, and as `belt` `makeInert` and
 `applyAccountEndings` before each `DUMMY_HASH`), which writes a superadmin's own `password` row `here`
-and nothing for a belt on one; and the restore's `carryAccountEndings`, which takes a backup's
+and nothing for a belt on one; and the restore's `carryAccountEndings`, which, from a sealed backup only (card
+3013), takes a backup's
 `password` rows whoever they name and leaves them out of its 100 rows for one account. Nothing deletes,
 updates or replaces a row; `tests/check-at-the-write.test.ts` holds src and scripts to it.
 
-**Readers.** `accountRulings` (the restore and the start's pass), `deletedHere` (`createSession`,
+**Readers.** `accountRulings` (the restore and the start's pass; in a restore its held-here half counts only an account with
+an exact row of this server's record, card 3013), `deletedHere` (`createSession`,
 `keyHolder`, the enable), `passwordReplacedHere` (card 2997: the sign-in, `createSession`, the
 step-up, the restore's `applyPasswordRulings` and the start's `endReplacedPasswordsPresent`; for a
 superadmin only its own exact `here` row) and `raiseUserCounterOverSeed`. `EXACT_ROWS_SQL`, the

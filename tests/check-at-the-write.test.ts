@@ -5710,13 +5710,16 @@ describe('a reset of the two-step sign-in under src always ends the keys (card 2
 const KEY_DELETERS: Record<string, { count: number; why: string }> = {
 	'src/lib/server/key-revocations.ts#endApiKeys': {
 		count: 1,
-		why: "The one delete of API keys by an ending: after the record's INSERT OR IGNORE, in the same transaction, on the connection it is given (card 2995)."
+		why:
+			"The one delete of API keys by an ending: after the record's INSERT OR IGNORE, in the same transaction, on the connection it is given (card 2995). " +
+			"With `recordOnly`, which only the restore passes and only where the backup's seal did not verify (RECORD_ONLY_CALLERS), it records only this " +
+			"server's own keys of the same accounts here, by id, hash and owner, and deletes the file's other keys unrecorded: this server never held them (card 3013, D4)."
 	},
 	'src/lib/server/db/restore.ts#leaveOut': {
 		count: 1,
 		why:
 			"The restore's leave-out: one DELETE ... WHERE EXISTS over the record, the gate's own predicate (R6), and a working copy's every key (R4). " +
-			'Keys of the backup, not ended here; those it names were recorded already, and the seed-matched ones are hash-recorded first (R2).'
+			'Keys of the backup, not ended here; those it names were recorded already, and, from a sealed backup only, the seed-matched ones are hash-recorded first (R2; card 3013, D5).'
 	},
 	'src/lib/server/deletes.ts#deleteUser': {
 		count: 1,
@@ -5783,6 +5786,14 @@ const END_API_KEYS_CALLERS = [
 	'src/lib/server/deletes.ts#deleteUser',
 	'src/routes/api/admin/reset/+server.ts#POST'
 ];
+
+/**
+ * Card 3013 (D4, R8): the functions that may call `endApiKeys` with a fourth argument, `recordOnly`, which records only
+ * the keys it lists. Only the restore's ender passes it, and the restore gives it one only where the backup's seal did
+ * not verify: a sealed restore, and every other ender, records every key it ends. Case (g) of the card's tests proves
+ * the sealed half in behaviour.
+ */
+const RECORD_ONLY_CALLERS = ['src/lib/server/db/restore.ts#restoredAccessEnder'];
 
 /** A name of SQL's, as SQLite reads it: bare, quoted, backticked or bracketed, with a schema before it or not. */
 const sqlName = (name: string) => String.raw`(?:["'\x60[]?\w+["'\x60\]]?${SQL_GAP}*\.${SQL_GAP}*)?["'\x60[]?${name}["'\x60\]]?(?![\w$])`;
@@ -5857,22 +5868,28 @@ const USERS_ENDING_WRITES: Record<string, { count: number; why: string }> = {
 		why: "An invite used to set a password, which ends the account's access (endAccountAccess): the hash it replaces recorded first, `password` (card 2997, W3)."
 	},
 	'src/lib/server/db/restore.ts#carryDisabled': { count: 1, why: "The restore's carry of this server's disables (card 2671): disabled_at and disabled_by, onto the same accounts restored." },
-	'src/lib/server/db/restore.ts#applyAccountEndings': { count: 3, why: "The restore's application of the record (card 2996): an inert or before-record account, a disabled one, a lowered role." },
+	'src/lib/server/db/restore.ts#applyAccountEndings': {
+		count: 3,
+		why:
+			"The restore's application of the record (card 2996): an inert or before-record account, a disabled one, a lowered role. Card 3013 (D3): from a backup " +
+			'whose seal did not verify, the account is ended the same way with no belt row written.'
+	},
 	'src/lib/server/db/restore.ts#applyPasswordRulings': {
 		count: 2,
 		why:
-			"Card 2997 (S1b, section 13.1): the restore's password step, over a restored hash the record already names as replaced, so no row, or any, R2, from an unsealed backup, " +
-			"recorded first as a belt (the code review's FP6): this server's own hash for the same account, or DUMMY_HASH and no enrol leave, then endRestoredAccess. " +
+			"Card 2997 (S1b, section 13.1): the restore's password step, over a restored hash the record already names as replaced, or any, R2, from an unsealed backup, " +
+			"with no row either way (card 3013, D3, removed the code review's FP6 belt: the file's hash is never recorded): this server's own hash for the same account, or DUMMY_HASH and no enrol leave, then endRestoredAccess. " +
 			"Card 3009 adds no statement, only uses of the same two: from a backup whose seal did not verify, an account not the same here given DUMMY_HASH and no enrol " +
 			"leave (`notTakenOne`, no row: the file's hash was never this server's, so nothing here replaced it), and the carry, `keep` giving the backup's superadmin the " +
 			"importer's own hash as this server held it (section 14.1); its email write sets no ending column."
 	},
-	'src/lib/server/db/restore.ts#keepSuperadminsHere': {
+	'src/lib/server/db/restore.ts#keepAccountStateHere': {
 		count: 1,
 		why:
-			"Card 3009, R2: the restore putting back this server's own superadmin, restored as the same account from a backup whose seal did not verify, as an " +
-			"enabled superadmin whatever the file made it: role, disabled_at and disabled_by to what they were here, before carryDisabled and the record's rulings. " +
-			"It ends nothing and lowers nothing, so it records nothing; a superadmin's ending rows are this server's `deleted` alone (card 2996, FP1)."
+			"Card 3013 (D6, R1, R2, R23), in place of card 3009's R2 step: from a backup whose seal did not verify, before the record's rulings and carryDisabled, " +
+			"each account that is the same here given this server's role (a superadmin here a superadmin again), and each account of this server's id and " +
+			"creation time its disabled state (disabled_at, and disabled_by as disablerFor names it; enabled where not disabled here). It puts back this " +
+			"server's own state, ends nothing and records nothing; counted in accountStateAsHere (R22)."
 	}
 };
 
@@ -5910,12 +5927,15 @@ const PASSWORD_HASH_CLASSES: Record<string, { kind: 'records' | 'restore' | 'sta
 	},
 	'src/lib/server/db/restore.ts#applyAccountEndings': {
 		kind: 'restore',
-		why: 'W8, an inert or before-record account given DUMMY_HASH: a `belt` row of the restored hash written before it (N1), never for a superadmin.'
+		why:
+			'W8, an inert or before-record account given DUMMY_HASH: a `belt` row of the restored hash written before it (N1), never for a superadmin, ' +
+			'and never from a backup whose seal did not verify (card 3013, D3), whose hash was the file’s choice.'
 	},
 	'src/lib/server/db/restore.ts#applyPasswordRulings': {
 		kind: 'restore',
 		why:
-			'W10, this server’s own hash for the same account, or DUMMY_HASH, over a restored hash the record already names, or one R2 discards, recorded first as a `belt` row (FP6). ' +
+			'W10, this server’s own hash for the same account, or DUMMY_HASH, over a restored hash the record already names, or one R2 discards, with no row: card 3013 (D3, R11) ' +
+			'removed the FP6 belt, as that hash was the file’s choice and a row of it would reset any account here holding it. ' +
 			'Card 3009, over an unsealed backup’s hash of an account not the same here: DUMMY_HASH with no row, as that hash was never this server’s and recording it would let ' +
 			'a planted file fingerprint accounts for card 2996’s matcher; and the carry, the importer’s own hash as this server held it, which no row names.'
 	},
@@ -5925,7 +5945,7 @@ const PASSWORD_HASH_CLASSES: Record<string, { kind: 'records' | 'restore' | 'sta
 
 /**
  * Card 2997 (test aa): the functions that may call `recordPasswordReplaced`, each once: the four writers that record
- * (W1, W2, W3, W7), the restore's belts (W8, and R2's in W10, the code review's FP6) and Reset Everything, which
+ * (W1, W2, W3, W7), the restore's belt (W8; card 3013, R11, removed R2's in W10, the code review's FP6) and Reset Everything, which
  * records every account's hash but the superadmin's before the clear (W12, decision 5). `scripts/` holds none, and writes no `password_hash` (R19): a host
  * script that ever writes a password must call `recordPasswordReplaced` before its write, and be listed here and in
  * PASSWORD_HASH_CLASSES as `records`.
@@ -5933,8 +5953,6 @@ const PASSWORD_HASH_CLASSES: Record<string, { kind: 'records' | 'restore' | 'sta
 const RECORD_PASSWORD_REPLACED_CALLERS = [
 	'src/lib/server/account-ending-bodies.ts#giveDummyHash',
 	'src/lib/server/db/restore.ts#applyAccountEndings',
-	// The code review's FP6: the backup's hash R2 discards, a belt.
-	'src/lib/server/db/restore.ts#applyPasswordRulings',
 	'src/routes/api/account/password/+server.ts#PUT',
 	'src/routes/api/admin/reset/+server.ts#POST',
 	'src/routes/api/users/[id]/password/+server.ts#PUT',
@@ -6005,6 +6023,13 @@ type KeyReading = {
 	deletes: string[];
 	clears: string[];
 	enders: string[];
+	/**
+	 * Card 3013: each call of `endApiKeys` with a fourth argument (`recordOnly`), by `file#function`; and, as its code
+	 * review's FP2 has it, each call whose arguments are spread, which may carry one.
+	 */
+	recordOnly: string[];
+	/** Card 3013's code review (FP2): each call of `restoredAccessEnder`, by `file#function`, with its second argument's text. */
+	accessEnders: { key: string; recordOnly: string | null }[];
 	findings: string[];
 	/** Card 2996: the writes of a role, a disable, a password or run-time fields of users, by `file#function`. */
 	userWrites: string[];
@@ -6039,7 +6064,7 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 	const tree = ts.createSourceFile(file, file.endsWith('.svelte') ? scriptsOf(source) : source, ts.ScriptTarget.Latest, true, kind);
 	const at = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
 	const keyOf = (node: ts.Node) => `${file}#${writerNameOf(node)}`;
-	const reading: KeyReading = { deletes: [], clears: [], enders: [], findings: [], userWrites: [], passwordWriters: [], dynamicSets: [], recorders: [], passwordRecorders: [], passwordSteps: [], expiryWrites: [] };
+	const reading: KeyReading = { deletes: [], clears: [], enders: [], recordOnly: [], accessEnders: [], findings: [], userWrites: [], passwordWriters: [], dynamicSets: [], recorders: [], passwordRecorders: [], passwordSteps: [], expiryWrites: [] };
 	/** Card 2997: a write of `password_hash` at `node`, kept with where it starts. */
 	const writesPassword = (node: ts.Node) => {
 		reading.passwordWriters.push(keyOf(node));
@@ -6207,6 +6232,12 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 		}
 		if (ts.isCallExpression(node) && ts.isIdentifier(bare(node.expression)) && (bare(node.expression) as ts.Identifier).text === 'endApiKeys') {
 			reading.enders.push(keyOf(node));
+			// Card 3013 (d3): a fourth argument is `recordOnly`; so may a spread one be (its code review, FP2).
+			if (node.arguments.length > 3 || node.arguments.some((argument) => ts.isSpreadElement(argument))) reading.recordOnly.push(keyOf(node));
+		}
+		if (ts.isCallExpression(node) && ts.isIdentifier(bare(node.expression)) && (bare(node.expression) as ts.Identifier).text === 'restoredAccessEnder') {
+			const second = node.arguments[1];
+			reading.accessEnders.push({ key: keyOf(node), recordOnly: second === undefined ? null : second.getText(tree) });
 		}
 		// Card 2996 (R9 v): each call of the record's one writer, by its `file#function`.
 		if (ts.isCallExpression(node) && ts.isIdentifier(bare(node.expression)) && (bare(node.expression) as ts.Identifier).text === 'recordAccountEnding') {
@@ -6252,6 +6283,24 @@ describe('every delete of an API key or an account, and the record of ended keys
 
 	it('test 21: endApiKeys is called by exactly the enders, each once', () => {
 		expect(readings.flatMap(({ enders }) => enders).sort()).toEqual([...END_API_KEYS_CALLERS].sort());
+	});
+
+	it('(d3) card 3013 (R8): endApiKeys is given recordOnly by exactly RECORD_ONLY_CALLERS, each once, and every one of them is an ender', () => {
+		expect(readings.flatMap(({ recordOnly }) => recordOnly).sort()).toEqual([...RECORD_ONLY_CALLERS].sort());
+		for (const caller of RECORD_ONLY_CALLERS) expect(END_API_KEYS_CALLERS).toContain(caller);
+		// Its code review (FP2): each of the restore's three enders is made with the restore's own `recordOnly`, and none other.
+		expect(readings.flatMap(({ accessEnders }) => accessEnders)).toEqual([
+			{ key: 'src/lib/server/db/restore.ts#carryDisabled', recordOnly: 'recordOnly' },
+			{ key: 'src/lib/server/db/restore.ts#applyAccountEndings', recordOnly: 'options.recordOnly' },
+			{ key: 'src/lib/server/db/restore.ts#applyPasswordRulings', recordOnly: 'options.recordOnly' }
+		]);
+	});
+
+	it("(d3) card 3013's code review (FP2): a call of endApiKeys whose arguments are spread is read as one that may give recordOnly", () => {
+		const spread = judgeKeyWrites('src/lib/server/x.ts', 'export function ender(...args: Parameters<typeof endApiKeys>) { return endApiKeys(...args); }');
+		expect(spread.recordOnly).toEqual(['src/lib/server/x.ts#ender']);
+		const plain = judgeKeyWrites('src/lib/server/x.ts', "export function ender(live: Db) { return endApiKeys(live, { userId: 1 }, 'revoked'); }");
+		expect(plain.recordOnly).toEqual([]);
 	});
 
 	it('test 21: the restore keeps the record out of the tables it clears, and Reset Everything names it among those it keeps', () => {

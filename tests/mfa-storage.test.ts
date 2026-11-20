@@ -35,6 +35,7 @@ import { generateBackupData } from '$lib/server/backup';
 import { INSTALLATION_ID, backupSealKey, sealCopy, webhookAddressMacKey } from '$lib/server/backup-secrets';
 import { mfaWithoutFactorSentence } from '$lib/server/mfa-backup';
 import { inTransaction } from '$lib/server/db/transaction';
+import { recordAccountEnding } from '$lib/server/account-endings';
 import { endAccountAccess } from '$lib/server/auth';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, keyFromBytes, loadMfaKey, mfaKeyLoad, type FactorAtStart, type KeyLoad, type MfaKey } from '$lib/server/mfa-key';
 import { factorAad, newFactorUid, sealWith, sha256Hex } from '$lib/server/mfa-crypto';
@@ -999,6 +1000,8 @@ describe('backups and restores', () => {
 		const { user } = enrolled();
 		// Another account with a factor, so that two-step sign-in is in use after the restore.
 		const { user: other } = enrolled();
+		// Its `role` row, as account creation writes one (card 3013, A13): the record attests the account held here (D8, R3).
+		inTransaction(() => recordAccountEnding(sqlite, user.id, 'role'));
 		const backup = backupNow();
 		// In the backup, the id is another account's, made at another moment,
 		// holding no second factor or code; sealed again, as this server would.

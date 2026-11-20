@@ -38,6 +38,7 @@ import { DELETED_HERE } from '$lib/server/account-disable';
 import { makeInert } from '$lib/server/account-ending-bodies';
 import { deleteUser } from '$lib/server/deletes';
 import { generateBackupData } from '$lib/server/backup';
+import { backupSealKey, sealCopy } from '$lib/server/backup-secrets';
 import { restoreFromBackup } from '$lib/server/db/restore';
 import { sweepEndedKeyReveals } from '$lib/server/startup-checks';
 import { mailPlacesNow, recordDestinationSetter, recordMailSetters } from '$lib/server/setting-setters';
@@ -352,6 +353,12 @@ const secondStepsOf = (id: number) =>
 	(sqlite.prepare('SELECT (SELECT COUNT(*) FROM mfa_factors WHERE user_id = @id) + (SELECT COUNT(*) FROM mfa_recovery_codes WHERE user_id = @id) AS n').get({ id }) as { n: number }).n;
 const backupNow = () => new Database(generateBackupData());
 
+/** `backup` sealed under `live`'s seal key, as `live`'s own backup is (card 3009's code review, FP1). */
+function sealedFor(live: Database.Database, backup: Database.Database): Database.Database {
+	sealCopy(backup, backupSealKey(live));
+	return backup;
+}
+
 describe('the writers record every ending (card 2996, slice 3)', () => {
 	beforeEach(() => {
 		process.env.LOG_LEVEL = 'INFO';
@@ -572,7 +579,7 @@ describe('the start’s and the five-minute pass of the record of account ending
 		const quinn = makeUser({ username: 'quinn' });
 		const backup = backupNow();
 		backup.prepare("UPDATE users SET created_at = 'zzz' WHERE id = ?").run(quinn.id);
-		const bytes = Buffer.from(backup.serialize());
+		const bytes = Buffer.from(sealedFor(sqlite, backup).serialize());
 		const patCreated = createdOf(pat.id);
 		sqlite.pragma('foreign_keys = OFF');
 		sqlite.prepare('DELETE FROM users WHERE id IN (?, ?)').run(pat.id, quinn.id);
@@ -720,7 +727,7 @@ describe('the code review’s fix pass (card 2996, FP1, FP5, FP6, FP16)', () => 
 			copy
 				.prepare("INSERT INTO account_endings (user_id, account_created, ending, ended_at, stated_ended, origin) VALUES (?, ?, 'disabled', '2099-11-20 11:00:00', '2099-11-20 11:00:00', 'here')")
 				.run(ann.id, createdOf(ann.id));
-			const bytes = Buffer.from(copy.serialize());
+			const bytes = Buffer.from(sealedFor(sqlite, copy).serialize());
 
 			expect(restoreFromBackup(sqlite, new Database(bytes)).errors).toEqual([]);
 			expect(userOf(ann.id).disabledAt).not.toBeNull();

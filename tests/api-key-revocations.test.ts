@@ -196,6 +196,25 @@ describe('every ender records the keys it ends, in its own transaction (card 299
 		expect(hashOf(theirs.id)).toBeDefined();
 	});
 
+	it.each([
+		{ kept: 'none', recordFirst: false },
+		{ kept: 'the first key, by id, hash and owner', recordFirst: true }
+	])('(d2) card 3013 (R8): endApiKeys with recordOnly naming $kept deletes both of the account’s keys and records only the one it names', ({ recordFirst }) => {
+		const first = makeApiKeyRow(ann);
+		const second = makeApiKeyRow(ann);
+		const theirs = makeApiKeyRow(chief);
+		const hash = hashOf(first.id)!;
+		const recordOnly = recordFirst ? [[first.id, hash, ann.id] as const] : [];
+
+		const ended = inTransaction(() => endApiKeys(sqlite, { userId: ann.id }, 'access ended', { recordOnly }));
+
+		expect(ended).toEqual([first.id, second.id]);
+		expect(hashOf(first.id)).toBeUndefined();
+		expect(hashOf(second.id)).toBeUndefined();
+		expect(recordOf()).toEqual(recordFirst ? [{ id: first.id, hash, because: 'access ended' }] : []);
+		expect(hashOf(theirs.id)).toBeDefined();
+	});
+
 	it('test 19: deleteUser of a disabled account still holding a key records it, account deleted, before the user row goes', () => {
 		inTransaction(() => disableAccount(db.select().from(users).all().find((u) => u.id === ann.id)!, chief));
 		// As a restore from before card 2671's carry, or a host edit, leaves one.

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.165
+version: 1.166
 status: As-Built
 date: 2026-11-20
 tags:
@@ -6167,7 +6167,8 @@ Covered by `tests/setting-holds.test.ts`, `tests/two-step-enrol.test.ts` (T65b, 
 ### What a Backup Holds, and What a Restore Brings In
 
 Since card 2995 a restore also leaves out every API key the record of keys ended on this server
-names, keeps that record and adds the backup's to it, and a working copy leaves out every key: see
+names, keeps that record and adds a sealed backup's to it (from a backup whose seal does not verify,
+none: card 3013), and a working copy leaves out every key: see
 [The Record of Ended API Keys](#the-record-of-ended-api-keys-card-2995).
 
 A session's id is the whole of what its cookie carries, and an unused invite's token sets
@@ -10396,15 +10397,15 @@ sequenceDiagram
     R->>L: read W and this server's keys up to W, before the clear
     R->>L: clear, copy, strandedBy, carryDisabled (records, set_by_key NULL)
     R->>B: read its record and its own key counter
-    R->>L: add each row within the backup's bounds, and raise the key counter over the seed rows
+    R->>L: add each row within the backup's bounds (sealed only: card 3013), and raise the key counter over the seed rows
     R->>L: fill, carry the holds and reveals, seed reveals where unseeded
-    R->>L: hash belt: a seed-matched key, or one whose id was here with another hash, recorded by hash
+    R->>L: hash belt (sealed only: card 3014): a seed-matched key, or one whose id was here with another hash, recorded by hash
     R->>L: every reveal of a key to leave out read, then DELETE FROM api_keys WHERE EXISTS (the rule)
     R->>L: working copy: every other key left out too
     R->>L: sweep, holdRevealedIn of every reveal read, ended-key sweep
 ```
 
-A backup's row is taken only where its `key_id` is a whole number from 1 to 2^53 - 1 and its
+From a backup this server sealed (card 3013), a row is taken only where its `key_id` is a whole number from 1 to 2^53 - 1 and its
 `key_hash` is `''` or a SHA-256; a seed row (`''`) only up to the backup's own key counter or largest
 key id, whichever is greater, since it names a key by id; a hashed row whatever its id, since it names
 one by hash and a server whose counter row was deleted can hold one above its counter (code review
@@ -10431,8 +10432,8 @@ before the release, or, from another server's backup, a key whose id this server
 counted, and re-made in a minute; the answer's sentence names that case (FP10). A key ended before
 the release whose hash this server never saw can come back if an edited old backup moves it to an id
 the record does not name: importing is the superadmin's alone, and the import's line names the file's
-SHA-256 (FP10). A crafted backup's hashed row with an id near 2^53 raises this server's key counter
-that far (FP1's cost). A host file rollback returns the record as old as the copy: the deployment
+SHA-256 (FP10). A crafted backup's hashed row with an id near 2^53 raised this server's key counter
+that far (FP1's cost) until card 3013, which takes no row from a backup whose seal does not verify. A host file rollback returns the record as old as the copy: the deployment
 guide says to dump and re-insert it, or to revoke again, and never to import under an older image.
 
 Covered by `tests/api-key-revocations.test.ts`, `tests/backups.test.ts` (card 2995's restore cases),
@@ -10483,7 +10484,8 @@ or enable row for one, so the rows a host promotion leaves behind never lower or
 belt, seed row, fingerprint or held-here match ever names it. In order: **deleted (inert)**, an exact `deleted` row, or a `deleted` row carrying its
 fingerprint (never a superadmin); **before record**, a seed row of its id (at most W, the account
 made no later than it, no exact `here` row), or, in a restore, this server held the id just before
-with a later creation time (never a superadmin); **disabled**, the latest by `(ended_at, seq)` of its
+with a later creation time and its record holds an exact row of that account (card 3013, R3; never a
+superadmin); **disabled**, the latest by `(ended_at, seq)` of its
 exact `disabled` and `enabled` rows that count (every `here` one; a `backup` one only where there is no
 `here` one, or a `backup` disable); **ceiling**, the latest exact `role` row that counts by the same
 precedence, which only lowers. `deletedHere` is the deleted half through the same matcher, one
@@ -10502,7 +10504,8 @@ changing nothing, where the seed would be more than 1,000,000 rows. The `users` 
 over every seed and watermark id at start and in every restore (`raiseUserCounterOverSeed`).
 
 **The restore** (`restoreInOneSnapshot`). The record is left out of `restorableTables` and kept by
-Reset. After the copy, `carryAccountEndings` adds the backup's rows as `backup` where no row of this
+Reset. After the copy, `carryAccountEndings` adds a sealed backup's rows as `backup` (from one whose
+seal does not verify it counts them and takes none: card 3013) where no row of this
 server's record before this restore has the same natural key (the stored creation time and the moment
 as stated, FP3, FP5): a row is taken only within the backup's own id bound (exact, seed and watermark
 alike), with a word, creation time, role and fingerprint its ending can have, a creation time no later
@@ -10684,7 +10687,8 @@ password inventory in `tests/check-at-the-write.test.ts`) and `tests/two-step-si
 
 Card 2997 kept this server's password for the same account, but an import of a backup whose seal does
 not verify (`unsealed` not null: no seal, a failed one, another server's, one sealed before card 2943's
-new key, a file that fails `PRAGMA integrity_check`) still gave every account not here the file's
+new key, this server's own made before Reset Everything or restored onto a database rebuilt after a
+loss, a file that fails `PRAGMA integrity_check`) still gave every account not here the file's
 hash, and the file's API keys. Such a file is only its uploader's word. From it, nothing that signs in
 now reaches an account that is not the same account here: no password, no second factor, no key.
 
@@ -10713,16 +10717,25 @@ leave to enrol (`restoreMfaRows`), passwords (`applyPasswordRulings`) and API ke
 the id and `created_at` alone, since a stricter identity there would fail open. Forging it gains
 nothing: an unsealed file can claim this server's id and any `created_at`, but a match only gives an
 account back this server's own password, factors and keys for that id, which only its holder knows,
-and the file's row cannot raise its role (card 2996's ceiling); a mismatch gives nothing.
+and, since card 3013, any account of that id and `created_at` takes this server's role and disabled
+state (`keepAccountStateHere`), which gives nothing either; a mismatch gives nothing.
+**Corrected by card 3013 (R1).** Card 3009 held here, as its assumption A8, that the file's row could
+not raise the role, by card 2996's ceiling. It could: the ceiling only lowers, and it treated an
+account the file made a superadmin as one, so a same-here account the file raised kept that role and
+its own password, and signed in as a superadmin. Card 3013 closes it (below).
 
 **Passwords** (`applyPasswordRulings`, unsealed branch, before card 2997's rules). An account not the
 same here takes `DUMMY_HASH` and `mfa_password_enrol = 0`, whatever the file holds, counted
 `passwordsKept.unsealed` (one the file already gives `DUMMY_HASH` is not counted); its report schedules
 are paused whatever its hash, where the restore keeps what reaches outside (a working copy switches them
 all off; FP2); it stays enabled. No `password` row is written and no key is ended: that hash
-was never this server's. Before any of it, and before `carryDisabled`, **`keepSuperadminsHere`** makes
-each superadmin of this server whose restored row is the same account here an enabled superadmin
-again, whatever the file made it (R2); nothing after it undoes it, card 2996's role ceiling included.
+was never this server's. Before any of it, and before card 2996's rulings, **`keepAccountStateHere`**
+(card 3013, in place of card 3009's `keepSuperadminsHere`) gives each restored account of this
+server's id and creation time (the same moment) this server's role and disabled state exactly, a
+superadmin here a superadmin again whatever the file made it (R2), disabled only where it is disabled
+here (its code review, FP5, FP6); nothing after it undoes it, card 2996's role ceiling included. Where
+that leaves the file's superadmin lowered or disabled and no superadmin enabled, the restore refuses,
+naming the superadmin as disabled or given a lower role here (FP4).
 
 **The superadmin carry** (R1 to R3), decided after every other account, for the file's superadmins
 that are not the same here:
@@ -11015,6 +11028,85 @@ gate for it, so the gate answers it, first and unlogged, in the same plain text,
 it (card 2227).
 
 Covered by `tests/gate.test.ts`.
+
+### An Unsealed Backup and the Records of Endings (card 3013)
+
+**The threat.** Cards 2995 to 2997 keep two append-only records, `account_endings` and
+`api_key_revocations`, which no import clears. Until this card an import also added the backup's own
+rows. Anyone who can read a backup holds every account's id, creation time and password fingerprint
+(`credentialOf` is SHA-256 of a public label and the bcrypt string), and every key's id and hash. A
+backup whose seal does not verify could therefore plant rows that reset every account but the
+superadmin (`password` rows of live fingerprints), end some for good (`deleted` rows), and end every
+key (hashed rows); a later restore of this server's own sealed backup applied them again. The
+restore's own writes were ways round: the belts `applyAccountEndings` writes fingerprint the hash the
+file chose, card 2997's FP6 belt fired only when unsealed, every `endRestoredAccess` recorded the hashes
+of the keys the file restored, and card 2995's hash belt recorded a planted key's hash (card 3014).
+The plan review found worse (R1, **Critical**): card 3009's `keepSuperadminsHere` put back only this
+server's superadmins, so a same-here account the file made a superadmin kept that role, and card 3009
+gave it its own password: its holder signed in as a superadmin. An unchecked file could also disable a
+real account, or change its creation time or the hash it was ruled by, for the next genuine restore to
+turn into a permanent record (R2 to R4).
+
+**The rule** (`restoreInOneSnapshot`, only where `sealVerified` is false, as it is or as a working copy):
+
+| # | Step | As built |
+|---|---|---|
+| D1 | `carryAccountEndings(…, sealVerified)` | counts the file's rows that are not watermark rows from the table's storage, adds none, raises `users`' counter over this server's rows only; `notTaken` |
+| D2 | `carryKeyRevocations(…, sealVerified)` | the same, counting rows whose `key_hash` is not `watermark`; sealed, it now counts in SQL first and leaves the whole record out over `MOST_SEED_ROWS` seed rows or `MOST_OTHER_ROWS` others (one `errors` line), else reads in two `.iterate()` passes (R16) |
+| D3 | `applyAccountEndings(…, { unsealed })`; `applyPasswordRulings` | no `deleted`/`disabled` belt and no `password` belt from an unsealed file; the account is still made inert or disabled for this restore. Card 2997's FP6 belt line is removed |
+| D4 | `endApiKeys(database, scope, because, { recordOnly })` | `unsealedKeep = keysOfTheSameHere(…)` is computed once, early; `restoredAccessEnder` passes it, so only keys this server held for the same account (id, hash and owner, through `json_each(@keep)`) are recorded; every key of the scope is still deleted. `undefined` is the statement byte for byte as before; `[]` records nothing |
+| D5 | `leaveOutRecordedKeys` | the hash belt runs only where `options.unsealed === null`, so a working copy of an unsealed file writes none either (card 3014) |
+| D6 | `keepAccountStateHere(live, here, disabledHere)` | replaces `keepSuperadminsHere`, after the copy and before `carryAccountEndings`: each restored account whose id and `created_at` (`sameCreation`) are an account's here takes this server's role and disabled state exactly (`disablerFor`, extracted from `carryDisabled`), a superadmin disabled here included (code review FP5, FP6). One guarded `UPDATE` each; `accountStateAsHere` counts a change of role or of whether it is disabled, not of `disabled_by` alone (FP8); `superadminEnded` gives the refusal its words (FP4); missing columns throw (FP9) |
+| D7 | `carryDisabled` | on an unchecked import, only an attested disable (rule 3 `disabled`, or an exact `deleted` row of this server's) is carried; a sealed restore carries every one, host edits included (R23) |
+| D8 | `accountsHeldHere` | the held-here map holds only accounts with an exact row of this server's record, on every restore (R3) |
+| D9 | `accountRulings(…, { rowsBySuperadminsHere })` | unchecked imports only: each account is ruled on this server's hash where it is the same here and on none otherwise, and only this server's superadmins are spared the record's rows (R1, R4, R20) |
+
+```mermaid
+flowchart TD
+    I["Import: the seal verdict"] -->|sealed| S["Both records carried within bounds;<br/>every disable carried; held-here attested only (D8)"]
+    I -->|"unsealed, as it is or a working copy"| K["unsealedKeep: this server's keys<br/>of the same accounts"]
+    K --> ST["keepAccountStateHere (D6):<br/>role and disabled state as here, counted"]
+    ST --> C1["carryAccountEndings: count only (D1)"]
+    C1 --> RU["accountRulings on this server's hash,<br/>its own superadmins spared (D9)"]
+    RU --> CD["carryDisabled: attested only (D7)"]
+    CD --> AE["applyAccountEndings, applyPasswordRulings:<br/>no belt (D3)"]
+    AE --> C2["carryKeyRevocations: count only (D2)"]
+    C2 --> LO["leaveOutRecordedKeys: no hash belt (D5)"]
+    CD & AE -.->|"endApiKeys recordOnly: unsealedKeep (D4)"| REC[("api_key_revocations")]
+```
+
+**The invariants** (`tests/backups.test.ts`, the describe "an unchecked backup adds nothing to this
+server's records and changes no account here (card 3013)"). After an unsealed import,
+`account_endings` is unchanged; `api_key_revocations` gains rows only for keys in `unsealedKeep`;
+every same-here account holds this server's role; every account of this server's id and creation time
+holds its disabled state; and a later restore of this server's own sealed backup brings every account,
+key and both records back exactly as they were (case (i)).
+
+**What the operator is told** (R5, R22). `RestoreResult.recordsNotTaken { accountEndings,
+keyRevocations }` and `RestoreResult.accountStateAsHere`, counted, naming nobody, 0 when sealed, and
+both carried on a restore that commits and then fails (`CommittedRestore`). The import route's
+`accountsKeptLines` adds a line for each above 0, which the answer's message and the panel show; the
+`[CRITICAL] [IMPORT]` line's `restoredWords` adds `giving N account(s) this server's role and enabled
+or disabled state` and `adding none of the backup's N account ending(s) and M ended API key(s) to this
+server's records, as its seal did not verify`, and its details carry both fields. No `errors` line is
+written, so this server's own backup imported after Reset Everything reads as a clean restore.
+
+**What is left (accepted).** (R-1) No record comes from an unchecked file: a move by import onto
+another server, or this server's own backup restored onto a database rebuilt after a loss (the seal
+key went with it), starts both records empty; by card 3009 nothing that signs in comes back either.
+The host-level move keeps both. (R-2) An older backup of another server brings its ended accounts back
+enabled but unable to sign in, with the file's role. (R-3) An account an unchecked restore makes inert
+or disabled gets no belt: where this server's exact or seed rows ruled it, the start rules it again;
+where only the held-here half did, it stays disabled with `DUMMY_HASH` and nothing re-asserts it.
+**Known fault (open):** D6 disables an account disabled here even where a file not of this server
+restores it, under that id and creation time, as a superadmin. Where every superadmin of such a file
+is one, every superadmin is left disabled; the check before the commit (`lacksSuperadmin`) should then
+refuse the import, failing closed, but no test proves it yet.
+
+ISO 27001 A.5.18 states the rule and cites `keepAccountStateHere`, `carryAccountEndings` and
+`carryKeyRevocations`. Covered by `tests/backups.test.ts` (cases (a) to (q)), `tests/api-key-revocations.test.ts`
+((d2)), `tests/check-at-the-write.test.ts` ((d3), `RECORD_ONLY_CALLERS`), `tests/admin-reset.test.ts` ((y)),
+`tests/account-endings.test.ts` and `tests/iso-27001.test.ts`.
 
 ### The Content-Security-Policy
 

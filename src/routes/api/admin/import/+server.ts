@@ -125,6 +125,7 @@ import {
 	type AccountsKept,
 	type ApiKeysLeftOut,
 	type PasswordsKept,
+	type RecordsNotTaken,
 	type RestoreResult,
 	type SystemLogLeftOut,
 	type UnsealedHeld,
@@ -563,9 +564,62 @@ function keysLeftOutSentence(left: ApiKeysLeftOut): string | null {
  * `reset` also count, where the backup's seal did not verify, the same account holding another password than this
  * server's (R2); `reset` also counts the same account whose password here cannot be given back (R11) and a superadmin
  * not here (R9); `superadmin` also counts the same account given back this server's password, replaced too (R12).
+ *
+ * Then, where the backup's seal did not verify (card 3013, R5, R22), the accounts given this server's role and enabled or
+ * disabled state (`stateAsHere`), and the rows of the backup's two records not taken (`notTaken`): each a sentence only
+ * where its count is above 0, counts only, and never worded as a problem.
  */
-function accountsKeptLines(kept: AccountsKept | undefined, passwords?: PasswordsKept, outside: Outside = 'keep'): string[] {
-	return [...endedLines(kept), ...passwordLines(passwords, outside)];
+function accountsKeptLines(
+	kept: AccountsKept | undefined,
+	passwords?: PasswordsKept,
+	outside: Outside = 'keep',
+	notTaken?: RecordsNotTaken,
+	stateAsHere = 0
+): string[] {
+	return [
+		...endedLines(kept),
+		...passwordLines(passwords, outside),
+		...(stateAsHere > 0 ? [stateAsHereLine(stateAsHere)] : []),
+		...(anyRecordsNotTaken(notTaken) ? [recordsNotTakenLine(notTaken)] : [])
+	];
+}
+
+/** Whether a restore of a backup whose seal did not verify left any row of its two records untaken (card 3013, R5). */
+const anyRecordsNotTaken = (notTaken: RecordsNotTaken | undefined): notTaken is RecordsNotTaken =>
+	notTaken !== undefined && (notTaken.accountEndings > 0 || notTaken.keyRevocations > 0);
+
+/**
+ * Card 3013's sentence of `accountsKeptLines` for D6 (R22): the accounts of a backup whose seal did not verify given the
+ * role and enabled or disabled state of the account here of their id and creation time (its code review, FP5, FP6, FP8:
+ * by that identity, and exactly as here, a superadmin's included), counted, naming nobody. Never a problem: an import of
+ * this server's own backup after Reset Everything says it as a restore that went as it should (R5).
+ */
+const stateAsHereLine = (count: number) =>
+	`${count} account(s) in the backup with the id and creation time of an account on this server took that account's role and ` +
+	"enabled or disabled state exactly as it is here, not the backup's: the backup's seal did not verify, so neither is taken from it.";
+
+/** The two counts of the rows not taken (card 3013, R5), each only where above 0: what both sentences below say (FP10). */
+const recordHalves = (notTaken: RecordsNotTaken): string[] => [
+	...(notTaken.accountEndings > 0 ? [`${notTaken.accountEndings} account ending(s)`] : []),
+	...(notTaken.keyRevocations > 0 ? [`${notTaken.keyRevocations} ended API key(s)`] : [])
+];
+
+/**
+ * Card 3013's sentence of `accountsKeptLines` for the rows of the backup's two records not taken, as its seal did not
+ * verify (D1, D2, R5): counts only, each half where its count is above 0, naming nobody, and never a problem.
+ */
+function recordsNotTakenLine(notTaken: RecordsNotTaken): string {
+	return (
+		`The backup's seal did not verify, so its record of ${recordHalves(notTaken).join(' and of ')} was not added to this server's: a file this server ` +
+		"cannot check ends no account and no key here, and this server's own records are kept as they were."
+	);
+}
+
+/** The CRITICAL line's words for card 3013 (R5, R22): counts only, each only where above 0; '' where none. */
+function unsealedRecordsWords(notTaken: RecordsNotTaken | undefined, stateAsHere: number): string {
+	const state = stateAsHere > 0 ? `, giving ${stateAsHere} account(s) this server's role and enabled or disabled state` : '';
+	if (!anyRecordsNotTaken(notTaken)) return state;
+	return `${state}, adding none of the backup's ${recordHalves(notTaken).join(' and ')} to this server's records, as its seal did not verify`;
 }
 
 /** Card 2996's sentences of `accountsKeptLines`. */
@@ -685,7 +739,9 @@ const anyPasswordsKept = (passwords: PasswordsKept | undefined) =>
  * use (card 2997), `here` and `reset`, and how many superadmins it left with a password to change, only where any: a
  * superadmin's is left in use, so it is not counted among those kept out of it. And, where the backup's seal did not
  * verify (card 3009), the passwords not taken among those kept out of use, the backup's superadmin given the importer's
- * password, the keys this server did not hold, and the settings held for review, each only where any.
+ * password, the keys this server did not hold, and the settings held for review, each only where any. And (card
+ * 3013) the accounts it gave this server's role and enabled or disabled state, and the rows of the backup's two records
+ * it did not take, each only where any.
  */
 function restoredWords(
 	outside: Outside,
@@ -694,7 +750,9 @@ function restoredWords(
 	recordLeftOut = 0,
 	passwords?: PasswordsKept,
 	held?: UnsealedHeld,
-	reach?: UnsealedReach
+	reach?: UnsealedReach,
+	notTaken?: RecordsNotTaken,
+	stateAsHere = 0
 ): string {
 	const how = outside === 'off' ? 'as a working copy' : 'as it is';
 	const accounts = accountsKeptCount(kept);
@@ -714,7 +772,9 @@ function restoredWords(
 		// Card 3009, R4: the mail, App URL and destinations of a backup whose seal did not verify, held, counted only.
 		(anyUnsealedHeld(held) ? `, holding ${held.mail + held.appUrl + held.destinations} setting(s) of a backup whose seal did not verify for the superadmin's review` : '') +
 		// Card 3012: what such a backup would have sent outside as the file has it, kept from it, counted only.
-		unsealedReachWords(reach);
+		unsealedReachWords(reach) +
+		// Card 3013: the accounts given this server's state, and the rows of its two records not taken, counted only.
+		unsealedRecordsWords(notTaken, stateAsHere);
 	if (left === undefined || (left.count === 0 && left.workingCopy === 0 && left.unsealed === 0)) return `${how}${keeping}`;
 	const parts = [
 		...(left.count > 0 ? [`${left.count} API key(s) ended on this server`] : []),
@@ -781,6 +841,8 @@ function importedLine(
 		passwordsKept?: PasswordsKept;
 		unsealedHeld?: UnsealedHeld;
 		unsealedReach?: UnsealedReach;
+		recordsNotTaken?: RecordsNotTaken;
+		accountStateAsHere?: number;
 		installation?: Installation;
 	}
 ): { message: string; meta: Record<string, unknown> } {
@@ -796,7 +858,10 @@ function importedLine(
 		// The settings of a backup whose seal did not verify held for review, counted, never named (card 3009, R4).
 		...(anyUnsealedHeld(done.unsealedHeld) ? { unsealedHeld: done.unsealedHeld } : {}),
 		// What such a backup would have sent outside, kept from it, counted, never named (card 3012): only where any.
-		...(anyUnsealedReach(done.unsealedReach) ? { unsealedReach: done.unsealedReach } : {})
+		...(anyUnsealedReach(done.unsealedReach) ? { unsealedReach: done.unsealedReach } : {}),
+		// The rows of its two records not taken, and the accounts given this server's state, counted, never named (card 3013).
+		...(anyRecordsNotTaken(done.recordsNotTaken) ? { recordsNotTaken: done.recordsNotTaken } : {}),
+		...((done.accountStateAsHere ?? 0) > 0 ? { accountStateAsHere: done.accountStateAsHere } : {})
 	};
 	const logLeft = done.systemLogLeftOut;
 	const logPart =
@@ -811,7 +876,7 @@ function importedLine(
 		message:
 			`The database was replaced from an uploaded backup by ${caller.username} (user ${caller.id} before the import): ` +
 			`${file.size}, SHA-256 ${file.sha256}, ${sealWords(done.unsealed, done.sealKeyHere)}, ` +
-			`restored ${restoredWords(outside, left, done.accountsKept, done.accountRecordLeftOut, done.passwordsKept, done.unsealedHeld, done.unsealedReach)}. The system log was kept as it was; ${logPart}`,
+			`restored ${restoredWords(outside, left, done.accountsKept, done.accountRecordLeftOut, done.passwordsKept, done.unsealedHeld, done.unsealedReach, done.recordsNotTaken, done.accountStateAsHere)}. The system log was kept as it was; ${logPart}`,
 		meta: {
 			by: { id: caller.id, username: caller.username },
 			ip: caller.ip,
@@ -1120,8 +1185,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 			// The backup's keys left out, ended here or a working copy's (card 2995), after the deadlines' sentence.
 			const keysLeftOut = keysLeftOutSentence(result.apiKeysLeftOut);
 			// And the accounts the record of account endings kept ended or lowered (card 2996), and the restored passwords
-			// kept out of use (card 2997), counted, naming nobody.
-			const accountsKept = accountsKeptLines(result.accountsKept, result.passwordsKept, outside);
+			// kept out of use (card 2997), counted, naming nobody. And, where the seal did not verify, the accounts given this
+			// server's state and the rows of the backup's records not taken (card 3013).
+			const accountsKept = accountsKeptLines(result.accountsKept, result.passwordsKept, outside, result.recordsNotTaken, result.accountStateAsHere);
 			const accountsKeptSaid = accountsKept.length > 0 ? accountsKept.join(' ') : null;
 			// And the personal decision links it cancelled (card 2697, Q15).
 			const decisionLinks = result.decisionLinksCleared > 0 ? decisionLinksSentence(result.decisionLinksCleared) : null;
@@ -1187,6 +1253,10 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				unsealedHeld: anyUnsealedHeld(result.unsealedHeld) ? result.unsealedHeld : undefined,
 				// What a backup whose seal did not verify would have sent outside, kept from it, counted (card 3012): absent where none.
 				unsealedReach: anyUnsealedReach(result.unsealedReach) ? result.unsealedReach : undefined,
+				// The rows of the records of a backup whose seal did not verify not taken, and the accounts given this server's
+				// state, counted (card 3013): absent where none.
+				recordsNotTaken: anyRecordsNotTaken(result.recordsNotTaken) ? result.recordsNotTaken : undefined,
+				accountStateAsHere: result.accountStateAsHere > 0 ? result.accountStateAsHere : undefined,
 				systemLog: systemLog ?? undefined,
 				superadmins
 			};
@@ -1306,7 +1376,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				const keysLeftOut = done ? keysLeftOutSentence(done.apiKeysLeftOut) : null;
 				// The accounts the record of account endings kept ended or lowered (card 2996), and the restored passwords kept
 				// out of use (card 2997), as a restore that succeeded says them.
-				const accountsKept = done ? accountsKeptLines(done.accountsKept, done.passwordsKept, outside) : [];
+				const accountsKept = done ? accountsKeptLines(done.accountsKept, done.passwordsKept, outside, done.recordsNotTaken, done.accountStateAsHere) : [];
 				const accountsKeptSaid = accountsKept.length > 0 ? accountsKept.join(' ') : null;
 				// The personal decision links it cancelled, as a restore that succeeded says them (card 2697, Q15).
 				const decisionLinks = done && done.decisionLinksCleared > 0 ? decisionLinksSentence(done.decisionLinksCleared) : null;
@@ -1354,6 +1424,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 						settingsHeld: unsealedHeld ?? undefined,
 						unsealedHeld: done && anyUnsealedHeld(done.unsealedHeld) ? done.unsealedHeld : undefined,
 						unsealedReach: done && anyUnsealedReach(done.unsealedReach) ? done.unsealedReach : undefined,
+						recordsNotTaken: done && anyRecordsNotTaken(done.recordsNotTaken) ? done.recordsNotTaken : undefined,
+						accountStateAsHere: done && done.accountStateAsHere > 0 ? done.accountStateAsHere : undefined,
 						systemLog: systemLog ?? undefined
 					},
 					{ status: 500 }

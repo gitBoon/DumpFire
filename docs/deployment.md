@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.154
+version: 1.155
 status: As-Built
 date: 2026-11-20
 tags:
@@ -1662,6 +1662,8 @@ flowchart TD
 9. **Report schedules**: every one was paused; each owner turns theirs back on on the **Reports** page.
 10. **Notification mail**: every account not the same here has it switched off; each person switches it back on from the Account page once signed in. The backup failure mail goes to this server's address (Scheduled Backups) until changed there.
 11. **Requests and people** (card 3020): every request with an address came in with its requester mail held, and every person in the people directory marked left. An administrator reviews each under **Mail held** in the Requests inbox and releases the ones whose address and card they recognise, with a password and a code (unconfirmed ones cannot be released and lapse in 7 days); then checks each person's address on the People page and marks them active, with a password and a code.
+
+**Neither record of endings comes with an import** (card 3013). The record of account endings and the record of ended API keys are this server's: an import of a backup whose seal does not verify adds none of its rows, so a fresh installation's records start empty. So do they after a restore of this server's own backup onto a database rebuilt after a loss, since the backup seal key went with the old database and the file no longer verifies; by card 3009 no password, second factor or API key comes back either. The host's move above keeps both records, which is one more reason to keep cold copies of the volume and the MFA key file.
 
 **A clone of the volume shares this server's identity.** A copy of the volume or of the database file started as a second server (a rehearsal kept running, a test instance) has this server's backup seal key and installation id: its backups verify here as this server's own, and an account in them is the same account here. On any clone, change both, on the clone, with its container stopped: delete the `backup_seal_key` row, as [The Release That Makes the Signing Keys Anew](#the-release-that-makes-the-signing-keys-anew-card-2943) documents, and the `installation_id` row, so that its next start makes a new one of each:
 
@@ -8381,8 +8383,8 @@ stopped) lets the start go on, and gives up the record of every id between: any 
 and ended before this release could come back with an older backup.
 
 **Keys ended on another server.** A restore onto another server cannot know of keys ended on the
-server that made the backup after the backup was made: it applies the backup's own record and its
-own, nothing else. Restore the newest backup available.
+server that made the backup after the backup was made: it applies its own record, nothing else,
+since that server's backup never verifies here and adds none of its record (card 3013). Restore the newest backup available.
 
 **What stays possible (residual).** A key ended before this release whose hash this server never
 saw (it was gone before 0076, and recorded only by its id) can come back if a backup is edited to
@@ -8496,8 +8498,9 @@ stay. Counted in the result.
 `users` counter and the highest accounts were then ended, before this release, those ids are above W
 and a backup from before can bring them back. Inherent to the watermark; the counter alone can be low.
 
-**Another server's endings.** A restore onto another server applies the backup's own record and its
-own, nothing else: it cannot know of accounts ended there after the backup was made.
+**Another server's endings.** A restore onto another server applies its own record, nothing else:
+that server's backup never verifies there, so its record is not taken (card 3013), and it cannot know
+of accounts ended there after the backup was made.
 
 **What stays possible (residual).** An account deleted before 0077 can come back as a new account if
 someone edits an old backup to change its id, its creation time and its password hash: only the
@@ -8605,7 +8608,8 @@ flowchart LR
 
 **What changes.** An import of a backup whose seal does not verify here (another server's, an edited
 file, one made before seals, or one made before card 2943's first start, when the seal key was made
-anew), as it is or as a working copy, takes no password, second factor, API key or invite from the
+anew; and, since card 3013 names them, this server's own backup made before Reset Everything, or one
+restored onto a database rebuilt after a loss, as the seal key went with it), as it is or as a working copy, takes no password, second factor, API key or invite from the
 file for any account that is not the same account here, and no invite at all (its code review, FP1).
 Each such account is given a password nothing matches, keeps no leave to set up two-step sign-in, has
 its report schedules paused whatever the file holds for it, stays enabled, and needs 🔑 or 📧. A key is kept only where this server held that very key (the same id, fingerprint
@@ -8884,6 +8888,91 @@ forward, and the older image starts with one model-check `ERROR` line.
 the file's address (card 3021). The mail settings' From address and name are this server's since
 card 3029, which ships in the same release. A participant the file plants on a person this server holds is mailed (N4, left), and a planted
 `people.user_id` still gives decision access on the register's side (card 3002).
+
+### The Release That Takes No Record From an Unsealed Backup (Card 3013)
+
+**Ships in the release since `332634f`** (production), with cards 2995, 2996, 2997, 3009, 3012, 3020
+and 3029, together, and never without card 3009. Card 3014 is folded in. **No migration**, nothing to
+set, and no change to the v1 API or its OpenAPI document; the internal import answer gains two
+additive fields, `recordsNotTaken` and `accountStateAsHere`.
+
+```mermaid
+flowchart LR
+    Imp["Import of a backup<br/>whose seal does not verify"] --> Rec["Both records:<br/>counted, none taken"]
+    Imp --> Belt["No belt from the file;<br/>a key recorded only if this server held it"]
+    Imp --> State{"An account of this server?"}
+    State -->|"its id and creation time"| Role["this server's role"]
+    State -->|"its id and creation time"| Dis["this server's enabled<br/>or disabled state"]
+    Rec & Role & Dis --> Said["counted in the answer, the panel<br/>and the CRITICAL line, naming nobody"]
+```
+
+**What changes.** An import of a backup whose seal does not verify here, as it is or as a working
+copy:
+
+- adds nothing to the record of account endings or the record of ended API keys, and counts the rows
+  it did not take;
+- writes no safety entry ("belt") from the file's word;
+- records an ended key only where this server held that key for the same account;
+- gives every account of this server's number and creation time its role and enabled or disabled
+  state exactly as here, a superadmin's included, counted, and refuses, changing nothing, where that
+  leaves no enabled superadmin;
+- says both counts in the answer, the panel and the `[CRITICAL] [IMPORT]` line, naming nobody, and
+  writes no line of problems.
+
+On an unchecked import a disable is carried only where this server's record attests it; a sealed
+restore carries every disable, as before. On every restore an account counts as held here with a later
+creation time only where the record holds a row for it.
+
+**Security.** It closes an elevation of privilege on an unchecked import (Critical: a file could make an
+ordinary account a superadmin, which then signed in with its own password) and four ways an unchecked
+file could defeat a later restore of a genuine backup.
+
+**The cost.** No record comes from an unchecked file. A move by import onto another server brings
+neither record, and nor does disaster recovery from this server's own backup onto a new database: the
+seal key went with the lost database, so the file no longer verifies. Both records then start empty,
+and, by card 3009, no password, second factor or key that signs in comes back. The host-level move
+([Moving to a New Host](#moving-to-a-new-host)) keeps both.
+
+**Going back.** There is no migration and no new kind of row, so going back to the build before this
+card (`7a8b773`) is code only. Going back to `332634f` follows the existing steps and adds none: the
+"Going back to an older image" paragraphs of
+[card 2995](#the-release-that-keeps-ended-api-keys-ended-across-a-restore-card-2995) and
+[card 2996](#the-release-that-keeps-ended-accounts-ended-across-a-restore-card-2996), and
+[card 2943's constraints](#the-release-that-makes-the-signing-keys-anew-card-2943). `332634f`'s import
+clears both records and refills them from the file; coming forward again, the start passes enforce
+any rows it planted.
+
+**Servers that ran the unreleased batch.** Rows a build before this card carried from an unchecked
+file stay in this server's records: nothing removes them and no start warns of them. Production never
+ran that batch. On a staging or test server that did, count the account rows any import carried,
+read-only, with the container stopped:
+
+```bash
+NEW=dumpfire:3013   # the tag made as soon as the release was built
+docker stop dumpfire
+# Read-only: the rows of the record of account endings that an import brought, and when they were ended.
+docker run --rm --network none -v dumpfire-data:/app/data "$NEW" node -e "
+const db = require('better-sqlite3')('/app/data/dumpfire.db', { fileMustExist: true, readonly: true });
+console.log(db.prepare(\"SELECT count(*) AS n, min(ended_at) AS first, max(ended_at) AS last FROM account_endings WHERE origin = 'backup'\").get());
+db.close();
+"
+docker start dumpfire
+```
+
+A sealed backup's rows are `backup` too, so a count above 0 is not by itself a fault. Rebuild any such
+server that imported an unchecked file under the unreleased batch: `api_key_revocations` has no
+`origin`, so the key rows it carried cannot be told apart.
+
+**Release note.** "Rows a build before card 3013 carried from a backup whose seal did not verify stay
+in this server's records; rebuild any non-production server that imported one."
+
+**What stays possible (residual).** An older backup of another server brings its ended accounts back
+enabled but unable to sign in, with the file's role: check each before inviting it. An account an
+unchecked restore made inert only because this server held its number with a later creation time
+stays disabled with a password nothing matches, and nothing re-asserts it. And (open) an account
+disabled here is disabled again even where a file not of this server restores it, under that number
+and creation time, as a superadmin; where that is every superadmin of the file, the import is left
+with none enabled.
 
 ## Changing the Schema
 

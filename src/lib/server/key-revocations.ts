@@ -117,6 +117,18 @@ function recordKeysEndedSql(where: string): string {
 	);
 }
 
+/** One of this server's keys by id, hash and owner, as `endApiKeys`' `recordOnly` names it (card 3013, D4). */
+export type KeptKey = readonly [id: number, hash: string, owner: number];
+
+/**
+ * Card 3013 (D4): a key of `api_keys` that is one of `@keep`, a JSON array of `[id, hash, owner]`, by all three: what
+ * `endApiKeys`' `recordOnly` narrows the record's statement to. Each column named by its table: `json_each` has an `id`
+ * of its own.
+ */
+const KEPT_HERE_WHERE =
+	'EXISTS (SELECT 1 FROM json_each(@keep) AS h ' +
+	"WHERE json_extract(h.value, '$[0]') = api_keys.id AND json_extract(h.value, '$[1]') = api_keys.key_hash AND json_extract(h.value, '$[2]') = api_keys.user_id)";
+
 /**
  * The account form of the record's statement (`@userId`, `@at`, `@because`): scripts/mfa-reset.mjs runs its own copy
  * word for word before it deletes an account's keys, and tests/mfa-reset-script.test.ts compares the two.
@@ -127,16 +139,31 @@ export const RECORD_ACCOUNT_KEYS_ENDED_SQL = recordKeysEndedSql('user_id = @user
  * End the API keys of `scope` on `database`, recording each first (card 2995): the record's statement, then the
  * delete, in the caller's transaction, so that a key is never deleted unrecorded nor recorded and kept. Every ender
  * calls it: the revoke (`revokeApiKeys`), an ending of an account's access (`endAccountAccess`), `deleteUser`, the
- * restore's carry of a disable (`carryDisabled`) and Reset Everything; the host's reset runs its own copy
- * (`RECORD_ACCOUNT_KEYS_ENDED_SQL`). Asks `inTransaction` of the connection it is given, not of the server's (R14),
- * and throws without writing when none is open. Returns the ids deleted, in order.
+ * restore's ending of an account it disables or resets (`restoredAccessEnder`) and Reset Everything; the host's reset
+ * runs its own copy (`RECORD_ACCOUNT_KEYS_ENDED_SQL`). Asks `inTransaction` of the connection it is given, not of the
+ * server's (R14), and throws without writing when none is open. Returns the ids deleted, in order.
+ *
+ * `recordOnly` (card 3013, D4) is passed by the restore alone, and only where the backup's seal did not verify: the keys
+ * this server held, by id, hash and owner, for the accounts that are the same here. Only those of `scope` are recorded;
+ * every key of `scope` is still deleted. The others are keys the file chose, never this server's, so recording their
+ * hashes would let it end a key here by hash. `undefined` is no filter, and the statement is the one above, byte for
+ * byte; `[]` records nothing.
  */
-export function endApiKeys(database: Database.Database, scope: KeyScope, because: RevokedBecause): number[] {
+export function endApiKeys(
+	database: Database.Database,
+	scope: KeyScope,
+	because: RevokedBecause,
+	options: { recordOnly?: readonly KeptKey[] } = {}
+): number[] {
 	if (!database.inTransaction) {
 		throw new Error('endApiKeys records and deletes keys inside the transaction of the ending, and none is open on the connection it was given');
 	}
 	const { where, params } = scopeOf(scope);
-	database.prepare(recordKeysEndedSql(where)).run({ ...params, at: stamp(), because });
+	if (options.recordOnly === undefined) {
+		database.prepare(recordKeysEndedSql(where)).run({ ...params, at: stamp(), because });
+	} else if (options.recordOnly.length > 0) {
+		database.prepare(recordKeysEndedSql(`${where} AND ${KEPT_HERE_WHERE}`)).run({ ...params, at: stamp(), because, keep: JSON.stringify(options.recordOnly) });
+	}
 	return (database.prepare(`DELETE FROM api_keys WHERE ${where} RETURNING id`).all(params) as { id: number }[]).map((row) => row.id).sort((a, b) => a - b);
 }
 

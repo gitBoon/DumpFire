@@ -332,6 +332,8 @@ describe('POST /api/admin/reset', () => {
 		const others = accounts.filter((account) => account.role !== 'superadmin');
 		expect(others).toHaveLength(2);
 		const backup = new Database(generateBackupData());
+		// The backup's record of account endings, its rows that are not watermark rows: what an unsealed import counts (card 3013).
+		const notTaken = backup.prepare("SELECT count(*) FROM account_endings WHERE ending <> 'watermark'").pluck().get() as number;
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		const res = await reset(e);
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -347,11 +349,12 @@ describe('POST /api/admin/reset', () => {
 		// not verify, no account in it is the same account here, and there is no importer here to give its password.
 		const result = restoreFromBackup(sqlite, backup);
 
-		// The one `errors` line is the fixture's hand-made ending of account 900, which names no account here (card 2997,
-		// NF6), pinned so that a change to it is seen.
-		expect(result.errors).toEqual([
-			"1 row(s) of the backup's record of account endings were left out, as they can name no account here: 1 with an id above the backup's own account counter. The rest of the record was added to this server's."
-		]);
+		// Card 3013 (D1, R5): the backup's record of account endings, its seal not verifying, is counted and not taken, with
+		// no `errors` line: this server's own backup after Reset Everything reads as a clean restore. The fixture's
+		// hand-made ending of account 900 (card 2997, NF6) is among the rows counted.
+		expect(result.errors).toEqual([]);
+		expect(notTaken).toBeGreaterThan(0);
+		expect(result.recordsNotTaken.accountEndings).toBe(notTaken);
 		expect(result.sealVerified).toBe(false);
 		expect(result.accountsKept).toMatchObject({ disabled: 2 });
 		// Card 3009: no account takes its password from the file, counted unsealed, the superadmin too, failing closed with

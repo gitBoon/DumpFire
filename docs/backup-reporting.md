@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.66
+version: 1.67
 status: As-Built
 date: 2026-11-20
 tags:
@@ -184,15 +184,15 @@ flowchart LR
 A restore never brings back an API key ended on this server (card 2995). The backup carries
 `api_key_revocations`, the record of every key ended where it was made (ids and SHA-256s, never a
 key), but a restore never clears this server's: `restorableTables` leaves it out, as it leaves out
-the system log. After `carryDisabled`, which records the keys it deletes, the backup's rows are added
-to this server's, each only where its id is a whole number and its hash is empty or a SHA-256, a seed
+the system log. After `carryDisabled`, which records the keys it deletes, a sealed backup's rows are added
+to this server's (from a backup whose seal does not verify none is: they are counted, card 3013), each only where its id is a whole number and its hash is empty or a SHA-256, a seed
 row (empty hash) only up to the backup's own key counter or largest key id, a hashed row whatever its
 id, and the watermark up to the larger of that bound and the ids the rows name (code review FP1); the
 rest are counted in one `errors` line, never quoted. The key counter is then raised to the largest id
 the record names. Once the secrets are filled and this server's reveals carried, the once-only reveal seed runs
 where the restored settings lack its flag, and every restored key the record names is left out: a
 key a seed row names by id, or whose id this server held with another hash just before the restore,
-first has its hash recorded; every reveal of each such key, and every webhook with a secret its
+first has its hash recorded (from a sealed backup only: card 3014); every reveal of each such key, and every webhook with a secret its
 account could set or read, is held in the one `holdRevealedIn`; then one `DELETE FROM api_keys WHERE
 EXISTS` the gate's own rule, and `set_by_key` emptied on what they set, which the sweep holds `key
 ended`. A working copy then leaves out every other key too, counted only. The answer says "N API
@@ -201,10 +201,10 @@ key(s) in the backup were left out …" after the deadlines' line, the panel sho
 
 ```mermaid
 flowchart LR
-    Dis["carryDisabled<br/>records, set_by_key NULL"] --> Union["carryKeyRevocations<br/>bounded rows added, counter raised"]
+    Dis["carryDisabled<br/>records, set_by_key NULL;<br/>unsealed: unsealedKeep only"] --> Union["carryKeyRevocations<br/>sealed: bounded rows added, counter raised<br/>unsealed: counted, none taken"]
     Union --> Fill3["fill, carry holds and reveals"]
     Fill3 --> Seed["seedRevealsOnce where unseeded"]
-    Seed --> Leave["leaveOutRecordedKeys<br/>hash belt, reveals read, DELETE WHERE EXISTS"]
+    Seed --> Leave["leaveOutRecordedKeys<br/>hash belt (sealed only), reveals read, DELETE WHERE EXISTS"]
     Leave --> Copy["working copy: every other key"]
     Copy --> Hold3["sweep, then holdRevealedIn of all of them"]
 ```
@@ -212,7 +212,8 @@ flowchart LR
 A restore never brings back an account deleted, disabled or demoted on this server (card 2996). The
 backup carries `account_endings`, the record of every ending of an account where it was made (ids,
 creation times and fingerprints of deleted accounts' password hashes, never a hash), but a restore
-never clears this server's. After the copy `carryAccountEndings` adds the backup's rows, each only
+never clears this server's. After the copy `carryAccountEndings` adds a sealed backup's rows (from a
+backup whose seal does not verify it counts them and takes none, card 3013), each only
 within the backup's own id bound, with a word, creation time, role and fingerprint its ending can
 have, a creation time no later than the restore, and naming no superadmin; at most 1,000,000 rows from
 one backup; an unreadable or future `ended_at` taken as the backup's own latest moment, so a re-import
@@ -228,12 +229,22 @@ lowered }`, naming no account.
 
 ```mermaid
 flowchart LR
-    Copy4["copy users whole"] --> Union4["carryAccountEndings<br/>bounded rows added, counter raised"]
+    Copy4["copy users whole"] --> State4["unsealed: keepAccountStateHere<br/>role and disabled state as here"]
+    State4 --> Union4["carryAccountEndings<br/>sealed: bounded rows added, counter raised<br/>unsealed: counted, none taken"]
     Union4 --> Rule4["accountRulings for every restored account"]
     Rule4 --> Mfa4["restoreMfaRows: none to an ended account"]
-    Mfa4 --> Apply4["carryDisabled, then applyAccountEndings<br/>inert, before record, disabled, lowered"]
+    Mfa4 --> Apply4["carryDisabled (attested only, unsealed), then applyAccountEndings<br/>inert, before record, disabled, lowered; no belt unsealed"]
     Apply4 --> Hold4["after the fill: holdNoLongerReadableIn"]
 ```
+
+A backup whose seal does not verify adds nothing to either record (card 3013). Its rows are counted
+(`recordsNotTaken { accountEndings, keyRevocations }`, watermark rows aside) and none is taken; no
+belt is written from the hash it chose; only keys this server held for the same account are recorded
+when an account is ended; and, before anything is ruled, `keepAccountStateHere` gives every account
+of this server's id and creation time its role and disabled state exactly as here, a superadmin's
+included (`accountStateAsHere`, counting a change of role or of whether it is disabled). The answer, the panel and the `[CRITICAL] [IMPORT]` line count
+both, naming nobody, and no `errors` line is written: this server's own backup imported after Reset
+Everything reads as a clean restore.
 
 A restore never brings back a password replaced on this server (card 2997). Every password change here
 (the holder's own, an administrator's reset, an invite used, Reset Everything) adds a `password` row
@@ -275,8 +286,10 @@ release). For anything the restore grants, `sameAccountHere` then holds where th
 are the same and the backup is sealed, or carries `this`, or carries `none` and the username is the
 same; never for `other`. From an unsealed backup, as it is or as a working copy:
 
-- **Passwords.** `keepSuperadminsHere` first makes this server's own superadmin, restored as the same
-  account, an enabled superadmin again. Then in `applyPasswordRulings` every account not the same here
+- **Passwords.** `keepAccountStateHere` (card 3013, in place of card 3009's `keepSuperadminsHere`)
+  runs first, right after the copy: every restored account of this server's id and creation time takes
+  this server's role and enabled or disabled state exactly, so this server's own superadmin is a
+  superadmin again, disabled only where it is disabled here. Then in `applyPasswordRulings` every account not the same here
   gets `DUMMY_HASH` and no leave to enrol, counted `unsealed` (not where the file gave it `DUMMY_HASH`
   already), and its report schedules paused whatever its hash, where the restore keeps what reaches
   outside; no `password` row and no key ended. The file's superadmins not the same here are decided
@@ -427,9 +440,9 @@ Until marked active, account holders among the people marked left cannot answer 
 ```mermaid
 flowchart LR
     Read6["before the clear: seal verdict,<br/>installation id here, the backup's verdict,<br/>accounts and keys here"] --> Copy6["clear, copy, installation id put back"]
-    Copy6 --> Mfa6["restoreMfaRows by sameAccountHere"]
-    Mfa6 --> Keep6["keepSuperadminsHere"]
-    Keep6 --> Pw6["applyPasswordRulings:<br/>unsealed, then the carry"]
+    Copy6 --> Keep6["keepAccountStateHere (3013):<br/>role and disabled state as here"]
+    Keep6 --> Mfa6["restoreMfaRows by sameAccountHere"]
+    Mfa6 --> Pw6["applyPasswordRulings:<br/>unsealed, then the carry"]
     Pw6 --> Hold6["holdUnsealedSettings"]
     Hold6 --> Notify6["keepNotifyEmailHere (3012)"]
     Notify6 --> Req6["holdUnsealedRequestMail (3020):<br/>requestRowsOf before and after"]
