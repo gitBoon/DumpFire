@@ -545,6 +545,9 @@ export function liveApiKeysOf(userId: number, now: number): { name: string; crea
 	const nowStamp = stamp(new Date(now));
 	return db
 		.select({
+			// With its id and hash, which the record of keys ended here is asked by (card 2995, R7).
+			id: apiKeys.id,
+			keyHash: apiKeys.keyHash,
 			name: apiKeys.name,
 			createdAt: apiKeys.createdAt,
 			lastUsedAt: apiKeys.lastUsedAt,

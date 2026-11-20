@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.147
+version: 1.148
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2995
+  - api-key-revocations
   - card-2947
   - migration-0075
   - card-2941
@@ -1631,6 +1633,8 @@ docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/
 ```
 
 `dumpfire.db*` takes the database and whichever of its `-wal` and `-shm` files exist. Returning it removes those two first, so that none is left beside the database that the copy does not have.
+
+**API keys ended since the copy was taken** (card 2995) work again once it is returned: the copy holds them, and its record of ended keys, where it has one, is as old as the copy. Before returning it, dump `api_key_revocations` and put it back afterwards, or revoke those keys again: see [The Release That Keeps Ended API Keys Ended Across a Restore](#the-release-that-keeps-ended-api-keys-ended-across-a-restore-card-2995).
 
 The cold copy is the whole database, every account's password hash and session included, so `-m 700` keeps the folder readable by you alone (`mkdir -p` leaves the mode of a folder that is there already as it was: check it with `ls -ld "$HOME/dumpfire-cold"`). Once the update is complete and the next backup after it has been taken and checked, delete it: `rm -rf "$HOME/dumpfire-cold"`.
 
@@ -8263,6 +8267,113 @@ command (`scripts/mfa-reset.mjs`) of this release refuses a database without the
 | H4 | Owner switches one on with key M | A new secret | The old one |
 | H5 | Give a key an expiry five minutes out, list with it, wait | Within five minutes of the expiry each listed webhook is off, one WARN naming the key | Still on |
 | H6 | `PUT` changing only `events` | Answer without `secret` | The secret given |
+
+### The Release That Keeps Ended API Keys Ended Across a Restore (Card 2995)
+
+**Ships with card 2947**: migrations 0074, 0075 and 0076 are applied in one start, with OpenAPI
+`1.15.0`. **Migration 0076** adds `api_key_revocations` and changes no existing row.
+
+**What changes.** A restore never brings back an API key that was revoked here, ended with its
+account's access (a password set by an administrator, an invite used, the holder's own change that
+ends keys, a two-step reset in the app or on the host, a disable, a delete), or cleared by Reset
+Everything. Each such ending records the key's id and its SHA-256, never the key. Every import leaves
+those keys out, from this server's backups and any other's; the result and the `[CRITICAL] [IMPORT]`
+line count them, the line's details naming them by id; what such a key set up or was given the secret
+of is held as at a revoke. Every check of a key refuses one the record names, and the start and the
+five-minute sweep end any found in place, with one `[WARN] [AUTH]` line.
+
+**A working copy leaves out every API key.** No key of the backup works on a copy restored with
+"Restore as a working copy"; the result counts them. Make new keys on the copy.
+
+**This release's image.** The commands below name it `dumpfire:2995`: tag it so as soon as it is
+built (`docker tag dumpfire:latest dumpfire:2995`), so that a command meant for this release never
+runs an image that `latest` has since moved to, or back from. Any image of this release or later does.
+
+**The first start.** 0076 writes the watermark W, the larger of the `api_keys` id counter and the
+largest key id held (Admin › Vacuum and Reset deleted the counters before c6ed310, so the counter
+alone can be low), and records by id every id from 1 to W that `api_keys` no longer holds, one row
+each, never a range. A restore of any backup made before the deploy leaves those keys out, a key an
+earlier import removed included, and records each one's hash when it is found. Preview before the
+deploy, read-only, from a container of the image on the same volume (nothing in it is written; it
+can run beside the server):
+
+```bash
+docker run --rm --network none -v dumpfire-data:/app/data dumpfire:2995 node -e "const d=require('better-sqlite3')('/app/data/dumpfire.db',{readonly:true,fileMustExist:true});console.log(d.prepare(\"SELECT w, w - (SELECT COUNT(*) FROM api_keys) AS seed_rows FROM (SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'api_keys'), 0), coalesce((SELECT max(id) FROM api_keys), 0)) AS w)\").get())"
+```
+
+**Where `seed_rows` is above 1,000,000** the first start halts at 0076 (card 2995's code review,
+FP5), changing nothing of it, with `CHECK constraint failed: migration 0076 would record more than
+1,000,000 API key ids this server no longer holds …`: the id counter has been set far above every
+key, by hand or by a fault. Find out why before going on. Lowering the counter
+(`UPDATE sqlite_sequence SET seq = <the largest key id> WHERE name = 'api_keys'`, with the container
+stopped) lets the start go on, and gives up the record of every id between: any key issued there
+and ended before this release could come back with an older backup.
+
+**Keys ended on another server.** A restore onto another server cannot know of keys ended on the
+server that made the backup after the backup was made: it applies the backup's own record and its
+own, nothing else. Restore the newest backup available.
+
+**What stays possible (residual).** A key ended before this release whose hash this server never
+saw (it was gone before 0076, and recorded only by its id) can come back if a backup is edited to
+move it to an id the record does not name. Only the superadmin can import, and an import names the
+file's SHA-256 in its `[CRITICAL] [IMPORT]` line. A seed row from another server's backup can also
+leave out a key of this server whose id it names: that is the fail-closed direction, counted in the
+answer, and the key is made again in a minute.
+
+**Before a host file rollback** (see [Taking and Returning the Cold Copy](#taking-and-returning-the-cold-copy)):
+the cold copy holds the keys as they were when it was taken, so a key revoked since would work
+again. Dump the record first, with the container stopped, from this release's image:
+
+```bash
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  dumpfire:2995 node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true});require('fs').writeFileSync('/cold/revocations.json',JSON.stringify(d.prepare('SELECT * FROM api_key_revocations').all()))"
+```
+
+While an image older than this release runs on the returned copy, it neither has nor reads the
+record: revoke again, on each holder's Account page, every key ended since the cold copy was taken.
+
+To put the dump back when this release runs again on a copy that predates it, the table must exist,
+and only 0076 makes it. So: **first start this release on the copy with no network, and stop it as
+soon as it is migrated**; then put the dump back with the server stopped; then start it as usual.
+This is the simplest safe order: 0076 never meets a table it did not make, no request can present a
+key while the copy is migrated and the record not yet back (there is no network), and the start
+that follows ends every key the dump names that is in place, before the schedulers.
+
+```bash
+# 1. The first start, with no network: run it as the usual `docker run` does (the same volume, the
+#    same environment and MFA_KEY_FILE), but with --network none, and stop it once the log says the
+#    migrations were applied.
+docker run -d --name dumpfire-migrate --network none -v dumpfire-data:/app/data <the usual -e and -v options> dumpfire:2995
+docker logs -f dumpfire-migrate   # until "Listening on"; then Ctrl+C
+docker stop dumpfire-migrate && docker rm dumpfire-migrate
+# 2. The dump put back, with the server stopped.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  dumpfire:2995 node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db');const rows=JSON.parse(require('fs').readFileSync('/cold/revocations.json','utf8'));const put=d.prepare('INSERT OR IGNORE INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (@key_id, @key_hash, @revoked_at, @revoked_because)');d.transaction(()=>rows.forEach((row)=>put.run(row)))()"
+# 3. Start as usual.
+```
+
+Where the returned copy was taken after this release had already run (it has the table), skip step 1.
+The node commands run from the image's own working folder, where `better-sqlite3` is installed. The
+dump holds key ids and SHA-256 fingerprints, never a key, and is safe to keep beside the cold copy.
+
+**Reset Everything** records every key it clears and keeps the record.
+
+**Going back to an older image.** That image never writes the record, and **its import clears the
+record and refills it from the backup**: never import a backup while an image older than this
+release runs. Where it must be done, dump the record first (the command above), and once this
+release runs again put it back (steps 2 and 3 above, with the server stopped); coming forward, the
+first start also ends any present key the record still names, as a revoke does. The host command
+(`scripts/mfa-reset.mjs`) of this release refuses a database without the table.
+
+**Nothing to set.** No environment variable, no OpenAPI change.
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | Export a backup; revoke key K on its holder's Account page | K gone | |
+| H2 | Import the file as it is | "1 API key(s) in the backup were left out …"; the `[CRITICAL] [IMPORT]` line "…leaving out 1 API key(s) ended on this server…", its details naming K's id and no account | K listed again, or a name in the line |
+| H3 | `curl -H "Authorization: Bearer <K>" …/api/v1/me`, then with a key L not revoked | 401, then 200 | 200 for K |
+| H4 | Import the same file as a working copy | Every key left out and counted | Any key works on the copy |
+| H5 | Restart | No new line; K still refused | K works |
 
 ## Changing the Schema
 

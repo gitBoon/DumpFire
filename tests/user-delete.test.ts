@@ -48,6 +48,7 @@ import type { SessionUser } from '$lib/server/auth';
 import { inTransaction } from '$lib/server/db/transaction';
 import { DISABLE_FIRST, ONLY_SUPERADMIN_DELETES, disableAccount } from '$lib/server/account-disable';
 import { deleteUser } from '$lib/server/deletes';
+import { RECORD_ACCOUNT_KEYS_ENDED_SQL } from '$lib/server/key-revocations';
 import { userDeleteWarning } from '$lib/api';
 import { api, type ApiOptions, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
@@ -437,6 +438,10 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 				'WHERE id IN (SELECT value FROM json_each(?)) AND (active = 1 OR held_because IS NULL) ' +
 				'RETURNING id, board_id AS boardId, receiver, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
 			).slice(0, 160),
+			// Card 2995 (R10): any key it still holds recorded as ended, then deleted, before the user row goes; the record's
+			// statement held whole to its first 160 characters (helpers/failing-write.ts).
+			RECORD_ACCOUNT_KEYS_ENDED_SQL.slice(0, 160),
+			'DELETE FROM api_keys WHERE user_id = @userId RETURNING id',
 			'DELETE FROM users WHERE id = ?'
 		]);
 		expect(run.effects).toEqual([]);

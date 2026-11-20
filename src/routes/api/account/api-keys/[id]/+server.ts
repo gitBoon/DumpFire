@@ -6,7 +6,9 @@ import { eq, and } from 'drizzle-orm';
 import { pathId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
-import { holdRevealed, markExposed, revealsOfKeys, seedRevealsOnce, switchOffLostWebhooks, tellSwitchedOff } from '$lib/server/webhooks';
+import { tellSwitchedOff } from '$lib/server/webhooks';
+import { revokeApiKeys } from '$lib/server/api-key-revoke';
+import { REVOKED_BECAUSE } from '$lib/server/key-revocations';
 import type { RequestHandler } from './$types';
 
 /** What the boards' owners are told caused it (card 2947, R12): no account named; the key and user ids are in the WARN. */
@@ -28,6 +30,10 @@ const REVOKED_IN_MAIL = 'an API key was revoked by its holder';
  * foreign key takes its rows with it; then the delete; then the setters' sweep;
  * then the hold of those read, which leaves one already held, a webhook the sweep
  * has just switched off among them.
+ *
+ * The key's id and hash are recorded in the same transaction, before it is
+ * deleted (card 2995): a restore of a backup made before the revoke leaves it
+ * out, and every check of a key refuses it (`revokeApiKeys`, `endApiKeys`).
  *
  * Told once, after the commit (R4): one WARN for those switched off and one for
  * those held, naming the key by its id (`API key #N was revoked by <name>`, the
@@ -56,25 +62,17 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 
 		if (!key) throw error(404, 'API key not found');
 
-		// The reads made before they were recorded, seeded first where they never were (its code review, FP2): one read
-		// of a flag once done. Then what it was given, before the delete takes its rows (card 2947, R3).
-		seedRevealsOnce();
-		const revealed = revealsOfKeys([key.id]);
-		db.delete(apiKeys).where(eq(apiKeys.id, id)).run();
 		// The key by its id, never its name: the cause goes to the system log, which
 		// every administrator reads (the ruling on S1's departure 9, as the create
 		// keeps a key's name out of the log).
 		const cause = `API key #${key.id} was revoked by ${user.username}`;
-		const swept = switchOffLostWebhooks({ setters: [user.id] }, cause, { told: 'by the caller' });
-		const held = holdRevealed(revealed);
-		// Every one it was given told as exposed, a webhook it set among them (FP4).
-		const given = revealed.map((reveal) => reveal.webhookId);
-		const switchedOff = markExposed([...swept, ...held.switchedOff], given);
-		const heldOff = markExposed(held.held, given);
-		if (switchedOff.length + heldOff.length > 0) {
-			afterCommit(() => tellSwitchedOff(switchedOff, cause, { mail: true }, heldOff, REVOKED_IN_MAIL));
+		// The revoke's body (card 2995, R7): the seed, what it was given read, the key recorded and deleted (its
+		// record, `revoked`, in this transaction), the setters' sweep, and the hold of what it was given.
+		const revoked = revokeApiKeys([{ id: key.id, userId: user.id }], cause, REVOKED_BECAUSE.revoked);
+		if (revoked.switchedOff.length + revoked.held.length > 0) {
+			afterCommit(() => tellSwitchedOff(revoked.switchedOff, cause, { mail: true }, revoked.held, REVOKED_IN_MAIL));
 		}
-		return { webhooksSwitchedOff: swept.length, revealedWebhooksHeld: held.switchedOff.length + held.held.length };
+		return { webhooksSwitchedOff: revoked.swept.length, revealedWebhooksHeld: revoked.revealedHeld.switchedOff.length + revoked.revealedHeld.held.length };
 	});
 
 	return json({ success: true, ...answer });

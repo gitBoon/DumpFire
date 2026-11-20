@@ -87,6 +87,11 @@
  * keys are deleted, are held with the rest, whoever set them, as the server's
  * `endAccountAccess` holds them; the keys' rows go with the keys.
  *
+ * Card 2995: unless `--keep-api-keys`, each key's id and SHA-256 are recorded
+ * in `api_key_revocations` (migration 0076), `access ended`, before the keys
+ * are deleted, as the server's `endApiKeys` records them, so that no restore of
+ * an older backup brings one back. A database without the record is refused.
+ *
  * `--hold-readable` (card 2935, P7) resets nothing: it holds only the webhooks
  * whose secret the named account can read now (`holdReadableScope`, which is
  * `readableNowScope` in webhooks.ts), writes the Webhooks lines and one AUTH WARN, and
@@ -117,10 +122,34 @@ const PLACEHOLDER_ORIGIN = 'http://localhost:3000';
  * system log, 0039), the report schedules it pauses (card 2894, S15), and the
  * settings it holds for review (card 2922, migration 0074, its plan's R14),
  * and which keys were given which webhook's secret, which the reset reads
- * before it deletes the keys (card 2947, migration 0075): a database without
- * them is refused, not reset in part.
+ * before it deletes the keys (card 2947, migration 0075), and the record of
+ * every API key ended on the server, which the reset writes before it deletes
+ * the keys (card 2995, migration 0076): a database without them is refused,
+ * not reset in part.
  */
-const NEEDED_TABLES = ['mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges', 'enrolment_links', 'system_logs', 'report_schedules', 'setting_holds', 'webhook_reveals'];
+const NEEDED_TABLES = [
+	'mfa_factors',
+	'mfa_recovery_codes',
+	'sign_in_challenges',
+	'enrolment_links',
+	'system_logs',
+	'report_schedules',
+	'setting_holds',
+	'webhook_reveals',
+	'api_key_revocations'
+];
+
+/** What the record says ended a key with its account's access: `REVOKED_BECAUSE.accessEnded` in src/lib/server/key-revocations.ts. */
+export const ACCESS_ENDED = 'access ended';
+
+/**
+ * The record of an account's keys ended, `RECORD_ACCOUNT_KEYS_ENDED_SQL` in src/lib/server/key-revocations.ts word for
+ * word (card 2995; tests/mfa-reset-script.test.ts compares them): `@userId` the account, `@at` the moment, `@because`
+ * the word. Run before the keys are deleted, so that no restore brings one back.
+ */
+export const RECORD_ACCOUNT_KEYS_ENDED_SQL =
+	'INSERT OR IGNORE INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) ' +
+	"SELECT id, key_hash, @at, @because FROM api_keys WHERE user_id = @userId AND key_hash NOT IN ('', 'watermark')";
 
 /** What `held_because` records for a webhook whose setter's access ended: `'setter access ended'` in src/lib/server/webhooks.ts. */
 const SETTER_ACCESS_ENDED = 'setter access ended';
@@ -570,7 +599,9 @@ function openDatabase(path) {
 					? 'no table of the settings held for review'
 					: missing.length === 1 && missing[0] === 'webhook_reveals'
 						? 'no table of the API keys given webhook secrets'
-						: 'no two-step sign-in tables';
+						: missing.length === 1 && missing[0] === 'api_key_revocations'
+							? 'no record of the API keys ended on this server'
+							: 'no two-step sign-in tables';
 		throw new Refused(`Refused: this database has ${what}; start the server once to migrate it (${path}).`);
 	}
 	// The webhook holds (migration 0071, card 2752) the switch-off records (card 2915, E16): a database
@@ -753,6 +784,8 @@ function reset(database, username, keep) {
 			/** @type {{ id: number, board_id: number, set_by: number | null, reader?: number }[]} */
 			let heldRows = [];
 			if (!keep) {
+				// Each key recorded as ended first, as the server's `endApiKeys` records it (card 2995): no restore brings it back.
+				database.prepare(RECORD_ACCOUNT_KEYS_ENDED_SQL).run({ userId: id, at: stamp(now), because: ACCESS_ENDED });
 				// The ids of the keys deleted, in order, for the meta (card 2915's code review, CS2): ids only.
 				apiKeyIds = /** @type {{ id: number }[]} */ (database.prepare('DELETE FROM api_keys WHERE user_id = ? RETURNING id').all(id))
 					.map((row) => row.id)

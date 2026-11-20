@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.59
+version: 1.60
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2995
+  - api-key-revocations
   - card-2947
   - webhook-reveals
   - card-2941
@@ -167,6 +169,34 @@ flowchart LR
     Fill2 --> CarryR["carryRevealsHere: put back where the same key came back"]
     CarryR --> HoldR["holdRevealedIn: the rest, and the disabled keys',<br/>a working copy too"]
     HoldR --> Ended["own restore: holdRevealsOfEndedKeys,<br/>the seed once, then ended keys"]
+```
+
+A restore never brings back an API key ended on this server (card 2995). The backup carries
+`api_key_revocations`, the record of every key ended where it was made (ids and SHA-256s, never a
+key), but a restore never clears this server's: `restorableTables` leaves it out, as it leaves out
+the system log. After `carryDisabled`, which records the keys it deletes, the backup's rows are added
+to this server's, each only where its id is a whole number and its hash is empty or a SHA-256, a seed
+row (empty hash) only up to the backup's own key counter or largest key id, a hashed row whatever its
+id, and the watermark up to the larger of that bound and the ids the rows name (code review FP1); the
+rest are counted in one `errors` line, never quoted. The key counter is then raised to the largest id
+the record names. Once the secrets are filled and this server's reveals carried, the once-only reveal seed runs
+where the restored settings lack its flag, and every restored key the record names is left out: a
+key a seed row names by id, or whose id this server held with another hash just before the restore,
+first has its hash recorded; every reveal of each such key, and every webhook with a secret its
+account could set or read, is held in the one `holdRevealedIn`; then one `DELETE FROM api_keys WHERE
+EXISTS` the gate's own rule, and `set_by_key` emptied on what they set, which the sweep holds `key
+ended`. A working copy then leaves out every other key too, counted only. The answer says "N API
+key(s) in the backup were left out …" after the deadlines' line, the panel shows it, and the
+`[CRITICAL] [IMPORT]` line's details carry `apiKeysLeftOut: { count, keyIds, workingCopy }`.
+
+```mermaid
+flowchart LR
+    Dis["carryDisabled<br/>records, set_by_key NULL"] --> Union["carryKeyRevocations<br/>bounded rows added, counter raised"]
+    Union --> Fill3["fill, carry holds and reveals"]
+    Fill3 --> Seed["seedRevealsOnce where unseeded"]
+    Seed --> Leave["leaveOutRecordedKeys<br/>hash belt, reveals read, DELETE WHERE EXISTS"]
+    Leave --> Copy["working copy: every other key"]
+    Copy --> Hold3["sweep, then holdRevealedIn of all of them"]
 ```
 
 ### Image Retention

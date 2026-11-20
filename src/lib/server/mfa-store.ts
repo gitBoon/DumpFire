@@ -550,7 +550,7 @@ export function resetTwoStep(
 	const liveKept = endKeys
 		? 0
 		: db
-				.select({ expiresAt: apiKeys.expiresAt, deadlineAt: apiKeys.deadlineAt })
+				.select({ id: apiKeys.id, keyHash: apiKeys.keyHash, expiresAt: apiKeys.expiresAt, deadlineAt: apiKeys.deadlineAt })
 				.from(apiKeys)
 				.where(eq(apiKeys.userId, userId))
 				.all()

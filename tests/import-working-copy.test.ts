@@ -134,18 +134,25 @@ const withoutFormKey = (rows: string[]) =>
  * server had it, over the backup's (card 2752): two databases migrated a
  * second apart hold two moments.
  */
-const withoutKeysRecorded = (rows: string[]) => rows.filter((row) => !row.includes('"key":"webhook_keys_recorded_at"'));
+const withoutKeysRecorded = (rows: string[]) =>
+	rows.filter(
+		(row) =>
+			!row.includes('"key":"webhook_keys_recorded_at"') &&
+			// And the once-only seed's flag, which the restore writes, as now, for a backup holding none (card 2995, R3).
+			!row.includes('"key":"webhook_reveals_seeded"')
+	);
 
 /** The tables that hold something a working copy switches off. */
 const OUTSIDE_TABLES = ['report_schedules', 'webhooks', 'settings'];
 
 /**
  * The rows of every table a restore copies, apart from the three above. The
- * id counters and the migration record are not copied by a restore.
+ * id counters and the migration record are not copied by a restore, nor is the
+ * record of API keys ended here (card 2995), which it keeps and adds to.
  */
 function everythingElseIn(database: Database.Database): Record<string, string[]> {
 	const contents = contentsOf(database);
-	for (const table of [...OUTSIDE_TABLES, 'sqlite_sequence', '__drizzle_migrations']) delete contents[table];
+	for (const table of [...OUTSIDE_TABLES, 'sqlite_sequence', '__drizzle_migrations', 'api_key_revocations']) delete contents[table];
 	return contents;
 }
 
@@ -440,7 +447,8 @@ describe('restoring as a working copy', () => {
 		// And the key check the sealed form key records, and the scrub every restore marks pending (card 2898).
 		// And the moment the restore's own run of the start pass covered (card 2935, P12).
 		// And the record that mail was set up, written before the working copy removed it (card 2922's code review, C4):
-		// the copy's password-only set-up stays shut.
+		// the copy's password-only set-up stays shut. And the once-only seed's flag, written for a backup holding none
+		// before the keys are left out (card 2995, R3).
 		expect(Object.keys(settings).sort()).toEqual([
 			'api_key_deadline',
 			'app_url',
@@ -452,6 +460,7 @@ describe('restoring as a working copy', () => {
 			'theme',
 			'two_step_released_at',
 			'webhook_keys_recorded_at',
+			'webhook_reveals_seeded',
 			'webhooks_already_off_held',
 			'webhooks_readable_by_disabled_held'
 		]);
@@ -538,6 +547,8 @@ describe('restoring as a working copy', () => {
 				'theme',
 				'two_step_released_at',
 				'webhook_keys_recorded_at',
+				// Card 2995 (R3): the once-only seed's flag, for a backup holding none.
+				'webhook_reveals_seeded',
 				'webhooks_already_off_held',
 				// Card 2935 (P12): the restore's own run of the start pass.
 				'webhooks_readable_by_disabled_held'
@@ -576,6 +587,8 @@ describe('restoring as a working copy', () => {
 			theme: 'dark',
 			// This server's, written by migration 0071 and kept by a restore (card 2752).
 			webhook_keys_recorded_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+			// The once-only seed's flag, written for a backup holding none (card 2995, R3).
+			webhook_reveals_seeded: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
 			// The backup's: one made since card 2923's release (its code review, S2).
 			webhooks_already_off_held: '2026-11-19T00:00:00.000Z',
 			// The backup's too: card 2935's pass ran there (P4), so the restore does not run it (P12).

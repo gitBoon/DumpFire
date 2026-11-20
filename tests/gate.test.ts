@@ -259,6 +259,67 @@ describe('a request to /api/v1/ with no key the gate accepts', () => {
 	});
 });
 
+// Card 2995 (test 4; R1, R7): the record of every API key ended on this server, asked by the one rule, `keyEnded`.
+describe('a key the record of keys ended on this server names (card 2995)', () => {
+	const REFUSED = { message: 'Invalid or expired API key' };
+	const record = (id: number, hash: string) =>
+		sqlite
+			.prepare("INSERT INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (?, ?, '2026-11-19 09:00:00', 'revoked')")
+			.run(id, hash);
+	const watermark = (w: number) =>
+		sqlite
+			.prepare("INSERT INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (?, 'watermark', '2026-11-19 09:00:00', 'before record')")
+			.run(w);
+	/** `user`'s key, by its row. */
+	const key = () => sqlite.prepare('SELECT id, key_hash AS keyHash FROM api_keys WHERE user_id = ?').get(user.id) as { id: number; keyHash: string };
+	const boards = () => (sqlite.prepare('SELECT COUNT(*) AS n FROM boards').get() as { n: number }).n;
+
+	it('by its hash: 401 in the gate’s words', async () => {
+		record(key().id + 100, key().keyHash);
+
+		expectJson(await send('GET', '/api/v1/me', { headers: withKey }), 401, REFUSED);
+	});
+
+	it('recorded after the gate let its request in: the write is refused 401 through stillAuthenticated, and nothing is written', async () => {
+		const { id, keyHash } = key();
+		record(id, keyHash);
+		const before = boards();
+
+		const res = await api('POST', '/api/v1/boards', { user, credential: { kind: 'api key', id }, body: { name: 'After the record' } });
+
+		expect({ status: res.status, message: res.body.message }).toEqual({ status: 401, ...REFUSED });
+		expect(boards()).toBe(before);
+	});
+
+	it('by a seed row of its id at or below the watermark: 401', async () => {
+		watermark(key().id);
+		record(key().id, '');
+
+		expectJson(await send('GET', '/api/v1/me', { headers: withKey }), 401, REFUSED);
+	});
+
+	it('by a seed row of its id with no watermark at all: 401, failing closed', async () => {
+		record(key().id, '');
+
+		expectJson(await send('GET', '/api/v1/me', { headers: withKey }), 401, REFUSED);
+	});
+
+	it('a seed row of its id above the watermark names nothing: let in', async () => {
+		watermark(key().id - 1);
+		record(key().id, '');
+
+		expect((await send('GET', '/api/v1/me', { headers: withKey })).status).toBe(200);
+	});
+
+	it('a hashed row of another hash at its id names nothing: let in, as with no record', async () => {
+		expect((await send('GET', '/api/v1/me', { headers: withKey })).status).toBe(200);
+		watermark(key().id);
+		record(key().id, 'f'.repeat(64));
+
+		expect((await send('GET', '/api/v1/me', { headers: withKey })).status).toBe(200);
+	});
+});
+
 describe('a key that has made its 60 requests in a minute', () => {
 	it('is answered 429, with how long to wait in the body and in Retry-After', async () => {
 		for (let i = 0; i < 60; i++) {

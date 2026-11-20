@@ -1,11 +1,12 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.154
+version: 1.155
 status: As-Built
 date: 2026-11-19
 tags:
   - api
+  - card-2995
   - card-2947
   - webhook-reveals
   - card-2941
@@ -125,6 +126,14 @@ administrator resets the password of an account a script runs on, the reset dial
 many keys it has. The webhooks the account set up go with its keys, switched off (see
 [Webhooks](#webhooks)); a reset and an invite also pause its report schedules. See
 [What Setting a Password Ends](authentication-security.md#what-setting-a-password-ends).
+
+**A key that ends stays ended** (card 2995). A revoke, a password set in a way that ends keys, a
+two-step reset, a disable, a delete of the account and Reset Everything each record the key's id and
+its SHA-256 on the server, never the key itself. An administrator who later restores a backup made
+before the key ended does not bring it back: the restore leaves it out, and the key is answered
+`401` as above wherever it is presented. A key that has merely expired or passed its deadline is not
+recorded, since it is still ended in any backup. A working copy restored from a backup has no API
+key at all. After a restore, a script whose key was ended is given a new key, as after any ending.
 
 ## Rate Limits
 
@@ -418,6 +427,18 @@ and its access; and at the write). Not marked Breaking. The admin page's load
 `null` when unreadable, `freeInodes` `null` where the volume counts none. The 507 is given too when
 fewer than 1,000 inodes are free, when the free space is not read within 2 seconds, and for 5
 minutes after a write found the disk full unless the free space has grown since.
+
+### Changes on 2026-11-19: a restore never brings back a key ended here (card 2995)
+
+Not Breaking; no operation, field or schema of `/api/v1` changes, and OpenAPI stays `1.15.0`
+(unreleased) with its note as it is. Every way a key ends (a revoke, an ending of its account's
+access, the account's delete, Reset Everything) records the key's id and SHA-256 on the server,
+never the key. A key that record names is answered `401` `{ "message": "Invalid or expired API key"
+}` wherever it is presented, as an ended key is; an import of a backup made before the key ended
+leaves it out of the restored data; and the server's start, and a sweep every five minutes, end any
+such key it finds in place. A script whose key was revoked, or whose account's keys were ended,
+keeps getting `401` after an administrator restores an older backup: give it a new key. A working
+copy restored from a backup has no API key at all.
 
 ### Changes on 2026-11-19: an API key given a webhook's secret holds it when it ends (card 2947)
 

@@ -194,7 +194,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'keysBeforeRecorded' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'answerWebhooks' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'holdRevealsOfEndedKeys' },
-			{ path: 'src/routes/api/account/api-keys/[id]/+server.ts', symbol: 'switchOffLostWebhooks' },
+			{ path: 'src/routes/api/account/api-keys/[id]/+server.ts', symbol: 'revokeApiKeys' },
+			{ path: 'src/lib/server/api-key-revoke.ts', symbol: 'switchOffLostWebhooks' },
 			{ path: 'src/lib/server/startup-checks.ts', symbol: 'announceWebhooksBeforeKeys' },
 			{ path: 'src/lib/server/ssh-host-key.ts' },
 			{ path: 'src/routes/api/reports/email/+server.ts', symbol: 'confirmStepUp' },
@@ -286,7 +287,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 		applicability: 'supports',
 		status: 'met',
 		how:
-			'A role change, disabling and a password reset end what the account held: its sessions and keys end, the webhooks it set are switched off and its report schedules paused, and each is logged. ' +
+			'Disabling and a password reset end what the account held: its sessions and keys end, the webhooks it set are switched off and its report schedules paused, and each is logged. ' +
+			'A role change ends the account\'s sessions, unused invites and pending sign-ins; its API keys stay, acting with the new role. ' +
 			'Removing an authenticator ends the account\'s other sessions and pending sign-ins (card 2772). ' +
 			'A change that takes an account\'s board access away switches off, for good, the webhooks it set on that board; giving the access back does not switch them on (card 2752). ' +
 			'Revoking an API key switches off, in the same change, the webhooks it set up, and one whose key expires or passes its deadline is switched off at the next start, restore or event (card 2893). ' +
@@ -294,16 +296,22 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Every way of setting a password, the holder\'s own change included, and a reset of an account\'s two-step sign-in, from the admin page or the host, pause the account\'s report schedules, and removing an authenticator lists its schedules that are on (card 2894). ' +
 			'The reset also ends the account\'s API keys and switches off the webhooks it set, as an administrator\'s password reset does; the reset\'s mail names them, and the host keeps them only when told to (card 2915). ' +
 			'Disabling an account ends all of this at once and refuses it at every gate, on every board and on every decision; a restore keeps it disabled (card 2671). ' +
-			'Every ending that ends the keys also holds the mail settings, App URL and backup destinations the account set for the superadmin\'s review, so nothing is sent to them until the superadmin keeps or removes each, and ends the links of the requests it made (card 2922).',
+			'Every ending that ends the keys also holds the mail settings, App URL and backup destinations the account set for the superadmin\'s review, so nothing is sent to them until the superadmin keeps or removes each, and ends the links of the requests it made (card 2922). ' +
+			'Every ending of an API key, Reset Everything\'s included, records the key\'s id and SHA-256, never the key, in the transaction that deletes it: no restore of an older backup, this server\'s or another\'s, brings it back, a working copy leaves out every key, every check of a key refuses one the record names, and the start ends any such key found present (card 2995).',
 		evidence: [
 			{ path: 'src/lib/server/auth.ts', symbol: 'endAccountAccess' },
+			{ path: 'src/lib/server/key-revocations.ts', symbol: 'endApiKeys' },
+			{ path: 'src/lib/server/auth.ts', symbol: 'keyRecorded' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'leaveOutRecordedKeys' },
 			{ path: 'src/lib/server/setting-setters.ts', symbol: 'holdSettingsSetBy' },
 			{ path: 'src/lib/server/account-disable.ts', symbol: 'disableAccount' },
 			{ path: 'src/routes/api/account/password/+server.ts', symbol: 'endAccountAccess' },
 			{ path: 'scripts/mfa-reset.mjs', symbol: 'report_schedules' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'switchOffHeld' },
-			{ path: 'src/routes/api/account/api-keys/[id]/+server.ts', symbol: 'switchOffLostWebhooks' },
-			{ path: 'src/routes/api/account/api-keys/[id]/+server.ts', symbol: 'holdRevealed' },
+			{ path: 'src/routes/api/account/api-keys/[id]/+server.ts', symbol: 'revokeApiKeys' },
+			{ path: 'src/lib/server/api-key-revoke.ts', symbol: 'switchOffLostWebhooks' },
+			{ path: 'src/lib/server/api-key-revoke.ts', symbol: 'holdRevealed' },
+			{ path: 'src/lib/server/api-key-revoke.ts', symbol: 'endRecordedKeysPresent' },
 			{ path: 'src/lib/server/startup-checks.ts', symbol: 'sweepEndedKeyReveals' },
 			{ path: 'src/lib/server/mfa-store.ts', symbol: 'resetTwoStep' },
 			{ path: 'src/lib/server/account-two-step.ts' },

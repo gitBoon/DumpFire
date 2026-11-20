@@ -28,6 +28,7 @@ import { raiseSignal } from './sign-in-challenges';
 // A cycle of functions only (webhooks.ts imports `keyEnded`): neither uses the other at module load (card 2923, decision 13).
 import { accountMayHaveRead, holdWebhooksOfSetter, revealedToAccount, type EndingCause } from './webhooks';
 import { holdSettingsSetBy, type SettingsRemoved } from './setting-setters';
+import { REVOKED_BECAUSE, endApiKeys, keyRecorded } from './key-revocations';
 import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
@@ -1041,6 +1042,10 @@ export const namingIds = (ids: number[]): string =>
  * removes it, and every link of the requests the account made is deleted, as
  * a disable deletes them (card 2671): `settingsHeld` and `requestLinks`.
  *
+ * Under `apiKeys`, each key is recorded as ended here before it is deleted
+ * (card 2995, `endApiKeys`, `access ended`): no restore brings it back, and
+ * every check of a key refuses it.
+ *
  * It throws if no transaction is open.
  */
 export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause: EndingCause; exceptInvite?: Buffer }): AccessEnded {
@@ -1058,8 +1063,9 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause
 	const invitesEnded = endUnusedInvites(userId);
 	const pending = endPendingSignIns(userId);
 	const ids = (rows: { id: number }[]) => rows.map((row) => row.id).sort((a, b) => a - b);
-	// The ids of the keys deleted, in order (card 2915's code review, CS2): a log line's meta names them.
-	const apiKeyIds = opts.apiKeys ? ids(db.delete(apiKeys).where(eq(apiKeys.userId, userId)).returning({ id: apiKeys.id }).all()) : [];
+	// The ids of the keys deleted, in order (card 2915's code review, CS2): a log line's meta names them. Each recorded
+	// first, `access ended`, so that no restore brings it back (card 2995, `endApiKeys`).
+	const apiKeyIds = opts.apiKeys ? endApiKeys(sqlite, { userId }, REVOKED_BECAUSE.accessEnded) : [];
 	const apiKeysEnded = apiKeyIds.length;
 	// Recorded as a hold (the code review of card 2752, CS4): switched on again,
 	// each is given a new secret, which whoever held the account may know; and
@@ -1373,26 +1379,35 @@ export function deadlinePassed(key: { deadlineAt: string | null }, now: Stamp): 
 }
 
 /**
- * Whether an API key has ended at `now`, a moment in the stored form: its
- * expiry is at or before `now`, or is set and names no moment (the P6 review,
- * S2), or its deadline has passed (`deadlinePassed`). A key that expires at
- * `now` has ended, as one whose deadline is `now` has: the same boundary for
- * both (card 2772). The one rule, asked by `keyHolder` (the gate and
- * `stillAuthenticated`) and by `keysAndWebhooksOf` in second-step.ts, so that
- * no list calls a key live that the gate refuses.
+ * Whether an API key's expiry has passed at `now`: it is at or before `now`, or
+ * is set and names no moment (the P6 review, S2). Half of `keyEnded`, asked on
+ * its own where how a key ended is told apart (`endedKeysWithReveals`).
  */
-export function keyEnded(key: { expiresAt: string | null; deadlineAt: string | null }, now: Stamp): boolean {
-	if (key.expiresAt !== null) {
-		const expires = toStamp(key.expiresAt);
-		if (expires === null || expires <= now) return true;
-	}
-	return deadlinePassed(key, now);
+export function keyExpired(key: { expiresAt: string | null }, now: Stamp): boolean {
+	if (key.expiresAt === null) return false;
+	const expires = toStamp(key.expiresAt);
+	return expires === null || expires <= now;
+}
+
+/**
+ * Whether an API key has ended at `now`, a moment in the stored form: its
+ * expiry has passed (`keyExpired`), or its deadline has (`deadlinePassed`), or
+ * the record of keys ended on this server names it (`keyRecorded`, card 2995,
+ * R7: one brought back by an older image's import or a host edit). A key that
+ * expires at `now` has ended, as one whose deadline is `now` has: the same
+ * boundary for both (card 2772). The one rule, asked by `keyHolder` (the gate
+ * and `stillAuthenticated`), by `keysAndWebhooksOf` in second-step.ts and by
+ * the webhooks' hold rule (`keyEndedFor`), so that no list calls a key live
+ * that the gate refuses.
+ */
+export function keyEnded(key: { id: number; keyHash: string; expiresAt: string | null; deadlineAt: string | null }, now: Stamp): boolean {
+	return keyExpired(key, now) || deadlinePassed(key, now) || keyRecorded(sqlite, key);
 }
 
 /**
  * The account an API key's row acts as, if the key is open: it has not ended
- * (`keyEnded`: its expiry and its deadline), and its account still exists and
- * is not disabled (card 2671).
+ * (`keyEnded`: its expiry, its deadline, and the record of keys ended here,
+ * card 2995), and its account still exists and is not disabled (card 2671).
  * Null if not. `findApiKey` and `stillAuthenticated` both ask it, so that what
  * counts as an open key is decided in one place.
  */

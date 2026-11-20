@@ -48,6 +48,15 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	"CREATE INDEX `idx_activity_log_card` ON `activity_log` (`card_id`);",
 	"CREATE INDEX `idx_activity_log_user_id_created_at` ON `activity_log` (`user_id`,`created_at`);",
 	[
+		"CREATE TABLE `api_key_revocations` (",
+		"\t`key_id` integer NOT NULL,",
+		"\t`key_hash` text NOT NULL,",
+		"\t`revoked_at` text NOT NULL,",
+		"\t`revoked_because` text NOT NULL,",
+		"\tPRIMARY KEY(`key_hash`, `key_id`)",
+		");"
+	].join('\n'),
+	[
 		"CREATE TABLE `api_keys` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
 		"\t`key_hash` text NOT NULL,",

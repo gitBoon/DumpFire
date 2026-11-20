@@ -122,6 +122,7 @@ import {
 	superadminsOf,
 	type Outside,
 	type OutsideSwitchedOff,
+	type ApiKeysLeftOut,
 	type RestoreResult,
 	type SystemLogLeftOut
 } from '$lib/server/db/restore';
@@ -412,6 +413,40 @@ function systemLogSentence(left: SystemLogLeftOut | null): string | null {
 }
 
 /**
+ * What the answer says of the backup's API keys the restore left out (card 2995): those the record of keys ended on
+ * this server names, with those of accounts disabled here, and a working copy's every other key. Absent when none was
+ * left out, so that an import of a backup with none reads as it did. Names no account, no key and no id: the ids are
+ * in the CRITICAL line's details alone.
+ */
+function keysLeftOutSentence(left: ApiKeysLeftOut): string | null {
+	const ended =
+		left.count > 0
+			? `${left.count} API key(s) in the backup were left out, because each was revoked or ended on this server, was gone ` +
+				'from it before endings were recorded, or is named by the record of ended keys of a backup imported here before, ' +
+				'another server\'s among them: none of them works, and their holders make new ones on the Account page.'
+			: null;
+	const copy =
+		left.workingCopy > 0
+			? `As a working copy, it ${ended ? 'also left out the other' : 'left out the'} ${left.workingCopy} API key(s) the backup held: no key works on a working copy.`
+			: null;
+	return [ended, copy].filter((sentence) => sentence !== null).join(' ') || null;
+}
+
+/**
+ * The CRITICAL line's words for how it was restored (card 2995): as before where no key was left out, else with how
+ * many keys ended here were left out, and a working copy's others.
+ */
+function restoredWords(outside: Outside, left: ApiKeysLeftOut | undefined): string {
+	const how = outside === 'off' ? 'as a working copy' : 'as it is';
+	if (left === undefined || (left.count === 0 && left.workingCopy === 0)) return how;
+	const parts = [
+		...(left.count > 0 ? [`${left.count} API key(s) ended on this server`] : []),
+		...(left.workingCopy > 0 ? [`${left.count > 0 ? 'the other' : 'the'} ${left.workingCopy} API key(s) it held, as a working copy`] : [])
+	];
+	return `${how}, leaving out ${parts.join(' and ')}`;
+}
+
+/**
  * Whose backup it was, by its seal, in the words of the import's CRITICAL line
  * (card 2899). A server with no key to check a seal with cannot say, whatever
  * the file carries (the code review's F8).
@@ -457,22 +492,25 @@ function importedLine(
 	caller: Importer,
 	file: { sizeBytes: number; size: string; sha256: string },
 	outside: Outside,
-	done: { unsealed: Unsealed | null; sealKeyHere: boolean; systemLogLeftOut: SystemLogLeftOut | null }
+	done: { unsealed: Unsealed | null; sealKeyHere: boolean; systemLogLeftOut: SystemLogLeftOut | null; apiKeysLeftOut?: ApiKeysLeftOut }
 ): { message: string; meta: Record<string, unknown> } {
-	const left = done.systemLogLeftOut;
+	const left = done.apiKeysLeftOut;
+	// The keys left out by id, in the details alone, only where there were any (card 2995): the line as before at none.
+	const keysMeta = left !== undefined && (left.count > 0 || left.workingCopy > 0) ? { apiKeysLeftOut: left } : {};
+	const logLeft = done.systemLogLeftOut;
 	const logPart =
-		left === null || left.lines === 0
+		logLeft === null || logLeft.lines === 0
 			? 'the backup held no log lines.'
-			: left.lines < 0
+			: logLeft.lines < 0
 				? "the backup's log, which could not be counted, was not brought in and remains in the file."
-				: left.first === null || left.last === null
-					? `the backup's ${left.lines} log line(s), at times in no form this build reads, were not brought in and remain in the file.`
-					: `the backup's ${left.lines} log line(s), ${left.first} to ${left.last}, were not brought in and remain in the file.`;
+				: logLeft.first === null || logLeft.last === null
+					? `the backup's ${logLeft.lines} log line(s), at times in no form this build reads, were not brought in and remain in the file.`
+					: `the backup's ${logLeft.lines} log line(s), ${logLeft.first} to ${logLeft.last}, were not brought in and remain in the file.`;
 	return {
 		message:
 			`The database was replaced from an uploaded backup by ${caller.username} (user ${caller.id} before the import): ` +
 			`${file.size}, SHA-256 ${file.sha256}, ${sealWords(done.unsealed, done.sealKeyHere)}, ` +
-			`restored ${outside === 'off' ? 'as a working copy' : 'as it is'}. The system log was kept as it was; ${logPart}`,
+			`restored ${restoredWords(outside, left)}. The system log was kept as it was; ${logPart}`,
 		meta: {
 			by: { id: caller.id, username: caller.username },
 			ip: caller.ip,
@@ -481,7 +519,8 @@ function importedLine(
 			seal: sealOf(done.unsealed, done.sealKeyHere),
 			check: done.unsealed?.check ?? null,
 			outside,
-			systemLogLeftOut: left
+			systemLogLeftOut: logLeft,
+			...keysMeta
 		}
 	};
 }
@@ -773,6 +812,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 			// The API keys of a backup made before 0069 given this server's deadline (card 2772).
 			const keyDeadline = result.apiKeyDeadlines > 0 ? apiKeyDeadlineNow() : null;
 			const keyDeadlines = result.apiKeyDeadlines > 0 ? apiKeyDeadlinesSentence(result.apiKeyDeadlines, keyDeadline) : null;
+			// The backup's keys left out, ended here or a working copy's (card 2995), after the deadlines' sentence.
+			const keysLeftOut = keysLeftOutSentence(result.apiKeysLeftOut);
 			// And the personal decision links it cancelled (card 2697, Q15).
 			const decisionLinks = result.decisionLinksCleared > 0 ? decisionLinksSentence(result.decisionLinksCleared) : null;
 			// What the removal above took is said after them (card 2411).
@@ -789,7 +830,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 			// one the superadmin kept here since the backup was made is held again.
 			const settingsHeld = settingsHeldCarriedSentence(result.settingHoldsCarried);
 			const ending = (text: string) =>
-				[linksReplaced, keyDeadlines, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, settingsHeld, workingCopy, systemLog].reduce<string>(
+				[linksReplaced, keyDeadlines, keysLeftOut, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, settingsHeld, workingCopy, systemLog].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					text
 				);
@@ -808,6 +849,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				requestLinksReplaced: result.requestLinksReplaced,
 				apiKeyDeadlines: result.apiKeyDeadlines,
 				apiKeyDeadline: keyDeadline ?? undefined,
+				// The keys ended here that were left out, 0 when none, and what the answer says of every key left out (card 2995).
+				apiKeysLeftOut: result.apiKeysLeftOut.count,
+				keysLeftOut: keysLeftOut ?? undefined,
 				decisionLinksCleared: result.decisionLinksCleared,
 				attachmentsPutBack: files.putBack,
 				workingCopy: workingCopy ?? undefined,
@@ -931,6 +975,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				// The API keys given this server's deadline, as a restore that succeeded says them (card 2772).
 				const keyDeadline = done && done.apiKeyDeadlines > 0 ? apiKeyDeadlineNow() : null;
 				const keyDeadlines = done && done.apiKeyDeadlines > 0 ? apiKeyDeadlinesSentence(done.apiKeyDeadlines, keyDeadline) : null;
+				// The backup's keys left out, as a restore that succeeded says them (card 2995).
+				const keysLeftOut = done ? keysLeftOutSentence(done.apiKeysLeftOut) : null;
 				// The personal decision links it cancelled, as a restore that succeeded says them (card 2697, Q15).
 				const decisionLinks = done && done.decisionLinksCleared > 0 ? decisionLinksSentence(done.decisionLinksCleared) : null;
 				const secretsKept = done ? secretsKeptSentence(done.secrets.kept) : null;
@@ -939,7 +985,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				const mfaLine = done ? mfaWithoutFactorSentence(done.mfa) : null;
 				// This server's system log kept, as a restore that succeeded says it (the code review's F6).
 				const systemLog = done ? systemLogSentence(done.systemLogLeftOut) : null;
-				const message = [linksReplaced, keyDeadlines, decisionLinks, secretsKept, secretsToEnter, mfaLine, systemLog].reduce<string>(
+				const message = [linksReplaced, keyDeadlines, keysLeftOut, decisionLinks, secretsKept, secretsToEnter, mfaLine, systemLog].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					err.message
 				);
@@ -961,6 +1007,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 						requestLinksReplaced: done?.requestLinksReplaced,
 						apiKeyDeadlines: done?.apiKeyDeadlines,
 						apiKeyDeadline: keyDeadline ?? undefined,
+						apiKeysLeftOut: done?.apiKeysLeftOut.count,
+						keysLeftOut: keysLeftOut ?? undefined,
 						decisionLinksCleared: done?.decisionLinksCleared,
 						secretsKept: secretsKept ?? undefined,
 						secretsToEnter: secretsToEnter ?? undefined,

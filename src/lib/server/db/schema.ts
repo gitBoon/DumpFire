@@ -1043,6 +1043,22 @@ export const apiKeys = sqliteTable('api_keys', {
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 
+// Every API key ended on this server (card 2995, migration 0076): its row id
+// and the SHA-256 the gate checks it by, never the key, with when and why.
+// Written by `endApiKeys` (key-revocations.ts) in the transaction that deletes
+// the key; never deleted, changed or replaced. A seed row has `keyHash` '' and
+// names a key by its id where that id is at most the watermark, the row whose
+// `keyHash` is 'watermark'. No foreign key: a row outlives its key. A restore
+// and Reset Everything keep it; a restore adds the backup's rows.
+export const apiKeyRevocations = sqliteTable('api_key_revocations', {
+	keyId: integer('key_id').notNull(),
+	keyHash: text('key_hash').notNull(),
+	revokedAt: text('revoked_at').notNull(),
+	revokedBecause: text('revoked_because').notNull()
+}, (table) => [
+	primaryKey({ columns: [table.keyHash, table.keyId] })
+]);
+
 // ─── System Logs (structured application logging) ───────────────────────────
 
 export const systemLogs = sqliteTable('system_logs', {

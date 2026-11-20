@@ -67,6 +67,7 @@ import { moveToTrash, type UploadFile } from './uploads';
 import { removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { requireDisabledAccount } from './account-disable';
 import { accountMayHaveRead, disableCovered, ENDING_IN_MAIL, holdWebhooksOfSetter, revealedToAccount } from './webhooks';
+import { REVOKED_BECAUSE, endApiKeys } from './key-revocations';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DELETE');
@@ -1009,6 +1010,9 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 		// links ended, while the link still names them (card 2675's code review,
 		// S4). See `markPeopleLeft`.
 		markPeopleLeft(userId, actor);
+		// Any key it still holds recorded as ended and deleted, before the user row goes (card 2995, decision 17): the
+		// cascade would delete it unrecorded, and a restore would bring it back.
+		endApiKeys(sqlite, { userId }, REVOKED_BECAUSE.accountDeleted);
 		sqlite.prepare('DELETE FROM users WHERE id = ?').run(userId);
 
 		afterCommit(() =>

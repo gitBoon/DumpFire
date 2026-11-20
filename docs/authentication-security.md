@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.159
+version: 1.160
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2995
+  - api-key-revocations
   - card-2947
   - webhook-reveals
   - card-2941
@@ -6145,6 +6147,10 @@ Covered by `tests/setting-holds.test.ts`, `tests/two-step-enrol.test.ts` (T65b, 
 
 ### What a Backup Holds, and What a Restore Brings In
 
+Since card 2995 a restore also leaves out every API key the record of keys ended on this server
+names, keeps that record and adds the backup's to it, and a working copy leaves out every key: see
+[The Record of Ended API Keys](#the-record-of-ended-api-keys-card-2995).
+
 A session's id is the whole of what its cookie carries, and an unused invite's token sets
 its account's password. A backup that held them signed in whoever read it, as anybody who
 was signed in when it was made, for as long as that session went on being used: a
@@ -6897,7 +6903,9 @@ flowchart LR
    in a way that ends keys: an administrator's reset, an invite used, or the holder's own
    change with "End my API keys too" ticked (see
    [What Setting a Password Ends](#what-setting-a-password-ends)). Either way its row is
-   deleted, and the gate answers it `401` `Invalid or expired API key`
+   deleted, and the gate answers it `401` `Invalid or expired API key`. Since card 2995 its id and
+   SHA-256 are recorded first, in the same transaction, so that no restore brings it back: see
+   [The Record of Ended API Keys](#the-record-of-ended-api-keys-card-2995)
 
 **Why a key asks for the password.** A key works until it is revoked, and the holder's own
 password change keeps it unless they ask. A key made on a session alone let whoever held
@@ -10289,6 +10297,119 @@ new secret. Going back to an older image leaves the table unread.
 
 Covered by `tests/webhook-reveals.test.ts`, `tests/backups.test.ts` (card 2947's restore cases),
 `tests/mfa-reset-script.test.ts` (T41, T42) and `tests/migrations.test.ts` (0075).
+
+Since card 2995, a key a restore leaves out because the record of ended keys names it is one the
+restore did not bring back: every row of `webhook_reveals` it has, and every webhook with a secret its
+account could set or read, is held in the restore's one `holdRevealedIn` call (below).
+
+### The Record of Ended API Keys (card 2995)
+
+A restore copied `api_keys` whole, so a key revoked during an incident came back the moment a backup
+from before the incident was imported, the natural next step of the incident. Migration 0076 adds
+`api_key_revocations`: one row per key ended on this server, by its row id and the SHA-256 the gate
+checks it by (`key_hash`), never the key, with when and why. It has no foreign key, so a row outlives
+its key and its account, and its primary key is `(key_hash, key_id)`, the only index it has.
+
+```mermaid
+flowchart TD
+    subgraph Enders["Every ender, in the transaction that deletes the key"]
+        R["Revoke: revokeApiKeys<br/>revoked"]
+        E["endAccountAccess<br/>access ended"]
+        D["deleteUser<br/>account deleted"]
+        C["restore: carryDisabled<br/>access ended"]
+        X["Reset Everything<br/>reset"]
+        H["scripts/mfa-reset.mjs<br/>its pinned copy"]
+    end
+    Enders --> EK["endApiKeys(database, scope, because)<br/>INSERT OR IGNORE id and hash, then DELETE"]
+    EK --> T[("api_key_revocations")]
+    T --> K["keyEnded: keyRecorded"]
+    K --> G["the gate, stillAuthenticated,<br/>keysAndWebhooksOf, holdOf"]
+    T --> S["start and five-minute sweep:<br/>a present recorded key ended as a revoke ends it"]
+    T --> RS["restore: never cleared;<br/>the backup's bounded rows added;<br/>every restored key it names left out"]
+```
+
+**The rule** (`keyRecordedSelect`, `src/lib/server/key-revocations.ts`): the record names a key when
+a row holds its hash, or when a seed row (`key_hash` `''`) holds its id and that id is at most the
+watermark W. `keyEnded` in auth.ts asks it beside the expiry and the deadline, so the gate,
+`stillAuthenticated`, every list of live keys and the webhooks' hold rule all call such a key ended.
+The gate's statement is three searches on the key, and no scan.
+
+**The seed and the watermark.** Keys ended before the record existed left no hash. 0076 writes W,
+the larger of the `api_keys` id counter and the largest id held (Admin › Vacuum and Reset deleted the
+counters before c6ed310, so the counter alone can be low), as a row whose `key_hash` is
+`'watermark'`, and a seed row for every id from 1 to W that `api_keys` no longer held. A seed row
+names an id only up to W; above it, only a hash names a key. With no watermark row at all, every seed
+row names its id (fail closed). The key counter is kept at or above every id the record names, the
+watermark and every hashed and seed row alike (`raiseKeyCounterOverRecord`, at start and in every
+restore; code review FP1), so no new key takes such an id. The migration seeds one row per id, never
+a range, and halts, changing nothing, where that would be more than 1,000,000 rows (FP5).
+
+**The lists.** No list calls a recorded key live (R7, FP3): `keyEnded` asks the record for
+`keysAndWebhooksOf`, the two-step reset's kept count and the hold rule, and the Account page's list
+(`GET /api/account/api-keys`) leaves such a key out, its hash read on the server and never answered,
+and does not count it toward the limit of ten.
+
+**Every ender records first.** `endApiKeys(database, scope, because)` runs the record's `INSERT OR
+IGNORE` and then the `DELETE`, in the caller's transaction, on the connection it is given, and throws
+without writing where that connection has none open. The revoke (`revokeApiKeys`, the revoke's body,
+which the start's pass runs too), `endAccountAccess`, `deleteUser`, the restore's `carryDisabled` and
+Reset Everything call it; `scripts/mfa-reset.mjs` runs `RECORD_ACCOUNT_KEYS_ENDED_SQL`, pinned word
+for word. No write deletes, changes or replaces a row of the record: `tests/check-at-the-write.test.ts`
+reads every file under src and scripts for that, and for every delete of `api_keys` or `users`.
+
+**The restore.** The record is left out of `restorableTables`, as the system log is: no import clears
+it, and Reset Everything keeps it. Inside the restore's transaction:
+
+```mermaid
+sequenceDiagram
+    participant R as restoreInOneSnapshot
+    participant L as Live database
+    participant B as Backup
+    R->>L: read W and this server's keys up to W, before the clear
+    R->>L: clear, copy, strandedBy, carryDisabled (records, set_by_key NULL)
+    R->>B: read its record and its own key counter
+    R->>L: add each row within the backup's bounds, and raise the key counter over the seed rows
+    R->>L: fill, carry the holds and reveals, seed reveals where unseeded
+    R->>L: hash belt: a seed-matched key, or one whose id was here with another hash, recorded by hash
+    R->>L: every reveal of a key to leave out read, then DELETE FROM api_keys WHERE EXISTS (the rule)
+    R->>L: working copy: every other key left out too
+    R->>L: sweep, holdRevealedIn of every reveal read, ended-key sweep
+```
+
+A backup's row is taken only where its `key_id` is a whole number from 1 to 2^53 - 1 and its
+`key_hash` is `''` or a SHA-256; a seed row (`''`) only up to the backup's own key counter or largest
+key id, whichever is greater, since it names a key by id; a hashed row whatever its id, since it names
+one by hash and a server whose counter row was deleted can hold one above its counter (code review
+FP1); and the backup's watermark up to the larger of that bound and every id its accepted rows name.
+The rest are counted in one line of `errors`, giving how many and why, never the backup's text. What a key left out
+may have been given (its rows of `webhook_reveals`, seeded, carried or the backup's own, and every
+webhook with a secret its account could set or read, whatever its last use) is held as `setter access
+ended`; what it set names no key afterwards (`set_by_key` NULL, as the foreign key would leave it) and
+the sweep holds it `key ended`. `RestoreResult.apiKeysLeftOut` is `{ count, keyIds, workingCopy }`,
+those of accounts disabled here counted with the recorded ones; the import says the count, and its
+`[CRITICAL] [IMPORT]` line's details give the ids, naming no account.
+
+**A key found in place.** An older image's import or a host edit can put back a key the record names.
+The gate refuses it at once; the start, and the sweep every five minutes, end it through
+`revokeApiKeys` (what it set held `key ended`, what it was given held) and write one `[WARN] [AUTH]`
+line naming it by id, never the key or its hash. A second run finds nothing. This pass, with the
+counter's raise, is a transaction of its own, apart from card 2947's hold of what ended keys were
+given: a failure of either rolls back that one alone, with its own `WARN`, and the other commits
+(FP4).
+
+**What is left (accepted).** A restore onto another server cannot know of keys ended on the server
+that made the backup after the backup was made. A seed row can leave out a key an import removed
+before the release, or, from another server's backup, a key whose id this server once issued; each is
+counted, and re-made in a minute; the answer's sentence names that case (FP10). A key ended before
+the release whose hash this server never saw can come back if an edited old backup moves it to an id
+the record does not name: importing is the superadmin's alone, and the import's line names the file's
+SHA-256 (FP10). A crafted backup's hashed row with an id near 2^53 raises this server's key counter
+that far (FP1's cost). A host file rollback returns the record as old as the copy: the deployment
+guide says to dump and re-insert it, or to revoke again, and never to import under an older image.
+
+Covered by `tests/api-key-revocations.test.ts`, `tests/backups.test.ts` (card 2995's restore cases),
+`tests/gate.test.ts`, `tests/admin-reset.test.ts`, `tests/mfa-reset-script.test.ts` (T21, T34, T44,
+T45), `tests/check-at-the-write.test.ts` (the inventory) and `tests/migrations.test.ts` (0076).
 
 ## Security Headers
 

@@ -44,9 +44,13 @@ import {
 	readableBy as scriptReadableBy,
 	REVEALED_TO_ACCOUNT_SQL as scriptRevealedToAccount,
 	SEED_REVEALS_SELECT as scriptSeedReveals,
+	// Card 2995: the record of an account's keys ended, and its word.
+	RECORD_ACCOUNT_KEYS_ENDED_SQL as scriptRecordAccountKeysEnded,
+	ACCESS_ENDED as scriptAccessEnded,
 	resetScope,
 	webhookLines
 } from '../scripts/mfa-reset.mjs';
+import { RECORD_ACCOUNT_KEYS_ENDED_SQL, REVOKED_BECAUSE } from '$lib/server/key-revocations';
 // Card 2922: the server's hold lines and places, which the script copies.
 import { heldLines as serverHeldLines } from '$lib/server/setting-setters';
 import { appUrlPlaceOf, mailPlaceOf } from '$lib/server/setting-holds';
@@ -143,6 +147,13 @@ function dumpOf(database: Database.Database, { logs = false, paused = [] as numb
 				if (row.key !== 'webhook_reveals_seeded') return row;
 				expect(isStamp(row.value), 'the seed’s flag').toBe(true);
 				return { ...row, value: '(masked)' };
+			});
+		}
+		// When each key was recorded as ended (card 2995): the moment of the reset, in the stored form.
+		if (table === 'api_key_revocations') {
+			rows = rows.map((row) => {
+				expect(isStamp(row.revoked_at), `the record of key ${row.key_id}`).toBe(true);
+				return { ...row, revoked_at: '(masked)' };
 			});
 		}
 		// When each setting was held for review (card 2922): the moment of the reset, in the stored form.
@@ -335,6 +346,11 @@ describe('scripts/mfa-reset.mjs', () => {
 			expect(copied.prepare('SELECT * FROM api_keys WHERE user_id = ? ORDER BY id').all(twin.id)).toEqual(twinsKeys);
 			expect(copied.prepare('SELECT * FROM webhooks WHERE id = ?').get(twinsHook.id)).toEqual(twinsHookRow);
 			expect(copied.prepare('SELECT * FROM webhooks WHERE id = ?').get(alreadyOff.id)).toEqual(alreadyOffRow);
+			// Card 2995 (test 20): both of the holder's keys recorded as ended, the one already ended among them, by id
+			// and hash, `access ended`, before they went; the twin's not.
+			expect(copied.prepare('SELECT key_id AS id, revoked_because AS because FROM api_key_revocations ORDER BY key_id').all()).toEqual(
+				keysOfHolder.map((key) => ({ id: key.id, because: 'access ended' }))
+			);
 			expect(copied.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(pausedHook.id)).toEqual({
 				active: 0,
 				heldBecause: 'setter access ended'
@@ -513,6 +529,8 @@ describe('scripts/mfa-reset.mjs', () => {
 			expect(copied.prepare('SELECT COUNT(*) AS n FROM setting_holds').get()).toEqual({ n: 0 });
 			expect(copied.prepare("SELECT COUNT(*) AS n FROM system_logs WHERE context IN ('SMTP', 'BACKUP')").get()).toEqual({ n: 0 });
 			expect(copied.prepare('SELECT COUNT(*) AS n FROM request_links').get()).toEqual({ n: 1 });
+			// Card 2995 (test 20): a key kept is not ended, and nothing is recorded.
+			expect(copied.prepare('SELECT COUNT(*) AS n FROM api_key_revocations').get()).toEqual({ n: 0 });
 		} finally {
 			copied.close();
 		}
@@ -694,6 +712,16 @@ describe('scripts/mfa-reset.mjs', () => {
 			database: 'no reveals',
 			status: 1,
 			says: 'this database has no table of the API keys given webhook secrets; start the server once to migrate it'
+		},
+		// Card 2995 (h, R15): the record of every API key ended on the server, written before the keys go, or nothing at
+		// all, refused in its own words.
+		{
+			case: 'T44',
+			refusal: 'a database without api_key_revocations',
+			args: ['holder'],
+			database: 'no record',
+			status: 1,
+			says: 'this database has no record of the API keys ended on this server; start the server once to migrate it'
 		}
 	])('$case: refuses $refusal with exit $status, saying so, and changes nothing', ({ args, database, status, says }) => {
 		if (
@@ -702,7 +730,8 @@ describe('scripts/mfa-reset.mjs', () => {
 			database === 'disabled' ||
 			database === 'no holds' ||
 			database === 'no setting holds' ||
-			database === 'no reveals'
+			database === 'no reveals' ||
+			database === 'no record'
 		) {
 			const holder = seedAccount('holder');
 			if (database === 'disabled') db.update(users).set({ disabledAt: stamp(), disabledBy: null }).where(eq(users.id, holder.id)).run();
@@ -730,6 +759,12 @@ describe('scripts/mfa-reset.mjs', () => {
 				// As a database from before migration 0075.
 				const old = new Database(file);
 				old.exec('DROP TABLE webhook_reveals');
+				old.close();
+			}
+			if (database === 'no record') {
+				// As a database from before migration 0076.
+				const old = new Database(file);
+				old.exec('DROP TABLE api_key_revocations');
 				old.close();
 			}
 		} else if (database === 'unmigrated') {
@@ -867,6 +902,11 @@ describe('scripts/mfa-reset.mjs', () => {
 		// Card 2947's code review (FP2, FP11): the seed's rows and the webhooks an account's keys were given.
 		expect(scriptSeedReveals).toBe(SEED_REVEALS_SELECT);
 		expect(scriptRevealedToAccount).toBe(REVEALED_TO_ACCOUNT_SQL);
+	});
+
+	it('T45 (card 2995, h, R15): the script records an account’s keys by the server’s statement word for word, under the server’s own word', () => {
+		expect(scriptRecordAccountKeysEnded).toBe(RECORD_ACCOUNT_KEYS_ENDED_SQL);
+		expect(scriptAccessEnded).toBe(REVOKED_BECAUSE.accessEnded);
 	});
 
 	it('T43 (card 2947’s code review, FP2): on a database no sweep has seeded, the host reset seeds first, as resetTwoStep does, and holds what the used key may have read', () => {

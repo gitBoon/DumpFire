@@ -143,6 +143,8 @@ import {
 	type SwitchedOff
 } from './webhooks';
 import { inTransaction } from './db/transaction';
+import { raiseKeyCounterOverRecord } from './key-revocations';
+import { endRecordedKeysPresent } from './api-key-revoke';
 import { removeSettingsOfFormerAdministrators, settingsHeldForReview, settingsSetBy } from './setting-setters';
 import {
 	FORGET_UNOPENABLE_SECRETS,
@@ -1436,8 +1438,17 @@ export const REVEAL_SWEEP_EVERY_MS = 5 * 60 * 1000;
  * every five minutes (`startEndedKeyRevealSweep`), whatever SCHEDULERS says: the hold is a write here, and a server
  * with its schedulers off still delivers. Returns how many it switched off or held, or null when it could not: one
  * WARN, nothing committed, and the next run tries again. It never throws.
+ *
+ * First, in a transaction of its own (card 2995, R7; its code review, FP4): every API key present that the record of
+ * keys ended on this server names (an older image's import, a host edit) is ended as a revoke ends it
+ * (`endRecordedKeysPresent`): what it set held `key ended`, what it was given held; one WARN under AUTH names the keys
+ * by id, never an account or a key, and the switch-offs are told as the sweep's are. And the key counter is raised over
+ * every id the record names (`raiseKeyCounterOverRecord`), so that no key made here takes one. A second run finds
+ * nothing. A failure of either pass rolls back that pass alone, says so in its own WARN, and leaves the other to commit;
+ * the answer is then null, and the next run tries again.
  */
 export function sweepEndedKeyReveals(value: string | undefined = process.env.SCHEDULERS, isDev: boolean = dev): number | null {
+	const endedAgain = endRecordedKeysAtStart(value, isDev);
 	let found: ReturnType<typeof holdRevealsOfEndedKeys>;
 	try {
 		found = inTransaction(() => holdRevealsOfEndedKeys());
@@ -1451,7 +1462,8 @@ export function sweepEndedKeyReveals(value: string | undefined = process.env.SCH
 		}
 		return null;
 	}
-	const { switchedOff, held, ended, seeded } = found;
+	const { switchedOff, held, ended } = found;
+	const seeded = endedAgain?.seeded ?? found.seeded;
 	if (seeded !== null) {
 		try {
 			webhooksLog.info(
@@ -1471,7 +1483,61 @@ export function sweepEndedKeyReveals(value: string | undefined = process.env.SCH
 			// The hold is committed; only its telling was lost.
 		}
 	}
-	return switchedOff.length + held.length;
+	return endedAgain === null ? null : switchedOff.length + held.length + endedAgain.count;
+}
+
+/**
+ * The record's pass of `sweepEndedKeyReveals` (card 2995, R7), in a transaction of its own (its code review, FP4): the
+ * key counter raised over every id the record names, then every present key the record names ended as a revoke ends
+ * it. Told once committed: one WARN under AUTH naming the keys by id alone, and the switch-offs as the sweep tells
+ * them. Returns how many webhooks it switched off or held, and the reveal seed's count where it ran; null when it could
+ * not, with one WARN under AUTH, nothing of it committed. It never throws.
+ */
+function endRecordedKeysAtStart(value: string | undefined, isDev: boolean): { count: number; seeded: number | null } | null {
+	let endedAgain: ReturnType<typeof endRecordedKeysPresent>;
+	try {
+		endedAgain = inTransaction(() => {
+			raiseKeyCounterOverRecord(sqlite);
+			return endRecordedKeysPresent();
+		});
+	} catch (err) {
+		try {
+			authLog.warn(
+				`The API keys that the record of keys ended on this server names could not be ended: ${(err as Error)?.message ?? err}. ` +
+					'The gate refuses them meanwhile; the next sweep, within five minutes, tries again.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+	if (endedAgain.keyIds.length > 0) {
+		try {
+			authLog.warn(
+				`${endedAgain.keyIds.length} API key(s) that the record of keys ended on this server names were present, brought back outside ` +
+					'the application (an older image’s import or a host edit), and were ended again as a revoke ends them: each is refused, ' +
+					'and what it set up or was given the secret of is held.',
+				{ keyIds: endedAgain.keyIds }
+			);
+		} catch {
+			// The ending is committed; only its line was lost.
+		}
+		if (endedAgain.switchedOff.length + endedAgain.held.length > 0) {
+			try {
+				const setting = schedulerSetting(value, isDev);
+				tellSwitchedOff(
+					endedAgain.switchedOff,
+					endedAgain.cause,
+					setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` },
+					endedAgain.held,
+					'an API key ended on this server was found present and ended again'
+				);
+			} catch {
+				// The hold is committed; only its telling was lost.
+			}
+		}
+	}
+	return { count: endedAgain.switchedOff.length + endedAgain.held.length, seeded: endedAgain.seeded };
 }
 
 let revealSweepTimer: ReturnType<typeof setInterval> | null = null;

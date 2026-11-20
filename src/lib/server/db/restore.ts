@@ -53,13 +53,27 @@ import {
 	holdRevealedIn,
 	holdRevealsOfEndedKeys,
 	holdUnheldOfGoneSetters,
+	readableBy,
 	readableCoveredAt,
+	seedRevealsOnce,
 	switchOffLostWebhooks,
 	tellSwitchedOff,
+	WEBHOOK_REVEALS_SEEDED,
 	WEBHOOKS_ALREADY_OFF_HELD,
 	type Reveal,
 	type SwitchedOff
 } from '../webhooks';
+import {
+	KEY_RECORD_TABLE,
+	REVOKED_BECAUSE,
+	REVOKED_BECAUSE_WORDS,
+	WATERMARK,
+	endApiKeys,
+	keyRecordedWhere,
+	raiseKeyCounterOverRecord,
+	seedNames,
+	watermarkOf
+} from '../key-revocations';
 import { sqlite } from './index';
 
 const log = createLogger('AUTH');
@@ -69,6 +83,12 @@ const MIGRATION_RECORD = '__drizzle_migrations';
 
 /** This server's own record of what was done to it, and by whom: a restore keeps it (card 2899). */
 const SYSTEM_LOG = 'system_logs';
+
+/**
+ * This server's record of every API key ended here (card 2995, migration 0076): a restore keeps it, as it keeps the
+ * system log, and adds the backup's rows to it (`carryKeyRevocations`); Reset Everything keeps it too.
+ */
+const KEY_RECORD = KEY_RECORD_TABLE;
 
 /**
  * The lines a backup's system log held, which a restore does not bring in
@@ -224,12 +244,22 @@ export type RestoreResult = {
 	 * kept again under Settings held for review. 0 where none.
 	 */
 	settingHoldsCarried: number;
+	/**
+	 * The backup's API keys the restore left out (card 2995): `keyIds`, by the backup's key id, those the record of
+	 * keys ended on this server names (`leaveOutRecordedKeys`) and those of an account disabled here (`carryDisabled`,
+	 * R13), with `count` how many; and `workingCopy`, a working copy's every other key, counted only (R4). Never an
+	 * account, a name or a prefix.
+	 */
+	apiKeysLeftOut: ApiKeysLeftOut;
 };
+
+/** The keys a restore left out (card 2995): see `RestoreResult.apiKeysLeftOut`. */
+export type ApiKeysLeftOut = { count: number; keyIds: number[]; workingCopy: number };
 
 /** What a restore that committed had done, for a `RestoreError` thrown after the commit. */
 export type CommittedRestore = Pick<
 	RestoreResult,
-	'requestLinksReplaced' | 'apiKeyDeadlines' | 'decisionLinksCleared' | 'secrets' | 'sealVerified' | 'unsealed' | 'sealKeyHere' | 'mfa' | 'systemLogLeftOut'
+	'requestLinksReplaced' | 'apiKeyDeadlines' | 'decisionLinksCleared' | 'secrets' | 'sealVerified' | 'unsealed' | 'sealKeyHere' | 'mfa' | 'systemLogLeftOut' | 'apiKeysLeftOut'
 >;
 
 /**
@@ -532,8 +562,14 @@ function hasSettingsTable(live: Database.Database): boolean {
  * ended again for each: their restored API keys deleted and their restored
  * report schedules paused. Their webhooks are switched off by the restore's
  * sweep, which runs after this. Returns the ids carried.
+ *
+ * The ids of the keys it deletes go into `keyIds`, which the restore's answer
+ * counts with the keys it leaves out (card 2995, R13), and every webhook that
+ * names one of them as the key that set it is made to name none, as the
+ * foreign key's ON DELETE SET NULL would with the foreign keys on (R8): the
+ * hold rule reads that as a key that ended.
  */
-function carryDisabled(live: Database.Database, disabled: readonly DisabledHere[], reveals: Reveal[] = []): number[] {
+function carryDisabled(live: Database.Database, disabled: readonly DisabledHere[], reveals: Reveal[] = [], keyIds: number[] = []): number[] {
 	if (disabled.length === 0) return [];
 	const restored = live.prepare('SELECT id FROM users WHERE id = ? AND created_at = ? AND role <> ?');
 	const sameAccount = live.prepare('SELECT 1 FROM users WHERE id = ? AND created_at = ?');
@@ -549,7 +585,6 @@ function carryDisabled(live: Database.Database, disabled: readonly DisabledHere[
 			)
 		: null;
 	const forgetReveals = hasReveals ? live.prepare('DELETE FROM webhook_reveals WHERE key_id IN (SELECT id FROM api_keys WHERE user_id = ?)') : null;
-	const keys = live.prepare('DELETE FROM api_keys WHERE user_id = ?');
 	const schedules = live.prepare('UPDATE report_schedules SET enabled = 0, updated_at = ? WHERE user_id = ? AND enabled = 1');
 	const carried: number[] = [];
 	for (const account of disabled) {
@@ -569,11 +604,197 @@ function carryDisabled(live: Database.Database, disabled: readonly DisabledHere[
 			for (const row of revealsOf.all(account.id) as (Omit<Reveal, 'before'> & { before: number })[]) reveals.push({ ...row, before: row.before === 1 });
 			forgetReveals.run(account.id);
 		}
-		keys.run(account.id);
+		// Each recorded as ended here first, `access ended` (card 2995): its disable ended it, and a later restore of
+		// the same backup, the account enabled again meanwhile, still leaves it out.
+		const ended = endApiKeys(live, { userId: account.id }, REVOKED_BECAUSE.accessEnded);
+		keyIds.push(...ended);
+		forgetSetByKey(live, ended);
 		schedules.run(stamp(), account.id);
 		carried.push(account.id);
 	}
 	return carried;
+}
+
+/**
+ * Every webhook that names one of `keyIds` as the key that set it made to name none (card 2995, R8): what the foreign
+ * key's ON DELETE SET NULL does with the foreign keys on, done by hand inside a restore, where they are off. The hold
+ * rule reads a webhook set with a key that names none as one whose key ended (`holdOf`).
+ */
+function forgetSetByKey(live: Database.Database, keyIds: readonly number[]): void {
+	if (keyIds.length === 0 || !live.prepare("SELECT 1 FROM pragma_table_info('webhooks') WHERE name = 'set_by_key'").get()) return;
+	live.prepare('UPDATE webhooks SET set_by_key = NULL WHERE set_by_key IN (SELECT value FROM json_each(?))').run(JSON.stringify(keyIds));
+}
+
+/** This server's keys up to W (card 2995, R1), read before the clear: a backup key with one of these ids and another hash is left out. */
+type KeysHeldHere = { watermark: number | null; held: [number, string][] };
+
+/**
+ * W, and the id and hash of every key this server holds with an id up to W, read before a restore clears `api_keys`
+ * (card 2995, R1), as `revealsHere` is read. With no watermark, every key's (fail closed). None where the database
+ * has no record.
+ */
+function keysHeldHere(live: Database.Database): KeysHeldHere {
+	if (!live.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(KEY_RECORD)) return { watermark: null, held: [] };
+	const watermark = watermarkOf(live);
+	const held = live
+		.prepare('SELECT id, key_hash AS keyHash FROM api_keys WHERE ? IS NULL OR id <= ? ORDER BY id')
+		.all(watermark, watermark) as { id: number; keyHash: string }[];
+	return { watermark, held: held.map((key) => [key.id, key.keyHash]) };
+}
+
+/** Why a row of a backup's record was left out (card 2995, R6), counted by reason: never the row's own text. */
+type RecordRowFault = 'an id that is not a whole number from 1 to 2^53 - 1' | "an id above the backup's own key counter" | 'a hash that is neither empty nor a SHA-256';
+
+/**
+ * Add the backup's record of ended API keys to this server's (card 2995, R6, as its code review's FP1 widened it),
+ * inside the restore's transaction: each row read from the snapshot's table storage, kept only where `key_id` is a safe
+ * integer of at least 1 and `key_hash` is '' or a SHA-256 in lower-case hex; a seed row ('') only where its id is at
+ * most the backup's own `api_keys` counter or its largest key id, whichever is greater; a hashed row whatever its id,
+ * since it names a key by hash alone and a server whose counter row was deleted can hold one above its counter;
+ * `revoked_at` read as a moment, else the restore's; `revoked_because` one of this build's words, else `recorded in a
+ * backup`. `INSERT OR IGNORE`: this server's rows are kept. The backup's watermark rows (R1) are added up to the larger
+ * of that bound and every id its accepted rows name, so a seed row from it names a key by id here too; a later restore
+ * of an older backup then leaves those keys out. Every row left out is counted in one `errors` line giving how many and
+ * why, never quoting the backup. Then this server's key counter is raised over every id the record names
+ * (`raiseKeyCounterOverRecord`). Not caught: a failure rolls the restore back. Returns how many rows it added.
+ */
+function carryKeyRevocations(live: Database.Database, backup: Database.Database, errors: string[], at: string): number {
+	let added = 0;
+	if (backup.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(KEY_RECORD)) {
+		const columns = columnNamesOf(backup, KEY_RECORD);
+		const rows = ['key_id', 'key_hash'].every((column) => columns.includes(column))
+			? (backup.prepare(fromTableStorage(backup, KEY_RECORD)).all() as Record<string, unknown>[])
+			: [];
+		const unreadable = rows.length === 0 && !['key_id', 'key_hash'].every((column) => columns.includes(column));
+		// The backup's own bound: its key counter, or its largest key id, whichever is greater.
+		const counter = backup.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'").get()
+			? Number((backup.prepare("SELECT max(seq) AS seq FROM sqlite_sequence WHERE name = 'api_keys'").get() as { seq: unknown }).seq ?? 0)
+			: 0;
+		const largest = columnNamesOf(backup, 'api_keys').includes('id')
+			? Number((backup.prepare(`SELECT max(id) AS id FROM (${fromTableStorage(backup, 'api_keys')})`).get() as { id: unknown }).id ?? 0)
+			: 0;
+		const bound = Math.max(Number.isSafeInteger(counter) ? counter : 0, Number.isSafeInteger(largest) ? largest : 0);
+		const faults = new Map<RecordRowFault, number>();
+		const fault = (why: RecordRowFault) => faults.set(why, (faults.get(why) ?? 0) + 1);
+		const put = live.prepare('INSERT OR IGNORE INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (?, ?, ?, ?)');
+		const accepted: { id: number; hash: string; row: Record<string, unknown> }[] = [];
+		const watermarks: { id: number; row: Record<string, unknown> }[] = [];
+		// The largest id an accepted seed or hashed row names: a watermark up to it is the backup's own (FP1).
+		let named = 0;
+		for (const row of rows) {
+			const id = row.key_id;
+			const hash = row.key_hash;
+			const watermark = hash === WATERMARK;
+			if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < (watermark ? 0 : 1)) {
+				fault('an id that is not a whole number from 1 to 2^53 - 1');
+				continue;
+			}
+			if (watermark) {
+				watermarks.push({ id, row });
+				continue;
+			}
+			if (typeof hash !== 'string' || (hash !== '' && !/^[0-9a-f]{64}$/.test(hash))) {
+				fault('a hash that is neither empty nor a SHA-256');
+				continue;
+			}
+			// Only a seed row is held to the backup's own key counter (card 2995's code review, FP1): it names a key by id,
+			// where a hashed row names one by hash alone, and its id was a key of that server's whatever its counter says
+			// now (Vacuum and Reset deleted the counters before c6ed310).
+			if (hash === '' && id > bound) {
+				fault("an id above the backup's own key counter");
+				continue;
+			}
+			named = Math.max(named, id);
+			accepted.push({ id, hash, row });
+		}
+		// The watermark up to the larger of the backup's own bound and the ids its accepted rows name (FP1): W was at least
+		// every id the record held when it was written.
+		for (const { id, row } of watermarks) {
+			if (id > Math.max(bound, named)) {
+				fault("an id above the backup's own key counter");
+				continue;
+			}
+			accepted.push({ id, hash: WATERMARK, row });
+		}
+		for (const { id, hash, row } of accepted) {
+			const when = toStamp(row.revoked_at) ?? at;
+			const because = typeof row.revoked_because === 'string' && REVOKED_BECAUSE_WORDS.includes(row.revoked_because) ? row.revoked_because : REVOKED_BECAUSE.inABackup;
+			added += put.run(id, hash, when, because).changes;
+		}
+		const leftOut = [...faults.values()].reduce((sum, n) => sum + n, 0);
+		if (leftOut > 0) {
+			errors.push(
+				`${leftOut} row(s) of the backup's record of ended API keys were left out, as they can name no key: ` +
+					[...faults].map(([why, n]) => `${n} with ${why}`).join(', ') +
+					'. The rest of the record was added to this server\'s.'
+			);
+		}
+		if (unreadable) errors.push("The backup's record of ended API keys has not the columns this build reads, and was not added to this server's.");
+	}
+	raiseKeyCounterOverRecord(live);
+	return added;
+}
+
+/** What `leaveOutRecordedKeys` left out (card 2995). */
+type KeysLeftOut = {
+	/** The restored keys the record names (R6), and those `carryDisabled` ended are added by the caller (R13): by id, sorted. */
+	keyIds: number[];
+	/** A working copy's other keys, left out as it is one (R4): counted only. */
+	workingCopy: number;
+	/** Every webhook a key left out may have been given the secret of, for the one `holdRevealedIn` (R3). */
+	reveals: Reveal[];
+};
+
+/**
+ * Leave out of the restored data every API key the record of ended keys names (card 2995), inside the restore's
+ * transaction, after the secrets are filled and `carryRevealsHere` and the once-only seed have run (R3), and before
+ * the ended-key sweep:
+ *
+ * 1. The hash belt (R2): every restored key a seed row names by its id (at most W), and every one whose id this server
+ *    held with another hash just before the restore (`held`, R1), has its own hash recorded, `before record`, so it
+ *    is caught under any id in any later backup. Both are then named by the one rule.
+ * 2. What each key left out may have been given (R3): every row of `webhook_reveals` it has, seeded, carried or the
+ *    backup's own, and every webhook with a secret, not held, that its account could set or read as an owner or an
+ *    administrator, whatever its last use: the backup's last use predates the leak. Returned for the one hold.
+ * 3. Its rows of `webhook_reveals` deleted, then one `DELETE FROM api_keys WHERE <keyRecordedWhere>` over every row
+ *    (R6), the gate's own predicate, then `set_by_key` emptied on every webhook naming one (R8).
+ *
+ * A working copy (`every`, R4) then leaves out every other key the same way, counted only: no key of a backup works
+ * on a copy of it. Not caught: a failure rolls the restore back.
+ */
+function leaveOutRecordedKeys(live: Database.Database, options: { held: KeysHeldHere['held']; every: boolean; at: string }): KeysLeftOut {
+	const hasReveals = !!live.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'webhook_reveals'").get();
+	const belt =
+		'INSERT OR IGNORE INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) ' +
+		`SELECT k.id, k.key_hash, @at, '${REVOKED_BECAUSE.beforeRecord}' FROM api_keys AS k WHERE k.key_hash NOT IN ('', '${WATERMARK}') AND (` +
+		// The seed's half of the gate's own rule (`seedNames`, card 2995's code review, FP7).
+		`EXISTS (${seedNames('k.id')}) ` +
+		"OR EXISTS (SELECT 1 FROM json_each(@held) AS h WHERE json_extract(h.value, '$[0]') = k.id AND json_extract(h.value, '$[1]') IS NOT k.key_hash))";
+	live.prepare(belt).run({ at: options.at, held: JSON.stringify(options.held) });
+
+	const leaveOut = (where: string): { keyIds: number[]; reveals: Reveal[] } => {
+		const reveals: Reveal[] = [];
+		if (hasReveals) {
+			const given = live
+				.prepare(
+					'SELECT r.webhook_id AS webhookId, r.key_id AS keyId, k.user_id AS userId, r.revealed_at IS NULL AS before ' +
+						`FROM webhook_reveals AS r JOIN api_keys AS k ON k.id = r.key_id WHERE ${where} ` +
+						'UNION SELECT w.id AS webhookId, k.id AS keyId, k.user_id AS userId, 1 AS before FROM api_keys AS k JOIN users AS u ON u.id = k.user_id ' +
+						"JOIN webhooks AS w ON w.secret <> '' AND (w.active = 1 OR w.held_because IS NULL) " +
+						`AND (w.set_by = k.user_id OR ${readableBy('k.user_id', 'u.role', 'w.board_id')}) WHERE ${where} ` +
+						'ORDER BY webhookId, keyId'
+				)
+				.all() as (Omit<Reveal, 'before'> & { before: number })[];
+			for (const row of given) reveals.push({ ...row, before: row.before === 1 });
+			live.prepare(`DELETE FROM webhook_reveals WHERE key_id IN (SELECT k.id FROM api_keys AS k WHERE ${where})`).run();
+		}
+		const keyIds = (live.prepare(`DELETE FROM api_keys AS k WHERE ${where} RETURNING id`).all() as { id: number }[]).map((row) => row.id).sort((a, b) => a - b);
+		forgetSetByKey(live, keyIds);
+		return { keyIds, reveals };
+	};
+	const recorded = leaveOut(keyRecordedWhere('k.id', 'k.key_hash'));
+	const rest = options.every ? leaveOut('1 = 1') : { keyIds: [], reveals: [] };
+	return { keyIds: recorded.keyIds, workingCopy: rest.keyIds.length, reveals: [...recorded.reveals, ...rest.reveals] };
 }
 
 /** A row of this server's `webhook_reveals`, read before a restore clears it, with what its carry is matched on (card 2947). */
@@ -754,7 +975,12 @@ function groupingsNotCopied(live: Database.Database, backup: Database.Database):
 /**
  * The tables a restore clears and refills: every table in the running database
  * except SQLite's own, tables drizzle-kit left behind mid-rebuild (`__new_*`),
- * the migration record and the system log.
+ * the migration record, the system log and the record of API keys ended here.
+ *
+ * The record of ended keys (card 2995) is this server's, as the system log is:
+ * cleared and refilled from a backup made before an ending, it would forget the
+ * ending and bring the key back. The restore adds the backup's rows to it
+ * instead, and Reset Everything, which reads this list, keeps it.
  *
  * The system log is this server's record of what was done to it, and by whom
  * (card 2899). A restore cleared it and copied the backup's in its place, so
@@ -778,7 +1004,7 @@ export function restorableTables(live: Database.Database): string[] {
 		.map((row) => row.name)
 		.filter(
 			(name) =>
-				!name.startsWith('sqlite_') && !name.startsWith('__new_') && name !== MIGRATION_RECORD && name !== SYSTEM_LOG
+				!name.startsWith('sqlite_') && !name.startsWith('__new_') && name !== MIGRATION_RECORD && name !== SYSTEM_LOG && name !== KEY_RECORD
 		);
 }
 
@@ -1359,6 +1585,14 @@ export function defaultOutside(
  * holds; a log that cannot be counted is said in `errors`, and the restore
  * goes on.
  *
+ * No API key ended on this server comes back (card 2995). The record of ended
+ * keys is not cleared (`restorableTables`); after `carryDisabled`, which
+ * records the keys it deletes, the backup's own record is added within its
+ * bounds (`carryKeyRevocations`); and after the secrets are filled and the
+ * reveals carried, every restored key the record names is left out with what
+ * it set or was given, a working copy leaving out every key
+ * (`leaveOutRecordedKeys`). `apiKeysLeftOut` counts them.
+ *
  * Throws a `RestoreError` in every case but a clean return. Its `committed`
  * says whether the database was changed: it is false, and the database is as
  * it was, for everything except foreign keys that could not be switched back
@@ -1400,6 +1634,9 @@ function restoreInOneSnapshot(
 	// The settings held for review here that the backup did not hold, carried over it (card 2922, R10).
 	let settingHoldsCarried = 0;
 	let apiKeyDeadlines = 0;
+	// The backup's keys left out: those the record of keys ended here names, those of accounts disabled here, and a
+	// working copy's every other key (card 2995).
+	let apiKeysLeftOut: ApiKeysLeftOut = { count: 0, keyIds: [], workingCopy: 0 };
 	let decisionLinksCleared = 0;
 	// The webhooks switched off for good inside the transaction (card 2752), told after the commit.
 	let swept: SwitchedOff[] = [];
@@ -1524,8 +1761,12 @@ function restoreInOneSnapshot(
 			const disabledAccountsHere = disabledHere(live);
 			// And which of its keys were given which webhook's secret (card 2947, R1): see `carryRevealsHere`.
 			const revealsNow = revealsHere(live);
+			// And W, and its keys up to W by id and hash (card 2995, R1): see `leaveOutRecordedKeys`.
+			const keysNow = keysHeldHere(live);
 			// The rows of the keys `carryDisabled` deletes, for the hold below (R2).
 			const disabledReveals: Reveal[] = [];
+			// And those keys' ids, counted with the keys left out (card 2995, R13).
+			const disabledKeyIds: number[] = [];
 			// The sign-ins left at their second step, which the clear below
 			// ends (card 2769, CS1): said once the restore is committed. No
 			// notice is mailed, since the accounts are the backup's from here.
@@ -1761,7 +2002,13 @@ function restoreInOneSnapshot(
 			// so that the answer is of the accounts as they will be, and before
 			// the sweep below, which then switches off the webhooks they set. Not
 			// caught: a restore that could not carry them is rolled back.
-			if (tables.includes('users')) carryDisabled(live, disabledAccountsHere, disabledReveals);
+			if (tables.includes('users')) carryDisabled(live, disabledAccountsHere, disabledReveals, disabledKeyIds);
+
+			// The backup's record of ended API keys added to this server's, which the clear never touched, each row
+			// within the backup's own bounds; and the key counter raised over every seed row (card 2995, R6). Not
+			// caught: a restore that could not add them is rolled back.
+			const restoredAt = stamp();
+			if (tables.includes('api_keys')) carryKeyRevocations(live, backup, errors, restoredAt);
 
 			// Nothing is committed that leaves user accounts and no superadmin
 			// among them: nobody could export, import or reset again, and
@@ -1828,6 +2075,22 @@ function restoreInOneSnapshot(
 			// the rest returned to be held below (card 2947, R1). Not caught.
 			const lostReveals = carryRevealsHere(live, revealsNow);
 
+			// The reads made before reads were recorded seeded where the restored settings lack the flag (card 2995,
+			// R3), on the own restore and a working copy alike, after the fill, so that the leave-out below reads every
+			// row of each key it leaves out. Then every restored key the record of ended keys names left out, with what
+			// it was given, and a working copy's every other key (R4). Before the sweep, which then reads each webhook
+			// such a key set as one whose key ended (R8). Not caught.
+			let leftOutReveals: Reveal[] = [];
+			if (tables.includes('api_keys')) {
+				if (tables.includes('settings') && tables.includes('webhook_reveals') && !live.prepare('SELECT 1 FROM settings WHERE key = ?').get(WEBHOOK_REVEALS_SEEDED)) {
+					seedRevealsOnce(live);
+				}
+				const leftOutKeys = leaveOutRecordedKeys(live, { held: keysNow.held, every: working, at: restoredAt });
+				leftOutReveals = leftOutKeys.reveals;
+				const keyIds = [...new Set([...disabledKeyIds, ...leftOutKeys.keyIds])].sort((a, b) => a - b);
+				apiKeysLeftOut = { count: keyIds.length, keyIds, workingCopy: leftOutKeys.workingCopy };
+			}
+
 			// Every restored webhook that is on and held switched off for good
 			// (card 2752, S1): see above. On the server's own connection alone,
 			// which the hold rule reads, and not for a working copy, which
@@ -1848,7 +2111,8 @@ function restoreInOneSnapshot(
 			// secret may be one a key the restore did not bring back was given, and every one the keys of an account
 			// disabled again were given, held, before a working copy switches every webhook off, so that switching one
 			// on gives it a new secret. The server's own restore tells them with its sweep; a working copy nobody.
-			const fromLost = live === sqlite || working ? holdRevealedIn(live, [...lostReveals, ...disabledReveals]) : { switchedOff: [], held: [] };
+			// With every webhook a key left out may have been given (card 2995, R3).
+			const fromLost = live === sqlite || working ? holdRevealedIn(live, [...lostReveals, ...disabledReveals, ...leftOutReveals]) : { switchedOff: [], held: [] };
 			if (live === sqlite && !working) {
 				// Then what every ended key was given, as the sweep does, the once-only seed first where the restored
 				// settings lack its flag, so nothing waits for the five-minute sweep. Told with the sweep. Not caught.
@@ -1906,7 +2170,7 @@ function restoreInOneSnapshot(
 			throw new RestoreError(
 				'The backup was restored and committed, but foreign keys could not be switched back on. Restart the ' +
 					'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it.',
-				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, mfa, systemLogLeftOut } }
+				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, mfa, systemLogLeftOut, apiKeysLeftOut } }
 			);
 		}
 		throw new RestoreError(
@@ -2011,5 +2275,5 @@ function restoreInOneSnapshot(
 		}
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut, settingHoldsCarried };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut, settingHoldsCarried, apiKeysLeftOut };
 }

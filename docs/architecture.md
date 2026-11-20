@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.139
+version: 1.140
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2995
+  - api-key-revocations
   - card-2947
   - card-2898
   - secrets-at-rest
@@ -265,7 +267,11 @@ time with every webhook made before setters were recorded, keeping the moment it
 `sweepEndedKeyReveals()` (card 2947: once, while `webhook_reveals_seeded` is absent, it seeds the
 reads made before they were recorded; then every API key with rows in `webhook_reveals` that has
 expired, passed its deadline or gone has its account's webhooks swept and every webhook with a
-secret it was given held, and its rows deleted; told as the sweep is; it cannot throw),
+secret it was given held, and its rows deleted; told as the sweep is; it cannot throw. Since card
+2995 it first ends, as a revoke does, every API key present that the record of keys ended on this
+server names, with one `WARN` under AUTH naming them by id, and keeps the key counter at or above
+every id that record names, in a transaction of its own: a failure of either pass rolls back that
+pass alone, with its own `WARN`),
 `startEndedKeyRevealSweep()` (the same every five minutes, whatever `SCHEDULERS` says; a second
 call starts no second timer) and `startSchedulers()`, in that order for the last six.
 
@@ -624,7 +630,9 @@ JSON.
 
 There are two `401`s. A request with no `Authorization` header, or one that is not a
 `Bearer` header, is told so. A key that is not known, has expired or belongs to a deleted
-user is answered `Invalid or expired API key`. `Bearer ` with nothing after it gets the
+user is answered `Invalid or expired API key`, and so is one the record of keys ended on this
+server names (card 2995: `keyEnded` asks `keyRecorded`, three searches on the record's key, so a key
+an older image's import or a host edit put back is refused). `Bearer ` with nothing after it gets the
 first: a header's value loses the spaces at its end before the gate sees it, so it arrives
 as `Bearer`, which is no `Bearer` header. The gate had a third, `API key is empty`, for it,
 which nothing could reach, and card 2117 took it out.

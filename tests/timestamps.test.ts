@@ -165,8 +165,9 @@ describe('timestampColumns', () => {
 		// review's CS1); and when a requester's link was issued (migration 0070, card 2870); and when a
 		// webhook was switched off by a hold (migration 0071, card 2752); and when an account was
 		// disabled (migration 0072, card 2671); and when a setting was held for review (migration 0074, card 2922); and
-		// when an API key was first given a webhook's secret (migration 0075, card 2947).
-		expect(found).toHaveLength(83);
+		// when an API key was first given a webhook's secret (migration 0075, card 2947); and when an API key was ended
+		// here (migration 0076, card 2995).
+		expect(found).toHaveLength(84);
 		for (const column of [
 			'activity_log.created_at',
 			'api_keys.expires_at',
@@ -193,7 +194,9 @@ describe('timestampColumns', () => {
 			// Card 2922.
 			'setting_holds.held_at',
 			// Card 2947.
-			'webhook_reveals.revealed_at'
+			'webhook_reveals.revealed_at',
+			// Card 2995.
+			'api_key_revocations.revoked_at'
 		]) {
 			expect(found).toContain(column);
 		}

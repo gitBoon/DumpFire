@@ -54,7 +54,7 @@ import { boardTeams, teamMembers, webhooks, type Board } from './db/schema';
 import { eq, and, asc, inArray, isNull } from 'drizzle-orm';
 import { createHash, createHmac } from 'crypto';
 import { createLogger } from './logger';
-import { deadlinePassed, keyEnded } from './auth';
+import { deadlinePassed, keyEnded, keyExpired } from './auth';
 import { canViewBoard, getBoardRole, roleOnBoard, type Actor } from './board-access';
 import { notifyWebhooksSwitchedOff } from './notifications';
 import { onTheWire } from './v1-json';
@@ -227,8 +227,8 @@ export function openedSecret(hook: Pick<Webhook, 'id' | 'boardId' | 'url' | 'rec
 /** Why a webhook is held, or null to send it (card 2325; `'key ended'`, card 2893). */
 export type Hold = 'no setter' | 'setter cannot open' | 'key ended';
 
-/** An API key as the hold rule reads it: which, whose it is, and when it ends. */
-type KeyRow = { id: number; userId: number; expiresAt: string | null; deadlineAt: string | null };
+/** An API key as the hold rule reads it: which, whose it is, its hash (the record of ended keys, card 2995), and when it ends. */
+type KeyRow = { id: number; userId: number; keyHash: string; expiresAt: string | null; deadlineAt: string | null };
 
 /**
  * The account that set the webhook up must still be able to open its board,
@@ -244,8 +244,8 @@ type KeyRow = { id: number; userId: number; expiresAt: string | null; deadlineAt
  * open the board:
  *
  *   - `set_with_key` 1 and a key recorded: held when the key's row is gone,
- *     it has ended (`keyEnded`, the gate's rule: its expiry or its deadline),
- *     or it is not the setter's (S12)
+ *     it has ended (`keyEnded`, the gate's rule: its expiry, its deadline, or
+ *     the record of keys ended here, card 2995), or it is not the setter's (S12)
  *   - `set_with_key` 1 and no key: held, always: its key was deleted, or it
  *     was set with a credential that is not a key (S11)
  *   - `set_with_key` NULL, a webhook set before keys were recorded: held when
@@ -280,7 +280,7 @@ function keyEndedFor(hook: Webhook, setBy: number, cache: Map<string, boolean>):
 		let ended = cache.get(key);
 		if (ended === undefined) {
 			const row = sqlite
-				.prepare('SELECT user_id AS userId, expires_at AS expiresAt, deadline_at AS deadlineAt FROM api_keys WHERE id = ?')
+				.prepare('SELECT id, user_id AS userId, key_hash AS keyHash, expires_at AS expiresAt, deadline_at AS deadlineAt FROM api_keys WHERE id = ?')
 				.get(hook.setByKey) as KeyRow | undefined;
 			ended = row === undefined || row.userId !== setBy || keyEnded(row, now);
 			cache.set(key, ended);
@@ -305,7 +305,7 @@ function keyEndedFor(hook: Webhook, setBy: number, cache: Map<string, boolean>):
 export function keysBeforeRecorded(setBy: number): KeyRow[] {
 	return sqlite
 		.prepare(
-			`SELECT id, user_id AS userId, expires_at AS expiresAt, deadline_at AS deadlineAt FROM api_keys
+			`SELECT id, user_id AS userId, key_hash AS keyHash, expires_at AS expiresAt, deadline_at AS deadlineAt FROM api_keys
 			 WHERE user_id = ? AND created_at < (SELECT value FROM settings WHERE key = 'webhook_keys_recorded_at')`
 		)
 		.all(setBy) as KeyRow[];
@@ -1223,7 +1223,7 @@ export function endedKeysWithReveals(database: typeof sqlite = sqlite, now: stri
 	for (const row of rows) {
 		if (row.gone === 1) ended.push({ id: row.id, userId: null, how: 'gone' });
 		else if (row.accountEnded === 1) ended.push({ id: row.id, userId: row.userId, how: 'disabled' });
-		else if (keyEnded({ expiresAt: row.expiresAt, deadlineAt: null }, now)) ended.push({ id: row.id, userId: row.userId, how: 'expired' });
+		else if (keyExpired(row, now)) ended.push({ id: row.id, userId: row.userId, how: 'expired' });
 		else if (deadlinePassed(row, now)) ended.push({ id: row.id, userId: row.userId, how: 'deadline' });
 	}
 	return ended;

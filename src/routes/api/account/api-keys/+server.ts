@@ -1,5 +1,6 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
+import { keyRecorded } from '$lib/server/key-revocations';
 import { afterCommit } from '$lib/server/db/transaction';
 import { apiKeys } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
@@ -13,6 +14,29 @@ import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
+
+/**
+ * The account's keys as the Account page lists them, and as the limit of ten counts them: every row but those the
+ * record of keys ended on this server names (`keyRecorded`, card 2995's code review, FP3), which the gate refuses
+ * and the start or the five-minute sweep deletes. Each with its hash, for the caller to drop.
+ */
+function liveKeysOf(userId: number) {
+	return db
+		.select({
+			id: apiKeys.id,
+			name: apiKeys.name,
+			keyPrefix: apiKeys.keyPrefix,
+			lastUsedAt: apiKeys.lastUsedAt,
+			expiresAt: apiKeys.expiresAt,
+			createdAt: apiKeys.createdAt,
+			deadlineAt: apiKeys.deadlineAt,
+			keyHash: apiKeys.keyHash
+		})
+		.from(apiKeys)
+		.where(eq(apiKeys.userId, userId))
+		.all()
+		.filter((key) => !keyRecorded(sqlite, key));
+}
 
 /**
  * GET — List the current user's API keys (without the secret). `deadlineAt`
@@ -31,18 +55,10 @@ const log = createLogger('AUTH');
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	const keys = db.select({
-		id: apiKeys.id,
-		name: apiKeys.name,
-		keyPrefix: apiKeys.keyPrefix,
-		lastUsedAt: apiKeys.lastUsedAt,
-		expiresAt: apiKeys.expiresAt,
-		createdAt: apiKeys.createdAt,
-		deadlineAt: apiKeys.deadlineAt
-	})
-		.from(apiKeys)
-		.where(eq(apiKeys.userId, locals.user.id))
-		.all();
+	// With its hash, read here alone: a key the record of keys ended on this server names is ended, refused by the
+	// gate and ended by the next sweep, and is not listed as live (card 2995's code review, FP3). The hash is never
+	// answered.
+	const keys = liveKeysOf(locals.user.id).map(({ keyHash: _keyHash, ...key }) => key);
 	const stopped = webhooksStoppedByRevoke(locals.user.id);
 	// Less exactly the ones the revoke's setters' sweep takes first (card 2947's code review, FP8).
 	const revealed = webhooksRevealedTo(locals.user.id, stopped);
@@ -65,12 +81,9 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 
 	const body = await readBody(request);
 
-	/** Limit to 10 keys per user. */
+	/** Limit to 10 keys per user: a key the record names is ended, and not counted (card 2995's code review, FP3). */
 	const requireRoom = (userId: number) => {
-		const existing = db.select({ id: apiKeys.id })
-			.from(apiKeys)
-			.where(eq(apiKeys.userId, userId))
-			.all();
+		const existing = liveKeysOf(userId);
 		if (existing.length >= 10) {
 			throw error(400, 'Maximum of 10 API keys per user');
 		}

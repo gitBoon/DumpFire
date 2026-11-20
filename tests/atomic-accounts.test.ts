@@ -98,6 +98,7 @@ import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { knownBrowserCookie, rememberBrowser, rememberedNonce } from '$lib/server/known-browsers';
 import { CHALLENGE_COOKIE, tokenHashOf } from '$lib/server/sign-in-challenges';
 import { ENDING_IN_MAIL, dispatchWebhook } from '$lib/server/webhooks';
+import { RECORD_ACCOUNT_KEYS_ENDED_SQL } from '$lib/server/key-revocations';
 import { PUT as changeOwnPassword } from '../src/routes/api/account/password/+server';
 import { load as loadAdminPage } from '../src/routes/admin/+page.server';
 import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.server';
@@ -560,6 +561,9 @@ describe('PUT /api/account/password', () => {
 			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
 			'delete from sign_in_challenges',
 			'delete from enrolment_links',
+			// The record of the keys ended here, before they go (card 2995): `shape` keeps three words, so the
+			// statement is 'insert or ignore'; the first pin holds it whole (RECORD_ACCOUNT_KEYS_ENDED_SQL).
+			'insert or ignore',
 			'delete from api_keys',
 			// The webhooks the account set (card 2168): written whether or not one
 			// matches, and only when the keys end.
@@ -569,6 +573,9 @@ describe('PUT /api/account/password', () => {
 			'update report_schedules set',
 			'insert into sessions'
 		]);
+		// The one pin of the record's shape holds its statement whole, as a write is recorded, to its first 160
+		// characters (helpers/failing-write.ts; card 2995, R10).
+		expect(run.writes).toContain(RECORD_ACCOUNT_KEYS_ENDED_SQL.slice(0, 160));
 		expect(run.effects).toEqual([]);
 		expectHashedOutsideTransaction();
 	});
@@ -839,6 +846,9 @@ describe('PUT /api/users/:id/password', () => {
 			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
 			'delete from sign_in_challenges',
 			'delete from enrolment_links',
+			// The record of the keys ended here, before they go (card 2995): `shape` keeps three words, so the
+			// statement is 'insert or ignore'; the first pin holds it whole (RECORD_ACCOUNT_KEYS_ENDED_SQL).
+			'insert or ignore',
 			'delete from api_keys',
 			// What the account set going (card 2168), written whether or not a row matches.
 			'update webhooks set',
@@ -1027,6 +1037,9 @@ describe('POST /api/users/:id/disable', () => {
 			'delete from invite_tokens',
 			'delete from sign_in_challenges',
 			'delete from enrolment_links',
+			// The record of the keys ended here, before they go (card 2995): `shape` keeps three words, so the
+			// statement is 'insert or ignore'; the first pin holds it whole (RECORD_ACCOUNT_KEYS_ENDED_SQL).
+			'insert or ignore',
 			'delete from api_keys',
 			'update webhooks set',
 			// The links of the requests it made, by the ending itself since card 2922.
@@ -1509,6 +1522,9 @@ describe('the invite page', () => {
 			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
 			'delete from sign_in_challenges',
 			'delete from enrolment_links',
+			// The record of the keys ended here, before they go (card 2995): `shape` keeps three words, so the
+			// statement is 'insert or ignore'; the first pin holds it whole (RECORD_ACCOUNT_KEYS_ENDED_SQL).
+			'insert or ignore',
 			'delete from api_keys',
 			'update webhooks set',
 			// The links of the requests it made (card 2922).
@@ -1864,6 +1880,9 @@ describe('what taking an account back switches off (card 2168)', () => {
 			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
 			'delete from sign_in_challenges',
 			'delete from enrolment_links',
+			// The record of the keys ended here, before they go (card 2995): `shape` keeps three words, so the
+			// statement is 'insert or ignore'; the first pin holds it whole (RECORD_ACCOUNT_KEYS_ENDED_SQL).
+			'insert or ignore',
 			'delete from api_keys',
 			'update webhooks set',
 			// The links of the requests it made (card 2922).
@@ -1916,6 +1935,9 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'delete from invite_tokens',
 			'delete from sign_in_challenges',
 			'delete from enrolment_links',
+			// The record of the keys ended here, before they go (card 2995): `shape` keeps three words, so the
+			// statement is 'insert or ignore'; the first pin holds it whole (RECORD_ACCOUNT_KEYS_ENDED_SQL).
+			'insert or ignore',
 			'delete from api_keys',
 			'update webhooks set',
 			// The links of the requests it made (card 2922).
@@ -2015,6 +2037,9 @@ describe('what taking an account back switches off (card 2168)', () => {
 			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
 			'delete from sign_in_challenges',
 			'delete from enrolment_links',
+			// The record of the keys ended here, before they go (card 2995): `shape` keeps three words, so the
+			// statement is 'insert or ignore'; the first pin holds it whole (RECORD_ACCOUNT_KEYS_ENDED_SQL).
+			'insert or ignore',
 			'delete from api_keys',
 			'update webhooks set',
 			// The links of the requests it made (card 2922).

@@ -44,7 +44,8 @@ import { join, posix } from 'node:path';
 import ts from 'typescript';
 import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
+import { restorableTables } from '$lib/server/db/restore';
 import {
 	boardCategories,
 	boardMembers,
@@ -4265,6 +4266,12 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 		writes: 1,
 		why: "Switches a webhook off for good when its setter can no longer open the board, recording why and when (card 2752): active off, held_because and held_at, and nothing else."
 	},
+	// Card 2995 (R8): a key the restore left out, or a disabled account's key it deleted, named by no webhook.
+	'src/lib/server/db/restore.ts#forgetSetByKey': {
+		does: 'switches off only',
+		writes: 1,
+		why: "A restore empties set_by_key on every webhook a key it deleted set, as the foreign key's ON DELETE SET NULL does with the foreign keys on; the hold rule reads that as 'key ended' (card 2995, R8)."
+	},
 	'src/lib/server/db/restore.ts#carryHolds': {
 		does: 'switches off only',
 		writes: 1,
@@ -4323,7 +4330,9 @@ const WEBHOOK_WRITER_CALLERS: Record<string, readonly string[]> = {
 	// Card 2947 (R3): what an API key was given, held by its revoke and by the sweep of ended keys, which the start
 	// and its five-minute timer run.
 	// And by the server's own restore (R1, R2), never failing open.
-	'src/lib/server/webhooks.ts#holdRevealed': ['src/routes/api/account/api-keys/[id]/+server.ts#DELETE'],
+	// Card 2995 (R7): the revoke's body, extracted as revokeApiKeys, which the revoke and the start's pass for a present
+	// key the record of ended keys names both run.
+	'src/lib/server/webhooks.ts#holdRevealed': ['src/lib/server/api-key-revoke.ts#revokeApiKeys'],
 	// Its code review (FP1): the restore holds on its own connection, a working copy's included.
 	'src/lib/server/webhooks.ts#holdRevealedIn': ['src/lib/server/db/restore.ts#restoreInOneSnapshot'],
 	'src/lib/server/webhooks.ts#holdRevealsOfEndedKeys': ['src/lib/server/startup-checks.ts#sweepEndedKeyReveals', 'src/lib/server/db/restore.ts#restoreInOneSnapshot'],
@@ -4447,8 +4456,12 @@ const WEBHOOK_SQL_WRITE = new RegExp(
 	'gi'
 );
 
-/** What a switch-off-only writer may set: `active` off, or `secret` blank, or `url` blank (card 2928: an address left out, to enter). */
-const SWITCH_OFF_SQL = /^["`[]?(?:active["`\]]?\s*=\s*0|(?:secret|url)["`\]]?\s*=\s*'')$/i;
+/**
+ * What a switch-off-only writer may set: `active` off, or `secret` blank, or `url` blank (card 2928: an address left
+ * out, to enter), or `set_by_key` NULL (card 2995, R8: the key that set it ended, which the hold rule reads as `key
+ * ended`, as the foreign key's ON DELETE SET NULL leaves it).
+ */
+const SWITCH_OFF_SQL = /^["`[]?(?:active["`\]]?\s*=\s*0|(?:secret|url)["`\]]?\s*=\s*''|set_by_key["`\]]?\s*=\s*NULL)$/i;
 
 /** What a switch-off-only writer may also set, to any value, beside `active` off: why and when it was held off (card 2752, E11). */
 const HOLD_SQL = /^["`[]?held_(?:because|at)["`\]]?\s*=\s*\S[\s\S]*$/i;
@@ -5665,6 +5678,336 @@ describe('a reset of the two-step sign-in under src always ends the keys (card 2
 		expect(reading.calls).toBe(1);
 		expect(reading.findings).toHaveLength(1);
 		expect(reading.findings[0]).toMatch(/^src\/lib\/server\/example\.ts:2 calls resetTwoStep /);
+	});
+});
+
+// ─── Card 2995: every delete of an API key or an account, and the record of ended keys ─────────────
+
+/**
+ * Card 2995 (R12, test 21): where an API key or an account may be deleted, or replaced, which deletes it, by
+ * `file#function` (`writerNameOf`), with how many such statements and why. Deleting an account deletes its keys by the
+ * foreign key, so a delete of `users` is a delete of keys. Every key deleted here is first recorded (`endApiKeys`), or
+ * is one the restore leaves out of a backup, which this server did not end.
+ */
+const KEY_DELETERS: Record<string, { count: number; why: string }> = {
+	'src/lib/server/key-revocations.ts#endApiKeys': {
+		count: 1,
+		why: "The one delete of API keys by an ending: after the record's INSERT OR IGNORE, in the same transaction, on the connection it is given (card 2995)."
+	},
+	'src/lib/server/db/restore.ts#leaveOut': {
+		count: 1,
+		why:
+			"The restore's leave-out: one DELETE ... WHERE EXISTS over the record, the gate's own predicate (R6), and a working copy's every key (R4). " +
+			'Keys of the backup, not ended here; those it names were recorded already, and the seed-matched ones are hash-recorded first (R2).'
+	},
+	'src/lib/server/deletes.ts#deleteUser': {
+		count: 1,
+		why: "DELETE FROM users, which cascades to the account's keys, after endApiKeys has recorded and deleted every key it still held (card 2995, decision 17)."
+	},
+	'scripts/mfa-reset.mjs#reset': {
+		count: 1,
+		why: "The host's two-step reset deletes the account's keys after its RECORD_ACCOUNT_KEYS_ENDED_SQL, the server's statement word for word (tests/mfa-reset-script.test.ts)."
+	}
+};
+
+/**
+ * Card 2995 (R12): the statements that delete from, or drop, a table named at run time, by `file#function`, with how
+ * many and why. Each can reach `api_keys` or `users` without naming either.
+ */
+const KEY_DYNAMIC_CLEARS: Record<string, { count: number; why: string }> = {
+	'src/lib/server/db/restore.ts#restoreInOneSnapshot': {
+		count: 1,
+		why: "The restore's clear of every restorable table, which `restorableTables` keeps the record out of: the backup's keys replace this server's, which is not an ending (decision 18); those the record names are then left out."
+	},
+	'src/routes/api/admin/reset/+server.ts#POST': {
+		count: 1,
+		why: "Reset Everything's clear of every restorable table, after endApiKeys has recorded and deleted every key, `reset` (R5); KEPT names the record."
+	},
+	'src/lib/server/db/migrate.ts#rebuildTable': {
+		count: 1,
+		why: "The migration runner's rebuild drops a table after copying its rows into its new shape; it rebuilds only boards, columns, categories, settings, user_xp and invite_tokens."
+	},
+	'src/lib/server/db/migrate.ts#storedSoByItsType': {
+		count: 1,
+		why: "The rebuild's probe drops its own temporary table (temp.<scratch>_probe), which it made a line before; never a table of the application."
+	},
+	'src/lib/server/db/migrate.ts#planRebuild': {
+		count: 1,
+		why: 'Advice in the text of an Obstacle, never run: the runner tells the host how to clear the rows that block a rebuild.'
+	}
+};
+
+/** The columns an `UPDATE api_keys` may set (R12): when a key was last used, and its deadline, which Keep clears. */
+const KEY_UPDATE_COLUMNS = ['last_used_at', 'deadline_at'];
+const KEY_UPDATE_FIELDS = ['lastUsedAt', 'deadlineAt'];
+
+/** The functions that may call `endApiKeys` (R12), each once: every ender. */
+const END_API_KEYS_CALLERS = [
+	'src/lib/server/api-key-revoke.ts#revokeApiKeys',
+	'src/lib/server/auth.ts#endAccountAccess',
+	'src/lib/server/db/restore.ts#carryDisabled',
+	'src/lib/server/deletes.ts#deleteUser',
+	'src/routes/api/admin/reset/+server.ts#POST'
+];
+
+/** A name of SQL's, as SQLite reads it: bare, quoted, backticked or bracketed, with a schema before it or not. */
+const sqlName = (name: string) => String.raw`(?:["'\x60[]?\w+["'\x60\]]?${SQL_GAP}*\.${SQL_GAP}*)?["'\x60[]?${name}["'\x60\]]?(?![\w$])`;
+
+/** A delete or a replace, which deletes, of api_keys or users. */
+const KEY_SQL_DELETE = new RegExp(
+	String.raw`\b(DELETE${SQL_GAP}+FROM|REPLACE${SQL_GAP}+INTO|INSERT${SQL_GAP}+OR${SQL_GAP}+REPLACE${SQL_GAP}+INTO|UPDATE${SQL_GAP}+OR${SQL_GAP}+REPLACE)${SQL_GAP}+(${sqlName('(?:api_keys|users)')})`,
+	'gi'
+);
+
+/** A drop or an alteration of api_keys or users, by name (card 2995's code review, FP6): never anywhere under src or scripts. */
+const KEY_SQL_DROP = new RegExp(
+	String.raw`\b(DROP${SQL_GAP}+TABLE(?:${SQL_GAP}+IF${SQL_GAP}+EXISTS)?|ALTER${SQL_GAP}+TABLE)${SQL_GAP}+(${sqlName('(?:api_keys|users)')})`,
+	'gi'
+);
+
+/** An upsert into api_keys that updates (FP6): `INSERT … INTO api_keys … ON CONFLICT … DO UPDATE`, which rewrites a key. */
+const KEY_SQL_UPSERT = new RegExp(
+	String.raw`\bINSERT(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+INTO${SQL_GAP}+${sqlName('api_keys')}[^;]*?\bON${SQL_GAP}+CONFLICT\b[^;]*?\bDO${SQL_GAP}+UPDATE\b`,
+	'gi'
+);
+
+/** An update of api_keys, with what it sets. */
+const KEY_SQL_UPDATE = new RegExp(String.raw`\bUPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+${sqlName('api_keys')}${SQL_GAP}+SET\b([\s\S]*?)(?=\bWHERE\b|\bRETURNING\b|\bFROM\b|;|$)`, 'gi');
+
+/** Anything but an INSERT OR IGNORE of the record (R12, test g): a delete, an update, a replace, or a drop. */
+const RECORD_SQL_WRITE = new RegExp(
+	String.raw`\b(DELETE${SQL_GAP}+FROM|UPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?|REPLACE${SQL_GAP}+INTO|INSERT${SQL_GAP}+OR${SQL_GAP}+REPLACE${SQL_GAP}+INTO|DROP${SQL_GAP}+TABLE(?:${SQL_GAP}+IF${SQL_GAP}+EXISTS)?|ALTER${SQL_GAP}+TABLE)${SQL_GAP}+${sqlName('api_key_revocations')}`,
+	'gi'
+);
+
+/** A table named at run time after DELETE FROM or DROP TABLE: `\u0000` stands for a template's substitution, or a piece that is no literal. */
+const DYNAMIC_CLEAR = new RegExp(String.raw`\b(DELETE${SQL_GAP}+FROM|DROP${SQL_GAP}+TABLE(?:${SQL_GAP}+IF${SQL_GAP}+EXISTS)?)${SQL_GAP}+["'\x60[]?\u0000`, 'gi');
+
+/** What the inventory found in one file (card 2995, R12). */
+type KeyReading = { deletes: string[]; clears: string[]; enders: string[]; findings: string[] };
+
+/**
+ * Card 2995 (R12) for one file under src or scripts, reusing the webhook rule's ways of reading (`scriptsOf`,
+ * `writerNameOf`, `SQL_GAP`): every string built from literals (one, a template, or pieces joined by `+`, each
+ * substitution or piece that is not a literal read as `\u0000`) is read as SQL. A delete or replace of `api_keys` or
+ * `users` is counted under its `file#function`, as is a delete or drop of a table named at run time; an `UPDATE
+ * api_keys` that sets anything but `last_used_at` and `deadline_at` is a finding; and any delete, update, replace, drop
+ * or alteration of `api_key_revocations` is a finding outright. In Drizzle, `.delete(apiKeys)` and `.delete(users)`
+ * are counted the same way, `.update(apiKeys).set({...})` may set only `lastUsedAt` and `deadlineAt`, and
+ * `.delete(apiKeyRevocations)` or `.update(apiKeyRevocations)` is a finding. Each call of `endApiKeys` is listed by its
+ * `file#function`. Not seen: a table name worked out at run time other than by a template or `+`, a statement held in
+ * a variable built elsewhere, a schema table under another name.
+ */
+function judgeKeyWrites(file: string, source: string): KeyReading {
+	const kind = /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+	const tree = ts.createSourceFile(file, file.endsWith('.svelte') ? scriptsOf(source) : source, ts.ScriptTarget.Latest, true, kind);
+	const at = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const keyOf = (node: ts.Node) => `${file}#${writerNameOf(node)}`;
+	const reading: KeyReading = { deletes: [], clears: [], enders: [], findings: [] };
+
+	/** The text a string, a template or a `+` chain of them builds, a substitution or other piece read as `\u0000`. */
+	const textOf = (node: ts.Expression): string => {
+		const inner = bare(node);
+		if (ts.isStringLiteral(inner) || ts.isNoSubstitutionTemplateLiteral(inner)) return inner.text;
+		if (ts.isTemplateExpression(inner)) return inner.head.text + inner.templateSpans.map((span) => `\u0000${span.literal.text}`).join('');
+		if (ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.PlusToken) return textOf(inner.left) + textOf(inner.right);
+		return '\u0000';
+	};
+	const isText = (node: ts.Node): boolean =>
+		ts.isStringLiteral(node) ||
+		ts.isNoSubstitutionTemplateLiteral(node) ||
+		ts.isTemplateExpression(node) ||
+		(ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken);
+	/** Whether `node` is a piece of a larger `+` chain, which is read whole. */
+	const inChain = (node: ts.Node): boolean => {
+		let parent = node.parent;
+		while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+		return !!parent && ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.PlusToken;
+	};
+
+	const judgeSql = (node: ts.Node, text: string) => {
+		for (const found of text.matchAll(KEY_SQL_DELETE)) {
+			reading.deletes.push(keyOf(node));
+			if (!(keyOf(node) in KEY_DELETERS)) {
+				reading.findings.push(`${file}:${at(node)} ${found[1].replace(/\s+/g, ' ').toUpperCase()} ${found[2]} in ${writerNameOf(node)}, which is not on KEY_DELETERS: a key deleted unrecorded comes back with the next restore (card 2995)`);
+			}
+		}
+		for (const found of text.matchAll(KEY_SQL_DROP)) {
+			reading.findings.push(`${file}:${at(node)} ${found[1].replace(/\s+/g, ' ').toUpperCase()} ${found[2]} in ${writerNameOf(node)}: no file may drop or alter the keys or the accounts by name (card 2995)`);
+		}
+		for (const _found of text.matchAll(KEY_SQL_UPSERT)) {
+			reading.findings.push(`${file}:${at(node)} upserts into api_keys with DO UPDATE in ${writerNameOf(node)}: a key is made, or ended, never rewritten (card 2995)`);
+		}
+		for (const found of text.matchAll(KEY_SQL_UPDATE)) {
+			const columns = found[1].split(',').map((part) => part.trim().split(/\s*=/)[0].replace(/["`[\]]/g, '').toLowerCase());
+			const others = columns.filter((column) => !KEY_UPDATE_COLUMNS.includes(column));
+			if (others.length > 0 || /^UPDATE\s+OR\b/i.test(found[0])) {
+				reading.findings.push(`${file}:${at(node)} updates api_keys (${others.join(', ') || 'OR'}) in ${writerNameOf(node)}: only last_used_at and deadline_at may be set (card 2995)`);
+			}
+		}
+		for (const found of text.matchAll(RECORD_SQL_WRITE)) {
+			reading.findings.push(`${file}:${at(node)} ${found[1].replace(/\s+/g, ' ').toUpperCase()} api_key_revocations in ${writerNameOf(node)}: the record is append-only (card 2995)`);
+		}
+		for (const found of text.matchAll(DYNAMIC_CLEAR)) {
+			reading.clears.push(keyOf(node));
+			if (!(keyOf(node) in KEY_DYNAMIC_CLEARS)) {
+				reading.findings.push(`${file}:${at(node)} ${found[1].replace(/\s+/g, ' ').toUpperCase()} a table named at run time in ${writerNameOf(node)}, which is not on KEY_DYNAMIC_CLEARS: it can reach api_keys or users (card 2995)`);
+			}
+		}
+	};
+
+	const visit = (node: ts.Node): void => {
+		if (isText(node) && !inChain(node)) {
+			const text = textOf(node as ts.Expression);
+			judgeSql(node, text);
+			// A chain is read whole; its pieces are not read again.
+			if (ts.isBinaryExpression(node)) return;
+		}
+		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+			const method = node.expression.name.text;
+			const [first] = node.arguments;
+			const table = first !== undefined && ts.isIdentifier(bare(first)) ? (bare(first) as ts.Identifier).text : null;
+			if (method === 'delete' && (table === 'apiKeys' || table === 'users')) {
+				reading.deletes.push(keyOf(node));
+				if (!(keyOf(node) in KEY_DELETERS)) {
+					reading.findings.push(`${file}:${at(node)} .delete(${table}) in ${writerNameOf(node)}, which is not on KEY_DELETERS: a key deleted unrecorded comes back with the next restore (card 2995)`);
+				}
+			}
+			// Drizzle's upserts on api_keys (card 2995's code review, FP6): the chain under them read down to its `.insert()`.
+			if (method === 'onConflictDoUpdate' || method === 'onConflictDoNothing') {
+				let link: ts.Expression = node.expression.expression;
+				let inserted: string | null = null;
+				while (ts.isCallExpression(link) || ts.isPropertyAccessExpression(link) || ts.isParenthesizedExpression(link) || ts.isNonNullExpression(link)) {
+					if (ts.isCallExpression(link) && ts.isPropertyAccessExpression(link.expression) && link.expression.name.text === 'insert') {
+						const [into] = link.arguments;
+						inserted = into !== undefined && ts.isIdentifier(bare(into)) ? (bare(into) as ts.Identifier).text : null;
+						break;
+					}
+					link = link.expression;
+				}
+				if (inserted === 'apiKeys' || inserted === 'apiKeyRevocations') {
+					reading.findings.push(`${file}:${at(node)} .${method}() on ${inserted} in ${writerNameOf(node)}: a key or its record is inserted plainly, never upserted (card 2995)`);
+				}
+			}
+			if ((method === 'delete' || method === 'update') && table === 'apiKeyRevocations') {
+				reading.findings.push(`${file}:${at(node)} .${method}(apiKeyRevocations) in ${writerNameOf(node)}: the record is append-only (card 2995)`);
+			}
+			if (method === 'update' && table === 'apiKeys') {
+				const set = node.parent;
+				const values = ts.isPropertyAccessExpression(set) && set.name.text === 'set' && ts.isCallExpression(set.parent) ? set.parent.arguments[0] : undefined;
+				const fields =
+					values !== undefined && ts.isObjectLiteralExpression(values)
+						? values.properties.map((property) => (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name) ? property.name.text : null))
+						: [null];
+				if (fields.some((field) => field === null || !KEY_UPDATE_FIELDS.includes(field))) {
+					reading.findings.push(`${file}:${at(node)} .update(apiKeys) in ${writerNameOf(node)}: only lastUsedAt and deadlineAt may be set (card 2995)`);
+				}
+			}
+		}
+		if (ts.isCallExpression(node) && ts.isIdentifier(bare(node.expression)) && (bare(node.expression) as ts.Identifier).text === 'endApiKeys') {
+			reading.enders.push(keyOf(node));
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(tree);
+	return reading;
+}
+
+describe('every delete of an API key or an account, and the record of ended keys (card 2995, R12)', () => {
+	const walked = [...filesUnder('src', (path) => WEBHOOK_WALKED.test(path)), ...filesUnder('scripts', (path) => WEBHOOK_WALKED.test(path))].map((file) => ({
+		file,
+		source: readFileSync(join(ROOT, file), 'utf8')
+	}));
+	const readings = walked.map(({ file, source }) => judgeKeyWrites(file, source));
+	const counted = (pick: (reading: KeyReading) => string[]) => {
+		const counts: Record<string, number> = {};
+		for (const reading of readings) for (const key of pick(reading)) counts[key] = (counts[key] ?? 0) + 1;
+		return counts;
+	};
+
+	it('test 21: finds no delete or replace of api_keys or users, no wider UPDATE api_keys, and no write of the record but an INSERT OR IGNORE, under src and scripts (g)', () => {
+		expect(readings.flatMap(({ findings }) => findings)).toEqual([]);
+		expect(walked.length).toBeGreaterThan(300);
+		expect(walked.map(({ file }) => file)).toContain('scripts/mfa-reset.mjs');
+	});
+
+	it('test 21: holds on KEY_DELETERS and KEY_DYNAMIC_CLEARS exactly what the walk found, each as many times as listed', () => {
+		expect(counted((reading) => reading.deletes)).toEqual(Object.fromEntries(Object.entries(KEY_DELETERS).map(([key, { count }]) => [key, count])));
+		expect(counted((reading) => reading.clears)).toEqual(Object.fromEntries(Object.entries(KEY_DYNAMIC_CLEARS).map(([key, { count }]) => [key, count])));
+	});
+
+	it('test 21: endApiKeys is called by exactly the enders, each once', () => {
+		expect(readings.flatMap(({ enders }) => enders).sort()).toEqual([...END_API_KEYS_CALLERS].sort());
+	});
+
+	it('test 21: the restore keeps the record out of the tables it clears, and Reset Everything names it among those it keeps', () => {
+		expect(restorableTables(sqlite)).not.toContain('api_key_revocations');
+		expect(restorableTables(sqlite)).toContain('api_keys');
+		const reset = readFileSync(join(ROOT, 'src/routes/api/admin/reset/+server.ts'), 'utf8');
+		expect(/const KEPT = \[[^\]]*'api_key_revocations'[^\]]*\]/.test(reset)).toBe(true);
+	});
+
+	describe('the rule itself', () => {
+		const EXAMPLE = 'src/lib/server/example.ts';
+		/** `code` as line 4 of a made-up module, in `wipe`. */
+		const inWipe = (code: string) =>
+			[
+				"import { db, sqlite } from '$lib/server/db'; import { eq } from 'drizzle-orm';",
+				"import { apiKeys, apiKeyRevocations, users } from '$lib/server/db/schema';",
+				'export function wipe(table: string, id: number) {',
+				`\t${code}`,
+				'}'
+			].join('\n');
+		const findingsOf = (code: string) => judgeKeyWrites(EXAMPLE, inWipe(code)).findings;
+
+		it('(g): a fixture holding DELETE FROM api_key_revocations is a finding by file and line', () => {
+			expect(findingsOf("sqlite.prepare('DELETE FROM api_key_revocations WHERE key_id = 1').run();")).toEqual([
+				`${EXAMPLE}:4 DELETE FROM api_key_revocations in wipe: the record is append-only (card 2995)`
+			]);
+		});
+
+		it.each([
+			{ form: 'an UPDATE of the record', code: "sqlite.prepare('UPDATE api_key_revocations SET key_hash = ?').run('x');" },
+			{ form: 'a REPLACE INTO the record', code: "sqlite.prepare('REPLACE INTO api_key_revocations (key_id, key_hash) VALUES (1, ?)').run('x');" },
+			{ form: 'an INSERT OR REPLACE INTO the record', code: "sqlite.prepare(`INSERT OR REPLACE INTO \"api_key_revocations\" (key_id) VALUES (${id})`).run();" },
+			{ form: 'a DROP of the record, joined by +', code: "sqlite.exec('DROP TABLE ' + 'api_key_revocations');" },
+			{ form: 'a Drizzle delete of the record', code: 'db.delete(apiKeyRevocations).run();' },
+			{ form: 'a Drizzle update of the record', code: "db.update(apiKeyRevocations).set({ keyHash: '' }).run();" },
+			{ form: 'a delete of api_keys', code: "sqlite.prepare('DELETE FROM api_keys WHERE id = ?').run(id);" },
+			{ form: 'a delete of users, across lines', code: 'sqlite.prepare(`DELETE\n\t\tFROM\n\tusers WHERE id = ?`).run(id);' },
+			{ form: 'a REPLACE INTO users', code: "sqlite.prepare('REPLACE INTO users (id, username) VALUES (?, ?)').run(id, 'x');" },
+			{ form: 'an INSERT OR REPLACE INTO api_keys', code: "sqlite.prepare('INSERT OR REPLACE INTO main.api_keys (id) VALUES (?)').run(id);" },
+			{ form: 'a Drizzle delete of api_keys', code: 'db.delete(apiKeys).where(eq(apiKeys.id, id)).run();' },
+			{ form: 'a Drizzle delete of users', code: 'db.delete(users).where(eq(users.id, id)).run();' },
+			{ form: 'an UPDATE api_keys of its hash', code: "sqlite.prepare('UPDATE api_keys SET key_hash = ? WHERE id = ?').run('x', id);" },
+			{ form: 'a Drizzle update of a key’s hash', code: "db.update(apiKeys).set({ keyHash: 'x' }).where(eq(apiKeys.id, id)).run();" },
+			{ form: 'a delete from a table named at run time', code: 'sqlite.prepare(`DELETE FROM "${table}"`).run();' },
+			// Card 2995's code review (FP6): a drop or an alteration by name, an upsert that updates, Drizzle's upserts.
+			{ form: 'a DROP TABLE of api_keys', code: "sqlite.exec('DROP TABLE IF EXISTS api_keys');" },
+			{ form: 'a DROP TABLE of users', code: 'sqlite.exec(`DROP TABLE "users"`);' },
+			{ form: 'an ALTER TABLE of api_keys', code: "sqlite.exec('ALTER TABLE api_keys RENAME TO old_keys');" },
+			{ form: 'an ALTER TABLE of users', code: "sqlite.exec('ALTER TABLE main.users DROP COLUMN role');" },
+			{
+				form: 'an INSERT … ON CONFLICT … DO UPDATE on api_keys',
+				code: "sqlite.prepare('INSERT INTO api_keys (id, key_hash) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET key_hash = excluded.key_hash').run(id, 'x');"
+			},
+			{ form: 'a Drizzle onConflictDoUpdate on apiKeys', code: "db.insert(apiKeys).values({ id }).onConflictDoUpdate({ target: apiKeys.id, set: { keyHash: 'x' } }).run();" },
+			{ form: 'a Drizzle onConflictDoNothing on apiKeys', code: 'db.insert(apiKeys).values({ id }).onConflictDoNothing().run();' }
+		])('finds $form, on its line, in its function', ({ code }) => {
+			const found = findingsOf(code);
+			expect(found).toHaveLength(1);
+			expect(found[0]).toMatch(/^src\/lib\/server\/example\.ts:4 .* in wipe[:,]/);
+		});
+
+		it.each([
+			{ form: 'the record’s INSERT OR IGNORE', code: "sqlite.prepare('INSERT OR IGNORE INTO api_key_revocations (key_id, key_hash) VALUES (?, ?)').run(id, 'x');" },
+			{ form: 'an update of when a key was last used', code: "sqlite.prepare('UPDATE api_keys SET last_used_at = ? WHERE id = ?').run('x', id);" },
+			{ form: 'a Drizzle clear of a key’s deadline', code: 'db.update(apiKeys).set({ deadlineAt: null }).where(eq(apiKeys.id, id)).run();' },
+			{ form: 'a read of the record', code: "sqlite.prepare('SELECT 1 FROM api_key_revocations WHERE key_hash = ?').get('x');" },
+			{ form: 'an update of users', code: "sqlite.prepare('UPDATE users SET email = ? WHERE id = ?').run('x', id);" }
+		])('lets $form through', ({ code }) => {
+			expect(findingsOf(code)).toEqual([]);
+		});
 	});
 });
 

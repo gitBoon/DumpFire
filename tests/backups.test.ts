@@ -120,7 +120,9 @@ import {
 	withHeldApart
 } from '$lib/server/backup-secrets';
 import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
-import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, generateApiKey, type Credential, type SessionUser } from '$lib/server/auth';
+import { resetAllRateLimits } from '$lib/server/rate-limit';
+import { stamp } from '$lib/timestamps';
 import { db, sqlite } from '$lib/server/db';
 // For the database file's path the import route asks for, stood in for in one case (card 2925).
 import * as connection from '$lib/server/db';
@@ -135,7 +137,7 @@ import {
 	rowsToRestore,
 	superadminsOf
 } from '$lib/server/db/restore';
-import { inviteTokens, taskRequests, users } from '$lib/server/db/schema';
+import { inviteTokens, taskRequests, users, type Board } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
 import { disableAccount } from '$lib/server/account-disable';
 import { removeSettingsOfFormerAdministrators } from '$lib/server/setting-setters';
@@ -723,6 +725,8 @@ describe('a restore', () => {
 		// One list, which the import's safety copy and Reset read as well.
 		expect(restorableTables(live)).not.toContain('system_logs');
 		expect(restorableTables(live)).not.toContain('__drizzle_migrations');
+		// Nor the record of every API key ended here (card 2995), which the restore keeps and adds the backup's to.
+		expect(restorableTables(live)).not.toContain('api_key_revocations');
 		expect(restorableTables(live)).toContain('users');
 	});
 
@@ -791,7 +795,8 @@ describe('a restore', () => {
 		// and this server's webhook_keys_recorded_at, which migration 0071 wrote
 		// here and a restore keeps (card 2752). And the key check the sealed form
 		// key records, and the scrub every restore marks pending (card 2898). And the moment the restore's own run of the
-		// start pass covered, written by it for a backup that had none (card 2935, P12).
+		// start pass covered, written by it for a backup that had none (card 2935, P12). And the once-only seed's flag,
+		// written for a backup that had none before the keys ended here are left out (card 2995, R3).
 		expect(column(live, 'SELECT key FROM settings ORDER BY key')).toEqual([
 			'api_key_deadline',
 			'app_url',
@@ -800,6 +805,7 @@ describe('a restore', () => {
 			'secrets_scrub_pending',
 			'two_step_released_at',
 			'webhook_keys_recorded_at',
+			'webhook_reveals_seeded',
 			'webhooks_readable_by_disabled_held'
 		]);
 		// The backup's own webhook_keys_recorded_at among them, and the earlier of the two kept.
@@ -1079,6 +1085,75 @@ describe('a restore', () => {
 			expect(failed.body.committed).toBe(true);
 			expect(failed.body.decisionLinksCleared).toBe(1);
 			expect(failed.message).toContain(`1 ${SENTENCE}`);
+		});
+
+		// Card 2995 (test 23): the import's answer and its CRITICAL line say how many API keys ended here were left out,
+		// the line's details naming them by id, and neither naming an account.
+		const LEFT_OUT =
+			'1 API key(s) in the backup were left out, because each was revoked or ended on this server, was gone from it before ' +
+			"endings were recorded, or is named by the record of ended keys of a backup imported here before, another server's among " +
+			'them: none of them works, and their holders make new ones on the Account page.';
+		const criticalSince = (from: number) =>
+			sqlite.prepare("SELECT message, meta FROM system_logs WHERE context = 'IMPORT' AND level = 'CRITICAL' AND id > ? ORDER BY id").get(from) as {
+				message: string;
+				meta: string;
+			};
+		const newestLine = () => sqlite.prepare('SELECT COALESCE(MAX(id), 0) FROM system_logs').pluck().get() as number;
+
+		it('test 23: a key revoked since the backup: the answer’s sentence and figures, and the CRITICAL line’s count and ids, naming no account', async () => {
+			const ann = makeUser({ username: 'ann-of-2995' });
+			const K = makeApiKeyRow(ann);
+			const backup = opening(generateBackupData());
+			expect((await api('DELETE', `/api/account/api-keys/${K.id}`, { user: ann })).status).toBe(200);
+			const from = newestLine();
+
+			const res = await importAnswer(backup);
+
+			expect(res.status, res.message).toBe(200);
+			expect(res.body.apiKeysLeftOut).toBe(1);
+			expect(res.body.keysLeftOut).toBe(LEFT_OUT);
+			expect(res.message).toContain(LEFT_OUT);
+			const line = criticalSince(from);
+			expect(line.message).toContain('restored as it is, leaving out 1 API key(s) ended on this server. The system log was kept as it was;');
+			expect(JSON.parse(line.meta).apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+			expect(`${line.message} ${line.meta} ${res.body.keysLeftOut}`).not.toContain('ann-of-2995');
+		});
+
+		it('test 23: none left out: no sentence, a figure of 0, and the line as before', async () => {
+			makeApiKeyRow(makeUser({ username: 'ann-of-2995' }));
+			const backup = opening(generateBackupData());
+			const from = newestLine();
+
+			const res = await importAnswer(backup);
+
+			expect(res.status, res.message).toBe(200);
+			expect(res.body.apiKeysLeftOut).toBe(0);
+			expect(res.body.keysLeftOut).toBeUndefined();
+			expect(res.message).not.toContain('API key(s) in the backup were left out');
+			const line = criticalSince(from);
+			expect(line.message).toContain('restored as it is. The system log was kept as it was;');
+			expect(JSON.parse(line.meta)).not.toHaveProperty('apiKeysLeftOut');
+		});
+
+		it('test 23: a restore that committed and then failed says it too', async () => {
+			const ann = makeUser({ username: 'ann-of-2995' });
+			const K = makeApiKeyRow(ann);
+			const backup = opening(generateBackupData());
+			expect((await api('DELETE', `/api/account/api-keys/${K.id}`, { user: ann })).status).toBe(200);
+			const from = newestLine();
+			const real = sqlite.pragma.bind(sqlite) as Database.Database['pragma'];
+			vi.spyOn(sqlite, 'pragma').mockImplementation(((source: string, options?: Database.PragmaOptions) =>
+				/^foreign_keys\s*=\s*ON$/i.test(source) ? [] : real(source, options)) as typeof sqlite.pragma);
+
+			const failed = await importAnswer(backup);
+			vi.mocked(sqlite.pragma).mockRestore();
+
+			expect(failed.status, failed.message).toBe(500);
+			expect(failed.body.committed).toBe(true);
+			expect(failed.body.apiKeysLeftOut).toBe(1);
+			expect(failed.body.keysLeftOut).toBe(LEFT_OUT);
+			expect(failed.message).toContain(LEFT_OUT);
+			expect(JSON.parse(criticalSince(from).meta).apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
 		});
 	});
 
@@ -7201,5 +7276,508 @@ describe('a OneDrive destination says whose OneDrive, and its folder path is one
 		expect(results).toEqual([expect.objectContaining({ destination: 'OneDrive', status: 'failed', message: ONEDRIVE_DRIVE_NOT_SET })]);
 		expect(handed).toEqual([]);
 		expect(sqlite.prepare('SELECT status, error FROM backup_log').all()).toEqual([{ status: 'failed', error: ONEDRIVE_DRIVE_NOT_SET }]);
+	});
+});
+
+// ─── Card 2995: a restore never brings back an API key ended here ──────────
+
+describe('a restore never brings back an API key ended on this server (card 2995)', () => {
+	const HELD = { active: 0, heldBecause: 'setter access ended' };
+	const KEY_ENDED = { active: 0, heldBecause: 'key ended' };
+	const rowOf = (id: number) => sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(id);
+	/** A row of the record, by hand: slice 2 has no writer (R11). */
+	const record = (id: number | string, hash: string, because = 'revoked', database: Database.Database = sqlite) =>
+		database
+			.prepare("INSERT INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (?, ?, '2026-11-19 09:00:00', ?)")
+			.run(id, hash, because);
+	const watermark = (w: number) => record(w, 'watermark', 'before record');
+	const recordOf = () =>
+		sqlite.prepare('SELECT key_id AS id, key_hash AS hash, revoked_because AS because FROM api_key_revocations ORDER BY key_hash, key_id').all() as {
+			id: number;
+			hash: string;
+			because: string;
+		}[];
+	const hashOf = (id: number) => sqlite.prepare('SELECT key_hash FROM api_keys WHERE id = ?').pluck().get(id) as string;
+	const keyIds = () => sqlite.prepare('SELECT id FROM api_keys ORDER BY id').pluck().all() as number[];
+	/** A key revoked here, as slice 2 stands in for the revoke: its row deleted and its hash recorded. */
+	const revokedHere = (id: number) => {
+		const hash = hashOf(id);
+		sqlite.prepare('DELETE FROM api_keys WHERE id = ?').run(id);
+		record(id, hash);
+	};
+	/** A key of `user` at the row id `id`, as the generator makes one. */
+	const keyAt = (id: number, user: SessionUser) => {
+		const made = generateApiKey();
+		sqlite.prepare('INSERT INTO api_keys (id, key_hash, key_prefix, name, user_id) VALUES (?, ?, ?, ?, ?)').run(id, made.keyHash, made.keyPrefix, `Key ${id}`, user.id);
+		return { id, key: made.plaintextKey, hash: made.keyHash };
+	};
+	const v1 = async (key: string) => (await gate('GET', '/api/v1/me', { headers: { authorization: `Bearer ${key}` } })).status;
+	const reveals = () =>
+		(sqlite.prepare('SELECT webhook_id AS w, key_id AS k FROM webhook_reveals ORDER BY webhook_id, key_id').all() as { w: number; k: number }[]).map((row) => [row.w, row.k]);
+	const reveal = (hookId: number, keyId: number) =>
+		sqlite.prepare("INSERT INTO webhook_reveals (webhook_id, key_id, revealed_at) VALUES (?, ?, '2026-11-19 09:00:00')").run(hookId, keyId);
+	const warnLines = () => sqlite.prepare("SELECT message FROM system_logs WHERE context = 'Webhooks' AND level = 'WARN' ORDER BY id").pluck().all() as string[];
+	/** `run` with WARN lines kept, which the tests' LOG_LEVEL drops. */
+	const withWarnings = <T>(run: () => T): T => {
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		try {
+			return run();
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+	};
+	const counter = () => sqlite.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'api_keys'").pluck().get() as number | undefined;
+	const NOTHING_LEFT_OUT = { count: 0, keyIds: [], workingCopy: 0 };
+	let owner: SessionUser;
+	let eve: SessionUser;
+	let board: Board;
+
+	beforeEach(() => {
+		resetDb();
+		resetAllRateLimits();
+		startedSinceAlreadyOffHeld();
+		makeUser({ username: 'chief', role: 'superadmin' });
+		owner = makeUser({ username: 'olga' });
+		eve = makeUser({ username: 'eve' });
+		board = makeBoard({ owner }).board;
+		addBoardMember(board, eve, 'editor');
+	});
+
+	it.each([
+		{ made: 'this server’s, its seal verifying', sealed: true },
+		{ made: 'one whose seal does not verify', sealed: false }
+	])('test 5 (card tests 1 and 2): a key revoked here since the backup is left out of $made, and refused; the other key works', async ({ sealed }) => {
+		const K = makeApiKeyRow(owner);
+		const L = makeApiKeyRow(owner);
+		const backup = opening(sealed ? generateBackupData() : Buffer.from(sqlite.serialize()));
+		revokedHere(K.id);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.sealVerified).toBe(sealed);
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+		expect(keyIds()).toEqual([L.id]);
+		expect(await v1(K.key)).toBe(401);
+		expect(await v1(L.key)).toBe(200);
+	});
+
+	it('test 7: a working copy leaves out the key revoked here, by id, and the other, counted only (R4)', () => {
+		const K = makeApiKeyRow(owner);
+		makeApiKeyRow(owner);
+		const backup = opening(generateBackupData());
+		revokedHere(K.id);
+
+		const result = restoreFromBackup(sqlite, backup, { outside: 'off' });
+
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 1 });
+		expect(keyIds()).toEqual([]);
+	});
+
+	it('(j): a working copy leaves out every key, with no record, and counts them (R4); none is recorded', async () => {
+		const K = makeApiKeyRow(owner);
+		makeApiKeyRow(eve);
+		const backup = opening(generateBackupData());
+		const before = recordOf();
+
+		const result = restoreFromBackup(sqlite, backup, { outside: 'off' });
+
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut).toEqual({ count: 0, keyIds: [], workingCopy: 2 });
+		expect(keyIds()).toEqual([]);
+		expect(await v1(K.key)).toBe(401);
+		// Left out as a copy, not ended: the record is as it was, so the same backup restored as it is brings them back.
+		expect(recordOf()).toEqual(before);
+		const again = restoreFromBackup(sqlite, opening(generateBackupData()));
+		expect(again.apiKeysLeftOut).toEqual(NOTHING_LEFT_OUT);
+	});
+
+	it('test 8: the union: the backup’s row is added to this server’s, which are kept, and survives to leave its key out of the next restore', () => {
+		const X = makeApiKeyRow(owner);
+		const xHash = hashOf(X.id);
+		const older = opening(generateBackupData());
+		record(1, 'c'.repeat(64));
+		const newer = opening(Buffer.from(sqlite.serialize()));
+		newer.prepare('DELETE FROM api_keys WHERE id = ?').run(X.id);
+		record(X.id, xHash, 'access ended', newer);
+		const here = recordOf();
+
+		const first = restoreFromBackup(sqlite, newer);
+
+		expect(first.errors).toEqual([]);
+		// This server's rows, row for row, and the backup's one more.
+		expect(recordOf()).toEqual([...here, { id: X.id, hash: xHash, because: 'access ended' }].sort((a, b) => (a.hash < b.hash ? -1 : a.hash > b.hash ? 1 : a.id - b.id)));
+		const second = restoreFromBackup(sqlite, older);
+		expect(second.errors).toEqual([]);
+		expect(second.apiKeysLeftOut).toEqual({ count: 1, keyIds: [X.id], workingCopy: 0 });
+		expect(keyIds()).toEqual([]);
+	});
+
+	it('test 9: a backup made before 0076, without the record: restored with no error, and this server’s record kept and applied', () => {
+		const K = makeApiKeyRow(owner);
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		backup.exec('DROP TABLE api_key_revocations');
+		revokedHere(K.id);
+		const here = recordOf();
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+		expect(recordOf()).toEqual(here);
+	});
+
+	it('test 10: a seed row at or below the watermark leaves its id out, and records that key’s hash (R2); the next id is kept', () => {
+		const seven = keyAt(7, owner);
+		const eight = keyAt(8, owner);
+		const backup = opening(generateBackupData());
+		sqlite.prepare('DELETE FROM api_keys WHERE id = 7').run();
+		watermark(8);
+		record(7, '', 'before record');
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [7], workingCopy: 0 });
+		expect(keyIds()).toEqual([8]);
+		// The hash belt: the key is caught under any id in any later backup.
+		expect(recordOf()).toContainEqual({ id: 7, hash: seven.hash, because: 'before record' });
+		const elsewhere = opening(generateBackupData());
+		elsewhere.prepare('UPDATE api_keys SET key_hash = ? WHERE id = 8').run(seven.hash);
+		expect(restoreFromBackup(sqlite, elsewhere).apiKeysLeftOut.keyIds).toEqual([8]);
+		expect(eight.hash).not.toBe(seven.hash);
+	});
+
+	it('test 11: a backup’s seed row within its bounds raises the key counter, and so does a hashed row (FP1); the next key takes the id after the largest', () => {
+		makeApiKeyRow(owner);
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		backup.prepare("UPDATE sqlite_sequence SET seq = 950 WHERE name = 'api_keys'").run();
+		record(900, '', 'before record', backup);
+		record(940, 'd'.repeat(64), 'revoked', backup);
+		expect(counter()).toBeLessThan(900);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(counter()).toBe(940);
+		expect(makeApiKeyRow(owner).id).toBe(941);
+	});
+
+	it('FP1: a backup whose counter row was deleted keeps its hashed row above its bound, and its watermark, on a fresh host; an older backup holding that key restored after leaves it out', () => {
+		// Keys 1 to 3 live, W 3, then key 3 revoked, then the counter row deleted (as Admin › Vacuum did before c6ed310).
+		const one = keyAt(1, owner);
+		keyAt(2, owner);
+		const three = keyAt(3, owner);
+		watermark(3);
+		const older = generateBackupData();
+		revokedHere(three.id);
+		sqlite.prepare("DELETE FROM sqlite_sequence WHERE name = 'api_keys'").run();
+		const newer = Buffer.from(sqlite.serialize());
+		// Its own bound: no counter row, and 2 the largest key it holds.
+		expect(opening(newer).prepare("SELECT seq FROM sqlite_sequence WHERE name = 'api_keys'").get()).toBeUndefined();
+
+		// A fresh host: nothing of this server's left.
+		resetDb();
+		const first = restoreFromBackup(sqlite, opening(newer));
+
+		expect(first.errors).toEqual([]);
+		expect(recordOf()).toEqual(
+			expect.arrayContaining([
+				{ id: 3, hash: three.hash, because: 'revoked' },
+				{ id: 3, hash: 'watermark', because: 'before record' }
+			])
+		);
+		// The counter never sits below an id the record names (FP1 b): the next key is 4, never 3.
+		expect(counter()).toBe(3);
+		const second = restoreFromBackup(sqlite, opening(older));
+
+		expect(second.errors).toEqual([]);
+		expect(second.apiKeysLeftOut).toEqual({ count: 1, keyIds: [3], workingCopy: 0 });
+		expect(keyIds()).toEqual([one.id, 2]);
+	});
+
+	it('test 11: with no key counter row here, one is written', () => {
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		backup.exec("INSERT OR REPLACE INTO sqlite_sequence (name, seq) VALUES ('api_keys', 950)");
+		record(900, '', 'before record', backup);
+		sqlite.prepare("DELETE FROM sqlite_sequence WHERE name = 'api_keys'").run();
+		expect(counter()).toBeUndefined();
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(counter()).toBe(900);
+	});
+
+	it('test 12: rows of the backup’s record that can name no key are left out with one line of a count and reasons, quoting nothing of the backup; an unreadable moment and an unknown word are kept', () => {
+		makeApiKeyRow(owner);
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		record(1, 'not-a-hash-2995', 'revoked', backup);
+		record('a', 'e'.repeat(64), 'revoked', backup);
+		record(0, 'e'.repeat(64), 'revoked', backup);
+		backup
+			.prepare("INSERT INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (1, ?, 'yesterday-ish', 'stolen-2995')")
+			.run('f'.repeat(64));
+		const at = stamp();
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([
+			"3 row(s) of the backup's record of ended API keys were left out, as they can name no key: 1 with a hash that is neither empty nor a SHA-256, " +
+				"2 with an id that is not a whole number from 1 to 2^53 - 1. The rest of the record was added to this server's."
+		]);
+		for (const quoted of ['not-a-hash-2995', 'stolen-2995', 'yesterday-ish']) expect(result.errors.join(' ')).not.toContain(quoted);
+		const kept = sqlite.prepare('SELECT key_id AS id, revoked_at AS at, revoked_because AS because FROM api_key_revocations WHERE key_hash = ?').get('f'.repeat(64)) as {
+			id: number;
+			at: string;
+			because: string;
+		};
+		expect(kept.id).toBe(1);
+		expect(kept.because).toBe('recorded in a backup');
+		expect(kept.at >= at).toBe(true);
+		expect(recordOf().filter((row) => row.hash === 'e'.repeat(64) || row.hash === 'not-a-hash-2995')).toEqual([]);
+	});
+
+	it('(c): rows with key_id 2^53, and above the backup’s own counter, are left out with one line; this server’s counter is unchanged, and the next key takes the one after it', () => {
+		makeApiKeyRow(owner);
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		const bound = backup.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'api_keys'").pluck().get() as number;
+		record(2 ** 53, '', 'before record', backup);
+		record(bound + 5, '', 'before record', backup);
+		const before = counter() as number;
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([
+			"2 row(s) of the backup's record of ended API keys were left out, as they can name no key: 1 with an id that is not a whole number from 1 to 2^53 - 1, " +
+				"1 with an id above the backup's own key counter. The rest of the record was added to this server's."
+		]);
+		expect(counter()).toBe(before);
+		expect(makeApiKeyRow(owner).id).toBe(before + 1);
+	});
+
+	describe('card 2947’s carry for a key left out (R3, R8)', () => {
+		let K: { key: string; id: number };
+		let W: number;
+		let U: number;
+		let V: number;
+
+		beforeEach(() => {
+			K = makeApiKeyRow(owner);
+			W = makeWebhook(board, { setBy: eve, secret: 'whsec-w-2995' }).id;
+			U = makeWebhook(board, { setBy: eve, secret: 'whsec-u-2995' }).id;
+			V = makeWebhook(board, { setBy: owner, secret: 'whsec-v-2995', setWithKey: true, setByKey: K.id }).id;
+			sealPlainSecrets(sqlite);
+			reveal(W, K.id);
+		});
+
+		it('test 13: the own restore deletes the key’s row and holds W, and U its account could read with no row (no last use asked); V it set is held key ended, naming no key (R8); told with the sweep', () => {
+			const backup = opening(generateBackupData());
+			revokedHere(K.id);
+
+			const result = withWarnings(() => restoreFromBackup(sqlite, backup, { by: 'chief' }));
+
+			expect(result.errors).toEqual([]);
+			expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+			expect(reveals()).toEqual([]);
+			expect(rowOf(W)).toEqual(HELD);
+			expect(rowOf(U)).toEqual(HELD);
+			expect(rowOf(V)).toEqual(KEY_ENDED);
+			expect(sqlite.prepare('SELECT set_by_key FROM webhooks WHERE id = ?').pluck().get(V)).toBeNull();
+			const told = warnLines().join('\n');
+			expect(told).toContain('found after a restore by chief');
+			for (const id of [W, U, V]) expect(told).toMatch(new RegExp(`[Ww]ebhook ${id} on board ${board.id}\\b`));
+		});
+
+		it('test 13: as a working copy, W and U are held before every webhook is switched off', () => {
+			const backup = opening(generateBackupData());
+			revokedHere(K.id);
+
+			const result = restoreFromBackup(sqlite, backup, { outside: 'off' });
+
+			expect(result.errors).toEqual([]);
+			expect(rowOf(W)).toEqual(HELD);
+			expect(rowOf(U)).toEqual(HELD);
+			expect(reveals()).toEqual([]);
+		});
+
+		it('test 14: this server’s row of a key the backup holds and the record names: the carry puts it back, and the leave-out reads it and holds W', () => {
+			const backup = opening(generateBackupData());
+			// Recorded by hand, the key kept live here: the carry finds the same key restored.
+			record(K.id, hashOf(K.id));
+
+			const result = restoreFromBackup(sqlite, backup);
+
+			expect(result.errors).toEqual([]);
+			expect(result.secrets.kept.webhooks).toEqual(expect.arrayContaining([W]));
+			expect(keyIds()).toEqual([]);
+			expect(reveals()).toEqual([]);
+			expect(rowOf(W)).toEqual(HELD);
+		});
+
+		it('(l1, l2): carryDisabled names no key on the webhooks a disabled account’s key set (R8), through endApiKeys, and counts that key with those left out (R13)', () => {
+			const kim = makeUser({ username: 'kim' });
+			addBoardMember(board, kim, 'editor');
+			const kimKey = makeApiKeyRow(kim);
+			const X = makeWebhook(board, { setBy: kim, setWithKey: true, setByKey: kimKey.id }).id;
+			const backup = opening(generateBackupData());
+			const chief = sqlite.prepare("SELECT id, username, role FROM users WHERE username = 'chief'").get() as SessionUser;
+			inTransaction(() => disableAccount(db.select().from(users).all().find((u) => u.id === kim.id)!, chief));
+
+			const result = restoreFromBackup(sqlite, backup);
+
+			expect(result.errors).toEqual([]);
+			expect(result.apiKeysLeftOut.keyIds).toContain(kimKey.id);
+			expect(sqlite.prepare('SELECT set_by_key FROM webhooks WHERE id = ?').pluck().get(X)).toBeNull();
+		});
+	});
+
+	it('FP2: the backup’s own reveal row of a key left out holds the webhook, though its account can no longer read or set it', () => {
+		const adam = makeUser({ username: 'adam', role: 'admin' });
+		const K = makeApiKeyRow(adam);
+		const W = makeWebhook(board, { setBy: eve, secret: 'whsec-fp2' }).id;
+		sealPlainSecrets(sqlite);
+		reveal(W, K.id);
+		// Demoted since it was given the secret, before the backup: it neither sets W nor can read it now.
+		sqlite.prepare("UPDATE users SET role = 'user' WHERE id = ?").run(adam.id);
+		const backup = opening(generateBackupData());
+		revokedHere(K.id);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut.keyIds).toEqual([K.id]);
+		expect(rowOf(W)).toEqual(HELD);
+		expect(reveals()).toEqual([]);
+	});
+
+	it('test 16: carryDisabled records the keys it deletes, access ended; the account enabled again, a second restore of the same backup still leaves them out', () => {
+		const kim = makeUser({ username: 'kim' });
+		const K = makeApiKeyRow(kim);
+		const hash = hashOf(K.id);
+		const backup = generateBackupData();
+		// Gone here before the disable, unrecorded, as a key a restore carried in before card 2671's carry: the disable
+		// records nothing of it, so only the restore's carry can.
+		sqlite.prepare('DELETE FROM api_keys WHERE id = ?').run(K.id);
+		const chief = sqlite.prepare("SELECT id, username, role FROM users WHERE username = 'chief'").get() as SessionUser;
+		inTransaction(() => disableAccount(db.select().from(users).all().find((u) => u.id === kim.id)!, chief));
+		expect(recordOf()).toEqual([]);
+
+		const first = restoreFromBackup(sqlite, opening(backup));
+
+		expect(first.errors).toEqual([]);
+		expect(first.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+		expect(recordOf()).toEqual([{ id: K.id, hash, because: 'access ended' }]);
+		sqlite.prepare('UPDATE users SET disabled_at = NULL, disabled_by = NULL WHERE id = ?').run(kim.id);
+
+		const second = restoreFromBackup(sqlite, opening(backup));
+
+		expect(second.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+		expect(keyIds()).toEqual([]);
+	});
+
+	it('test 25: a backup made after revokes holds the record row for row as this server does, and no value of it is a key', async () => {
+		const K = makeApiKeyRow(owner);
+		makeApiKeyRow(owner);
+		expect((await api('DELETE', `/api/account/api-keys/${K.id}`, { user: owner })).status).toBe(200);
+		const all = (database: Database.Database) => database.prepare('SELECT * FROM api_key_revocations ORDER BY rowid').all() as Record<string, unknown>[];
+
+		const backup = opening(generateBackupData());
+
+		expect(all(backup)).toEqual(all(sqlite));
+		expect(all(backup).some((row) => row.key_id === K.id && row.revoked_because === 'revoked')).toBe(true);
+		for (const row of all(backup)) for (const value of Object.values(row)) expect(String(value).startsWith('df_')).toBe(false);
+	});
+
+	it('test 26: end to end, a key revoked through DELETE /api/account/api-keys/{id} stays out of this server’s backup from before it, and is refused', async () => {
+		const K = makeApiKeyRow(owner);
+		const L = makeApiKeyRow(owner);
+		const backup = opening(generateBackupData());
+		expect((await api('DELETE', `/api/account/api-keys/${K.id}`, { user: owner })).status).toBe(200);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+		expect(await v1(K.key)).toBe(401);
+		expect(await v1(L.key)).toBe(200);
+	});
+
+	it('test 15: a restore whose leave-out, or whose union, cannot be written is rolled back, and nothing is changed', () => {
+		const K = makeApiKeyRow(owner);
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		record(K.id + 50, 'a'.repeat(64), 'revoked', backup);
+		backup.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'api_keys'").run(K.id + 60);
+		revokedHere(K.id);
+		const before = snapshotDb();
+		for (const trigger of [
+			`CREATE TEMP TRIGGER refuse_2995 BEFORE DELETE ON api_keys WHEN OLD.id = ${K.id} BEGIN SELECT RAISE(ABORT, 'refused by test 15'); END`,
+			"CREATE TEMP TRIGGER refuse_2995 BEFORE INSERT ON api_key_revocations BEGIN SELECT RAISE(ABORT, 'refused by test 15'); END"
+		]) {
+			sqlite.exec(trigger);
+			try {
+				let thrown: unknown = null;
+				try {
+					restoreFromBackup(sqlite, backup);
+				} catch (e) {
+					thrown = e;
+				}
+				expect(thrown).toBeInstanceOf(RestoreError);
+				expect((thrown as RestoreError).committed).toBe(false);
+				expect((thrown as RestoreError).message).toContain('refused by test 15');
+				expectUnchanged(before);
+			} finally {
+				sqlite.exec('DROP TRIGGER IF EXISTS temp.refuse_2995');
+			}
+		}
+	});
+
+	it('(b): an id this server held with another hash just before the restore: the backup’s key at that id is left out, counted, and its hash recorded (R1)', async () => {
+		const old = keyAt(5, owner);
+		const backup = opening(generateBackupData());
+		sqlite.prepare('DELETE FROM api_keys WHERE id = 5').run();
+		const held = keyAt(5, owner);
+		watermark(5);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [5], workingCopy: 0 });
+		expect(keyIds()).toEqual([]);
+		expect(recordOf()).toContainEqual({ id: 5, hash: old.hash, because: 'before record' });
+		expect(await v1(old.key)).toBe(401);
+		expect(held.hash).not.toBe(old.hash);
+	});
+
+	it('(d): a backup shaped as before 0075, its key recorded here and used: the own restore leaves it out and holds W, told with the sweep; a working copy holds W before switching every webhook off', () => {
+		for (const outside of ['keep', 'off'] as const) {
+			resetDb();
+			startedSinceAlreadyOffHeld();
+			makeUser({ username: 'chief', role: 'superadmin' });
+			const olga = makeUser({ username: 'olga' });
+			const ann = makeUser({ username: 'ann' });
+			const theBoard = makeBoard({ owner: olga }).board;
+			addBoardMember(theBoard, ann, 'editor');
+			const K = makeApiKeyRow(olga);
+			const W = makeWebhook(theBoard, { setBy: ann, secret: 'whsec-d-2995' }).id;
+			sqlite.prepare("UPDATE webhooks SET created_at = '2026-10-01 09:00:00' WHERE id = ?").run(W);
+			sqlite.prepare("UPDATE api_keys SET last_used_at = '2026-11-01 09:00:00' WHERE id = ?").run(K.id);
+			const backup = opening(Buffer.from(sqlite.serialize()));
+			backup.exec("DROP TABLE webhook_reveals; DELETE FROM settings WHERE key = 'webhook_reveals_seeded'");
+			revokedHere(K.id);
+
+			const result = withWarnings(() => restoreFromBackup(sqlite, backup, { outside, by: 'chief' }));
+
+			expect(result.errors, outside).toEqual([]);
+			expect(result.apiKeysLeftOut.keyIds, outside).toEqual([K.id]);
+			expect(rowOf(W), outside).toEqual(HELD);
+			if (outside === 'keep') {
+				expect(warnLines().join('\n')).toContain('found after a restore by chief');
+				expect(warnLines().join('\n')).toMatch(new RegExp(`[Ww]ebhook ${W} on board ${theBoard.id}\\b`));
+			}
+		}
 	});
 });

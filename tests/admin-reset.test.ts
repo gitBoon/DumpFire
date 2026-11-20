@@ -87,8 +87,8 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-/** What a reset keeps. */
-const KEPT = ['system_logs', 'backup_log'];
+/** What a reset keeps: with the record of every API key ended here (card 2995). */
+const KEPT = ['system_logs', 'backup_log', 'api_key_revocations'];
 /** The migration runner's record of the files it has applied. */
 const MIGRATION_RECORD = '__drizzle_migrations';
 
@@ -244,7 +244,10 @@ function everything(): Everything {
 		.prepare("INSERT INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) VALUES ('mail', ?, 'setter access ended', ?, ?, 'member')")
 		.run('f'.repeat(64), '2026-11-19 09:00:00', member.id);
 
-	// The two tables a reset keeps.
+	// The tables a reset keeps: with the record of every API key ended here (card 2995, migration 0076).
+	sqlite
+		.prepare("INSERT INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (?, ?, '2026-11-19 09:00:00', 'revoked')")
+		.run(900, 'a'.repeat(64));
 	db.insert(backupLog)
 		.values({ destinationType: 'sftp', destinationName: 'Offsite', filename: 'backup-1.db', status: 'success' })
 		.run();
@@ -313,8 +316,18 @@ describe('POST /api/admin/reset', () => {
 				expect(res.body).toEqual({
 					success: true,
 					redirect: '/setup',
-					trash: { moved: 3, missing: 0, failed: [] }
+					trash: { moved: 3, missing: 0, failed: [] },
+					// Card 2995 (k, R5): every key it cleared recorded as ended, and counted.
+					apiKeysRecorded: 1
 				});
+				// The record kept, the row it held among it, and the key cleared recorded `reset` (card 2995, k, R5).
+				const key = Object.values(e.before.api_keys)[0];
+				expect(
+					sqlite.prepare('SELECT key_id AS id, key_hash AS hash, revoked_because AS because FROM api_key_revocations ORDER BY key_hash').all()
+				).toEqual([
+					{ id: 900, hash: 'a'.repeat(64), because: 'revoked' },
+					{ id: key.id, hash: 'hash', because: 'reset' }
+				]);
 
 				// Everything is cleared, the users among them: they used to stay.
 				// Settings hold three rows: the form signing key, made again as the reset commits (card 2750),
@@ -347,6 +360,7 @@ describe('POST /api/admin/reset', () => {
 						message:
 							`The database was reset by admin (ID: ${e.admin.id}): ${total} row(s) cleared from ` +
 							`${cleared().length} table(s), the system log and the backup history kept; ` +
+							'1 API key(s) recorded as ended, so that no import brings one back, and that record kept; ' +
 							'3 attachment file(s) moved to the trash'
 					}
 				]);
@@ -388,7 +402,12 @@ describe('POST /api/admin/reset', () => {
 		expect(run.writes.at(-1)).toBe(upsert);
 		expect(run.writes.at(-2)).toMatch(/^INSERT INTO settings \(key, value\) VALUES/);
 		expect(run.writes.at(-3)).toBe(upsert);
-		expect(run.writes.slice(STEP_UP_WRITES.length, -3).sort()).toEqual(
+		// Before the clear, every key recorded as ended and deleted (card 2995, R5): the one write to a kept table.
+		expect(run.writes.slice(STEP_UP_WRITES.length, STEP_UP_WRITES.length + 2)).toEqual([
+			expect.stringMatching(/^INSERT OR IGNORE INTO api_key_revocations \(key_id, key_hash, revoked_at, revoked_because\) SELECT id, key_hash, @at, @because FROM api_keys WHERE 1 = 1 /),
+			'DELETE FROM api_keys WHERE 1 = 1 RETURNING id'
+		]);
+		expect(run.writes.slice(STEP_UP_WRITES.length + 2, -3).sort()).toEqual(
 			cleared()
 				.map((table) => `DELETE FROM "${table}"`)
 				.sort()

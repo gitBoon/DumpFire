@@ -63,6 +63,8 @@ const TEST_FILES = [
 	'admin-panels.test.ts',
 	'admin-reset.test.ts',
 	'api-key-deadline.test.ts',
+	// Card 2995: the record of every API key ended on this server, and the rule that refuses a key it names.
+	'api-key-revocations.test.ts',
 	'archive-answers.test.ts',
 	'atomic-accounts.test.ts',
 	'atomic-creation.test.ts',

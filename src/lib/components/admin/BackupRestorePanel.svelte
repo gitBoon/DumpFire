@@ -78,6 +78,10 @@
 		decisionLinks?: string;
 		/** API keys of a backup made before migration 0069 given this server's deadline, when there were any (card 2772). */
 		keyDeadlines?: string;
+		/** The backup's API keys left out, ended on this server or a working copy's, when there were any (card 2995). */
+		keysLeftOut?: string;
+		/** This server's settings held for review carried over the backup's, when there were any (card 2922; card 2995's F6). */
+		settingsHeld?: string;
 		/** Who the superadmin is now: who can sign in to export, import or reset again. */
 		superadmin?: string;
 		/** Every table restored, with its rows, for whoever wants all of it. */
@@ -103,6 +107,8 @@
 		secretsToEnter?: string;
 		mfaWithoutFactor?: string;
 		settingsRemoved?: string;
+		settingsHeld?: string;
+		keysLeftOut?: string;
 		systemLog?: string;
 		attachmentsPutBack?: number;
 		requestLinksReplaced?: number;
@@ -159,6 +165,12 @@
 			// What went after the restore, mail settings above all, whose going
 			// stops invites and password resets (card 2411).
 			settingsRemoved: result.settingsRemoved,
+			// This server's settings held for review that the backup did not hold, held again over it (card 2922): the
+			// server's sentence, absent when there were none. Never shown before card 2995 (its F6).
+			settingsHeld: result.settingsHeld,
+			// The backup's API keys left out, ended on this server or a working copy's (card 2995): the server's sentence,
+			// absent when none was left out. It names no account.
+			keysLeftOut: result.keysLeftOut,
 			// This server's system log was kept, and the backup's lines were not
 			// brought in (card 2899): the server's sentence, absent when the
 			// backup held none.
@@ -549,6 +561,9 @@
 			{#if importReport.keyDeadlines}
 				<p class="import-report-detail">{importReport.keyDeadlines}</p>
 			{/if}
+			{#if importReport.keysLeftOut}
+				<p class="import-report-detail">{importReport.keysLeftOut}</p>
+			{/if}
 			{#if importReport.decisionLinks}
 				<p class="import-report-detail">{importReport.decisionLinks}</p>
 			{/if}
@@ -566,6 +581,9 @@
 			{/if}
 			{#if importReport.settingsRemoved}
 				<p class="import-report-detail">{importReport.settingsRemoved}</p>
+			{/if}
+			{#if importReport.settingsHeld}
+				<p class="import-report-detail">{importReport.settingsHeld}</p>
 			{/if}
 			{#if importReport.systemLog}
 				<p class="import-report-detail">{importReport.systemLog}</p>

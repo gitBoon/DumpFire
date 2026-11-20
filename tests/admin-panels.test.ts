@@ -1064,6 +1064,49 @@ describe('the Import Database dialog, mounted (card 2362)', () => {
 		expect(lines).toContain(kept);
 	});
 
+	// Card 2995 (test 24): the server's sentence of the API keys left out, and card 2922's of the settings held again
+	// (its F6), each shown when the answer has it and not otherwise.
+	it.each([
+		{ answered: 'both sentences', given: true },
+		{ answered: 'neither', given: false }
+	])('shows the keys left out and the settings held again when the answer says so: $answered (card 2995)', async ({ given }) => {
+		const keysLeftOut =
+			'1 API key(s) in the backup were left out, because each was revoked or ended on this server, or was gone from it before endings were recorded: ' +
+			'none of them works, and their holders make new ones on the Account page.';
+		const settingsHeld = 'The mail settings, held for review on this server, are held again: keep or remove them under Settings held for review.';
+		answer = (what) =>
+			what === 'POST /api/admin/import/confirm'
+				? Response.json({ confirmation: 'the-confirmation', expiresInSeconds: 60 })
+				: what === 'POST /api/admin/import?outside=keep'
+					? Response.json({
+							success: true,
+							message: 'Database restored (4.0 KB).',
+							restored: { boards: 2 },
+							sizeBytes: 4096,
+							...(given ? { keysLeftOut, apiKeysLeftOut: 1, settingsHeld } : { apiKeysLeftOut: 0 })
+						})
+					: undefined;
+		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
+		target.querySelector<HTMLButtonElement>('.btn-backup.import')!.click();
+		flushSync();
+		pick(target, 'monday.db');
+		await settle();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		type(dialog.querySelector<HTMLInputElement>('input[type="password"]')!, MINE);
+		typeCode(document);
+		buttonNamed(dialog, 'Confirm').click();
+		await settle();
+
+		const lines = [...target.querySelectorAll('.import-report .import-report-detail')].map((p) => p.textContent);
+		if (given) {
+			expect(lines).toContain(keysLeftOut);
+			expect(lines).toContain(settingsHeld);
+		} else {
+			expect(lines.join(' ')).not.toContain('API key');
+			expect(lines.join(' ')).not.toContain('held for review');
+		}
+	});
+
 	it('opens no dialog and sends nothing for a file that is not a .db backup, or one that cannot be read', async () => {
 		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
 		pick(target, 'export.json');

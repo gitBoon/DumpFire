@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.95
+version: 1.96
 status: As-Built
 date: 2026-11-19
 tags:
+  - card-2995
+  - api-key-revocations
   - card-2947
   - migration-0075
   - webhook-reveals
@@ -1735,7 +1737,60 @@ revoke, an ending, a user delete, the host's reset) and a webhook's with the web
 
 A backup carries the table like any other: it is not secret. A backup made before 0075 has none,
 and the restore seeds where the restored settings lack the flag. Going back to an older image
-leaves the table unread and unwritten.
+leaves the table unread and unwritten. Since card 2995 the restore's `leaveOutRecordedKeys` reads
+and deletes the rows of every key it leaves out, and holds what they name.
+
+### Every API key ended on this server (`api_key_revocations`, migration 0076)
+
+Card 2995. One row for each API key ended here, so that no restore brings it back and every check of
+a key refuses it. No foreign key: a row outlives its key and its account.
+
+```mermaid
+erDiagram
+    users ||--o{ api_keys : "cascade"
+    api_keys |o..o{ api_key_revocations : "named by key_hash, or by key_id where key_hash is empty and key_id is at most W; no foreign key"
+    api_keys ||--o{ webhook_reveals : "cascade"
+    api_key_revocations {
+        text key_hash PK "SHA-256 hex the gate checks; empty for a seed row; 'watermark' for W"
+        integer key_id PK "the key's row id here; W on a watermark row"
+        text revoked_at "when it was ended here, in the stored form"
+        text revoked_because "revoked, access ended, account deleted, reset, before record, recorded in a backup"
+    }
+```
+
+| Column | Type | Meaning |
+|---|---|---|
+| `key_id` | integer, part of the primary key | The key's row id here; on a watermark row, W |
+| `key_hash` | text, the first column of the primary key | The SHA-256, in lower-case hex, that the gate checks the key by; `''` for a seed row, whose hash nobody knew; `'watermark'` for a watermark row |
+| `revoked_at` | text, `*_at` | When it was ended, or the seed's moment |
+| `revoked_because` | text | `revoked`, `access ended`, `account deleted`, `reset`, `before record` (the seed, and a hash recorded by the restore's belt), or `recorded in a backup` (a backup's row with a word this build does not know) |
+
+The primary key `(key_hash, key_id)` is the table's only index: the gate looks a key up by hash, by
+`('', id)` and the largest watermark, each a search on it.
+
+**Writers.** Migration 0076 (the watermark W, the larger of the key counter and the largest id held,
+and a seed row for every id from 1 to W that `api_keys` no longer held); `endApiKeys` (the revoke
+through `revokeApiKeys`, `endAccountAccess`, `deleteUser`, the restore's `carryDisabled` and Reset
+Everything), always `INSERT OR IGNORE` before the delete, in the same transaction;
+`scripts/mfa-reset.mjs` (`RECORD_ACCOUNT_KEYS_ENDED_SQL`, pinned to the server's); the restore's
+`carryKeyRevocations` (the backup's seed rows within its own key counter, its hashed rows whatever
+their id, and its watermark up to the larger of that counter and the ids its rows name) and
+`leaveOutRecordedKeys` (the hash of a key a seed row names by id, or whose id this server held with
+another hash). Nothing deletes, updates or replaces a row; `tests/check-at-the-write.test.ts` holds
+src and scripts to it.
+
+**Readers.** `keyRecorded` (through `keyEnded`: the gate, `stillAuthenticated`, the live-key lists,
+the webhooks' hold rule), the restore's leave-out (`DELETE FROM api_keys WHERE EXISTS` the same
+rule), `endRecordedKeysPresent` at start and every five minutes, the Account page's key list and
+its limit of ten (neither counts a recorded key), and `raiseKeyCounterOverRecord`, which keeps
+`sqlite_sequence` for `api_keys` at or above every id the record names. 0076 writes one row per id,
+never a range, and halts where that would be more than 1,000,000 rows.
+
+`restorableTables` leaves the table out, as it leaves out the system log, and Reset Everything's
+`KEPT` names it: neither clears it. A backup carries it like any other table: it holds ids and
+hashes, never a key. A backup made before 0076 has none, and the restore applies this server's
+record alone. Going back to an older image leaves it unwritten there, and that image's restore
+clears it and refills it from the backup.
 
 ### A disabled account (migration 0072)
 
