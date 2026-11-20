@@ -210,6 +210,23 @@ describe('the checklist source', () => {
 		expect(item.how).not.toContain('are still mailed as it has them');
 	});
 
+	it("(g) card 3029: A.8.12 says, right after card 3020's rule, that an unsealed restore kept as it is keeps this server's From, not as open, and cites both symbols, each of which exists", () => {
+		const item = CHECKLIST.find((entry) => entry.ref === 'A.8.12')!;
+		for (const [path, symbol] of [
+			['src/lib/server/db/restore.ts', 'keepMailFromHere'],
+			['src/lib/server/email.ts', 'mailFromAsRead']
+		]) {
+			const evidence = item.evidence.find((e) => e.path === path && e.symbol === symbol);
+			expect(evidence, `${path} ${symbol}`).toBeDefined();
+			expect(evidenceFault(evidence!), `${path} ${symbol}`).toBeNull();
+		}
+		expect(item.how).toContain(
+			'so no decision mail goes to them (card 3020). ' +
+				"On such a restore kept as it is, mail keeps this server's From address and name, or none where it had none (card 3029). "
+		);
+		expect(item.how.slice(item.how.indexOf('Still open:'))).not.toContain('3029');
+	});
+
 	it('names every gap: a card or an accepted risk for each item short of met, and neither for a met one', () => {
 		const faults: string[] = [];
 		for (const item of APPLICATION_SIDE) {

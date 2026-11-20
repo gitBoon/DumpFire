@@ -7276,7 +7276,7 @@ describe('0059, which adds who last changed the mail settings, the App URL and e
 		expect(ONE_OFFS.filter((oneOff) => oneOff.file === FILE_0059)).toEqual([]);
 	});
 
-	it('restores a backup made before 0059: every setting it holds comes back, unattributed, and this server’s setter rows are cleared', () => {
+	it('restores a backup made before 0059: every setting it holds comes back but the From, unattributed, and this server’s setter rows are cleared', () => {
 		const live = memoryDb();
 		runMigrations({ database: live, migrationsDir: REAL_MIGRATIONS });
 		live.exec(`
@@ -7290,9 +7290,10 @@ describe('0059, which adds who last changed the mail settings, the App URL and e
 		const result = restoreFromBackup(live, backup);
 
 		expect(result.errors).toEqual([]);
+		// Card 3029: a backup made before 0059 has no seal, so its From Address is only the file's word, and this server,
+		// which had none, is left with none.
 		expect(live.prepare("SELECT key, value FROM settings WHERE key IN ('smtp_host', 'smtp_from_address', 'app_url') ORDER BY key").all()).toEqual([
 			{ key: 'app_url', value: 'https://board.example.test' },
-			{ key: 'smtp_from_address', value: 'board@example.test' },
 			{ key: 'smtp_host', value: 'smtp.example.test' }
 		]);
 		expect(JSON.parse((live.prepare("SELECT value FROM settings WHERE key = 'backup_config'").get() as { value: string }).value).destinations.map((d: { name: string }) => d.name)).toEqual(['Bucket']);

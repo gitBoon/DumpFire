@@ -116,7 +116,7 @@ import {
 	type AccountRuling
 } from '../account-endings';
 import { DUMMY_HASH } from '../dummy-hash';
-import { appUrlAsRead } from '../email';
+import { appUrlAsRead, mailFromAsRead } from '../email';
 import { failureConfigOf } from '../setting-setters';
 import { APP_URL_SETTING, DESTINATION_SETTING, MAIL_SETTING, UNSEALED_RESTORE, appUrlPlaceOf, mailPlaceOf, placeKey } from '../setting-holds';
 import { sqlite } from './index';
@@ -361,7 +361,8 @@ export type RestoreResult = {
 	 * server's address (R5); `requestsMailHeld` and `requestsUnconfirmedHeld`, the restored requests with an address that
 	 * this server did not hold as they are, and whose requester mail it newly held, confirmed and unconfirmed apart (card
 	 * 3020, R11); `peopleMailOff`, the people it marked left, as this server did not hold their address and account or has
-	 * them as left, and `decisionPlacesMailOff`, those people's places on decisions, not removed (card 3020, R7, R8, R21).
+	 * them as left, and `decisionPlacesMailOff`, those people's places on decisions, not removed (card 3020, R7, R8, R21);
+	 * `mailFrom`, 1 where, kept as it is, it gave the mail's From address and name this server's (card 3029).
 	 * All 0 for a sealed backup.
 	 */
 	unsealedReach: UnsealedReach;
@@ -392,6 +393,8 @@ export type UnsealedReach = {
 	peopleMailOff: number;
 	/** Card 3020 (R21): participant rows, not removed, of those people: places on decisions. */
 	decisionPlacesMailOff: number;
+	/** Card 3029: 1 where the From address or name a mail would use was replaced with this server's; 0 on a working copy. */
+	mailFrom: number;
 };
 
 /** A restore's `unsealedReach` before anything is counted. */
@@ -405,7 +408,8 @@ export const NO_UNSEALED_REACH: UnsealedReach = {
 	requestsMailHeld: 0,
 	requestsUnconfirmedHeld: 0,
 	peopleMailOff: 0,
-	decisionPlacesMailOff: 0
+	decisionPlacesMailOff: 0,
+	mailFrom: 0
 };
 
 /** The restored passwords a restore kept out of use (cards 2997 and 3009): see `RestoreResult.passwordsKept`. */
@@ -826,6 +830,44 @@ function keepNotifyEmailHere(live: Database.Database, before: string | null): nu
 	live.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(JSON.stringify({ ...was, notifyEmail: addressHere }));
 	// The failure mail goes only to a value that is set (`config.notifyEmail &&`, backup.ts): none for none is no change.
 	return was.notifyEmail || addressHere !== '' ? 1 : 0;
+}
+
+/** The settings a mail's From is read from (card 3029), by what `MailFromHere` holds of each. */
+const MAIL_FROM_KEYS = { address: 'smtp_from_address', name: 'smtp_from_name' } as const;
+
+/**
+ * This server's From Address and From Name rows (card 3029), read before the clear by `settingOf`: each value as read,
+ * text as a string and a BLOB as a Buffer, or null where there is no row. Pass as read (its plan's R6):
+ * `keepMailFromHere` writes each back exactly so.
+ */
+type MailFromHere = { address: string | Buffer | null; name: string | Buffer | null };
+
+/** This server's From rows, as `MailFromHere` holds them. Reads. */
+function mailFromHere(live: Database.Database): MailFromHere {
+	// `settingOf` answers the value as better-sqlite3 gives it: a Buffer for a BLOB, whatever its type says.
+	const read = (key: string) => settingOf(live, key) as string | Buffer | null;
+	return { address: read(MAIL_FROM_KEYS.address), name: read(MAIL_FROM_KEYS.name) };
+}
+
+/**
+ * Card 3029: on a restore of a backup whose seal did not verify, kept as it is, the mail's From Address and From Name
+ * are this server's rows exactly (`before`), whatever the file holds: each restored row is deleted, and this server's
+ * value is put back as read, where it had one. Where it had none, none is left, so that the settings read as they did
+ * before the restore: no file's address takes a mail's bounces or replies, the envelope sender among them. Type-blind
+ * and unconditional; on its own gate (R5). Counts 1 only where the From a mail would use (`mailFromAsRead`, name or
+ * address) changes, naming nothing. A working copy removes both rows itself (`switchOffOutside`). Not caught.
+ */
+function keepMailFromHere(live: Database.Database, before: MailFromHere): number {
+	const restored = mailFromAsRead(settingOf(live, MAIL_FROM_KEYS.address), settingOf(live, MAIL_FROM_KEYS.name));
+	const remove = live.prepare('DELETE FROM settings WHERE key = ?');
+	const putBack = live.prepare('INSERT INTO settings (key, value) VALUES (?, ?)');
+	for (const field of ['address', 'name'] as const) {
+		remove.run(MAIL_FROM_KEYS[field]);
+		const value = before[field];
+		if (value !== null) putBack.run(MAIL_FROM_KEYS[field], value);
+	}
+	const kept = mailFromAsRead(before.address, before.name);
+	return restored.address === kept.address && restored.name === kept.name ? 0 : 1;
 }
 
 /**
@@ -3251,6 +3293,10 @@ function restoreInOneSnapshot(
 			const placesNow = settingPlacesIn(live);
 			// And its backup failure mail's address (card 3012, R5): see `keepNotifyEmailHere`.
 			const notifyEmailNow = notifyEmailHere(live);
+			// And its mail's From Address and From Name rows, as read, where the seal did not verify (card 3029): see
+			// `keepMailFromHere`. Null, not read, for a sealed backup, which never reaches that step: never a value that
+			// reads as "no From here".
+			const mailFromNow: MailFromHere | null = sealVerified ? null : mailFromHere(live);
 			const mailEverHere = mailEverConfiguredHere(live);
 			// And its disabled accounts (card 2671, S6): see `carryDisabled`.
 			const disabledAccountsHere = disabledHere(live);
@@ -3648,6 +3694,14 @@ function restoreInOneSnapshot(
 			// and so before anything is mailed or sent. Not caught.
 			if (!sealVerified && !working && tables.includes('settings') && tables.includes('setting_holds')) {
 				unsealedHeld = holdUnsealedSettings(live, placesNow, restoredAt);
+			}
+			// Card 3029 (R5): and, kept as it is, the mail's From Address and From Name this server's rows as read, on a gate
+			// of its own, since the hold above asks only where mail is handed over. A working copy removes both rows
+			// (`switchOffOutside`). Not caught.
+			if (!sealVerified && !working && tables.includes('settings')) {
+				// Unreachable: this server's From is read wherever the seal did not verify, which this step's gate asks first.
+				if (mailFromNow === null) throw new Error("internal error: this server's mail From was not read before the restore");
+				unsealedReach = { ...unsealedReach, mailFrom: keepMailFromHere(live, mailFromNow) };
 			}
 			// Card 3012 (R5): and, as it is or as a working copy, the backup failure mail's address this server's, called on its
 			// own: the last of card 3012's steps (R14). Not caught.

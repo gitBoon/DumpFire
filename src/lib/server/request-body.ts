@@ -133,7 +133,7 @@ const TIME_OF_DAY = /^([01]\d|2[0-3]):[0-5]\d$/;
  * `, ; < > " ( )`: the mailer reads `victim,attacker@evil.test` as two
  * addresses, and the others mark a name, a group or a comment round one.
  */
-const EMAIL_ADDRESS = /^[^\s@,;<>"()]+@[^\s@,;<>"()]+$/;
+export const EMAIL_ADDRESS = /^[^\s@,;<>"()]+@[^\s@,;<>"()]+$/;
 
 // ─── The body ────────────────────────────────────────────────────────────────
 

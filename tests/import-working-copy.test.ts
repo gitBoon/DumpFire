@@ -368,6 +368,14 @@ const ARMED_REACH =
 	'held and their secrets discarded: each sends nothing until an owner of its board or an administrator switches it on, which gives it a ' +
 	'new secret; 2 account(s) not the same here have their notification mail switched off until each signs in and switches it on; and the ' +
 	"backup failure mail goes to this server's address, not the backup's.";
+/**
+ * The same, restored as it is (card 3029): the mail's From address and name are this server's, none here, not the
+ * backup's. A working copy removes the mail settings, so it says only `ARMED_REACH`.
+ */
+const ARMED_REACH_KEPT = ARMED_REACH.replace(
+	'; and the backup failure mail',
+	"; mail goes out under this server's From address and name, not the backup's, or under none where this server had none; and the backup failure mail"
+);
 
 /** The armed backup. */
 function armedBackup(): Database.Database {
@@ -451,7 +459,8 @@ const AS_THE_BACKUP_HAS_IT = {
 	webhooksActive: 0,
 	backupSchedule: 'daily',
 	backupDestinations: 2,
-	mailSettings: 8
+	// Card 3029: the backup's eight but its From Address and From Name, as this server, which had neither, has none.
+	mailSettings: 6
 };
 /**
  * The same through the route, which gives the importer: ann, the backup's superadmin, is given the importer's password
@@ -683,6 +692,8 @@ describe('restoring as a working copy', () => {
 			const restored = schedulesPaused(table, withoutKeysRecorded(withoutFormKey(contentsOf(live)[table])));
 			const backedUp = schedulesPaused(table, withoutKeysRecorded(withoutFormKey(contentsOf(backup)[table])), [1, 2]);
 			if (table === 'webhooks') expect(heldAtSetApart(restored)).toEqual(heldUnsealed(backedUp));
+			// And its From Address and From Name not taken, this server having none (card 3029).
+			else if (table === 'settings') expect(restored).toEqual(backedUp.filter((row) => !/"key":"smtp_from_(address|name)"/.test(row)));
 			else expect(restored).toEqual(backedUp);
 		}
 		// And its mail, App URL and destination held for review (card 3009, R4).
@@ -855,7 +866,7 @@ describe('restoring as a working copy', () => {
 		opened.push(sealed);
 		sealCopy(sealed, backupSealKey(kept));
 		expect(restoreFromBackup(kept, sealed, { outside: 'keep' }).errors).toEqual([]);
-		expect(reachingOutside(kept)).toEqual({ ...AS_THE_BACKUP_HAS_IT, reportSchedulesEnabled: 3, webhooksActive: 2 });
+		expect(reachingOutside(kept)).toEqual({ ...AS_THE_BACKUP_HAS_IT, reportSchedulesEnabled: 3, webhooksActive: 2, mailSettings: 8 });
 	});
 });
 
@@ -1237,19 +1248,19 @@ describe('through the route', () => {
 		expect(response.body.message).toMatch(new RegExp(`^Database restored \\(${size}\\)\\. .*\\bwebhooks: 3\\. Everybody`));
 		// Card 3009 (R4): then its mail, App URL and destination held for review, counted.
 		expect(response.body.message.slice(response.body.message.lastIndexOf('webhooks: 3.'))).toBe(
-			`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann. ${PASSWORDS_NOT_TAKEN} ${ARMED_HELD} ${HELD_UNSEALED_SENTENCE} ${ARMED_REACH}`
+			`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann. ${PASSWORDS_NOT_TAKEN} ${ARMED_HELD} ${HELD_UNSEALED_SENTENCE} ${ARMED_REACH_KEPT}`
 		);
 		// With what it kept from reaching outside after it (card 3012).
-		expect(response.body.settingsHeld).toBe(`${HELD_UNSEALED_SENTENCE} ${ARMED_REACH}`);
+		expect(response.body.settingsHeld).toBe(`${HELD_UNSEALED_SENTENCE} ${ARMED_REACH_KEPT}`);
 		// The CRITICAL line of who imported (card 2899), then the account of it, then the webhooks held (card 3012).
 		expect(logged).toHaveLength(3);
 		expect(logged[2]).toBe(`[WARN] [IMPORT] ${ARMED_HELD}`);
 		expect(logged[0]).toMatch(
-			/^\[CRITICAL\] \[IMPORT\] The database was replaced from an uploaded backup by .*, restored as it is, keeping 1 of the backup's password\(s\) out of use, giving the backup's superadmin the importing account's password but no authenticator, holding 4 setting\(s\) of a backup whose seal did not verify for the superadmin's review, keeping what a backup whose seal did not verify would send outside: 3 webhook\(s\) held; 2 account\(s\)' notification mail switched off; the backup failure mail's address kept as on this server\. /
+			/^\[CRITICAL\] \[IMPORT\] The database was replaced from an uploaded backup by .*, restored as it is, keeping 1 of the backup's password\(s\) out of use, giving the backup's superadmin the importing account's password but no authenticator, holding 4 setting\(s\) of a backup whose seal did not verify for the superadmin's review, keeping what a backup whose seal did not verify would send outside: 3 webhook\(s\) held; 2 account\(s\)' notification mail switched off; the mail's From address and name kept as on this server; the backup failure mail's address kept as on this server\. /
 		);
-		expect(logged[1].endsWith(`Filled in: first_completed_at on 0 card(s). ${PASSWORDS_NOT_TAKEN} ${ARMED_HELD} ${HELD_UNSEALED_SENTENCE} ${ARMED_REACH}`)).toBe(true);
+		expect(logged[1].endsWith(`Filled in: first_completed_at on 0 card(s). ${PASSWORDS_NOT_TAKEN} ${ARMED_HELD} ${HELD_UNSEALED_SENTENCE} ${ARMED_REACH_KEPT}`)).toBe(true);
 		// But for the webhooks held, which are switched off for good, and the notification mail switched off (card 3012).
-		expect(`${response.body.message} ${logged[1]}`.replaceAll(ARMED_HELD, '').replaceAll(ARMED_REACH, '')).not.toMatch(/working copy|switched off|removed/i);
+		expect(`${response.body.message} ${logged[1]}`.replaceAll(ARMED_HELD, '').replaceAll(ARMED_REACH_KEPT, '')).not.toMatch(/working copy|switched off|removed/i);
 		expect(reachingOutside(sqlite)).toEqual(AS_THE_BACKUP_HAS_IT_IMPORTED);
 		// The settings as the backup has them, beside the form signing key the restore makes (card 2750), and the flag
 		// the check of the stored images writes once the import has committed, the backup holding no image and no flag
@@ -1265,8 +1276,9 @@ describe('through the route', () => {
 			const restored = schedulesPaused(table, made(contentsOf(sqlite)[table]));
 			const backedUp = schedulesPaused(table, made(contentsOf(backup)[table]), [1, 2]);
 			if (table === 'webhooks') expect(heldAtSetApart(restored)).toEqual(heldUnsealed(backedUp));
-			// And the failure mail's address this server's, none here (card 3012, R5).
-			else if (table === 'settings') expect(restored).toEqual(failureMailAs(backedUp, ''));
+			// And the failure mail's address this server's, none here (card 3012, R5), and its From Address and From Name not
+			// taken, this server having none (card 3029).
+			else if (table === 'settings') expect(restored).toEqual(failureMailAs(backedUp, '').filter((row) => !/"key":"smtp_from_(address|name)"/.test(row)));
 			else expect(restored).toEqual(backedUp);
 		}
 		expect(contentsOf(backup).settings.filter((row) => row.includes('"key":"stored_images_rechecked"'))).toEqual([]);

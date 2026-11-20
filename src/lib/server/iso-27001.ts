@@ -668,6 +668,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Every password change and a reset of the two-step sign-in pause the account\'s report schedules, each turned on again only with the password and a code (card 2894). ' +
 			'There is a Content-Security-Policy and a Referrer-Policy. Backups hold no secret and no requester link. ' +
 			'A restore of a backup whose seal did not verify sends nothing outside as the file has it: every webhook with an address is held with its secret discarded, every report schedule is paused, the accounts that are the same here keep this server\'s email address and notification choices, every other account has its notification mail switched off, and the backup failure mail keeps this server\'s address (card 3012); requests whose requester or card this server did not hold as they are have their mail held until an administrator releases each, as reviewed, with a password and a code, and people whose address and account it did not hold are marked left, so no decision mail goes to them (card 3020). ' +
+			"On such a restore kept as it is, mail keeps this server's From address and name, or none where it had none (card 3029). " +
 			'Still open: a schedule covers boards added to its grouping later. ' +
 			'Any administrator can still add a backup destination of their own and Run Now, which sends it a full copy of the database, and whoever sets the mail server reads every mail (card 2906, to be ruled).',
 		evidence: [
@@ -682,6 +683,9 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: 'src/lib/server/db/restore.ts', symbol: 'switchOffUnsealedPeople' },
 			{ path: 'src/lib/server/request-access.ts', symbol: 'requesterMailAddress' },
 			{ path: 'src/routes/api/requests/held/+server.ts', symbol: 'confirmStepUp' },
+			// Card 3029: an unsealed backup's From kept as this server's, and the From handed to nodemailer as a name and an address.
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'keepMailFromHere' },
+			{ path: 'src/lib/server/email.ts', symbol: 'mailFromAsRead' },
 			{ path: 'src/routes/api/reports/email/+server.ts', symbol: 'confirmStepUp' },
 			{ path: 'svelte.config.js', symbol: 'csp' },
 			{ path: 'src/lib/server/gate-answers.ts', symbol: 'Referrer-Policy' },

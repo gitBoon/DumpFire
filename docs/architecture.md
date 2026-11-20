@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.145
+version: 1.146
 status: As-Built
 date: 2026-11-20
 tags:
@@ -59,7 +59,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "The restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -3108,6 +3108,13 @@ run in the one transaction, and the notice after it changes:
    `webhooks_already_off_held`, which is more conservative: FP10). For an unsealed restore only,
    `carryHolds` puts this server's reason on such a row only where both addresses open and are equal
    (FP9).
+Card 3029 adds a step between card 3009's hold and step 9, restored as it is only, on a gate of its
+own: `keepMailFromHere` deletes the restored `smtp_from_address` and `smtp_from_name` rows and puts
+this server's back exactly as `mailFromHere` read them before the clear (none where it had none),
+counted as `mailFrom` only where the From a mail would use (`mailFromAsRead`) changes. A working copy
+removes both in `switchOffOutside`. Not caught. Every mail is handed to nodemailer with `from` as
+`mailFromAsRead`'s name and address, so a From Name never adds an address.
+
 9. `keepNotifyEmailHere`, after `holdUnsealedSettings`, as it is or as a working copy:
    `backup_config.notifyEmail` becomes this server's (`notifyEmailHere`, read before the clear, both
    through `failureConfigOf`), the last of card 3012's steps (FP12), counted only where the address
@@ -3147,7 +3154,8 @@ among them, is merged into `secrets.toEnter.heldWebhooks` (`{ id, boardId, board
 (`fillSecretGaps`' `listedOnLeftOff`, now ids: FP8). After the commit, `tellSwitchedOff` writes
 its `WARN` line and mails nobody. `RestoreResult.unsealedReach` counts each step (`webhooks`,
 `schedules`, `accountsAsHere`, `addressesGivenUp`, `notificationsOff`, `notifyEmail`, and card 3020's
-`requestsMailHeld`, `requestsUnconfirmedHeld`, `peopleMailOff`, `decisionPlacesMailOff`) and names
+`requestsMailHeld`, `requestsUnconfirmedHeld`, `peopleMailOff`, `decisionPlacesMailOff`, and card
+3029's `mailFrom`) and names
 nothing; the import route turns it into one sentence in `settingsHeld`, the CRITICAL line's words and
 its details. A sealed restore runs none of it.
 
@@ -3157,7 +3165,7 @@ sequenceDiagram
     participant R as restoreInOneSnapshot
     participant L as Live database (one transaction)
     I->>R: restoreFromBackup(live, backup, { outside, importer })
-    R->>L: read before the clear: notifyEmailHere, accountsHeldHere (with notification_prefs), requestRowsOf and peopleRowsOf (card 3020)
+    R->>L: read before the clear: notifyEmailHere, accountsHeldHere (with notification_prefs), requestRowsOf and peopleRowsOf (card 3020), mailFromHere (card 3029)
     R->>L: clear, copy (webhook addresses and secrets sealed as read)
     R->>L: keepSuperadminsHere (card 3009), carryDisabled, applyAccountEndings
     R->>L: keepAccountsHere: placeholders apart, the same here take this server's email and choices, others' email_all false (card 3012)
@@ -3167,6 +3175,7 @@ sequenceDiagram
     R->>L: holdUnsealedWebhooks: url not '' held and secret discarded, url '' switched off (card 3012)
     R->>L: carryHolds (this server's reason only where both addresses open and are equal)
     R->>L: carrySettingHolds, holdUnsealedSettings (card 3009, kept as it is)
+    R->>L: keepMailFromHere: this server's From rows as read, none where it had none (card 3029, kept as it is)
     R->>L: keepNotifyEmailHere (card 3012)
     R->>L: holdUnsealedRequestMail: held unless held here as it is, this server's hold where it was (card 3020)
     R->>L: switchOffUnsealedPeople: left, people_changes by DumpFire, the last of card 3020's steps

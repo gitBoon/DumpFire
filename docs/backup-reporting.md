@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.65
+version: 1.66
 status: As-Built
 date: 2026-11-20
 tags:
@@ -54,7 +54,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, an unsealed import holding the requester mail of requests it did not hold as they are and marking left the people it did not hold (holdUnsealedRequestMail, switchOffUnsealedPeople, card 3020, and its L9 cost), an unsealed import holding every webhook with an address, pausing schedules and keeping emails, choices and notifyEmail as here (unsealedReach, card 3012), the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "An unsealed import restored as it is keeping this server's mail From (card 3029), Scheduled backup system with multi-destination support, an unsealed import holding the requester mail of requests it did not hold as they are and marking left the people it did not hold (holdUnsealedRequestMail, switchOffUnsealedPeople, card 3020, and its L9 cost), an unsealed import holding every webhook with an address, pausing schedules and keeping emails, choices and notifyEmail as here (unsealedReach, card 3012), the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -342,6 +342,13 @@ mail address no longer reach outside as the file has them (card 3012). Inside th
   `carryHolds` gives such a row this server's own reason only where both addresses open and are equal,
   and only on an unsealed restore. Switching on any held webhook gives it a new secret, whatever the
   reason (see [authentication-security.md](authentication-security.md)).
+- **The mail's From** (`keepMailFromHere`, card 3029, restored as it is only, on a gate of its own between
+  `holdUnsealedSettings` and `keepNotifyEmailHere`). Card 3009's hold asks only where mail is handed
+  over (host, port, user, way out), so a file that keeps this server's could set the From every mail
+  goes under, and the envelope sender that takes the bounces. The restored `smtp_from_address` and
+  `smtp_from_name` rows are deleted and this server's, read before the clear, put back exactly as
+  read, whatever their type; none where this server had none. Counted (`mailFrom`) only where the From
+  a mail would use changes (`mailFromAsRead`). A working copy removes both with the mail settings.
 - **Failure mail** (`keepNotifyEmailHere`, after `holdUnsealedSettings`, as it is or as a working copy).
   `backup_config.notifyEmail` becomes this server's, read before the clear (`''` where it has none),
   unless the restored one is exactly that string; counted only where the address the failure mail goes

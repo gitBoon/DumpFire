@@ -389,6 +389,10 @@ function unsealedReachSentence(reach: UnsealedReach | undefined): string | null 
 						(reach.decisionPlacesMailOff > 0 ? `, so ${reach.decisionPlacesMailOff} place(s) on decisions are mailed nothing` : '') +
 						': an administrator marks each active on the People page, with a password and a code, once the address is checked'
 				]
+			: []),
+		// Card 3029: the mail's From address and name, this server's again, counted only.
+		...(reach.mailFrom > 0
+			? ["mail goes out under this server's From address and name, not the backup's, or under none where this server had none"]
 			: [])
 	];
 	const failureMail = reach.notifyEmail > 0 ? "the backup failure mail goes to this server's address, not the backup's" : null;
@@ -409,6 +413,7 @@ function unsealedReachWords(reach: UnsealedReach | undefined): string {
 		...(reach.requestsUnconfirmedHeld > 0 ? [`${reach.requestsUnconfirmedHeld} unconfirmed request(s) held`] : []),
 		...(reach.peopleMailOff > 0 ? [`${reach.peopleMailOff} person(s) marked left`] : []),
 		...(reach.decisionPlacesMailOff > 0 ? [`${reach.decisionPlacesMailOff} place(s) on decisions mailed nothing`] : []),
+		...(reach.mailFrom > 0 ? ["the mail's From address and name kept as on this server"] : []),
 		...(reach.notifyEmail > 0 ? ["the backup failure mail's address kept as on this server"] : [])
 	];
 	return `, keeping what a backup whose seal did not verify would send outside: ${parts.join('; ')}`;

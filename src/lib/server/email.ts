@@ -41,6 +41,7 @@ import { MAIL_CONNECTION_SETTINGS, mailPasswordAad, openStored, sealStored } fro
 // The settings held for the superadmin's review (card 2922): a leaf, which this passes the values it reads.
 import { anyHeld, appUrlHeldAt, heldBecauseAt, mailHeldAt, mailPlaceOf, MAIL_SETTING, UNSEALED_RESTORE } from './setting-holds';
 import { stamp } from '$lib/timestamps';
+import { EMAIL_ADDRESS } from './request-body';
 
 const log = createLogger('EMAIL');
 
@@ -130,6 +131,22 @@ function smtpSettingsWith(host: string): SmtpConfig {
 		fromName: getSetting('smtp_from_name') || 'DumpFire',
 		...(pass.kind === 'unopenable' ? { passUnopenable: true as const } : {})
 	};
+}
+
+/**
+ * The From a mail is handed to nodemailer with (card 3029, its plan's R1), from the From Address and From Name as
+ * stored: a name and an address apart, never joined as text, so that nodemailer quotes the name and no name can add
+ * an address of its own, nor take the envelope's sender. Each is read as text: text as it is, a BLOB as UTF-8, and
+ * anything else as ''; the name '' is 'DumpFire'. An address that is not one a save takes is ''. An address '' gives a
+ * mail no From and the envelope `MAIL FROM:<>`.
+ * A restore of a backup whose seal did not verify counts by it too (`keepMailFromHere`), so the two cannot differ.
+ */
+export function mailFromAsRead(address: unknown, name: unknown): { name: string; address: string } {
+	const asText = (value: unknown) => (typeof value === 'string' ? value : Buffer.isBuffer(value) ? value.toString('utf8') : '');
+	const text = asText(address);
+	// Fails closed: an address a save would refuse (`EMAIL_ADDRESS`, at most 254 characters) is no address, so no line
+	// break, comma or second address stored by any route reaches a header or the envelope.
+	return { name: asText(name) || 'DumpFire', address: text.length <= 254 && EMAIL_ADDRESS.test(text) ? text : '' };
 }
 
 /**
@@ -880,7 +897,9 @@ async function deliverMail(
 
 	try {
 		const transporter = createTransporter(config);
-		await transporter.sendMail({ from: `"${config.fromName}" <${config.fromAddress}>`, ...message });
+		// The From last, as a name and an address apart (card 3029, R1, R2): nodemailer quotes the name, so no name adds an
+		// address of its own, and nothing in the message replaces it.
+		await transporter.sendMail({ ...message, from: mailFromAsRead(config.fromAddress, config.fromName) });
 		status.sent++;
 		status.lastSentAt = new Date().toISOString();
 		return { sent: true };

@@ -57,7 +57,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { google } from 'googleapis';
+import nodemailer from 'nodemailer';
 import { generateBackupData, getBackupConfig, runBackup, saveBackupConfig, withoutSecrets } from '$lib/server/backup';
+import { sendEmail } from '$lib/server/email';
 import { DRIVE_REFUSAL, FOLDER_PATH_REFUSAL, ONEDRIVE_DRIVE_NOT_SET } from '$lib/server/onedrive-address';
 import {
 	DESTINATION_SECRET_FIELDS,
@@ -1271,7 +1273,7 @@ describe('a restore', () => {
 			const res = await importAnswer(backup);
 
 			expect(res.status, res.message).toBe(200);
-			const reach = { webhooks: 1, schedules: 1, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0 };
+			const reach = { webhooks: 1, schedules: 1, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0, mailFrom: 0 };
 			expect(res.body.unsealedReach).toEqual(reach);
 			expect(res.body.settingsHeld).toBe(REACH_KEEP);
 			expect(res.message).toContain(REACH_KEEP);
@@ -1291,7 +1293,7 @@ describe('a restore', () => {
 			});
 
 			expect(res.status, res.message).toBe(200);
-			expect(res.body.unsealedReach).toEqual({ webhooks: 1, schedules: 0, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0 });
+			expect(res.body.unsealedReach).toEqual({ webhooks: 1, schedules: 0, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0, mailFrom: 0 });
 			expect(res.body.settingsHeld).toBe(REACH_OPENING + REACH_WEBHOOKS + REACH_ACCOUNTS);
 			expect(res.body.settingsHeld).not.toContain('report schedule');
 			expect(criticalSince(from).message).toContain(REACH_CRITICAL.replace(' 1 report schedule(s) paused;', ''));
@@ -1309,7 +1311,7 @@ describe('a restore', () => {
 
 			expect(failed.status, failed.message).toBe(500);
 			expect(failed.body.committed).toBe(true);
-			expect(failed.body.unsealedReach).toEqual({ webhooks: 1, schedules: 1, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0 });
+			expect(failed.body.unsealedReach).toEqual({ webhooks: 1, schedules: 1, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0, mailFrom: 0 });
 			expect(failed.body.settingsHeld).toBe(REACH_KEEP);
 			expect(failed.message).toContain(REACH_KEEP);
 			expectNamesNone(failed.message);
@@ -1409,6 +1411,30 @@ describe('a restore', () => {
 			const line = criticalSince(from);
 			expect(line.message).toContain(HELD_3020_CRITICAL);
 			expectNamesNoneOf3020(ids, failed.message, line.message, line.meta);
+		});
+
+		// Card 3029 (f): the From an unsealed backup brought in, this server's again, said through the route in counts only.
+		it('(f) card 3029: kept as it is, the From kept as on this server is said in settingsHeld and the answer, the figures, and the CRITICAL words and details, naming no address or name', async () => {
+			sqlite.prepare("INSERT INTO settings (key, value) VALUES ('smtp_from_address', 'board@here.test'), ('smtp_from_name', 'The Board')").run();
+			const backup = ownBackup({ edited: true });
+			backup.prepare('UPDATE settings SET value = ? WHERE key = ?').run('x@planted-3029.test', 'smtp_from_address');
+			backup.prepare('UPDATE settings SET value = ? WHERE key = ?').run('Planted Name of 3029', 'smtp_from_name');
+			const from = newestLine();
+
+			const res = await importAnswer(backup);
+
+			expect(res.status, res.message).toBe(200);
+			const reach = { ...NO_UNSEALED_REACH, mailFrom: 1 };
+			expect(res.body.unsealedReach).toEqual(reach);
+			const said = REACH_OPENING + "mail goes out under this server's From address and name, not the backup's, or under none where this server had none.";
+			expect(res.body.settingsHeld).toBe(said);
+			expect(res.message).toContain(said);
+			const line = criticalSince(from);
+			expect(line.message).toContain(", keeping what a backup whose seal did not verify would send outside: the mail's From address and name kept as on this server");
+			expect(JSON.parse(line.meta).unsealedReach).toEqual(reach);
+			for (const text of [res.message, res.body.settingsHeld, line.message, line.meta]) {
+				for (const planted of ['planted-3029', 'Planted Name of 3029']) expect(text, planted).not.toContain(planted);
+			}
 		});
 
 		// Card 3009 (x): the words of an unsealed import, counts only: no username, id or key prefix (card 2997's FP14).
@@ -10595,7 +10621,7 @@ describe('an unsealed backup sends nothing outside as the file has it (card 3012
 		expect(accountRow(96)).toEqual({ email: 'other@file.test', prefs: '{"email_all":false}' });
 		expect(failureMailNow()).toBe('ops@here.test');
 		// No schedule paused by the step: a working copy switches every one off itself.
-		expect(result.unsealedReach).toEqual({ webhooks: 1, schedules: 0, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0 });
+		expect(result.unsealedReach).toEqual({ webhooks: 1, schedules: 0, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0, mailFrom: 0 });
 	});
 
 	it('(h2) FP8: a working copy of a backup made after card 2169 and before card 2928, its addresses plain, counts each webhook it holds once, and not again among those it switched off', () => {
@@ -10893,7 +10919,7 @@ describe('an unsealed backup sends nothing outside as the file has it (card 3012
 		expect(accountRow(member.id)).toEqual({ email: 'member@file.test', prefs: '{"email_all":true}' });
 		expect(accountRow(120)).toEqual({ email: 'other@file.test', prefs: '{}' });
 		expect(failureMailNow()).toBe('ops@file.test');
-		expect(result.unsealedReach).toEqual({ webhooks: 0, schedules: 0, accountsAsHere: 0, addressesGivenUp: 0, notificationsOff: 0, notifyEmail: 0, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0 });
+		expect(result.unsealedReach).toEqual({ webhooks: 0, schedules: 0, accountsAsHere: 0, addressesGivenUp: 0, notificationsOff: 0, notifyEmail: 0, requestsMailHeld: 0, requestsUnconfirmedHeld: 0, peopleMailOff: 0, decisionPlacesMailOff: 0, mailFrom: 0 });
 	});
 
 	it("(w) card 3012 R14: a failure at the failure mail write, the last of card 3012's steps on the keep path, rolls every step back", () => {
@@ -11521,6 +11547,179 @@ describe('a working copy of an unsealed backup holds its requests and marks its 
 			expect(sent.emails).toEqual([]);
 		} finally {
 			sent.restore();
+		}
+	});
+});
+
+// ─── Card 3029: the From every mail goes out under ──────────────────────────
+
+describe("an unsealed backup sends no mail under the file's From (card 3029)", () => {
+	/** `database`'s From rows set to each value given, a string or a Buffer, or none for null; a field not given is left. */
+	const fromIn = (database: Database.Database, from: { address?: string | Buffer | null; name?: string | Buffer | null }) => {
+		for (const [key, value] of [
+			['smtp_from_address', from.address],
+			['smtp_from_name', from.name]
+		] as const) {
+			if (value === undefined) continue;
+			database.prepare('DELETE FROM settings WHERE key = ?').run(key);
+			if (value !== null) database.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(key, value);
+		}
+	};
+	/** This server's mail, a relay with no user, and its From rows as given: each a value, or null for no row. */
+	const fromHere = (address: string | null, name: string | null) => {
+		sqlite.prepare("INSERT INTO settings (key, value) VALUES ('smtp_host', 'relay.here.test') ON CONFLICT (key) DO UPDATE SET value = excluded.value").run();
+		fromIn(sqlite, { address, name });
+	};
+	/** The From rows here, each with its storage class. */
+	const fromRows = () =>
+		sqlite.prepare("SELECT key, typeof(value) AS type, value FROM settings WHERE key IN ('smtp_from_address', 'smtp_from_name') ORDER BY key").all();
+	const THIS_SERVERS = [
+		{ key: 'smtp_from_address', type: 'text', value: 'board@here.test' },
+		{ key: 'smtp_from_name', type: 'text', value: 'The Board' }
+	];
+	/**
+	 * The From each mail `send` sends is handed to nodemailer with, by a stand-in of this block's own (its plan's R3:
+	 * `effects()` records no From, and its record is not changed for it).
+	 */
+	const sentFrom = async (send: () => Promise<unknown>) => {
+		const handed: unknown[] = [];
+		const spy = vi.spyOn(nodemailer, 'createTransport').mockImplementation((() => ({
+			sendMail: async (mail: { from?: unknown }) => {
+				handed.push(mail.from);
+				return { messageId: '<from-3029@example.test>' };
+			}
+		})) as unknown as typeof nodemailer.createTransport);
+		try {
+			await send();
+		} finally {
+			spy.mockRestore();
+		}
+		return handed;
+	};
+
+	it("(a1) kept as it is, a file that changes the From Address only gives both rows back as this server's, counted, and a mail then goes out under them", async () => {
+		fromHere('board@here.test', 'The Board');
+		const backup = ownBackup({ edited: true });
+		fromIn(backup, { address: 'x@file.test' });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(fromRows()).toEqual(THIS_SERVERS);
+		expect(result.unsealedReach).toEqual({ ...NO_UNSEALED_REACH, mailFrom: 1 });
+		expect(await sentFrom(() => sendEmail('someone@example.test', 'After the restore', '<p>Hello</p>'))).toEqual([{ name: 'The Board', address: 'board@here.test' }]);
+	});
+
+	it("(a2) a file that changes the From Name only, to one that closes its quotes and names an address, gives the name back as this server's, counted, and a mail goes out under it", async () => {
+		fromHere('board@here.test', 'The Board');
+		const backup = ownBackup({ edited: true });
+		fromIn(backup, { name: 'Ops" <x@file.test>, "' });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(fromRows()).toEqual(THIS_SERVERS);
+		expect(result.unsealedReach).toEqual({ ...NO_UNSEALED_REACH, mailFrom: 1 });
+		expect(await sentFrom(() => sendEmail('someone@example.test', 'After the restore', '<p>Hello</p>'))).toEqual([{ name: 'The Board', address: 'board@here.test' }]);
+	});
+
+	it("(b) where this server had no From rows, the file's are removed and none is left, counted", () => {
+		fromHere(null, null);
+		const backup = ownBackup({ edited: true });
+		fromIn(backup, { address: 'x@file.test', name: 'The File' });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(fromRows()).toEqual([]);
+		expect(result.unsealedReach).toEqual({ ...NO_UNSEALED_REACH, mailFrom: 1 });
+	});
+
+	it("(c) a file that stores this server's From Address as a BLOB gets this server's text row back, not counted, as a mail reads the same", () => {
+		fromHere('board@here.test', 'The Board');
+		const backup = ownBackup({ edited: true });
+		fromIn(backup, { address: Buffer.from('board@here.test') });
+		expect(backup.prepare("SELECT typeof(value) FROM settings WHERE key = 'smtp_from_address'").pluck().get()).toBe('blob');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(fromRows()).toEqual(THIS_SERVERS);
+		expect(result.unsealedReach).toEqual(NO_UNSEALED_REACH);
+	});
+
+	it("(c2) where this server stores its From Address as a BLOB, a file's text address is replaced with this server's BLOB as read, counted", () => {
+		fromHere('board@here.test', 'The Board');
+		fromIn(sqlite, { address: Buffer.from('board@here.test') });
+		const backup = ownBackup({ edited: true });
+		fromIn(backup, { address: 'x@file.test' });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(fromRows()).toEqual([
+			{ key: 'smtp_from_address', type: 'blob', value: Buffer.from('board@here.test') },
+			{ key: 'smtp_from_name', type: 'text', value: 'The Board' }
+		]);
+		expect(result.unsealedReach).toEqual({ ...NO_UNSEALED_REACH, mailFrom: 1 });
+	});
+
+	it("(d) a working copy of a file whose From differs from this server's removes both rows with the mail settings, and counts no From kept", () => {
+		fromHere('board@here.test', 'The Board');
+		const backup = ownBackup({ edited: true });
+		fromIn(backup, { address: 'x@file.test', name: 'The File' });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id, outside: 'off' });
+
+		expect(result.errors).toEqual([]);
+		expect(fromRows()).toEqual([]);
+		expect(result.outside?.mailSettings).toBe(3);
+		expect(result.unsealedReach).toEqual(NO_UNSEALED_REACH);
+	});
+
+	it("(e) a backup sealed as this server's own brings its From in as it has it, and counts nothing", () => {
+		fromHere('board@here.test', 'The Board');
+		const backup = ownBackup();
+		fromIn(backup, { address: 'x@file.test', name: 'The File' });
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.errors).toEqual([]);
+		expect(fromRows()).toEqual([
+			{ key: 'smtp_from_address', type: 'text', value: 'x@file.test' },
+			{ key: 'smtp_from_name', type: 'text', value: 'The File' }
+		]);
+		expect(result.unsealedReach).toEqual(NO_UNSEALED_REACH);
+	});
+
+	it('(w2) card 3029 R4: a failure at the From step rolls every step back', () => {
+		fromHere('board@here.test', 'The Board');
+		const backup = ownBackup({ edited: true });
+		fromIn(backup, { address: 'x@file.test' });
+		const before = snapshotDb();
+		try {
+			sqlite.exec(`
+				CREATE TEMP TRIGGER from_step_refused BEFORE DELETE ON settings
+				WHEN OLD.key = 'smtp_from_address' AND OLD.value = 'x@file.test'
+				BEGIN SELECT RAISE(ABORT, 'the From step is refused'); END
+			`);
+			let thrown: unknown;
+			try {
+				restoreFromBackup(sqlite, backup, { importer: chief.id });
+			} catch (error) {
+				thrown = error;
+			}
+
+			expect(thrown).toBeInstanceOf(RestoreError);
+			expect((thrown as RestoreError).committed).toBe(false);
+			expect((thrown as RestoreError).message).toBe('The restore failed and nothing was changed: the From step is refused');
+			expectUnchanged(before);
+			expect(fromRows()).toEqual(THIS_SERVERS);
+		} finally {
+			sqlite.exec('DROP TRIGGER IF EXISTS temp.from_step_refused');
 		}
 	});
 });

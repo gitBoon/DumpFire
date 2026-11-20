@@ -35,7 +35,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
 import { settings } from '$lib/server/db/schema';
-import { TLS_FAULT_HINT, appUrlAsRead, linkBaseUrl, sendEmail, sendEmailWithAttachment, sendTestEmail, smtpPasswordMissing } from '$lib/server/email';
+import { TLS_FAULT_HINT, appUrlAsRead, linkBaseUrl, mailFromAsRead, sendEmail, sendEmailWithAttachment, sendTestEmail, smtpPasswordMissing } from '$lib/server/email';
 import { TYPED_SECRET_LOOKS_SEALED } from '$lib/server/stored-secrets';
 import { eq } from 'drizzle-orm';
 import { api } from './helpers/api';
@@ -239,15 +239,18 @@ const setMail = (values: Record<string, string | null>) => {
 
 /**
  * nodemailer's `createTransport` stood in for: each transport's options are
- * kept in `handed`, and its `sendMail` sends, or throws the error `fail` gave.
+ * kept in `handed`, each message its `sendMail` is given in `sent` (card
+ * 3029), and its `sendMail` sends, or throws the error `fail` gave.
  */
 function standInTransport() {
 	const handed: Record<string, any>[] = [];
+	const sent: Record<string, any>[] = [];
 	let failWith: Error | null = null;
 	const spy = vi.spyOn(nodemailer, 'createTransport').mockImplementation(((options: Record<string, any>) => {
 		handed.push(options);
 		return {
-			sendMail: async () => {
+			sendMail: async (message: Record<string, any>) => {
+				sent.push(message);
 				if (failWith) throw failWith;
 				return { messageId: '<stand-in@example.test>' };
 			}
@@ -255,6 +258,7 @@ function standInTransport() {
 	}) as unknown as typeof nodemailer.createTransport);
 	return {
 		handed,
+		sent,
 		fail(error: Error | null) {
 			failWith = error;
 		},
@@ -313,6 +317,96 @@ describe('the connection every mail is sent over (test 16)', () => {
 			expect(howItConnects(options)).toEqual(expected);
 			expect(options).toMatchObject({ host: 'smtp.example.test', port: Number(port), auth: { user: 'mailer', pass: PASSWORD } });
 		}
+		// Card 3029 (R3): each handed its From as a name and an address apart, which nodemailer quotes.
+		expect(transport.sent.map((message) => message.from)).toEqual(Array(3).fill({ name: 'The Board', address: 'board@example.test' }));
+	});
+});
+
+// ─── The From every mail goes out under (card 3029) ─────────────────────────
+
+describe('the From every mail is handed to nodemailer with (card 3029)', () => {
+	/** nodemailer itself, taken before any spy stands in for it. */
+	const realCreateTransport = nodemailer.createTransport.bind(nodemailer);
+
+	/**
+	 * The From header and the envelope of a notification sent with `name` as the From Name, as a real nodemailer builds
+	 * the message it would send: a stream transport, which builds it and sends nothing.
+	 */
+	const builtWith = async (name: string) => {
+		const { header, envelope } = await builtInFull(name);
+		return { header, envelope };
+	};
+
+	/** As `builtWith`, with every header line of the message as built too, and a Buffer name stored as a BLOB. */
+	const builtInFull = async (name: string | Buffer) => {
+		if (typeof name === 'string') setMail({ smtp_from_name: name });
+		else {
+			setMail({ smtp_from_name: null });
+			sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('smtp_from_name', name);
+		}
+		const built: { header: string | undefined; envelope: unknown; headers: string[] }[] = [];
+		const spy = vi.spyOn(nodemailer, 'createTransport').mockImplementation((() => {
+			const stream = realCreateTransport({ streamTransport: true, buffer: true, newline: 'unix' });
+			return {
+				sendMail: async (mail: Parameters<typeof stream.sendMail>[0]) => {
+					const info = (await stream.sendMail(mail)) as unknown as { message: Buffer; envelope: unknown };
+					const lines = info.message.toString().split('\n');
+					const headers = lines.slice(0, lines.indexOf(''));
+					built.push({ header: lines.find((line) => line.startsWith('From:')), envelope: info.envelope, headers });
+					return info;
+				}
+			};
+		}) as unknown as typeof nodemailer.createTransport);
+		try {
+			expect(await sendEmail('someone@example.test', 'A notification', '<p>Hello</p>')).toBe(true);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(built).toHaveLength(1);
+		return built[0];
+	};
+	const ENVELOPE = { from: 'board@example.test', to: ['someone@example.test'] };
+
+	// Written and run against the From as it was joined as text before card 3029, so the header is shown unchanged (R1).
+	it.each([
+		['DumpFire', 'From: DumpFire <board@example.test>'],
+		['The Board', 'From: The Board <board@example.test>'],
+		['Ops, Team', 'From: "Ops, Team" <board@example.test>'],
+		['Zoë Board', 'From: =?UTF-8?Q?Zo=C3=AB_Board?= <board@example.test>']
+	])('(m1) an ordinary From Name, %s, gives the header it gave before', async (name, header) => {
+		expect(await builtWith(name)).toEqual({ header, envelope: ENVELOPE });
+	});
+
+	it('(m2) a From Name that closes its quotes and names an address of its own gives one address, the From Address, in the header and the envelope (F1)', async () => {
+		expect(await builtWith('Ops" <x@file.test>, "')).toEqual({ header: 'From: "Ops\\" <x@file.test>, \\"" <board@example.test>', envelope: ENVELOPE });
+	});
+
+	it.each([
+		['a line break and a Bcc header, as text', 'A\r\nBcc: v@evil.test'],
+		['an address, a line break and a header of its own, as a BLOB', Buffer.from('B <b@evil.test>\r\nX: y')]
+	])('(m2) a From Name holding %s adds no header and no address: one From line, the envelope sender the From Address', async (_holding, name) => {
+		const { headers, envelope } = await builtInFull(name);
+		expect(headers.filter((line) => line.startsWith('From:'))).toHaveLength(1);
+		expect(headers.filter((line) => /^(Bcc|X):/i.test(line))).toEqual([]);
+		expect(envelope).toEqual(ENVELOPE);
+	});
+
+	it('(m3) a From Name with quote marks keeps them', async () => {
+		expect(await builtWith('The "New" Board')).toEqual({ header: 'From: "The \\"New\\" Board" <board@example.test>', envelope: ENVELOPE });
+	});
+
+	it.each([
+		['text, as it is', 'board@example.test', 'The Board', { name: 'The Board', address: 'board@example.test' }],
+		["'', the name's default and no address", '', '', { name: 'DumpFire', address: '' }],
+		["none, not text, as ''", null, null, { name: 'DumpFire', address: '' }],
+		['a BLOB, as UTF-8', Buffer.from('zoë@example.test'), Buffer.from('Zoë Board'), { name: 'Zoë Board', address: 'zoë@example.test' }],
+		// An address a save would refuse is no address, so it reaches neither a header nor the envelope (fails closed).
+		['text with a line break and a Bcc header', 'a@here.test\r\nBcc: z@evil.test', 'The Board', { name: 'The Board', address: '' }],
+		['text naming two addresses', 'a@here.test, b@evil.test', 'The Board', { name: 'The Board', address: '' }],
+		['text of 255 characters', `${'a'.repeat(245)}@here.test`, 'The Board', { name: 'The Board', address: '' }],
+		['text of 254 characters, the most a save takes', `${'a'.repeat(244)}@here.test`, 'The Board', { name: 'The Board', address: `${'a'.repeat(244)}@here.test` }]
+	])('(m4) mailFromAsRead reads each of the two settings stored as %s', (_stored, address, name, from) => {
+		expect(mailFromAsRead(address, name)).toEqual(from);
 	});
 });
 

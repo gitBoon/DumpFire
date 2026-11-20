@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.91
+version: 1.92
 status: As-Built
 date: 2026-11-20
 tags:
@@ -43,7 +43,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Complete guide to DumpFire's notification pipeline: requester mail held after an unsealed restore, progress mail to every unheld accepted request on a card, mailed false on a reply, and people marked left mailed nothing about decisions (card 3020), the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
+description: "The From handed over as a name and an address, and kept as this server's by an unsealed restore (card 3029), Complete guide to DumpFire's notification pipeline: requester mail held after an unsealed restore, progress mail to every unheld accepted request on a card, mailed false on a reply, and people marked left mailed nothing about decisions (card 3020), the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -158,8 +158,8 @@ names each change too, since card 2396: see
 | `smtp_secure` | boolean | false | No longer read or written (card 2189). It was "Use SSL/TLS", which only switched the certificate check on for ports other than 465; that is now always on. A row saved before is left where it is, and a working copy removes it with the other mail settings |
 | `smtp_user` | string | — | Auth username |
 | `smtp_pass` | string | — | Auth password, stored sealed under a key derived from the MFA key file and bound to the host, port, user and way out it was saved with (card 2898): a host changed by hand leaves it unopenable, and no mail is then sent while a user is set ("the mail password stored on this server cannot be opened, so it must be entered again"). See [Service Secrets at Rest](authentication-security.md#service-secrets-at-rest-card-2898) |
-| `smtp_from_address` | string | — | Sender email address |
-| `smtp_from_name` | string | DumpFire | Sender display name |
+| `smtp_from_address` | string | — | Sender email address. Handed to nodemailer apart from the name (`mailFromAsRead`, card 3029): the From header's address and the envelope sender. Empty gives no From and `MAIL FROM:<>`, which most mail servers refuse |
+| `smtp_from_name` | string | DumpFire | Sender display name, quoted by nodemailer as typed, so quote marks and commas never add an address (card 3029). A restore of a backup whose seal did not verify, kept as it is, keeps this server's From Address and From Name, or none where it had none |
 
 **The password is in no backup** (card 2169). A backup's copy has no `smtp_pass` row; the
 other mail settings are in it. An Import Backup keeps this server's password when the
