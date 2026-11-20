@@ -1,11 +1,13 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.155
+version: 1.156
 status: As-Built
-date: 2026-11-19
+date: 2026-11-20
 tags:
   - api
+  - card-2996
+  - account-endings
   - card-2995
   - card-2947
   - webhook-reveals
@@ -428,6 +430,34 @@ and its access; and at the write). Not marked Breaking. The admin page's load
 fewer than 1,000 inodes are free, when the free space is not read within 2 seconds, and for 5
 minutes after a write found the disk full unless the free space has grown since.
 
+### Changes on 2026-11-20: a restore never brings back an account deleted, disabled or demoted here (card 2996)
+
+Not Breaking; no operation, field or schema of `/api/v1` changes, and OpenAPI stays `1.15.0`
+(unreleased) with its note as it is. Every delete, disable, enable and role change of an account, and
+the role it is made with, is recorded on the server by the account's id and creation time (for a
+delete, a fingerprint of its password hash, never the hash). A key of an account the record names as
+deleted is answered `401` `{ "message": "Invalid or expired API key" }`, as a disabled account's is,
+whatever a host edit has done to its row; an import of an older backup brings such an account back
+disabled, so its keys stay ended.
+
+Internal (`/api`):
+
+- `POST /api/users/{id}/enable` answers `409` `{ "message": "The record of account endings names this
+  account as deleted, and a restore brought it back: it cannot be enabled. Delete it; then make a new
+  account for anyone who returns." }` for an account the record names as deleted, before the
+  password and code are asked, with nothing written; and `403` `{ "message": "Only the superadmin can
+  enable an account the record of account endings keeps disabled (a restore or the start brought its
+  disable)" }` to an administrator for an account whose disable the record ruled, before the password.
+- `POST /api/admin/import` (additive) answers `accountsKept`, `{ deleted, beforeRecord, disabled,
+  lowered }`, the restored accounts the record kept ended or lowered, counted and never named, and
+  `accountsKeptLines`, one sentence for each kind there was, absent where all are 0; and
+  `accountRecordLeftOut`, the rows of the backup's record left out whole for its size (more than
+  1,000,000 rows naming accounts by number alone, or other rows, or more than 100 for one account),
+  0 where it was taken; a restore that committed and then failed answers them too.
+- `POST /api/admin/reset` (additive) answers `accountsRecorded`: every account but the superadmin,
+  recorded as disabled before the clear, so that an import after the reset brings them back
+  disabled.
+
 ### Changes on 2026-11-19: a restore never brings back a key ended here (card 2995)
 
 Not Breaking; no operation, field or schema of `/api/v1` changes, and OpenAPI stays `1.15.0`
@@ -680,7 +710,7 @@ step-up actions `POST /api/users/[id]/disable`, `POST /api/users/[id]/enable`):
 | Route | Answers |
 |-------|---------|
 | `POST /api/users/{id}/disable` (new) | `{ disabled: true, disabledAt, sessionsEnded, invitesEnded, apiKeysEnded, webhooksSwitchedOff, reportSchedulesPaused, requestLinksEnded, soleOwnerOf, noticeSent, settingsRemoved? }`, `settingsRemoved` being `{ mail, appUrl, destinations, failureAddress }` where something was. `403` for the caller's own account (`You cannot disable your own account`), the superadmin's, or an administrator's by an administrator; `409 This account is already disabled` |
-| `POST /api/users/{id}/enable` (new) | `{ enabled: true, noticeSent }`. `403` for the caller's own account, as disable, and for an account the superadmin disabled, by an administrator (`Only the superadmin can enable an account the superadmin disabled`); `409 This account is not disabled` |
+| `POST /api/users/{id}/enable` (new) | `{ enabled: true, noticeSent }`. `403` for the caller's own account, as disable, and for an account the superadmin disabled, by an administrator (`Only the superadmin can enable an account the superadmin disabled`); `409 This account is not disabled`; since card 2996, `409` for an account the record of account endings names as deleted (`The record of account endings names this account as deleted, and a restore brought it back: it cannot be enabled. Delete it; then make a new account for anyone who returns.`), before the password |
 | `DELETE /api/users/{id}` (**breaking**) | `409 {"message": "Disable the account first"}` for an account that is not disabled, where it deleted it; `403 Only the superadmin can delete an account the superadmin disabled`. Both before the password is asked |
 | `PUT /api/users/{id}/password`, `POST /api/users/{id}/invite`, `POST /api/users/{id}/mfa/reset` | `409 This account is disabled: enable it first` for a disabled account |
 | `POST /api/boards/{id}/share`, `POST /api/teams/{id}/members/{userId}` | `400 That account is disabled` for a disabled account added, or given a higher role; lowering and removal stay open |

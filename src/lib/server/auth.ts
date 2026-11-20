@@ -29,6 +29,7 @@ import { raiseSignal } from './sign-in-challenges';
 import { accountMayHaveRead, holdWebhooksOfSetter, revealedToAccount, type EndingCause } from './webhooks';
 import { holdSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { REVOKED_BECAUSE, endApiKeys, keyRecorded } from './key-revocations';
+import { deletedHere } from './account-endings';
 import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
@@ -617,12 +618,18 @@ export function createSession(userId: number, opts: { startedAt?: Stamp } = {}):
 		if (given === null) throw new Error('A session cannot be started at a moment that names none.');
 		createdAt = given;
 	}
-	const account = db.select({ role: users.role, disabledAt: users.disabledAt }).from(users).where(eq(users.id, userId)).get();
+	const account = db
+		.select({ role: users.role, disabledAt: users.disabledAt, createdAt: users.createdAt, passwordHash: users.passwordHash })
+		.from(users)
+		.where(eq(users.id, userId))
+		.get();
 	if (!account) throw new Error(`A session cannot be made for user ${userId}, who is not there.`);
 	// Every sign-in completion, the verify, the enrol confirm and the own
 	// password change, makes its session here (card 2671, S5): a disabled
-	// account gets none, whichever way it got this far.
-	if (account.disabledAt !== null) throw new AccountDisabled(userId);
+	// account gets none, whichever way it got this far. Nor does one the record
+	// of account endings names as deleted (card 2996, R16), whatever a host edit
+	// has done to its row since.
+	if (account.disabledAt !== null || deletedHere(sqlite, { id: userId, ...account })) throw new AccountDisabled(userId);
 	const started = parseStamp(createdAt)!.getTime();
 	const now = Date.now();
 	if (started + sessionLimitsFor(account.role).totalMs <= now) {
@@ -1419,8 +1426,9 @@ function keyHolder(apiKey: typeof apiKeys.$inferSelect): User | null {
 		.where(eq(users.id, apiKey.userId))
 		.get();
 	// A disabled account's keys ended at the disable (card 2671, D6): one left
-	// by a restore or a host edit is refused here all the same.
-	return holder === undefined || holder.disabledAt !== null ? null : holder;
+	// by a restore or a host edit is refused here all the same. So is one of an
+	// account the record of account endings names as deleted (card 2996, R16).
+	return holder === undefined || holder.disabledAt !== null || deletedHere(sqlite, holder) ? null : holder;
 }
 
 /**

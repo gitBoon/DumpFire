@@ -308,6 +308,11 @@ describe('scripts/mfa-reset.mjs', () => {
 		const live = keysOfHolder.filter((key) => key.id !== ended.id);
 		const endedName = keysOfHolder.find((key) => key.id === ended.id)!.name;
 		expect(live).toHaveLength(1);
+		// Card 2996 (test 38): a row of the record of account endings, which the host's reset leaves row for row as it was.
+		sqlite
+			.prepare("INSERT INTO account_endings (user_id, account_created, ending, role, ended_at) VALUES (?, ?, 'role', 'user', '2026-11-19 09:00:00')")
+			.run(holder.id, sqlite.prepare('SELECT created_at FROM users WHERE id = ?').pluck().get(holder.id));
+		const endingsBefore = sqlite.prepare('SELECT * FROM account_endings ORDER BY seq').all();
 		writeCopy();
 		const logsBefore = (sqlite.prepare('SELECT COUNT(*) AS n FROM system_logs').get() as { n: number }).n;
 		const [schedule] = schedulesIn(sqlite, holder.id);
@@ -333,6 +338,8 @@ describe('scripts/mfa-reset.mjs', () => {
 		expect(fileDump({ paused: [schedule.id], held: [hook.id, pausedHook.id] })).toEqual(expected);
 		const copied = new Database(file, { readonly: true, fileMustExist: true });
 		try {
+			// Card 2996 (test 38): the record of account endings as it was.
+			expect(copied.prepare('SELECT * FROM account_endings ORDER BY seq').all()).toEqual(endingsBefore);
 			const [paused] = schedulesIn(copied, holder.id);
 			expect(paused.enabled).toBe(0);
 			expect(paused.updatedAt).not.toBe(EARLIER);

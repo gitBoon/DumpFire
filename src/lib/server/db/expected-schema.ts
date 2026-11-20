@@ -27,6 +27,22 @@
  */
 export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	[
+		"CREATE TABLE `account_endings` (",
+		"\t`seq` integer PRIMARY KEY NOT NULL,",
+		"\t`user_id` integer NOT NULL,",
+		"\t`account_created` text NOT NULL,",
+		"\t`ending` text NOT NULL,",
+		"\t`role` text DEFAULT '' NOT NULL,",
+		"\t`credential` text DEFAULT '' NOT NULL,",
+		"\t`ended_at` text NOT NULL,",
+		"\t`stated_ended` text DEFAULT '' NOT NULL,",
+		"\t`origin` text DEFAULT 'here' NOT NULL",
+		");"
+	].join('\n'),
+	"CREATE INDEX `account_endings_account` ON `account_endings` (`user_id`,`account_created`,`ending`,`stated_ended`);",
+	"CREATE INDEX `account_endings_credential` ON `account_endings` (`credential`) WHERE credential <> '';",
+	"CREATE INDEX `account_endings_watermark` ON `account_endings` (`user_id`) WHERE ending = 'watermark';",
+	[
 		"CREATE TABLE `activity_log` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
 		"\t`board_id` integer NOT NULL,",

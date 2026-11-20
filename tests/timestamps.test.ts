@@ -166,8 +166,10 @@ describe('timestampColumns', () => {
 		// webhook was switched off by a hold (migration 0071, card 2752); and when an account was
 		// disabled (migration 0072, card 2671); and when a setting was held for review (migration 0074, card 2922); and
 		// when an API key was first given a webhook's secret (migration 0075, card 2947); and when an API key was ended
-		// here (migration 0076, card 2995).
-		expect(found).toHaveLength(84);
+		// here (migration 0076, card 2995); and when an account was ended here (migration 0077, card 2996: its creation
+		// time is held in `account_created`, not an `*_at` column, so that a seed row's '' is never read as unreadable).
+		expect(found).toHaveLength(85);
+		expect(found).not.toContain('account_endings.account_created');
 		for (const column of [
 			'activity_log.created_at',
 			'api_keys.expires_at',
@@ -196,7 +198,9 @@ describe('timestampColumns', () => {
 			// Card 2947.
 			'webhook_reveals.revealed_at',
 			// Card 2995.
-			'api_key_revocations.revoked_at'
+			'api_key_revocations.revoked_at',
+			// Card 2996.
+			'account_endings.ended_at'
 		]) {
 			expect(found).toContain(column);
 		}

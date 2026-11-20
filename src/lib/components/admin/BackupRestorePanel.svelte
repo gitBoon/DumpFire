@@ -80,6 +80,8 @@
 		keyDeadlines?: string;
 		/** The backup's API keys left out, ended on this server or a working copy's, when there were any (card 2995). */
 		keysLeftOut?: string;
+		/** The accounts the record of account endings kept ended or lowered, one line for each kind, when there were any (card 2996). */
+		accountsKept?: string[];
 		/** This server's settings held for review carried over the backup's, when there were any (card 2922; card 2995's F6). */
 		settingsHeld?: string;
 		/** Who the superadmin is now: who can sign in to export, import or reset again. */
@@ -109,6 +111,7 @@
 		settingsRemoved?: string;
 		settingsHeld?: string;
 		keysLeftOut?: string;
+		accountsKeptLines?: string[];
 		systemLog?: string;
 		attachmentsPutBack?: number;
 		requestLinksReplaced?: number;
@@ -171,6 +174,9 @@
 			// The backup's API keys left out, ended on this server or a working copy's (card 2995): the server's sentence,
 			// absent when none was left out. It names no account.
 			keysLeftOut: result.keysLeftOut,
+			// The accounts the record of account endings kept ended or lowered (card 2996): the server's lines, absent when
+			// there were none. They count, and name no account.
+			accountsKept: Array.isArray(result.accountsKeptLines) && result.accountsKeptLines.length > 0 ? result.accountsKeptLines : undefined,
 			// This server's system log was kept, and the backup's lines were not
 			// brought in (card 2899): the server's sentence, absent when the
 			// backup held none.
@@ -563,6 +569,11 @@
 			{/if}
 			{#if importReport.keysLeftOut}
 				<p class="import-report-detail">{importReport.keysLeftOut}</p>
+			{/if}
+			{#if importReport.accountsKept}
+				{#each importReport.accountsKept as line (line)}
+					<p class="import-report-detail" data-testid="import-accounts-kept">{line}</p>
+				{/each}
 			{/if}
 			{#if importReport.decisionLinks}
 				<p class="import-report-detail">{importReport.decisionLinks}</p>

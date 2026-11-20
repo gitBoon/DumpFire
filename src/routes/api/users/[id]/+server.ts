@@ -9,13 +9,14 @@ import { eq } from 'drizzle-orm';
 import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireAdmin, requireManagedAccount } from '$lib/server/route-guards';
-import { endSessionsOf, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
+import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { endUnusedInvites } from '$lib/server/invites';
 import { endPendingSignIns } from '$lib/server/mfa-store';
-import { anyRemoved, removeSettingsSetBy, settingsSetBy } from '$lib/server/setting-setters';
-import { ENDING_IN_MAIL, holdNoLongerReadable, switchOffLostWebhooks } from '$lib/server/webhooks';
+import { anyRemoved, settingsSetBy } from '$lib/server/setting-setters';
+import { ENDING_IN_MAIL } from '$lib/server/webhooks';
+import { ACCOUNT_ANSWERED, changeAccountRole } from '$lib/server/account-ending-bodies';
 import { mayManageAccount } from '$lib/account-rule';
 import { createLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
@@ -65,6 +66,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * settings, the App URL and the backup destinations they last changed (card
  * 2397): the answer then has `settingsRemoved`, `{ mail, appUrl,
  * destinations }`, and an answer that removed nothing has no such field.
+ *
+ * A role that actually changes is recorded in the record of account endings
+ * with the role after, a raise too (card 2996), so that no restore of an older
+ * backup gives back a role lowered here; the change runs through
+ * `changeAccountRole` (account-ending-bodies.ts), which the start's pass shares.
  *
  * A body that carries `role` or `email` asks for the caller's own password
  * again, in `currentPassword` (card 2701, step-up.ts): it changes an account's
@@ -157,7 +163,7 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 			writeAs(locals, (caller) => {
 				const { target, updates } = refusals(caller);
 				if (Object.keys(updates).length === 0) return { ...answered(target), invitesEnded: 0 };
-				return { ...db.update(users).set(updates).where(eq(users.id, userId)).returning(ANSWERED).get(), invitesEnded: 0 };
+				return { ...db.update(users).set(updates).where(eq(users.id, userId)).returning(ACCOUNT_ANSWERED).get(), invitesEnded: 0 };
 			})
 		);
 	}
@@ -178,28 +184,45 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 	const answer = await whilePasswordHolds(callerId, hash, () =>
 		writeAs(locals, (caller) => {
 			const { actor, target, updates, changed } = refusals(caller);
+			const roleChanged = changed.includes('role');
 
-			// The invites, the pending sign-ins and the enrolment links (card
-			// 2768) end before the account is written. A change of role ends
-			// the account's sessions too (card 2775, decision 6): a session's
-			// limits follow its role, and a change of privilege renews it. An
-			// email change alone ends none.
+			// A role changed: the role change's body, shared with the start's pass for an account the record of account
+			// endings lowers (card 2996, R5). The invites, the pending sign-ins and the enrolment links (card 2768) end
+			// before the account is written, and its sessions (card 2775, decision 6: a session's limits follow its
+			// role); the account written, with any other field sent; the change recorded, `role`; each webhook it set on
+			// a board it can no longer open switched off for good (card 2752, D2); an administrator made a user has the
+			// webhooks with a secret it could read held (card 2935, P2) and the settings it last changed removed (card
+			// 2397). Its keys and sessions are as above.
+			if (roleChanged) {
+				const done = changeAccountRole(target, { ...updates, role: updates.role as 'user' | 'admin' }, actor, {
+					log: `${target.username}'s role was changed to ${updates.role} by ${actor.username}`,
+					mail: ENDING_IN_MAIL.demoted
+				});
+				const role = done.row.role;
+				afterCommit(() =>
+					log.info(
+						`User ${actor.id} changed the ${changed.join(' and ')} of user ${target.id} — ended ${done.invitesEnded} unused invite(s)` +
+							(done.sessionsEnded > 0 ? ` and ${done.sessionsEnded} session(s)` : ''),
+						{ targetUserId: target.id, changed, role, invitesEnded: done.invitesEnded, sessionsEnded: done.sessionsEnded },
+						{ userId: actor.id }
+					)
+				);
+				// The answer names what went, and only then has the field.
+				if (done.settingsRemoved !== null && anyRemoved(done.settingsRemoved)) {
+					return { ...done.row, invitesEnded: done.invitesEnded, settingsRemoved: done.settingsRemoved };
+				}
+				return { ...done.row, invitesEnded: done.invitesEnded };
+			}
+
+			// An email change alone (or nothing that changes): the invites, the pending sign-ins and the enrolment links
+			// end before the account is written; no session ends.
 			const invitesEnded = changed.length > 0 ? endUnusedInvites(target.id) : 0;
 			if (changed.length > 0) endPendingSignIns(target.id);
-			const roleChanged = changed.includes('role');
-			const sessionsEnded = roleChanged ? endSessionsOf(target.id) : 0;
 			if (changed.length > 0) {
 				afterCommit(() =>
 					log.info(
-						`User ${actor.id} changed the ${changed.join(' and ')} of user ${target.id} — ended ${invitesEnded} unused invite(s)` +
-							(sessionsEnded > 0 ? ` and ${sessionsEnded} session(s)` : ''),
-						{
-							targetUserId: target.id,
-							changed,
-							...(roleChanged ? { role: updates.role } : {}),
-							invitesEnded,
-							...(roleChanged ? { sessionsEnded } : {})
-						},
+						`User ${actor.id} changed the ${changed.join(' and ')} of user ${target.id} — ended ${invitesEnded} unused invite(s)`,
+						{ targetUserId: target.id, changed, invitesEnded },
 						{ userId: actor.id }
 					)
 				);
@@ -207,39 +230,12 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 
 			if (Object.keys(updates).length === 0) return { ...answered(target), invitesEnded };
 
-			const row = db.update(users).set(updates).where(eq(users.id, userId)).returning(ANSWERED).get();
-
-			// A role changed: each webhook the account set on a board it can no
-			// longer open is switched off for good, in this write (card 2752, D2).
-			if (roleChanged) {
-				switchOffLostWebhooks({ setters: [target.id] }, `${target.username}'s role was changed to ${row.role} by ${actor.username}`);
-			}
-			// An administrator made an ordinary user could read every webhook's secret, and can now read only those on
-			// the boards it owns: the others with a secret are held, so each is given a new secret when switched on
-			// (card 2935, P2). Its keys and sessions are as above.
-			if (roleChanged && (target.role === 'admin' || target.role === 'superadmin') && row.role !== 'admin' && row.role !== 'superadmin') {
-				holdNoLongerReadable(target.id, 'all', {
-					log: `${target.username}'s role was changed to ${row.role} by ${actor.username}`,
-					mail: ENDING_IN_MAIL.demoted
-				});
-			}
-
-			// An administrator made a user loses what they set that sends mail or
-			// backups somewhere, in this transaction (card 2397): the mail settings,
-			// the App URL and the destinations they last changed. The answer names
-			// what went, and only then has the field.
-			if (updates.role === 'user' && target.role !== 'user') {
-				const settingsRemoved = removeSettingsSetBy(target, 'demoted', actor);
-				if (anyRemoved(settingsRemoved)) return { ...row, invitesEnded, settingsRemoved };
-			}
-			return { ...row, invitesEnded };
+			// A role sent as the one the account has is no change, and records nothing (card 2996).
+			return { ...db.update(users).set(updates).where(eq(users.id, userId)).returning(ACCOUNT_ANSWERED).get(), invitesEnded };
 		}));
 
 	return json(answer);
 };
-
-/** The columns PUT answers of an account, and no others. */
-const ANSWERED = { id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt };
 
 /**
  * An account as PUT answers it when nothing changed: the columns an update

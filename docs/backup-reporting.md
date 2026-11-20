@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.60
+version: 1.61
 status: As-Built
-date: 2026-11-19
+date: 2026-11-20
 tags:
+  - card-2996
+  - account-endings
   - card-2995
   - api-key-revocations
   - card-2947
@@ -197,6 +199,32 @@ flowchart LR
     Seed --> Leave["leaveOutRecordedKeys<br/>hash belt, reveals read, DELETE WHERE EXISTS"]
     Leave --> Copy["working copy: every other key"]
     Copy --> Hold3["sweep, then holdRevealedIn of all of them"]
+```
+
+A restore never brings back an account deleted, disabled or demoted on this server (card 2996). The
+backup carries `account_endings`, the record of every ending of an account where it was made (ids,
+creation times and fingerprints of deleted accounts' password hashes, never a hash), but a restore
+never clears this server's. After the copy `carryAccountEndings` adds the backup's rows, each only
+within the backup's own id bound, with a word, creation time, role and fingerprint its ending can
+have, a creation time no later than the restore, and naming no superadmin; at most 1,000,000 rows from
+one backup; an unreadable or future `ended_at` taken as the backup's own latest moment, so a re-import
+adds nothing; the rest counted in one `errors` line, never quoted. The `users` counter is raised over
+the seed. Then the one rule is asked of every restored account, before the second factors; after
+`carryDisabled` each account it ends comes back disabled by the superadmin, an inert one with
+`DUMMY_HASH` and no factor, and each it lowers is given the lower role; after the fill what each could
+read is held. A working copy does the same. The answer adds a line for each kind there was ("N
+account(s) in the backup are named as deleted by the record of account endings: …"), the panel shows
+them, and the `[CRITICAL] [IMPORT]` line says `keeping N account(s) ended or lowered as the record of
+account endings says`, its details carrying `accountsKept: { deleted, beforeRecord, disabled,
+lowered }`, naming no account.
+
+```mermaid
+flowchart LR
+    Copy4["copy users whole"] --> Union4["carryAccountEndings<br/>bounded rows added, counter raised"]
+    Union4 --> Rule4["accountRulings for every restored account"]
+    Rule4 --> Mfa4["restoreMfaRows: none to an ended account"]
+    Mfa4 --> Apply4["carryDisabled, then applyAccountEndings<br/>inert, before record, disabled, lowered"]
+    Apply4 --> Hold4["after the fill: holdNoLongerReadableIn"]
 ```
 
 ### Image Retention

@@ -220,12 +220,19 @@ function insertInto(live: Database.Database, table: 'mfa_factors' | 'mfa_recover
  * and set the key check. `here` is `readMfaHere(live)` from before the clear,
  * `sealVerified` the restore's verdict on the backup's seal, and `key` this
  * server's MFA key, or null where it has none.
+ *
+ * `ended` is what the record of account endings ruled of the restored accounts
+ * (card 2996, decision 4): one ruled deleted, or one this server had before it
+ * recorded endings, gets no factor and no code from anywhere; one ruled
+ * disabled gets this server's own where it is the same account here, and never
+ * the backup's. None of them is named in `leftOut` or `withoutFactor`: the
+ * answer names no account the record ended.
  */
 export function restoreMfaRows(
 	live: Database.Database,
 	backup: Database.Database,
 	here: MfaHere,
-	options: { sealVerified: boolean; key: MfaKey | null }
+	options: { sealVerified: boolean; key: MfaKey | null; ended?: ReadonlyMap<number, 'deleted' | 'before record' | 'disabled'> }
 ): MfaRestore {
 	const result: MfaRestore = { keptFromHere: 0, takenFromBackup: 0, leftOut: [], leftOutBecause: null, withoutFactor: [] };
 	const userColumns = columnsOf(live, 'users');
@@ -249,6 +256,10 @@ export function restoreMfaRows(
 	const same: { id: number; createdAt: string }[] = [];
 	for (const account of restoredAccounts) {
 		const matched = here.accounts.has(account.id) && sameMoment(here.accounts.get(account.id), account.created_at);
+		// The record of account endings first (card 2996): an ended account gets none, and is named nowhere; a disabled
+		// one only this server's own, where it is the same account here.
+		const ruled = options.ended?.get(account.id);
+		if (ruled === 'deleted' || ruled === 'before record' || (ruled === 'disabled' && !matched)) continue;
 		const from = matched
 			? { factors: hereFactors.get(account.id) ?? [], codes: hereCodes.get(account.id) ?? [] }
 			: { factors: backupFactors.get(account.id) ?? [], codes: backupCodes.get(account.id) ?? [] };
@@ -303,13 +314,17 @@ export function restoreMfaRows(
 	// 5. Who has no factor, once two-step sign-in is in use: a factor in the
 	// restored data, or one of the backup's left out.
 	if (factorsHere && (factorsNow > 0 || result.leftOut.length > 0)) {
-		result.withoutFactor = live
-			.prepare(
-				`SELECT ${userColumns.includes('username') ? 'username' : 'CAST(id AS TEXT)'} FROM users u ` +
-					'WHERE NOT EXISTS (SELECT 1 FROM mfa_factors f WHERE f.user_id = u.id) ORDER BY u.id'
-			)
-			.pluck()
-			.all() as string[];
+		result.withoutFactor = (
+			live
+				.prepare(
+					`SELECT id, ${userColumns.includes('username') ? 'username' : 'CAST(id AS TEXT)'} AS name FROM users u ` +
+						'WHERE NOT EXISTS (SELECT 1 FROM mfa_factors f WHERE f.user_id = u.id) ORDER BY u.id'
+				)
+				.all() as { id: number; name: string }[]
+		)
+			// No account the record of account endings ended is named (card 2996).
+			.filter((row) => !options.ended?.has(row.id))
+			.map((row) => row.name);
 	}
 
 	return result;

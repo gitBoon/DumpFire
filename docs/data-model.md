@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.96
+version: 1.97
 status: As-Built
-date: 2026-11-19
+date: 2026-11-20
 tags:
+  - card-2996
+  - account-endings
   - card-2995
   - api-key-revocations
   - card-2947
@@ -1791,6 +1793,61 @@ never a range, and halts where that would be more than 1,000,000 rows.
 hashes, never a key. A backup made before 0076 has none, and the restore applies this server's
 record alone. Going back to an older image leaves it unwritten there, and that image's restore
 clears it and refills it from the backup.
+
+### Every ending of an account on this server (`account_endings`, migration 0077)
+
+Card 2996. One row for each ending of an account here (a delete, a disable, an enable, a role change,
+the role it was made with), so that no restore brings back an account deleted, disabled or demoted
+here. No foreign key: a row outlives its account. No unique index: every write here is one plain
+`INSERT`, and the restore's union asks `NOT EXISTS`.
+
+```mermaid
+erDiagram
+    users ||--o{ account_endings : "named by user_id and account_created as a moment; by user_id alone where account_created is empty, ending is deleted and user_id is at most W; never a superadmin by a backup's row; no foreign key"
+    users ||--o{ api_keys : "cascade; card 2995 records each key ended"
+    account_endings {
+        integer seq PK "order of writing here"
+        integer user_id "the account's row id; W on the watermark row"
+        text account_created "the account's created_at, stored form; empty for a seed row and the watermark"
+        text ending "deleted, disabled, enabled, role, watermark"
+        text role "for role: user or admin, the role after; empty otherwise"
+        text credential "for deleted: the fingerprint of the password hash; empty otherwise"
+        text ended_at "when, stored form"
+        text stated_ended "the moment as its writer stated it, before any clamp"
+        text origin "here, backup, or belt"
+    }
+```
+
+| Column | Type | Meaning |
+|---|---|---|
+| `seq` | integer, primary key (the rowid) | The order the rows were written in: two endings in one second keep it |
+| `user_id` | integer | The account's row id here; on the watermark row, W |
+| `account_created` | text, not an `*_at` column | The account's `created_at` in the stored form; `''` for a seed row, which names an id alone, and for the watermark. Not `*_at`, so the timestamp normaliser never reads `''` as unreadable, nor rewrites the record |
+| `ending` | text | `deleted`, `disabled`, `enabled`, `role`, or `watermark` (no ending of anyone) |
+| `role` | text, default `''` | On a `role` row, `user` or `admin`, the role after |
+| `credential` | text, default `''` | On a `deleted` row, SHA-256 hex of the label `dumpfire account credential v1`, a NUL and the bcrypt hash; `''` where the hash is not a well-formed bcrypt string or is `DUMMY_HASH`. Never the hash |
+| `ended_at` | text, `*_at` | When it was ended; a backup's row clamped to the backup's own latest moment no later than the restore. The seed's role rows are dated at the account's creation, its disables at their own moment, the earliest stamp (`0001-01-01 00:00:00`) where either names none or one after the migration (card 2996's code review, FP4) |
+| `stated_ended` | text, default `''`, not an `*_at` column | The moment as the row's writer stated it: `ended_at` for a row written here, the backup's own (or a digest of its text where it names no moment) for one a restore brought. The union's key, so that importing the same backup again adds nothing whenever it runs (FP5) |
+| `origin` | text, default `'here'` | `here`, written by this server; `backup`, brought by a restore; `belt`, written by the record's own rule in a restore or the start's pass (FP2: this server's own for any account but a superadmin, never evidence against one) |
+
+Three indexes: `account_endings_account (user_id, account_created, ending, stated_ended)` (the union's key, FP3), the partial
+`account_endings_credential (credential) WHERE credential <> ''` and the partial
+`account_endings_watermark (user_id) WHERE ending = 'watermark'`. Every statement of the rule, and
+`deletedHere`'s, is a search on one of them (tests/account-endings.test.ts, case g).
+
+**Writers.** Migration 0077 (the watermark, a seed row for every id up to W that `users` no longer
+held, and every present account's role and disable but the superadmin's); `recordAccountEnding`
+(`deleteUser`, `disableAccountSteps`, `enableAccount`, `changeAccountRole`, `POST /api/users`, Reset
+Everything, and the belts of the restore's `applyAccountEndings` and the start's
+`endRecordedAccountsPresent`), which reads the account's role on the connection it is given and
+refuses the superadmin; and the restore's `carryAccountEndings`. Nothing deletes, updates or replaces
+a row; `tests/check-at-the-write.test.ts` holds src and scripts to it.
+
+**Readers.** `accountRulings` (the restore and the start's pass), `deletedHere` (`createSession`,
+`keyHolder`, the enable) and `raiseUserCounterOverSeed`. `restorableTables` leaves the table out and
+Reset's `KEPT` names it. A backup carries it like any other table: it holds ids, creation times and
+fingerprints, never a hash. A backup made before 0077 has none, and the restore applies this server's
+record alone.
 
 ### A disabled account (migration 0072)
 

@@ -68,6 +68,7 @@ import { removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { requireDisabledAccount } from './account-disable';
 import { accountMayHaveRead, disableCovered, ENDING_IN_MAIL, holdWebhooksOfSetter, revealedToAccount } from './webhooks';
 import { REVOKED_BECAUSE, endApiKeys } from './key-revocations';
+import { ACCOUNT_ENDING, recordAccountEnding } from './account-endings';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DELETE');
@@ -1010,6 +1011,9 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 		// links ended, while the link still names them (card 2675's code review,
 		// S4). See `markPeopleLeft`.
 		markPeopleLeft(userId, actor);
+		// The delete recorded, with the fingerprint of the password hash it held, while the row is there to read (card
+		// 2996): no restore of an older backup brings the account back but inert.
+		recordAccountEnding(sqlite, userId, ACCOUNT_ENDING.deleted);
 		// Any key it still holds recorded as ended and deleted, before the user row goes (card 2995, decision 17): the
 		// cascade would delete it unrecorded, and a restore would bring it back.
 		endApiKeys(sqlite, { userId }, REVOKED_BECAUSE.accountDeleted);

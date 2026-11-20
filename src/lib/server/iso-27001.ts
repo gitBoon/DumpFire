@@ -87,7 +87,7 @@ export type IsoItem = {
 };
 
 /** The day every status below was last checked against the code. */
-export const CHECKED_ON = '2026-11-18';
+export const CHECKED_ON = '2026-11-20';
 
 /** Every status, in the order the page counts them. */
 export const STATUSES: readonly IsoStatus[] = ['met', 'partly-met', 'not-met', 'not-applicable', 'organisational'];
@@ -297,10 +297,14 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'The reset also ends the account\'s API keys and switches off the webhooks it set, as an administrator\'s password reset does; the reset\'s mail names them, and the host keeps them only when told to (card 2915). ' +
 			'Disabling an account ends all of this at once and refuses it at every gate, on every board and on every decision; a restore keeps it disabled (card 2671). ' +
 			'Every ending that ends the keys also holds the mail settings, App URL and backup destinations the account set for the superadmin\'s review, so nothing is sent to them until the superadmin keeps or removes each, and ends the links of the requests it made (card 2922). ' +
-			'Every ending of an API key, Reset Everything\'s included, records the key\'s id and SHA-256, never the key, in the transaction that deletes it: no restore of an older backup, this server\'s or another\'s, brings it back, a working copy leaves out every key, every check of a key refuses one the record names, and the start ends any such key found present (card 2995).',
+			'Every ending of an API key, Reset Everything\'s included, records the key\'s id and SHA-256, never the key, in the transaction that deletes it: no restore of an older backup, this server\'s or another\'s, brings it back, a working copy leaves out every key, every check of a key refuses one the record names, and the start ends any such key found present (card 2995). ' +
+			'Every delete, disable, enable and role change of an account, its creation and Reset Everything included, records the account\'s id and creation time, and for a delete a fingerprint of its password hash, never the hash, in the transaction that makes it: no restore of an older backup brings back an account deleted here but disabled with no password or second factor that works, nor lifts a disable made here, nor gives back a role lowered here; the sign-in and every check of a key refuse an account the record names as deleted, and the start and the five-minute sweep end again any such account found otherwise (card 2996).',
 		evidence: [
 			{ path: 'src/lib/server/auth.ts', symbol: 'endAccountAccess' },
 			{ path: 'src/lib/server/key-revocations.ts', symbol: 'endApiKeys' },
+			{ path: 'src/lib/server/account-endings.ts', symbol: 'recordAccountEnding' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyAccountEndings' },
+			{ path: 'src/lib/server/account-ending-bodies.ts', symbol: 'endRecordedAccountsPresent' },
 			{ path: 'src/lib/server/auth.ts', symbol: 'keyRecorded' },
 			{ path: 'src/lib/server/db/restore.ts', symbol: 'leaveOutRecordedKeys' },
 			{ path: 'src/lib/server/setting-setters.ts', symbol: 'holdSettingsSetBy' },

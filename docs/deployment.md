@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.148
+version: 1.149
 status: As-Built
-date: 2026-11-19
+date: 2026-11-20
 tags:
+  - card-2996
+  - account-endings
   - card-2995
   - api-key-revocations
   - card-2947
@@ -1348,6 +1350,8 @@ At least one line should end `superadmin`, not `superadmin (disabled)`. Then sig
 
 If the old superadmin's account is still there, there are now two, and neither can manage the other's account. Make the old one an administrator with the same command, with `'admin'` in place of `'superadmin'` in the `UPDATE`, or disable it as the new superadmin once its role is changed (card 2671: an account is disabled before it can be deleted).
 
+**This is safe with the record of account endings** (card 2996's code review, FP1). The account promoted may have rows in the record from before (the role it was made with, a role change, a disable): for a superadmin none of them counts, since the application never writes one for a superadmin, so no later import lowers or disables it, the start says nothing of it, and an import of this server's own backup is not refused. Only a `deleted` row this server wrote counts for a superadmin: never promote an account a restore brought back inert (disabled with no password that works, its enable refused as deleted), or every import after would be refused for want of a superadmin; make a new account instead, through set-up on an empty database if need be, or promote another.
+
 An import cannot bring this about: a backup that has users and no enabled superadmin among them is refused before anything is written. See [Restoring from Backup](admin-guide.md#restoring-from-backup).
 
 ### If the Superadmin Loses Their Authenticator
@@ -1633,6 +1637,8 @@ docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/
 ```
 
 `dumpfire.db*` takes the database and whichever of its `-wal` and `-shm` files exist. Returning it removes those two first, so that none is left beside the database that the copy does not have.
+
+**Accounts deleted, disabled or demoted since the copy was taken** (card 2996) come back as they were in it, unless `account_endings` is dumped and put back: see [The Release That Keeps Ended Accounts Ended Across a Restore](#the-release-that-keeps-ended-accounts-ended-across-a-restore-card-2996).
 
 **API keys ended since the copy was taken** (card 2995) work again once it is returned: the copy holds them, and its record of ended keys, where it has one, is as old as the copy. Before returning it, dump `api_key_revocations` and put it back afterwards, or revoke those keys again: see [The Release That Keeps Ended API Keys Ended Across a Restore](#the-release-that-keeps-ended-api-keys-ended-across-a-restore-card-2995).
 
@@ -8374,6 +8380,114 @@ first start also ends any present key the record still names, as a revoke does. 
 | H3 | `curl -H "Authorization: Bearer <K>" …/api/v1/me`, then with a key L not revoked | 401, then 200 | 200 for K |
 | H4 | Import the same file as a working copy | Every key left out and counted | Any key works on the copy |
 | H5 | Restart | No new line; K still refused | K works |
+
+### The Release That Keeps Ended Accounts Ended Across a Restore (Card 2996)
+
+**Ships with cards 2947 and 2995**, before the release is pushed: migrations 0074 to 0077 are applied
+in one start, with OpenAPI `1.15.0` (this card changes no OpenAPI). **Migration 0077** adds
+`account_endings` and changes no existing row. Any image of this release can run the commands below
+(the image tagged for card 2995, `dumpfire:2995`, once rebuilt with this card, or a tag of its own).
+
+```mermaid
+flowchart LR
+    Start["first start of this release"] --> M77["0077: guard, table, watermark W,<br/>seed by id up to W, present roles and disables"]
+    M77 --> Pass["start pass: accounts the record ends<br/>ended again (none at first)"]
+    Pass --> Live["every delete, disable, enable,<br/>role change and creation recorded"]
+    Live --> Imp["every import keeps them ended"]
+```
+
+**What changes.** A restore never brings back an account deleted here, never lifts a disable made
+here, and never gives back a role lowered here. Every delete, disable, enable and role change, and the
+role every account is made with, records the account's id and creation time and, for a delete, a
+fingerprint of its password hash, never the hash. Every import, of this server's backups and any
+other's, as it is or as a working copy, keeps those endings: a deleted account comes back disabled
+with no password or second factor that works and cannot be enabled (delete it again, then make a new
+account for anyone who returns); a disabled one stays disabled; a role is capped at this server's.
+The result and the `[CRITICAL] [IMPORT]` line count them and name nobody. The next start, and every
+five minutes, end again any such account found otherwise, with one `[WARN] [AUTH]` line of counts.
+
+**The first start.** 0077 writes the watermark W, the larger of the `users` id counter and the largest
+account id held; records by id every id up to W that `users` no longer holds, one row each; and
+records every present account's role and every disable, the superadmin's never. Preview, read-only,
+from a container of this release's image on the same volume:
+
+```bash
+docker run --rm --network none -v dumpfire-data:/app/data dumpfire:2995 node -e "const d=require('better-sqlite3')('/app/data/dumpfire.db',{readonly:true,fileMustExist:true});console.log(d.prepare(\"SELECT w, w - (SELECT COUNT(*) FROM users) AS seed_rows FROM (SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name = 'users'), 0), coalesce((SELECT max(id) FROM users), 0)) AS w)\").get())"
+```
+
+**Where `seed_rows` is above 1,000,000** the first start halts at 0077, changing nothing of it, with
+`CHECK constraint failed: migration 0077 would record more than 1,000,000 account ids …`: the users id
+counter is set far above every account. Find out why before going on; lowering the counter (with the
+container stopped) gives up the record of every id between.
+
+**Accounts that only share a number.** A backup holding an account whose id this server once had and
+deleted before 0077 (or held, just before the import, with a later creation time) brings it back
+disabled with no working password: the superadmin enables it and sends it an invite if it should
+stay. Counted in the result.
+
+**Account ids above W** (card 2995's N1, for accounts). Where Admin › Vacuum or Reset deleted the
+`users` counter and the highest accounts were then ended, before this release, those ids are above W
+and a backup from before can bring them back. Inherent to the watermark; the counter alone can be low.
+
+**Another server's endings.** A restore onto another server applies the backup's own record and its
+own, nothing else: it cannot know of accounts ended there after the backup was made.
+
+**What stays possible (residual).** An account deleted before 0077 can come back as a new account if
+someone edits an old backup to change its id, its creation time and its password hash: only the
+superadmin can import, and the import's line names the file's SHA-256.
+
+**Reset Everything** keeps the record and records every account but the superadmin as disabled: an
+import after a reset brings the accounts back disabled, and the superadmin enables the ones wanted.
+
+**Before a host file rollback** (see [Taking and Returning the Cold Copy](#taking-and-returning-the-cold-copy)):
+dump `account_endings` with `api_key_revocations`, with the container stopped, and put both back once
+this release has migrated the returned copy, by the same three steps as card 2995's (the first start
+with no network, the dump put back with the server stopped, the usual start):
+
+```bash
+# Before returning the copy, with the container stopped: the dump.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  dumpfire:2995 node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true});require('fs').writeFileSync('/cold/account-endings.json',JSON.stringify(d.prepare('SELECT * FROM account_endings ORDER BY seq').all()))"
+# 1. This release's first start on the returned copy, with no network, stopped once migrated (card 2995's step 1).
+# 2. With the server stopped, the dump put back, in its order, after the rows the migration wrote:
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  dumpfire:2995 node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db');const rows=JSON.parse(require('fs').readFileSync('/cold/account-endings.json','utf8'));const put=d.prepare('INSERT INTO account_endings (user_id, account_created, ending, role, credential, ended_at, stated_ended, origin) VALUES (@user_id, @account_created, @ending, @role, @credential, @ended_at, @stated_ended, @origin)');d.transaction(()=>{for(const r of rows)put.run(r)})()"
+# 3. The usual start.
+```
+
+Put the dump back after `api_key_revocations`' in the same stopped window: the two are independent,
+and the order between them does not matter. The re-migrated copy's own rows never outrank the dump's
+(card 2996's code review, FP4): 0077 dates the role rows it writes at each account's creation and
+the disables at their own moment, so a demotion, a disable or a delete made before the rollback, in
+the dump with its own later moment, stands. The next start then ends again every account the dump
+names that the copy brought back. The dump holds ids, creation times and fingerprints, never a
+password hash.
+
+**A `deleted` row cannot be lifted** (FP17). Once the record names an account as deleted (a delete
+here, or a backup's row brought by an import), no enable, no import and no start brings it back into
+use: it stays disabled with no password that works, and an administrator who needs the person back
+deletes the inert account and makes a new one. The record is append-only, and nothing in the
+application deletes a row of it.
+
+**Going back to an older image.** That image never writes the record, and its import clears and
+refills it from the backup: never import under an older image. Its Reset Everything clears the record
+too (card 2996's code review, FP13), since that image's reset keeps only the tables it knows: never
+reset under an older image either, or dump the record first and put it back once forward. Coming
+forward, the start ends again any account the record ends; a delete, disable or demotion made on the
+older image is not recorded.
+
+**Nothing to set.** No environment variable, no OpenAPI change.
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | Export a backup | A `.db` file | |
+| H2 | Make Ann a user; disable and delete Bob | Done | |
+| H3 | Import the file as it is | "1 account(s) in the backup are named as deleted by the record of account endings: …" and "1 account(s) in the backup were given back the lower role …"; the `[CRITICAL] [IMPORT]` line "…keeping 2 account(s) ended or lowered as the record of account endings says…", no name, no id | Bob enabled, Ann an admin, or a name in either |
+| H4 | Sign in as Bob with his old password and authenticator | Refused | Signed in |
+| H5 | Users panel: Enable on Bob | "The record of account endings names this account as deleted, and a restore brought it back: it cannot be enabled. …" | Enabled |
+| H6 | Delete Bob again | Deleted | Refused |
+| H7 | Import the same file as a working copy | The same two lines | Bob can sign in on the copy |
+| H8 | Restart | No new AUTH line about accounts | A WARN: the restore left something the start ended |
 
 ## Changing the Schema
 

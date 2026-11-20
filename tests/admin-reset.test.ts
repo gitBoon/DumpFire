@@ -18,6 +18,10 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, sqlite } from '$lib/server/db';
+import Database from 'better-sqlite3';
+import { generateBackupData } from '$lib/server/backup';
+import { restorableTables, restoreFromBackup } from '$lib/server/db/restore';
+import { RECORD_ACCOUNT_ENDING_SQL } from '$lib/server/account-endings';
 import {
 	activityLog,
 	apiKeys,
@@ -87,8 +91,8 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-/** What a reset keeps: with the record of every API key ended here (card 2995). */
-const KEPT = ['system_logs', 'backup_log', 'api_key_revocations'];
+/** What a reset keeps: with the record of every API key ended here (card 2995), and of every account ended here (card 2996). */
+const KEPT = ['system_logs', 'backup_log', 'api_key_revocations', 'account_endings'];
 /** The migration runner's record of the files it has applied. */
 const MIGRATION_RECORD = '__drizzle_migrations';
 
@@ -248,6 +252,10 @@ function everything(): Everything {
 	sqlite
 		.prepare("INSERT INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (?, ?, '2026-11-19 09:00:00', 'revoked')")
 		.run(900, 'a'.repeat(64));
+	// And of every account ended here (card 2996, migration 0077).
+	sqlite
+		.prepare("INSERT INTO account_endings (user_id, account_created, ending, ended_at) VALUES (900, '2026-01-01 09:00:00', 'deleted', '2026-11-20 09:00:00')")
+		.run();
 	db.insert(backupLog)
 		.values({ destinationType: 'sftp', destinationName: 'Offsite', filename: 'backup-1.db', status: 'success' })
 		.run();
@@ -294,6 +302,34 @@ describe('POST /api/admin/reset', () => {
 		expectFilesInPlace(e);
 	});
 
+	it('(n) (card 2996, R19): a reset records every account but the superadmin as disabled, and an import after it brings them back disabled, the superadmin enabled', async () => {
+		const e = everything();
+		const backup = new Database(generateBackupData());
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const res = await reset(e);
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toMatchObject({ accountsRecorded: 2 });
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.accountsKept).toMatchObject({ disabled: 2 });
+		const accounts = sqlite.prepare('SELECT role, disabled_at AS disabledAt, disabled_by AS disabledBy FROM users ORDER BY id').all() as {
+			role: string;
+			disabledAt: string | null;
+			disabledBy: number | null;
+		}[];
+		expect(accounts.filter((account) => account.role === 'superadmin')).toEqual([{ role: 'superadmin', disabledAt: null, disabledBy: null }]);
+		const others = accounts.filter((account) => account.role !== 'superadmin');
+		expect(others).toHaveLength(2);
+		for (const account of others) expect(account).toMatchObject({ disabledAt: expect.any(String), disabledBy: e.admin.id });
+	});
+
+	it('test 6: leaves the record of account endings out of the tables a restore and a reset clear (card 2996)', () => {
+		expect(restorableTables(sqlite)).not.toContain('account_endings');
+		expect(restorableTables(sqlite)).toContain('users');
+		expect(appTables()).toContain('account_endings');
+	});
+
 	it('clears every table but the system log and the backup history, or clears nothing', async () => {
 		// A failed reset is logged at ERROR, once for each write that is failed below.
 		vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -318,7 +354,9 @@ describe('POST /api/admin/reset', () => {
 					redirect: '/setup',
 					trash: { moved: 3, missing: 0, failed: [] },
 					// Card 2995 (k, R5): every key it cleared recorded as ended, and counted.
-					apiKeysRecorded: 1
+					apiKeysRecorded: 1,
+					// Card 2996 (n, R19): every account but the superadmin recorded as disabled, and counted.
+					accountsRecorded: 2
 				});
 				// The record kept, the row it held among it, and the key cleared recorded `reset` (card 2995, k, R5).
 				const key = Object.values(e.before.api_keys)[0];
@@ -338,6 +376,14 @@ describe('POST /api/admin/reset', () => {
 				// the system log.
 				const after = snapshotDb();
 				expect(after.backup_log).toEqual(e.before.backup_log);
+				// Card 2996 (test 6): the record of account endings kept, every row of it; (n, R19): and every account but
+				// the superadmin recorded as disabled here, by its id and creation time, before the clear.
+				const kept = Object.values(e.before.account_endings);
+				expect(Object.values(after.account_endings).slice(0, kept.length)).toEqual(kept);
+				const accounts = Object.values(e.before.users).filter((user) => user.role !== 'superadmin');
+				expect(
+					sqlite.prepare("SELECT user_id AS id, account_created AS created, ending, origin FROM account_endings WHERE seq > 1 ORDER BY seq").all()
+				).toEqual(accounts.map((user) => ({ id: user.id, created: user.created_at, ending: 'disabled', origin: 'here' })));
 				expect(
 					sqlite.prepare("SELECT message FROM system_logs WHERE context = 'TEST'").all()
 				).toEqual([{ message: 'A line from before the reset' }]);
@@ -361,6 +407,7 @@ describe('POST /api/admin/reset', () => {
 							`The database was reset by admin (ID: ${e.admin.id}): ${total} row(s) cleared from ` +
 							`${cleared().length} table(s), the system log and the backup history kept; ` +
 							'1 API key(s) recorded as ended, so that no import brings one back, and that record kept; ' +
+							'2 account(s) recorded as disabled, so that an import brings each back disabled, and that record kept; ' +
 							'3 attachment file(s) moved to the trash'
 					}
 				]);
@@ -402,12 +449,15 @@ describe('POST /api/admin/reset', () => {
 		expect(run.writes.at(-1)).toBe(upsert);
 		expect(run.writes.at(-2)).toMatch(/^INSERT INTO settings \(key, value\) VALUES/);
 		expect(run.writes.at(-3)).toBe(upsert);
-		// Before the clear, every key recorded as ended and deleted (card 2995, R5): the one write to a kept table.
-		expect(run.writes.slice(STEP_UP_WRITES.length, STEP_UP_WRITES.length + 2)).toEqual([
+		// Before the clear, every account but the superadmin recorded as disabled (card 2996, n, R19), then every key
+		// recorded as ended and deleted (card 2995, R5): the only writes to the kept tables.
+		expect(run.writes.slice(STEP_UP_WRITES.length, STEP_UP_WRITES.length + 4)).toEqual([
+			RECORD_ACCOUNT_ENDING_SQL.slice(0, 160),
+			RECORD_ACCOUNT_ENDING_SQL.slice(0, 160),
 			expect.stringMatching(/^INSERT OR IGNORE INTO api_key_revocations \(key_id, key_hash, revoked_at, revoked_because\) SELECT id, key_hash, @at, @because FROM api_keys WHERE 1 = 1 /),
 			'DELETE FROM api_keys WHERE 1 = 1 RETURNING id'
 		]);
-		expect(run.writes.slice(STEP_UP_WRITES.length + 2, -3).sort()).toEqual(
+		expect(run.writes.slice(STEP_UP_WRITES.length + 4, -3).sort()).toEqual(
 			cleared()
 				.map((table) => `DELETE FROM "${table}"`)
 				.sort()

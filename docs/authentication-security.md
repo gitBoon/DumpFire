@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.160
+version: 1.161
 status: As-Built
-date: 2026-11-19
+date: 2026-11-20
 tags:
+  - card-2996
+  - account-endings
   - card-2995
   - api-key-revocations
   - card-2947
@@ -10410,6 +10412,112 @@ guide says to dump and re-insert it, or to revoke again, and never to import und
 Covered by `tests/api-key-revocations.test.ts`, `tests/backups.test.ts` (card 2995's restore cases),
 `tests/gate.test.ts`, `tests/admin-reset.test.ts`, `tests/mfa-reset-script.test.ts` (T21, T34, T44,
 T45), `tests/check-at-the-write.test.ts` (the inventory) and `tests/migrations.test.ts` (0076).
+
+### The Record of Account Endings (card 2996)
+
+A restore copied `users` whole, and `carryDisabled` carried only the disables of accounts still here,
+so an account deleted here came back enabled with its password, its recovery codes and, from this
+server's own sealed backup, its authenticator; an administrator made a user came back an
+administrator. Migration 0077 adds `account_endings`: one row per ending of an account on this server,
+by the account's row id and creation time (`account_created`, `created_at` in the stored form):
+`deleted` (with `credential`, a fingerprint of the password hash: SHA-256 of the label
+`dumpfire account credential v1`, a NUL and the hash, for a well-formed bcrypt string only, `''` for
+anything else and for `DUMMY_HASH`; it tells an account renumbered in a backup by the hash it held, and
+is no secret and no password check), `disabled`, `enabled`, `role` (the role after; the role an
+account is made with too). `origin` is `here`, `backup`, or `belt` for a row the record's own rule
+wrote in a restore or the start's pass (card 2996's code review, FP2: counted as this server's for any
+account but a superadmin, and never evidence against one). `seq` orders the rows as written, and
+`stated_ended` keeps the moment as its writer stated it, before any clamp (FP5). No foreign key, no
+unique index; every write here is one plain `INSERT` (`recordAccountEnding`).
+
+```mermaid
+flowchart TD
+    subgraph Writers["Every writer, in the transaction of the change"]
+        DEL["deleteUser: deleted, with the fingerprint"]
+        DIS["disableAccountSteps: disabled"]
+        ENA["enableAccount: enabled<br/>(refused 409 for one named deleted)"]
+        ROLE["changeAccountRole: role, the role after"]
+        NEW["POST /api/users: role, at creation"]
+        RST["Reset Everything: disabled, every account but the superadmin"]
+        BELT["the restore and the start: the belts"]
+    end
+    Writers --> REC["recordAccountEnding(database, id, ending)<br/>role read on that connection; refuses the superadmin"]
+    REC --> T[("account_endings")]
+    T --> RULE["accountRulings: deleted / before record / disabled / ceiling"]
+    T --> DH["deletedHere: createSession, keyHolder, the enable"]
+    RULE --> RS["restore: applyAccountEndings, restoreMfaRows,<br/>holdNoLongerReadableIn"]
+    RULE --> ST["start and five-minute sweep:<br/>endRecordedAccountsPresent"]
+```
+
+**The rule** (`accountRulings`, `src/lib/server/account-endings.ts`). The exact rows of an account are
+those of its id whose `account_created` names the same moment as its `created_at` (every row of its
+id where its own names none; never the watermark). For a superadmin, of the restored data or here,
+only this server's own exact `deleted` rows count (FP1, FP2): the application writes no role, disable
+or enable row for one, so the rows a host promotion leaves behind never lower or disable it, and no
+belt, seed row, fingerprint or held-here match ever names it. In order: **deleted (inert)**, an exact `deleted` row, or a `deleted` row carrying its
+fingerprint (never a superadmin); **before record**, a seed row of its id (at most W, the account
+made no later than it, no exact `here` row), or, in a restore, this server held the id just before
+with a later creation time (never a superadmin); **disabled**, the latest by `(ended_at, seq)` of its
+exact `disabled` and `enabled` rows that count (every `here` one; a `backup` one only where there is no
+`here` one, or a `backup` disable); **ceiling**, the latest exact `role` row that counts by the same
+precedence, which only lowers. `deletedHere` is the deleted half through the same matcher, one
+statement of index searches that matches the creation time in SQL and stops at the first row (FP3);
+`createSession` and `keyHolder` refuse an account it names whatever its row says (R16). An account
+whose disable the record ruled (deleted, before record, or a disable resting on a belt or a backup's
+row) is enabled by the superadmin alone, `403` to an administrator before the password (FP15).
+
+**The seed and the watermark.** 0077 writes W (the larger of the `users` id counter and the largest
+id held) as a row whose `ending` is `'watermark'`, which names no account; a `deleted` row with
+`account_created` `''` for every id from 1 to W that `users` no longer held; and, for every present
+account but the superadmin, its role (dated at the account's creation) and, where disabled, its
+disable (at its own moment; the earliest stamp where either names none or a later one, FP4). A guard
+halts the file,
+changing nothing, where the seed would be more than 1,000,000 rows. The `users` counter is raised
+over every seed and watermark id at start and in every restore (`raiseUserCounterOverSeed`).
+
+**The restore** (`restoreInOneSnapshot`). The record is left out of `restorableTables` and kept by
+Reset. After the copy, `carryAccountEndings` adds the backup's rows as `backup` where no row of this
+server's record before this restore has the same natural key (the stored creation time and the moment
+as stated, FP3, FP5): a row is taken only within the backup's own id bound (exact, seed and watermark
+alike), with a word, creation time, role and fingerprint its ending can have, a creation time no later
+than the restore, and naming no superadmin of the restored data or here (one this server holds
+already is no news, and is not counted); more than 1,000,000 seed rows, more than 1,000,000 other
+rows, or more than 100 rows for one account, and none is taken, the rows counted in the answer and the
+`[CRITICAL] [IMPORT]` line (FP3, FP7); an `ended_at` that is unreadable or in the future is the
+backup's own latest moment no later than the restore, among the rows taken, and the union's key is
+the moment as stated, so a re-import adds nothing whenever it runs. Every
+row left out is counted in one `errors` line that quotes nothing of the backup. Then the rule is asked
+of every restored account, before `restoreMfaRows`, which gives no factor or code to an account ended
+or kept as before record and never the backup's to one kept disabled, naming none of them; and after
+`carryDisabled`, `applyAccountEndings` brings each back: inert (`DUMMY_HASH`, disabled by the
+superadmin, its keys ended `account deleted`, an exact `deleted` row written where none names it,
+R3), before record (`DUMMY_HASH`, disabled, an exact `disabled` row written), disabled (its password
+kept), lowered. After the fill `holdNoLongerReadableIn` holds what every such account could read and
+cannot now. A restore that ends or lowers the restored data's only superadmin (only this server's own
+rows can) is refused, nothing changed, with a sentence of its own. A working copy does all of it.
+
+**The start and the five-minute pass.** `endRecordedAccountsPresent` runs first in
+`sweepEndedKeyReveals`, in a transaction of its own: the rule over the present accounts (no held-here
+half), each ended through the application's own bodies, `disableAccountSteps` and
+`changeAccountRole` (account-ending-bodies.ts, shared with the disable and role routes), an inert
+account also losing its second factors and recovery codes, every row it writes a belt. One
+`[WARN] [AUTH]` line counts them; the webhooks' lines and the settings' lines it causes name no
+account either (FP16), as the restore's `holdNoLongerReadableIn` lines do not; it mails the boards'
+owners only where the schedulers run (FP6). A superadmin a `deleted` row of this server's names is
+never touched, and a `WARN` of its own says so. A failure rolls back this pass alone, with its own
+`WARN`.
+
+**What is left (accepted).** A restore onto another server cannot know of accounts ended there after
+the backup was made. An account deleted before 0077 whose id, creation time and hash are all edited in
+an old backup can come back as a new account (superadmin only; the import names the file's SHA-256).
+Account ids above W, ended where the counter had been deleted, can come back (card 2995's N1, for
+accounts). The settings lines of `removeSettingsOfFormerAdministrators` after an import name their
+setter, as they always have.
+
+Covered by `tests/account-endings.test.ts`, `tests/backups.test.ts` (card 2996's restore cases),
+`tests/account-disable.test.ts`, `tests/atomic-accounts.test.ts`, `tests/user-delete.test.ts`,
+`tests/admin-reset.test.ts`, `tests/mfa-storage.test.ts`, `tests/mfa-reset-script.test.ts` (T21),
+`tests/check-at-the-write.test.ts` (the account inventory) and `tests/migrations.test.ts` (0077).
 
 ## Security Headers
 

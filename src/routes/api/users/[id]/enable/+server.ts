@@ -1,6 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
-import { NOT_DISABLED, enableAccount, requireMayUndoDisable } from '$lib/server/account-disable';
+import { NOT_DISABLED, enableAccount, requireMayEnableRecorded, requireMayUndoDisable, requireNotDeletedHere } from '$lib/server/account-disable';
 import { addressOf } from '$lib/server/client-address';
 import { securityNoticeSent } from '$lib/server/notifications';
 import { refuseOwnAccount, requireAdmin, requireManagedAccount, requireUser } from '$lib/server/route-guards';
@@ -47,6 +47,10 @@ export const POST: RequestHandler = async ({ params, request, locals, cookies, g
 		});
 		if (target.disabledAt === null) throw error(409, NOT_DISABLED);
 		requireMayUndoDisable(actor, target, 'enable');
+		// An account the record of account endings names as deleted (card 2996, R18): 409, before any password is asked.
+		requireNotDeletedHere(target);
+		// One whose disable the record of account endings ruled: the superadmin's alone (its code review, FP15), 403.
+		requireMayEnableRecorded(actor, target);
 		return { actor, target };
 	};
 

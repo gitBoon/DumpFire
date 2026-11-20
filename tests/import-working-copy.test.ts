@@ -148,11 +148,12 @@ const OUTSIDE_TABLES = ['report_schedules', 'webhooks', 'settings'];
 /**
  * The rows of every table a restore copies, apart from the three above. The
  * id counters and the migration record are not copied by a restore, nor is the
- * record of API keys ended here (card 2995), which it keeps and adds to.
+ * record of API keys ended here (card 2995), nor the record of accounts ended here (card 2996): it keeps both and adds
+ * to them.
  */
 function everythingElseIn(database: Database.Database): Record<string, string[]> {
 	const contents = contentsOf(database);
-	for (const table of [...OUTSIDE_TABLES, 'sqlite_sequence', '__drizzle_migrations', 'api_key_revocations']) delete contents[table];
+	for (const table of [...OUTSIDE_TABLES, 'sqlite_sequence', '__drizzle_migrations', 'api_key_revocations', 'account_endings']) delete contents[table];
 	return contents;
 }
 

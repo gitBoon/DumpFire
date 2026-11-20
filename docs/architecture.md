@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.140
+version: 1.141
 status: As-Built
-date: 2026-11-19
+date: 2026-11-20
 tags:
+  - card-2996
+  - account-endings
   - card-2995
   - api-key-revocations
   - card-2947
@@ -271,7 +273,10 @@ secret it was given held, and its rows deleted; told as the sweep is; it cannot 
 2995 it first ends, as a revoke does, every API key present that the record of keys ended on this
 server names, with one `WARN` under AUTH naming them by id, and keeps the key counter at or above
 every id that record names, in a transaction of its own: a failure of either pass rolls back that
-pass alone, with its own `WARN`),
+pass alone, with its own `WARN`. Since card 2996 it first of all ends again, in a transaction of
+its own, every account present that the record of account endings ends or lowers, through the
+disable's and the role change's own bodies (`endRecordedAccountsPresent`, account-ending-bodies.ts), with one
+`WARN` under AUTH of counts and no name),
 `startEndedKeyRevealSweep()` (the same every five minutes, whatever `SCHEDULERS` says; a second
 call starts no second timer) and `startSchedulers()`, in that order for the last six.
 
@@ -632,7 +637,8 @@ There are two `401`s. A request with no `Authorization` header, or one that is n
 `Bearer` header, is told so. A key that is not known, has expired or belongs to a deleted
 user is answered `Invalid or expired API key`, and so is one the record of keys ended on this
 server names (card 2995: `keyEnded` asks `keyRecorded`, three searches on the record's key, so a key
-an older image's import or a host edit put back is refused). `Bearer ` with nothing after it gets the
+an older image's import or a host edit put back is refused), and one of an account the record of
+account endings names as deleted (card 2996: `keyHolder` asks `deletedHere`, two index searches). `Bearer ` with nothing after it gets the
 first: a header's value loses the spaces at its end before the gate sees it, so it arrives
 as `Bearer`, which is no `Bearer` header. The gate had a third, `API key is empty`, for it,
 which nothing could reach, and card 2117 took it out.
@@ -2994,6 +3000,25 @@ How the queue behaves:
 - **The check is made where the write is.** Every route that reads a body reads it first and calls its guard after it, and nothing is awaited between a guard and the write it allows. The handlers card 2115 moved call their guard inside the transaction that writes; a `DELETE` that reads no body checks and writes with no transaction, which is as safe, because the database calls are synchronous and nothing is awaited between the two. `tests/check-at-the-write.test.ts` reads every handler under `src/routes/api` and fails on any call before the body but those that read no row, and on a handler whose text reads a body where it cannot find the read. The attachment upload is the one handler that also looks before its body, so that a caller with no access is not sent 25 MB, and it reads the row again inside the transaction. Before its body it also takes a place in flight (3 an account, 6 the server, given back in a `finally` and lapsing after 10 minutes) and counts the upload against the account's hour, both in memory and reading no row; after it, it charges the day what was read inside a `writeAs`, for every file (card 2910, both the card window's upload and a key's). That is also why an invite cannot be used twice and set-up cannot create two superadmins.
 
 Two things open their own transactions and do not use the helper, because they switch foreign keys off around them: the migration runner, and the restore behind Import Backup. The import of the old JSON export was a third; it was removed on 2026-10-14 (card 2157), and Import Backup takes a `.db` backup only.
+
+Since card 2996 (2026-11-20) the restore's transaction also keeps every ending of an account made on this server, from the record `account_endings` (migration 0077), which `restorableTables` leaves out and Reset keeps. Its steps run on the restore's own connection, never through the server's `afterCommit`: what the application's disable would end that a restore does not already end (sessions, invites, pending sign-ins and request links are never brought in) is done by `endRestoredAccess`, shared with `carryDisabled`, and the settings and failure address go once the import has committed (`removeSettingsOfFormerAdministrators('restore')`).
+
+```mermaid
+sequenceDiagram
+    participant R as restoreInOneSnapshot
+    participant L as Live database (one transaction)
+    participant B as Backup snapshot
+    R->>L: read accountsHeldHere (W, ids and created_at up to W, superadmins)
+    R->>L: clear, copy (account_endings kept)
+    R->>B: read its account_endings and its users bound
+    R->>L: carryAccountEndings: bounded rows added as backup, users counter raised
+    R->>L: accountRulings for every restored account
+    R->>L: restoreMfaRows(ended): none to an ended account, none named
+    R->>L: carryDisabled, then applyAccountEndings (belts, DUMMY_HASH, keys, schedules, roles)
+    R->>L: lacksSuperadmin (its own sentence where the record ended the superadmin)
+    R->>L: fill, then holdRevealedIn and holdNoLongerReadableIn
+    R->>L: COMMIT, and accountsKept counted to the import
+```
 
 ### Log lines written during a transaction
 

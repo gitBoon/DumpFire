@@ -27,10 +27,12 @@ import { eq } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { users, type User } from './db/schema';
 import { afterCommit } from './db/transaction';
-import { endAccountAccess, namingIds, type AccessEnded } from './auth';
-import { advanceReadableCovered, ENDING_IN_MAIL } from './webhooks';
-import { anyRemoved, removeFailureAddress, removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
+import { namingIds, type AccessEnded } from './auth';
+import { ENDING_IN_MAIL } from './webhooks';
+import { anyRemoved, type SettingsRemoved } from './setting-setters';
 import { createLogger } from './logger';
+import { ACCOUNT_ENDING, deletedHere, disableRuledByRecord, recordAccountEnding } from './account-endings';
+import { disableAccountSteps } from './account-ending-bodies';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('AUTH');
@@ -62,6 +64,31 @@ export const DISABLE_FIRST = 'Disable the account first';
 export const ENABLE_FIRST = 'This account is disabled: enable it first';
 export const ONLY_SUPERADMIN_ENABLES = 'Only the superadmin can enable an account the superadmin disabled';
 export const ONLY_SUPERADMIN_DELETES = 'Only the superadmin can delete an account the superadmin disabled';
+/**
+ * 409 for an account the record of account endings names as deleted (card 2996): a restore brought it back inert.
+ * It never says the account was deleted on this server, since a backup's row may say so (R18).
+ */
+export const DELETED_HERE =
+	'The record of account endings names this account as deleted, and a restore brought it back: it cannot be enabled. ' +
+	'Delete it; then make a new account for anyone who returns.';
+
+/** 409 for an account the record of account endings names as deleted (card 2996, R18): asked before the step-up. */
+export function requireNotDeletedHere(target: Pick<User, 'id' | 'createdAt' | 'role' | 'passwordHash'>): void {
+	if (deletedHere(sqlite, target)) error(409, DELETED_HERE);
+}
+
+/** 403 to anyone but the superadmin for an account whose disable the record of account endings ruled (card 2996's code review, FP15). */
+export const ONLY_SUPERADMIN_ENABLES_RECORDED =
+	'Only the superadmin can enable an account the record of account endings keeps disabled (a restore or the start brought its disable)';
+
+/**
+ * 403 when the record of account endings ruled the account's disable (FP15: a backup's row, a belt, the restore or the
+ * start's pass) and `actor` is not the superadmin: asked before the step-up. An administrator's own disable here is
+ * still undone by an administrator.
+ */
+export function requireMayEnableRecorded(actor: Pick<User, 'role'>, target: Pick<User, 'id' | 'createdAt' | 'role' | 'passwordHash'>): void {
+	if (actor.role !== 'superadmin' && disableRuledByRecord(sqlite, target)) error(403, ONLY_SUPERADMIN_ENABLES_RECORDED);
+}
 
 /** 409 for a disabled account: a password reset, an invite or a two-step reset of one is refused (D18). */
 export function requireEnabledAccount(target: Pick<User, 'disabledAt'>): void {
@@ -145,29 +172,14 @@ export function disableAccount(target: User, actor: Actor, ip: string | null = n
 	requireTransaction('disableAccount');
 	if (target.disabledAt !== null) error(409, ALREADY_DISABLED);
 
-	const disabledAt = stamp();
-	db.update(users).set({ disabledAt, disabledBy: actor.id }).where(eq(users.id, target.id)).run();
-	// The settings an administrator set, removed first (card 2922): the ending below holds what an account set, and
-	// finds nothing left to hold, so a disable removes them as it always has and writes no hold's line. Their holds
-	// left by an earlier ending stay, as tombstones (R1).
-	const removed: SettingsRemoved =
-		target.role === 'admin' || target.role === 'superadmin'
-			? removeSettingsSetBy(target, 'disabled', actor)
-			: { mail: false, appUrl: false, destinations: [] };
-	// Told after the commit (card 2923): `disabled_at`, written above, leaves the account out of the owners' mail.
-	// It deletes the links of every request the account made too (card 2922, as S3 here before).
-	const access = endAccountAccess(target.id, {
-		apiKeys: true,
-		cause: { log: `${target.username}'s account was disabled by ${actor.username}`, mail: ENDING_IN_MAIL.disabled }
+	// The disable's body, shared with the start's pass for an account the record of account endings ends (card 2996,
+	// R5): both columns written and the ending recorded; an administrator's settings removed; what a password reset
+	// ends, with the keys; the start pass's moment moved past it; its address out of the backup failure address.
+	const { disabledAt, removed, access, failureAddress } = disableAccountSteps(target, { id: actor.id, actor }, {
+		log: `${target.username}'s account was disabled by ${actor.username}`,
+		mail: ENDING_IN_MAIL.disabled
 	});
-	// This ending held what the account could read (card 2935): the start pass's moment moves past it (P4), so the
-	// next start does not hold again what an owner switches on with a new secret meanwhile.
-	advanceReadableCovered(disabledAt, target.id);
 	const requestLinksEnded = access.requestLinks;
-
-	// The account's address out of the backup failure address whatever its role (the code review's CS2): any
-	// address can be typed there, and the mail goes to whoever holds it.
-	const failureAddress = removeFailureAddress(target.email);
 	const settingsRemoved: Disabled['settingsRemoved'] = anyRemoved(removed) || failureAddress ? { ...removed, failureAddress } : null;
 	const owned = soleOwnerOf(target.id);
 
@@ -224,8 +236,14 @@ export function enableAccount(target: User, actor: Actor, ip: string | null = nu
 	requireTransaction('enableAccount');
 	if (target.disabledAt === null) error(409, NOT_DISABLED);
 	requireMayUndoDisable(actor, target, 'enable');
+	// An account the record of account endings names as deleted is inert, and stays so (card 2996): 409, nothing written.
+	requireNotDeletedHere(target);
+	// One whose disable the record ruled is the superadmin's to enable (its code review, FP15).
+	requireMayEnableRecorded(actor, target);
 
 	db.update(users).set({ disabledAt: null, disabledBy: null }).where(eq(users.id, target.id)).run();
+	// Recorded (card 2996): a restore of a backup that holds the account disabled then leaves it as this server has it.
+	recordAccountEnding(sqlite, target.id, ACCOUNT_ENDING.enabled);
 	const was = target.disabledAt;
 	afterCommit(() =>
 		log.warn(

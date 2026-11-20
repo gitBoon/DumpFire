@@ -138,6 +138,16 @@ describe('the checklist source', () => {
 	});
 
 	// 5
+	it('test 43 (card 2996): A.5.18 names the record of account endings, its writer, the restore’s application and the start’s pass as evidence, and each exists', () => {
+		const item = CHECKLIST.find((entry) => entry.ref === 'A.5.18')!;
+		for (const symbol of ['recordAccountEnding', 'applyAccountEndings', 'endRecordedAccountsPresent']) {
+			const evidence = item.evidence.find((e) => e.symbol === symbol);
+			expect(evidence, symbol).toBeDefined();
+			expect(evidenceFault(evidence!), symbol).toBeNull();
+		}
+		expect(item.how).toContain('(card 2996)');
+	});
+
 	it('names every gap: a card or an accepted risk for each item short of met, and neither for a met one', () => {
 		const faults: string[] = [];
 		for (const item of APPLICATION_SIDE) {

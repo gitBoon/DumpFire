@@ -2,6 +2,7 @@ import { error, isHttpError, json } from '@sveltejs/kit';
 import { sqlite } from '$lib/server/db';
 import { restorableTables } from '$lib/server/db/restore';
 import { REVOKED_BECAUSE, endApiKeys } from '$lib/server/key-revocations';
+import { ACCOUNT_ENDING, recordAccountEnding } from '$lib/server/account-endings';
 import { clearSessionCookie, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { readBody } from '$lib/server/request-body';
 import { resetFormSecretCache, writeFormSecret } from '$lib/server/request-tokens';
@@ -17,11 +18,11 @@ import { createLogger } from '$lib/server/logger';
 const log = createLogger('ADMIN');
 
 /**
- * What a reset keeps: the record of what was done to this installation, and the record of every API key ended here
- * (card 2995), which `restorableTables` leaves out already and which is named here so that no change to that list can
- * make a reset clear it.
+ * What a reset keeps: the record of what was done to this installation, the record of every API key ended here
+ * (card 2995) and the record of every account ended here (card 2996), which `restorableTables` leaves out already and
+ * which are named here so that no change to that list can make a reset clear them.
  */
-const KEPT = ['system_logs', 'backup_log', 'api_key_revocations'];
+const KEPT = ['system_logs', 'backup_log', 'api_key_revocations', 'account_endings'];
 
 const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -49,6 +50,12 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
  * record is kept (card 2995, R5): an import after a reset never brings a key
  * back. The answer counts them, `apiKeysRecorded`.
  *
+ * And every account but the superadmin is recorded as disabled here, before
+ * the clear, in the record of account endings, which is kept too (card 2996,
+ * R19): an import after a reset brings the accounts back disabled, and the
+ * superadmin enables the ones wanted. The answer counts them,
+ * `accountsRecorded`.
+ *
  * Attachment files are moved to the trash once the reset is committed. A file
  * that cannot be moved is named in the answer, which is still a success: the
  * rows are gone either way.
@@ -66,7 +73,7 @@ export const POST: RequestHandler = async ({ request, locals, cookies, url }) =>
 	const body = await readBody(request);
 
 	let actor: SessionUser | undefined;
-	let cleared: { tables: number; rows: number; files: UploadFile[]; apiKeysRecorded: number };
+	let cleared: { tables: number; rows: number; files: UploadFile[]; apiKeysRecorded: number; accountsRecorded: number };
 	try {
 		// Who resets, as the account is now (card 2253), named for the lines
 		// below, which are written whether the reset commits or fails: the
@@ -101,6 +108,12 @@ export const POST: RequestHandler = async ({ request, locals, cookies, url }) =>
 				rows += (sqlite.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get() as { n: number }).n;
 			}
 
+			// Every account but the superadmin recorded as disabled here, before the clear (card 2996, R19): an import
+			// after the reset brings each back disabled, and the superadmin enables the ones wanted. The record is kept.
+			const accounts = sqlite.prepare("SELECT id FROM users WHERE role <> 'superadmin' ORDER BY id").pluck().all() as number[];
+			for (const id of accounts) recordAccountEnding(sqlite, id, ACCOUNT_ENDING.disabled);
+			const accountsRecorded = accounts.length;
+
 			// Every API key recorded as ended here, `reset`, and deleted, before the clear (card 2995, R5): a reset done
 			// to shut someone out is not undone for keys by an import of an older backup. The record is kept below.
 			const apiKeysRecorded = endApiKeys(sqlite, { every: true }, REVOKED_BECAUSE.reset).length;
@@ -117,7 +130,7 @@ export const POST: RequestHandler = async ({ request, locals, cookies, url }) =>
 			// transaction, and tried at the next start (card 2898's code review, S1).
 			markScrubPending(sqlite);
 
-			return { tables: tables.length, rows, files, apiKeysRecorded };
+			return { tables: tables.length, rows, files, apiKeysRecorded, accountsRecorded };
 		}));
 	} catch (e) {
 		// Refused at the write (card 2253): an answer already, and nothing was
@@ -167,6 +180,7 @@ export const POST: RequestHandler = async ({ request, locals, cookies, url }) =>
 		`The database was reset by ${actor.username} (ID: ${actor.id}): ${cleared.rows} row(s) cleared from ` +
 			`${cleared.tables} table(s), the system log and the backup history kept; ` +
 			`${cleared.apiKeysRecorded} API key(s) recorded as ended, so that no import brings one back, and that record kept; ` +
+			`${cleared.accountsRecorded} account(s) recorded as disabled, so that an import brings each back disabled, and that record kept; ` +
 			`${trash.moved} attachment file(s) moved to the trash${notMoved}`,
 		undefined,
 		{ userId: actor.id }
@@ -175,5 +189,5 @@ export const POST: RequestHandler = async ({ request, locals, cookies, url }) =>
 	// Clear the session cookie so the caller is logged out
 	clearSessionCookie(cookies, url);
 
-	return json({ success: true, redirect: '/setup', trash, apiKeysRecorded: cleared.apiKeysRecorded });
+	return json({ success: true, redirect: '/setup', trash, apiKeysRecorded: cleared.apiKeysRecorded, accountsRecorded: cleared.accountsRecorded });
 };

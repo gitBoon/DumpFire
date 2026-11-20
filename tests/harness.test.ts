@@ -53,6 +53,8 @@ const TEST_FILES = [
 	'access-control.test.ts',
 	// Card 2671: an account disabled and enabled again, and every gate that refuses a disabled one.
 	'account-disable.test.ts',
+	// Card 2996: a restore never brings back an account deleted, disabled or demoted on this server.
+	'account-endings.test.ts',
 	'account-two-step.test.ts',
 	'activity-twins.test.ts',
 	// Card 2910: the name and the type a file that is not an image is stored with.

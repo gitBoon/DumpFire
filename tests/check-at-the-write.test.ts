@@ -4324,7 +4324,11 @@ const WEBHOOK_WRITER_CALLERS: Record<string, readonly string[]> = {
 	// Card 2923's code review (E4): the endings of an account's access.
 	'src/lib/server/webhooks.ts#holdWebhooksOfSetter': ['src/lib/server/auth.ts#endAccountAccess', 'src/lib/server/deletes.ts#deleteUser'],
 	// Card 2935 (P2): the two writes that lower an owner's or an administrator's role.
-	'src/lib/server/webhooks.ts#holdNoLongerReadable': ['src/routes/api/users/[id]/+server.ts#PUT', 'src/routes/api/boards/[id]/share/+server.ts#POST', 'src/routes/api/boards/[id]/share/+server.ts#DELETE'],
+	// Card 2996 (R5): the role change's body, shared by PUT /api/users/{id} and the start's pass, in account-ending-bodies.ts.
+	'src/lib/server/webhooks.ts#holdNoLongerReadable': ['src/lib/server/account-ending-bodies.ts#changeAccountRole', 'src/routes/api/boards/[id]/share/+server.ts#POST', 'src/routes/api/boards/[id]/share/+server.ts#DELETE'],
+	// Card 2996 (R7): what every account the record of account endings ended or lowered in a restore could read, held
+	// on the restore's own connection.
+	'src/lib/server/webhooks.ts#holdNoLongerReadableIn': ['src/lib/server/db/restore.ts#restoreInOneSnapshot'],
 	// Card 2935 (P4, P12): the start pass and the restore.
 	'src/lib/server/webhooks.ts#coverReadable': ['src/lib/server/startup-checks.ts#holdReadableWebhooksAtStart', 'src/lib/server/db/restore.ts#holdRestoredReadable'],
 	// Card 2947 (R3): what an API key was given, held by its revoke and by the sweep of ended keys, which the start
@@ -5745,7 +5749,9 @@ const KEY_UPDATE_FIELDS = ['lastUsedAt', 'deadlineAt'];
 const END_API_KEYS_CALLERS = [
 	'src/lib/server/api-key-revoke.ts#revokeApiKeys',
 	'src/lib/server/auth.ts#endAccountAccess',
-	'src/lib/server/db/restore.ts#carryDisabled',
+	// The restore's ending of an account it disables, shared by card 2671's carry and card 2996's applyAccountEndings: the
+	// function `restoredAccessEnder` makes once for a restore's connection (card 2996's code review, FP11).
+	'src/lib/server/db/restore.ts#restoredAccessEnder',
 	'src/lib/server/deletes.ts#deleteUser',
 	'src/routes/api/admin/reset/+server.ts#POST'
 ];
@@ -5783,8 +5789,110 @@ const RECORD_SQL_WRITE = new RegExp(
 /** A table named at run time after DELETE FROM or DROP TABLE: `\u0000` stands for a template's substitution, or a piece that is no literal. */
 const DYNAMIC_CLEAR = new RegExp(String.raw`\b(DELETE${SQL_GAP}+FROM|DROP${SQL_GAP}+TABLE(?:${SQL_GAP}+IF${SQL_GAP}+EXISTS)?)${SQL_GAP}+["'\x60[]?\u0000`, 'gi');
 
-/** What the inventory found in one file (card 2995, R12). */
-type KeyReading = { deletes: string[]; clears: string[]; enders: string[]; findings: string[] };
+// ─── Card 2996: every write of an account's ending, and the record of account endings ─────────────
+
+/** The columns of `users` an ending writes (R9 i): a role, a disable, a password. */
+const USERS_ENDING_COLUMNS = ['role', 'disabled_at', 'disabled_by', 'password_hash'];
+const USERS_ENDING_FIELDS = ['role', 'disabledAt', 'disabledBy', 'passwordHash'];
+
+/**
+ * Card 2996 (R9 i, vi): every write of `users` that sets a role, a disable or a password hash, or sets fields built at
+ * run time, by `file#function`, with how many and why. Each is an ending of an account or a way back from one, and is
+ * recorded where it ends one (`recordAccountEnding`), or is the restore's or the start's own application of the record.
+ */
+const USERS_ENDING_WRITES: Record<string, { count: number; why: string }> = {
+	'src/lib/server/account-ending-bodies.ts#disableAccountSteps': { count: 1, why: "The disable's body (R5): disabled_at and disabled_by, recorded `disabled` in the same transaction." },
+	'src/lib/server/account-ending-bodies.ts#makeInert': { count: 1, why: 'An inert account (R5, R6): DUMMY_HASH, which nothing matches, by the start pass of the record.' },
+	'src/lib/server/account-ending-bodies.ts#changeAccountRole': { count: 1, why: "The role change's body (R5), its fields the route's: recorded `role`, with the role after." },
+	'src/lib/server/account-disable.ts#enableAccount': { count: 1, why: 'The enable: both columns cleared, recorded `enabled`; refused for an account the record names deleted.' },
+	'src/routes/api/users/[id]/+server.ts#PUT': {
+		count: 2,
+		why:
+			'The username and emoji alone (:166, the plan\'s :160), and an email change with no role change, or a role sent as the one it has (:234, the plan\'s :210): ' +
+			'no disable or password is among the fields readAccountFields gives, and a role that changes goes through changeAccountRole.'
+	},
+	'src/routes/api/account/password/+server.ts#PUT': { count: 1, why: "The holder's own password change, with the current password (card 2701): not an ending; card 2997's to record." },
+	'src/routes/api/users/[id]/password/+server.ts#PUT': { count: 1, why: "An administrator's password set, which ends the account's access (endAccountAccess): card 2997's to record." },
+	'src/routes/invite/[token]/+page.server.ts#default': { count: 1, why: 'An invite used to set a password, which ends the account\'s access (endAccountAccess): card 2997\'s to record.' },
+	'src/lib/server/db/restore.ts#carryDisabled': { count: 1, why: "The restore's carry of this server's disables (card 2671): disabled_at and disabled_by, onto the same accounts restored." },
+	'src/lib/server/db/restore.ts#applyAccountEndings': { count: 3, why: "The restore's application of the record (card 2996): an inert or before-record account, a disabled one, a lowered role." }
+};
+
+/** Card 2996 (R9 vi): the writers of `password_hash` among them. */
+const PASSWORD_HASH_WRITERS = [
+	'src/lib/server/account-ending-bodies.ts#changeAccountRole',
+	'src/lib/server/account-ending-bodies.ts#makeInert',
+	'src/lib/server/db/restore.ts#applyAccountEndings',
+	'src/routes/api/account/password/+server.ts#PUT',
+	'src/routes/api/users/[id]/+server.ts#PUT',
+	'src/routes/api/users/[id]/password/+server.ts#PUT',
+	'src/routes/invite/[token]/+page.server.ts#default'
+];
+
+/**
+ * Card 2996 (R9 ii): the `UPDATE users SET ${...}` built at run time, by `file#function`, with how many and why. Each
+ * sets columns named in its own code, none of them a role, a disable or a password.
+ */
+const USERS_DYNAMIC_SETS: Record<string, { count: number; why: string }> = {
+	'src/lib/server/second-step.ts#verifyStep': {
+		count: 4,
+		why: "A code's counters (:900, :914, :922) and a lane's pause (:947): the lane's own `*_wrong` and `*_resumes_at` columns, by name from its column table; never a role, a disable or a password."
+	},
+	'src/lib/server/mfa-backup.ts#restoreMfaRows': { count: 2, why: "The restore's guessing counters zeroed (:274) and the same accounts' sign-in history put back (:283): the columns of GUESSING and HISTORY." }
+};
+
+/** Card 2996 (R9 v): the functions that may call `recordAccountEnding`, each once. */
+const RECORD_ACCOUNT_ENDING_CALLERS = [
+	'src/lib/server/account-ending-bodies.ts#changeAccountRole',
+	'src/lib/server/account-ending-bodies.ts#disableAccountSteps',
+	'src/lib/server/account-ending-bodies.ts#endRecordedAccountsPresent',
+	'src/lib/server/account-disable.ts#enableAccount',
+	'src/lib/server/db/restore.ts#applyAccountEndings',
+	'src/lib/server/deletes.ts#deleteUser',
+	'src/routes/api/admin/reset/+server.ts#POST',
+	'src/routes/api/users/+server.ts#POST'
+];
+
+/**
+ * Card 2996 (R9 iv): the only places that may INSERT INTO the record, a plain insert: the restore's union, and the
+ * record's one statement, `RECORD_ACCOUNT_ENDING_SQL`, a constant at account-endings.ts's top level that
+ * `recordAccountEnding` alone runs (exported for the pins, R10; its callers pinned by RECORD_ACCOUNT_ENDING_CALLERS).
+ */
+const ACCOUNT_RECORD_INSERTERS = ['src/lib/server/account-endings.ts#(top level)', 'src/lib/server/db/restore.ts#carryAccountEndings'];
+
+/** An update of users, with what it sets. */
+const USERS_SQL_UPDATE = new RegExp(String.raw`\bUPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+${sqlName('users')}${SQL_GAP}+SET\b([\s\S]*?)(?=\bWHERE\b|\bRETURNING\b|\bFROM\b|;|$)`, 'gi');
+
+/** An upsert into users that updates (R9 iii): `INSERT … INTO users … ON CONFLICT … DO UPDATE`, which rewrites an account. */
+const USERS_SQL_UPSERT = new RegExp(
+	String.raw`\bINSERT(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+INTO${SQL_GAP}+${sqlName('users')}[^;]*?\bON${SQL_GAP}+CONFLICT\b[^;]*?\bDO${SQL_GAP}+UPDATE\b`,
+	'gi'
+);
+
+/** Anything written to the record of account endings but a plain INSERT (R9 iv): a delete, an update, a replace, an insert or ignore, a drop. */
+const ACCOUNT_RECORD_SQL_WRITE = new RegExp(
+	String.raw`\b(DELETE${SQL_GAP}+FROM|UPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?|REPLACE${SQL_GAP}+INTO|INSERT${SQL_GAP}+OR${SQL_GAP}+\w+${SQL_GAP}+INTO|DROP${SQL_GAP}+TABLE(?:${SQL_GAP}+IF${SQL_GAP}+EXISTS)?|ALTER${SQL_GAP}+TABLE)${SQL_GAP}+${sqlName('account_endings')}`,
+	'gi'
+);
+
+/** A plain INSERT INTO the record. */
+const ACCOUNT_RECORD_SQL_INSERT = new RegExp(String.raw`\bINSERT${SQL_GAP}+INTO${SQL_GAP}+${sqlName('account_endings')}`, 'gi');
+
+/** What the inventory found in one file (card 2995, R12; card 2996, R9). */
+type KeyReading = {
+	deletes: string[];
+	clears: string[];
+	enders: string[];
+	findings: string[];
+	/** Card 2996: the writes of a role, a disable, a password or run-time fields of users, by `file#function`. */
+	userWrites: string[];
+	/** Card 2996: those of them that write `password_hash`. */
+	passwordWriters: string[];
+	/** Card 2996: the `UPDATE users SET ${...}` built at run time. */
+	dynamicSets: string[];
+	/** Card 2996: the callers of `recordAccountEnding`. */
+	recorders: string[];
+};
 
 /**
  * Card 2995 (R12) for one file under src or scripts, reusing the webhook rule's ways of reading (`scriptsOf`,
@@ -5803,7 +5911,7 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 	const tree = ts.createSourceFile(file, file.endsWith('.svelte') ? scriptsOf(source) : source, ts.ScriptTarget.Latest, true, kind);
 	const at = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
 	const keyOf = (node: ts.Node) => `${file}#${writerNameOf(node)}`;
-	const reading: KeyReading = { deletes: [], clears: [], enders: [], findings: [] };
+	const reading: KeyReading = { deletes: [], clears: [], enders: [], findings: [], userWrites: [], passwordWriters: [], dynamicSets: [], recorders: [] };
 
 	/** The text a string, a template or a `+` chain of them builds, a substitution or other piece read as `\u0000`. */
 	const textOf = (node: ts.Expression): string => {
@@ -5854,6 +5962,35 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 				reading.findings.push(`${file}:${at(node)} ${found[1].replace(/\s+/g, ' ').toUpperCase()} a table named at run time in ${writerNameOf(node)}, which is not on KEY_DYNAMIC_CLEARS: it can reach api_keys or users (card 2995)`);
 			}
 		}
+		// Card 2996 (R9 i, ii, vi): an UPDATE users that sets a role, a disable or a password, or sets columns built at run time.
+		for (const found of text.matchAll(USERS_SQL_UPDATE)) {
+			if (found[1].includes('\u0000')) {
+				reading.dynamicSets.push(keyOf(node));
+				if (!(keyOf(node) in USERS_DYNAMIC_SETS)) {
+					reading.findings.push(`${file}:${at(node)} updates users with columns built at run time in ${writerNameOf(node)}, which is not on USERS_DYNAMIC_SETS (card 2996)`);
+				}
+				continue;
+			}
+			const columns = found[1].split(',').map((part) => part.trim().split(/\s*=/)[0].replace(/["`[\]]/g, '').toLowerCase());
+			if (!columns.some((column) => USERS_ENDING_COLUMNS.includes(column))) continue;
+			reading.userWrites.push(keyOf(node));
+			if (columns.includes('password_hash')) reading.passwordWriters.push(keyOf(node));
+			if (!(keyOf(node) in USERS_ENDING_WRITES)) {
+				reading.findings.push(`${file}:${at(node)} updates users (${columns.filter((c) => USERS_ENDING_COLUMNS.includes(c)).join(', ')}) in ${writerNameOf(node)}, which is not on USERS_ENDING_WRITES (card 2996)`);
+			}
+		}
+		for (const _found of text.matchAll(USERS_SQL_UPSERT)) {
+			reading.findings.push(`${file}:${at(node)} upserts into users with DO UPDATE in ${writerNameOf(node)}: an account is made, changed by its writers, or ended, never rewritten (card 2996)`);
+		}
+		// Card 2996 (R9 iv): the record of account endings is append-only, written by a plain INSERT in its two writers alone.
+		for (const found of text.matchAll(ACCOUNT_RECORD_SQL_WRITE)) {
+			reading.findings.push(`${file}:${at(node)} ${found[1].replace(/\s+/g, ' ').toUpperCase()} account_endings in ${writerNameOf(node)}: the record is append-only, written by a plain INSERT (card 2996)`);
+		}
+		for (const _found of text.matchAll(ACCOUNT_RECORD_SQL_INSERT)) {
+			if (!ACCOUNT_RECORD_INSERTERS.includes(keyOf(node))) {
+				reading.findings.push(`${file}:${at(node)} INSERT INTO account_endings in ${writerNameOf(node)}: only recordAccountEnding and carryAccountEndings write the record (card 2996)`);
+			}
+		}
 	};
 
 	const visit = (node: ts.Node): void => {
@@ -5888,9 +6025,37 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 				if (inserted === 'apiKeys' || inserted === 'apiKeyRevocations') {
 					reading.findings.push(`${file}:${at(node)} .${method}() on ${inserted} in ${writerNameOf(node)}: a key or its record is inserted plainly, never upserted (card 2995)`);
 				}
+				// Card 2996 (R9 iii): an account is never upserted over.
+				if (method === 'onConflictDoUpdate' && inserted === 'users') {
+					reading.findings.push(`${file}:${at(node)} .onConflictDoUpdate() on users in ${writerNameOf(node)}: an account is made, changed by its writers, or ended, never rewritten (card 2996)`);
+				}
 			}
 			if ((method === 'delete' || method === 'update') && table === 'apiKeyRevocations') {
 				reading.findings.push(`${file}:${at(node)} .${method}(apiKeyRevocations) in ${writerNameOf(node)}: the record is append-only (card 2995)`);
+			}
+			// Card 2996 (R9 iv): the record of account endings is written by its two writers' SQL alone, never through Drizzle.
+			if ((method === 'delete' || method === 'update' || method === 'insert') && table === 'accountEndings') {
+				reading.findings.push(`${file}:${at(node)} .${method}(accountEndings) in ${writerNameOf(node)}: the record is append-only, written by recordAccountEnding (card 2996)`);
+			}
+			// Card 2996 (R9 i, vi): a Drizzle update of users judged by the fields it sets: a role, a disable or a password,
+			// or fields not written out here, is an ending's write and must be listed.
+			if (method === 'update' && table === 'users') {
+				const set = node.parent;
+				const values = ts.isPropertyAccessExpression(set) && set.name.text === 'set' && ts.isCallExpression(set.parent) ? set.parent.arguments[0] : undefined;
+				const fields =
+					values !== undefined && ts.isObjectLiteralExpression(values)
+						? values.properties.map((property) =>
+								(ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) && ts.isIdentifier(property.name) ? property.name.text : null
+							)
+						: [null];
+				if (fields.some((field) => field === null || USERS_ENDING_FIELDS.includes(field))) {
+					reading.userWrites.push(keyOf(node));
+					if (fields.some((field) => field === null || field === 'passwordHash')) reading.passwordWriters.push(keyOf(node));
+					if (!(keyOf(node) in USERS_ENDING_WRITES)) {
+						const named = fields.filter((field) => field === null || USERS_ENDING_FIELDS.includes(field)).map((field) => field ?? 'fields not written out here');
+						reading.findings.push(`${file}:${at(node)} .update(users) setting ${named.join(', ')} in ${writerNameOf(node)}, which is not on USERS_ENDING_WRITES (card 2996)`);
+					}
+				}
 			}
 			if (method === 'update' && table === 'apiKeys') {
 				const set = node.parent;
@@ -5906,6 +6071,10 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 		}
 		if (ts.isCallExpression(node) && ts.isIdentifier(bare(node.expression)) && (bare(node.expression) as ts.Identifier).text === 'endApiKeys') {
 			reading.enders.push(keyOf(node));
+		}
+		// Card 2996 (R9 v): each call of the record's one writer, by its `file#function`.
+		if (ts.isCallExpression(node) && ts.isIdentifier(bare(node.expression)) && (bare(node.expression) as ts.Identifier).text === 'recordAccountEnding') {
+			reading.recorders.push(keyOf(node));
 		}
 		ts.forEachChild(node, visit);
 	};
@@ -5947,14 +6116,33 @@ describe('every delete of an API key or an account, and the record of ended keys
 		expect(/const KEPT = \[[^\]]*'api_key_revocations'[^\]]*\]/.test(reset)).toBe(true);
 	});
 
+	it('test 33 (card 2996, R9 i, ii, vi): every write of a role, a disable, a password or run-time fields of users is on USERS_ENDING_WRITES, each as many times as listed; every run-time SET on USERS_DYNAMIC_SETS; the password writers listed', () => {
+		expect(counted((reading) => reading.userWrites)).toEqual(Object.fromEntries(Object.entries(USERS_ENDING_WRITES).map(([key, { count }]) => [key, count])));
+		expect(counted((reading) => reading.dynamicSets)).toEqual(Object.fromEntries(Object.entries(USERS_DYNAMIC_SETS).map(([key, { count }]) => [key, count])));
+		expect([...new Set(readings.flatMap(({ passwordWriters }) => passwordWriters))].sort()).toEqual([...PASSWORD_HASH_WRITERS].sort());
+	});
+
+	it('test 33 (R9 v): recordAccountEnding is called by exactly the writers of an ending, each once', () => {
+		expect(readings.flatMap(({ recorders }) => recorders).sort()).toEqual([...RECORD_ACCOUNT_ENDING_CALLERS].sort());
+	});
+
+	it('test 34 (R9 iv): the record of account endings is kept out of what a restore clears and named among what Reset keeps; the host script writes no ending of an account', () => {
+		expect(restorableTables(sqlite)).not.toContain('account_endings');
+		const reset = readFileSync(join(ROOT, 'src/routes/api/admin/reset/+server.ts'), 'utf8');
+		expect(/const KEPT = \[[^\]]*'account_endings'[^\]]*\]/.test(reset)).toBe(true);
+		// No role, disable, password or delete of an account in the host's scripts.
+		expect(readings.flatMap(({ userWrites }) => userWrites).filter((key) => key.startsWith('scripts/'))).toEqual([]);
+		expect(readings.flatMap(({ deletes }) => deletes).filter((key) => key.startsWith('scripts/') && !key.endsWith('#reset'))).toEqual([]);
+	});
+
 	describe('the rule itself', () => {
 		const EXAMPLE = 'src/lib/server/example.ts';
 		/** `code` as line 4 of a made-up module, in `wipe`. */
 		const inWipe = (code: string) =>
 			[
 				"import { db, sqlite } from '$lib/server/db'; import { eq } from 'drizzle-orm';",
-				"import { apiKeys, apiKeyRevocations, users } from '$lib/server/db/schema';",
-				'export function wipe(table: string, id: number) {',
+				"import { accountEndings, apiKeys, apiKeyRevocations, users } from '$lib/server/db/schema';",
+				'export function wipe(table: string, id: number, fields: object) {',
 				`\t${code}`,
 				'}'
 			].join('\n');
@@ -5992,7 +6180,20 @@ describe('every delete of an API key or an account, and the record of ended keys
 				code: "sqlite.prepare('INSERT INTO api_keys (id, key_hash) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET key_hash = excluded.key_hash').run(id, 'x');"
 			},
 			{ form: 'a Drizzle onConflictDoUpdate on apiKeys', code: "db.insert(apiKeys).values({ id }).onConflictDoUpdate({ target: apiKeys.id, set: { keyHash: 'x' } }).run();" },
-			{ form: 'a Drizzle onConflictDoNothing on apiKeys', code: 'db.insert(apiKeys).values({ id }).onConflictDoNothing().run();' }
+			{ form: 'a Drizzle onConflictDoNothing on apiKeys', code: 'db.insert(apiKeys).values({ id }).onConflictDoNothing().run();' },
+			// Card 2996 (R9, tests 33 and 34): an account's ending written outside its writers, and the record of account endings.
+			{ form: 'an unlisted Drizzle role write', code: "db.update(users).set({ role: 'admin' }).where(eq(users.id, id)).run();" },
+			{ form: 'an unlisted Drizzle write of fields built elsewhere', code: 'db.update(users).set(fields).where(eq(users.id, id)).run();' },
+			{ form: 'an unlisted SQL disable', code: "sqlite.prepare('UPDATE users SET disabled_at = ?, disabled_by = ? WHERE id = ?').run('x', 1, id);" },
+			{ form: 'an unlisted SQL password write', code: "sqlite.prepare('UPDATE main.users SET \"password_hash\" = ? WHERE id = ?').run('x', id);" },
+			{ form: 'an unlisted UPDATE users SET built at run time', code: 'sqlite.prepare(`UPDATE users SET ${table} = 0 WHERE id = ?`).run(id);' },
+			{ form: 'an upsert into users with DO UPDATE', code: "sqlite.prepare('INSERT INTO users (id, role) VALUES (?, ?) ON CONFLICT (id) DO UPDATE SET role = excluded.role').run(id, 'admin');" },
+			{ form: 'a Drizzle onConflictDoUpdate on users', code: "db.insert(users).values({ id }).onConflictDoUpdate({ target: users.id, set: { role: 'admin' } }).run();" },
+			{ form: 'a DELETE FROM the record of account endings', code: "sqlite.prepare('DELETE FROM account_endings WHERE user_id = ?').run(id);" },
+			{ form: 'an UPDATE of the record of account endings', code: "sqlite.prepare('UPDATE account_endings SET origin = ?').run('here');" },
+			{ form: 'an INSERT OR IGNORE INTO the record of account endings', code: "sqlite.prepare('INSERT OR IGNORE INTO account_endings (user_id) VALUES (?)').run(id);" },
+			{ form: 'a plain INSERT INTO the record outside its writers', code: "sqlite.prepare('INSERT INTO account_endings (user_id) VALUES (?)').run(id);" },
+			{ form: 'a Drizzle insert into the record', code: 'db.insert(accountEndings).values({ userId: id }).run();' }
 		])('finds $form, on its line, in its function', ({ code }) => {
 			const found = findingsOf(code);
 			expect(found).toHaveLength(1);

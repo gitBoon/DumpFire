@@ -99,6 +99,7 @@ import { knownBrowserCookie, rememberBrowser, rememberedNonce } from '$lib/serve
 import { CHALLENGE_COOKIE, tokenHashOf } from '$lib/server/sign-in-challenges';
 import { ENDING_IN_MAIL, dispatchWebhook } from '$lib/server/webhooks';
 import { RECORD_ACCOUNT_KEYS_ENDED_SQL } from '$lib/server/key-revocations';
+import { RECORD_ACCOUNT_ENDING_SQL } from '$lib/server/account-endings';
 import { PUT as changeOwnPassword } from '../src/routes/api/account/password/+server';
 import { load as loadAdminPage } from '../src/routes/admin/+page.server';
 import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.server';
@@ -1030,6 +1031,8 @@ describe('POST /api/users/:id/disable', () => {
 		expect(shape(run.writes)).toEqual([
 			...STEP_UP_WRITES,
 			'update users set',
+			// Card 2996 (R10): the disable recorded, in the transaction that writes it.
+			'insert into account_endings',
 			// The once-only seed, before the keys go (card 2947's code review, FP2).
 			'insert or ignore',
 			'insert into settings',
@@ -1048,7 +1051,68 @@ describe('POST /api/users/:id/disable', () => {
 			// Card 2935 (P4): the start pass's moment moved past this disable.
 			'update settings set'
 		]);
+		// The one pin of its shape holds the record's statement whole, to the first 160 characters (helpers/failing-write.ts).
+		expect(run.writes).toContain(RECORD_ACCOUNT_ENDING_SQL.slice(0, 160));
 		expect(run.effects).toEqual([]);
+	});
+});
+
+describe('POST /api/users/:id/enable and PUT /api/users/:id with a role (card 2996, f)', () => {
+	/** The superadmin, signed in with a factor; an account the superadmin disabled; an administrator. */
+	const scene = () => {
+		const chief = makeUser({ username: 'chief', role: 'superadmin' });
+		const target = makeUser({ username: 'target', disabled: { by: chief } });
+		const ada = makeUser({ username: 'ada', role: 'admin' });
+		makeSession(chief, 'the-chief');
+		stepUpFactor(chief);
+		return { chief, target, ada };
+	};
+	const asChief = (chief: SessionUser, body: Record<string, unknown> = {}) => ({
+		user: chief,
+		body: { ...body, currentPassword: FIXTURE_PASSWORD, ...codeOf(chief) },
+		headers: from('the-chief')
+	});
+
+	it('(f): the enable writes the account and its record together, or neither', async () => {
+		const run = await eachWriteInTurn({
+			build: scene,
+			request: ({ chief, target }) => api('POST', `/api/users/${target.id}/enable`, asChief(chief)),
+			apart: [...STEP_UP_APART],
+			afterSuccess: ({ target }, res: ApiResult) => {
+				expect(res.status, JSON.stringify(res.body)).toBe(200);
+				expect(userRow(target.id)).toMatchObject({ disabledAt: null, disabledBy: null });
+				expect(sqlite.prepare('SELECT ending FROM account_endings WHERE user_id = ?').pluck().all(target.id)).toEqual(['enabled']);
+			}
+		});
+
+		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'update users set', 'insert into account_endings']);
+		expect(run.writes).toContain(RECORD_ACCOUNT_ENDING_SQL.slice(0, 160));
+	});
+
+	it('(f): a role change writes the account, its record and everything the change ends together, or none of it', async () => {
+		const run = await eachWriteInTurn({
+			build: scene,
+			request: ({ chief, ada }) => api('PUT', `/api/users/${ada.id}`, asChief(chief, { role: 'user' })),
+			apart: [...STEP_UP_APART],
+			afterSuccess: ({ ada }, res: ApiResult) => {
+				expect(res.status, JSON.stringify(res.body)).toBe(200);
+				expect(userRow(ada.id)).toMatchObject({ role: 'user' });
+				expect(sqlite.prepare('SELECT role FROM account_endings WHERE user_id = ?').pluck().all(ada.id)).toEqual(['user']);
+			}
+		});
+
+		expect(shape(run.writes)).toEqual([
+			...STEP_UP_WRITES,
+			'delete from invite_tokens',
+			'delete from sign_in_challenges',
+			'delete from enrolment_links',
+			'delete from sessions',
+			'update users set',
+			'insert into account_endings',
+			'update webhooks set'
+		]);
+		expect(shape(run.writes).filter((write) => write === 'insert into account_endings')).toHaveLength(1);
+		expect(run.writes).toContain(RECORD_ACCOUNT_ENDING_SQL.slice(0, 160));
 	});
 });
 
@@ -1130,6 +1194,8 @@ describe('POST /api/users', () => {
 		expect(shape(run.writes)).toEqual([
 			...STEP_UP_WRITES,
 			'insert into users',
+			// Card 2996 (R2): the role it is made with, recorded.
+			'insert into account_endings',
 			'delete from invite_tokens',
 			'insert into invite_tokens'
 		]);
@@ -1199,7 +1265,8 @@ describe('POST /api/users', () => {
 
 		// The superadmin's own password counted, their code spent and the count cleared (cards 2701 and 2771), then
 		// the user and its link: the delete finds nothing, as a link is issued one way, which ends any earlier one.
-		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'insert into users', 'delete from enrolment_links', 'insert into enrolment_links']);
+		// Card 2996 (R2): the role it is made with, recorded after the insert.
+		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'insert into users', 'insert into account_endings', 'delete from enrolment_links', 'insert into enrolment_links']);
 		expect(run.effects).toEqual([]);
 
 		// Said once at INFO, naming the account and who made it, and never the link or its token.
@@ -2539,6 +2606,8 @@ describe('PUT /api/users/:id', () => {
 		// Before it, the superadmin's own password counted, their code spent and
 		// the count cleared, apart from the transaction (cards 2701 and 2771).
 		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'delete from invite_tokens', 'delete from sign_in_challenges', 'delete from enrolment_links', 'update users set']);
+		// Card 2996 (f, R10): an email change alone is no ending, and writes nothing to the record.
+		expect(run.writes.join('\n')).not.toContain('account_endings');
 		expect(run.effects).toEqual([]);
 	});
 

@@ -410,7 +410,7 @@ export function removeSettingsSetBy(
 	setter: Named,
 	why: 'demoted' | 'deleted' | 'disabled' | 'not-an-administrator' | 'gone',
 	actor: Named | null,
-	found: 'start-up' | 'restore' = 'start-up'
+	found: 'start-up' | 'restore' | 'record' = 'start-up'
 ): SettingsRemoved {
 	const rows = db.select().from(settingSetters).where(eq(settingSetters.userId, setter.id)).all();
 	const removed: SettingsRemoved = { mail: false, appUrl: false, destinations: [] };
@@ -465,7 +465,12 @@ export function removeSettingsSetBy(
 				? 'whose account is not in the restored data (found after a restore)'
 				: 'whose account no longer exists (found at start-up: it was deleted outside the admin page)'
 	}[why];
-	const whose = `saved by ${why === 'gone' ? `account ${setter.id}` : quoted(setter.username)}, ${because}`;
+	// Card 2996 (FP16): the record of account endings' pass names no account, in the words or the details.
+	const unnamed = found === 'record';
+	const whose = unnamed
+		? 'saved by an account that the record of account endings on this server ends or lowers (found by its pass)'
+		: `saved by ${why === 'gone' ? `account ${setter.id}` : quoted(setter.username)}, ${because}`;
+	const setterMeta = unnamed ? {} : { setter: setter.id };
 	const filedUnder = { userId: actor?.id ?? null };
 	if (removed.mail || removed.appUrl) {
 		const what = [removed.mail ? 'mail settings' : null, removed.appUrl ? 'App URL' : null].filter((part) => part !== null).join(' and the ');
@@ -473,12 +478,12 @@ export function removeSettingsSetBy(
 			removed.mail ? ' No mail is sent until an administrator sets the mail up again.' : '',
 			removed.appUrl ? " Links in mail use APP_URL, or the server's own address, until an App URL is saved again." : ''
 		].join('');
-		const meta = { setter: setter.id, reason: why, mail: removed.mail, appUrl: removed.appUrl };
+		const meta = { ...setterMeta, reason: why, mail: removed.mail, appUrl: removed.appUrl };
 		afterCommit(() => smtpLog.warn(`The ${what} removed: ${whose}.${after}`, meta, filedUnder));
 	}
 	if (gone.length > 0) {
 		const list = gone.map((d) => `${quoted(d.name)} (${d.type})`).join(', ');
-		const meta = { setter: setter.id, reason: why, destinations: gone };
+		const meta = { ...setterMeta, reason: why, destinations: gone };
 		afterCommit(() =>
 			backupLog.warn(
 				`Backup destination${gone.length === 1 ? '' : 's'} ${list} removed: ${whose}. ` +

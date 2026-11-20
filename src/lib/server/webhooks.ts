@@ -491,13 +491,23 @@ export type SwitchedOff = {
 	 * to treat the old secret as exposed and change it at the receiver now.
 	 */
 	exposed?: boolean;
+	/** Told with no account named in its line (card 2996, FP16): a hold of the record of account endings' passes. */
+	unnamed?: boolean;
 };
 
 /** The API key a hold names as given a webhook's secret (card 2947). */
 export type RevealedBy = { key: number; user: number | null; before: boolean };
 
-/** The words for a key a hold names (card 2947): its id, and its account's where known. */
-const keyNamed = (by: RevealedBy) => (by.user === null ? `key ${by.key}` : `key ${by.key}, user ${by.user}`);
+/** The words for a key a hold names (card 2947): its id, and its account's where known, unless the item is `unnamed` (card 2996). */
+const keyNamed = (by: RevealedBy, unnamed = false) => (by.user === null || unnamed ? `key ${by.key}` : `key ${by.key}, user ${by.user}`);
+
+/** ` (user N)` in a hold's words, or nothing for an item told `unnamed` (card 2996, FP16: the record's passes name no account). */
+const userWord = (hook: SwitchedOff, id: number | null) => (hook.unnamed ? '' : ` (user ${id})`);
+
+/** `items` marked `unnamed` where `unnamed` is set, so that their lines name no account (card 2996, FP16). */
+export function unnamedWhere<T extends SwitchedOff>(items: readonly T[], unnamed: boolean | undefined): T[] {
+	return unnamed ? items.map((item) => ({ ...item, unnamed: true })) : [...items];
+}
 
 /** A webhook row and its hold, as `SwitchedOff` names them. */
 function switchedOff(hook: Webhook, hold: Hold): SwitchedOff {
@@ -574,7 +584,7 @@ export type Telling = { mail: true } | { mail: false; because: string };
 export function switchOffLostWebhooks(
 	scope: SweepScope,
 	cause: string,
-	options: { telling?: Telling; told?: 'after commit' | 'by the caller' } = {}
+	options: { telling?: Telling; told?: 'after commit' | 'by the caller'; unnamed?: boolean } = {}
 ): SwitchedOff[] {
 	if (!sqlite.inTransaction) {
 		throw new Error('switchOffLostWebhooks switches off inside the transaction of the write that took the access away, and none is open');
@@ -594,7 +604,8 @@ export function switchOffLostWebhooks(
 	}
 	if (done.length > 0 && options.told !== 'by the caller') {
 		const telling = options.telling ?? { mail: true };
-		afterCommit(() => tellSwitchedOff(done, cause, telling));
+		const told = unnamedWhere(done, options.unnamed);
+		afterCommit(() => tellSwitchedOff(told, cause, telling));
 	}
 	return done;
 }
@@ -605,28 +616,28 @@ export function switchOffLostWebhooks(
  * key deleted, or a credential that was not a key, leaves no id to name.
  */
 const HOLD_IN_WORDS: Record<HeldBecause, (hook: SwitchedOff) => string> = {
-	'setter cannot open': (hook) => `the account that set it up (user ${hook.setBy}) can no longer open the board`,
+	'setter cannot open': (hook) => `the account that set it up${userWord(hook, hook.setBy)} can no longer open the board`,
 	'no setter': () => 'nobody is recorded as having set it up',
 	// Card 2923: ending an account's access, the start-up pass and a restore; `set_by` NULL for one found with no setter.
 	// Card 2935 (P13, L2): a reader's hold first, then no setter, then one found. Card 2947: a key it was given, first.
 	'setter access ended': (hook) =>
 		hook.revealedBy !== undefined
 			? hook.revealedBy.before
-				? `an API key that may have been given its secret before such reads were recorded (${keyNamed(hook.revealedBy)}) ended`
-				: `an API key that was given its secret (${keyNamed(hook.revealedBy)}) ended`
+				? `an API key that may have been given its secret before such reads were recorded (${keyNamed(hook.revealedBy, hook.unnamed)}) ended`
+				: `an API key that was given its secret (${keyNamed(hook.revealedBy, hook.unnamed)}) ended`
 			: typeof hook.reader === 'number'
-			? `an account that could read its secret as an owner of the board or an administrator (user ${hook.reader}) lost that access`
+			? `an account that could read its secret as an owner of the board or an administrator${userWord(hook, hook.reader)} lost that access`
 			: hook.reader === 'found'
 				? READER_FOUND
 				: hook.setBy === null
 					? 'nobody is recorded as having set it up'
 					: hook.found
-						? `it was found switched off with no hold, as it may have been when the access of the account that set it up (user ${hook.setBy}) ended`
-						: `the account that set it up (user ${hook.setBy}) had its access ended`,
+						? `it was found switched off with no hold, as it may have been when the access of the account that set it up${userWord(hook, hook.setBy)} ended`
+						: `the account that set it up${userWord(hook, hook.setBy)} had its access ended`,
 	'key ended': (hook) =>
 		hook.setWithKey === null
-			? `the account that set it up (user ${hook.setBy}) has no working API key from before keys were recorded`
-			: `the API key that set it up (${hook.setByKey === null ? 'no key recorded' : `key ${hook.setByKey}`}, user ${hook.setBy}) has ended`
+			? `the account that set it up${userWord(hook, hook.setBy)} has no working API key from before keys were recorded`
+			: `the API key that set it up (${hook.setByKey === null ? 'no key recorded' : `key ${hook.setByKey}`}${hook.unnamed ? '' : `, user ${hook.setBy}`}) has ended`
 };
 
 /** Why, in the owners' mail: the hold in words, naming nobody. */
@@ -792,7 +803,14 @@ function heldAsSwitchedOff(rows: readonly HeldRow[], found: boolean): SwitchedOf
  * administrators read; `mail`, the kind of action and no account, for the
  * boards' owners.
  */
-export type EndingCause = { log: string; mail: string };
+export type EndingCause = {
+	log: string;
+	mail: string;
+	/** Whether the owners are mailed (card 2996, FP6): the start's pass mails only where the schedulers run. Mailed by default. */
+	telling?: Telling;
+	/** Lines that name no account (card 2996, FP16): the record of account endings' passes. */
+	unnamed?: boolean;
+};
 
 /**
  * The owners' mail's words for each ending of an account's access (card 2923's code review, S5): its kind, naming
@@ -907,7 +925,7 @@ function holdInScope(
 	database: typeof sqlite,
 	scope: string,
 	params: Record<string, unknown>,
-	mark: (row: SwitchedOff) => Pick<SwitchedOff, 'reader' | 'revealedBy' | 'exposed'>
+	mark: (row: SwitchedOff) => Pick<SwitchedOff, 'reader' | 'revealedBy' | 'exposed' | 'unnamed'>
 ): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
 	registerStampFunctions(database);
 	// Read in the scope, then written by id in a statement of literals alone, so that the writer inventory reads it
@@ -972,7 +990,8 @@ export function holdWebhooksOfSetter(
 		...(given.has(hook.id) ? { exposed: true } : {})
 	}));
 	if (switchedOff.length + held.length > 0) {
-		afterCommit(() => tellSwitchedOff(switchedOff, cause.log, { mail: true }, held, cause.mail, userId));
+		const [toldOff, toldHeld] = [unnamedWhere(switchedOff, cause.unnamed), unnamedWhere(held, cause.unnamed)];
+		afterCommit(() => tellSwitchedOff(toldOff, cause.log, cause.telling ?? { mail: true }, toldHeld, cause.mail, userId));
 	}
 	return { switchedOff, held, readable: [...switchedOff, ...held].filter((hook) => hook.reader !== undefined).length };
 }
@@ -991,15 +1010,61 @@ export function holdNoLongerReadable(userId: number, boardIds: readonly number[]
 	// the start pass, held what it could read, and what owners switched on since has a secret it never saw.
 	if (disableCovered(userId)) return 0;
 	const boards = boardIds === 'all' ? '1' : 'board_id IN (SELECT value FROM json_each(@boards))';
-	const scope =
-		`set_by IS NOT @id AND secret <> '' AND ${boards} ` +
-		`AND NOT ${readableBy('@id', '(SELECT role FROM users WHERE id = @id)')} AND ${mayHaveRead('@id')}`;
+	const scope = noLongerReadableScope("secret <> ''", boards, `${readableBy('@id', ROLE_OF_ID)} OR NOT ${mayHaveRead('@id')}`);
 	const params: Record<string, unknown> = { id: userId, ...(boardIds === 'all' ? {} : { boards: JSON.stringify(boardIds) }) };
 	const { switchedOff, held } = holdInScope(sqlite, scope, params, () => ({ reader: userId }));
 	if (switchedOff.length + held.length > 0) {
-		afterCommit(() => tellSwitchedOff(switchedOff, cause.log, { mail: true }, held, cause.mail, userId));
+		const [toldOff, toldHeld] = [unnamedWhere(switchedOff, cause.unnamed), unnamedWhere(held, cause.unnamed)];
+		afterCommit(() => tellSwitchedOff(toldOff, cause.log, cause.telling ?? { mail: true }, toldHeld, cause.mail, userId));
 	}
 	return switchedOff.length + held.length;
+}
+
+/**
+ * The scope a lowered role's hold takes, over a `webhooks` row, for `@id` (card 2935, P2; card 2996, R7): what `@id`
+ * did not set, with a secret by `withSecret`, on the boards `boardFilter` keeps (every board, the boards named, or the
+ * boards the account could read with the role it was restored with), that it cannot read by `stillReadable` now. One
+ * text for `holdNoLongerReadable` and `holdNoLongerReadableIn`.
+ */
+function noLongerReadableScope(withSecret: string, boardFilter: string, stillReadable: string): string {
+	return `set_by IS NOT @id AND ${withSecret} AND ${boardFilter} AND NOT (${stillReadable})`;
+}
+
+/** An account a restore ended or lowered by the record of account endings (card 2996, R7), for `holdNoLongerReadableIn`. */
+export type RuledReader = { id: number; was: string; ended: boolean };
+
+/**
+ * `holdNoLongerReadable` on the restore's connection, for every account the record of account endings ruled on in it
+ * (card 2996, R7): each webhook with a secret it did not set that it could read with the role it was restored with
+ * (`was`), and that it cannot read now: its role lowered, or, `ended`, any at all, the account being disabled or
+ * inert. Each is taken as one that may have read: the restored data cannot show otherwise. `listed`, the webhooks the
+ * backup left without their secret, count as having one, as the restore's readable pass counts them. Each marked
+ * `reader`, the account's id. Run after the fill, beside `holdRevealedIn`. Opens no transaction; throws outside one;
+ * tells nobody: the restore tells them with its sweep.
+ */
+export function holdNoLongerReadableIn(
+	live: typeof sqlite,
+	accounts: readonly RuledReader[],
+	listed: readonly number[] = []
+): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
+	if (!live.inTransaction) throw new Error("holdNoLongerReadableIn holds inside the restore's transaction, and none is open");
+	const scope = noLongerReadableScope(
+		"(secret <> '' OR id IN (SELECT value FROM json_each(@listed)))",
+		readableBy('@id', '@was'),
+		`@ended = 0 AND ${readableBy('@id', ROLE_OF_ID)}`
+	);
+	const switchedOff: SwitchedOff[] = [];
+	const held: SwitchedOff[] = [];
+	for (const account of accounts) {
+		// Each told with no account named (card 2996, FP16): the restore's lines count, and name nobody the record ended.
+		const found = holdInScope(live, scope, { id: account.id, was: account.was, ended: account.ended ? 1 : 0, listed: JSON.stringify(listed) }, () => ({
+			reader: account.id,
+			unnamed: true
+		}));
+		switchedOff.push(...found.switchedOff);
+		held.push(...found.held);
+	}
+	return { switchedOff, held };
 }
 
 /**

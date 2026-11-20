@@ -140,11 +140,13 @@ import {
 	switchOffLostWebhooks,
 	WEBHOOKS_ALREADY_OFF_HELD,
 	webhooksLog,
-	type SwitchedOff
+	type SwitchedOff,
+	type Telling
 } from './webhooks';
 import { inTransaction } from './db/transaction';
 import { raiseKeyCounterOverRecord } from './key-revocations';
 import { endRecordedKeysPresent } from './api-key-revoke';
+import { endRecordedAccountsPresent, type AccountsEndedAgain } from './account-ending-bodies';
 import { removeSettingsOfFormerAdministrators, settingsHeldForReview, settingsSetBy } from './setting-setters';
 import {
 	FORGET_UNOPENABLE_SECRETS,
@@ -1446,8 +1448,15 @@ export const REVEAL_SWEEP_EVERY_MS = 5 * 60 * 1000;
  * every id the record names (`raiseKeyCounterOverRecord`), so that no key made here takes one. A second run finds
  * nothing. A failure of either pass rolls back that pass alone, says so in its own WARN, and leaves the other to commit;
  * the answer is then null, and the next run tries again.
+ *
+ * Before both, in a transaction of its own (card 2996): every account present that the record of account endings ends
+ * or lowers is ended or lowered again through the application's own bodies, and the `users` counter raised over the
+ * seed (`endRecordedAccountsAtStart`); one WARN under AUTH counts them and names nobody.
  */
 export function sweepEndedKeyReveals(value: string | undefined = process.env.SCHEDULERS, isDev: boolean = dev): number | null {
+	// The record of account endings first, in a transaction of its own (card 2996, decision 14), so that the keys it
+	// ends are recorded and their reveals held by the passes after it.
+	const accountsAgain = endRecordedAccountsAtStart(value, isDev);
 	const endedAgain = endRecordedKeysAtStart(value, isDev);
 	let found: ReturnType<typeof holdRevealsOfEndedKeys>;
 	try {
@@ -1483,7 +1492,62 @@ export function sweepEndedKeyReveals(value: string | undefined = process.env.SCH
 			// The hold is committed; only its telling was lost.
 		}
 	}
-	return endedAgain === null ? null : switchedOff.length + held.length + endedAgain.count;
+	return endedAgain === null || accountsAgain === null ? null : switchedOff.length + held.length + endedAgain.count;
+}
+
+/**
+ * The record of account endings' pass of `sweepEndedKeyReveals` (card 2996, section 3.6, decision 14), in a
+ * transaction of its own: every account present that the record ends or lowers, an older image's import or a host edit
+ * having brought it back, ended or lowered again through the application's own bodies (`endRecordedAccountsPresent`).
+ * Told once committed in one WARN under AUTH, with counts and no name (R18); a superadmin the record would end or
+ * lower is never touched, and a WARN of its own says so. A failure rolls back this pass alone, with its own WARN, and
+ * the key pass after it still runs (card 2995's FP4). The boards' owners are mailed about what it holds only where the
+ * schedulers run, as the key pass mails (card 2996's code review, FP6); elsewhere the webhooks' WARN says why not.
+ * Returns the counts, or null where it could not. It never throws.
+ */
+function endRecordedAccountsAtStart(value: string | undefined, isDev: boolean): AccountsEndedAgain | null {
+	let done: AccountsEndedAgain;
+	try {
+		const setting = schedulerSetting(value, isDev);
+		const telling: Telling = setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` };
+		done = inTransaction(() => endRecordedAccountsPresent(telling));
+	} catch (err) {
+		try {
+			authLog.warn(
+				`The accounts that the record of account endings on this server ends or lowers could not be ended again: ${(err as Error)?.message ?? err}. ` +
+					'The next sweep, within five minutes, tries again.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+	const total = done.deleted + done.beforeRecord + done.disabled + done.lowered;
+	if (total > 0) {
+		try {
+			authLog.warn(
+				`${total} account(s) that the record of account endings on this server names were found enabled, with a working password, ` +
+					'or above their role here (an older image’s import or a host edit), and were ended again as the record says: ' +
+					`${done.deleted} kept deleted, ${done.beforeRecord} kept disabled as accounts this server had before it recorded endings, ` +
+					`${done.disabled} disabled and ${done.lowered} given back their lower role.`,
+				{ deleted: done.deleted, beforeRecord: done.beforeRecord, disabled: done.disabled, lowered: done.lowered }
+			);
+		} catch {
+			// The ending is committed; only its line was lost.
+		}
+	}
+	if (done.superadminNamed > 0) {
+		try {
+			authLog.warn(
+				'The record of account endings on this server names the superadmin, whom it never ends or lowers: the account was left as it ' +
+					'is. A host edit of the record or of users may have made this; see docs/authentication-security.md.',
+				{ superadminNamed: done.superadminNamed }
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+	}
+	return done;
 }
 
 /**

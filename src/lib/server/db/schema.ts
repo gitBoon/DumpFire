@@ -1059,6 +1059,36 @@ export const apiKeyRevocations = sqliteTable('api_key_revocations', {
 	primaryKey({ columns: [table.keyHash, table.keyId] })
 ]);
 
+// Every ending of an account on this server (card 2996, migration 0077): by its
+// row id and its creation time (`accountCreated`, `users.created_at` in the
+// stored form), what happened (`deleted`, `disabled`, `enabled`, `role`), the
+// role after for a role row, a SHA-256 fingerprint of the password hash for a
+// deleted one (never the hash), when, and whether this server wrote it
+// (`here`), a restore brought it (`backup`) or the record's own rule wrote it
+// (`belt`, never evidence against a superadmin). `seq` is the order of writing.
+// A seed row has `accountCreated` '' and names an account by its id where that
+// id is at most the watermark (the row whose `ending` is 'watermark'). Written
+// by `recordAccountEnding` (account-endings.ts) in the transaction of the
+// change, with a plain INSERT; never deleted, changed or replaced. No foreign
+// key: a row outlives its account. A restore and Reset Everything keep it; a
+// restore adds the backup's rows.
+export const accountEndings = sqliteTable('account_endings', {
+	seq: integer('seq').primaryKey(),
+	userId: integer('user_id').notNull(),
+	accountCreated: text('account_created').notNull(),
+	ending: text('ending').notNull(),
+	role: text('role').notNull().default(''),
+	credential: text('credential').notNull().default(''),
+	endedAt: text('ended_at').notNull(),
+	// The moment as the row's writer stated it, before any clamp (card 2996's code review, FP5): the union's key.
+	statedEnded: text('stated_ended').notNull().default(''),
+	origin: text('origin').notNull().default('here')
+}, (table) => [
+	index('account_endings_account').on(table.userId, table.accountCreated, table.ending, table.statedEnded),
+	index('account_endings_credential').on(table.credential).where(sql`credential <> ''`),
+	index('account_endings_watermark').on(table.userId).where(sql`ending = 'watermark'`)
+]);
+
 // ─── System Logs (structured application logging) ───────────────────────────
 
 export const systemLogs = sqliteTable('system_logs', {

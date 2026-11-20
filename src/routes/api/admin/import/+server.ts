@@ -122,6 +122,7 @@ import {
 	superadminsOf,
 	type Outside,
 	type OutsideSwitchedOff,
+	type AccountsKept,
 	type ApiKeysLeftOut,
 	type RestoreResult,
 	type SystemLogLeftOut
@@ -433,17 +434,49 @@ function keysLeftOutSentence(left: ApiKeysLeftOut): string | null {
 }
 
 /**
- * The CRITICAL line's words for how it was restored (card 2995): as before where no key was left out, else with how
- * many keys ended here were left out, and a working copy's others.
+ * What the answer and the panel say of the restored accounts the record of account endings kept ended or lowered
+ * (card 2996, section 3.7 as section 11 rules it): one sentence for each kind there was any of, counts only, naming no
+ * account. Empty where there were none, so that an import with none reads as it did. A `deleted` ruling may rest on a
+ * backup's row, so no sentence says the account was deleted on this server (R18).
  */
-function restoredWords(outside: Outside, left: ApiKeysLeftOut | undefined): string {
+function accountsKeptLines(kept: AccountsKept | undefined): string[] {
+	if (kept === undefined) return [];
+	return [
+		kept.deleted > 0
+			? `${kept.deleted} account(s) in the backup are named as deleted by the record of account endings: each is kept disabled, with no ` +
+				'password or second factor that works, and cannot be enabled again. Delete each on the Users page before making a new account for anyone ' +
+				'who returns: its username and email address would otherwise block the new one.'
+			: null,
+		kept.beforeRecord > 0
+			? `${kept.beforeRecord} account(s) in the backup share a number with an account this server had before it recorded account endings: ` +
+				'each is kept disabled with no password that works. If one should stay, the superadmin enables it and sends it an invite.'
+			: null,
+		kept.disabled > 0 ? `${kept.disabled} account(s) in the backup are kept disabled, as the record of account endings says.` : null,
+		kept.lowered > 0 ? `${kept.lowered} account(s) in the backup were given back the lower role the record of account endings holds.` : null
+	].filter((line): line is string => line !== null);
+}
+
+/** How many accounts the record kept ended or lowered, for the CRITICAL line (card 2996): 0 where none. */
+const accountsKeptCount = (kept: AccountsKept | undefined) => (kept === undefined ? 0 : kept.deleted + kept.beforeRecord + kept.disabled + kept.lowered);
+
+/**
+ * The CRITICAL line's words for how it was restored (card 2995): as before where no key was left out, else with how
+ * many keys ended here were left out, and a working copy's others. And how many accounts the record of account endings
+ * kept ended or lowered (card 2996), only where there were any.
+ */
+function restoredWords(outside: Outside, left: ApiKeysLeftOut | undefined, kept?: AccountsKept, recordLeftOut = 0): string {
 	const how = outside === 'off' ? 'as a working copy' : 'as it is';
-	if (left === undefined || (left.count === 0 && left.workingCopy === 0)) return how;
+	const accounts = accountsKeptCount(kept);
+	// The backup's record of account endings left out whole for its size (card 2996's code review, FP3, FP7): counted.
+	const keeping =
+		(accounts > 0 ? `, keeping ${accounts} account(s) ended or lowered as the record of account endings says` : '') +
+		(recordLeftOut > 0 ? `, the backup's record of account endings (${recordLeftOut} row(s)) left out for its size` : '');
+	if (left === undefined || (left.count === 0 && left.workingCopy === 0)) return `${how}${keeping}`;
 	const parts = [
 		...(left.count > 0 ? [`${left.count} API key(s) ended on this server`] : []),
 		...(left.workingCopy > 0 ? [`${left.count > 0 ? 'the other' : 'the'} ${left.workingCopy} API key(s) it held, as a working copy`] : [])
 	];
-	return `${how}, leaving out ${parts.join(' and ')}`;
+	return `${how}${keeping}, leaving out ${parts.join(' and ')}`;
 }
 
 /**
@@ -492,11 +525,23 @@ function importedLine(
 	caller: Importer,
 	file: { sizeBytes: number; size: string; sha256: string },
 	outside: Outside,
-	done: { unsealed: Unsealed | null; sealKeyHere: boolean; systemLogLeftOut: SystemLogLeftOut | null; apiKeysLeftOut?: ApiKeysLeftOut }
+	done: {
+		unsealed: Unsealed | null;
+		sealKeyHere: boolean;
+		systemLogLeftOut: SystemLogLeftOut | null;
+		apiKeysLeftOut?: ApiKeysLeftOut;
+		accountsKept?: AccountsKept;
+		accountRecordLeftOut?: number;
+	}
 ): { message: string; meta: Record<string, unknown> } {
 	const left = done.apiKeysLeftOut;
 	// The keys left out by id, in the details alone, only where there were any (card 2995): the line as before at none.
 	const keysMeta = left !== undefined && (left.count > 0 || left.workingCopy > 0) ? { apiKeysLeftOut: left } : {};
+	// The accounts the record of account endings kept ended or lowered, counted, never named (card 2996): only where any.
+	const accountsMeta = {
+		...(accountsKeptCount(done.accountsKept) > 0 ? { accountsKept: done.accountsKept } : {}),
+		...((done.accountRecordLeftOut ?? 0) > 0 ? { accountRecordLeftOut: done.accountRecordLeftOut } : {})
+	};
 	const logLeft = done.systemLogLeftOut;
 	const logPart =
 		logLeft === null || logLeft.lines === 0
@@ -510,7 +555,7 @@ function importedLine(
 		message:
 			`The database was replaced from an uploaded backup by ${caller.username} (user ${caller.id} before the import): ` +
 			`${file.size}, SHA-256 ${file.sha256}, ${sealWords(done.unsealed, done.sealKeyHere)}, ` +
-			`restored ${restoredWords(outside, left)}. The system log was kept as it was; ${logPart}`,
+			`restored ${restoredWords(outside, left, done.accountsKept, done.accountRecordLeftOut)}. The system log was kept as it was; ${logPart}`,
 		meta: {
 			by: { id: caller.id, username: caller.username },
 			ip: caller.ip,
@@ -520,7 +565,8 @@ function importedLine(
 			check: done.unsealed?.check ?? null,
 			outside,
 			systemLogLeftOut: logLeft,
-			...keysMeta
+			...keysMeta,
+			...accountsMeta
 		}
 	};
 }
@@ -814,6 +860,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 			const keyDeadlines = result.apiKeyDeadlines > 0 ? apiKeyDeadlinesSentence(result.apiKeyDeadlines, keyDeadline) : null;
 			// The backup's keys left out, ended here or a working copy's (card 2995), after the deadlines' sentence.
 			const keysLeftOut = keysLeftOutSentence(result.apiKeysLeftOut);
+			// And the accounts the record of account endings kept ended or lowered (card 2996), counted, naming nobody.
+			const accountsKept = accountsKeptLines(result.accountsKept);
+			const accountsKeptSaid = accountsKept.length > 0 ? accountsKept.join(' ') : null;
 			// And the personal decision links it cancelled (card 2697, Q15).
 			const decisionLinks = result.decisionLinksCleared > 0 ? decisionLinksSentence(result.decisionLinksCleared) : null;
 			// What the removal above took is said after them (card 2411).
@@ -830,7 +879,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 			// one the superadmin kept here since the backup was made is held again.
 			const settingsHeld = settingsHeldCarriedSentence(result.settingHoldsCarried);
 			const ending = (text: string) =>
-				[linksReplaced, keyDeadlines, keysLeftOut, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, settingsHeld, workingCopy, systemLog].reduce<string>(
+				[linksReplaced, keyDeadlines, keysLeftOut, accountsKeptSaid, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, settingsHeld, workingCopy, systemLog].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					text
 				);
@@ -852,6 +901,11 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				// The keys ended here that were left out, 0 when none, and what the answer says of every key left out (card 2995).
 				apiKeysLeftOut: result.apiKeysLeftOut.count,
 				keysLeftOut: keysLeftOut ?? undefined,
+				// The accounts the record of account endings kept ended or lowered, counted, and the panel's lines (card 2996).
+				accountsKept: result.accountsKept,
+				accountsKeptLines: accountsKept.length > 0 ? accountsKept : undefined,
+				// The rows of the backup's record of account endings left out whole for its size (FP3, FP7), 0 when none.
+				accountRecordLeftOut: result.accountRecordLeftOut,
 				decisionLinksCleared: result.decisionLinksCleared,
 				attachmentsPutBack: files.putBack,
 				workingCopy: workingCopy ?? undefined,
@@ -977,6 +1031,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				const keyDeadlines = done && done.apiKeyDeadlines > 0 ? apiKeyDeadlinesSentence(done.apiKeyDeadlines, keyDeadline) : null;
 				// The backup's keys left out, as a restore that succeeded says them (card 2995).
 				const keysLeftOut = done ? keysLeftOutSentence(done.apiKeysLeftOut) : null;
+				// The accounts the record of account endings kept ended or lowered, as a restore that succeeded says them (card 2996).
+				const accountsKept = done ? accountsKeptLines(done.accountsKept) : [];
+				const accountsKeptSaid = accountsKept.length > 0 ? accountsKept.join(' ') : null;
 				// The personal decision links it cancelled, as a restore that succeeded says them (card 2697, Q15).
 				const decisionLinks = done && done.decisionLinksCleared > 0 ? decisionLinksSentence(done.decisionLinksCleared) : null;
 				const secretsKept = done ? secretsKeptSentence(done.secrets.kept) : null;
@@ -985,7 +1042,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				const mfaLine = done ? mfaWithoutFactorSentence(done.mfa) : null;
 				// This server's system log kept, as a restore that succeeded says it (the code review's F6).
 				const systemLog = done ? systemLogSentence(done.systemLogLeftOut) : null;
-				const message = [linksReplaced, keyDeadlines, keysLeftOut, decisionLinks, secretsKept, secretsToEnter, mfaLine, systemLog].reduce<string>(
+				const message = [linksReplaced, keyDeadlines, keysLeftOut, accountsKeptSaid, decisionLinks, secretsKept, secretsToEnter, mfaLine, systemLog].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					err.message
 				);
@@ -1009,6 +1066,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 						apiKeyDeadline: keyDeadline ?? undefined,
 						apiKeysLeftOut: done?.apiKeysLeftOut.count,
 						keysLeftOut: keysLeftOut ?? undefined,
+						accountsKept: done?.accountsKept,
+						accountsKeptLines: accountsKept.length > 0 ? accountsKept : undefined,
+						accountRecordLeftOut: done?.accountRecordLeftOut,
 						decisionLinksCleared: done?.decisionLinksCleared,
 						secretsKept: secretsKept ?? undefined,
 						secretsToEnter: secretsToEnter ?? undefined,

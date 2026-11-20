@@ -73,15 +73,10 @@ export const PASSWORD_TOO_LONG = `Password must be at most ${LONGEST_PASSWORD.to
 
 /**
  * What a sign-in at a name that is no account checks its password against
- * (card 2192), so that it costs the one check a wrong password at an account
- * costs, and the time it takes does not tell which names are accounts. The
- * cost-12 hash of 32 random bytes, made once when the card was built
- * (`hashSync(randomBytes(32).toString('hex'), 12)`) and nothing else kept of
- * them: nothing is meant to match it. It must be at `BCRYPT_ROUNDS`, as every
- * stored hash is, or it would take another time (tests/password-checks.test.ts
- * holds it).
+ * (card 2192): kept in dummy-hash.ts since card 2996, so that the record of
+ * account endings can read it without loading bcryptjs, and re-exported here.
  */
-export const DUMMY_HASH = '$2b$12$ZJoqPz9NkEAIQhAx09PXiOnu2GMT2hwKv5wcOhyNK5p9Kdx9GJ1He';
+export { DUMMY_HASH } from './dummy-hash';
 
 /**
  * The characters of a password that are kept. bcrypt reads only the first 72

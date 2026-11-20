@@ -1107,6 +1107,46 @@ describe('the Import Database dialog, mounted (card 2362)', () => {
 		}
 	});
 
+	// Card 2996 (test 42): the server's lines of the accounts the record of account endings kept ended or lowered, each
+	// shown when the answer has them and none otherwise.
+	it.each([
+		{ answered: 'two lines', given: true },
+		{ answered: 'none', given: false }
+	])('shows the accounts the record of account endings kept ended or lowered when the answer says so: $answered (card 2996)', async ({ given }) => {
+		const accountsKeptLines = [
+			'1 account(s) in the backup are named as deleted by the record of account endings: each is kept disabled, with no password or second factor that works, and cannot be enabled again.',
+			'1 account(s) in the backup were given back the lower role the record of account endings holds.'
+		];
+		answer = (what) =>
+			what === 'POST /api/admin/import/confirm'
+				? Response.json({ confirmation: 'the-confirmation', expiresInSeconds: 60 })
+				: what === 'POST /api/admin/import?outside=keep'
+					? Response.json({
+							success: true,
+							message: 'Database restored (4.0 KB).',
+							restored: { boards: 2 },
+							sizeBytes: 4096,
+							...(given
+								? { accountsKept: { deleted: 1, beforeRecord: 0, disabled: 0, lowered: 1 }, accountsKeptLines }
+								: { accountsKept: { deleted: 0, beforeRecord: 0, disabled: 0, lowered: 0 } })
+						})
+					: undefined;
+		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
+		target.querySelector<HTMLButtonElement>('.btn-backup.import')!.click();
+		flushSync();
+		pick(target, 'monday.db');
+		await settle();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		type(dialog.querySelector<HTMLInputElement>('input[type="password"]')!, MINE);
+		typeCode(document);
+		buttonNamed(dialog, 'Confirm').click();
+		await settle();
+
+		const shown = [...target.querySelectorAll('[data-testid="import-accounts-kept"]')].map((p) => p.textContent);
+		expect(shown).toEqual(given ? accountsKeptLines : []);
+		if (!given) expect([...target.querySelectorAll('.import-report .import-report-detail')].map((p) => p.textContent).join(' ')).not.toContain('record of account endings');
+	});
+
 	it('opens no dialog and sends nothing for a file that is not a .db backup, or one that cannot be read', async () => {
 		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
 		pick(target, 'export.json');

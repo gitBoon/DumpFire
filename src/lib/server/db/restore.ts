@@ -12,7 +12,7 @@
  * exists on both sides.
  */
 import type Database from 'better-sqlite3';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { dev } from '$app/environment';
 import { schedulerSetting } from '../schedulers';
 import { putBackFromTrash, type UploadFile } from '../uploads';
@@ -50,10 +50,12 @@ import { createLogger } from '../logger';
 import { REPLACE_PLAIN_USED_INVITES, inHashForm } from '../invites';
 import {
 	coverReadable,
+	holdNoLongerReadableIn,
 	holdRevealedIn,
 	holdRevealsOfEndedKeys,
 	holdUnheldOfGoneSetters,
 	readableBy,
+	type RuledReader,
 	readableCoveredAt,
 	seedRevealsOnce,
 	switchOffLostWebhooks,
@@ -72,8 +74,25 @@ import {
 	keyRecordedWhere,
 	raiseKeyCounterOverRecord,
 	seedNames,
-	watermarkOf
+	watermarkOf,
+	type RevokedBecause
 } from '../key-revocations';
+import {
+	ACCOUNT_ENDING,
+	ACCOUNT_ENDING_WORDS,
+	ACCOUNT_RECORD_TABLE,
+	CARRY_ACCOUNT_ENDING_SQL,
+	ENDED_ROLES,
+	ORIGIN,
+	accountRulings,
+	accountWatermarkOf,
+	credentialOf,
+	hasAccountRecord,
+	raiseUserCounterOverSeed,
+	recordAccountEnding,
+	type AccountRuling
+} from '../account-endings';
+import { DUMMY_HASH } from '../dummy-hash';
 import { sqlite } from './index';
 
 const log = createLogger('AUTH');
@@ -89,6 +108,12 @@ const SYSTEM_LOG = 'system_logs';
  * system log, and adds the backup's rows to it (`carryKeyRevocations`); Reset Everything keeps it too.
  */
 const KEY_RECORD = KEY_RECORD_TABLE;
+
+/**
+ * This server's record of every ending of an account here (card 2996, migration 0077): a restore keeps it, as it keeps
+ * the record of ended keys, and adds the backup's rows to it; Reset Everything keeps it too.
+ */
+const ACCOUNT_RECORD = ACCOUNT_RECORD_TABLE;
 
 /**
  * The lines a backup's system log held, which a restore does not bring in
@@ -251,15 +276,41 @@ export type RestoreResult = {
 	 * account, a name or a prefix.
 	 */
 	apiKeysLeftOut: ApiKeysLeftOut;
+	/**
+	 * The restored accounts the record of account endings kept ended or lowered (card 2996), counted only, never named:
+	 * `deleted`, brought back disabled and inert; `beforeRecord`, sharing an id this server had and deleted before it
+	 * recorded endings, or held with a later creation time, brought back disabled with no password that works;
+	 * `disabled`, kept disabled as the record says; `lowered`, given back the lower role it holds.
+	 */
+	accountsKept: AccountsKept;
+	/**
+	 * The rows of the backup's record of account endings left out whole (card 2996's code review, FP3, FP7): more than
+	 * 1,000,000 seed rows or other rows, or more than 100 for one account. Counted, naming no account; 0 where it was taken.
+	 */
+	accountRecordLeftOut: number;
 };
 
 /** The keys a restore left out (card 2995): see `RestoreResult.apiKeysLeftOut`. */
 export type ApiKeysLeftOut = { count: number; keyIds: number[]; workingCopy: number };
 
+/** The accounts a restore kept ended or lowered (card 2996): see `RestoreResult.accountsKept`. */
+export type AccountsKept = { deleted: number; beforeRecord: number; disabled: number; lowered: number };
+
 /** What a restore that committed had done, for a `RestoreError` thrown after the commit. */
 export type CommittedRestore = Pick<
 	RestoreResult,
-	'requestLinksReplaced' | 'apiKeyDeadlines' | 'decisionLinksCleared' | 'secrets' | 'sealVerified' | 'unsealed' | 'sealKeyHere' | 'mfa' | 'systemLogLeftOut' | 'apiKeysLeftOut'
+	| 'requestLinksReplaced'
+	| 'apiKeyDeadlines'
+	| 'decisionLinksCleared'
+	| 'secrets'
+	| 'sealVerified'
+	| 'unsealed'
+	| 'sealKeyHere'
+	| 'mfa'
+	| 'systemLogLeftOut'
+	| 'apiKeysLeftOut'
+	| 'accountsKept'
+	| 'accountRecordLeftOut'
 >;
 
 /**
@@ -575,17 +626,7 @@ function carryDisabled(live: Database.Database, disabled: readonly DisabledHere[
 	const sameAccount = live.prepare('SELECT 1 FROM users WHERE id = ? AND created_at = ?');
 	const superadmin = live.prepare("SELECT id FROM users WHERE role = 'superadmin' AND disabled_at IS NULL ORDER BY id LIMIT 1");
 	const disable = live.prepare('UPDATE users SET disabled_at = ?, disabled_by = ? WHERE id = ?');
-	// The rows of the keys deleted below, deleted explicitly with them (card 2947, R2): the foreign keys are off during a
-	// restore, so no cascade takes them. Collected into `reveals` first, for the restore to hold what those keys were given.
-	const hasReveals = !!live.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'webhook_reveals'").get();
-	const revealsOf = hasReveals
-		? live.prepare(
-				'SELECT r.webhook_id AS webhookId, r.key_id AS keyId, k.user_id AS userId, r.revealed_at IS NULL AS before ' +
-					'FROM webhook_reveals AS r JOIN api_keys AS k ON k.id = r.key_id WHERE k.user_id = ? ORDER BY r.webhook_id, r.key_id'
-			)
-		: null;
-	const forgetReveals = hasReveals ? live.prepare('DELETE FROM webhook_reveals WHERE key_id IN (SELECT id FROM api_keys WHERE user_id = ?)') : null;
-	const schedules = live.prepare('UPDATE report_schedules SET enabled = 0, updated_at = ? WHERE user_id = ? AND enabled = 1');
+	const endRestoredAccess = restoredAccessEnder(live);
 	const carried: number[] = [];
 	for (const account of disabled) {
 		if (restored.get(account.id, account.createdAt, 'superadmin') === undefined) continue;
@@ -600,19 +641,347 @@ function carryDisabled(live: Database.Database, disabled: readonly DisabledHere[
 					? ((superadmin.get() as { id: number } | undefined)?.id ?? null)
 					: null;
 		disable.run(account.disabledAt, by, account.id);
-		if (revealsOf && forgetReveals) {
-			for (const row of revealsOf.all(account.id) as (Omit<Reveal, 'before'> & { before: number })[]) reveals.push({ ...row, before: row.before === 1 });
-			forgetReveals.run(account.id);
-		}
-		// Each recorded as ended here first, `access ended` (card 2995): its disable ended it, and a later restore of
-		// the same backup, the account enabled again meanwhile, still leaves it out.
-		const ended = endApiKeys(live, { userId: account.id }, REVOKED_BECAUSE.accessEnded);
-		keyIds.push(...ended);
-		forgetSetByKey(live, ended);
-		schedules.run(stamp(), account.id);
+		// Its keys recorded as ended here first, `access ended` (card 2995): its disable ended them, and a later restore of
+		// the same backup, the account enabled again meanwhile, still leaves them out.
+		endRestoredAccess(account.id, REVOKED_BECAUSE.accessEnded, reveals, keyIds);
 		carried.push(account.id);
 	}
 	return carried;
+}
+
+/**
+ * What a restore ends of a restored account it disables (card 2671's carry, and card 2996's `applyAccountEndings`),
+ * one body for both on the restore's own connection: the rows of `webhook_reveals` of its keys collected into
+ * `reveals`, for the restore to hold what those keys were given, and deleted explicitly with them (card 2947, R2: the
+ * foreign keys are off during a restore, so no cascade takes them); its keys recorded as ended and deleted
+ * (`endApiKeys`, `because`), their ids added to `keyIds`, which the answer counts with the keys left out (card 2995,
+ * R13), and every webhook that names one as the key that set it made to name none (R8); its report schedules paused.
+ * Its sessions, invites, pending sign-ins, enrolment links and request links no restore brings in; what it set is
+ * switched off by the restore's sweep; what it could read is held by the readable pass and `holdNoLongerReadableIn`;
+ * and the settings it set, with its address in the backup failure address, go once the import has committed
+ * (`removeSettingsOfFormerAdministrators('restore')`, A15). Not caught.
+ *
+ * Made once for a restore's connection (card 2996's code review, FP11): the probe of `webhook_reveals` and the
+ * statements are prepared once, not once an account.
+ */
+function restoredAccessEnder(live: Database.Database): (accountId: number, because: RevokedBecause, reveals: Reveal[], keyIds: number[]) => void {
+	const hasReveals = tableIn(live, 'webhook_reveals');
+	const revealsOf = hasReveals
+		? live.prepare(
+				'SELECT r.webhook_id AS webhookId, r.key_id AS keyId, k.user_id AS userId, r.revealed_at IS NULL AS before ' +
+					'FROM webhook_reveals AS r JOIN api_keys AS k ON k.id = r.key_id WHERE k.user_id = ? ORDER BY r.webhook_id, r.key_id'
+			)
+		: null;
+	const forgetReveals = hasReveals ? live.prepare('DELETE FROM webhook_reveals WHERE key_id IN (SELECT id FROM api_keys WHERE user_id = ?)') : null;
+	const pauseSchedules = live.prepare('UPDATE report_schedules SET enabled = 0, updated_at = ? WHERE user_id = ? AND enabled = 1');
+	return function endRestoredAccess(accountId, because, reveals, keyIds) {
+		if (revealsOf !== null && forgetReveals !== null) {
+			for (const row of revealsOf.all(accountId) as (Omit<Reveal, 'before'> & { before: number })[]) reveals.push({ ...row, before: row.before === 1 });
+			forgetReveals.run(accountId);
+		}
+		const ended = endApiKeys(live, { userId: accountId }, because);
+		keyIds.push(...ended);
+		forgetSetByKey(live, ended);
+		pauseSchedules.run(stamp(), accountId);
+	};
+}
+
+/** Whether `database` has a table of this name (card 2996's code review, FP11: one probe for the carries). */
+function tableIn(database: Database.Database, name: string): boolean {
+	return !!database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+}
+
+/**
+ * A backup's own id bound for `table` (card 2995, R6; card 2996, R14; FP11): the larger of its `sqlite_sequence`
+ * counter `counterName` and the largest whole-number `id` its `table` holds, read from the table's own storage; 0 where
+ * it has neither.
+ */
+function backupBound(backup: Database.Database, table: string, counterName: string): number {
+	const counter = tableIn(backup, 'sqlite_sequence')
+		? Number((backup.prepare('SELECT max(seq) AS seq FROM sqlite_sequence WHERE name = ?').get(counterName) as { seq: unknown }).seq ?? 0)
+		: 0;
+	const largest = columnNamesOf(backup, table).includes('id')
+		? Number((backup.prepare(`SELECT max(id) AS id FROM (${fromTableStorage(backup, table)})`).get() as { id: unknown }).id ?? 0)
+		: 0;
+	return Math.max(Number.isSafeInteger(counter) ? counter : 0, Number.isSafeInteger(largest) ? largest : 0);
+}
+
+/** This server's accounts as the record of account endings reads them, before the clear (card 2996). */
+type AccountsHere = {
+	/** Each account with an id up to W, by id, with its `created_at` (rule 2's held-here half); every one where W is unknown. */
+	held: Map<number, string>;
+	/** Its superadmins, by id and fingerprint: no backup row naming one is taken (R1). */
+	superadmins: { ids: number[]; credentials: string[] };
+};
+
+/**
+ * W, and the id and `created_at` of every account this server holds with an id up to W, with its superadmins, read
+ * before a restore clears `users` (card 2996), as `keysHeldHere` is read. None where the database has no record.
+ */
+function accountsHeldHere(live: Database.Database): AccountsHere {
+	const none: AccountsHere = { held: new Map(), superadmins: { ids: [], credentials: [] } };
+	if (!hasAccountRecord(live) || !columnNamesOf(live, 'users').includes('created_at')) return none;
+	const watermark = accountWatermarkOf(live);
+	const rows = live.prepare('SELECT id, created_at AS createdAt, role, password_hash AS passwordHash FROM users ORDER BY id').all() as {
+		id: number;
+		createdAt: string;
+		role: string;
+		passwordHash: string;
+	}[];
+	const supers = rows.filter((row) => row.role === 'superadmin');
+	return {
+		held: new Map(rows.filter((row) => watermark === null || row.id <= watermark).map((row) => [row.id, row.createdAt])),
+		superadmins: { ids: supers.map((row) => row.id), credentials: supers.map((row) => credentialOf(row.passwordHash)).filter((c) => c !== '') }
+	};
+}
+
+/** Why a row of a backup's record of account endings was left out (card 2996, R14, R1), counted by reason: never the row's own text. */
+type AccountRowFault =
+	| 'an id that is not a whole number from 1 to 2^53 - 1'
+	| 'an ending this build does not know'
+	| 'a creation time that is not one the ending can have'
+	| 'a role that is neither user nor admin'
+	| 'a fingerprint that is not one the ending can have'
+	| "an id above the backup's own account counter"
+	| 'a creation time later than the restore'
+	| 'a row naming the superadmin';
+
+/**
+ * The most rows taken from one backup's record of account endings (R14; card 2996's code review, FP7): seed rows,
+ * which name an account by its id alone, as many as migration 0077's guard lets it write, and as many other rows
+ * again; over either, none of it is.
+ */
+const MOST_SEED_ROWS = 1_000_000;
+const MOST_OTHER_ROWS = 1_000_000;
+
+/** The most rows one backup's record may hold for one account, by id and creation time (FP3): over that, none of it is taken. */
+const MOST_ROWS_PER_ACCOUNT = 100;
+
+/** A row of the backup's record as the union takes it. */
+type CarriedRow = { id: number; created: string; ending: string; role: string; credential: string; endedAt: string | null; stated: string };
+
+/**
+ * Add the backup's record of account endings to this server's (card 2996, section 3.5 as section 11 rules it), inside
+ * the restore's transaction, each row read from the snapshot's table storage in its order and kept only where:
+ *
+ * - `user_id` is a safe integer of at least 1 (0 on a watermark row) and at most the backup's own bound, its `users`
+ *   counter or its largest account id, whichever is greater: exact, seed and watermark rows alike (R14);
+ * - `ending` is one of this build's words;
+ * - `account_created` is '' on a watermark row, '' or a moment on a `deleted` row, a moment on any other, and that
+ *   moment no later than the restore's (R14);
+ * - `role` is `user` or `admin` on a `role` row, '' on any other;
+ * - `credential` is '' or a SHA-256 in lower-case hex, and only on a `deleted` row;
+ * - it names no superadmin, of the restored data or this server's, by id or by fingerprint (R1).
+ *
+ * `ended_at` is read as a moment; one that names none, or one later than the restore, is taken as the backup's own
+ * latest moment that is not, among the rows it takes and its accounts' creation times (R15; card 2996's code review,
+ * FP5). A row is added, `origin` `backup`, only where no row of this server's record before this restore has the same
+ * natural key: its creation time in the stored form and the moment as the backup stated it (`stated_ended`), so that
+ * importing the same backup again adds nothing whenever it runs (R4, FP3, FP5): the backup's own rows are all kept, so
+ * that two endings in one second keep their order. More than 1,000,000 seed rows, more than 1,000,000 other rows, or
+ * more than 100 rows for one account by id and creation time: none of it is added, and the rows it held are counted
+ * (R14, FP3, FP7). Every row left out is counted in one `errors` line, a count and reasons, never quoting the backup.
+ * The rows are read twice, as an iteration, never all at once (FP7). Then this server's `users` counter is raised over
+ * every seed and watermark id (`raiseUserCounterOverSeed`). Not caught: a failure rolls the restore back. Returns how
+ * many rows it added, and how many of the backup's it left out whole.
+ */
+function carryAccountEndings(live: Database.Database, backup: Database.Database, errors: string[], at: string, here: AccountsHere): { added: number; leftOutWhole: number } {
+	let added = 0;
+	let leftOutWhole = 0;
+	if (tableIn(backup, ACCOUNT_RECORD)) {
+		const columns = columnNamesOf(backup, ACCOUNT_RECORD);
+		const readable = ['user_id', 'account_created', 'ending', 'ended_at'].every((column) => columns.includes(column));
+		const from = fromTableStorage(backup, ACCOUNT_RECORD);
+		const sizes = readable
+			? (backup
+					.prepare(
+						"SELECT count(*) AS total, coalesce(sum(CASE WHEN account_created = '' AND ending = 'deleted' THEN 1 ELSE 0 END), 0) AS seed, " +
+							`coalesce((SELECT max(n) FROM (SELECT count(*) AS n FROM (${from}) WHERE ending IS NOT 'watermark' GROUP BY user_id, account_created)), 0) AS most ` +
+							`FROM (${from})`
+					)
+					.get() as { total: number; seed: number; most: number })
+			: { total: 0, seed: 0, most: 0 };
+		const whole = (why: string) => {
+			leftOutWhole = sizes.total;
+			errors.push(`The backup's record of account endings holds ${why}, more than any server writes, and none of its ${sizes.total} row(s) was added to this server's.`);
+		};
+		if (!readable) {
+			errors.push("The backup's record of account endings has not the columns this build reads, and was not added to this server's.");
+		} else if (sizes.seed > MOST_SEED_ROWS) {
+			whole(`more than ${MOST_SEED_ROWS.toLocaleString('en-GB')} rows naming accounts by number alone`);
+		} else if (sizes.total - sizes.seed > MOST_OTHER_ROWS) {
+			whole(`more than ${MOST_OTHER_ROWS.toLocaleString('en-GB')} rows naming accounts by number and creation time`);
+		} else if (sizes.most > MOST_ROWS_PER_ACCOUNT) {
+			whole(`more than ${MOST_ROWS_PER_ACCOUNT} rows for one account`);
+		} else {
+			// The backup's own bound: its account counter, or its largest account id, whichever is greater (FP11).
+			const bound = backupBound(backup, 'users', 'users');
+			// The superadmins of the restored data, with this server's (R1).
+			const restoredSupers = live.prepare("SELECT id, password_hash AS passwordHash FROM users WHERE role = 'superadmin'").all() as { id: number; passwordHash: string }[];
+			const superIds = new Set([...here.superadmins.ids, ...restoredSupers.map((row) => row.id)]);
+			const superCredentials = new Set([...here.superadmins.credentials, ...restoredSupers.map((row) => credentialOf(row.passwordHash)).filter((c) => c !== '')]);
+			const stated = columns.includes('stated_ended');
+			// A row this server holds already, by the union's own key (FP1): a backup of this server's own carries its rows on
+			// an account promoted to superadmin since, which are no news and are not counted as left out.
+			const heldAlready = live.prepare(
+				'SELECT 1 FROM account_endings WHERE user_id = @id AND account_created = @created AND ending = @ending ' +
+					"AND (stated_ended = @stated OR (stated_ended = '' AND ended_at = @stated)) AND role = @role AND credential = @credential LIMIT 1"
+			);
+			/** A row of the backup judged: taken, the reason it is left out, or `held` where this server holds it already. */
+			const judge = (row: Record<string, unknown>): CarriedRow | AccountRowFault | 'held' => {
+				const id = row.user_id;
+				const ending = row.ending;
+				const watermark = ending === ACCOUNT_ENDING.watermark;
+				if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < (watermark ? 0 : 1)) return 'an id that is not a whole number from 1 to 2^53 - 1';
+				if (typeof ending !== 'string' || !ACCOUNT_ENDING_WORDS.includes(ending)) return 'an ending this build does not know';
+				const createdText = row.account_created;
+				const created = toStamp(createdText);
+				const seedLike = createdText === '';
+				if (watermark ? !seedLike : seedLike ? ending !== ACCOUNT_ENDING.deleted : created === null) return 'a creation time that is not one the ending can have';
+				const role = row.role ?? '';
+				if (ending === ACCOUNT_ENDING.role ? typeof role !== 'string' || !ENDED_ROLES.includes(role) : role !== '') return 'a role that is neither user nor admin';
+				const credential = row.credential ?? '';
+				if (typeof credential !== 'string' || (credential !== '' && (ending !== ACCOUNT_ENDING.deleted || !/^[0-9a-f]{64}$/.test(credential)))) {
+					return 'a fingerprint that is not one the ending can have';
+				}
+				if (id > bound) return "an id above the backup's own account counter";
+				if (created !== null && created > at) return 'a creation time later than the restore';
+				// The moment as the backup stated it (FP5): its own stated moment where it carries one, else its `ended_at`;
+				// the stored form where it names a moment, else a digest of its text, never the text.
+				const said = stated && typeof row.stated_ended === 'string' && row.stated_ended !== '' ? row.stated_ended : row.ended_at;
+				const statedAt = toStamp(said) ?? `?${createHash('sha256').update(String(said)).digest('hex').slice(0, 32)}`;
+				const taken: CarriedRow = { id, created: created ?? '', ending, role: role as string, credential, endedAt: toStamp(row.ended_at), stated: statedAt };
+				if (!watermark && (superIds.has(id) || (credential !== '' && superCredentials.has(credential)))) {
+					const { endedAt: _endedAt, ...key } = taken;
+					return heldAlready.get(key) === undefined ? 'a row naming the superadmin' : 'held';
+				}
+				return taken;
+			};
+
+			// First pass: what is taken, and the backup's own latest moment no later than the restore's among those rows and
+			// its accounts' creation times (R15, FP5).
+			const faults = new Map<AccountRowFault, number>();
+			let fixed = '';
+			const later = (moment: string | null) => {
+				if (moment !== null && moment <= at && moment > fixed) fixed = moment;
+			};
+			for (const row of backup.prepare(from).iterate() as Iterable<Record<string, unknown>>) {
+				const taken = judge(row);
+				if (taken === 'held') continue;
+				if (typeof taken === 'string') faults.set(taken, (faults.get(taken) ?? 0) + 1);
+				else later(taken.endedAt);
+			}
+			if (columnNamesOf(backup, 'users').includes('created_at')) {
+				for (const row of backup.prepare(`SELECT created_at FROM (${fromTableStorage(backup, 'users')})`).iterate() as Iterable<{ created_at: unknown }>) {
+					later(toStamp(row.created_at));
+				}
+			}
+			const fixedPoint = fixed === '' ? at : fixed;
+
+			// Second pass: each taken row added where this server held no row of its key before the restore (R4, FP3, FP5).
+			const before = (live.prepare('SELECT coalesce(max(seq), 0) AS seq FROM account_endings').get() as { seq: number }).seq;
+			const put = live.prepare(CARRY_ACCOUNT_ENDING_SQL);
+			for (const row of backup.prepare(from).iterate() as Iterable<Record<string, unknown>>) {
+				const taken = judge(row);
+				if (typeof taken === 'string') continue;
+				const { endedAt, ...key } = taken;
+				added += put.run({ ...key, endedAt: endedAt === null || endedAt > at ? fixedPoint : endedAt, before }).changes;
+			}
+			const leftOut = [...faults.values()].reduce((sum, n) => sum + n, 0);
+			if (leftOut > 0) {
+				errors.push(
+					`${leftOut} row(s) of the backup's record of account endings were left out, as they can name no account here: ` +
+						[...faults].map(([why, n]) => `${n} with ${why}`).join(', ') +
+						". The rest of the record was added to this server's."
+				);
+			}
+		}
+	}
+	raiseUserCounterOverSeed(live);
+	return { added, leftOutWhole };
+}
+
+/**
+ * Apply the record's rulings to the restored accounts (card 2996, section 3.4 as section 11 rules it), inside the
+ * restore's transaction, after `carryDisabled`: each through `endRestoredAccess`, as the carry of a disable ends what an
+ * account held.
+ *
+ * - **Deleted (inert):** a `deleted` row written, `here`, where none names it by its very creation time, carrying the
+ *   fingerprint it was matched on (R3); disabled (at the restore's moment where it was not), by the superadmin, with
+ *   `DUMMY_HASH` for its password and no leave to set up on it; its keys ended `account deleted`.
+ * - **Before record:** an exact `disabled` row written, `here`, so that from then on its exact rows govern and an
+ *   enable by the superadmin sticks; disabled by the superadmin with `DUMMY_HASH` (R21); its keys ended `access ended`.
+ * - **Disabled:** where it is enabled, disabled at the latest `disabled` row's moment, by the superadmin; its password
+ *   kept; its keys ended `access ended`.
+ * - **Lowered:** given the role the record holds.
+ *
+ * `disabled_by` is the enabled superadmin of the restored rows with the lowest id that the record ends nothing of
+ * (S14: only the superadmin may enable or delete it), or none. A superadmin the record ends or lowers is ended or
+ * lowered, and the restore is then refused, if none is left (decision 6). Not caught. Returns the counts, and every
+ * account it ended or lowered, with the role it was restored with, for `holdNoLongerReadableIn` (R7).
+ */
+function applyAccountEndings(
+	live: Database.Database,
+	rulings: readonly AccountRuling[],
+	at: string,
+	reveals: Reveal[],
+	keyIds: number[]
+): { kept: AccountsKept; ruled: RuledReader[]; superadminEnded: boolean } {
+	const kept: AccountsKept = { deleted: 0, beforeRecord: 0, disabled: 0, lowered: 0 };
+	const ruled: RuledReader[] = [];
+	let superadminEnded = false;
+	if (rulings.length === 0) return { kept, ruled, superadminEnded };
+	const ending = rulings.filter((ruling) => ruling.ended !== null).map((ruling) => ruling.id);
+	const by =
+		(
+			live
+				.prepare(
+					"SELECT id FROM users WHERE role = 'superadmin' AND disabled_at IS NULL AND id NOT IN (SELECT value FROM json_each(?)) ORDER BY id LIMIT 1"
+				)
+				.get(JSON.stringify(ending)) as { id: number } | undefined
+		)?.id ?? null;
+	const current = live.prepare('SELECT role, disabled_at AS disabledAt FROM users WHERE id = ?');
+	const inert = live.prepare(
+		'UPDATE users SET disabled_at = coalesce(disabled_at, @at), disabled_by = @by, password_hash = @dummy, mfa_password_enrol = 0 WHERE id = @id'
+	);
+	const disable = live.prepare('UPDATE users SET disabled_at = @at, disabled_by = @by WHERE id = @id');
+	const lower = live.prepare('UPDATE users SET role = @role WHERE id = @id');
+	const endRestoredAccess = restoredAccessEnder(live);
+	for (const ruling of rulings) {
+		const account = current.get(ruling.id) as { role: string; disabledAt: string | null } | undefined;
+		if (account === undefined) continue;
+		// A superadmin of the restored data or here (FP2): never given a belt.
+		const superadmin = account.role === 'superadmin' || ruling.superadmin;
+		let ended = false;
+		if (ruling.ended === 'deleted' || ruling.ended === 'before record') {
+			const deleted = ruling.ended === 'deleted';
+			// The belt (R3; rule 2), `origin` `belt` (FP2): written before the password goes, so that a `deleted` row carries
+			// the fingerprint the account was matched on. Never of a superadmin, whose only rows that count are this server's
+			// own `deleted` rows, there already.
+			if (!superadmin && (!deleted || !ruling.exactDeleted)) {
+				recordAccountEnding(live, ruling.id, deleted ? ACCOUNT_ENDING.deleted : ACCOUNT_ENDING.disabled, { at, origin: ORIGIN.belt });
+			}
+			inert.run({ at, by, dummy: DUMMY_HASH, id: ruling.id });
+			endRestoredAccess(ruling.id, deleted ? REVOKED_BECAUSE.accountDeleted : REVOKED_BECAUSE.accessEnded, reveals, keyIds);
+			if (deleted) kept.deleted++;
+			else kept.beforeRecord++;
+			ended = true;
+		} else if (ruling.ended === 'disabled' && account.disabledAt === null) {
+			disable.run({ at: ruling.disabledAt ?? at, by, id: ruling.id });
+			endRestoredAccess(ruling.id, REVOKED_BECAUSE.accessEnded, reveals, keyIds);
+			kept.disabled++;
+			ended = true;
+		}
+		if (ruling.lowerTo !== null) {
+			lower.run({ role: ruling.lowerTo, id: ruling.id });
+			kept.lowered++;
+		}
+		// Only an account this restore disabled, made inert or lowered is held for what it could read (FP8).
+		if (!ended && ruling.lowerTo === null) continue;
+		if (account.role === 'superadmin') superadminEnded = true;
+		ruled.push({ id: ruling.id, was: ruling.role, ended });
+	}
+	return { kept, ruled, superadminEnded };
 }
 
 /**
@@ -660,20 +1029,14 @@ type RecordRowFault = 'an id that is not a whole number from 1 to 2^53 - 1' | "a
  */
 function carryKeyRevocations(live: Database.Database, backup: Database.Database, errors: string[], at: string): number {
 	let added = 0;
-	if (backup.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(KEY_RECORD)) {
+	if (tableIn(backup, KEY_RECORD)) {
 		const columns = columnNamesOf(backup, KEY_RECORD);
 		const rows = ['key_id', 'key_hash'].every((column) => columns.includes(column))
 			? (backup.prepare(fromTableStorage(backup, KEY_RECORD)).all() as Record<string, unknown>[])
 			: [];
 		const unreadable = rows.length === 0 && !['key_id', 'key_hash'].every((column) => columns.includes(column));
-		// The backup's own bound: its key counter, or its largest key id, whichever is greater.
-		const counter = backup.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'").get()
-			? Number((backup.prepare("SELECT max(seq) AS seq FROM sqlite_sequence WHERE name = 'api_keys'").get() as { seq: unknown }).seq ?? 0)
-			: 0;
-		const largest = columnNamesOf(backup, 'api_keys').includes('id')
-			? Number((backup.prepare(`SELECT max(id) AS id FROM (${fromTableStorage(backup, 'api_keys')})`).get() as { id: unknown }).id ?? 0)
-			: 0;
-		const bound = Math.max(Number.isSafeInteger(counter) ? counter : 0, Number.isSafeInteger(largest) ? largest : 0);
+		// The backup's own bound: its key counter, or its largest key id, whichever is greater (card 2996's code review, FP11).
+		const bound = backupBound(backup, 'api_keys', 'api_keys');
 		const faults = new Map<RecordRowFault, number>();
 		const fault = (why: RecordRowFault) => faults.set(why, (faults.get(why) ?? 0) + 1);
 		const put = live.prepare('INSERT OR IGNORE INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (?, ?, ?, ?)');
@@ -975,12 +1338,14 @@ function groupingsNotCopied(live: Database.Database, backup: Database.Database):
 /**
  * The tables a restore clears and refills: every table in the running database
  * except SQLite's own, tables drizzle-kit left behind mid-rebuild (`__new_*`),
- * the migration record, the system log and the record of API keys ended here.
+ * the migration record, the system log, the record of API keys ended here and
+ * the record of accounts ended here.
  *
  * The record of ended keys (card 2995) is this server's, as the system log is:
  * cleared and refilled from a backup made before an ending, it would forget the
  * ending and bring the key back. The restore adds the backup's rows to it
- * instead, and Reset Everything, which reads this list, keeps it.
+ * instead, and Reset Everything, which reads this list, keeps it. The record of
+ * account endings (card 2996) is kept for the same reason.
  *
  * The system log is this server's record of what was done to it, and by whom
  * (card 2899). A restore cleared it and copied the backup's in its place, so
@@ -1004,7 +1369,12 @@ export function restorableTables(live: Database.Database): string[] {
 		.map((row) => row.name)
 		.filter(
 			(name) =>
-				!name.startsWith('sqlite_') && !name.startsWith('__new_') && name !== MIGRATION_RECORD && name !== SYSTEM_LOG && name !== KEY_RECORD
+				!name.startsWith('sqlite_') &&
+				!name.startsWith('__new_') &&
+				name !== MIGRATION_RECORD &&
+				name !== SYSTEM_LOG &&
+				name !== KEY_RECORD &&
+				name !== ACCOUNT_RECORD
 		);
 }
 
@@ -1593,6 +1963,17 @@ export function defaultOutside(
  * it set or was given, a working copy leaving out every key
  * (`leaveOutRecordedKeys`). `apiKeysLeftOut` counts them.
  *
+ * No account deleted, disabled or demoted on this server comes back so (card
+ * 2996). The record of account endings is not cleared (`restorableTables`);
+ * after the copy, the backup's own record is added within its bounds
+ * (`carryAccountEndings`) and the one rule is asked of every restored account
+ * (`accountRulings`), before the second factors, which give none to an account
+ * it ends; after `carryDisabled`, each account it ends is brought back
+ * disabled, an inert one with no password that works, and each it lowers given
+ * the lower role (`applyAccountEndings`); after the fill, what each could read
+ * is held (`holdNoLongerReadableIn`). A working copy does the same.
+ * `accountsKept` counts them, and names nobody.
+ *
  * Throws a `RestoreError` in every case but a clean return. Its `committed`
  * says whether the database was changed: it is false, and the database is as
  * it was, for everything except foreign keys that could not be switched back
@@ -1646,6 +2027,12 @@ function restoreInOneSnapshot(
 	let readable: { switchedOff: SwitchedOff[]; held: SwitchedOff[] } = { switchedOff: [], held: [] };
 	// And those a key the restore did not bring back, or an ended key, was given the secret of (card 2947, R1), told with them.
 	let revealed: { switchedOff: SwitchedOff[]; held: SwitchedOff[] } = { switchedOff: [], held: [] };
+	// And those an account the record of account endings ended or lowered could read (card 2996, R7), told with them.
+	let ruledHeld: { switchedOff: SwitchedOff[]; held: SwitchedOff[] } = { switchedOff: [], held: [] };
+	// The accounts the record of account endings kept ended or lowered (card 2996), counted only.
+	let accountsKept: AccountsKept = { deleted: 0, beforeRecord: 0, disabled: 0, lowered: 0 };
+	// The rows of the backup's record of account endings left out whole, for its size (card 2996's code review, FP3, FP7).
+	let accountRecordLeftOut = 0;
 	const sweptBecause = `found after a restore${options.by ? ` by ${options.by}` : ''}`;
 	let secrets: SecretsAccount = {
 		kept: { mailPassword: false, destinations: [], webhooks: [] },
@@ -1763,6 +2150,8 @@ function restoreInOneSnapshot(
 			const revealsNow = revealsHere(live);
 			// And W, and its keys up to W by id and hash (card 2995, R1): see `leaveOutRecordedKeys`.
 			const keysNow = keysHeldHere(live);
+			// And its accounts up to the account watermark, with its superadmins (card 2996): see `accountRulings`.
+			const accountsNow = accountsHeldHere(live);
 			// The rows of the keys `carryDisabled` deletes, for the hold below (R2).
 			const disabledReveals: Reveal[] = [];
 			// And those keys' ids, counted with the keys left out (card 2995, R13).
@@ -1890,11 +2279,36 @@ function restoreInOneSnapshot(
 			// S1), and tried at the next start. Never cleared by a restore.
 			markScrubPending(live);
 
+			// The restore's moment, for every record it writes (card 2995; card 2996, R22: before the second factors).
+			const restoredAt = stamp();
+
+			// The backup's record of account endings added to this server's, which the clear never touched, each row within
+			// the backup's own bounds, and the account counter raised over every seed id; then the one rule asked of every
+			// restored account (card 2996), before the second factors, which follow it. Not caught: a restore that could not
+			// add them or rule is rolled back.
+			let rulings: AccountRuling[] = [];
+			if (tables.includes('users') && hasAccountRecord(live)) {
+				accountRecordLeftOut = carryAccountEndings(live, backup, errors, restoredAt, accountsNow).leftOutWhole;
+				const restoredAccounts = live.prepare('SELECT id, created_at AS createdAt, role, password_hash AS passwordHash FROM users ORDER BY id').all() as {
+					id: number;
+					createdAt: unknown;
+					role: string;
+					passwordHash: unknown;
+				}[];
+				// This server's superadmins are ruled as superadmins whatever the backup makes them (FP2).
+				rulings = accountRulings(live, restoredAccounts, { heldHere: accountsNow.held, superadminsHere: new Set(accountsNow.superadmins.ids) });
+			}
+			const endedByRecord = new Map(
+				rulings.filter((ruling) => ruling.ended !== null).map((ruling) => [ruling.id, ruling.ended as 'deleted' | 'before record' | 'disabled'])
+			);
+
 			// The second factors and recovery codes, by their own rules, the
 			// guessing counters zeroed, the same accounts' sign-in history and
-			// the key check (card 2768): see above. Not caught: a restore that
+			// the key check (card 2768): see above. None to an account the record
+			// of account endings ended, and never the backup's to one it keeps
+			// disabled; none of them named (card 2996). Not caught: a restore that
 			// could not put them back is rolled back.
-			mfa = restoreMfaRows(live, backup, mfaHere, { sealVerified, key: mfaKey });
+			mfa = restoreMfaRows(live, backup, mfaHere, { sealVerified, key: mfaKey, ended: endedByRecord });
 			for (const table of ['mfa_factors', 'mfa_recovery_codes']) {
 				if (!tables.includes(table)) continue;
 				const rows = (live.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get() as { n: number }).n;
@@ -2004,10 +2418,15 @@ function restoreInOneSnapshot(
 			// caught: a restore that could not carry them is rolled back.
 			if (tables.includes('users')) carryDisabled(live, disabledAccountsHere, disabledReveals, disabledKeyIds);
 
+			// Every restored account the record of account endings ends or lowers, ended or lowered (card 2996): after the
+			// carry of this server's disables, which keeps the disabler, and before the superadmin is asked about, the
+			// readable pass, the fill and card 2995's carry, so that each sees the accounts as they will be. Not caught.
+			const applied = applyAccountEndings(live, rulings, restoredAt, disabledReveals, disabledKeyIds);
+			accountsKept = applied.kept;
+
 			// The backup's record of ended API keys added to this server's, which the clear never touched, each row
 			// within the backup's own bounds; and the key counter raised over every seed row (card 2995, R6). Not
 			// caught: a restore that could not add them is rolled back.
-			const restoredAt = stamp();
 			if (tables.includes('api_keys')) carryKeyRevocations(live, backup, errors, restoredAt);
 
 			// Nothing is committed that leaves user accounts and no superadmin
@@ -2019,9 +2438,14 @@ function restoreInOneSnapshot(
 			// otherwise commit. So it is asked again here, of the rows as restored.
 			if (lacksSuperadmin(live)) {
 				const users = leftOut.get('users') ?? [];
+				// Its own sentence where this server's record of account endings ended or lowered the superadmin (card 2996,
+				// decision 6): only this server's own rows can (R1), which a genuine backup never meets.
 				throw new RestoreLeavesNoSuperadmin(
-					'the restored data would have user accounts and none of them the superadmin' +
-						(users.length > 0 ? `, because a row of users could not be copied (${some(users)})` : ''),
+					applied.superadminEnded
+						? "the restored data's superadmin is an account this server's record of account endings names as deleted, disabled or " +
+								'given a lower role here, so restoring it would leave nobody able to sign in as the superadmin'
+						: 'the restored data would have user accounts and none of them the superadmin' +
+								(users.length > 0 ? `, because a row of users could not be copied (${some(users)})` : ''),
 					{ errors }
 				);
 			}
@@ -2113,6 +2537,9 @@ function restoreInOneSnapshot(
 			// on gives it a new secret. The server's own restore tells them with its sweep; a working copy nobody.
 			// With every webhook a key left out may have been given (card 2995, R3).
 			const fromLost = live === sqlite || working ? holdRevealedIn(live, [...lostReveals, ...disabledReveals, ...leftOutReveals]) : { switchedOff: [], held: [] };
+			// And every webhook with a secret an account the record of account endings ended or lowered could read and cannot
+			// now, beside it, after the fill, each taken as one that may have read (card 2996, R7). Told with the sweep.
+			ruledHeld = live === sqlite || working ? holdNoLongerReadableIn(live, applied.ruled, listedAll.map((entry) => entry.id)) : { switchedOff: [], held: [] };
 			if (live === sqlite && !working) {
 				// Then what every ended key was given, as the sweep does, the once-only seed first where the restored
 				// settings lack its flag, so nothing waits for the five-minute sweep. Told with the sweep. Not caught.
@@ -2170,7 +2597,7 @@ function restoreInOneSnapshot(
 			throw new RestoreError(
 				'The backup was restored and committed, but foreign keys could not be switched back on. Restart the ' +
 					'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it.',
-				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, mfa, systemLogLeftOut, apiKeysLeftOut } }
+				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, mfa, systemLogLeftOut, apiKeysLeftOut, accountsKept, accountRecordLeftOut } }
 			);
 		}
 		throw new RestoreError(
@@ -2201,20 +2628,24 @@ function restoreInOneSnapshot(
 	// With those a disabled owner or administrator could read (card 2935, P12), on the server's own restore alone.
 	const readableTold = options.outside === 'off' ? { switchedOff: [], held: [] } : readable;
 	// With those a lost or ended key was given the secret of (card 2947, R1), on the server's own restore alone.
-	if (swept.length > 0 || held.length > 0 || readableTold.switchedOff.length + readableTold.held.length + revealed.switchedOff.length + revealed.held.length > 0) {
+	// And those an account the record of account endings ended or lowered could read (card 2996, R7), the same way.
+	const ruledTold = options.outside === 'off' || live !== sqlite ? { switchedOff: [], held: [] } : ruledHeld;
+	const toldCount =
+		swept.length + held.length + readableTold.switchedOff.length + readableTold.held.length + revealed.switchedOff.length + revealed.held.length + ruledTold.switchedOff.length + ruledTold.held.length;
+	if (toldCount > 0) {
 		try {
 			const setting = schedulerSetting(process.env.SCHEDULERS, dev);
 			tellSwitchedOff(
-				[...swept, ...readableTold.switchedOff, ...revealed.switchedOff],
+				[...swept, ...readableTold.switchedOff, ...revealed.switchedOff, ...ruledTold.switchedOff],
 				sweptBecause,
 				setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` },
-				[...held, ...readableTold.held, ...revealed.held],
+				[...held, ...readableTold.held, ...revealed.held, ...ruledTold.held],
 				// The owners' mail names no account (card 2947's code review, FP5): who restored is in the log alone.
 				SWEPT_IN_MAIL
 			);
 		} catch (e) {
-			// The readable ones counted too (card 2935's code review, C12), and the revealed ones (card 2947).
-			const all = swept.length + held.length + readableTold.switchedOff.length + readableTold.held.length + revealed.switchedOff.length + revealed.held.length;
+			// The readable ones counted too (card 2935's code review, C12), the revealed ones (card 2947) and the ruled ones (card 2996).
+			const all = toldCount;
 			errors.push(`The ${all} webhook(s) the restore switched off or held could not all be said: ${messageOf(e)}`);
 		}
 	}
@@ -2275,5 +2706,5 @@ function restoreInOneSnapshot(
 		}
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut, settingHoldsCarried, apiKeysLeftOut };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut, settingHoldsCarried, apiKeysLeftOut, accountsKept, accountRecordLeftOut };
 }

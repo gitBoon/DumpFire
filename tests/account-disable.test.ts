@@ -55,9 +55,11 @@ import { mailPlacesNow, recordDestinationSetter, recordMailSetters } from '$lib/
 import { setAppUrl } from '$lib/server/email';
 import {
 	ALREADY_DISABLED,
+	DELETED_HERE,
 	ENABLE_FIRST,
 	NOT_DISABLED,
-	ONLY_SUPERADMIN_ENABLES
+	ONLY_SUPERADMIN_ENABLES,
+	ONLY_SUPERADMIN_ENABLES_RECORDED
 } from '$lib/server/account-disable';
 import { stamp } from '$lib/timestamps';
 import { pageLoad } from './helpers/actions';
@@ -378,6 +380,68 @@ describe('POST /api/users/[id]/enable', () => {
 
 		expect({ status: res.status, body: res.body }).toEqual({ status, body: { message: says } });
 		expectUnchanged(before);
+	});
+
+	it('FP15 (card 2996): an account whose disable the record of account endings ruled is the superadmin’s to enable: an administrator is refused 403 before the password; the superadmin enables it; an administrator’s own disable is still an administrator’s to undo', async () => {
+		const s = scene();
+		// Disabled by a backup's row of the record, as a restore leaves it; the disabler an administrator, so S14 has no say.
+		const ruled = makeUser({ username: 'ruled', disabled: { by: s.admin } });
+		const created = sqlite.prepare('SELECT created_at FROM users WHERE id = ?').pluck().get(ruled.id) as string;
+		sqlite
+			.prepare("INSERT INTO account_endings (user_id, account_created, ending, ended_at, origin) VALUES (?, ?, 'disabled', '2026-11-19 09:00:00', 'backup')")
+			.run(ruled.id, created);
+		const sending = stepUp(s.admin);
+		const before = snapshotDb();
+
+		const refused = await api('POST', `/api/users/${ruled.id}/enable`, { ...sending, body: { ...sending.body, currentPassword: 'not the password' } });
+
+		expect({ status: refused.status, body: refused.body }).toEqual({ status: 403, body: { message: ONLY_SUPERADMIN_ENABLES_RECORDED } });
+		expect(authWarnings()).toEqual([]);
+		expectUnchanged(before);
+		const enabled = await enable(s.chief, ruled);
+		expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
+		expect(row(ruled.id)).toMatchObject({ disabledAt: null });
+
+		// An administrator's own disable, through the route: undone by an administrator, as before.
+		expect((await disable(s.admin, s.bob)).status).toBe(200);
+		expect((await enable(s.admin, s.bob)).status).toBe(200);
+	});
+
+	it('test 29 (card 2996): the disable records `disabled` at its own moment, and the enable records `enabled`, each by the account’s id and creation time', async () => {
+		const s = scene();
+		expect((await disable(s.admin, s.bob)).status).toBe(200);
+		const disabledAt = row(s.bob.id).disabledAt;
+		expect((await enable(s.admin, s.bob)).status).toBe(200);
+
+		expect(
+			sqlite.prepare('SELECT user_id AS id, account_created AS created, ending, ended_at AS at, origin FROM account_endings ORDER BY seq').all() as unknown[]
+		).toEqual([
+			{ id: s.bob.id, created: row(s.bob.id).createdAt, ending: 'disabled', at: disabledAt, origin: 'here' },
+			{ id: s.bob.id, created: row(s.bob.id).createdAt, ending: 'enabled', at: expect.any(String), origin: 'here' }
+		]);
+	});
+
+	it('test 26 (card 2996): refuses an account the record of account endings names as deleted, 409, before the password, with nothing written; one only a seed row names is enabled', async () => {
+		const s = scene();
+		const gone = makeUser({ username: 'gone', disabled: { by: s.admin } });
+		const created = sqlite.prepare('SELECT created_at FROM users WHERE id = ?').pluck().get(gone.id) as string;
+		sqlite
+			.prepare("INSERT INTO account_endings (user_id, account_created, ending, ended_at) VALUES (?, ?, 'deleted', '2026-11-19 09:00:00')")
+			.run(gone.id, created);
+		const sending = stepUp(s.admin);
+		const before = snapshotDb();
+
+		const res = await api('POST', `/api/users/${gone.id}/enable`, { ...sending, body: { ...sending.body, currentPassword: 'not the password' } });
+
+		expect({ status: res.status, body: res.body }).toEqual({ status: 409, body: { message: DELETED_HERE } });
+		expectUnchanged(before);
+
+		// A seed row names an id, not this account: enabling it is the superadmin's or an administrator's to do.
+		const seeded = makeUser({ username: 'seeded', disabled: { by: s.admin } });
+		sqlite.prepare("INSERT INTO account_endings (user_id, account_created, ending, ended_at) VALUES (?, '', 'deleted', '2026-11-19 09:00:00')").run(seeded.id);
+		const enabled = await enable(s.admin, seeded);
+		expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
+		expect(row(seeded.id)).toMatchObject({ disabledAt: null });
 	});
 });
 

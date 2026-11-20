@@ -992,7 +992,12 @@ describe('backups and restores', () => {
 		expect(factorsOf(user.id)).toEqual([]);
 		expect(codesOf(user.id)).toEqual([]);
 		expect(factorsOf(other.id)).toHaveLength(1);
-		expect(result.mfa.withoutFactor).toContain(user.username);
+		// Card 2996: this server held the id just before the restore, made later than the backup's account, so the
+		// record of account endings keeps the backup's account disabled with no password that works (rule 2), and names
+		// it nowhere, the list of accounts without a factor included.
+		expect(result.accountsKept).toMatchObject({ beforeRecord: 1 });
+		expect(userRow(user.id).disabledAt).not.toBeNull();
+		expect(result.mfa.withoutFactor).not.toContain(user.username);
 		expect(result.mfa.withoutFactor).not.toContain(other.username);
 		expect(result.mfa).toMatchObject({ keptFromHere: 1, takenFromBackup: 0, leftOut: [] });
 	});

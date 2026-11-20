@@ -1,6 +1,7 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
 import { users } from '$lib/server/db/schema';
+import { ACCOUNT_ENDING, recordAccountEnding } from '$lib/server/account-endings';
 import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { LONGEST_PASSWORD, PASSWORD_TOO_LONG, makePasswordHash } from '$lib/server/passwords';
 import { issueInvite } from '$lib/server/invites';
@@ -179,6 +180,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			})
 			.returning({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt })
 			.get();
+		// The role it is made with, recorded (card 2996, R2): every account made here has a row of this server's, so a
+		// row of another's naming its id never governs it, and its role has a ceiling from the first.
+		recordAccountEnding(sqlite, account.id, ACCOUNT_ENDING.role);
 
 		// How the account signs in first: one of the two, never both or neither.
 		// If no password was provided and SMTP is ready, an invite, mailed
