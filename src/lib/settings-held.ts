@@ -13,8 +13,36 @@ export type HeldSetting = {
 	heldAt: string;
 	setBy: number | null;
 	setByName: string | null;
+	/** Why it is held (`held_because`): an ended setter's access, or a backup whose seal did not verify (card 3009). */
+	heldBecause: string;
 	where: Record<string, unknown>;
 };
+
+/**
+ * `held_because` of a setting a restore held because it came in with a backup whose seal did not verify (card 3009,
+ * R4): set by nobody, so its words never name a setter or say one's access was ended (its code review, FP4).
+ */
+export const HELD_FROM_UNSEALED_BACKUP = 'restored from a backup whose seal did not verify';
+
+/** Whether a hold is the unsealed restore's (`HELD_FROM_UNSEALED_BACKUP`), not an ended setter's. */
+export const heldFromUnsealedBackup = (held: Pick<HeldSetting, 'heldBecause'>): boolean => held.heldBecause === HELD_FROM_UNSEALED_BACKUP;
+
+/**
+ * What the review list says of why its settings are held (card 3009's code review, FP4), by the reasons it holds: an
+ * ended setter's access, a backup whose seal did not verify, or both.
+ */
+export function heldListWhy(held: readonly Pick<HeldSetting, 'heldBecause'>[]): string {
+	const unsealed = held.filter(heldFromUnsealedBackup).length;
+	if (unsealed === 0) return 'Each of these was set by an account whose access was ended with its API keys.';
+	if (unsealed === held.length) return "Each of these came in with a backup whose seal did not verify, so where it sends is only the file's word.";
+	return "Each of these was set by an account whose access was ended with its API keys, or came in with a backup whose seal did not verify.";
+}
+
+/** Who a held setting is told as set by, by why it is held (FP4): a restore's hold names nobody. */
+export function heldSetByWords(held: Pick<HeldSetting, 'heldBecause' | 'setBy' | 'setByName'>): string {
+	if (heldFromUnsealedBackup(held)) return 'From a backup whose seal did not verify';
+	return `Set by ${held.setByName ?? `user ${held.setBy ?? 'unknown'}`}`;
+}
 
 /** A held setting's name, to begin a sentence: the mail settings, the App URL, or a backup destination by its name. */
 export function heldSettingName(held: Pick<HeldSetting, 'kind' | 'name'>): string {

@@ -126,8 +126,10 @@ import {
 	type ApiKeysLeftOut,
 	type PasswordsKept,
 	type RestoreResult,
-	type SystemLogLeftOut
+	type SystemLogLeftOut,
+	type UnsealedHeld
 } from '$lib/server/db/restore';
+import type { Installation } from '$lib/server/backup-secrets';
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { mkdirSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
@@ -280,7 +282,9 @@ function workingCopySentence(done: OutsideSwitchedOff): string {
 	return (
 		`Restored as a working copy: ${done.reportSchedules} report schedule(s) and ${done.webhooks} webhook(s) ` +
 		`switched off, the backup schedule ${done.backupScheduleWasOn ? 'switched off' : 'was already off'}, ` +
-		`${done.backupDestinations} backup destination(s) removed, ${done.mailSettings} mail setting(s) removed.`
+		`${done.backupDestinations} backup destination(s) removed, ${done.mailSettings} mail setting(s) removed` +
+		// Card 3009's code review, FP3: a working copy of a backup whose seal did not verify removes its App URL too.
+		((done.appUrl ?? 0) > 0 ? ", and the backup's App URL removed, as its seal did not verify: links begin with this server's own address." : '.')
 	);
 }
 
@@ -309,6 +313,33 @@ function settingsHeldCarriedSentence(count: number): string | null {
 		"the superadmin's review is held again, one kept since this backup was made included; keep it again under Settings held for review."
 	);
 }
+
+/** Whether a restore of a backup whose seal did not verify held any of its settings for review (card 3009, R4). */
+const anyUnsealedHeld = (held: UnsealedHeld | undefined): held is UnsealedHeld => held !== undefined && held.mail + held.destinations + held.appUrl > 0;
+
+/**
+ * What the answer and the panel say of the settings a backup whose seal did not verify brought in and the restore held
+ * for the superadmin's review (card 3009, R4): which kinds, the destinations counted, naming none. Absent where none was,
+ * so that every other import reads as it did. Tells the superadmin to check the App URL and the mail host before any
+ * invite is sent, as both are only the file's word.
+ */
+function unsealedHeldSentence(held: UnsealedHeld | undefined): string | null {
+	if (!anyUnsealedHeld(held)) return null;
+	const kinds = [
+		...(held.mail > 0 ? ['the mail settings'] : []),
+		...(held.appUrl > 0 ? ['the App URL'] : []),
+		...(held.destinations > 0 ? [`${held.destinations} backup destination(s)`] : [])
+	];
+	const listed = kinds.length === 1 ? kinds[0] : `${kinds.slice(0, -1).join(', ')} and ${kinds[kinds.length - 1]}`;
+	return (
+		`The backup's seal did not verify, so ${listed} it brought in, at places this server did not hold, ` +
+		"were held for the superadmin's review: nothing is sent through them, and no link begins with the App URL, until the superadmin " +
+		'checks each and keeps or removes it under Settings held for review.'
+	);
+}
+
+/** Sentences joined, the absent left out; null where none is present. */
+const sentences = (...said: (string | null)[]) => said.filter((sentence): sentence is string => sentence !== null).join(' ') || null;
 
 /**
  * The API key deadline the restore left in the settings (migration 0069, card
@@ -431,7 +462,13 @@ function keysLeftOutSentence(left: ApiKeysLeftOut): string | null {
 		left.workingCopy > 0
 			? `As a working copy, it ${ended ? 'also left out the other' : 'left out the'} ${left.workingCopy} API key(s) the backup held: no key works on a working copy.`
 			: null;
-	return [ended, copy].filter((sentence) => sentence !== null).join(' ') || null;
+	// Card 3009: the keys of a backup whose seal did not verify that this server did not hold for the same account.
+	const unsealed =
+		left.unsealed > 0
+			? `${left.unsealed} API key(s) in the backup were left out, because the backup's seal did not verify and this server did not ` +
+				'hold them for the same account: none of them works, and their holders make new ones on the Account page.'
+			: null;
+	return [ended, copy, unsealed].filter((sentence) => sentence !== null).join(' ') || null;
 }
 
 /**
@@ -446,8 +483,8 @@ function keysLeftOutSentence(left: ApiKeysLeftOut): string | null {
  * server's (R2); `reset` also counts the same account whose password here cannot be given back (R11) and a superadmin
  * not here (R9); `superadmin` also counts the same account given back this server's password, replaced too (R12).
  */
-function accountsKeptLines(kept: AccountsKept | undefined, passwords?: PasswordsKept): string[] {
-	return [...endedLines(kept), ...passwordLines(passwords)];
+function accountsKeptLines(kept: AccountsKept | undefined, passwords?: PasswordsKept, outside: Outside = 'keep'): string[] {
+	return [...endedLines(kept), ...passwordLines(passwords, outside)];
 }
 
 /** Card 2996's sentences of `accountsKeptLines`. */
@@ -472,7 +509,7 @@ function endedLines(kept: AccountsKept | undefined): string[] {
 const accountsKeptCount = (kept: AccountsKept | undefined) => (kept === undefined ? 0 : kept.deleted + kept.beforeRecord + kept.disabled + kept.lowered);
 
 /** Card 2997's sentences of `accountsKeptLines`: the restored passwords kept out of use, counted, naming nobody. */
-function passwordLines(passwords: PasswordsKept | undefined): string[] {
+function passwordLines(passwords: PasswordsKept | undefined, outside: Outside): string[] {
 	if (passwords === undefined) return [];
 	return [
 		passwords.here > 0
@@ -488,35 +525,118 @@ function passwordLines(passwords: PasswordsKept | undefined): string[] {
 		passwords.superadmin > 0
 			? `${passwords.superadmin} superadmin account(s) were left with a password that was replaced on this server, or, where the backup's seal ` +
 				"did not verify, one other than this server's, so that a superadmin can still sign in: sign in and change it on the Account page at once."
-			: null
+			: null,
+		// Card 3009: from a backup whose seal did not verify, the accounts not the same here took no password from it; what
+		// happened to their schedules, the mail and the App URL said as this restore did it (its code review, FP14).
+		passwords.unsealed > 0 ? unsealedLine(passwords.unsealed, outside) : null,
+		// And the backup's superadmin given the importer's own password (card 3009, R1, R2), named by no username but by
+		// the email address it now holds, the importer's (its code review, FP5, FP7).
+		passwords.superadminGivenYours > 0 ? givenYoursLine(passwords) : null
 	].filter((line): line is string => line !== null);
 }
 
-/** Whether a restore kept any password out of use or left a superadmin's (card 2997): the answer and the line say so only then. */
-const anyPasswordsKept = (passwords: PasswordsKept | undefined) => passwords !== undefined && passwords.here + passwords.reset + passwords.superadmin > 0;
+/**
+ * What the answer says of the accounts of a backup whose seal did not verify that took no password from it (card 3009),
+ * by how it was restored (its code review, FP14): kept as it is, their report schedules paused and the backup's mail
+ * host and App URL, where they differ from this server's, held for review; as a working copy, every schedule switched
+ * off, and the mail settings and the App URL removed, so that no invite can be mailed.
+ */
+function unsealedLine(count: number, outside: Outside): string {
+	const opening =
+		`${count} account(s) in the backup are not on this server as the same account, and the backup's seal did not verify, so ` +
+		'the password each holds in it was not taken';
+	if (outside === 'off') {
+		return (
+			`${opening}: each needs its password set (🔑) before it can sign in. As a working copy, every report schedule was switched off, ` +
+			"and the mail settings and the backup's App URL were removed, so no invite can be mailed. Before giving anyone a password, check " +
+			"each one's email address and role: in a backup whose seal did not verify they are only the file's word."
+		);
+	}
+	return (
+		`${opening}: each needs its password set (🔑) or an invite (📧) before it can sign in, and its report schedules were paused. The ` +
+		"backup's App URL and mail host, where they differ from this server's, are held for review. Before sending an invite, check each " +
+		"one's email address and role, and the App URL and the mail host: in a backup whose seal did not verify they are only the file's " +
+		'word. Or set its password with 🔑, which mails nothing.'
+	);
+}
+
+/**
+ * What the answer says of the backup's superadmin given the importer's password (card 3009, R1, R2): pointed at by the
+ * email address it now holds, the importer's, never by a username, which is the file's text (its code review, FP7); with
+ * how it signs in, by what was carried (FP6): the importer's authenticators; none, and the leave to set up one on that
+ * password; or none, so that the host resets its two-step sign-in. And how many other accounts gave up that address (FP5).
+ */
+function givenYoursLine(passwords: PasswordsKept): string {
+	const which = 'the superadmin that now holds your email address';
+	const given =
+		"The backup's superadmin is not the account you imported with, and the backup's seal did not verify, so its password in the backup " +
+		'was not taken: it was given the password you confirmed this import with';
+	const how =
+		passwords.givenYoursWithoutFactor === 0
+			? `, and your authenticators. Sign in as it, ${which}, with that password and a code from your authenticator, and change the ` +
+				'password on the Account page if you wish.'
+			: passwords.givenYoursMayEnrol > 0
+				? ', but none of your authenticators, as no MFA key is loaded or none of yours could be moved, and your leave to set up two-step ' +
+					`sign-in on that password alone. Sign in as it, ${which}, with that password and set up an authenticator when asked, while that ` +
+					"leave's 14 days run; if it is asked for a link instead, the server's host resets its two-step sign-in with scripts/mfa-reset.mjs."
+				: ', but none of your authenticators, as no MFA key is loaded or none of yours could be moved: it cannot sign in until the ' +
+					`server's host resets its two-step sign-in with scripts/mfa-reset.mjs. Then sign in as it, ${which}, with that password.`;
+	const gaveUp =
+		passwords.emailGivenUp > 0
+			? ` ${passwords.emailGivenUp} other account(s) in the backup held your email address and were given one that receives no mail: ` +
+				'set each one\'s address on the Users page before inviting it.'
+			: '';
+	return `${given}${how}${gaveUp}`;
+}
+
+/**
+ * Whether a restore kept any password out of use or left a superadmin's (card 2997), or, where the backup's seal did not
+ * verify, took none from the file or gave the backup's superadmin the importer's (card 3009, R12): the answer and the
+ * line's details carry the counts only then.
+ */
+const anyPasswordsKept = (passwords: PasswordsKept | undefined) =>
+	passwords !== undefined && passwords.here + passwords.reset + passwords.superadmin + passwords.unsealed + passwords.superadminGivenYours > 0;
 
 /**
  * The CRITICAL line's words for how it was restored (card 2995): as before where no key was left out, else with how
  * many keys ended here were left out, and a working copy's others. And how many accounts the record of account endings
  * kept ended or lowered (card 2996), only where there were any. And how many of the backup's passwords it kept out of
  * use (card 2997), `here` and `reset`, and how many superadmins it left with a password to change, only where any: a
- * superadmin's is left in use, so it is not counted among those kept out of it.
+ * superadmin's is left in use, so it is not counted among those kept out of it. And, where the backup's seal did not
+ * verify (card 3009), the passwords not taken among those kept out of use, the backup's superadmin given the importer's
+ * password, the keys this server did not hold, and the settings held for review, each only where any.
  */
-function restoredWords(outside: Outside, left: ApiKeysLeftOut | undefined, kept?: AccountsKept, recordLeftOut = 0, passwords?: PasswordsKept): string {
+function restoredWords(
+	outside: Outside,
+	left: ApiKeysLeftOut | undefined,
+	kept?: AccountsKept,
+	recordLeftOut = 0,
+	passwords?: PasswordsKept,
+	held?: UnsealedHeld
+): string {
 	const how = outside === 'off' ? 'as a working copy' : 'as it is';
 	const accounts = accountsKeptCount(kept);
-	const keptOut = passwords === undefined ? 0 : passwords.here + passwords.reset;
+	// Card 3009: the passwords of an unsealed backup's accounts not the same here are kept out of use too.
+	const keptOut = passwords === undefined ? 0 : passwords.here + passwords.reset + passwords.unsealed;
 	const supers = passwords?.superadmin ?? 0;
+	const givenYours = (passwords?.superadminGivenYours ?? 0) > 0;
 	// The backup's record of account endings left out whole for its size (card 2996's code review, FP3, FP7): counted.
 	const keeping =
 		(accounts > 0 ? `, keeping ${accounts} account(s) ended or lowered as the record of account endings says` : '') +
 		(keptOut > 0 ? `, keeping ${keptOut} of the backup's password(s) out of use` : '') +
 		(supers > 0 ? `, leaving ${supers} superadmin account(s) with a password to change at once` : '') +
-		(recordLeftOut > 0 ? `, the backup's record of account endings (${recordLeftOut} row(s)) left out for its size` : '');
-	if (left === undefined || (left.count === 0 && left.workingCopy === 0)) return `${how}${keeping}`;
+		(givenYours
+			? `, giving the backup's superadmin the importing account's password${(passwords?.givenYoursWithoutFactor ?? 0) > 0 ? ' but no authenticator' : ''}`
+			: '') +
+		(recordLeftOut > 0 ? `, the backup's record of account endings (${recordLeftOut} row(s)) left out for its size` : '') +
+		// Card 3009, R4: the mail, App URL and destinations of a backup whose seal did not verify, held, counted only.
+		(anyUnsealedHeld(held) ? `, holding ${held.mail + held.appUrl + held.destinations} setting(s) of a backup whose seal did not verify for the superadmin's review` : '');
+	if (left === undefined || (left.count === 0 && left.workingCopy === 0 && left.unsealed === 0)) return `${how}${keeping}`;
 	const parts = [
 		...(left.count > 0 ? [`${left.count} API key(s) ended on this server`] : []),
-		...(left.workingCopy > 0 ? [`${left.count > 0 ? 'the other' : 'the'} ${left.workingCopy} API key(s) it held, as a working copy`] : [])
+		...(left.workingCopy > 0 ? [`${left.count > 0 ? 'the other' : 'the'} ${left.workingCopy} API key(s) it held, as a working copy`] : []),
+		// Card 3009: those of a backup whose seal did not verify that this server did not hold for the same account.
+		...(left.unsealed > 0 ? [`${left.unsealed} API key(s) of a backup whose seal did not verify`] : [])
 	];
 	return `${how}${keeping}, leaving out ${parts.join(' and ')}`;
 }
@@ -575,17 +695,21 @@ function importedLine(
 		accountsKept?: AccountsKept;
 		accountRecordLeftOut?: number;
 		passwordsKept?: PasswordsKept;
+		unsealedHeld?: UnsealedHeld;
+		installation?: Installation;
 	}
 ): { message: string; meta: Record<string, unknown> } {
 	const left = done.apiKeysLeftOut;
 	// The keys left out by id, in the details alone, only where there were any (card 2995): the line as before at none.
-	const keysMeta = left !== undefined && (left.count > 0 || left.workingCopy > 0) ? { apiKeysLeftOut: left } : {};
+	const keysMeta = left !== undefined && (left.count > 0 || left.workingCopy > 0 || left.unsealed > 0) ? { apiKeysLeftOut: left } : {};
 	// The accounts the record of account endings kept ended or lowered, counted, never named (card 2996): only where any.
 	const accountsMeta = {
 		...(accountsKeptCount(done.accountsKept) > 0 ? { accountsKept: done.accountsKept } : {}),
 		...((done.accountRecordLeftOut ?? 0) > 0 ? { accountRecordLeftOut: done.accountRecordLeftOut } : {}),
 		// The restored passwords kept out of use, counted, never named (card 2997): only where any.
-		...(anyPasswordsKept(done.passwordsKept) ? { passwordsKept: done.passwordsKept } : {})
+		...(anyPasswordsKept(done.passwordsKept) ? { passwordsKept: done.passwordsKept } : {}),
+		// The settings of a backup whose seal did not verify held for review, counted, never named (card 3009, R4).
+		...(anyUnsealedHeld(done.unsealedHeld) ? { unsealedHeld: done.unsealedHeld } : {})
 	};
 	const logLeft = done.systemLogLeftOut;
 	const logPart =
@@ -600,7 +724,7 @@ function importedLine(
 		message:
 			`The database was replaced from an uploaded backup by ${caller.username} (user ${caller.id} before the import): ` +
 			`${file.size}, SHA-256 ${file.sha256}, ${sealWords(done.unsealed, done.sealKeyHere)}, ` +
-			`restored ${restoredWords(outside, left, done.accountsKept, done.accountRecordLeftOut, done.passwordsKept)}. The system log was kept as it was; ${logPart}`,
+			`restored ${restoredWords(outside, left, done.accountsKept, done.accountRecordLeftOut, done.passwordsKept, done.unsealedHeld)}. The system log was kept as it was; ${logPart}`,
 		meta: {
 			by: { id: caller.id, username: caller.username },
 			ip: caller.ip,
@@ -608,6 +732,9 @@ function importedLine(
 			sha256: file.sha256,
 			seal: sealOf(done.unsealed, done.sealKeyHere),
 			check: done.unsealed?.check ?? null,
+			// What the backup's installation id says of it (card 3009, R6): `this`, `other` or `none`, the verdict alone and
+			// never the id. Only where the seal did not verify, where it decides the same account here.
+			...(done.unsealed !== null && done.installation !== undefined ? { installation: done.installation } : {}),
 			outside,
 			systemLogLeftOut: logLeft,
 			...keysMeta,
@@ -907,7 +1034,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 			const keysLeftOut = keysLeftOutSentence(result.apiKeysLeftOut);
 			// And the accounts the record of account endings kept ended or lowered (card 2996), and the restored passwords
 			// kept out of use (card 2997), counted, naming nobody.
-			const accountsKept = accountsKeptLines(result.accountsKept, result.passwordsKept);
+			const accountsKept = accountsKeptLines(result.accountsKept, result.passwordsKept, outside);
 			const accountsKeptSaid = accountsKept.length > 0 ? accountsKept.join(' ') : null;
 			// And the personal decision links it cancelled (card 2697, Q15).
 			const decisionLinks = result.decisionLinksCleared > 0 ? decisionLinksSentence(result.decisionLinksCleared) : null;
@@ -923,7 +1050,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 			const systemLog = systemLogSentence(result.systemLogLeftOut);
 			// This server's settings held for review that the backup did not hold, carried over it (card 2922, R10):
 			// one the superadmin kept here since the backup was made is held again.
-			const settingsHeld = settingsHeldCarriedSentence(result.settingHoldsCarried);
+			// And what a backup whose seal did not verify brought in that reaches outside, held for review (card 3009, R4): in
+			// the same sentence's place, which the panel shows.
+			const settingsHeld = sentences(settingsHeldCarriedSentence(result.settingHoldsCarried), unsealedHeldSentence(result.unsealedHeld));
 			const ending = (text: string) =>
 				[linksReplaced, keyDeadlines, keysLeftOut, accountsKeptSaid, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, settingsHeld, workingCopy, systemLog].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
@@ -962,6 +1091,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				mfaWithoutFactor: mfaLine ?? undefined,
 				settingsRemoved: settingsRemoved ?? undefined,
 				settingsHeld: settingsHeld ?? undefined,
+				// The settings of a backup whose seal did not verify held for review, counted (card 3009, R4): absent where none.
+				unsealedHeld: anyUnsealedHeld(result.unsealedHeld) ? result.unsealedHeld : undefined,
 				systemLog: systemLog ?? undefined,
 				superadmins
 			};
@@ -1081,7 +1212,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				const keysLeftOut = done ? keysLeftOutSentence(done.apiKeysLeftOut) : null;
 				// The accounts the record of account endings kept ended or lowered (card 2996), and the restored passwords kept
 				// out of use (card 2997), as a restore that succeeded says them.
-				const accountsKept = done ? accountsKeptLines(done.accountsKept, done.passwordsKept) : [];
+				const accountsKept = done ? accountsKeptLines(done.accountsKept, done.passwordsKept, outside) : [];
 				const accountsKeptSaid = accountsKept.length > 0 ? accountsKept.join(' ') : null;
 				// The personal decision links it cancelled, as a restore that succeeded says them (card 2697, Q15).
 				const decisionLinks = done && done.decisionLinksCleared > 0 ? decisionLinksSentence(done.decisionLinksCleared) : null;
@@ -1091,7 +1222,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				const mfaLine = done ? mfaWithoutFactorSentence(done.mfa) : null;
 				// This server's system log kept, as a restore that succeeded says it (the code review's F6).
 				const systemLog = done ? systemLogSentence(done.systemLogLeftOut) : null;
-				const message = [linksReplaced, keyDeadlines, keysLeftOut, accountsKeptSaid, decisionLinks, secretsKept, secretsToEnter, mfaLine, systemLog].reduce<string>(
+				// The settings of a backup whose seal did not verify held for review, as a restore that succeeded says them (card 3009, R4).
+				const unsealedHeld = done ? unsealedHeldSentence(done.unsealedHeld) : null;
+				const message = [linksReplaced, keyDeadlines, keysLeftOut, accountsKeptSaid, decisionLinks, secretsKept, secretsToEnter, mfaLine, unsealedHeld, systemLog].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					err.message
 				);
@@ -1123,6 +1256,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 						secretsKept: secretsKept ?? undefined,
 						secretsToEnter: secretsToEnter ?? undefined,
 						mfaWithoutFactor: mfaLine ?? undefined,
+						settingsHeld: unsealedHeld ?? undefined,
+						unsealedHeld: done && anyUnsealedHeld(done.unsealedHeld) ? done.unsealedHeld : undefined,
 						systemLog: systemLog ?? undefined
 					},
 					{ status: 500 }

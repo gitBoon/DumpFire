@@ -22,7 +22,7 @@
 	import { onMount } from 'svelte';
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
-	import { heldIsPlural, heldPlaceWords, heldSettingName, heldSettingNameWithin, type HeldSetting } from '$lib/settings-held';
+	import { heldIsPlural, heldListWhy, heldPlaceWords, heldSetByWords, heldSettingName, heldSettingNameWithin, type HeldSetting } from '$lib/settings-held';
 
 	/**
 	 * What a Remove of held mail or a held App URL ends across the server (R2; the code review's C2, C3): every
@@ -132,7 +132,8 @@
 			<p class="section-desc">⚠️ The settings held for review could not be read: reload the page.</p>
 		{:else}
 			<p class="section-desc">
-				Each of these was set by an account whose access was ended with its API keys. Nothing is sent to it until
+				<!-- Worded by why each is held (card 3009's code review, FP4): an ended setter's access, or an unsealed backup. -->
+				{heldListWhy(held)} Nothing is sent to it until
 				{mayRelease ? 'you keep it or remove it' : 'the superadmin keeps it or removes it'}.
 			</p>
 			<ul class="held-list">
@@ -141,7 +142,7 @@
 						<div>
 							<strong>{heldSettingName(setting)}</strong>: {heldPlaceWords(setting)}
 							<div class="held-meta">
-								Set by {setting.setByName ?? `user ${setting.setBy ?? 'unknown'}`}; held since {setting.heldAt} UTC
+								{heldSetByWords(setting)}; held since {setting.heldAt} UTC
 							</div>
 							{#if setting.kind === 'mail'}
 								<!-- The code review's C14: what was mailed through it before the hold still works. -->

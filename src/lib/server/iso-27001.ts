@@ -264,7 +264,12 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Every password change records a fingerprint of the hash it replaces, never the hash: no restore of an older backup, this server\'s or another\'s, brings such a password back into use, ' +
 				'but a superadmin\'s, left so that the superadmin can sign in and flagged at every start until it is changed; ' +
 				'the sign-in, sessions and the step-up refuse one found in place, and the start signs out any account holding one (card 2997). ' +
-				'A backup whose seal does not verify cannot change the password of an account that is on this server, but can still give an account that is not on this server any password (card 3009).',
+				'A backup whose seal does not verify cannot change the password of an account that is on this server, and gives no account that is not the same account here ' +
+				"(its id and creation time, and this installation's id, or none and the same username) a password, an API key or a second factor from the file: each gets a password nothing matches, " +
+				"and, where the importer could not otherwise sign in, the backup's superadmin is given the importer's own password and authenticators; " +
+				"none of its invites is restored, and a sealed backup's only as used history, so no invite from a file sets a password; " +
+				"the mail settings, App URL and backup destinations it brings in at places this server did not hold are held for the superadmin's review, " +
+				'or, on a working copy, removed (card 3009).',
 		evidence: [
 			{ path: 'src/lib/server/passwords.ts', symbol: 'BCRYPT_ROUNDS' },
 			{ path: 'src/lib/server/passwords.ts', symbol: 'LONGEST_PASSWORD' },
@@ -278,6 +283,10 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: 'src/lib/server/request-access.ts', symbol: 'SETTLED_LINK_DAYS' },
 			{ path: 'src/lib/server/account-endings.ts', symbol: 'recordPasswordReplaced' },
 			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyPasswordRulings' },
+			{ path: 'src/lib/server/mfa-backup.ts', symbol: 'sameAccountHere' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'keysOfTheSameHere' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'holdUnsealedSettings' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'rowsToRestore' },
 			{ path: AUTH_DOC, anchor: 'requester-links-stored-as-hashes-card-2870' },
 			{ path: AUTH_DOC, anchor: 'service-secrets-at-rest-card-2898' },
 			{ path: AUTH_DOC, anchor: 'isoiec-270012022' }

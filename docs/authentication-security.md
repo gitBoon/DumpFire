@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.162
+version: 1.163
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3009
+  - unsealed-backup-grants
   - card-2997
   - passwords-replaced
   - card-2996
@@ -132,7 +134,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, every password change recorded by a fingerprint of the hash it replaces so that no restore brings it back and the sign-in, createSession, the step-up and the start refuse or end one found in place, never locking the superadmin out (card 2997), a Google Drive destination that takes only a service account's key file and signs in with a JWT built from it, never GoogleAuth, and a Test that runs only a saved destination (card 2939), the service secrets kept in the database sealed at rest (card 2898: the mail password, backup destination credentials, webhook secrets and three signing keys sealed with AES-256-GCM under a key derived from the MFA key file, each bound to where it is used, the key check recorded with the first sealed value, plain values sealed at every start and the file scrubbed, and what a value that does not open does), a two-step reset that ends the account's API keys and switches off its webhooks (card 2915: always from the admin page, on the host unless --keep-api-keys, its options read strictly, the message saying what ended and what settings the account set), disabled accounts (card 2671: who may disable, enable and delete, what disabling ends, every gate that refuses a disabled account, and a restore that keeps them disabled), a restore that keeps the running system log and brings none of the backup's lines in, with the import's CRITICAL line naming who imported which file (card 2899), what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), a milestone the caller cannot see answered 404 Milestone not found, the goal a card is in refused in words of its own, and the id counter accepted as R6 (card 2911), a task request a signed-in caller cannot read answered 404 Request not found, the accept and reject on requireRequest (card 2914), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), every upload's limits whatever the file (card 2910: 30 an hour counted before the body, 100 MB a day charged what was read, 3 at once for an account and 6 for the server with each place given back in a finally and lapsing after 10 minutes, Connection: close on every refusal before the body, 120 seconds for the body to arrive, a failed read charged what was read, one part to a form, 20 other files a card, names cleaned, types normalised and the disk name the server's), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty-two actions that ask for the current password and a code from the authenticator app again (card 2671's disable and enable among them) (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
+description: "Deep-dive into DumpFire's authentication system, the grant identity (sameAccountHere, the installation id, the username fallback) and an unsealed backup giving no account not the same here a password, key or factor, with the superadmin carry, earlier key ends and held settings (card 3009), every password change recorded by a fingerprint of the hash it replaces so that no restore brings it back and the sign-in, createSession, the step-up and the start refuse or end one found in place, never locking the superadmin out (card 2997), a Google Drive destination that takes only a service account's key file and signs in with a JWT built from it, never GoogleAuth, and a Test that runs only a saved destination (card 2939), the service secrets kept in the database sealed at rest (card 2898: the mail password, backup destination credentials, webhook secrets and three signing keys sealed with AES-256-GCM under a key derived from the MFA key file, each bound to where it is used, the key check recorded with the first sealed value, plain values sealed at every start and the file scrubbed, and what a value that does not open does), a two-step reset that ends the account's API keys and switches off its webhooks (card 2915: always from the admin page, on the host unless --keep-api-keys, its options read strictly, the message saying what ended and what settings the account set), disabled accounts (card 2671: who may disable, enable and delete, what disabling ends, every gate that refuses a disabled account, and a restore that keeps them disabled), a restore that keeps the running system log and brings none of the backup's lines in, with the import's CRITICAL line naming who imported which file (card 2899), what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), a milestone the caller cannot see answered 404 Milestone not found, the goal a card is in refused in words of its own, and the id counter accepted as R6 (card 2911), a task request a signed-in caller cannot read answered 404 Request not found, the accept and reject on requireRequest (card 2914), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), every upload's limits whatever the file (card 2910: 30 an hour counted before the body, 100 MB a day charged what was read, 3 at once for an account and 6 for the server with each place given back in a finally and lapsing after 10 minutes, Connection: close on every refusal before the body, 120 seconds for the body to arrive, a failed read charged what was read, one part to a form, 20 other files a card, names cleaned, types normalised and the disk name the server's), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty-two actions that ask for the current password and a code from the authenticator app again (card 2671's disable and enable among them) (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
 ---
 
 # Authentication & Security
@@ -1959,7 +1961,9 @@ this image, and would work again on the older one.", and the server starts. It i
 runner and the rehearsal, because it deletes rows. At the release itself it finds nothing: 0068
 has run.
 
-**A restore.** A backup holds no unused invite, and a restore brings none in. A backup made
+**A restore.** A backup holds no unused invite, and a restore brings none in: from a backup whose
+seal verified only used invites, by their stored type (`typeof(used) = 'integer'`), each written
+used; from one whose seal did not verify, none at all (card 3009's code review, FP1). A backup made
 before card 2849 holds each used invite's token as it was mailed; `rowsToRestore()` gives such a
 row 32 random bytes as it reads it (`inHashForm()` in `invites.ts` says which rows are already
 hashes), so a plain token never reaches the live file. After the copy, inside the restore's
@@ -6342,11 +6346,11 @@ cleared (`readMfaHere`), and once the copy is done, inside the restore's transac
 
 ```mermaid
 flowchart TD
-    Copy["The restore's copy is done,<br/>inside its transaction"] --> Each{"For each restored account:<br/>same id and same created_at<br/>as an account here?"}
+    Copy["The restore's copy is done,<br/>inside its transaction"] --> Each{"For each restored account:<br/>same id and same created_at<br/>as an account here? Unsealed, also<br/>this installation's id, or with none<br/>the same username: card 3009"}
     Each -->|"yes: the same account"| Here["This server's factors and codes,<br/>as they are now"]
     Each -->|"no"| Trust{"Backup's seal verified with this<br/>server's key, and its mfa_key_check<br/>is this server's MFA key's?"}
     Trust -->|"yes"| Theirs["The backup's factors and codes"]
-    Trust -->|"no"| None["None. Named in leftOut:<br/>unsealed, no key, or key differs"]
+    Trust -->|"no"| None["None. Named in leftOut:<br/>unsealed, no key, or key differs.<br/>Unsealed: counted, never named"]
     Here --> Zero["Every account's wrong-code counters<br/>and pauses zeroed"]
     Theirs --> Zero
     None --> Zero
@@ -10633,7 +10637,8 @@ nothing, since `credentialOf(DUMMY_HASH)` is `''`.
 
 **The superadmin is never locked out, and why.** A superadmin is never refused at sign-in, at
 `createSession` or at the step-up, never given `DUMMY_HASH` by the start, and in a restore keeps this
-server's hash, or the backup's where it is not here, unless the importer can still sign in as one. A
+server's hash, or the backup's where it is not here, unless the importer can still sign in as one
+(from a backup whose seal does not verify, card 3009's carry decides instead, below). A
 host file rollback puts the record back with the database, so it can hold the superadmin's own `here`
 row on the hash the copy holds; the host recovery promotes an account and changes no password; either
 way, refusing the superadmin could leave nobody able to sign in as one. Instead a `[WARN] [AUTH]` line
@@ -10643,8 +10648,8 @@ would do nothing in a restore and make that line repeat for ever.
 
 **What is left (accepted).** A password replaced before this release was never fingerprinted (nothing
 kept the hash), so a backup made before that change can still bring it back. A backup whose seal does
-not verify keeps this server's hash for the same account, but can still give an account not here any
-password (its own card). A forged backup's `password` rows naming hashes in use here stay in the
+not verify keeps this server's hash for the same account and, since card 3009, gives an account not the
+same here none (below). A forged backup's `password` rows naming hashes in use here stay in the
 record, so a later genuine restore, or the start, leaves those accounts needing a password set (R20).
 
 Covered by `tests/account-endings.test.ts`, `tests/backups.test.ts` (card 2996's restore cases),
@@ -10654,6 +10659,147 @@ Covered by `tests/account-endings.test.ts`, `tests/backups.test.ts` (card 2996's
 card 2997's by the same files (its restore cases and the import's words in `tests/backups.test.ts`, the
 password inventory in `tests/check-at-the-write.test.ts`) and `tests/two-step-sign-in.test.ts`,
 `tests/session-hardening.test.ts`, `tests/step-up.test.ts` and `tests/iso-27001.test.ts`.
+
+#### Nothing That Signs In From an Unsealed Backup (card 3009)
+
+Card 2997 kept this server's password for the same account, but an import of a backup whose seal does
+not verify (`unsealed` not null: no seal, a failed one, another server's, one sealed before card 2943's
+new key, a file that fails `PRAGMA integrity_check`) still gave every account not here the file's
+hash, and the file's API keys. Such a file is only its uploader's word. From it, nothing that signs in
+now reaches an account that is not the same account here: no password, no second factor, no key.
+
+**The grant identity** (`sameAccountHere(here, restored, trust)` in `mfa-backup.ts`, with
+`GrantTrust = { sealVerified, installation }`). Every server holds `settings.installation_id`, 16
+random bytes as 32 lower-case hex, not secret: made at the start inside `replaceSigningKeysAtStart`'s
+transaction (`ensureInstallationId`, `INSERT OR IGNORE`; one not of its form, a host's edit, is
+made anew there with one `[CRITICAL] [STARTUP]` line that names neither id: its code review, FP13),
+and ensured by `withoutSecrets`' default argument, so every backup carries it under its seal. A restore never brings it in (it is on
+`rowsToRestore`'s left-out list) and puts this server's back after the clear, beside `keepSealKey`;
+where this server has none, none is kept and none made. `installationOf(backup, here)` reads the
+backup's settings and answers only a verdict, never logged with the id: `this`, `other` (another id,
+a malformed one, two rows, or any where this server has none) or `none` (the backup carries none: made
+before this release).
+
+| Backup | The same account here when |
+|---|---|
+| Sealed by this server | the same id and `created_at` (the same moment) |
+| Unsealed, `installation` `this` | the same id and `created_at` |
+| Unsealed, `installation` `other` | never |
+| Unsealed, `installation` `none` | the same id, `created_at` and username, exactly (the username fallback) |
+
+It decides everything a restore **grants**: second factors, recovery codes, sign-in history and the
+leave to enrol (`restoreMfaRows`), passwords (`applyPasswordRulings`) and API keys
+(`keysOfTheSameHere`). The rules that **restrict** (`carryDisabled`, card 2996's `accountRulings`) keep
+the id and `created_at` alone, since a stricter identity there would fail open. Forging it gains
+nothing: an unsealed file can claim this server's id and any `created_at`, but a match only gives an
+account back this server's own password, factors and keys for that id, which only its holder knows,
+and the file's row cannot raise its role (card 2996's ceiling); a mismatch gives nothing.
+
+**Passwords** (`applyPasswordRulings`, unsealed branch, before card 2997's rules). An account not the
+same here takes `DUMMY_HASH` and `mfa_password_enrol = 0`, whatever the file holds, counted
+`passwordsKept.unsealed` (one the file already gives `DUMMY_HASH` is not counted); its report schedules
+are paused whatever its hash, where the restore keeps what reaches outside (a working copy switches them
+all off; FP2); it stays enabled. No `password` row is written and no key is ended: that hash
+was never this server's. Before any of it, and before `carryDisabled`, **`keepSuperadminsHere`** makes
+each superadmin of this server whose restored row is the same account here an enabled superadmin
+again, whatever the file made it (R2); nothing after it undoes it, card 2996's role ceiling included.
+
+**The superadmin carry** (R1 to R3), decided after every other account, for the file's superadmins
+that are not the same here:
+
+1. Where the importer is in the file as the same account here, or any superadmin of this server is
+   restored as the same account, enabled and holding this server's usable hash (the importer able to
+   sign in among them; its code review, FP5): each gets `DUMMY_HASH`.
+2. Otherwise, where the importer is an account this server held and one of them is enabled, the
+   lowest-id enabled one is given the importer's hash as it was here, the importer's
+   `mfa_password_enrol` in place of the file's (FP6), the importer's TOTP factors opened with this
+   server's MFA key under `factorAad(importer, …)` and sealed again under `factorAad(chosen, …)`
+   (`carryFactors`; recovery codes do not move), and the importer's email, always: any other restored
+   account holding it (case-insensitively) is given `email-given-up-<id>@restore.invalid`, counted
+   `emailGivenUp` (FP5). Its report schedules are paused (FP2). `superadminGivenYours = 1`;
+   `givenYoursWithoutFactor = 1` where no factor could be carried (no MFA key loaded, or none opened),
+   and then `givenYoursMayEnrol = 1` where the leave it was given runs (`two_step_released_at` within
+   14 days), else it needs the host's `scripts/mfa-reset.mjs`. Every other such superadmin gets
+   `DUMMY_HASH`. Where the carried factors are the first on the server (a backup made before card 2768),
+   the second factors are counted again after the carry and the answer says two-step sign-in is now in
+   use (`firstFactorsCarried`, FP12).
+3. Otherwise (no importer, one this server did not hold, or none enabled), fail closed: each gets
+   `DUMMY_HASH`.
+
+**Why it is not a lockout.** The importer was signed in as an enabled superadmin, and confirmed the
+import with its password and a code seconds before. Afterwards either it signs in as itself, or it
+signs in as the backup's chosen superadmin with the same password and authenticator. The file's own
+superadmin hash is exactly what a forger would plant, so it is never the one taken; the importer's is
+this server's. Where the file has no enabled superadmin at all, `lacksSuperadmin` refuses as before,
+and the host's promotion remains the backstop.
+
+**API keys** (`leaveOutRecordedKeys`' `unsealed` step, after card 2995's recorded leave-out). From an
+unsealed backup, a restored key is kept only where this server held that very key (`keysHeldHere().all`:
+the same id, `key_hash` and `user_id`) for an account that is the same here; every other is left out,
+its `webhook_reveals` rows deleted and held and `set_by_key` emptied, counted
+`apiKeysLeftOut.unsealed`, and never recorded in `api_key_revocations` (it never existed here). Keys
+planted on accounts that are here are left out too. A working copy leaves out every key already
+(`workingCopy`), so the step is skipped there. A kept key takes the earlier of this server's and the
+file's `expires_at`, and the same for `deadline_at` (`takeEarlierEnds`, R5): a set value beats null,
+and one that cannot be read counts as passed, so a key expired here never comes back working.
+
+**What reaches outside is held** (`holdUnsealedSettings`, R4). On an unsealed restore that keeps what
+reaches outside, a `setting_holds` row, `held_because` `restored from a backup whose seal did not
+verify`, set by nobody, is written for the restored mail settings where their place differs from this
+server's before the restore, for each restored destination at a place this server held none at, and
+for the restored App URL where it differs from this server's (also where `ORIGIN` is the image's
+placeholder, which restricts nothing). Held mail sends nothing, a held destination receives no backup
+and a held App URL begins no link, until the superadmin keeps or removes each. Counted
+`unsealedHeld = { mail, destinations, appUrl }`, by the rows written (`.run(...).changes`: a hold this
+server carried there already is not counted again; FP8). A sealed restore writes none; a working copy of
+an unsealed file writes none and removes the mail, the destinations and the App URL
+(`switchOffOutside(…, { appUrl: true })`, counted `outside.appUrl`; FP3). Each hold is told by its
+`held_because` (FP4): the review list (`heldBecause` on each item), a held mail's words
+(`MAIL_HELD_UNSEALED`, by `mailHeldWords`), a held destination's (`DESTINATION_HELD_UNSEALED`, by
+`destinationHeldWords`) and the start's WARN never name a setter for a restore's hold.
+
+**Invites** (`rowsToRestore`, FP1). An unsealed backup restores no `invite_tokens` row at all. A sealed
+one restores used invites only, as history, by the stored type as well as the value (`typeof(used) =
+'integer' AND used <> 0`, so a column declared with no type holding the text `'0'`, which this
+server's integer column would read as 0, is left out) and writes each `used = 1`. Every other filter a
+restore runs on a backup's own rows was audited for the same trick: the settings left-out list (keys,
+compared by text), `installationOf` and `readBackupMfaKeyCheck` (a text key, the value checked in code),
+the record of account endings and of ended keys (each row checked in code by `typeof`), the system log
+count and `lacksSuperadmin` (asked again of the rows as restored); none needed the fix.
+
+```mermaid
+flowchart TD
+    A["Restored account,\nseal not verified"] --> S{"sameAccountHere?"}
+    S -->|"Yes"| H["This server's hash, factors and keys\n(card 2997's rules); keys end at the earlier date"]
+    S -->|"No, not a superadmin"| D["DUMMY_HASH, enrol 0,\nschedules paused: unsealed"]
+    S -->|"No, a superadmin"| C{"Importer the same here,\nor able to sign in?"}
+    C -->|"Yes"| D
+    C -->|"No"| E{"Importer held here,\nand one enabled?"}
+    E -->|"Yes"| G["Lowest-id enabled: the importer's hash,\nfactors and email: superadminGivenYours.\nOthers DUMMY_HASH"]
+    E -->|"No"| D
+```
+
+The second factors' sentences name no account for an unsealed import (R10; its code review, FP7):
+those not the same here are counted (`MfaRestore.notSameHere`) and those that are too
+(`withoutFactorUnnamed`), the file's usernames being only its word; the carried superadmin is pointed at
+as "the superadmin that now holds your email address", never by username. A sealed import names them as
+before. ISO 27001 A.5.17 no longer states the gap, says no invite from a file sets a password and that a
+working copy removes what it would hold, and cites `sameAccountHere`, `keysOfTheSameHere`,
+`holdUnsealedSettings` and `rowsToRestore` as evidence.
+
+**What is left (accepted).** A backup with no installation id (made before this release) is matched by
+username, so servers built by one script with the same usernames made in the same seconds are taken
+for each other. A superadmin renamed since such a backup is not the same account in an unsealed restore
+of it and needs the host's `mfa-reset`. A same-account password that differs is counted under card
+2997's `here` and `reset`, an account not the same here under `unsealed`, apart. A backup of a host-file
+or volume clone of this server (the same seal key and installation id) verifies as this server's own:
+change both on any clone (see [Moving to a New Host](deployment.md#moving-to-a-new-host)).
+
+Covered by `tests/backups.test.ts` (the unsealed cases, the carry through the route with a TOTP
+sign-in, the keys, the holds and the failure test), `tests/import-working-copy.test.ts`,
+`tests/setting-holds.test.ts`, `tests/mfa-storage.test.ts`, `tests/stored-secrets.test.ts`,
+`tests/migrations.test.ts`, `tests/admin-reset.test.ts`, `tests/check-at-the-write.test.ts`,
+`tests/account-endings.test.ts` and `tests/iso-27001.test.ts`.
 
 ## Security Headers
 

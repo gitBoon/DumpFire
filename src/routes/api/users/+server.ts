@@ -13,7 +13,7 @@ import { ENROLMENT_LINK_PATH, issueEnrolmentLink } from '$lib/server/mfa-store';
 import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
 import { readBody } from '$lib/server/request-body';
 import { listUsersFor } from '$lib/server/list-access';
-import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, mailCannotSendProblem } from '$lib/server/email';
+import { NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, mailCannotSendProblem, mailProblemWords } from '$lib/server/email';
 import { sendInviteEmail } from '$lib/server/notifications';
 import { requireAdmin, requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -41,7 +41,7 @@ export const GET: RequestHandler = async ({ locals }) => {
  */
 function noMailWords(): string | null {
 	const cannot = mailCannotSendProblem();
-	return cannot === null ? null : `Password must be at least 8 characters (${MAIL_PROBLEM_WORDS[cannot]})`;
+	return cannot === null ? null : `Password must be at least 8 characters (${mailProblemWords(cannot)})`;
 }
 
 /**

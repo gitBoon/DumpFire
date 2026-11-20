@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.142
+version: 1.143
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3009
+  - unsealed-backup-grants
   - card-2997
   - passwords-replaced
   - card-2996
@@ -53,7 +55,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "High-level and component-level architecture of the DumpFire Kanban board system, including the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "High-level and component-level architecture of the DumpFire Kanban board system, including the restore's unsealed steps (keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -3015,17 +3017,20 @@ sequenceDiagram
     participant R as restoreInOneSnapshot
     participant L as Live database (one transaction)
     participant B as Backup snapshot
-    R->>L: read accountsHeldHere (W, ids and created_at up to W, superadmins, every account's created_at and hash)
-    R->>L: clear, copy (account_endings kept)
+    R->>B: the seal verdict, and installationOf(backup, installation id here): this, other or none (card 3009)
+    R->>L: read accountsHeldHere (W, ids and created_at up to W, superadmins, every account's created_at, username and hash)
+    R->>L: read keysHeldHere (every key with its owner, expiry and deadline) and the settings' places (card 3009)
+    R->>L: clear, copy (account_endings kept), keepSealKey, installation id put back
     R->>B: read its account_endings and its users bound
     R->>L: carryAccountEndings: bounded rows added as backup, users counter raised
     R->>L: accountRulings for every restored account
-    R->>L: restoreMfaRows(ended): none to an ended account, none named
-    R->>L: carryDisabled, then applyAccountEndings (belts, a password belt before each DUMMY_HASH, keys, schedules, roles)
-    R->>L: applyPasswordRulings (card 2997): this server's hash, DUMMY_HASH, or a superadmin left
+    R->>L: restoreMfaRows(ended, trust): none to an ended account, none named, sameAccountHere deciding the same account
+    R->>L: keepSuperadminsHere (unsealed, card 3009), carryDisabled, then applyAccountEndings (belts, a password belt before each DUMMY_HASH, keys, schedules, roles)
+    R->>L: applyPasswordRulings (card 2997, with card 3009's unsealed branch and superadmin carry first)
     R->>L: carryKeyRevocations, then lacksSuperadmin (its own sentence where the record ended the superadmin)
-    R->>L: fill, then holdRevealedIn and holdNoLongerReadableIn
-    R->>L: COMMIT, and accountsKept and passwordsKept counted to the import
+    R->>L: carrySettingHolds, holdUnsealedSettings (unsealed, kept outside: card 3009)
+    R->>L: fill, leaveOutRecordedKeys (unsealed: keysOfTheSameHere, takeEarlierEnds), then holdRevealedIn and holdNoLongerReadableIn
+    R->>L: COMMIT, and accountsKept, passwordsKept, apiKeysLeftOut, unsealedHeld and installation counted to the import
 ```
 
 Since card 2997 the same transaction keeps every password replaced on this server out of use. After
@@ -3037,6 +3042,41 @@ account here and that hash is usable, and otherwise `DUMMY_HASH` with its keys e
 `endRestoredAccess`; a superadmin is never given `DUMMY_HASH` unless the importer, the same superadmin
 here, can still sign in. It writes no row of its own, and is not caught: a failure rolls the restore
 back. `RestoreResult.passwordsKept` counts `here`, `reset` and `superadmin`.
+
+Since card 3009 a backup whose seal does not verify gives nothing that signs in to an account that is
+not the same account here. Before the clear the restore reads this server's `installation_id` and
+the backup's verdict on it (`installationOf`: `this`, `other` or `none`), which with the seal's
+verdict makes the `GrantTrust` every granting step asks through `sameAccountHere` (`mfa-backup.ts`):
+the same id and `created_at`, and then a sealed backup or `this`; never `other`; for `none`, the same
+username. The installation id is on `rowsToRestore`'s left-out list and put back after the clear,
+beside the seal key. Then, all in the one transaction and only for an unsealed backup:
+
+0. `rowsToRestore` reads no `invite_tokens` row of an unsealed backup, and of a sealed one only used
+   rows stored as integers, written used (its code review, FP1).
+1. `restoreMfaRows` keeps factors, codes and sign-in history only for `sameAccountHere`, and counts,
+   never names, the accounts left with none (`notSameHere`, and `withoutFactorUnnamed` for those that
+   are the same here: FP7), through `accountsWithoutFactor`.
+2. `keepSuperadminsHere`, before `carryDisabled`: each superadmin here restored as the same account is
+   an enabled superadmin again.
+3. `applyPasswordRulings`' unsealed branch: an account not the same here gets `DUMMY_HASH` and enrol 0
+   (`unsealed`) and its schedules paused where outside is kept, whatever its hash (FP2); the file's
+   superadmins not the same here are decided last, the lowest-id enabled one given the importer's hash,
+   enrol leave (FP6), factors (`carryFactors`) and email, always (another holder given one under
+   `.invalid`, `emailGivenUp`: FP5), its schedules paused, where the importer is held here and is not in
+   the file as the same account and no superadmin of this server restored as the same account can sign
+   in (FP5) (`superadminGivenYours`, `givenYoursWithoutFactor`, `givenYoursMayEnrol`), every other
+   `DUMMY_HASH`, failing closed with no importer or none enabled. After a carry the second factors are
+   counted again (`accountsWithoutFactor`), and `firstFactorsCarried` says where they are the first (FP12).
+4. `holdUnsealedSettings`, after `carrySettingHolds` and before the fill, where outside is kept: the
+   mail settings, App URL and destinations at places this server did not hold, held by nobody
+   (`unsealedHeld`, counted by rows written: FP8). A working copy's `switchOffOutside(…, { appUrl: true })`
+   removes the App URL too (FP3).
+5. `leaveOutRecordedKeys`' `unsealed` step, after the recorded leave-out and skipped for a working
+   copy: only this server's own keys (id, hash, owner) of accounts the same here are kept
+   (`keysOfTheSameHere`), each at the earlier expiry and deadline (`takeEarlierEnds`); the rest are left
+   out, counted `apiKeysLeftOut.unsealed`, with their reveals held.
+
+None is caught: a failure rolls the whole restore back, the installation id included.
 
 ### Log lines written during a transaction
 

@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.150
+version: 1.151
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3009
+  - unsealed-backup-grants
   - card-2997
   - passwords-replaced
   - card-2996
@@ -98,7 +100,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Docker deployment, a host file rollback after which every password changed since the copy needs 🔑 or 📧 and the superadmin is warned until it changes its own, and superadmin recovery promoting an account whose password works (card 2997), the release that brings every stored service account JSON to the one rule at start and tests only saved destinations (card 2939: the start's WARN line, its checks, GOOGLE_CLOUD_UNIVERSE_DOMAIN), the release that seals the stored secrets under the MFA key (card 2898: the read-only queries before, the first start's line, the scrub and Admin › Vacuum, copies made before, a value that does not open, and going back), the release that holds already-off webhooks when an account's access ends and mails the boards' owners (card 2923: OpenAPI 1.15.0, breaking, a one-time start-up hold, the host's command printing what it held), the release that ends API keys at a two-step reset (card 2915: always from the admin page, on the host unless --keep-api-keys, a read-only check of what will end, going back, OpenAPI 1.14.0 breaking), the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Docker deployment, moving to a new host, a volume clone's seal key and installation id changed, and the release that takes nothing that signs in from an unsealed backup with its rollback (card 3009), a host file rollback after which every password changed since the copy needs 🔑 or 📧 and the superadmin is warned until it changes its own, and superadmin recovery promoting an account whose password works (card 2997), the release that brings every stored service account JSON to the one rule at start and tests only saved destinations (card 2939: the start's WARN line, its checks, GOOGLE_CLOUD_UNIVERSE_DOMAIN), the release that seals the stored secrets under the MFA key (card 2898: the read-only queries before, the first start's line, the scrub and Admin › Vacuum, copies made before, a value that does not open, and going back), the release that holds already-off webhooks when an account's access ends and mails the boards' owners (card 2923: OpenAPI 1.15.0, breaking, a one-time start-up hold, the host's command printing what it held), the release that ends API keys at a two-step reset (card 2915: always from the admin page, on the host unless --keep-api-keys, a read-only check of what will end, going back, OpenAPI 1.14.0 breaking), the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -659,16 +661,19 @@ factor only as ciphertext, and the key check (`mfa_key_check`), and never the ke
 both a backup and the key can open every authenticator secret in it. Whoever loses the key
 loses every second factor: see [If the Key Is Lost](#if-the-key-is-lost).
 
-**Second factors survive a restore only onto the installation that made the backup.** Import
-Backup takes a backup's second factors only when the backup's seal verifies, and the key that
-seals backups (`backup_seal_key`) is made by each installation for itself and is in no backup.
-Restoring onto a rebuilt server, a new volume or another installation, **even with the right
-MFA key mounted**, therefore leaves every account in the backup with no second factor: each
-needs its two-step sign-in reset (card 2773, see
-[Resetting Two-Step Sign-In](admin-guide.md#resetting-two-step-sign-in)) before it can sign in. The restore names them, and
+**Second factors, passwords and API keys survive a restore only onto the installation that made
+the backup.** Import Backup takes a backup's second factors only when the backup's seal verifies,
+and the key that seals backups (`backup_seal_key`) is made by each installation for itself and is
+in no backup; nor is the installation's own id (`installation_id`, card 3009). Restoring onto a
+rebuilt server, a new volume or another installation, **even with the right MFA key mounted**,
+therefore leaves every account in the backup with no second factor and, since card 3009, with no
+password and no API key from it (the backup's superadmin is given the importer's password and
+authenticators): each needs its two-step sign-in reset (card 2773, see
+[Resetting Two-Step Sign-In](admin-guide.md#resetting-two-step-sign-in)) and its password set
+(🔑) or an invite (📧) before it can sign in, and makes new keys. The restore counts them, and
 says why their factors were left out ("the backup was not made by this server, or was changed
-after it was made"). Keep the database volume, not only the backups, if you want factors to
-survive a rebuild, and keep the MFA key file with it.
+after it was made"). Keep the database volume, not only the backups, if you want them to survive
+a rebuild, and keep the MFA key file with it: see [Moving to a New Host](#moving-to-a-new-host).
 
 **Keep every old key for as long as the backups made with it.** After a
 [change of key](#changing-the-key), backups and cold copies made before it hold factors sealed
@@ -946,9 +951,11 @@ to 5 are done again.
 **A rebuilt server is the same as a lost key, for second factors, even with the key.** If the
 server itself is rebuilt (a new volume, a new installation) and a backup is imported, every
 account's factors in it are left out as unsealed, because the key that seals backups is the old
-installation's and in no backup (see [Backing It Up](#backing-it-up)). Mounting the right MFA
-key does not change that: every account needs its two-step sign-in reset (card 2773), and the
-restore names them, with the reason.
+installation's and in no backup (see [Backing It Up](#backing-it-up)). Since card 3009 the same
+goes for every account's password and API keys in it, the backup's superadmin given the
+importer's password and authenticators. Mounting the right MFA key does not change that: every
+account needs its two-step sign-in reset (card 2773) and its password set (🔑) or an invite (📧),
+and the restore counts them, with the reason.
 
 ## Attachment Files
 
@@ -1621,6 +1628,47 @@ docker image rm dumpfire:pre-move
 ```
 
 If `Listening on` is missing, or either of the other lines is there, stop the new container at once, before anyone opens the site. The data is in `$HOME/dumpfire-move`, and inside the image `dumpfire:pre-move` at `$from`, whatever has become of the old container. To take a file out of that image again: `docker create --name pre-move dumpfire:pre-move`, then `docker cp "pre-move:$from/dumpfire.db" .` (and the same for the others), then `docker rm pre-move`.
+
+### Moving to a New Host
+
+**The move that keeps everything is the host's, not an import** (card 3009). Stop the old instance first, and keep it stopped. Then move the database volume, or a cold copy taken with the container stopped (see [Taking and Returning the Cold Copy](#taking-and-returning-the-cold-copy)), **and the MFA key file** that `MFA_KEY_FILE` names, mounted as before. The new host is then this installation: its backup seal key and installation id come with the database, so every password, second factor and API key comes with it, and its backups restore there as its own. Without the MFA key file, every second factor is lost (see [If the Key Is Lost](#if-the-key-is-lost)) and every backup of the old host reads as unsealed.
+
+```mermaid
+flowchart TD
+    Can{"Can the volume or a cold copy,\nand the MFA key file, be moved?"}
+    Can -->|"Yes"| Host["Stop the old instance.\nMove both. Start the new one.\nEverything is kept"]
+    Can -->|"No"| Fresh["Set up a fresh installation:\nyour superadmin and authenticator"]
+    Fresh --> Imp["Import Backup, as it is"]
+    Imp --> Sign["Sign in as the backup's superadmin\nwith your password and a code"]
+    Sign --> Held["Settings held for review:\ncheck the App URL and the mail host,\nkeep or remove each"]
+    Held --> Each["🔑 or 📧 each account,\nnew API keys, mfa-reset\nwhere the answer names it"]
+```
+
+**Import Backup onto a fresh installation is the fallback**, where the volume or the key file cannot be moved. Its seal does not verify there and it carries another installation's id, so no account in it is the same account there: none takes a password, a second factor or an API key from it. In this order:
+
+1. **Set up the fresh installation** with a superadmin of your own, and set up your authenticator on it.
+2. **Import the backup**, as it is, confirming with your password and a code. Your set-up account is replaced by the backup's accounts.
+3. **Sign in as the backup's superadmin**, the one the answer names, with your own password and a code from your authenticator: the backup's lowest-numbered enabled superadmin was given both (and your email address, where no other account in the backup holds it). Where the answer says none of your authenticators could be moved (no MFA key loaded), it cannot sign in until the host runs `docker exec <container> node scripts/mfa-reset.mjs <username>` for it; see [If the Superadmin Loses Their Authenticator](#if-the-superadmin-loses-their-authenticator).
+4. **Check the App URL and the mail host** under Settings held for review, with each backup destination held there, and keep or remove each: they came from a file whose seal did not verify, and nothing is sent through them until then.
+5. **Then each account**: check its email address and role, then set its password (🔑) or send an invite (📧), and reset its two-step sign-in (🛡️).
+6. **New API keys**, made by their holders on the Account page: none of the backup's works.
+7. **The host's `scripts/mfa-reset.mjs`** for any account the answer says needs it.
+
+**A clone of the volume shares this server's identity.** A copy of the volume or of the database file started as a second server (a rehearsal kept running, a test instance) has this server's backup seal key and installation id: its backups verify here as this server's own, and an account in them is the same account here. On any clone, change both, on the clone, with its container stopped: delete the `backup_seal_key` row, as [The Release That Makes the Signing Keys Anew](#the-release-that-makes-the-signing-keys-anew-card-2943) documents, and the `installation_id` row, so that its next start makes a new one of each:
+
+```bash
+docker stop <clone>
+docker run --rm --network none -v <clone-volume>:/app/data dumpfire:latest node -e "
+const db = require('better-sqlite3')('/app/data/dumpfire.db', { fileMustExist: true });
+console.log('rows removed:', db.prepare(\"DELETE FROM settings WHERE key IN ('backup_seal_key', 'installation_id')\").run().changes);
+db.close();
+"
+docker start <clone>
+```
+
+Never run it against this server's own volume: its backups would then read as another installation's, and every account in them would lose its password, keys and factors on an import.
+
+**What it cannot tell apart** (card 3009). A backup made before card 3009 carries no installation id, so an account in it is the same account here by its number, creation time and username: two servers built by one script, with the same usernames made in the same seconds, are taken for each other. A superadmin renamed since such a backup was made is not the same account in an unsealed restore of it, and needs the host's `scripts/mfa-reset.mjs`. A password of the same account that differs from this server's is counted under card 2997's figures (`here`, `reset`), and an account not the same here under card 3009's (`unsealed`), apart. And a backup of a clone of this server that was not changed as above verifies as this server's own.
 
 ### Taking and Returning the Cold Copy
 
@@ -7982,7 +8030,9 @@ time: information only, never a reason the server keeps or replaces the key.
   included**: Import Backup restores everything, then lists the mail password, each
   destination's credentials and each webhook's secret and address to enter again ("None was kept
   from this server, because this backup was not made by this server, or was changed since."), and
-  gives no second factor to an account not on this server. Have the mail password and the
+  gives no second factor to an account not on this server, nor, since card 3009, any password or
+  API key to an account not the same here (by number, creation time and username, as such a backup
+  carries no installation id). Have the mail password and the
   destinations' credentials to hand for as long as such a backup might be restored. The
   replacement is automatic: you do not choose when older backups stop counting as this server's.
   Run **▶ Run Now** after the deploy so a backup sealed with the new key exists at once.
@@ -8007,7 +8057,9 @@ image signed with that key's sealed text do not hold here, so remembered browser
 start again once more.
 
 **Changing the backup seal key again later**: with the container stopped, delete its row, then
-start; the start makes a new one, with the line, its record and a scrub of the file.
+start; the start makes a new one, with the line, its record and a scrub of the file. On a copy of
+this server's volume, change the installation id with it (card 3009): see
+[Moving to a New Host](#moving-to-a-new-host).
 
 ```bash
 docker stop dumpfire
@@ -8451,8 +8503,10 @@ nothing matches as well, and needs its password set (🔑) or an invite (📧) o
 account keeps this server's, an account not here gets one nothing matches. A password replaced before
 this release was never fingerprinted, so a backup made before that change can still bring it back:
 after restoring such a backup, reset those accounts' passwords as before. A backup whose seal does not
-verify keeps this server's password for the same account, but can still give an account not here any
-password. See [Restoring from Backup](admin-guide.md#restoring-from-backup).
+verify keeps this server's password for the same account and, since card 3009, gives an account not
+the same here none of its own (see
+[The Release That Takes Nothing That Signs In From an Unsealed Backup](#the-release-that-takes-nothing-that-signs-in-from-an-unsealed-backup-card-3009)).
+See [Restoring from Backup](admin-guide.md#restoring-from-backup).
 
 **A database that ran an unreleased card 2996 build** (a development or test server, never production:
 `332634f` never ran one, so it holds none). Card 2997 fingerprints a password hash in its `$2b$` form
@@ -8524,6 +8578,100 @@ older image is not recorded.
 | H6 | Delete Bob again | Deleted | Refused |
 | H7 | Import the same file as a working copy | The same two lines | Bob can sign in on the copy |
 | H8 | Restart | No new AUTH line about accounts | A WARN: the restore left something the start ended |
+
+### The Release That Takes Nothing That Signs In From an Unsealed Backup (Card 3009)
+
+**Ships in the release since `332634f`** (production), which holds cards 2943, 2947, 2994 to 2997,
+3006 and 3009, together. No migration, no environment variable, no OpenAPI change:
+`POST /api/admin/import` is internal, and its answer only gains fields.
+
+```mermaid
+flowchart LR
+    Imp["Import of a backup\nwhose seal does not verify"] --> Same{"The same account here?\nnumber, creation time, and\nthis installation's id\n(no id: the same username)"}
+    Same -->|"Yes"| Here["This server's password,\nfactors and keys;\nkeys end at the earlier date"]
+    Same -->|"No"| None["No password, factor or key\nfrom the file; schedules paused;\n🔑 or 📧"]
+    Imp --> Sup["The importer not in the file:\nthe backup's superadmin given\nthe importer's password and authenticators"]
+    Imp --> Hold["Mail, App URL and new destinations\nheld for review"]
+```
+
+**What changes.** An import of a backup whose seal does not verify here (another server's, an edited
+file, one made before seals, or one made before card 2943's first start, when the seal key was made
+anew), as it is or as a working copy, takes no password, second factor, API key or invite from the
+file for any account that is not the same account here, and no invite at all (its code review, FP1).
+Each such account is given a password nothing matches, keeps no leave to set up two-step sign-in, has
+its report schedules paused whatever the file holds for it, stays enabled, and needs 🔑 or 📧. A key is kept only where this server held that very key (the same id, fingerprint
+and owner) for the same account, and then ends at the earlier of this server's and the file's expiry
+and deadline. A superadmin of this server restored as the same account is an enabled superadmin
+after the import, whatever the file says. Where the account importing is not in the file as the same
+account and could not sign in as itself afterwards, the file's lowest-numbered enabled superadmin
+that is not the same here is given the importer's password, its authenticators sealed again (not its
+recovery codes), its leave to set up on its password alone, and its email address, which any other
+account of the file holding it gives up for one that receives no mail; its schedules are paused.
+Every other such superadmin gets a password nothing matches, as each does where any superadmin of
+this server restored as the same account can sign in, or none is enabled (FP2, FP5, FP6). Restored as
+it is, the file's mail settings, App URL and destinations at places this server did not hold are held
+for the superadmin's review (card 2922's hold), each told as from a backup whose seal did not verify,
+never as a setter's; a working copy removes them, the App URL included (FP3, FP4). The answer and the `[CRITICAL] [IMPORT]` line count
+all of it and name nobody; the line's details say only `installation`: `this`, `other` or `none`. A
+backup this server sealed restores as before.
+
+**The installation id.** Every server now has `settings.installation_id`, 32 hex characters, made
+once at the start in the signing keys' transaction, and every backup made from now on carries it
+under its seal. One a host edit left not of that form is made anew at the next start, with one
+`[CRITICAL] [STARTUP]` line naming neither id (FP13). It is not secret, is never written to a log or an answer, and is never brought in
+by a restore: the restore puts back this server's own. An account in an unsealed backup carrying
+this id is the same account here by its number and creation time; one carrying another id has none;
+one carrying none (made before this release) is matched by number, creation time and username.
+
+**Moving to a new host**: move the volume and the MFA key file, or import onto a fresh installation
+in the order [Moving to a New Host](#moving-to-a-new-host) gives. **On any clone of the volume**,
+change the backup seal key and the installation id as that section says.
+
+**Nothing to set.** No migration, no environment variable, no OpenAPI change.
+
+**What stays possible (residual).** The username fallback for a backup made before this release
+cannot tell apart servers built by one script with the same usernames made in the same seconds. A
+superadmin renamed since such a backup is not the same account in an unsealed restore of it, and
+needs the host's `scripts/mfa-reset.mjs`. A same-account password that differs is counted under card
+2997's `here` and `reset`, and an account not the same here under `unsealed`, apart. A backup of a
+host-file or volume clone of this server not changed as above verifies as this server's own.
+
+**Rolling back** goes to `332634f`, production before this release, and to nothing between: card
+2997's image was never released on its own. [Card 2943's rollback constraints](#the-release-that-makes-the-signing-keys-anew-card-2943)
+bind first, for the whole release. On `332634f` the `installation_id` row stays in `settings`, and
+that image ignores it; its imports take the file's passwords, keys and invites for accounts not here,
+as before cards 2995 to 3009, and copy the file's `installation_id` over this server's. It reads no
+`setting_holds`, so a mail host, App URL or destination an unsealed import held is in force there:
+remove each such setting under Settings held for review before rolling back. **Coming forward
+again**, if any import was made on the older image, delete the row on the host, with the server
+stopped, so that the next start makes a fresh one:
+
+```bash
+docker stop dumpfire
+docker run --rm --network none -v dumpfire-data:/app/data dumpfire:latest node -e "
+const db = require('better-sqlite3')('/app/data/dumpfire.db', { fileMustExist: true });
+console.log('rows removed:', db.prepare(\"DELETE FROM settings WHERE key = 'installation_id'\").run().changes);
+db.close();
+"
+docker start dumpfire
+```
+
+This server's backups made before then carry the old id, so one of them whose seal does not verify
+reads as another installation's, which only fails safe: none of its accounts is the same here, and
+none takes a password, factor or key from it. **If this step is skipped**,
+this server carries the id of the installation whose backup was imported, so that installation's
+backups read here as `this` in an unsealed restore, and an account in them with the same number and
+creation time is taken for the same account: skipping it weakens the rule for backups of the server
+whose id was copied.
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | ▶ Run Now, then import that backup as it is | Restored as before; no new sentence | A new sentence, or a password changed |
+| H2 | Copy that backup, add an admin account with a known password and an API key, then import it | "1 account(s) in the backup are not on this server as the same account …" and "1 API key(s) in the backup were left out …"; no name | The added account signs in, or its key answers `/api/v1` |
+| H3 | Set up a second, empty instance with its own superadmin and authenticator; import the first server's backup there with that superadmin's password | "The backup's superadmin is not the account you imported with …"; the backup's superadmin signs in there with the new superadmin's password and a code from its authenticator, and not with its own | Locked out, or the import refused |
+| H4 | On the second instance, sign in as an ordinary account with its first-server password | Refused | Signed in |
+| H5 | On the second instance, call `/api/v1/me` with that account's first-server key | `401` | Answered |
+| H6 | On the second instance, open Settings held for review | The mail settings and the App URL held | Neither held |
 
 ## Changing the Schema
 

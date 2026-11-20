@@ -326,7 +326,7 @@ describe('POST /api/admin/reset', () => {
 		for (const account of others) expect(account).toMatchObject({ disabledAt: expect.any(String), disabledBy: e.admin.id });
 	});
 
-	it('(y) card 2997: a reset records the password hash of every account but the superadmin as replaced, and an import after it of a backup taken before brings those accounts back disabled with DUMMY_HASH, the superadmin with its hash as the backup has it', async () => {
+	it('(y) card 2997: a reset records the password hash of every account but the superadmin as replaced, and an import after it of a backup taken before brings those accounts back disabled with DUMMY_HASH, and (card 3009, R3) the superadmin enabled with DUMMY_HASH, there being no importer', async () => {
 		const e = everything();
 		const accounts = Object.values(e.before.users).map((user) => ({ id: user.id as number, role: user.role as string, created: user.created_at as string }));
 		const others = accounts.filter((account) => account.role !== 'superadmin');
@@ -343,6 +343,8 @@ describe('POST /api/admin/reset', () => {
 			sqlite.prepare("SELECT user_id AS id, account_created AS created, role, credential, origin FROM account_endings WHERE ending = 'password' ORDER BY seq").all()
 		).toEqual(others.map((account) => ({ id: account.id, created: account.created, role: '', credential: credentialOf(fixtureHashOf(account.id)), origin: 'here' })));
 
+		// Card 3009: the reset took this server's seal key, its installation id and every account, so the backup's seal does
+		// not verify, no account in it is the same account here, and there is no importer here to give its password.
 		const result = restoreFromBackup(sqlite, backup);
 
 		// The one `errors` line is the fixture's hand-made ending of account 900, which names no account here (card 2997,
@@ -350,12 +352,15 @@ describe('POST /api/admin/reset', () => {
 		expect(result.errors).toEqual([
 			"1 row(s) of the backup's record of account endings were left out, as they can name no account here: 1 with an id above the backup's own account counter. The rest of the record was added to this server's."
 		]);
+		expect(result.sealVerified).toBe(false);
 		expect(result.accountsKept).toMatchObject({ disabled: 2 });
-		expect(result.passwordsKept).toEqual({ here: 0, reset: 2, superadmin: 0 });
+		// Card 3009: no account takes its password from the file, counted unsealed, the superadmin too, failing closed with
+		// no importer (R3). Through the route there is always one, whose password the superadmin would be given.
+		expect(result.passwordsKept).toEqual({ here: 0, reset: 0, superadmin: 0, unsealed: 3, superadminGivenYours: 0, givenYoursWithoutFactor: 0, givenYoursMayEnrol: 0, emailGivenUp: 0 });
 		const restored = (id: number) =>
 			sqlite.prepare('SELECT disabled_at AS disabledAt, password_hash AS passwordHash FROM users WHERE id = ?').get(id) as { disabledAt: string | null; passwordHash: string };
 		for (const account of others) expect(restored(account.id), account.role).toEqual({ disabledAt: expect.any(String), passwordHash: DUMMY_HASH });
-		expect(restored(e.admin.id)).toEqual({ disabledAt: null, passwordHash: fixtureHashOf(e.admin) });
+		expect(restored(e.admin.id)).toEqual({ disabledAt: null, passwordHash: DUMMY_HASH });
 	});
 
 	it('test 6: leaves the record of account endings out of the tables a restore and a reset clear (card 2996)', () => {

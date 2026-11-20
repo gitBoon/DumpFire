@@ -38,7 +38,7 @@ import { openSessionUser, sessionHashIn, type Credential } from './auth';
 import { isAdmin } from './board-access';
 import { db } from './db';
 import { enrolmentLinks, users } from './db/schema';
-import { MAIL_PROBLEM_WORDS, type MailOutcome } from './email';
+import { type MailOutcome, mailProblemWords } from './email';
 import { usableInvite } from './invites';
 import { createLogger } from './logger';
 
@@ -106,7 +106,7 @@ export function inviteMailAnswer(opts: {
 	const { outcome, credential, actorId, accountId, token, baseUrl } = opts;
 	if (outcome.sent) return { mailSent: true };
 
-	const mailProblem = MAIL_PROBLEM_WORDS[outcome.problem];
+	const mailProblem = mailProblemWords(outcome.problem);
 	const notGiven = whyNotGiven(credential, actorId, accountId, token);
 	const said = `Invite for user ${accountId} was issued by user ${actorId}; its mail was not sent (${mailProblem}), and its link was`;
 

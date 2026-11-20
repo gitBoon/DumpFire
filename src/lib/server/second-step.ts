@@ -60,7 +60,7 @@ import {
 	usableEnrolmentLink
 } from './mfa-store';
 import { sha256Hex } from './mfa-crypto';
-import { MAIL_PROBLEM_WORDS, PLACEHOLDER_ORIGIN, isSmtpConfigured, linkBaseUrl, mailCannotSend, mailEverConfigured } from './email';
+import { PLACEHOLDER_ORIGIN, isSmtpConfigured, linkBaseUrl, mailCannotSend, mailEverConfigured, mailProblemWords } from './email';
 import { endUnusedInvites } from './invites';
 import { matchingStep, readAuthenticatorCode } from './totp';
 import { canonicalRecoveryCode, newRecoveryCodes } from './recovery-codes';
@@ -450,7 +450,7 @@ async function releaseMail(
 	const mailed = await sendReleaseLinkMail(outcome.email, outcome.username, outcome.token, base, { at: new Date(now), address });
 	if (!mailed.sent) {
 		inTransaction(() => sqlite.prepare('DELETE FROM enrolment_links WHERE token_hash = ?').run(tokenHash));
-		answers.noSecondStep(`could not email (${MAIL_PROBLEM_WORDS[mailed.problem]})`, 'warn');
+		answers.noSecondStep(`could not email (${mailProblemWords(mailed.problem)})`, 'warn');
 		return fail(503, { error: COULD_NOT_EMAIL, identity });
 	}
 	// The new link is the one that works now (decision 3).

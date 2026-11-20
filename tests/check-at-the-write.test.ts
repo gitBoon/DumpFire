@@ -5745,6 +5745,20 @@ const KEY_DYNAMIC_CLEARS: Record<string, { count: number; why: string }> = {
 const KEY_UPDATE_COLUMNS = ['last_used_at', 'deadline_at'];
 const KEY_UPDATE_FIELDS = ['lastUsedAt', 'deadlineAt'];
 
+/**
+ * Card 3009 (R5): the one place an `UPDATE api_keys` may set `expires_at` too, by `file#function`, with how many and
+ * why: never the hash, the owner or anything else, and only ever to an earlier moment than the key had. Every other
+ * writer is held to KEY_UPDATE_COLUMNS as before.
+ */
+const KEY_EXPIRY_WRITERS: Record<string, { count: number; why: string }> = {
+	'src/lib/server/db/restore.ts#takeEarlierEnds': {
+		count: 1,
+		why:
+			"Card 3009, R5: a key a backup whose seal did not verify brought back, kept because this server held that very key for the same account, given " +
+			"the earlier of this server's expiry and the file's (earlierEnd), so that a key expired here never comes back working from a file that says it has none. It only ever ends a key sooner."
+	}
+};
+
 /** The functions that may call `endApiKeys` (R12), each once: every ender. */
 const END_API_KEYS_CALLERS = [
 	'src/lib/server/api-key-revoke.ts#revokeApiKeys',
@@ -5834,7 +5848,17 @@ const USERS_ENDING_WRITES: Record<string, { count: number; why: string }> = {
 		count: 2,
 		why:
 			"Card 2997 (S1b, section 13.1): the restore's password step, over a restored hash the record already names as replaced, so no row, or any, R2, from an unsealed backup, " +
-			"recorded first as a belt (the code review's FP6): this server's own hash for the same account, or DUMMY_HASH and no enrol leave, then endRestoredAccess."
+			"recorded first as a belt (the code review's FP6): this server's own hash for the same account, or DUMMY_HASH and no enrol leave, then endRestoredAccess. " +
+			"Card 3009 adds no statement, only uses of the same two: from a backup whose seal did not verify, an account not the same here given DUMMY_HASH and no enrol " +
+			"leave (`notTakenOne`, no row: the file's hash was never this server's, so nothing here replaced it), and the carry, `keep` giving the backup's superadmin the " +
+			"importer's own hash as this server held it (section 14.1); its email write sets no ending column."
+	},
+	'src/lib/server/db/restore.ts#keepSuperadminsHere': {
+		count: 1,
+		why:
+			"Card 3009, R2: the restore putting back this server's own superadmin, restored as the same account from a backup whose seal did not verify, as an " +
+			"enabled superadmin whatever the file made it: role, disabled_at and disabled_by to what they were here, before carryDisabled and the record's rulings. " +
+			"It ends nothing and lowers nothing, so it records nothing; a superadmin's ending rows are this server's `deleted` alone (card 2996, FP1)."
 	}
 };
 
@@ -5876,7 +5900,10 @@ const PASSWORD_HASH_CLASSES: Record<string, { kind: 'records' | 'restore' | 'sta
 	},
 	'src/lib/server/db/restore.ts#applyPasswordRulings': {
 		kind: 'restore',
-		why: 'W10, this server’s own hash for the same account, or DUMMY_HASH, over a restored hash the record already names, or one R2 discards, recorded first as a `belt` row (FP6).'
+		why:
+			'W10, this server’s own hash for the same account, or DUMMY_HASH, over a restored hash the record already names, or one R2 discards, recorded first as a `belt` row (FP6). ' +
+			'Card 3009, over an unsealed backup’s hash of an account not the same here: DUMMY_HASH with no row, as that hash was never this server’s and recording it would let ' +
+			'a planted file fingerprint accounts for card 2996’s matcher; and the carry, the importer’s own hash as this server held it, which no row names.'
 	},
 	'src/lib/server/account-ending-bodies.ts#changeAccountRole': { kind: 'not a writer', why: 'W14: the route’s fields, which readAccountFields gives with no password; listed because `.set(updates)` is not written out.' },
 	'src/routes/api/users/[id]/+server.ts#PUT': { kind: 'not a writer', why: 'W14: readAccountFields gives no password; listed because its `.set` is not an object literal.' }
@@ -5977,6 +6004,8 @@ type KeyReading = {
 	passwordRecorders: string[];
 	/** Card 2997: each such call and each write of `password_hash`, by `file#function`, where in the file it starts. */
 	passwordSteps: { key: string; at: number; step: 'records' | 'writes' }[];
+	/** Card 3009: each `UPDATE api_keys` that sets `expires_at`, by `file#function`. */
+	expiryWrites: string[];
 };
 
 /**
@@ -5996,7 +6025,7 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 	const tree = ts.createSourceFile(file, file.endsWith('.svelte') ? scriptsOf(source) : source, ts.ScriptTarget.Latest, true, kind);
 	const at = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
 	const keyOf = (node: ts.Node) => `${file}#${writerNameOf(node)}`;
-	const reading: KeyReading = { deletes: [], clears: [], enders: [], findings: [], userWrites: [], passwordWriters: [], dynamicSets: [], recorders: [], passwordRecorders: [], passwordSteps: [] };
+	const reading: KeyReading = { deletes: [], clears: [], enders: [], findings: [], userWrites: [], passwordWriters: [], dynamicSets: [], recorders: [], passwordRecorders: [], passwordSteps: [], expiryWrites: [] };
 	/** Card 2997: a write of `password_hash` at `node`, kept with where it starts. */
 	const writesPassword = (node: ts.Node) => {
 		reading.passwordWriters.push(keyOf(node));
@@ -6038,7 +6067,10 @@ function judgeKeyWrites(file: string, source: string): KeyReading {
 		}
 		for (const found of text.matchAll(KEY_SQL_UPDATE)) {
 			const columns = found[1].split(',').map((part) => part.trim().split(/\s*=/)[0].replace(/["`[\]]/g, '').toLowerCase());
-			const others = columns.filter((column) => !KEY_UPDATE_COLUMNS.includes(column));
+			// Card 3009 (R5): `expires_at` too, in KEY_EXPIRY_WRITERS' functions alone, each counted.
+			const expiryWriter = keyOf(node) in KEY_EXPIRY_WRITERS;
+			if (columns.includes('expires_at')) reading.expiryWrites.push(keyOf(node));
+			const others = columns.filter((column) => !KEY_UPDATE_COLUMNS.includes(column) && !(expiryWriter && column === 'expires_at'));
 			if (others.length > 0 || /^UPDATE\s+OR\b/i.test(found[0])) {
 				reading.findings.push(`${file}:${at(node)} updates api_keys (${others.join(', ') || 'OR'}) in ${writerNameOf(node)}: only last_used_at and deadline_at may be set (card 2995)`);
 			}
@@ -6198,6 +6230,10 @@ describe('every delete of an API key or an account, and the record of ended keys
 	it('test 21: holds on KEY_DELETERS and KEY_DYNAMIC_CLEARS exactly what the walk found, each as many times as listed', () => {
 		expect(counted((reading) => reading.deletes)).toEqual(Object.fromEntries(Object.entries(KEY_DELETERS).map(([key, { count }]) => [key, count])));
 		expect(counted((reading) => reading.clears)).toEqual(Object.fromEntries(Object.entries(KEY_DYNAMIC_CLEARS).map(([key, { count }]) => [key, count])));
+	});
+
+	it('card 3009 (R5): an UPDATE api_keys sets expires_at only in KEY_EXPIRY_WRITERS, each as many times as listed', () => {
+		expect(counted((reading) => reading.expiryWrites)).toEqual(Object.fromEntries(Object.entries(KEY_EXPIRY_WRITERS).map(([key, { count }]) => [key, count])));
 	});
 
 	it('test 21: endApiKeys is called by exactly the enders, each once', () => {

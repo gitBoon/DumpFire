@@ -28,6 +28,7 @@ import { createHash } from 'node:crypto';
 import { and, asc, eq, like } from 'drizzle-orm';
 import { db } from './db';
 import { settingHolds } from './db/schema';
+import { HELD_FROM_UNSEALED_BACKUP } from '../settings-held';
 
 /** The setter rows' and the holds' name for every smtp_* setting, as one. */
 export const MAIL_SETTING = 'mail';
@@ -35,8 +36,14 @@ export const MAIL_SETTING = 'mail';
 export const APP_URL_SETTING = 'app_url';
 /** Each destination's begins with this, its name after it. */
 export const DESTINATION_SETTING = 'backup_destination:';
-/** Why a setting is held: the one reason there is (`held_because`). */
+/** Why a setting is held (`held_because`): the account that set it had its access ended. */
 export const SETTER_ACCESS_ENDED = 'setter access ended';
+/**
+ * Or: it came in with a backup whose seal did not verify, at a place this server did not hold (card 3009, R4;
+ * `holdUnsealedSettings` in restore.ts). Set by nobody. Held, kept and removed as any other; told in its own words
+ * (its code review, FP4), never as a setter's ending. The words' module holds the value, so the page reads it too.
+ */
+export const UNSEALED_RESTORE = HELD_FROM_UNSEALED_BACKUP;
 
 /**
  * A place as a row stores it: a SHA-256 digest of what decides where the
@@ -109,6 +116,37 @@ export function destinationHeldAt(place: string): boolean {
 	);
 }
 
+/**
+ * Why `setting` at `place` is held (`held_because`), or null where it is not held there: what the words a hold is told
+ * in are picked by (card 3009's code review, FP4).
+ */
+export function heldBecauseAt(setting: string, place: string | null): string | null {
+	if (place === null) return null;
+	const row = db
+		.select({ heldBecause: settingHolds.heldBecause })
+		.from(settingHolds)
+		.where(and(eq(settingHolds.setting, setting), eq(settingHolds.place, place)))
+		.get();
+	return row?.heldBecause ?? null;
+}
+
+/**
+ * Why a destination at `place` is held, by every hold of a destination's name there (as `destinationHeldAt` finds
+ * them): an ended setter's, or another this build does not know, where any is; the unsealed restore's only where every
+ * one is (FP4). Null where none is held there.
+ */
+export function destinationHeldBecause(place: string): string | null {
+	if (!anyHeld()) return null;
+	const reasons = db
+		.select({ heldBecause: settingHolds.heldBecause })
+		.from(settingHolds)
+		.where(and(eq(settingHolds.place, place), like(settingHolds.setting, `${DESTINATION_SETTING}%`)))
+		.all()
+		.map((row) => row.heldBecause);
+	if (reasons.length === 0) return null;
+	return reasons.find((reason) => reason !== UNSEALED_RESTORE) ?? UNSEALED_RESTORE;
+}
+
 /** One row of `setting_holds`, as the review list and the start's line read it. */
 export type HoldRow = {
 	setting: string;
@@ -136,3 +174,15 @@ export function heldSettingWords(setting: string): string {
 export const DESTINATION_HELD =
 	"This backup destination is held for the superadmin's review: the account that set it up had its access ended. " +
 	'Nothing is sent to it until the superadmin keeps or removes it under Settings held for review on the admin page.';
+
+/** The same, of a destination held as it came in with a backup whose seal did not verify (card 3009's code review, FP4). */
+export const DESTINATION_HELD_UNSEALED =
+	"This backup destination is held for the superadmin's review: it came in with a backup whose seal did not verify, so where it " +
+	"sends is only the file's word. Nothing is sent to it until the superadmin keeps or removes it under Settings held for review on the admin page.";
+
+/** What a destination held at `place` is told, by why it is held (FP4); null where it is not held. */
+export function destinationHeldWords(place: string): string | null {
+	const because = destinationHeldBecause(place);
+	if (because === null) return null;
+	return because === UNSEALED_RESTORE ? DESTINATION_HELD_UNSEALED : DESTINATION_HELD;
+}

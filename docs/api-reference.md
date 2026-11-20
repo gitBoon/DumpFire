@@ -1,11 +1,13 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.157
+version: 1.158
 status: As-Built
 date: 2026-11-20
 tags:
   - api
+  - card-3009
+  - unsealed-backup-grants
   - card-2997
   - passwords-kept-on-restore
   - card-2996
@@ -64,7 +66,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "REST API reference for DumpFire's external v1 API: authentication, the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -431,6 +433,86 @@ and its access; and at the write). Not marked Breaking. The admin page's load
 `null` when unreadable, `freeInodes` `null` where the volume counts none. The 507 is given too when
 fewer than 1,000 inodes are free, when the free space is not read within 2 seconds, and for 5
 minutes after a write found the disk full unless the free space has grown since.
+
+### Changes on 2026-11-20: an unsealed backup gives no account not here a password, key or factor (card 3009)
+
+Not Breaking; no operation, field or schema of `/api/v1` changes, and OpenAPI stays `1.15.0`
+(unreleased) with its note as it is. No migration and no environment variable. An import of a backup
+whose seal does not verify takes no password, second factor or API key from it for any account that
+is not the same account here; every backup now carries the server's installation id, which decides
+that, and which no answer or log line ever holds. A key of such an account answers `/api/v1` `401`, as
+any key the server does not hold.
+
+Internal (`/api`):
+
+- `POST /api/admin/import` (additive). `passwordsKept` is now `{ here, reset, superadmin, unsealed,
+  superadminGivenYours, givenYoursWithoutFactor, givenYoursMayEnrol, emailGivenUp }`, given where any
+  of the first five is above 0: `unsealed`, accounts not the same here whose password in the backup was
+  not taken; `superadminGivenYours` (0 or 1), the backup's superadmin given the importing account's
+  password and authenticators; `givenYoursWithoutFactor` (0 or 1), given none of its authenticators;
+  `givenYoursMayEnrol` (0 or 1), so given, it holds the importer's leave to set up on its password alone
+  and that leave's 14 days run; `emailGivenUp`, the other accounts in the backup that held the
+  importer's email address, which the carried superadmin always takes, given one under `.invalid`
+  (card 3009's code review, FP5, FP6). Each adds its sentence to `accountsKeptLines` and `message`:
+  "N account(s) in the backup are not on this server as the same account, and the backup's seal did
+  not verify, so the password each holds in it was not taken: each needs its password set (🔑) or an
+  invite (📧) before it can sign in, and its report schedules were paused. The backup's App URL and
+  mail host, where they differ from this server's, are held for review. Before sending an invite, check
+  each one's email address and role, and the App URL and the mail host: in a backup whose seal did not
+  verify they are only the file's word. Or set its password with 🔑, which mails nothing." (for
+  `?outside=off`: "…: each needs its password set (🔑) before it can sign in. As a working copy, every
+  report schedule was switched off, and the mail settings and the backup's App URL were removed, so no
+  invite can be mailed. Before giving anyone a password, check each one's email address and role: in a
+  backup whose seal did not verify they are only the file's word.", FP14) and "The backup's superadmin
+  is not the account you imported with, and the backup's seal did not verify, so its password in the
+  backup was not taken: it was given the password you confirmed this import with, and your
+  authenticators. Sign in as it, the superadmin that now holds your email address, with that password
+  and a code from your authenticator, and change the password on the Account page if you wish."
+  (without a factor: "…, but none of your authenticators, as no MFA key is loaded or none of yours
+  could be moved: it cannot sign in until the server's host resets its two-step sign-in with
+  scripts/mfa-reset.mjs. Then sign in as it, the superadmin that now holds your email address, with
+  that password."; with the leave: "…, and your leave to set up two-step sign-in on that password
+  alone. Sign in as it, the superadmin that now holds your email address, with that password and set
+  up an authenticator when asked, while that leave's 14 days run; if it is asked for a link instead,
+  the server's host resets its two-step sign-in with scripts/mfa-reset.mjs."), never naming a username
+  (FP7), and, where `emailGivenUp` is above 0, " N other account(s) in the backup held your email
+  address and were given one that receives no mail: set each one's address on the Users page before
+  inviting it.".
+- `outside` for `?outside=off` of a backup whose seal did not verify gains `appUrl: 1` where its App
+  URL was removed (absent otherwise), and `workingCopy` ends ", and the backup's App URL removed, as
+  its seal did not verify: links begin with this server's own address." (FP3).
+- An unsealed import restores no invite at all; a sealed one only used invites, written used (FP1).
+- The answer's `apiKeysLeftOut` stays the count of keys ended here; the restore's figure, in the
+  `[CRITICAL] [IMPORT]` line's details, is now `{ count, keyIds, workingCopy, unsealed }`. `unsealed`
+  above 0 adds to `keysLeftOut`: "N API key(s) in the backup were left out, because the backup's seal did not
+  verify and this server did not hold them for the same account: none of them works, and their holders
+  make new ones on the Account page."
+- `unsealedHeld`, `{ mail, destinations, appUrl }`, absent where all are 0: what the restore held for
+  the superadmin's review; `settingsHeld` gains its sentence, which the panel shows: "The backup's seal
+  did not verify, so the mail settings, the App URL and N backup destination(s) it brought in, at
+  places this server did not hold, were held for the superadmin's review: nothing is sent through them,
+  and no link begins with the App URL, until the superadmin checks each and keeps or removes it under
+  Settings held for review." (naming only the kinds held).
+- `mfaWithoutFactor`, for an unsealed import, names no account (FP7): the accounts not the same here
+  "N account(s) in the backup are not on this server as the same account and have no second factor
+  after this restore: each needs its two-step sign-in reset before it can sign in.", and those that are
+  "N account(s) on this server have no second factor after this restore and each needs its two-step
+  sign-in reset before it can sign in; the backup's seal did not verify, so none is named here."; where
+  the carry gave the first second factors on the server (FP12), it begins "Your authenticators, given
+  to the backup's superadmin, are the first second factors on this server, so two-step sign-in is in
+  use from this restore: every other account needs a second factor before it can sign in."
+- A restore that committed and then failed answers `settingsHeld` and `unsealedHeld` too.
+- The `[CRITICAL] [IMPORT]` line counts `unsealed` in "keeping N of the backup's password(s) out of
+  use", adds ", giving the backup's superadmin the importing account's password" (" but no
+  authenticator"), "N API key(s) of a backup whose seal did not verify" and ", holding N setting(s) of
+  a backup whose seal did not verify for the superadmin's review"; its details carry the new fields,
+  `unsealedHeld` where any, and `installation` (`this`, `other` or `none`, only where the seal did not
+  verify), never the id.
+- `GET /api/admin/settings/held` lists the restore's holds as any other, with no setter (the
+  `setting_holds` row's `held_because` is `restored from a backup whose seal did not verify`); Keep
+  and Remove work on them unchanged. Each item now carries `heldBecause`, which the page words it by:
+  a restore's hold names no setter (FP4). A held mail's `problem` stays `held`, and its words, and a
+  held destination's `409` message, say it came in with a backup whose seal did not verify.
 
 ### Changes on 2026-11-20: a restore never brings back a password replaced here (card 2997)
 

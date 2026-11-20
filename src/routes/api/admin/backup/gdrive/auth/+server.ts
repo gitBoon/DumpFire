@@ -32,8 +32,7 @@ import { error, isHttpError, json } from '@sveltejs/kit';
 import { google, type Auth, type drive_v3 } from 'googleapis';
 import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
 import { whilePasswordHolds } from '$lib/server/auth';
-import { destinationHeldNow, getBackupConfig, saveBackupConfig } from '$lib/server/backup';
-import { DESTINATION_HELD } from '$lib/server/setting-holds';
+import { destinationHeldNow, destinationHeldWordsNow, getBackupConfig, saveBackupConfig } from '$lib/server/backup';
 import { makeDumpfireFolder, reachFolder } from '$lib/server/backup-destinations';
 import { quotedName } from '$lib/server/backup-secrets';
 import { afterCommit } from '$lib/server/db/transaction';
@@ -124,7 +123,8 @@ function connectable(destName: string) {
 	const dest = config.destinations.find(d => d.name === destName && d.type === 'gdrive') as any;
 	if (!dest) throw error(404, 'Google Drive destination not found');
 	// Not one held for the superadmin's review (card 2922, R5): a Connect binds it to a Google account anew.
-	if (destinationHeldNow(dest)) throw error(409, DESTINATION_HELD);
+	const held = destinationHeldWordsNow(dest);
+	if (held !== null) throw error(409, held);
 	const { clientId, clientSecret } = dest;
 	if (!clientId || !clientSecret) throw error(400, 'Client ID and Secret required');
 	return { dest, clientId, clientSecret };
@@ -145,7 +145,8 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const dest = config.destinations.find(d => d.name === destName && d.type === 'gdrive');
 	if (!dest || dest.type !== 'gdrive') throw error(404, 'Google Drive destination not found');
 	// Not one held for the superadmin's review (card 2922, R5).
-	if (destinationHeldNow(dest)) throw error(409, DESTINATION_HELD);
+	const held = destinationHeldWordsNow(dest);
+	if (held !== null) throw error(409, held);
 
 	const { clientId, clientSecret } = dest as any;
 	if (!clientId || !clientSecret) throw error(400, 'Client ID and Secret required');

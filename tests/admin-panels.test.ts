@@ -3878,6 +3878,35 @@ describe('the settings held for review on the admin pages, mounted (card 2922, c
 		expect(buttonNamed(asAdmin, 'Remove')).toBeUndefined();
 	});
 
+	it('words each hold by why it was held: an unsealed restore names no setter, and says the list came in with that backup (card 3009’s code review, FP4)', async () => {
+		const RESTORED = { ...MAIL_HELD, setBy: null, setByName: null, heldBecause: 'restored from a backup whose seal did not verify' };
+		answer = (what) => (what === 'GET /api/admin/settings/held' ? Response.json({ held: [RESTORED], tombstones: 0, mayRelease: true }) : undefined);
+		const target = draw(SettingsHeldPanel, { confirm: vi.fn() });
+		await settle();
+
+		const said = target.querySelector('.settings-held')!.textContent!.replace(/\s+/g, ' ');
+		expect(said).toContain("Each of these came in with a backup whose seal did not verify, so where it sends is only the file's word. Nothing is sent to it until you keep it or remove it.");
+		expect(target.querySelector('.held-meta')!.textContent!.trim()).toBe('From a backup whose seal did not verify; held since 2026-11-19 09:00:00 UTC');
+		expect(said).not.toMatch(/Set by|user unknown|access was ended/);
+
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		// Both reasons at once: the list says both, and each item its own.
+		answer = (what) =>
+			what === 'GET /api/admin/settings/held'
+				? Response.json({ held: [RESTORED, { ...MAIL_HELD, setting: 'app_url', kind: 'app_url', where: { url: 'https://x.example.test' } }], tombstones: 0, mayRelease: true })
+				: undefined;
+		const mixed = draw(SettingsHeldPanel, { confirm: vi.fn() });
+		await settle();
+		expect(mixed.querySelector('.settings-held')!.textContent!.replace(/\s+/g, ' ')).toContain(
+			'Each of these was set by an account whose access was ended with its API keys, or came in with a backup whose seal did not verify.'
+		);
+		expect([...mixed.querySelectorAll('.held-meta:not(.held-urgent)')].map((meta) => meta.textContent!.trim().split(';')[0])).toEqual([
+			'From a backup whose seal did not verify',
+			'Set by ann'
+		]);
+	});
+
 	it('shows the superadmin a banner while a setting is held, and nothing to an administrator or with none held', () => {
 		// In its own number (C11): the mail settings are, a destination is.
 		const shown = draw(SettingsHeldBanner, { held: [{ kind: 'mail', name: null }], superadmin: true });

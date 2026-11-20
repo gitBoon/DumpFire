@@ -610,6 +610,8 @@ export type HeldForReview = {
 	heldAt: string;
 	setBy: number | null;
 	setByName: string | null;
+	/** Why it is held (`held_because`), which picks the words it is told in (card 3009's code review, FP4). */
+	heldBecause: string;
 	/** Where it sends, with no secret (R4): the mail's host, port, user and way out; the App URL; a destination masked. */
 	where: Record<string, unknown>;
 };
@@ -630,7 +632,7 @@ export function settingsHeldForReview(): { held: HeldForReview[]; tombstones: nu
 	const listed = new Set<unknown>();
 	let inForce = 0;
 	for (const row of rows) {
-		const base = { place: row.place, holdPlace: row.place, heldAt: row.heldAt, setBy: row.setBy, setByName: row.setByName };
+		const base = { place: row.place, holdPlace: row.place, heldAt: row.heldAt, setBy: row.setBy, setByName: row.setByName, heldBecause: row.heldBecause };
 		if (row.setting === MAIL && now.mail === row.place) {
 			const { host, port, user, allowInsecure } = mailConnectionAsRead();
 			held.push({ ...base, setting: MAIL, kind: 'mail', name: null, where: { host, port, user, allowInsecure } });

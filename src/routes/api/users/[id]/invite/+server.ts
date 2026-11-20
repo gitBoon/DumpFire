@@ -2,7 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import { issueInvite } from '$lib/server/invites';
 import { holdsFactor } from '$lib/server/mfa-store';
 import { inviteMailAnswer } from '$lib/server/invite-link';
-import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, linkBaseUrlWithoutAppUrlSetting, mailCannotSendProblem } from '$lib/server/email';
+import { NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, linkBaseUrlWithoutAppUrlSetting, mailCannotSendProblem, mailProblemWords } from '$lib/server/email';
 import { settingsSetBy } from '$lib/server/setting-setters';
 import { sendInviteEmail } from '$lib/server/notifications';
 import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
@@ -111,7 +111,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 		if (cannot !== null) {
 			throw error(
 				400,
-				`The invite was not made: ${MAIL_PROBLEM_WORDS[cannot]}. Any earlier invite to this account still works.`
+				`The invite was not made: ${mailProblemWords(cannot)}. Any earlier invite to this account still works.`
 			);
 		}
 

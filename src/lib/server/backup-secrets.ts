@@ -554,7 +554,7 @@ const hasColumns = (database: Database.Database, table: string, ...columns: stri
  * table does not, and the table's rows are the ones the seal is made over
  * (the second review's B1).
  */
-function settingOf(database: Database.Database, key: string): string | null {
+export function settingOf(database: Database.Database, key: string): string | null {
 	if (!hasColumns(database, 'settings', 'key', 'value')) return null;
 	const row = database.prepare('SELECT value FROM settings NOT INDEXED WHERE key = ?').get(key) as { value: string } | undefined;
 	return row ? row.value : null;
@@ -1193,6 +1193,74 @@ export function unsealedBecause(backup: Database.Database, key: string | null): 
 	const check = backupFailsCheck(backup);
 	if (check !== null) return { seal: 'failed', check };
 	return sealVerifies(backup, key) ? null : { seal: 'failed', check: null };
+}
+
+// ─── The installation id (card 3009, R6) ─────────────────────────────────────
+
+/**
+ * The setting that names this installation: 16 random bytes as 32 lower-case
+ * hex, made once at start (`ensureInstallationId`) and not secret. Every backup
+ * carries it under its seal (`withoutSecrets`); no restore brings a backup's in
+ * (`rowsToRestore`), and a restore puts this server's back as it was, or none
+ * where it had none. Never in a log or an answer: a restore says only the
+ * verdict (`installationOf`).
+ */
+export const INSTALLATION_ID = 'installation_id';
+
+/** An installation id's one form: 32 lower-case hex. */
+const INSTALLATION_FORM = /^[0-9a-f]{32}$/;
+
+/**
+ * What a backup's installation id says of it beside this server's: `this`,
+ * the same id; `other`, another, a malformed one, more than one, or one where
+ * this server has none; `none`, it carries none (made before card 3009, or the
+ * row deleted). Decides "the same account here" for an unsealed backup
+ * (`sameAccountHere`, mfa-backup.ts).
+ */
+export type Installation = 'this' | 'other' | 'none';
+
+/** This server's installation id, where it holds one of the form; null otherwise. Reads, and writes nothing. */
+export function installationIdHere(live: Database.Database): string | null {
+	const stored = settingOf(live, INSTALLATION_ID);
+	return stored !== null && INSTALLATION_FORM.test(stored) ? stored : null;
+}
+
+/**
+ * Whether this server holds an installation id that is not of its one form (a host's edit, or a later build's): text
+ * of 32 lower-case hex, nothing else (card 3009's code review, FP13). Reads, and writes nothing.
+ */
+export function installationIdMalformed(live: Database.Database): boolean {
+	const stored = settingOf(live, INSTALLATION_ID) as unknown;
+	return stored !== null && !(typeof stored === 'string' && INSTALLATION_FORM.test(stored));
+}
+
+/**
+ * This server's installation id, made where it holds none, or where the one it holds is not of its form (FP13: a
+ * malformed one is replaced, never kept by `INSERT OR IGNORE`, as every backup would carry it and every restore read
+ * it as another installation's); one of the form is never replaced. The one stored answered: by the start, in the
+ * transaction of its signing keys, which says CRITICAL where it replaced one (`installationIdMalformed` first), and by
+ * `withoutSecrets`' default argument. Never by a restore.
+ */
+export function ensureInstallationId(live: Database.Database = sqlite): string {
+	if (installationIdMalformed(live)) live.prepare('DELETE FROM settings WHERE key = ?').run(INSTALLATION_ID);
+	live.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(INSTALLATION_ID, randomBytes(16).toString('hex'));
+	return settingOf(live, INSTALLATION_ID) as string;
+}
+
+/**
+ * The verdict on `backup`'s installation id beside `here`, this server's
+ * (`installationIdHere`), read from the settings table's own storage
+ * (`fromTableStorage`), as every read of a backup is: `none` where it has no
+ * settings table, no key and value columns, or no row; `this` where it holds
+ * exactly one row, of the form, equal to `here`; `other` for anything else, a
+ * doubt being another installation. Reads, and writes nothing.
+ */
+export function installationOf(backup: Database.Database, here: string | null): Installation {
+	if (!hasColumns(backup, 'settings', 'key', 'value')) return 'none';
+	const rows = backup.prepare(fromTableStorage(backup, 'settings', 'key = ?')).all(INSTALLATION_ID) as { value: unknown }[];
+	if (rows.length === 0) return 'none';
+	const value = rows[0].value;
+	return rows.length === 1 && here !== null && typeof value === 'string' && INSTALLATION_FORM.test(value) && value === here ? 'this' : 'other';
 }
 
 // ─── The restore ─────────────────────────────────────────────────────────────

@@ -55,6 +55,31 @@ import production from './fixtures/production-schema-2026-10-12.json';
 import { compare, stateOf, type Findings, type State } from './rehearsal/compare';
 import { ONE_OFFS, ONE_OFFS_FROM, type OneOff } from './rehearsal/one-offs';
 
+/**
+ * Card 3009: what an import says of a backup's superadmin given the importer's password, the backup's seal not verifying
+ * and the importer not in it: the route's importer holds no authenticator, so none was carried and the host's reset is named.
+ */
+const GIVEN_YOURS_NO_FACTOR =
+	"The backup's superadmin is not the account you imported with, and the backup's seal did not verify, so its password in the backup was " +
+	'not taken: it was given the password you confirmed this import with, but none of your authenticators, as no MFA key is loaded or none ' +
+	"of yours could be moved: it cannot sign in until the server's host resets its two-step sign-in with scripts/mfa-reset.mjs. Then sign " +
+	'in as it, the superadmin that now holds your email address, with that password.';
+/** Card 3009: and of one account in it not the same here, its password not taken. */
+const ONE_PASSWORD_NOT_TAKEN =
+	"1 account(s) in the backup are not on this server as the same account, and the backup's seal did not verify, so the password each " +
+	'holds in it was not taken: each needs its password set (🔑) or an invite (📧) before it can sign in, and its report schedules were ' +
+	"paused. The backup's App URL and mail host, where they differ from this server's, are held for review. Before sending an invite, " +
+	"check each one's email address and role, and the App URL and the mail host: in a backup whose seal did not verify they are only the " +
+	"file's word. Or set its password with 🔑, which mails nothing.";
+/** `text` as a regular expression matches it, word for word. */
+const literally = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Card 3009 (R4): what an import says of a backup's mail settings held for review, its seal not verifying. */
+const HELD_MAIL_UNSEALED =
+	"The backup's seal did not verify, so the mail settings it brought in, at places this server did not hold, were held " +
+	"for the superadmin's review: nothing is sent through them, and no link begins with the App URL, until the superadmin checks each and " +
+	'keeps or removes it under Settings held for review.';
+
 const ROOT = process.cwd();
 const REAL_MIGRATIONS = join(ROOT, 'drizzle');
 const realFiles = readdirSync(REAL_MIGRATIONS)
@@ -5177,7 +5202,10 @@ describe('restoring a backup taken before the latest migrations', () => {
 						'an Options column at the far left of 3 delivery board\\(s\\), ' +
 						'the default \\(0\\) in place of NULL in columns\\.wip_limit on 2 row\\(s\\)\\. ' +
 						'2 request link\\(s\\) replaced: a link mailed before this restore no longer works, and its requester can have ' +
-						'a new one sent from the page it opens\\.$'
+						'a new one sent from the page it opens\\. ' +
+						// Card 3009: one account's password not taken, its superadmin given the importer's, and (R4) its mail
+						// settings, from a file with no seal, at a place this server did not hold, held.
+						`${literally(`${ONE_PASSWORD_NOT_TAKEN} ${GIVEN_YOURS_NO_FACTOR} ${HELD_MAIL_UNSEALED}`)}$`
 				)
 			);
 			expect(logged[1]).toBe(`[ERROR] [IMPORT] Restore committed, with 1 problem(s): ${problem}`);
@@ -5222,7 +5250,10 @@ describe('restoring a backup taken before the latest migrations', () => {
 						'an Options column at the far left of 3 delivery board\\(s\\), ' +
 						'the default \\(0\\) in place of NULL in columns\\.wip_limit on 2 row\\(s\\)\\. ' +
 						'2 request link\\(s\\) replaced: a link mailed before this restore no longer works, and its requester can have ' +
-						'a new one sent from the page it opens\\.$'
+						'a new one sent from the page it opens\\. ' +
+						// Card 3009: one account's password not taken, its superadmin given the importer's, and (R4) its mail
+						// settings, from a file with no seal, at a place this server did not hold, held.
+						`${literally(`${ONE_PASSWORD_NOT_TAKEN} ${GIVEN_YOURS_NO_FACTOR} ${HELD_MAIL_UNSEALED}`)}$`
 				)
 			);
 			expect(sqlite.prepare('SELECT id, wip_limit FROM columns ORDER BY id').all()).toEqual([
@@ -5300,7 +5331,11 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(logged).toHaveLength(2);
 			expect(logged.shift()).toMatch(IMPORTED);
 			expect(logged[0]).toMatch(
-				/Filled in: first_completed_at on 0 card\(s\), committed_at and committed_by on 1 card\(s\) not upstream\. Cleared: the commitment of 1 upstream card\(s\), the discard mark of 1 card\(s\) that are not archived\.$/
+				// Card 3009: then the backup's superadmin given the importer's password.
+				new RegExp(
+					'Filled in: first_completed_at on 0 card\\(s\\), committed_at and committed_by on 1 card\\(s\\) not upstream\\. Cleared: the commitment of 1 upstream ' +
+						`card\\(s\\), the discard mark of 1 card\\(s\\) that are not archived\\. ${literally(GIVEN_YOURS_NO_FACTOR)}$`
+				)
 			);
 			// A restore that clears nothing says nothing of clearing: the pre-0060 ones above end at their Filled in.
 			expect(logged[0].match(/Cleared:/g)).toHaveLength(1);
@@ -5331,7 +5366,11 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(logged).toHaveLength(2);
 			expect(logged.shift()).toMatch(IMPORTED);
 			expect(logged[0]).toMatch(
-				/Filled in: first_completed_at on 0 card\(s\), an Options column at the far left of 1 delivery board\(s\), the title Options on 1 Options column\(s\)\. Cleared: the Options role of 1 second Options column\(s\), each board keeping its leftmost\.$/
+				// Card 3009: then the backup's superadmin given the importer's password.
+				new RegExp(
+					'Filled in: first_completed_at on 0 card\\(s\\), an Options column at the far left of 1 delivery board\\(s\\), the title Options on 1 Options ' +
+						`column\\(s\\)\\. Cleared: the Options role of 1 second Options column\\(s\\), each board keeping its leftmost\\. ${literally(GIVEN_YOURS_NO_FACTOR)}$`
+				)
 			);
 			expect(sqlite.prepare("SELECT board_id AS boardId, title FROM columns WHERE role IS 'options' ORDER BY board_id").all()).toEqual([
 				{ boardId: 1, title: 'Options' },
@@ -5385,7 +5424,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 				'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it. ' +
 				// It replaced every request's link, and listed the secrets, as a restore that succeeded does, and says so (O8).
 				'2 request link(s) replaced: a link mailed before this restore no longer works, and its requester can have ' +
-				`a new one sent from the page it opens. ${toEnter} ${kept}`;
+				// Card 3009 (R4): its mail settings, from a backup with no seal, held for review.
+				`a new one sent from the page it opens. ${ONE_PASSWORD_NOT_TAKEN} ${GIVEN_YOURS_NO_FACTOR} ${toEnter} ${HELD_MAIL_UNSEALED} ${kept}`;
 			expect(response.status).toBe(500);
 			// The page reloads its data on this, and not on any other failure.
 			expect(response.body.committed).toBe(true);
@@ -5405,7 +5445,9 @@ describe('restoring a backup taken before the latest migrations', () => {
 					`^\\[CRITICAL\\] \\[IMPORT\\] The database was replaced from an uploaded backup by ${admin.username} ` +
 						`\\(user ${admin.id} before the import\\): [0-9.]+ KB, SHA-256 [0-9a-f]{64}, ` +
 						'a backup this server could not check, as it has no key to check a seal with, ' +
-						'restored as it is\\. The system log was kept as it was; '
+						// Card 3009 (R4): its mail settings held for review, counted.
+						"restored as it is, keeping 1 of the backup's password\\(s\\) out of use, giving the backup's superadmin the importing account's password but no authenticator, " +
+							"holding 1 setting\\(s\\) of a backup whose seal did not verify for the superadmin's review\\. The system log was kept as it was; "
 				)
 			);
 			expect(logged[0]).toContain('"seal":"not checked"');

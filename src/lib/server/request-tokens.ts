@@ -25,7 +25,7 @@ import { settings } from './db/schema';
 import { inTransaction } from './db/transaction';
 import { sha256Hex } from './mfa-crypto';
 import { newSigningKeyText, openStored, sealStored, settingAad } from './stored-secrets';
-import { MAIL_PROBLEM_WORDS } from './email';
+import { MAIL_PROBLEM_WORDS, mailHeldWords } from './email';
 
 // ─── Request tokens ──────────────────────────────────────────────────────────
 
@@ -59,9 +59,12 @@ export const NO_MAIL_PASSWORD =
 /** Why, when the mail settings are held for the superadmin's review (card 2922, R12): the mail's own words (its code review's C13). */
 export const MAIL_HELD = MAIL_PROBLEM_WORDS.held;
 
-/** Why no mail can go though a host is set, for the WARN line, or null where one can (card 2922: held first). */
+/**
+ * Why no mail can go though a host is set, for the WARN line, or null where one can (card 2922: held first). A held
+ * mail in the words of why it is held (card 3009's code review, FP4): `MAIL_HELD` for an ended setter's.
+ */
 export function cannotMailWhy(problem: 'held' | 'no-password' | null): string | null {
-	return problem === 'held' ? MAIL_HELD : problem === 'no-password' ? NO_MAIL_PASSWORD : null;
+	return problem === 'held' ? mailHeldWords() : problem === 'no-password' ? NO_MAIL_PASSWORD : null;
 }
 
 /** A new random token for a link: 32 bytes as 64 hex characters (decision 7). */

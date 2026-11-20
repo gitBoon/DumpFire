@@ -39,7 +39,7 @@ import { createLogger } from './logger';
 import { maskSecretPaths } from './secret-paths';
 import { MAIL_CONNECTION_SETTINGS, mailPasswordAad, openStored, sealStored } from './stored-secrets';
 // The settings held for the superadmin's review (card 2922): a leaf, which this passes the values it reads.
-import { anyHeld, appUrlHeldAt, mailHeldAt } from './setting-holds';
+import { anyHeld, appUrlHeldAt, heldBecauseAt, mailHeldAt, mailPlaceOf, MAIL_SETTING, UNSEALED_RESTORE } from './setting-holds';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('EMAIL');
@@ -212,6 +212,21 @@ export function appUrlHeld(): boolean {
 	if (!anyHeld()) return false;
 	const stored = getSetting('app_url');
 	return stored !== null && appUrlHeldAt(appUrlAsRead(stored));
+}
+
+/**
+ * What a held mail is told (`MAIL_PROBLEM_WORDS.held`), in the words of why the mail settings read as `connection` are
+ * held (card 3009's code review, FP4): an ended setter's access as before, or a backup whose seal did not verify, which
+ * names no setter. Read at the moment it is said, as the hold is.
+ */
+export function mailHeldWords(connection: { host: string; port: number; user: string; allowInsecure: boolean } = mailConnectionAsRead()): string {
+	const because = connection.host === '' ? null : heldBecauseAt(MAIL_SETTING, mailPlaceOf(connection));
+	return because === UNSEALED_RESTORE ? MAIL_HELD_UNSEALED : MAIL_PROBLEM_WORDS.held;
+}
+
+/** A mail problem in the words an answer uses (`MAIL_PROBLEM_WORDS`), a held mail's by why it is held (FP4). */
+export function mailProblemWords(problem: MailProblem): string {
+	return problem === 'held' ? mailHeldWords() : MAIL_PROBLEM_WORDS[problem];
 }
 
 /**
@@ -658,6 +673,13 @@ export const MAIL_PROBLEM_WORDS: Record<MailProblem, string> = {
 };
 
 /**
+ * A held mail's words where the mail settings came in with a backup whose seal did not verify (card 3009, R4; its code
+ * review, FP4): nobody set them, so no setter is named, and where they send is only the file's word.
+ */
+export const MAIL_HELD_UNSEALED =
+	"the mail settings are held for the superadmin's review, as they came in with a backup whose seal did not verify, so the mail host is only the file's word; the superadmin checks it and keeps or removes them under Settings held for review on the admin page";
+
+/**
  * Whether a mail went: handed to the mail server and accepted by it. A bounce
  * afterwards goes to the From address, and is not known here. `detail` is the
  * error's message, masked by `maskMailText` and cut at 500 characters.
@@ -832,7 +854,7 @@ async function deliverMail(
 	// with nothing awaited between this and the transport below, so a hold committed meanwhile is never missed. Not
 	// counted and not logged, as a mail with no host is not: the hold's own line says that mail stops.
 	if (mailHeldAt(config)) {
-		return { sent: false, problem: 'held', detail: MAIL_PROBLEM_WORDS.held };
+		return { sent: false, problem: 'held', detail: mailHeldWords(config) };
 	}
 
 	/** Counted, kept as the last failure and logged at ERROR, as every mail that did not go is. */

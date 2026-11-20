@@ -1319,11 +1319,14 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 			).toEqual([kept.body.secretsToEnter]);
 			expect(names()).toEqual(['Old', "Bob's"]);
 
-			// As a working copy, from the same backup: only its App URL to go, and nothing listed to enter.
+			// As a working copy, from the same backup: nothing listed to enter, and its App URL gone. The backup's seal does
+			// not verify, so the working copy removes the App URL itself, and says so (card 3009's code review, FP3): the
+			// setter's pass after it finds nothing left to remove.
 			const copy = await importing(backup, 'off');
 
-			expect(copy.body.settingsRemoved).toBe(REMOVED(APP_URL_GONE));
-			expect(copy.body.message).toContain(REMOVED(APP_URL_GONE));
+			expect(copy.body.settingsRemoved).toBeUndefined();
+			expect(copy.body.workingCopy).toContain("and the backup's App URL removed, as its seal did not verify");
+			expect(copy.body.outside).toMatchObject({ appUrl: 1 });
 			expect(copy.body.secretsToEnter).toBeUndefined();
 			expect(setting('app_url')).toBeNull();
 		});

@@ -32,7 +32,7 @@ import { db, sqlite } from '$lib/server/db';
 import { enrolmentLinks, mfaFactors, mfaRecoveryCodes, settings, signInChallenges, users, webhooks } from '$lib/server/db/schema';
 import { restoreFromBackup } from '$lib/server/db/restore';
 import { generateBackupData } from '$lib/server/backup';
-import { backupSealKey, sealCopy, webhookAddressMacKey } from '$lib/server/backup-secrets';
+import { INSTALLATION_ID, backupSealKey, sealCopy, webhookAddressMacKey } from '$lib/server/backup-secrets';
 import { mfaWithoutFactorSentence } from '$lib/server/mfa-backup';
 import { inTransaction } from '$lib/server/db/transaction';
 import { endAccountAccess } from '$lib/server/auth';
@@ -925,7 +925,7 @@ describe('backups and restores', () => {
 		expect(result.mfa).toMatchObject({ keptFromHere: 0, takenFromBackup: 1, leftOut: [], leftOutBecause: null });
 	});
 
-	it("T52: a backup sealed with another server's key has an account's MFA rows left out as 'unsealed', and names it without a factor", () => {
+	it("T52: a backup sealed with another server's key has an account's MFA rows left out as 'unsealed', and counts it without a factor, naming it nowhere (card 3009, R10)", () => {
 		makeUser({ role: 'superadmin' });
 		const { user } = enrolled();
 		const backup = backupNow();
@@ -937,9 +937,31 @@ describe('backups and restores', () => {
 		expect(result.sealVerified).toBe(false);
 		expect(factorsOf(user.id)).toEqual([]);
 		expect(codesOf(user.id)).toEqual([]);
-		expect(result.mfa.leftOut).toEqual([user.username]);
+		expect(result.mfa.leftOut).toEqual([]);
 		expect(result.mfa.leftOutBecause).toBe('unsealed');
-		expect(result.mfa.withoutFactor).toContain(user.username);
+		expect(result.mfa.withoutFactor).not.toContain(user.username);
+		expect(result.mfa.notSameHere).toBe(1);
+	});
+
+	it("(e) card 3009: an unsealed backup from another installation whose account has this server's account's id and created_at gets no factor from here and none from the file", () => {
+		makeUser({ role: 'superadmin' });
+		const { user } = enrolled();
+		const backup = backupNow();
+		// The same id, creation time and username as the account here: only the installation id says another server's.
+		backup.prepare('UPDATE settings SET value = ? WHERE key = ?').run('ab'.repeat(16), INSTALLATION_ID);
+		const createdAt = userRow(user.id).createdAt;
+		// Added here since the backup: kept were the account taken for the same one.
+		addTotpFactor(user.id, 'Tablet', newTotpSecret());
+
+		const result = restore(backup);
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.installation).toBe('other');
+		expect(userRow(user.id)).toMatchObject({ createdAt, username: user.username });
+		// Neither this server's two factors nor the backup's one, and no code from either.
+		expect(factorsOf(user.id)).toEqual([]);
+		expect(codesOf(user.id)).toEqual([]);
+		expect(result.mfa).toMatchObject({ keptFromHere: 0, takenFromBackup: 0, leftOut: [], leftOutBecause: 'unsealed' });
 	});
 
 	it("T53: this server's own sealed backup restored with another key has an account's MFA rows left out as 'key differs'", () => {
@@ -1062,14 +1084,27 @@ describe('backups and restores', () => {
 		]) {
 			backup.exec(`ALTER TABLE users DROP COLUMN ${column}`);
 		}
+		// Sealed again, as this server's own backup made before 0065 is: an unsealed one names no account (card 3009's
+		// code review, FP7), which T54b asserts.
+		const bytes = Buffer.from(backup.serialize());
+		sealCopy(backup, backupSealKey(sqlite));
 
 		const result = restore(backup);
 
+		expect(result.sealVerified).toBe(true);
 		expect(result.errors).toEqual([]);
 		expect(factorsOf(user.id).map((row) => row.factorUid)).toEqual([factor.factorUid]);
 		expect(result.mfa.leftOut).toEqual([]);
 		expect(result.mfa.leftOutBecause).toBeNull();
 		expect(result.mfa.withoutFactor).toEqual([chief.username, other.username]);
+
+		// T54b, card 3009's code review (FP7): the same file unsealed counts them and names none; they are the same here.
+		const unsealed = restore(new Database(bytes));
+		expect(unsealed.sealVerified).toBe(false);
+		expect(unsealed.mfa).toMatchObject({ withoutFactor: [], withoutFactorUnnamed: 2, notSameHere: 0 });
+		const said = mfaWithoutFactorSentence(unsealed.mfa)!;
+		expect(said).toContain("2 account(s) on this server have no second factor after this restore and each needs its two-step sign-in reset before it can sign in; the backup's seal did not verify, so none is named here.");
+		for (const name of [chief.username, other.username]) expect(said).not.toContain(name);
 	});
 
 	it("T55: zeroes every account's guessing counters; the same account keeps this server's history, any other has the backup's", () => {

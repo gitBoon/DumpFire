@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.62
+version: 1.63
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3009
+  - unsealed-backup-grants
   - card-2997
   - passwords-replaced
   - card-2996
@@ -48,7 +50,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "Scheduled backup system with multi-destination support, the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -258,6 +260,61 @@ flowchart LR
     Here5 --> Words5["passwordsKept, accountsKeptLines, CRITICAL line"]
     Reset5 --> Words5
     Super5 --> Words5
+```
+
+A backup whose seal does not verify gives nothing that signs in to an account that is not the same
+account here (card 3009). Every backup now carries this installation's id, `settings.installation_id`
+(32 hex characters, not secret), written by `withoutSecrets` under the seal; a restore never brings it
+in and puts this server's back after the clear. Before the clear the restore reads the backup's
+verdict, `installation`: `this`, `other` or `none` (the backup carries none, made before this
+release). For anything the restore grants, `sameAccountHere` then holds where the id and `created_at`
+are the same and the backup is sealed, or carries `this`, or carries `none` and the username is the
+same; never for `other`. From an unsealed backup, as it is or as a working copy:
+
+- **Passwords.** `keepSuperadminsHere` first makes this server's own superadmin, restored as the same
+  account, an enabled superadmin again. Then in `applyPasswordRulings` every account not the same here
+  gets `DUMMY_HASH` and no leave to enrol, counted `unsealed` (not where the file gave it `DUMMY_HASH`
+  already), and its report schedules paused whatever its hash, where the restore keeps what reaches
+  outside; no `password` row and no key ended. The file's superadmins not the same here are decided
+  last: where the importer is in the file as the same account, or any superadmin of this server is
+  restored as the same account, enabled, with this server's usable hash (card 3009's code review, FP5),
+  each gets `DUMMY_HASH`; otherwise the lowest-id enabled one is given the importer's hash, its TOTP
+  factors sealed again for it, its leave to enrol (FP6) and its email, always, any other holder of that
+  address given one under `.invalid` (`emailGivenUp`, FP5), and its schedules paused (FP2)
+  (`superadminGivenYours`, with `givenYoursWithoutFactor` where no factor could be carried and
+  `givenYoursMayEnrol` where its leave runs), and every other `DUMMY_HASH`; with no importer this
+  server held, or none enabled, every one `DUMMY_HASH`.
+- **Invites.** None of the file's is restored; a sealed backup's used ones only, written used (FP1).
+- **API keys.** After card 2995's recorded leave-out, `leaveOutRecordedKeys` keeps only the keys this
+  server held (the same id, `key_hash` and `user_id`) for an account that is the same here
+  (`keysOfTheSameHere`); every other is left out, with its reveals held, counted `unsealed`, and not
+  recorded as ended. Each kept key takes the earlier of the two `expires_at` and `deadline_at`
+  (`takeEarlierEnds`). A working copy leaves out every key already, as `workingCopy`.
+- **What reaches outside.** Restored as it is, `holdUnsealedSettings` holds the mail settings at
+  another place than this server's, the App URL where it differs, and each destination at a place this
+  server held none at, as `setting_holds` rows with `held_because` `restored from a backup whose seal
+  did not verify` and no setter (see [A Destination Held for Review](#a-destination-held-for-review-card-2922)),
+  counted `unsealedHeld: { mail, destinations, appUrl }` by the rows written (FP8). A held destination
+  receives no backup until the superadmin keeps it, and its run, Test and Connect say it "came in with a
+  backup whose seal did not verify" (`DESTINATION_HELD_UNSEALED`, FP4). Google Drive and OneDrive
+  destinations are held as S3 ones are. A working copy of such a file removes the mail, the
+  destinations and its App URL (`outside.appUrl`, FP3).
+
+The answer adds the `unsealed` and `superadminGivenYours` sentences to `accountsKeptLines`, the keys'
+sentence to `keysLeftOut` and the holds' to `settingsHeld`, all counts and no name; the
+`[CRITICAL] [IMPORT]` line counts `unsealed` among the passwords kept out of use, adds the carry and
+the keys and holds of "a backup whose seal did not verify", and its details carry `passwordsKept`,
+`apiKeysLeftOut` and `unsealedHeld` with the new fields, and `installation`, the verdict alone. A
+backup this server sealed restores as before.
+
+```mermaid
+flowchart LR
+    Read6["before the clear: seal verdict,<br/>installation id here, the backup's verdict,<br/>accounts and keys here"] --> Copy6["clear, copy, installation id put back"]
+    Copy6 --> Mfa6["restoreMfaRows by sameAccountHere"]
+    Mfa6 --> Keep6["keepSuperadminsHere"]
+    Keep6 --> Pw6["applyPasswordRulings:<br/>unsealed, then the carry"]
+    Pw6 --> Hold6["holdUnsealedSettings"]
+    Hold6 --> Keys6["leaveOutRecordedKeys:<br/>unsealed keep list, earlier ends"]
 ```
 
 ### Image Retention
@@ -1536,7 +1593,10 @@ confirmed after the list was read is refused `409` (C16).
 **Restore.** A backup carries `setting_holds`. The restore carries this server's holds over the
 backup's as a union (`carrySettingHolds`), so a destination removed here after a hold, or kept here
 since the backup was made, comes back held; the import's answer says how many holds it carried. A
-working copy, which removes every destination, deletes their holds after the carry.
+working copy, which removes every destination, deletes their holds after the carry. From a backup
+whose seal does not verify, restored as it is, each restored destination at a place this server held
+none at is held too, by nobody, `held_because` `restored from a backup whose seal did not verify`
+(card 3009, above), with the mail settings and the App URL where they differ from this server's.
 
 ```mermaid
 flowchart TD

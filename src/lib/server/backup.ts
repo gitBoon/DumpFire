@@ -20,8 +20,8 @@ import { createLogger } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { KNOWN_BROWSER_SECRET_KEY } from './known-browsers';
 import { REQUEST_FORM_SECRET_KEY } from './request-tokens';
-import { CREDENTIALS_NOT_ENTERED, backupSealKey, clearSecrets, credentialsMissing, destinationPlace, driveMissing, hostKeyMissing, sealCopy, webhookAddressMacKey } from './backup-secrets';
-import { DESTINATION_HELD, destinationHeldAt, placeKey } from './setting-holds';
+import { CREDENTIALS_NOT_ENTERED, INSTALLATION_ID, backupSealKey, clearSecrets, credentialsMissing, destinationPlace, driveMissing, ensureInstallationId, hostKeyMissing, sealCopy, webhookAddressMacKey } from './backup-secrets';
+import { destinationHeldAt, destinationHeldWords, placeKey } from './setting-holds';
 import { openDestinationSecrets, sealDestinationSecrets, unopenableFields } from './stored-secrets';
 import { inTransaction } from './db/transaction';
 
@@ -118,7 +118,8 @@ export function saveBackupConfig(config: BackupConfig): void {
  */
 function notTried(destination: DestinationConfig): string | null {
 	// Held for the superadmin's review first (card 2922): nothing else about it matters until it is kept.
-	if (destinationHeldNow(destination)) return DESTINATION_HELD;
+	const held = destinationHeldWordsNow(destination);
+	if (held !== null) return held;
 	if (unopenableFields(destination).length > 0) return CREDENTIALS_NOT_ENTERED;
 	// A OneDrive destination with no drive (card 2941) last: asked before the copy, so no token is asked for.
 	return credentialsMissing(destination) ?? hostKeyMissing(destination) ?? driveMissing(destination);
@@ -134,6 +135,15 @@ function notTried(destination: DestinationConfig): string | null {
 export function destinationHeldNow(destination: DestinationConfig | Record<string, unknown>): boolean {
 	// By its place alone, whatever name it has now (the code review's C12).
 	return destinationHeldAt(placeKey(destinationPlace(destination)));
+}
+
+/**
+ * What `destination`, as it is about to be used, is told where it is held (`destinationHeldNow`), in the words of why
+ * it is held (card 3009's code review, FP4: an ended setter's access, or a backup whose seal did not verify); null where
+ * it is not held. Synchronous, as `destinationHeldNow` is.
+ */
+export function destinationHeldWordsNow(destination: DestinationConfig | Record<string, unknown>): string | null {
+	return destinationHeldWords(placeKey(destinationPlace(destination)));
 }
 
 // ─── Backup Data Generation ─────────────────────────────────────────────────
@@ -209,13 +219,25 @@ export function destinationHeldNow(destination: DestinationConfig | Record<strin
  * backup whose seal it can make again with its own key: one this server made,
  * changed by nobody since. `key` is this server's unless a test gives another.
  *
+ * And it carries this server's installation id (card 3009, R6), written into
+ * the copy's settings before the seal, so that the seal covers it:
+ * `installation`, this server's, made here with `INSERT OR IGNORE` where the
+ * start has not made one yet. A restore of an unsealed backup asks it whether
+ * an account is the same account here (`sameAccountHere`, mfa-backup.ts).
+ *
  * `from` is a copy. This is never given the running database, and
  * `clearSecrets` refuses it if it is.
  *
  * A table that is not there is skipped. Anything else that goes wrong is
  * thrown: a copy that could not be cleared is not one to hand on.
  */
-export function withoutSecrets(from: string, to: string, key: Buffer = backupSealKey(), macKey: Buffer = webhookAddressMacKey()): void {
+export function withoutSecrets(
+	from: string,
+	to: string,
+	key: Buffer = backupSealKey(),
+	macKey: Buffer = webhookAddressMacKey(),
+	installation: string = ensureInstallationId()
+): void {
 	const copy = new Database(from);
 	try {
 		// better-sqlite3 opens every connection in SQLite's defensive mode,
@@ -250,6 +272,12 @@ export function withoutSecrets(from: string, to: string, key: Buffer = backupSea
 		// secrets (card 2169), and the webhooks' addresses, each with the match a
 		// restore fills it back by, made with `macKey` (card 2928): see above.
 		clearSecrets(copy, macKey);
+		// This server's installation id (card 3009, R6), as the running database holds it, before the seal: see above.
+		if (has('settings')) {
+			copy
+				.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value')
+				.run(INSTALLATION_ID, installation);
+		}
 		// Sealed last, over the copy as it is written out: `VACUUM INTO` moves
 		// rows to other pages and changes none of them, and the seal is taken
 		// over the rows (see above).
@@ -273,7 +301,8 @@ export function withoutSecrets(from: string, to: string, key: Buffer = backupSea
  * running database is not touched by any of it: its sessions, its mail
  * password, its destinations' credentials and its webhooks are as they were.
  * The one thing written to it is the key backups are sealed with, by the
- * first backup the server makes, and never again.
+ * first backup the server makes, and never again (and the installation id,
+ * card 3009, where the start has not made it).
  *
  * The export the superadmin downloads and the copy a schedule uploads are
  * both made here, so that neither can hold what the other does not: both
@@ -481,9 +510,10 @@ async function cleanupRetention(config: DestinationConfig, retention: number, ki
 	for (let i = 0; i < toDelete.length; i++) {
 		const filename = toDelete[i];
 		// Asked again before each delete (C3): a hold written meanwhile stops it, nothing awaited between.
-		if (destinationHeldNow(config)) {
-			log.warn(`Retention stopped at "${config.name}": ${DESTINATION_HELD}`);
-			return `Keep Last was not fully applied: ${notRemoved + toDelete.length - i} of ${toDelete.length} older copies were not removed. ${DESTINATION_HELD}`;
+		const held = destinationHeldWordsNow(config);
+		if (held !== null) {
+			log.warn(`Retention stopped at "${config.name}": ${held}`);
+			return `Keep Last was not fully applied: ${notRemoved + toDelete.length - i} of ${toDelete.length} older copies were not removed. ${held}`;
 		}
 		if (Date.now() >= deadline) {
 			for (const rest of toDelete.slice(i)) notRemovedBecause(rest, `Keep Last stops after ${RETENTION_DEADLINE_MS / 60_000} minutes`);
@@ -744,8 +774,9 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 		// Asked again, of the destination as it is used, immediately before it is reached (card 2922, its plan's
 		// R3): a hold committed while an earlier destination was uploading is not missed. Nothing is awaited
 		// between this and the upload begun below. An upload already on the wire finishes.
-		if (destinationHeldNow(destConfig)) {
-			failed(destConfig, DESTINATION_HELD, 0, 0);
+		const heldBefore = destinationHeldWordsNow(destConfig);
+		if (heldBefore !== null) {
+			failed(destConfig, heldBefore, 0, 0);
 			continue;
 		}
 		try {
@@ -783,10 +814,11 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 		// Run retention cleanup over this run's own kind of copy (card 2405). Not at a destination held while its
 		// upload ran (card 2922, R3): asked again here, with nothing awaited before the cleanup reaches it.
 		let problem: string | null;
-		if (destinationHeldNow(destConfig)) {
-			log.warn(`Retention not run at "${destConfig.name}": ${DESTINATION_HELD}`);
+		const heldAfter = destinationHeldWordsNow(destConfig);
+		if (heldAfter !== null) {
+			log.warn(`Retention not run at "${destConfig.name}": ${heldAfter}`);
 			// On the row and the answer, not the mail: the hold is the superadmin's to review already (card 2941, R6).
-			problem = `Keep Last was not applied: ${DESTINATION_HELD}`;
+			problem = `Keep Last was not applied: ${heldAfter}`;
 		} else {
 			problem = await cleanupRetention(destConfig, config.retention, how);
 			if (problem !== null) retentionProblems.push({ destConfig, problem });

@@ -105,7 +105,7 @@ import {
 	storedAppUrl,
 	storedAppUrlText
 } from './email';
-import { heldSettingWords, holdRows } from './setting-holds';
+import { heldSettingWords, holdRows, UNSEALED_RESTORE } from './setting-holds';
 import { notifyWebhooksBeforeKeys, securityNoticeSent, type NoticeSchedule, type WebhookBeforeKeys } from './notifications';
 import { noticeScheduleOf } from './reports';
 import { schedulerSetting } from './schedulers';
@@ -120,7 +120,7 @@ import { END_PLAIN_REQUEST_LINKS, resetFormSecretCache } from './request-tokens'
 import { resetKnownBrowserSecretCache, signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
-import { quotedName, secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './backup-secrets';
+import { ensureInstallationId, installationIdMalformed, quotedName, secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './backup-secrets';
 import { parseAllowInside } from './webhook-address';
 import {
 	activeWebhooksRefused,
@@ -834,6 +834,15 @@ function namedSecrets(secrets: readonly { where: string }[]): string {
 }
 
 /**
+ * The start's CRITICAL line where the installation id it held was not of its form and was made anew (card 3009's code
+ * review, FP13). Names neither id.
+ */
+export const INSTALLATION_ID_REPLACED =
+	"This server's installation id was not of its form (32 lower-case hex; a host's edit of the database), so it was made anew. " +
+	"A backup made before this start carries the old one: restored here, its seal still decides, and where the seal does not " +
+	'verify none of its accounts is taken as the same account here. See docs/deployment.md, Moving to a New Host.';
+
+/**
  * Seal, before the server listens, every stored secret held in plain (card
  * 2898, decision 6), and scrub the old plain text out of the file (decision
  * 14, S6). Called once, from hooks.server.ts, after `ensureFormSecret`, as a
@@ -899,6 +908,7 @@ export function sealStoredSecretsAtStart(
 	let logMaskFailed: string | null = null;
 	let forgottenBesideNoAddress: number[] = [];
 	let keysMade: SigningKeyMade[] = [];
+	let installationIdReplaced = false;
 	try {
 		if (key === null) throw new Error('no MFA key is loaded');
 		[counts, replaced, firstSealing, normalised, firstOfRelease, forgottenBesideNoAddress, keysMade] = database
@@ -927,6 +937,10 @@ export function sealStoredSecretsAtStart(
 				// plain or of an older form, and the backup seal key where there is none; never sealed in place. Before
 				// the sweep, which leaves them. Marks the scrub itself; no first sealing.
 				const madeNow = replaceSigningKeysAtStart(database, key);
+				// Card 3009 (R6): this installation's id, made once and kept, in the same transaction; every backup carries it.
+				// One not of its form (a host's edit) is made anew, said CRITICAL after the commit (its code review, FP13).
+				installationIdReplaced = installationIdMalformed(database);
+				ensureInstallationId(database);
 				const sealedNow = sealPlainSecrets(database, key);
 				const replacedNow = replaceUnopenableSigningKeys(database, key);
 				let first = false;
@@ -949,6 +963,10 @@ export function sealStoredSecretsAtStart(
 		);
 	}
 
+	if (installationIdReplaced) {
+		// Card 3009's code review, FP13: never the id itself, the old one or the new.
+		log.critical(INSTALLATION_ID_REPLACED);
+	}
 	const total = sealedTotal(counts);
 	const dbPath = database.name;
 	const onDisk = dbPath !== '' && dbPath !== ':memory:';
@@ -1204,10 +1222,18 @@ export function reportSettingsHeld(): number {
 			);
 		}
 		if (held.length === 0) return 0;
-		const named = [...new Set(held.map((row) => heldSettingWords(row.setting)))].join(', ');
-		const whose = [...new Set(held.map((row) => (row.setByName === null ? `user ${row.setBy ?? 'unknown'}` : `"${printable(row.setByName)}"`)))].join(', ');
+		// Worded by why each is held (card 3009's code review, FP4): a setter whose access was ended is named; a setting
+		// that came in with a backup whose seal did not verify was set by nobody, and no setter is named for it.
+		const named = (rows: typeof held) => [...new Set(rows.map((row) => heldSettingWords(row.setting)))].join(', ');
+		const bySetter = held.filter((row) => row.heldBecause !== UNSEALED_RESTORE);
+		const fromUnsealed = held.filter((row) => row.heldBecause === UNSEALED_RESTORE);
+		const whose = [...new Set(bySetter.map((row) => (row.setByName === null ? `user ${row.setBy ?? 'unknown'}` : `"${printable(row.setByName)}"`)))].join(', ');
+		const parts = [
+			...(bySetter.length > 0 ? [`${named(bySetter)} (set by ${whose}, whose access was ended)`] : []),
+			...(fromUnsealed.length > 0 ? [`${named(fromUnsealed)} (restored from a backup whose seal did not verify, so where they send is only the file's word)`] : [])
+		];
 		log.warn(
-			`Settings held for the superadmin's review: ${named} (set by ${whose}, whose access was ended). Nothing is sent to them ` +
+			`Settings held for the superadmin's review: ${parts.join('; ')}. Nothing is sent to them ` +
 				'until the superadmin keeps or removes each under Settings held for review on the admin page; an older image would use them again.',
 			{ held: held.map((row) => ({ setting: row.setting, heldAt: row.heldAt, setBy: row.setBy })) }
 		);

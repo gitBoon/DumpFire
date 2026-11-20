@@ -1,14 +1,7 @@
 import { error, json } from '@sveltejs/kit';
 import { afterCommit } from '$lib/server/db/transaction';
 import { namingIds, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
-import {
-	MAIL_PROBLEM_WORDS,
-	NO_LINK_ADDRESS,
-	isSmtpConfigured,
-	linkBaseUrl,
-	linkBaseUrlWithoutAppUrlSetting,
-	mailCannotSendProblem
-} from '$lib/server/email';
+import { NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, linkBaseUrlWithoutAppUrlSetting, mailCannotSendProblem, mailProblemWords } from '$lib/server/email';
 import { ENROLMENT_LINK_NOT_GIVEN, enrolmentLinkNotGiven } from '$lib/server/invite-link';
 import { sha256Hex } from '$lib/server/mfa-crypto';
 import { ENROLMENT_LINK_PATH, resetTwoStep, twoStepResetMeta } from '$lib/server/mfa-store';
@@ -273,7 +266,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 		// Held for the superadmin's review too (card 2922, R12), as the reset itself may have held them.
 		const cannot = mailCannotSendProblem();
 		if (cannot !== null) {
-			mailProblem = MAIL_PROBLEM_WORDS[cannot];
+			mailProblem = mailProblemWords(cannot);
 		} else {
 			// Whether it had an authenticator picks what the notice says was lost (card 2773's review); the
 			// schedules paused (card 2894, S14) and the keys and webhooks ended (card 2915) are said as the message
@@ -284,7 +277,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 				webhooksSwitchedOff: ended.webhooks
 			});
 			if (outcome.sent) mailSent = true;
-			else mailProblem = MAIL_PROBLEM_WORDS[outcome.problem];
+			else mailProblem = mailProblemWords(outcome.problem);
 		}
 	}
 

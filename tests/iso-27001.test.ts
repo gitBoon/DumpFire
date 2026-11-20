@@ -156,8 +156,22 @@ describe('the checklist source', () => {
 			expect(evidenceFault(evidence!), symbol).toBeNull();
 		}
 		expect(item.how).toContain('(card 2997)');
-		// The code review's FP8: no overclaim, the unsealed backup's residual for an account not here named with its card.
-		expect(item.how).toContain('can still give an account that is not on this server any password (card 3009)');
+	});
+
+	it('(z) card 3009: A.5.17 names the same account here, the unsealed key rule and the holds as evidence, each exists, and no longer says an unsealed backup can give an account any password', () => {
+		const item = CHECKLIST.find((entry) => entry.ref === 'A.5.17')!;
+		for (const symbol of ['sameAccountHere', 'keysOfTheSameHere', 'holdUnsealedSettings', 'rowsToRestore']) {
+			const evidence = item.evidence.find((e) => e.symbol === symbol);
+			expect(evidence, symbol).toBeDefined();
+			expect(evidenceFault(evidence!), symbol).toBeNull();
+		}
+		expect(item.how).not.toContain('any password');
+		expect(item.how).toContain('gives no account that is not the same account here');
+		expect(item.how).toContain('a password, an API key or a second factor from the file');
+		// Its code review (FP1, FP3): no invite of a file sets a password, and a working copy removes what it would hold.
+		expect(item.how).toContain("none of its invites is restored, and a sealed backup's only as used history, so no invite from a file sets a password");
+		expect(item.how).toContain("held for the superadmin's review, or, on a working copy, removed (card 3009)");
+		expect(item.how).toContain('(card 3009)');
 	});
 
 	it('names every gap: a card or an accepted risk for each item short of met, and neither for a met one', () => {

@@ -31,7 +31,7 @@ import { eq } from 'drizzle-orm';
 import { currentMfaKey, keyFromBytes, type MfaKey } from '$lib/server/mfa-key';
 import { sealWith } from '$lib/server/mfa-crypto';
 import { destinationPlace, mailChanges, mailConnection, sealKeyHere, secretsToEnter } from '$lib/server/backup-secrets';
-import { sealStoredSecretsAtStart } from '$lib/server/startup-checks';
+import { INSTALLATION_ID_REPLACED, sealStoredSecretsAtStart } from '$lib/server/startup-checks';
 import { maskSecretsInLog } from '$lib/server/secret-paths';
 import { generateBackupData } from '$lib/server/backup';
 import {
@@ -703,6 +703,52 @@ describe('the start step: signing keys and the scrub', () => {
 		const stored = setting(SEAL_KEY);
 		expect(recordLines(start())).toEqual([]);
 		expect(setting(SEAL_KEY)).toBe(stored);
+	});
+
+	it("(f2) card 3009 (R6): the start makes the installation id once, 32 lower-case hex, and a second start keeps it", () => {
+		expect(setting('installation_id')).toBeUndefined();
+
+		start();
+
+		const made = setting('installation_id');
+		expect(made).toMatch(/^[0-9a-f]{32}$/);
+		start();
+		expect(setting('installation_id')).toBe(made);
+	});
+
+	it("(f2b) card 3009's code review, FP10: the id is made in the start's one transaction: a later step that fails takes it back with the rest", () => {
+		expect(setting('installation_id')).toBeUndefined();
+		// A mail password held in plain, which the start seals after the id is made; its write refused.
+		putSetting('smtp_pass', 'a plain mail password of FP10');
+		sqlite.exec(
+			"CREATE TEMP TRIGGER refuse_fp10 BEFORE UPDATE ON settings WHEN NEW.key = 'smtp_pass' BEGIN SELECT RAISE(ABORT, 'refused by FP10'); END"
+		);
+		try {
+			expect(() => start()).toThrow(/stored secrets could not be sealed under the MFA key \(refused by FP10\)/);
+		} finally {
+			sqlite.exec('DROP TRIGGER IF EXISTS temp.refuse_fp10');
+		}
+
+		expect(setting('installation_id')).toBeUndefined();
+		expect(setting('smtp_pass')).toBe('a plain mail password of FP10');
+	});
+
+	it("(f3) card 3009's code review, FP13: an id not of its form is made anew at start, with one CRITICAL line that names neither id", () => {
+		const malformed = 'NOT-OF-ITS-FORM-' + 'ab'.repeat(8);
+		putSetting('installation_id', malformed);
+
+		const lines = start();
+
+		const made = setting('installation_id')!;
+		expect(made).toMatch(/^[0-9a-f]{32}$/);
+		const said = lines.filter((line) => line.startsWith('[CRITICAL]') && line.includes("This server's installation id was not of its form"));
+		expect(said).toHaveLength(1);
+		expect(said[0].startsWith(`[CRITICAL] [STARTUP] ${INSTALLATION_ID_REPLACED}`)).toBe(true);
+		expect(lines.filter((line) => line.includes(malformed) || line.includes(made))).toEqual([]);
+		// A second start keeps the new one, and says nothing.
+		const again = start();
+		expect(setting('installation_id')).toBe(made);
+		expect(again.filter((line) => line.includes('installation id'))).toEqual([]);
 	});
 
 	it('58: a seal key that does not open, forgotten on the operator\'s word, takes its record with it, and the next start makes a new one because none was stored (the fix pass, C3(a))', () => {

@@ -24,8 +24,7 @@
 
 import { error, json } from '@sveltejs/kit';
 import { HostKeySignatureFailed, createDestination, readDestination, type SftpTestResult } from '$lib/server/backup-destinations';
-import { destinationHeldNow, getBackupConfig } from '$lib/server/backup';
-import { DESTINATION_HELD } from '$lib/server/setting-holds';
+import { destinationHeldWordsNow, getBackupConfig } from '$lib/server/backup';
 import { destinationToTest } from '$lib/server/backup-secrets';
 import { TYPED_SECRET_LOOKS_SEALED, destinationLooksSealed, unopenableFields } from '$lib/server/stored-secrets';
 import { readBody } from '$lib/server/request-body';
@@ -68,7 +67,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if ('refusal' in kept) throw error(400, kept.refusal);
 	// Nor one held for the superadmin's review (card 2922): a Test reaches it, its credentials and all. Asked of the
 	// stored entry about to be tested, with nothing awaited between this and the connect below.
-	if (destinationHeldNow(kept.destination)) throw error(409, DESTINATION_HELD);
+	const held = destinationHeldWordsNow(kept.destination);
+	if (held !== null) throw error(409, held);
 	// A kept secret whose stored value does not open is no secret to test
 	// with, and an SFTP Test without it would try none (card 2898's code review, E2, S3).
 	if (unopenableFields(kept.destination).length > 0) {

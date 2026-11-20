@@ -63,10 +63,22 @@ import {
 	mailCannotSend,
 	mailEverConfigured,
 	mailStatus,
+	PLACEHOLDER_ORIGIN,
 	resetMailStatus,
 	trySendEmail
 } from '$lib/server/email';
-import { appUrlPlaceOf, DESTINATION_HELD, mailPlaceOf, placeKey, SETTER_ACCESS_ENDED } from '$lib/server/setting-holds';
+import {
+	appUrlPlaceOf,
+	DESTINATION_HELD,
+	DESTINATION_HELD_UNSEALED,
+	destinationHeldWords,
+	mailPlaceOf,
+	placeKey,
+	SETTER_ACCESS_ENDED,
+	UNSEALED_RESTORE
+} from '$lib/server/setting-holds';
+import { MAIL_HELD_UNSEALED, mailProblemWords } from '$lib/server/email';
+import { cannotMailWhy } from '$lib/server/request-tokens';
 import { reportSettingsHeld } from '$lib/server/startup-checks';
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
@@ -943,5 +955,264 @@ describe('a held setting cannot be saved over, nor an invite sent through the ac
 		// The control: the setter row gone, the same invite is made.
 		sqlite.prepare('DELETE FROM setting_setters').run();
 		expect((await api('POST', `/api/users/${ann.id}/invite`, stepUp(chief))).status).toBe(200);
+	});
+});
+
+describe('a backup whose seal did not verify has its mail, destinations and App URL held (card 3009, R4)', () => {
+	const NONE = { mail: 0, destinations: 0, appUrl: 0 };
+	const PLANTED_HOST = 'relay.planted.test';
+	const PLANTED_URL = 'https://planted.example.test';
+	const P = s3('P', 'planted-bucket');
+	let chief: SessionUser;
+	let origin: string | undefined;
+
+	/** This server's backup, opened to be edited: any edit leaves a seal that does not verify. */
+	const opened = () => new Database(generateBackupData());
+	const set = (backup: Database.Database, key: string, value: string) =>
+		backup.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, value);
+	/** `backup` with the destination `entry` added to its list, as a file edited by hand holds it. */
+	const plantDestination = (backup: Database.Database, entry: Record<string, unknown>) => {
+		const stored = backup.prepare("SELECT value FROM settings WHERE key = 'backup_config'").pluck().get() as string;
+		const config = JSON.parse(stored) as { destinations: unknown[] };
+		set(backup, 'backup_config', JSON.stringify({ ...config, destinations: [...config.destinations, entry] }));
+	};
+	const heldUnsealed = () =>
+		sqlite.prepare('SELECT setting, place FROM setting_holds WHERE held_because = ? ORDER BY setting, place').all(UNSEALED_RESTORE) as { setting: string; place: string }[];
+
+	beforeEach(() => {
+		chief = makeUser({ username: 'chief', role: 'superadmin' });
+		origin = process.env.ORIGIN;
+	});
+
+	afterEach(() => {
+		if (origin === undefined) delete process.env.ORIGIN;
+		else process.env.ORIGIN = origin;
+	});
+
+	it('(w1) a planted mail relay is held, and no mail is sent through it; released, it sends', async () => {
+		makeSmtp();
+		const backup = opened();
+		try {
+			set(backup, 'smtp_host', PLANTED_HOST);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(result.unsealedHeld).toEqual({ ...NONE, mail: 1 });
+			const place = mailPlaceOf({ host: PLANTED_HOST, port: 587, user: '', allowInsecure: false });
+			expect(heldUnsealed()).toEqual([{ setting: 'mail', place }]);
+			expect(await trySendEmail('a@example.test', 'Planted', '<p>x</p>')).toMatchObject({ sent: false, problem: 'held' });
+			expect(sent.emails).toEqual([]);
+			// The control: the hold is what stops it.
+			sqlite.prepare('DELETE FROM setting_holds').run();
+			expect(await trySendEmail('a@example.test', 'Released', '<p>x</p>')).toEqual({ sent: true });
+		} finally {
+			backup.close();
+		}
+	});
+
+	it('(w2) a planted destination is held, and a scheduled backup sends nothing to it; one this server held at its place is not held', async () => {
+		saveDestinations([A]);
+		const backup = opened();
+		try {
+			plantDestination(backup, P);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(result.unsealedHeld).toEqual({ ...NONE, destinations: 1 });
+			expect(heldUnsealed()).toEqual([{ setting: 'backup_destination:P', place: placeOf('P') }]);
+			const results = await runBackup();
+			// In the words of why it is held (card 3009's code review, FP4): no setter, none whose access was ended.
+			expect(results.find((row) => row.destination === 'P')).toMatchObject({ status: 'failed', message: DESTINATION_HELD_UNSEALED });
+			expect(reached.made).not.toContain('P');
+			expect(reached.uploads).not.toContain('P');
+			// The control: released, the next run reaches it.
+			sqlite.prepare('DELETE FROM setting_holds').run();
+			await runBackup();
+			expect(reached.uploads).toContain('P');
+		} finally {
+			backup.close();
+		}
+	});
+
+	it.each([
+		{ kind: 'a Google Drive destination', entry: { type: 'gdrive', name: 'PG', authMethod: 'oauth', clientId: 'client-pg', clientSecret: 'secret-pg', folderId: 'folder-pg' } },
+		{
+			kind: 'a OneDrive destination',
+			entry: { type: 'onedrive', name: 'PO', tenantId: 'tenant-po', clientId: 'client-po', clientSecret: 'secret-po', folderPath: '/DumpFire Backups', drive: 'po@contoso.example' }
+		}
+	])('(w2b) card 3009’s code review, FP9: $kind planted is held as an S3 one is, and a scheduled backup sends nothing to it', async ({ entry }) => {
+		saveDestinations([A]);
+		const backup = opened();
+		try {
+			plantDestination(backup, entry);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(result.unsealedHeld).toEqual({ ...NONE, destinations: 1 });
+			expect(heldUnsealed()).toEqual([{ setting: `backup_destination:${entry.name}`, place: placeOf(entry.name) }]);
+			const results = await runBackup();
+			expect(results.find((row) => row.destination === entry.name)).toMatchObject({ status: 'failed', message: DESTINATION_HELD_UNSEALED });
+			expect(reached.made).not.toContain(entry.name);
+			expect(reached.uploads).not.toContain(entry.name);
+		} finally {
+			backup.close();
+		}
+	});
+
+	it('(w3) a planted App URL is held with ORIGIN the image’s placeholder, and no link begins with it; released, links do', () => {
+		process.env.ORIGIN = PLACEHOLDER_ORIGIN;
+		const backup = opened();
+		try {
+			set(backup, 'app_url', PLANTED_URL);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(result.unsealedHeld).toEqual({ ...NONE, appUrl: 1 });
+			expect(heldUnsealed()).toEqual([{ setting: 'app_url', place: appUrlPlaceOf(PLANTED_URL) }]);
+			expect(getAppUrl()).not.toBe(PLANTED_URL);
+			// The control: released, the placeholder restricts nothing and links begin with it.
+			sqlite.prepare('DELETE FROM setting_holds').run();
+			expect(getAppUrl()).toBe(PLANTED_URL);
+		} finally {
+			backup.close();
+		}
+	});
+
+	it.each([
+		{ made: 'a working copy of an unsealed backup', outside: 'off' as const, sealed: false },
+		{ made: 'a sealed backup, its mail, URL and destinations not this server’s now', outside: 'keep' as const, sealed: true }
+	])('(w4) $made writes no hold', ({ outside, sealed }) => {
+		makeSmtp();
+		saveDestinations([A]);
+		const backup = opened();
+		try {
+			if (sealed) {
+				// This server moved on since the backup: its mail, URL and destinations elsewhere now.
+				sqlite.prepare("UPDATE settings SET value = 'smtp.elsewhere.test' WHERE key = 'smtp_host'").run();
+				sqlite.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://elsewhere.example.test')").run();
+				saveDestinations([B]);
+			} else {
+				set(backup, 'smtp_host', PLANTED_HOST);
+				set(backup, 'app_url', PLANTED_URL);
+				plantDestination(backup, P);
+			}
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id, outside });
+
+			expect(result.sealVerified).toBe(sealed);
+			expect(result.unsealedHeld).toEqual(NONE);
+			expect(heldUnsealed()).toEqual([]);
+			// The working copy removes the planted App URL with the mail, and counts it (card 3009's code review, FP3); a sealed
+			// restore keeps the backup's.
+			expect(result.outside?.appUrl).toBe(sealed ? undefined : 1);
+			// None after either: the working copy removed the planted one; the sealed backup was made before this server set one.
+			expect(sqlite.prepare("SELECT value FROM settings WHERE key = 'app_url'").pluck().get()).toBeUndefined();
+		} finally {
+			backup.close();
+		}
+	});
+
+	it('(w6) card 3009’s code review, FP8: a hold this server carried at the planted place already is not counted again', () => {
+		makeSmtp();
+		// A setter's hold here, a tombstone at the planted relay's place: carried over the backup, then met by the restore's.
+		const place = mailPlaceOf({ host: PLANTED_HOST, port: 587, user: '', allowInsecure: false });
+		hold('mail', place);
+		const backup = opened();
+		try {
+			set(backup, 'smtp_host', PLANTED_HOST);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(result.unsealedHeld).toEqual(NONE);
+			expect(sqlite.prepare('SELECT setting, place, held_because AS why FROM setting_holds').all()).toEqual([{ setting: 'mail', place, why: SETTER_ACCESS_ENDED }]);
+		} finally {
+			backup.close();
+		}
+	});
+});
+
+describe('a hold is told by why it was held (card 3009’s code review, FP4)', () => {
+	/** Hold `setting` at `place` as an unsealed restore does: set by nobody. */
+	const holdUnsealed = (setting: string, place: string) =>
+		sqlite
+			.prepare('INSERT INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) VALUES (?, ?, ?, ?, NULL, NULL)')
+			.run(setting, place, UNSEALED_RESTORE, stamp());
+
+	it.each([
+		{ why: 'an unsealed restore', unsealed: true },
+		{ why: 'an ended setter (the control)', unsealed: false }
+	])('(fp4a) held mail, by $why: the mail, a mail problem and the request link’s WARN in its own words', async ({ unsealed }) => {
+		makeSmtp();
+		if (unsealed) holdUnsealed('mail', SMTP_PLACE);
+		else hold('mail', SMTP_PLACE);
+		const words = unsealed ? MAIL_HELD_UNSEALED : MAIL_PROBLEM_WORDS.held;
+
+		expect(await trySendEmail('a@example.test', 'Held', '<p>x</p>')).toEqual({ sent: false, problem: 'held', detail: words });
+		expect(mailProblemWords('held')).toBe(words);
+		expect(cannotMailWhy('held')).toBe(words);
+		if (unsealed) {
+			expect(words).not.toMatch(/access was ended|account that set/);
+			expect(words).toContain('a backup whose seal did not verify');
+		}
+	});
+
+	it.each([
+		{ why: 'an unsealed restore', unsealed: true },
+		{ why: 'an ended setter (the control)', unsealed: false }
+	])('(fp4b) a destination held by $why: a run, a Test and a Connect are told it in its own words', async ({ unsealed }) => {
+		saveDestinations([A]);
+		if (unsealed) holdUnsealed('backup_destination:A', placeOf('A'));
+		else hold('backup_destination:A', placeOf('A'));
+		const words = unsealed ? DESTINATION_HELD_UNSEALED : DESTINATION_HELD;
+
+		expect(destinationHeldWords(placeOf('A'))).toBe(words);
+		const results = await runBackup();
+		expect(results.find((row) => row.destination === 'A')).toMatchObject({ status: 'failed', message: words });
+		const superadmin = makeUser({ username: 'chief', role: 'superadmin' });
+		const shown = (await api('GET', '/api/admin/backup', { user: superadmin })).body.destinations.find((d: { name: string }) => d.name === 'A');
+		const tested = await api('POST', '/api/admin/backup/test', { user: superadmin, body: shown });
+		expect(tested.status).toBe(409);
+		expect(tested.body.message).toBe(words);
+	});
+
+	it('(fp4c) the start’s WARN names no setter for an unsealed restore’s hold, and names the ended setter beside it', () => {
+		makeSmtp();
+		saveDestinations([A]);
+		holdUnsealed('mail', SMTP_PLACE);
+
+		expect(reportSettingsHeld()).toBe(1);
+		const alone = lines('STARTUP').at(-1)!.message;
+		expect(alone).toBe(
+			"Settings held for the superadmin's review: the mail settings (restored from a backup whose seal did not verify, so where they send is " +
+				"only the file's word). Nothing is sent to them until the superadmin keeps or removes each under Settings held for review on the " +
+				'admin page; an older image would use them again.'
+		);
+		expect(alone).not.toMatch(/user unknown|whose access was ended|set by/);
+
+		hold('backup_destination:A', placeOf('A'));
+		expect(reportSettingsHeld()).toBe(2);
+		const both = lines('STARTUP').at(-1)!.message;
+		expect(both).toContain('backup destination "A" (set by "ann", whose access was ended); the mail settings (restored from a backup whose seal did not verify');
+	});
+
+	it('(fp4d) the review list carries why each is held, for the page to word it', async () => {
+		makeSmtp();
+		saveDestinations([A]);
+		holdUnsealed('mail', SMTP_PLACE);
+		hold('backup_destination:A', placeOf('A'));
+		const superadmin = makeUser({ username: 'chief', role: 'superadmin' });
+
+		const listed = await api('GET', '/api/admin/settings/held', { user: superadmin });
+
+		expect(listed.status).toBe(200);
+		expect(listed.body.held.map((row: { setting: string; heldBecause: string; setBy: number | null }) => [row.setting, row.heldBecause, row.setBy])).toEqual([
+			['backup_destination:A', SETTER_ACCESS_ENDED, 7],
+			['mail', UNSEALED_RESTORE, null]
+		]);
 	});
 });

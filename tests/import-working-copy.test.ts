@@ -46,6 +46,9 @@ import { api, routeMethods } from './helpers/api';
 import { importConfirmation, makeUser, resetDb, startedSinceAlreadyOffHeld } from './helpers/fixtures';
 import { afterEachTimestampCheck } from './helpers/timestamps';
 import { readOpened, readOpenedUrl } from './helpers/reads';
+import { DUMMY_HASH } from '$lib/server/dummy-hash';
+import { UNSEALED_RESTORE } from '$lib/server/setting-holds';
+import { backupSealKey, sealCopy } from '$lib/server/backup-secrets';
 
 const REAL_MIGRATIONS = join(process.cwd(), 'drizzle');
 
@@ -308,6 +311,16 @@ const SENTENCE =
 	'Restored as a working copy: 3 report schedule(s) and 2 webhook(s) switched off, the backup schedule switched off, ' +
 	'2 backup destination(s) removed, 8 mail setting(s) removed.';
 
+/**
+ * The same, of the armed backup, whose seal does not verify: its App URL removed too, and counted (card 3009's code
+ * review, FP3).
+ */
+const SWITCHED_OFF_UNSEALED: OutsideSwitchedOff = { ...SWITCHED_OFF, appUrl: 1 };
+const SENTENCE_UNSEALED = SENTENCE.replace(
+	'8 mail setting(s) removed.',
+	"8 mail setting(s) removed, and the backup's App URL removed, as its seal did not verify: links begin with this server's own address."
+);
+
 /** The armed backup. */
 function armedBackup(): Database.Database {
 	const backup = migratedDb();
@@ -379,13 +392,98 @@ function reachingOutside(database: Database.Database) {
 	};
 }
 
+/**
+ * As the backup has them, but for the report schedules card 3009 pauses (R7): the armed backup's seal does not verify
+ * and none of its accounts is the same here, so each is given a password nothing matches, and its schedules are paused
+ * where the restore keeps what reaches outside. With no importer given, the superadmin ann is too (R3): none is left on.
+ */
 const AS_THE_BACKUP_HAS_IT = {
-	reportSchedulesEnabled: 3,
+	reportSchedulesEnabled: 0,
 	webhooksActive: 2,
 	backupSchedule: 'daily',
 	backupDestinations: 2,
 	mailSettings: 8
 };
+/**
+ * The same through the route, which gives the importer: ann, the backup's superadmin, is given the importer's password
+ * (card 3009), and her schedules 1 and 2 are paused as bob's is, being the file's (its code review, FP2).
+ */
+const AS_THE_BACKUP_HAS_IT_IMPORTED = { ...AS_THE_BACKUP_HAS_IT, reportSchedulesEnabled: 0 };
+
+/**
+ * `contents` as a restore of the armed backup leaves its accounts (card 3009): its seal does not verify and none of them
+ * is the same here, so none takes its password from the file.
+ */
+const passwordsNotTaken = (contents: Record<string, string[]>) => ({
+	...contents,
+	users: contents.users.map((row) => JSON.stringify({ ...JSON.parse(row), password_hash: DUMMY_HASH })).sort()
+});
+
+/**
+ * `contents` without the holds a restore of the armed backup that keeps what reaches outside writes (card 3009, R4): its
+ * mail settings, App URL and destination are at places this server did not hold, from a backup whose seal does not
+ * verify, so each is held for review. Asked on their own by `HELD_UNSEALED_ROWS`.
+ */
+const withoutUnsealedHolds = (contents: Record<string, string[]>) => ({
+	...contents,
+	setting_holds: contents.setting_holds.filter((row) => !row.includes(UNSEALED_RESTORE))
+});
+
+/**
+ * What the route's answer says of the armed backup's passwords (card 3009): bob, not the same account here, takes none
+ * from the file; ann, its superadmin, is given the importer's password, and no authenticator, as the importer the route's
+ * helper makes holds none, so the host's reset is named.
+ */
+const GIVEN_YOURS =
+	"The backup's superadmin is not the account you imported with, and the backup's seal did not verify, so its password in the backup was " +
+	'not taken: it was given the password you confirmed this import with, but none of your authenticators, as no MFA key is loaded or none ' +
+	"of yours could be moved: it cannot sign in until the server's host resets its two-step sign-in with scripts/mfa-reset.mjs. Then sign " +
+	'in as it, the superadmin that now holds your email address, with that password.';
+const PASSWORDS_NOT_TAKEN =
+	"1 account(s) in the backup are not on this server as the same account, and the backup's seal did not verify, so the password each " +
+	'holds in it was not taken: each needs its password set (🔑) or an invite (📧) before it can sign in, and its report schedules were ' +
+	"paused. The backup's App URL and mail host, where they differ from this server's, are held for review. Before sending an invite, " +
+	"check each one's email address and role, and the App URL and the mail host: in a backup whose seal did not verify they are only the " +
+	"file's word. Or set its password with 🔑, which mails nothing. " +
+	GIVEN_YOURS;
+/** The same of a working copy (card 3009's code review, FP14): every schedule switched off, and the mail and App URL removed. */
+const PASSWORDS_NOT_TAKEN_WORKING =
+	"1 account(s) in the backup are not on this server as the same account, and the backup's seal did not verify, so the password each " +
+	'holds in it was not taken: each needs its password set (🔑) before it can sign in. As a working copy, every report schedule was ' +
+	"switched off, and the mail settings and the backup's App URL were removed, so no invite can be mailed. Before giving anyone a " +
+	"password, check each one's email address and role: in a backup whose seal did not verify they are only the file's word. " +
+	GIVEN_YOURS;
+
+/** Those holds, by setting and why (card 3009, R4). */
+const HELD_UNSEALED_ROWS = [
+	['app_url', UNSEALED_RESTORE],
+	['backup_destination:Bucket', UNSEALED_RESTORE],
+	['mail', UNSEALED_RESTORE]
+];
+
+/**
+ * What the route's answer says of them (card 3009, R4), the panel's `settingsHeld`: through the route the server holds no
+ * destination before the import, so both of the armed backup's are held.
+ */
+const HELD_UNSEALED_SENTENCE =
+	"The backup's seal did not verify, so the mail settings, the App URL and 2 backup destination(s) it brought in, at places this server did " +
+	"not hold, were held for the superadmin's review: nothing is sent through them, and no link begins with the App URL, until the superadmin " +
+	'checks each and keeps or removes it under Settings held for review.';
+
+/**
+ * The rows of `table` as a restore of the armed backup that keeps what reaches outside leaves them (card 3009, R7): the
+ * report schedules of the accounts `paused` owns switched off; and every schedule without its `updated_at`, which the
+ * pause stamps with its own moment. Applied to both sides.
+ */
+const schedulesPaused = (table: string, rows: string[], paused: number[] = []) =>
+	table !== 'report_schedules'
+		? rows
+		: rows
+				.map((row) => {
+					const { updated_at: _updated, ...schedule } = JSON.parse(row) as Record<string, unknown>;
+					return JSON.stringify(paused.includes(schedule.user_id as number) ? { ...schedule, enabled: 0 } : schedule);
+				})
+				.sort();
 const AS_IT_WAS_HERE = {
 	reportSchedulesEnabled: 1,
 	webhooksActive: 1,
@@ -414,7 +512,7 @@ describe('restoring as a working copy', () => {
 		expect(result.errors).toEqual([]);
 		// Counted: what was on. The schedule and the webhook that were off
 		// already are not among them.
-		expect(result.outside).toEqual(SWITCHED_OFF);
+		expect(result.outside).toEqual(SWITCHED_OFF_UNSEALED);
 		expect(reachingOutside(live)).toEqual(NOTHING);
 
 		// Every schedule and every webhook is there, as the backup has it but
@@ -450,9 +548,9 @@ describe('restoring as a working copy', () => {
 		// And the record that mail was set up, written before the working copy removed it (card 2922's code review, C4):
 		// the copy's password-only set-up stays shut. And the once-only seed's flag, written for a backup holding none
 		// before the keys are left out (card 2995, R3).
+		// No App URL: the backup's seal does not verify (card 3009's code review, FP3).
 		expect(Object.keys(settings).sort()).toEqual([
 			'api_key_deadline',
-			'app_url',
 			'backup_config',
 			'mail_ever_configured_at',
 			'mfa_key_check',
@@ -466,11 +564,12 @@ describe('restoring as a working copy', () => {
 			'webhooks_readable_by_disabled_held'
 		]);
 		expect(JSON.parse(settings['backup_config'])).toEqual(BACKUP_CONFIG_OFF);
-		expect(settings['app_url']).toBe(APP_URL);
+		// Card 3009's code review, FP3: the backup's seal does not verify, so its App URL is removed with the mail.
+		expect(settings['app_url']).toBeUndefined();
 		expect(settings['theme']).toBe('dark');
 
-		// Everything else is the backup's, and the backup was only read.
-		expect(everythingElseIn(live)).toEqual(everythingElseIn(backup));
+		// Everything else is the backup's, but for its accounts' passwords (card 3009), and the backup was only read.
+		expect(everythingElseIn(live)).toEqual(passwordsNotTaken(everythingElseIn(backup)));
 		expect(rowsOf(live, 'users').map((row) => row.username)).toEqual(['ann', 'bob']);
 		expect(contentsOf(backup)).toEqual(backupBefore);
 		expect(live.pragma('foreign_keys', { simple: true })).toBe(1);
@@ -487,7 +586,7 @@ describe('restoring as a working copy', () => {
 		expect(result.errors).toEqual([]);
 		// Webhooks 1 and 3 were on, and are off in the backup for want of a
 		// secret: still counted. One mail setting fewer: there is no password.
-		expect(result.outside).toEqual({ ...SWITCHED_OFF, mailSettings: 7 });
+		expect(result.outside).toEqual({ ...SWITCHED_OFF_UNSEALED, mailSettings: 7 });
 		expect(reachingOutside(live)).toEqual(NOTHING);
 		expect(rowsOf(live, 'webhooks').map((row) => [row.id, row.secret, row.active])).toEqual([
 			[1, '', 0],
@@ -518,10 +617,16 @@ describe('restoring as a working copy', () => {
 		expect(result.errors).toEqual([]);
 		expect(result.outside).toBeNull();
 		expect(reachingOutside(live)).toEqual(AS_THE_BACKUP_HAS_IT);
+		// But for the schedules of its two accounts, paused (card 3009, R7), and their passwords.
 		for (const table of OUTSIDE_TABLES) {
-			expect(withoutKeysRecorded(withoutFormKey(contentsOf(live)[table]))).toEqual(withoutKeysRecorded(withoutFormKey(contentsOf(backup)[table])));
+			expect(schedulesPaused(table, withoutKeysRecorded(withoutFormKey(contentsOf(live)[table])))).toEqual(
+				schedulesPaused(table, withoutKeysRecorded(withoutFormKey(contentsOf(backup)[table])), [1, 2])
+			);
 		}
-		expect(everythingElseIn(live)).toEqual(everythingElseIn(backup));
+		// And its mail, App URL and destination held for review (card 3009, R4).
+		expect(result.unsealedHeld).toEqual({ mail: 1, destinations: 1, appUrl: 1 });
+		expect(rowsOf(live, 'setting_holds', 'setting').map((row) => [row.setting, row.held_because])).toEqual(HELD_UNSEALED_ROWS);
+		expect(withoutUnsealedHolds(everythingElseIn(live))).toEqual(passwordsNotTaken(everythingElseIn(backup)));
 	});
 
 	it.each(['not json {', '', '[1, 2]', 'null', '"daily"', '42'])(
@@ -536,11 +641,10 @@ describe('restoring as a working copy', () => {
 			const result = restoreFromBackup(live, backup, { outside: 'off' });
 
 			expect(result.errors).toEqual([]);
-			expect(result.outside).toEqual({ ...SWITCHED_OFF, backupScheduleWasOn: false, backupDestinations: 0 });
+			expect(result.outside).toEqual({ ...SWITCHED_OFF_UNSEALED, backupScheduleWasOn: false, backupDestinations: 0 });
 			// It went on to the mail settings, and the restore is committed; mail set up recorded first (card 2922, C4).
 			expect(Object.keys(settingsIn(live)).sort()).toEqual([
 				'api_key_deadline',
-				'app_url',
 				'mail_ever_configured_at',
 				'mfa_key_check',
 				'request_form_secret',
@@ -554,7 +658,7 @@ describe('restoring as a working copy', () => {
 				// Card 2935 (P12): the restore's own run of the start pass.
 				'webhooks_readable_by_disabled_held'
 			]);
-			expect(everythingElseIn(live)).toEqual(everythingElseIn(backup));
+			expect(everythingElseIn(live)).toEqual(passwordsNotTaken(everythingElseIn(backup)));
 		}
 	);
 
@@ -575,11 +679,12 @@ describe('restoring as a working copy', () => {
 			webhooks: 0,
 			backupScheduleWasOn: false,
 			backupDestinations: 0,
-			mailSettings: 0
+			mailSettings: 0,
+			// The backup's App URL, its seal not verifying (card 3009's code review, FP3).
+			appUrl: 1
 		});
 		// No configuration is written where there was none.
 		expect(settingsIn(live)).toEqual({
-			app_url: APP_URL,
 			// The key check its sealing records, and the form key sealed (card 2898).
 			mfa_key_check: expect.stringMatching(/^[0-9a-f]{64}$/),
 			request_form_secret: expect.stringMatching(/^dfsealed:1:/),
@@ -596,9 +701,11 @@ describe('restoring as a working copy', () => {
 			webhooks_readable_by_disabled_held: '2026-11-19 00:00:00'
 		});
 		expect(readOpened('settings', 'request_form_secret', live)).toMatch(/^v2:[0-9a-f]{64}$/);
-		// The settings as the backup has them, but for this server's 0071 moment, kept (card 2752).
+		// The settings as the backup has them, but for this server's 0071 moment, kept (card 2752), and the App URL, removed
+		// as the backup's seal does not verify (card 3009's code review, FP3).
+		const withoutAppUrl = (rows: string[]) => rows.filter((row) => !row.includes('"key":"app_url"'));
 		for (const table of OUTSIDE_TABLES) {
-			expect(withoutKeysRecorded(withoutFormKey(contentsOf(live)[table]))).toEqual(withoutFormKey(contentsOf(backup)[table]));
+			expect(withoutKeysRecorded(withoutFormKey(contentsOf(live)[table]))).toEqual(withoutAppUrl(withoutFormKey(contentsOf(backup)[table])));
 		}
 	});
 
@@ -612,7 +719,7 @@ describe('restoring as a working copy', () => {
 		const result = restoreFromBackup(live, backup, { outside: 'off' });
 
 		// "Run Backup Now" needs a destination and no schedule.
-		expect(result.outside).toEqual({ ...SWITCHED_OFF, backupScheduleWasOn: false });
+		expect(result.outside).toEqual({ ...SWITCHED_OFF_UNSEALED, backupScheduleWasOn: false });
 		expect(JSON.parse(settingsIn(live)['backup_config'])).toEqual(BACKUP_CONFIG_OFF);
 	});
 
@@ -816,8 +923,11 @@ describe('what the application reads after a restore', () => {
 
 	it('has all of them when the same backup is restored as it is', () => {
 		// The same readers find everything, so that finding nothing above is
-		// the working copy and not the readers.
-		const result = restoreFromBackup(sqlite, armedBackup(), { outside: 'keep' });
+		// the working copy and not the readers. Sealed with this server's key, as its own backup: one whose seal did not
+		// verify would pause the schedules of its accounts, none of them the same here (card 3009, R7).
+		const backup = armedBackup();
+		sealCopy(backup, backupSealKey(sqlite));
+		const result = restoreFromBackup(sqlite, backup, { outside: 'keep' });
 
 		expect(result.errors).toEqual([]);
 		expect(getBackupConfig()).toEqual(BACKUP_CONFIG);
@@ -954,6 +1064,8 @@ describe('through the route', () => {
 		const admin = makeUser({ role: 'superadmin' });
 		// Made before the backup's accounts, so never the same account as the backup's user 1 by sharing its second of
 		// creation: an unsealed backup's same account would keep this server's password and be counted (card 2997, R2).
+		// So not in the backup, the importer's password is given to the backup's superadmin, ann, whose schedules then stay
+		// as the backup has them (card 3009, section 14.1).
 		sqlite.prepare("UPDATE users SET created_at = '2020-01-01 00:00:00' WHERE id = ?").run(admin.id);
 		// With their password confirmed first (card 2701), before `arrange`
 		// reads what there is: the session it is confirmed on is theirs.
@@ -1004,12 +1116,13 @@ describe('through the route', () => {
 		expect(response.status).toBe(200);
 		expect(response.body.success).toBe(true);
 		expect(response.body.errors).toBeUndefined();
-		expect(response.body.outside).toEqual(SWITCHED_OFF);
+		expect(response.body.outside).toEqual(SWITCHED_OFF_UNSEALED);
 		// The message it had, closed with a full stop, then that everybody is
 		// signed out, which the answer says and the log line does not, and then
 		// the sentence.
 		expect(response.body.message).toMatch(new RegExp(`^Database restored \\(${size}\\)\\. .*\\bwebhooks: 3\\. Everybody`));
-		expect(response.body.message.endsWith(`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann. ${SENTENCE}`)).toBe(true);
+		// Card 3009: the passwords the backup's accounts were not given said first.
+		expect(response.body.message.endsWith(`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann. ${PASSWORDS_NOT_TAKEN_WORKING} ${SENTENCE_UNSEALED}`)).toBe(true);
 		expect(response.body.superadmins).toEqual(['ann']);
 		// Who imported which file first, at CRITICAL (card 2899), then the account of it.
 		expect(logged).toHaveLength(2);
@@ -1017,19 +1130,20 @@ describe('through the route', () => {
 		expect(logged[1]).toMatch(
 			new RegExp(
 				`^\\[INFO\\] \\[IMPORT\\] Database restored from an uploaded backup \\(${size}\\)\\. Rows: .*\\. ` +
-					'Filled in: first_completed_at on 0 card\\(s\\)\\. Restored as'
+					'Filled in: first_completed_at on 0 card\\(s\\)\\. 1 account\\(s\\) in the backup are not on this server as the same account.*\\. Restored as'
 			)
 		);
-		expect(logged[1].endsWith(`. ${SENTENCE}`)).toBe(true);
+		expect(logged[1].endsWith(`. ${SENTENCE_UNSEALED}`)).toBe(true);
 		// The same account in parts, which is what the admin page lays out: the
 		// size, the rows of each table, and the sentence on its own.
 		expect(response.body.sizeBytes).toBeGreaterThan(0);
 		expect(response.body.restored.boards).toBe(2);
 		expect(response.body.restored.webhooks).toBe(3);
-		expect(response.body.workingCopy).toBe(SENTENCE);
+		expect(response.body.workingCopy).toBe(SENTENCE_UNSEALED);
 		// And it is what it says.
 		expect(reachingOutside(sqlite)).toEqual(NOTHING);
-		expect(settingsIn(sqlite)['app_url']).toBe(APP_URL);
+		// Removed with the mail, the backup's seal not verifying (card 3009's code review, FP3).
+		expect(settingsIn(sqlite)['app_url']).toBeUndefined();
 		expect(sqlite.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }]);
 	});
 
@@ -1048,13 +1162,19 @@ describe('through the route', () => {
 		expect(response.body.workingCopy).toBeUndefined();
 		expect(response.body.restored.boards).toBe(2);
 		expect(response.body.message).toMatch(new RegExp(`^Database restored \\(${size}\\)\\. .*\\bwebhooks: 3\\. Everybody`));
-		expect(response.body.message.endsWith(`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann.`)).toBe(true);
+		// Card 3009 (R4): then its mail, App URL and destination held for review, counted.
+		expect(response.body.message.slice(response.body.message.lastIndexOf('webhooks: 3.'))).toBe(
+			`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann. ${PASSWORDS_NOT_TAKEN} ${HELD_UNSEALED_SENTENCE}`
+		);
+		expect(response.body.settingsHeld).toBe(HELD_UNSEALED_SENTENCE);
 		// The CRITICAL line of who imported (card 2899), then the account of it.
 		expect(logged).toHaveLength(2);
-		expect(logged[0]).toMatch(/^\[CRITICAL\] \[IMPORT\] The database was replaced from an uploaded backup by .*, restored as it is\. /);
-		expect(logged[1]).toMatch(/Filled in: first_completed_at on 0 card\(s\)\.$/);
+		expect(logged[0]).toMatch(
+			/^\[CRITICAL\] \[IMPORT\] The database was replaced from an uploaded backup by .*, restored as it is, keeping 1 of the backup's password\(s\) out of use, giving the backup's superadmin the importing account's password but no authenticator, holding 4 setting\(s\) of a backup whose seal did not verify for the superadmin's review\. /
+		);
+		expect(logged[1].endsWith(`Filled in: first_completed_at on 0 card(s). ${PASSWORDS_NOT_TAKEN} ${HELD_UNSEALED_SENTENCE}`)).toBe(true);
 		expect(`${response.body.message} ${logged[1]}`).not.toMatch(/working copy|switched off|removed/i);
-		expect(reachingOutside(sqlite)).toEqual(AS_THE_BACKUP_HAS_IT);
+		expect(reachingOutside(sqlite)).toEqual(AS_THE_BACKUP_HAS_IT_IMPORTED);
 		// The settings as the backup has them, beside the form signing key the restore makes (card 2750), and the flag
 		// the check of the stored images writes once the import has committed, the backup holding no image and no flag
 		// (card 2761, the code review's CS3).
@@ -1062,7 +1182,9 @@ describe('through the route', () => {
 		// holding none (card 2947, R7).
 		const made = (rows: string[]) =>
 			withoutFormKey(rows).filter((row) => !row.includes('"key":"stored_images_rechecked"') && !row.includes('"key":"webhook_reveals_seeded"'));
-		for (const table of OUTSIDE_TABLES) expect(made(contentsOf(sqlite)[table])).toEqual(made(contentsOf(backup)[table]));
+		// But for the schedules of bob and of ann, the superadmin given the importer's password, paused: neither is the same
+		// account here, from a backup whose seal does not verify (card 3009, R7; its code review, FP2).
+		for (const table of OUTSIDE_TABLES) expect(schedulesPaused(table, made(contentsOf(sqlite)[table]))).toEqual(schedulesPaused(table, made(contentsOf(backup)[table]), [1, 2]));
 		expect(contentsOf(backup).settings.filter((row) => row.includes('"key":"stored_images_rechecked"'))).toEqual([]);
 		expect(contentsOf(sqlite).settings.filter((row) => row.includes('"key":"stored_images_rechecked"'))).toHaveLength(1);
 		expect(contentsOf(backup).settings.filter((row) => row.includes('"key":"webhook_reveals_seeded"'))).toEqual([]);
@@ -1118,7 +1240,7 @@ describe('through the route', () => {
 		const { response } = await upload('?outside=off', armedBackup());
 
 		expect(response.status).toBe(200);
-		expect(response.body.outside).toEqual(SWITCHED_OFF);
+		expect(response.body.outside).toEqual(SWITCHED_OFF_UNSEALED);
 		expect(reachingOutside(sqlite)).toEqual(NOTHING);
 	});
 
@@ -1128,8 +1250,8 @@ describe('through the route', () => {
 		const { response } = await upload('', armedBackup());
 
 		expect(response.status).toBe(200);
-		expect(response.body.outside).toEqual(SWITCHED_OFF);
-		expect(response.body.message.endsWith(`. ${SENTENCE}`)).toBe(true);
+		expect(response.body.outside).toEqual(SWITCHED_OFF_UNSEALED);
+		expect(response.body.message.endsWith(`. ${SENTENCE_UNSEALED}`)).toBe(true);
 		expect(reachingOutside(sqlite)).toEqual(NOTHING);
 	});
 
@@ -1139,7 +1261,7 @@ describe('through the route', () => {
 		const { response } = await upload('', armedBackup());
 
 		expect(response.status).toBe(200);
-		expect(response.body.outside).toEqual(SWITCHED_OFF);
+		expect(response.body.outside).toEqual(SWITCHED_OFF_UNSEALED);
 		expect(reachingOutside(sqlite)).toEqual(NOTHING);
 	});
 
@@ -1151,7 +1273,7 @@ describe('through the route', () => {
 		expect(response.status).toBe(200);
 		expect(response.body.outside).toBeUndefined();
 		expect(response.body.message).not.toMatch(/working copy/i);
-		expect(reachingOutside(sqlite)).toEqual(AS_THE_BACKUP_HAS_IT);
+		expect(reachingOutside(sqlite)).toEqual(AS_THE_BACKUP_HAS_IT_IMPORTED);
 	});
 
 	it.each(['sideways', '', 'OFF', 'true'])(
@@ -1204,11 +1326,11 @@ describe('through the route', () => {
 		expect(response.status).toBe(200);
 		expect(response.body.success).toBe(true);
 		expect(response.body.errors).toEqual([problem]);
-		expect(response.body.outside).toEqual(SWITCHED_OFF);
+		expect(response.body.outside).toEqual(SWITCHED_OFF_UNSEALED);
 		expect(response.body.message).toMatch(
 			new RegExp(`^Database restored \\(${size}\\), with 1 problem\\(s\\); each is given in the list\\. .*\\bcards: 3\\b`)
 		);
-		expect(response.body.message.endsWith(`. ${SENTENCE}`)).toBe(true);
+		expect(response.body.message.endsWith(`. ${SENTENCE_UNSEALED}`)).toBe(true);
 		// After the CRITICAL line of who imported (card 2899).
 		expect(logged).toHaveLength(2);
 		expect(logged[0]).toMatch(/^\[CRITICAL\] \[IMPORT\] The database was replaced from an uploaded backup by /);
@@ -1234,12 +1356,14 @@ describe('through the route', () => {
 			webhooks: 0,
 			backupScheduleWasOn: false,
 			backupDestinations: 0,
-			mailSettings: 0
+			mailSettings: 0,
+			appUrl: 1
 		});
 		expect(
 			response.body.message.endsWith(
 				'. Restored as a working copy: 0 report schedule(s) and 0 webhook(s) switched off, the backup schedule ' +
-					'was already off, 0 backup destination(s) removed, 0 mail setting(s) removed.'
+					"was already off, 0 backup destination(s) removed, 0 mail setting(s) removed, and the backup's App URL removed, as its seal " +
+					"did not verify: links begin with this server's own address."
 			)
 		).toBe(true);
 	});

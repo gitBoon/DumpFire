@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.98
+version: 1.99
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3009
+  - unsealed-backup-grants
   - card-2997
   - passwords-replaced
   - card-2996
@@ -70,7 +72,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "Complete database schema documentation with ER diagram, table descriptions, account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
+description: "Complete database schema documentation with ER diagram, table descriptions, settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -3217,7 +3219,12 @@ of about zero.
   secret).
 - **Settings held for review** (card 2922, migration `0074_add_setting_holds.sql`, 2026-11-19).
   `setting_holds`: `setting` and `place` text, as `setting_setters` names them, the key
-  `PRIMARY KEY(setting, place)`; `held_because` text, `'setter access ended'`; `held_at`, a
+  `PRIMARY KEY(setting, place)`; `held_because` text, `'setter access ended'`, or, since card
+  3009, `'restored from a backup whose seal did not verify'` (written by the restore itself,
+  `holdUnsealedSettings`, with `set_by` and `set_by_name` NULL, for the mail settings, App URL
+  and destinations at new places that such a backup brought in, restored as it is; the review list,
+  a held mail, a held destination and the start's WARN word each hold by it, and never name a setter
+  for the restore's: its code review, FP4); `held_at`, a
   moment in the stored form; `set_by` integer and `set_by_name` text, the account whose ending
   made the hold and its username then, with **no foreign key**, so a hold outlives the account.
   Every ending of an account's access with its API keys copies each of its setter rows here
@@ -3525,6 +3532,21 @@ flowchart LR
   never brings either in, and fills this server's secrets only into a backup whose seal it
   can make again. See
   [The Secrets a Backup Does Not Hold](authentication-security.md#the-secrets-a-backup-does-not-hold-card-2169).
+- **The installation id** (card 3009, no migration): `settings.installation_id`, 16 random bytes
+  as 32 lower-case hex, **not secret** and stored in plain. Made once by the start, inside the
+  transaction of `replaceSigningKeysAtStart` (`ensureInstallationId`, `INSERT OR IGNORE`, so one
+  stored of its form is never replaced; one not of its form, a host's edit, is deleted and made anew,
+  the start saying so in one `[CRITICAL] [STARTUP]` line that names neither id: card 3009's code
+  review, FP13), and by the first backup where the start has not yet made it
+  (`withoutSecrets`' default argument). Every backup's copy carries it, written before the seal, so
+  the seal covers it. **A restore never brings it in** (`rowsToRestore` leaves it out) and puts this
+  server's back after the clear, beside `backup_seal_key`; where this server has none, none is kept
+  and none made. Never written to a log or an answer: a restore reads the backup's against this
+  server's and says only the verdict, `this`, `other` or `none`, which decides whether an account of
+  a backup whose seal does not verify is the same account here (`sameAccountHere`; see
+  [Nothing That Signs In From an Unsealed Backup](authentication-security.md#nothing-that-signs-in-from-an-unsealed-backup-card-3009)).
+  A copy of the volume shares it with the seal key: delete both rows on any clone, with its server
+  stopped, so that its next start makes new ones.
 - **The live database keeps its secrets sealed** (card 2898, no migration): `webhooks.secret`,
   `settings.smtp_pass`, the secret fields of `settings.backup_config`'s destinations (and a
   service account's `private_key` inside its JSON), `known_browser_secret`,

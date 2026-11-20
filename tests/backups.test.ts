@@ -92,6 +92,7 @@ import {
 	BACKUP_SEAL_KEY,
 	CREDENTIALS_NOT_ENTERED,
 	GDRIVE_NOT_CONNECTED,
+	INSTALLATION_ID,
 	NOT_SEALED_HERE,
 	NO_SEAL_HERE,
 	SAVE_BEFORE_TEST,
@@ -105,8 +106,11 @@ import {
 	webhookAddressMacKey,
 	clearSecrets,
 	credentialsMissing,
+	ensureInstallationId,
 	failedCheckSentence,
 	hostKeyChanges,
+	installationIdHere,
+	installationOf,
 	sealCopy,
 	sealKeyHere,
 	sealOf,
@@ -131,6 +135,8 @@ import { credentialOf, passwordReplacedHere, recordPasswordReplaced } from '$lib
 import { endReplacedPasswordsPresent } from '$lib/server/account-ending-bodies';
 import { hashSync } from 'bcryptjs';
 import { DUMMY_HASH } from '$lib/server/dummy-hash';
+import { carryFactors, mfaWithoutFactorSentence, readMfaHere, sameAccountHere, type GrantTrust } from '$lib/server/mfa-backup';
+import { usableInvite } from '$lib/server/invites';
 import { shouldNotifyUser } from '$lib/server/notifications';
 import { NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import {
@@ -183,13 +189,14 @@ import {
 	stepUpCode,
 	stepUpFactor,
 	sessionHashOf,
-	sessionCredential
+	sessionCredential,
+	sessionRow
 } from './helpers/fixtures';
 import { FROM_THE_PAGE, gate, gateApiRoutes } from './helpers/gate';
 import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
-import { afterEachTimestampCheck } from './helpers/timestamps';
+import { afterEachTimestampCheck, allowOtherTimestampForms } from './helpers/timestamps';
 import { readOpened, readOpenedUrl } from './helpers/reads';
-import { openReleaseWindow, passwordStep } from './helpers/two-step';
+import { giveFactor, openReleaseWindow, passwordStep, signInFully } from './helpers/two-step';
 
 /** What the stand-in destination was handed: the bytes, under the name and for the destination they were for. */
 const uploaded = vi.hoisted(() => [] as { destination: string; filename: string; bytes: Buffer }[]);
@@ -199,6 +206,14 @@ const handed = vi.hoisted(() => [] as Record<string, unknown>[]);
 
 /** No MFA key loaded, for one case of card 2898 (case 33): `currentMfaKey` answers null while it is set. */
 const keyStub = vi.hoisted(() => ({ none: false }));
+
+/** No authenticator carried by card 3009's carry, for its words through the route: `carryFactors` answers 0 while it is set. */
+const carryStub = vi.hoisted(() => ({ none: false }));
+
+vi.mock('$lib/server/mfa-backup', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/mfa-backup')>();
+	return { ...real, carryFactors: (...args: Parameters<typeof real.carryFactors>) => (carryStub.none ? 0 : real.carryFactors(...args)) };
+});
 
 vi.mock('$lib/server/mfa-key', async (importOriginal) => {
 	const real = await importOriginal<typeof import('$lib/server/mfa-key')>();
@@ -601,7 +616,7 @@ describe('a backup', () => {
 			expect(bytes.includes(Buffer.from(KNOWN_BROWSER_SECRET_KEY))).toBe(false);
 			// The other settings are there, and the backup's seal (card 2169's S1), which is no secret, and the
 			// MFA key's check the superadmin's factor wrote (card 2771), which is none either.
-			expect(column(opening(bytes), 'SELECT key FROM settings ORDER BY key')).toEqual(['app_url', BACKUP_SEAL, 'mfa_key_check']);
+			expect(column(opening(bytes), 'SELECT key FROM settings ORDER BY key')).toEqual(['app_url', BACKUP_SEAL, 'installation_id', 'mfa_key_check']);
 		}
 		// And the running database still has it.
 		expect(column(sqlite, `SELECT value FROM settings WHERE key = '${KNOWN_BROWSER_SECRET_KEY}'`)).toEqual([key]);
@@ -653,6 +668,8 @@ describe('a backup', () => {
 /** A backup of another installation: its own superadmin, sessions and invites, and one board. */
 function backupWithSignIns(): Database.Database {
 	const backup = migratedDb();
+	// Its invites are taken only from a backup whose seal verified (card 3009's code review, FP1): a case that restores
+	// them seals the copy, with `sealedFor`, once it holds all it will.
 	backup.exec(`
 		INSERT INTO users (id, username, email, password_hash, role) VALUES
 			(1, 'ann', 'ann@example.test', 'x', 'superadmin'),
@@ -670,6 +687,12 @@ function backupWithSignIns(): Database.Database {
 	return backup;
 }
 
+/** `backup` sealed under `live`'s seal key, as `live`'s own backup is (card 3009's code review, FP1). */
+function sealedFor(live: Database.Database, backup: Database.Database): Database.Database {
+	sealCopy(backup, backupSealKey(live));
+	return backup;
+}
+
 describe('a restore', () => {
 	it('brings in no session and no unused invite, whatever the backup holds, and clears the ones that were here', () => {
 		const live = migratedDb();
@@ -681,10 +704,11 @@ describe('a restore', () => {
 		live
 			.prepare("INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES (?, 9, '2099-01-01T00:00:00.000Z', 0)")
 			.run(inviteHashOf('invite-that-was-here'));
-		const backup = backupWithSignIns();
+		const backup = sealedFor(live, backupWithSignIns());
 
 		const result = restoreFromBackup(live, backup);
 
+		expect(result.sealVerified).toBe(true);
 		expect(result.errors).toEqual([]);
 		expect(column(live, 'SELECT id FROM sessions')).toEqual([]);
 		// The used one, with 0068's token in place of the one it was mailed with (card 2849).
@@ -749,11 +773,12 @@ describe('a restore', () => {
 		const backup = backupWithSignIns();
 		const inHashForm = inviteHashOf('used-invite-made-since');
 		backup.prepare("INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES (?, 1, '2099-01-01T00:00:00.000Z', 1)").run(inHashForm);
+		sealedFor(live, backup);
 		const isHashForm = (value: unknown) => Buffer.isBuffer(value) && value.length === 32;
 
 		// Replaced as the rows are read (the code review, CR3): a plain token never
 		// reaches the live file, not even to be written over.
-		const read = rowsToRestore(backup, 'invite_tokens');
+		const read = rowsToRestore(backup, 'invite_tokens', undefined, { sealVerified: true });
 		expect(read.map((row) => isHashForm(row.token))).toEqual([true, true]);
 		expect(read.map((row) => row.token)).toContainEqual(inHashForm);
 
@@ -1125,7 +1150,7 @@ describe('a restore', () => {
 			expect(res.message).toContain(LEFT_OUT);
 			const line = criticalSince(from);
 			expect(line.message).toContain('restored as it is, leaving out 1 API key(s) ended on this server. The system log was kept as it was;');
-			expect(JSON.parse(line.meta).apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+			expect(JSON.parse(line.meta).apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0, unsealed: 0 });
 			expect(`${line.message} ${line.meta} ${res.body.keysLeftOut}`).not.toContain('ann-of-2995');
 		});
 
@@ -1163,7 +1188,122 @@ describe('a restore', () => {
 			expect(failed.body.apiKeysLeftOut).toBe(1);
 			expect(failed.body.keysLeftOut).toBe(LEFT_OUT);
 			expect(failed.message).toContain(LEFT_OUT);
-			expect(JSON.parse(criticalSince(from).meta).apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+			expect(JSON.parse(criticalSince(from).meta).apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0, unsealed: 0 });
+		});
+
+		// Card 3009 (R4, w5): the mail, App URL and destinations an unsealed backup brought in, held for review, counted in the
+		// answer, in the sentence the panel shows (settingsHeld) and in the CRITICAL line, naming none.
+		const HELD_UNSEALED =
+			"The backup's seal did not verify, so the mail settings and the App URL it brought in, at places this server did not hold, were held " +
+			"for the superadmin's review: nothing is sent through them, and no link begins with the App URL, until the superadmin checks each and " +
+			'keeps or removes it under Settings held for review.';
+
+		it('(w5) card 3009, R4: the settings an unsealed backup brought in, held, are counted in the answer, the panel’s sentence and the CRITICAL line, naming none', async () => {
+			makeSmtp();
+			const backup = opening(generateBackupData());
+			backup.prepare("UPDATE settings SET value = 'relay.planted.test' WHERE key = 'smtp_host'").run();
+			backup.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://planted.example.test')").run();
+			const from = newestLine();
+
+			const res = await importAnswer(backup);
+
+			expect(res.status, res.message).toBe(200);
+			expect(res.body.unsealedHeld).toEqual({ mail: 1, destinations: 0, appUrl: 1 });
+			expect(res.body.settingsHeld).toBe(HELD_UNSEALED);
+			expect(res.message).toContain(HELD_UNSEALED);
+			const line = criticalSince(from);
+			expect(line.message).toContain(", holding 2 setting(s) of a backup whose seal did not verify for the superadmin's review");
+			expect(JSON.parse(line.meta).unsealedHeld).toEqual({ mail: 1, destinations: 0, appUrl: 1 });
+			for (const said of [res.message, line.message, line.meta]) {
+				expect(said).not.toContain('relay.planted.test');
+				expect(said).not.toContain('planted.example.test');
+			}
+		});
+
+		// Card 3009 (x): the words of an unsealed import, counts only: no username, id or key prefix (card 2997's FP14).
+		const UNSEALED_PASSWORDS =
+			"1 account(s) in the backup are not on this server as the same account, and the backup's seal did not verify, so the password each " +
+			'holds in it was not taken: each needs its password set (🔑) or an invite (📧) before it can sign in, and its report schedules were ' +
+			"paused. The backup's App URL and mail host, where they differ from this server's, are held for review. Before sending an invite, " +
+			"check each one's email address and role, and the App URL and the mail host: in a backup whose seal did not verify they are only the " +
+			"file's word. Or set its password with 🔑, which mails nothing.";
+		const UNSEALED_KEYS =
+			"1 API key(s) in the backup were left out, because the backup's seal did not verify and this server did not hold them for the same " +
+			'account: none of them works, and their holders make new ones on the Account page.';
+		const UNSEALED_WORDS =
+			"restored as it is, keeping 1 of the backup's password(s) out of use, leaving out 1 API key(s) of a backup whose seal did not verify. The system log was kept as it was;";
+		/** This server's own backup with an administrator it never held, and a key planted on the member, which is here. */
+		const plantedBackup = () => {
+			const backup = opening(generateBackupData());
+			backup
+				.prepare("INSERT INTO users (id, username, email, password_hash, role) VALUES (90, 'planted-of-3009', 'planted-of-3009@example.test', ?, 'admin')")
+				.run(fixtureHashOf(member));
+			const made = generateApiKey();
+			backup.prepare('INSERT INTO api_keys (id, key_hash, key_prefix, name, user_id) VALUES (900, ?, ?, ?, ?)').run(made.keyHash, made.keyPrefix, 'Planted', member.id);
+			return { backup, prefix: made.keyPrefix };
+		};
+		/** Whether `said` names the planted account or key in any form a line names one by. */
+		const namesPlanted = (said: string, prefix: string) =>
+			said.includes('planted-of-3009') || said.includes(prefix) || new RegExp(`(\\b(user|account|id|key)\\s*[#:=]?\\s*|#|"\\w*id"\\s*:\\s*"?)(90|900)\\b`, 'i').test(said);
+
+		it('(x) card 3009: an unsealed import’s sentences, figures and CRITICAL words and details count the passwords and keys not taken, naming nobody; the details carry the verdict, never the id', async () => {
+			const { backup, prefix } = plantedBackup();
+			const id = sqlite.prepare('SELECT value FROM settings WHERE key = ?').pluck().get(INSTALLATION_ID) as string;
+			const from = newestLine();
+
+			const res = await importAnswer(backup);
+
+			expect(res.status, res.message).toBe(200);
+			expect(res.body.passwordsKept).toEqual({ here: 0, reset: 0, superadmin: 0, unsealed: 1, superadminGivenYours: 0, givenYoursWithoutFactor: 0, givenYoursMayEnrol: 0, emailGivenUp: 0 });
+			expect(res.body.accountsKeptLines).toEqual([UNSEALED_PASSWORDS]);
+			expect(res.body.keysLeftOut).toBe(UNSEALED_KEYS);
+			expect(res.message).toContain(UNSEALED_KEYS);
+			expect(res.message).toContain(UNSEALED_PASSWORDS);
+			const line = criticalSince(from);
+			expect(line.message).toContain(UNSEALED_WORDS);
+			const meta = JSON.parse(line.meta);
+			expect(meta.installation).toBe('this');
+			expect(meta.passwordsKept).toMatchObject({ unsealed: 1 });
+			expect(meta.apiKeysLeftOut).toEqual({ count: 0, keyIds: [], workingCopy: 0, unsealed: 1 });
+			const said = `${res.message} ${line.message} ${line.meta} ${res.body.accountsKeptLines.join(' ')}`;
+			expect(namesPlanted(said, prefix)).toBe(false);
+			expect(said).not.toContain(id);
+		});
+
+		it('(x) card 3009: a sealed import says none of it, and its CRITICAL line carries no verdict', async () => {
+			const backup = opening(generateBackupData());
+			const from = newestLine();
+
+			const res = await importAnswer(backup);
+
+			expect(res.status, res.message).toBe(200);
+			expect(res.body.passwordsKept).toBeUndefined();
+			expect(res.body.keysLeftOut).toBeUndefined();
+			expect(res.message).not.toContain('seal did not verify');
+			const line = criticalSince(from);
+			expect(line.message).toContain('restored as it is. The system log was kept as it was;');
+			expect(JSON.parse(line.meta)).not.toHaveProperty('installation');
+		});
+
+		it('(x) card 3009: a restore that committed and then failed says it too', async () => {
+			const { backup, prefix } = plantedBackup();
+			const from = newestLine();
+			const real = sqlite.pragma.bind(sqlite) as Database.Database['pragma'];
+			vi.spyOn(sqlite, 'pragma').mockImplementation(((source: string, options?: Database.PragmaOptions) =>
+				/^foreign_keys\s*=\s*ON$/i.test(source) ? [] : real(source, options)) as typeof sqlite.pragma);
+
+			const failed = await importAnswer(backup);
+			vi.mocked(sqlite.pragma).mockRestore();
+
+			expect(failed.status, failed.message).toBe(500);
+			expect(failed.body.committed).toBe(true);
+			expect(failed.body.accountsKeptLines).toEqual([UNSEALED_PASSWORDS]);
+			expect(failed.body.keysLeftOut).toBe(UNSEALED_KEYS);
+			expect(failed.message).toContain(UNSEALED_PASSWORDS);
+			const line = criticalSince(from);
+			expect(line.message).toContain(UNSEALED_WORDS);
+			expect(JSON.parse(line.meta).installation).toBe('this');
+			expect(namesPlanted(`${failed.message} ${line.message} ${line.meta}`, prefix)).toBe(false);
 		});
 
 		// Card 2996 (test 41): the answer, its figures and the CRITICAL line say how many accounts the record of account
@@ -1268,7 +1408,7 @@ describe('a restore', () => {
 		const PASSWORD_SUPERADMIN_LINE =
 			"1 superadmin account(s) were left with a password that was replaced on this server, or, where the backup's seal did not verify, one " +
 			"other than this server's, so that a superadmin can still sign in: sign in and change it on the Account page at once.";
-		const ALL_KEPT = { here: 1, reset: 1, superadmin: 1 };
+		const ALL_KEPT = { here: 1, reset: 1, superadmin: 1, unsealed: 0, superadminGivenYours: 0, givenYoursWithoutFactor: 0, givenYoursMayEnrol: 0, emailGivenUp: 0 };
 		/**
 		 * Since this server's sealed backup: Alma's password changed here; Bea's replaced here and Bea gone, with no row that
 		 * names her deleted; and the superadmin's own password recorded as replaced, as a host file rollback leaves it.
@@ -1382,7 +1522,7 @@ describe('a restore', () => {
 		});
 
 	it('signs everybody out through the route, whoever sent it included, and says so', async () => {
-		const backup = backupWithSignIns();
+		const backup = sealedFor(sqlite, backupWithSignIns());
 		await routeMethods('/api/admin/import');
 		const dir = mkdtempSync(join(tmpdir(), 'dumpfire-import-'));
 		tempDirs.push(dir);
@@ -6315,6 +6455,9 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 	it('case 40: refuses a backup whose only superadmin is disabled, and changes nothing', () => {
 		const backup = backupNow();
 		backup.prepare('UPDATE users SET disabled_at = ? WHERE id = ?').run(DISABLED_AT, chief.id);
+		// Sealed with this server's key, as its own backup of a database that held it so: a copy whose seal did not verify
+		// would keep this server's superadmin enabled (card 3009, R2).
+		sealCopy(backup, backupSealKey(sqlite));
 		const before = snapshotDb();
 
 		expect(backupLacksSuperadmin(backup)).toBe(true);
@@ -7524,7 +7667,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		}
 	};
 	const counter = () => sqlite.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'api_keys'").pluck().get() as number | undefined;
-	const NOTHING_LEFT_OUT = { count: 0, keyIds: [], workingCopy: 0 };
+	const NOTHING_LEFT_OUT = { count: 0, keyIds: [], workingCopy: 0, unsealed: 0 };
 	let owner: SessionUser;
 	let eve: SessionUser;
 	let board: Board;
@@ -7553,7 +7696,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 
 		expect(result.errors).toEqual([]);
 		expect(result.sealVerified).toBe(sealed);
-		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0, unsealed: 0 });
 		expect(keyIds()).toEqual([L.id]);
 		expect(await v1(K.key)).toBe(401);
 		expect(await v1(L.key)).toBe(200);
@@ -7568,7 +7711,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		const result = restoreFromBackup(sqlite, backup, { outside: 'off' });
 
 		expect(result.errors).toEqual([]);
-		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 1 });
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 1, unsealed: 0 });
 		expect(keyIds()).toEqual([]);
 	});
 
@@ -7581,7 +7724,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		const result = restoreFromBackup(sqlite, backup, { outside: 'off' });
 
 		expect(result.errors).toEqual([]);
-		expect(result.apiKeysLeftOut).toEqual({ count: 0, keyIds: [], workingCopy: 2 });
+		expect(result.apiKeysLeftOut).toEqual({ count: 0, keyIds: [], workingCopy: 2, unsealed: 0 });
 		expect(keyIds()).toEqual([]);
 		expect(await v1(K.key)).toBe(401);
 		// Left out as a copy, not ended: the record is as it was, so the same backup restored as it is brings them back.
@@ -7607,7 +7750,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		expect(recordOf()).toEqual([...here, { id: X.id, hash: xHash, because: 'access ended' }].sort((a, b) => (a.hash < b.hash ? -1 : a.hash > b.hash ? 1 : a.id - b.id)));
 		const second = restoreFromBackup(sqlite, older);
 		expect(second.errors).toEqual([]);
-		expect(second.apiKeysLeftOut).toEqual({ count: 1, keyIds: [X.id], workingCopy: 0 });
+		expect(second.apiKeysLeftOut).toEqual({ count: 1, keyIds: [X.id], workingCopy: 0, unsealed: 0 });
 		expect(keyIds()).toEqual([]);
 	});
 
@@ -7621,7 +7764,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		const result = restoreFromBackup(sqlite, backup);
 
 		expect(result.errors).toEqual([]);
-		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0, unsealed: 0 });
 		expect(recordOf()).toEqual(here);
 	});
 
@@ -7636,7 +7779,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		const result = restoreFromBackup(sqlite, backup);
 
 		expect(result.errors).toEqual([]);
-		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [7], workingCopy: 0 });
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [7], workingCopy: 0, unsealed: 0 });
 		expect(keyIds()).toEqual([8]);
 		// The hash belt: the key is caught under any id in any later backup.
 		expect(recordOf()).toContainEqual({ id: 7, hash: seven.hash, because: 'before record' });
@@ -7674,9 +7817,15 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		// Its own bound: no counter row, and 2 the largest key it holds.
 		expect(opening(newer).prepare("SELECT seq FROM sqlite_sequence WHERE name = 'api_keys'").get()).toBeUndefined();
 
-		// A fresh host: nothing of this server's left.
+		// A fresh host: nothing of this server's left. Both backups sealed under its key, as its own are, so that the record
+		// alone decides here (card 3009's code review, FP11): card 3009's leave-out of an unsealed one is its own case below.
 		resetDb();
-		const first = restoreFromBackup(sqlite, opening(newer));
+		const sealedHere = (bytes: Buffer) => {
+			const backup = opening(bytes);
+			sealCopy(backup, backupSealKey(sqlite));
+			return backup;
+		};
+		const first = restoreFromBackup(sqlite, sealedHere(newer));
 
 		expect(first.errors).toEqual([]);
 		expect(recordOf()).toEqual(
@@ -7687,11 +7836,34 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		);
 		// The counter never sits below an id the record names (FP1 b): the next key is 4, never 3.
 		expect(counter()).toBe(3);
+		const second = restoreFromBackup(sqlite, sealedHere(older));
+
+		expect(second.sealVerified).toBe(true);
+		expect(second.errors).toEqual([]);
+		expect(second.apiKeysLeftOut).toEqual({ count: 1, keyIds: [3], workingCopy: 0, unsealed: 0 });
+		expect(keyIds()).toEqual([one.id, 2]);
+	});
+
+	it('FP1, card 3009: the same older backup, its seal not verifying on the fresh host, also leaves out keys 1 and 2, which that host never held, counted apart', () => {
+		keyAt(1, owner);
+		keyAt(2, owner);
+		const three = keyAt(3, owner);
+		watermark(3);
+		const older = generateBackupData();
+		revokedHere(three.id);
+		const newer = Buffer.from(sqlite.serialize());
+		resetDb();
+		const newerHere = opening(newer);
+		sealCopy(newerHere, backupSealKey(sqlite));
+		expect(restoreFromBackup(sqlite, newerHere).errors).toEqual([]);
+
 		const second = restoreFromBackup(sqlite, opening(older));
 
+		// None of its accounts is the same here (this host has no installation id): its keys this host never held go too.
+		expect(second.sealVerified).toBe(false);
 		expect(second.errors).toEqual([]);
-		expect(second.apiKeysLeftOut).toEqual({ count: 1, keyIds: [3], workingCopy: 0 });
-		expect(keyIds()).toEqual([one.id, 2]);
+		expect(second.apiKeysLeftOut).toEqual({ count: 1, keyIds: [3], workingCopy: 0, unsealed: 2 });
+		expect(keyIds()).toEqual([]);
 	});
 
 	it('test 11: with no key counter row here, one is written', () => {
@@ -7776,7 +7948,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 			const result = withWarnings(() => restoreFromBackup(sqlite, backup, { by: 'chief' }));
 
 			expect(result.errors).toEqual([]);
-			expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+			expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0, unsealed: 0 });
 			expect(reveals()).toEqual([]);
 			expect(rowOf(W)).toEqual(HELD);
 			expect(rowOf(U)).toEqual(HELD);
@@ -7864,13 +8036,13 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		const first = restoreFromBackup(sqlite, opening(backup));
 
 		expect(first.errors).toEqual([]);
-		expect(first.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+		expect(first.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0, unsealed: 0 });
 		expect(recordOf()).toEqual([{ id: K.id, hash, because: 'access ended' }]);
 		sqlite.prepare('UPDATE users SET disabled_at = NULL, disabled_by = NULL WHERE id = ?').run(kim.id);
 
 		const second = restoreFromBackup(sqlite, opening(backup));
 
-		expect(second.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+		expect(second.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0, unsealed: 0 });
 		expect(keyIds()).toEqual([]);
 	});
 
@@ -7896,7 +8068,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		const result = restoreFromBackup(sqlite, backup);
 
 		expect(result.errors).toEqual([]);
-		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0 });
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [K.id], workingCopy: 0, unsealed: 0 });
 		expect(await v1(K.key)).toBe(401);
 		expect(await v1(L.key)).toBe(200);
 	});
@@ -7940,7 +8112,7 @@ describe('a restore never brings back an API key ended on this server (card 2995
 		const result = restoreFromBackup(sqlite, backup);
 
 		expect(result.errors).toEqual([]);
-		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [5], workingCopy: 0 });
+		expect(result.apiKeysLeftOut).toEqual({ count: 1, keyIds: [5], workingCopy: 0, unsealed: 0 });
 		expect(keyIds()).toEqual([]);
 		expect(recordOf()).toContainEqual({ id: 5, hash: old.hash, because: 'before record' });
 		expect(await v1(old.key)).toBe(401);
@@ -8566,7 +8738,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 });
 
 describe('a restore never brings back a password replaced on this server (card 2997)', () => {
-	const NONE = { here: 0, reset: 0, superadmin: 0 };
+	const NONE = { here: 0, reset: 0, superadmin: 0, unsealed: 0, superadminGivenYours: 0, givenYoursWithoutFactor: 0, givenYoursMayEnrol: 0, emailGivenUp: 0 };
 	/** The password an account changed to here since the backup, and a hash of it at bcrypt's lowest cost. */
 	const NEW_PASSWORD = 'the new password of card 2997';
 	const newHash = () => hashSync(NEW_PASSWORD, 4);
@@ -8712,6 +8884,9 @@ describe('a restore never brings back a password replaced on this server (card 2
 		// R7: the backup's own rows on Sam's old hash and on the chief's current one.
 		passwordRow(backup, sam.id, samCreated, hashLike(1));
 		passwordRow(backup, chief.id, createdOf(chief.id), fixtureHashOf(chief));
+		// Sealed again, as this server's own backup of a database holding them: card 3009 gives a superadmin not here of a
+		// backup whose seal did not verify a password nothing matches.
+		sealCopy(backup, backupSealKey(sqlite));
 		// This server's own exact row on Sam's hash, then Sam gone.
 		expect(inTransaction(() => recordPasswordReplaced(sqlite, sam.id))).toBe(true);
 		goneHere(sam.id);
@@ -9016,14 +9191,35 @@ describe('a restore never brings back a password replaced on this server (card 2
 			{ id: a.id, created: createdOf(a.id), ending: 'password', role: '', credential: credentialOf(fresh), origin: 'belt' }
 		]);
 
-		// A gone from this server, then the same unsealed backup again: its hash is caught by the belt.
+		// A gone from this server, then the same backup again, sealed here so that the belt alone decides (card 3009's
+		// code review, FP11): its hash is caught by the belt. Card 3009's own rule for it unsealed is the next case.
 		goneHere(a.id);
-		const again = restoreFromBackup(sqlite, opening(bytes));
+		const sealedAgain = opening(bytes);
+		sealCopy(sealedAgain, backupSealKey(sqlite));
+		const again = restoreFromBackup(sqlite, sealedAgain);
 
+		expect(again.sealVerified).toBe(true);
 		expect(again.errors).toEqual([]);
 		expect(again.passwordsKept).toEqual({ ...NONE, reset: 1 });
 		expect(userOf(a.id)).toMatchObject({ disabledAt: null, passwordHash: DUMMY_HASH, enrol: 0 });
 		expect(recordOf().filter((entry) => entry.ending === 'password')).toHaveLength(1);
+	});
+
+	it('(ee2b) card 3009 (FP11): the same unsealed backup again, A gone from this server: not the same account here, so its hash is not taken, counted unsealed, before the belt is asked', () => {
+		const a = makeUser({ username: 'alma' });
+		const copy = opening(Buffer.from(sqlite.serialize()));
+		const fresh = hashSync('a password of the forged copy', 4);
+		copy.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(fresh, a.id);
+		const bytes = Buffer.from(copy.serialize());
+		expect(restoreFromBackup(sqlite, opening(bytes)).passwordsKept).toEqual({ ...NONE, here: 1 });
+		goneHere(a.id);
+
+		const again = restoreFromBackup(sqlite, opening(bytes));
+
+		expect(again.sealVerified).toBe(false);
+		expect(again.errors).toEqual([]);
+		expect(again.passwordsKept).toEqual({ ...NONE, unsealed: 1 });
+		expect(userOf(a.id)).toMatchObject({ disabledAt: null, passwordHash: DUMMY_HASH, enrol: 0 });
 	});
 
 	it('(ii) card 2997, R10: this server’s superadmin’s replaced hash, held in the backup by an administrator under another id, is kept out of use; the start pass and the matcher agree', async () => {
@@ -9054,8 +9250,8 @@ describe('a restore never brings back a password replaced on this server (card 2
 		// Card 2996's FP2 (part 1's departure 2): a forged copy that lowers this server's superadmin, with a hash this
 		// server never recorded, which R2 discards: still no belt on it.
 		{ held: 'a hash this server never recorded: this server’s usable hash', recorded: false, replacedToo: false, kept: { ...NONE, here: 1 } },
-		// Where this server's hash is replaced too, rule 4 would keep it for a superadmin: as an administrator, none.
-		{ held: 'the hash its exact here row names, this server’s replaced too: a password nothing matches', recorded: true, replacedToo: true, kept: { ...NONE, reset: 1 } }
+		// Where this server's hash is replaced too, rule 4 keeps it for a superadmin, which card 3009's R2 keeps it.
+		{ held: 'the hash its exact here row names, this server’s replaced too: this server’s hash, as a superadmin’s', recorded: true, replacedToo: true, kept: { ...NONE, superadmin: 1 } }
 	])('(ii2) card 2997, R10 (code review, FP12): a backup that makes this server’s superadmin an administrator, holding $held, and no belt is written on it', ({ recorded, replacedToo, kept }) => {
 		const sam = makeUser({ username: 'sam' });
 		const copy = opening(Buffer.from(sqlite.serialize()));
@@ -9074,9 +9270,10 @@ describe('a restore never brings back a password replaced on this server (card 2
 		expect(result.sealVerified).toBe(false);
 		expect(result.errors).toEqual([]);
 		expect(result.passwordsKept).toEqual(kept);
-		expect(userOf(chief.id)).toMatchObject({ disabledAt: null, passwordHash: replacedToo ? DUMMY_HASH : mine });
-		// Card 2996 keeps no role for this server's superadmin (it records none): the restored role is the backup's.
-		expect(sqlite.prepare('SELECT role FROM users WHERE id = ?').pluck().get(chief.id)).toBe('admin');
+		expect(userOf(chief.id)).toMatchObject({ disabledAt: null, passwordHash: mine });
+		// Card 2996 keeps no role for this server's superadmin (it records none), but the backup's seal did not verify, so
+		// card 3009's R2 keeps it the superadmin, as the same account here.
+		expect(sqlite.prepare('SELECT role FROM users WHERE id = ?').pluck().get(chief.id)).toBe('superadmin');
 		// No row on this server's superadmin (card 2996's FP2): the record is as it was before the restore.
 		expect(recordOf()).toEqual(record);
 	});
@@ -9122,5 +9319,864 @@ describe('a restore never brings back a password replaced on this server (card 2
 		expect(result.errors).toEqual([]);
 		expect(result.passwordsKept).toEqual({ ...NONE, reset: 1 });
 		expect(userOf(a.id)).toEqual({ disabledAt: null, passwordHash: DUMMY_HASH, enrol: 0 });
+	});
+});
+
+// ─── Card 3009: the fixtures its describe blocks share (its code review, FP15) ───
+
+/** Another installation's id, as a backup made elsewhere carries it. */
+const OTHER_ID = 'ab'.repeat(16);
+/** This server's own backup, opened to be edited: any edit leaves a seal that does not verify, and `edited` makes one. */
+const ownBackup = (opts: { edited?: boolean } = {}) => {
+	const backup = opening(generateBackupData());
+	if (opts.edited === true) backup.prepare("UPDATE boards SET name = 'edited since' WHERE id = (SELECT min(id) FROM boards)").run();
+	return backup;
+};
+/** `backup` carrying another installation's id: none of its accounts is the same account here. */
+const fromElsewhere = (backup: Database.Database) => {
+	backup.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(INSTALLATION_ID, OTHER_ID);
+	return backup;
+};
+
+// ─── Card 3009: the installation id, and the same account here ──────────────
+
+describe('the installation id, and the same account here (card 3009, slice 1)', () => {
+	const ID_FORM = /^[0-9a-f]{32}$/;
+	const installationIn = (database: Database.Database) => column<string>(database, `SELECT value FROM settings WHERE key = '${INSTALLATION_ID}'`);
+
+	it('(a) ensureInstallationId makes one 32-hex id once and answers it again; a backup carries it under its seal, and editing it makes the seal fail (R6)', () => {
+		expect(installationIdHere(sqlite)).toBeNull();
+
+		// A first backup before any start made one: withoutSecrets' default makes it here, and writes it into the copy,
+		// which was taken from the running database before it was made.
+		const backup = opening(generateBackupData());
+
+		const made = installationIdHere(sqlite)!;
+		expect(made).toMatch(ID_FORM);
+		expect(installationIn(backup)).toEqual([made]);
+		// Made once: answered again, and never replaced.
+		expect(ensureInstallationId(sqlite)).toBe(made);
+		expect(ensureInstallationId(sqlite)).toBe(made);
+		expect(installationIn(sqlite)).toEqual([made]);
+		const key = sealKeyHere(sqlite)!.key;
+		expect(sealVerifies(backup, key)).toBe(true);
+		backup.prepare('UPDATE settings SET value = ? WHERE key = ?').run(OTHER_ID, INSTALLATION_ID);
+		expect(sealVerifies(backup, key)).toBe(false);
+		expect(installationIn(sqlite)).toEqual([made]);
+	});
+
+	it("(b) a restore of a file carrying another installation's id leaves this server's id as it was (R6)", () => {
+		const live = migratedDb();
+		live.exec(`INSERT INTO users (id, username, email, password_hash, role) VALUES (9, 'here', 'here@example.test', 'x', 'superadmin')`);
+		const mine = ensureInstallationId(live);
+		const backup = fromElsewhere(backupWithSignIns());
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.installation).toBe('other');
+		expect(installationIn(live)).toEqual([mine]);
+		expect(installationIdHere(live)).toBe(mine);
+	});
+
+	it('(c) a server with no id, restoring a file that carries one: no id is made and none kept, and the verdict is other (R6)', () => {
+		const live = migratedDb();
+		live.exec(`INSERT INTO users (id, username, email, password_hash, role) VALUES (9, 'here', 'here@example.test', 'x', 'superadmin')`);
+		expect(installationIdHere(live)).toBeNull();
+		const backup = fromElsewhere(backupWithSignIns());
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.installation).toBe('other');
+		expect(installationIn(live)).toEqual([]);
+	});
+
+	/** An account here, and the trusts a restore can hold. */
+	const HERE = { createdAt: '2026-11-01 10:00:00', username: 'nina' };
+	const trust = (sealVerified: boolean, installation: GrantTrust['installation']): GrantTrust => ({ sealVerified, installation });
+	/** A backup's settings table with no key on it, so that it can hold any rows a file can. */
+	const settingsOnly = (...values: string[]) => {
+		const backup = new Database(':memory:');
+		opened.push(backup);
+		backup.exec('CREATE TABLE settings (key TEXT, value TEXT)');
+		for (const value of values) backup.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(INSTALLATION_ID, value);
+		return backup;
+	};
+
+	it.each([
+		{
+			row: 'sealed, the same moment, renamed and carrying another id: the same account',
+			got: () => sameAccountHere(HERE, { createdAt: HERE.createdAt, username: 'renamed' }, trust(true, 'other')),
+			expected: true
+		},
+		{
+			row: "unsealed, this installation's id, renamed, the moment in another form: the same account",
+			got: () => sameAccountHere(HERE, { createdAt: '2026-11-01T10:00:00.000Z', username: 'renamed' }, trust(false, 'this')),
+			expected: true
+		},
+		{
+			row: "unsealed, another installation's id, every field the same: not the same account",
+			got: () => sameAccountHere(HERE, { ...HERE }, trust(false, 'other')),
+			expected: false
+		},
+		{
+			row: 'unsealed, no id, the same username: the same account',
+			got: () => sameAccountHere(HERE, { ...HERE }, trust(false, 'none')),
+			expected: true
+		},
+		{
+			row: 'unsealed, no id, renamed: not the same account',
+			got: () => sameAccountHere(HERE, { createdAt: HERE.createdAt, username: 'Nina' }, trust(false, 'none')),
+			expected: false
+		},
+		{
+			row: 'the creation time a second apart, or no account of that id here, sealed: not the same account',
+			got: () => [
+				sameAccountHere(HERE, { createdAt: '2026-11-01 10:00:01', username: HERE.username }, trust(true, 'this')),
+				sameAccountHere(undefined, { ...HERE }, trust(true, 'this'))
+			],
+			expected: [false, false]
+		},
+		{
+			row: "installationOf: a malformed id, or this server's id in two rows, read as other",
+			got: () => {
+				const here = 'cd'.repeat(16);
+				return [installationOf(settingsOnly(here.toUpperCase()), here), installationOf(settingsOnly(here, here), here), installationOf(settingsOnly(here), here)];
+			},
+			expected: ['other', 'other', 'this']
+		}
+	])('(d) $row', ({ got, expected }) => {
+		expect(got()).toEqual(expected);
+	});
+
+	it("(e2) an unsealed import's second-factor sentence counts the accounts not the same here and names none; a sealed one names them as before (R10)", () => {
+		const bytes = generateBackupData();
+
+		// Sealed: the accounts with no factor named, as before card 3009.
+		const sealed = restoreFromBackup(sqlite, opening(bytes));
+		expect(sealed.sealVerified).toBe(true);
+		const sealedSaid = mfaWithoutFactorSentence(sealed.mfa)!;
+		expect(sealedSaid).toContain(': administrator, member.');
+		expect(sealed.mfa.notSameHere).toBe(0);
+
+		// Unsealed, from another installation: no account is the same here, so none is named.
+		const unsealed = restoreFromBackup(sqlite, fromElsewhere(opening(bytes)));
+		expect(unsealed.sealVerified).toBe(false);
+		expect(unsealed.installation).toBe('other');
+		expect(unsealed.mfa).toMatchObject({ withoutFactor: [], leftOut: [], leftOutBecause: 'unsealed', notSameHere: 3 });
+		const said = mfaWithoutFactorSentence(unsealed.mfa)!;
+		expect(said).toContain('3 account(s) in the backup are not on this server as the same account and have no second factor');
+		expect(said).toContain('Their second factors in the backup were left out because the backup was not made by this server, or was changed after it was made.');
+		for (const name of ['chief', 'administrator', 'member']) expect(said).not.toContain(name);
+	});
+});
+
+// ─── Card 3009: passwords from a backup whose seal did not verify ───────────
+
+describe('an unsealed backup gives no account a password this server did not hold (card 3009, slice 2)', () => {
+	const NONE = { here: 0, reset: 0, superadmin: 0, unsealed: 0, superadminGivenYours: 0, givenYoursWithoutFactor: 0, givenYoursMayEnrol: 0, emailGivenUp: 0 };
+	/** A password whoever edited the file knows, and a hash of it at bcrypt's lowest cost. */
+	const FILE_PASSWORD = 'a password the forger knows, card 3009';
+	const fileHash = () => hashSync(FILE_PASSWORD, 4);
+	const EARLIER = '2020-01-01 00:00:00';
+	/** An account the file holds and this server never did, with an enabled report schedule. */
+	const planted = (backup: Database.Database, id: number, role: string, opts: { hash?: string; disabled?: boolean } = {}) => {
+		backup
+			.prepare('INSERT INTO users (id, username, email, password_hash, role, disabled_at) VALUES (?, ?, ?, ?, ?, ?)')
+			.run(id, `planted-${id}`, `planted-${id}@example.test`, opts.hash ?? fileHash(), role, opts.disabled ? '2026-11-01 09:00:00' : null);
+		backup.prepare("INSERT INTO report_schedules (user_id, name, scope, enabled) VALUES (?, 'Weekly', 'all', 1)").run(id);
+		return { id, username: `planted-${id}`, email: `planted-${id}@example.test` };
+	};
+	const userOf = (id: number) =>
+		sqlite.prepare('SELECT disabled_at AS disabledAt, password_hash AS passwordHash, mfa_password_enrol AS enrol FROM users WHERE id = ?').get(id) as
+			| { disabledAt: string | null; passwordHash: string; enrol: number }
+			| undefined;
+	const accountOf = (id: number) =>
+		sqlite.prepare('SELECT role, email, disabled_at AS disabledAt, disabled_by AS disabledBy, password_hash AS passwordHash FROM users WHERE id = ?').get(id) as {
+			role: string;
+			email: string;
+			disabledAt: string | null;
+			disabledBy: number | null;
+			passwordHash: string;
+		};
+	const schedulesOn = (id: number) => sqlite.prepare('SELECT enabled FROM report_schedules WHERE user_id = ? ORDER BY id').pluck().all(id) as number[];
+	const refused = { type: 'failure', status: 400, error: 'Invalid username/email or password' };
+	const answerOf = (res: Awaited<ReturnType<typeof passwordStep>>['res']) => ({ type: res.type, status: res.status, error: res.type === 'failure' ? res.data.error : null });
+
+	beforeEach(() => {
+		resetAllRateLimits();
+	});
+
+	it.each([
+		{ made: 'as it is', outside: 'keep' as const },
+		{ made: 'as a working copy', outside: 'off' as const }
+	])('(g) the card’s test, $made: an administrator not here holding a hash of a known password gets one nothing matches, stays enabled, and that password is refused', async ({ outside }) => {
+		const backup = ownBackup();
+		const x = planted(backup, 90, 'admin');
+		backup.prepare('UPDATE users SET mfa_password_enrol = 1 WHERE id = ?').run(x.id);
+
+		const result = restoreFromBackup(sqlite, backup, { outside });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toEqual({ ...NONE, unsealed: 1 });
+		expect(userOf(x.id)).toEqual({ disabledAt: null, passwordHash: DUMMY_HASH, enrol: 0 });
+		// Its schedule paused where what reaches outside is kept; a working copy's switch-off finds it on, and counts it (R7).
+		if (outside === 'keep') {
+			expect(schedulesOn(x.id)).toEqual([0]);
+		} else {
+			expect(result.outside?.reportSchedules).toBe(1);
+			expect(schedulesOn(x.id)).toEqual([0]);
+		}
+		expect(answerOf((await passwordStep(x, { password: FILE_PASSWORD })).res)).toEqual(refused);
+	});
+
+	it('(i) a collision: an unsealed backup from another installation whose account has this server’s account’s id and creation time, and its very hash, gets one nothing matches', () => {
+		const backup = fromElsewhere(ownBackup());
+		// The file holds this server's own hash for the member: the same id and creation time are not the same account.
+		expect(column(backup, `SELECT password_hash FROM users WHERE id = ${member.id}`)).toEqual([fixtureHashOf(member)]);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.installation).toBe('other');
+		expect(result.errors).toEqual([]);
+		expect(userOf(member.id)).toMatchObject({ passwordHash: DUMMY_HASH, enrol: 0 });
+		// The member and the administrator, and the superadmin with no importer (R3).
+		expect(result.passwordsKept).toEqual({ ...NONE, unsealed: 3 });
+	});
+
+	it('(j) an unsealed backup with no installation id: an account with this server’s account’s id and creation time, renamed, gets one nothing matches', () => {
+		const backup = ownBackup();
+		backup.prepare('DELETE FROM settings WHERE key = ?').run(INSTALLATION_ID);
+		backup.prepare("UPDATE users SET username = 'member-renamed' WHERE id = ?").run(member.id);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.installation).toBe('none');
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toEqual({ ...NONE, unsealed: 1 });
+		expect(userOf(member.id)).toMatchObject({ passwordHash: DUMMY_HASH });
+		// The others, their usernames the same, are the same accounts, and keep this server's.
+		expect(userOf(admin.id)).toMatchObject({ passwordHash: fixtureHashOf(admin) });
+	});
+
+	it.each([
+		{ held: 'a value that is not bcrypt', value: 'not a bcrypt hash at all', unsealed: 1 },
+		{ held: 'DUMMY_HASH already', value: DUMMY_HASH, unsealed: 0 }
+	])('(k) an account not the same here holding $held: given DUMMY_HASH, counted only where it did not hold it', ({ value, unsealed }) => {
+		const backup = ownBackup();
+		const x = planted(backup, 90, 'user', { hash: value });
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toEqual({ ...NONE, unsealed });
+		expect(userOf(x.id)).toMatchObject({ disabledAt: null, passwordHash: DUMMY_HASH });
+	});
+
+	it('(l) the importer, the same account here and able to sign in: a superadmin of the file not here gets one nothing matches, counted; the importer signs in', async () => {
+		const factor = stepUpFactor(chief);
+		const backup = ownBackup();
+		const sam = planted(backup, 90, 'superadmin');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toEqual({ ...NONE, unsealed: 1 });
+		expect(userOf(sam.id)).toMatchObject({ disabledAt: null, passwordHash: DUMMY_HASH });
+		expect(answerOf((await passwordStep(sam, { password: FILE_PASSWORD })).res)).toEqual(refused);
+		expect((await signInFully(chief, factor)).session).toEqual(expect.any(String));
+	});
+
+	it('(m) a new host, through the route: the backup’s superadmin is given the importer’s password and authenticator, signs in with them, and the file’s password is refused', async () => {
+		// The backup, from another installation: its superadmin, user 1, made earlier, holding a password the file knows.
+		const backup = fromElsewhere(ownBackup());
+		backup.prepare('UPDATE users SET created_at = ?, password_hash = ? WHERE id = ?').run(EARLIER, fileHash(), chief.id);
+		// This server's importer, a superadmin with an authenticator, not in the backup.
+		const newboss = makeUser({ username: 'newboss', role: 'superadmin' });
+		const factor = giveFactor(newboss);
+		await routeMethods('/api/admin/import');
+		const dir = mkdtempSync(join(tmpdir(), 'dumpfire-import-'));
+		tempDirs.push(dir);
+		vi.spyOn(process, 'cwd').mockReturnValue(dir);
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+
+		const res = await api('POST', '/api/admin/import?outside=keep', {
+			user: newboss,
+			headers: { 'content-type': 'application/octet-stream', ...importConfirmation(newboss) },
+			body: backup.serialize()
+		});
+
+		expect(res.status, res.body.message).toBe(200);
+		expect(res.body.passwordsKept).toMatchObject({ superadminGivenYours: 1 });
+		const backupsSuperadmin = { username: 'chief' };
+		expect(accountOf(chief.id)).toMatchObject({ role: 'superadmin', disabledAt: null, passwordHash: fixtureHashOf(newboss) });
+		expect(answerOf((await passwordStep(backupsSuperadmin, { password: FILE_PASSWORD })).res)).toEqual(refused);
+		// The importer's password, then a code from the importer's authenticator: signed in as the backup's superadmin.
+		const { session } = await signInFully(backupsSuperadmin, factor);
+		expect(sessionRow(session)?.userId).toBe(chief.id);
+	});
+
+	it.each([
+		{ row: 'the lower-numbered one disabled: the enabled one is given the importer’s password', laterDisabled: false },
+		{ row: 'every one disabled: none is given it, each gets one nothing matches (R3)', laterDisabled: true }
+	])('(n) two superadmins of the file not here, the importer unable to sign in, $row', ({ laterDisabled }) => {
+		stepUpFactor(chief);
+		// Where every one is disabled, a superadmin of this server that is the same account in the file is what lets the
+		// restore commit (an enabled superadmin must remain).
+		const boss = laterDisabled ? makeUser({ username: 'boss', role: 'superadmin' }) : null;
+		const backup = ownBackup();
+		// The file's user 1, made earlier, is not this server's chief: the importer is not in the file. Disabled.
+		backup.prepare('UPDATE users SET created_at = ?, password_hash = ?, disabled_at = ? WHERE id = ?').run(EARLIER, fileHash(), '2026-11-01 09:00:00', chief.id);
+		const sam = planted(backup, 90, 'superadmin', { disabled: laterDisabled });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(userOf(chief.id)).toMatchObject({ passwordHash: DUMMY_HASH });
+		if (laterDisabled) {
+			expect(result.passwordsKept).toEqual({ ...NONE, unsealed: 2 });
+			expect(userOf(sam.id)).toMatchObject({ passwordHash: DUMMY_HASH });
+			expect(accountOf(boss!.id)).toMatchObject({ role: 'superadmin', disabledAt: null, passwordHash: fixtureHashOf(boss!) });
+		} else {
+			// The file's user 1 holds the importer's address, which the carried superadmin takes (the code review's FP5).
+			expect(result.passwordsKept).toEqual({ ...NONE, unsealed: 1, superadminGivenYours: 1, emailGivenUp: 1 });
+			expect(userOf(sam.id)).toMatchObject({ disabledAt: null, passwordHash: fixtureHashOf(chief) });
+			// With the importer's authenticator, sealed again for it (R1).
+			expect(sqlite.prepare('SELECT COUNT(*) FROM mfa_factors WHERE user_id = ?').pluck().get(sam.id)).toBe(1);
+		}
+	});
+
+	it('(o) no importer given: a superadmin of an unsealed file not here gets one nothing matches (R3)', () => {
+		const backup = ownBackup();
+		const sam = planted(backup, 90, 'superadmin');
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toEqual({ ...NONE, unsealed: 1 });
+		expect(userOf(sam.id)).toMatchObject({ disabledAt: null, passwordHash: DUMMY_HASH });
+	});
+
+	it('(r) an account not the same here that card 2996 rules deleted is counted by card 2996 alone, not unsealed', () => {
+		const x = makeUser({ username: 'xavier' });
+		const xCreated = sqlite.prepare('SELECT created_at FROM users WHERE id = ?').pluck().get(x.id) as string;
+		const backup = ownBackup();
+		// Any edit: the seal does not verify.
+		backup.prepare("UPDATE boards SET name = 'edited since' WHERE id = (SELECT min(id) FROM boards)").run();
+		// X deleted here since, with the exact row card 2996 writes.
+		sqlite.pragma('foreign_keys = OFF');
+		try {
+			sqlite.prepare('DELETE FROM users WHERE id = ?').run(x.id);
+		} finally {
+			sqlite.pragma('foreign_keys = ON');
+		}
+		sqlite.prepare("INSERT INTO account_endings (user_id, account_created, ending, credential, ended_at) VALUES (?, ?, 'deleted', ?, ?)").run(x.id, xCreated, credentialOf(fixtureHashOf(x)), stamp());
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(result.accountsKept).toMatchObject({ deleted: 1 });
+		expect(result.passwordsKept).toEqual(NONE);
+		expect(userOf(x.id)).toMatchObject({ passwordHash: DUMMY_HASH, disabledAt: expect.any(String) });
+	});
+
+	it('(l2) an unsealed file that makes this server’s superadmin a disabled administrator: it is an enabled superadmin after, and nothing is carried (R2)', () => {
+		const backup = ownBackup();
+		backup.prepare("UPDATE users SET role = 'admin', disabled_at = ?, disabled_by = ? WHERE id = ?").run('2026-11-01 09:00:00', admin.id, chief.id);
+		const sam = planted(backup, 90, 'superadmin');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(accountOf(chief.id)).toMatchObject({ role: 'superadmin', disabledAt: null, disabledBy: null, passwordHash: fixtureHashOf(chief) });
+		expect(result.passwordsKept).toEqual({ ...NONE, unsealed: 1 });
+		expect(userOf(sam.id)).toMatchObject({ passwordHash: DUMMY_HASH });
+	});
+
+	it.each([
+		{ row: 'free: the carried superadmin takes it', holder: null },
+		{ row: 'held by another restored account: the carried superadmin takes it all the same, and the holder gives it up (FP5)', holder: 'member' as const }
+	])('(m2) the importer’s email, $row (R2)', ({ holder }) => {
+		const backup = ownBackup();
+		// The file's user 1, made earlier, is not this server's chief, and has an address of its own.
+		backup.prepare("UPDATE users SET created_at = ?, email = 'file-boss@example.test' WHERE id = ?").run(EARLIER, chief.id);
+		if (holder !== null) backup.prepare('UPDATE users SET email = ? WHERE id = ?').run(chief.email.toUpperCase(), member.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toMatchObject({ superadminGivenYours: 1, emailGivenUp: holder === null ? 0 : 1 });
+		// The code review's FP5: always the importer's, so the answer can point at it by that address.
+		expect(accountOf(chief.id).email).toBe(chief.email);
+		if (holder !== null) expect(accountOf(member.id).email).toBe(`email-given-up-${member.id}@restore.invalid`);
+	});
+
+	it('(p2) the importer in the file as the same account, unable to sign in: nothing is carried, and a superadmin of the file not here gets one nothing matches (R2)', () => {
+		const backup = ownBackup();
+		const sam = planted(backup, 90, 'superadmin');
+		// The importer's password here recorded as replaced, as a host file rollback leaves it: it cannot sign in.
+		expect(inTransaction(() => recordPasswordReplaced(sqlite, chief.id))).toBe(true);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		// The importer kept as card 2997's rule 4 keeps a superadmin's, and counted so.
+		expect(result.passwordsKept).toEqual({ ...NONE, superadmin: 1, unsealed: 1 });
+		expect(userOf(sam.id)).toMatchObject({ passwordHash: DUMMY_HASH });
+		expect(userOf(chief.id)).toMatchObject({ passwordHash: fixtureHashOf(chief) });
+	});
+
+	it.each([
+		{
+			row: 'with the importer’s authenticator carried',
+			stubbed: false,
+			said:
+				"The backup's superadmin is not the account you imported with, and the backup's seal did not verify, so its password in the backup was " +
+				'not taken: it was given the password you confirmed this import with, and your authenticators. Sign in as it, the superadmin that now ' +
+				'holds your email address, with that password and a code from your authenticator, and change the password on the Account page if you wish.',
+			words: ", giving the backup's superadmin the importing account's password. The system log",
+			enrol: false
+		},
+		{
+			row: 'with no authenticator carried, the host’s reset named',
+			stubbed: true,
+			said:
+				"The backup's superadmin is not the account you imported with, and the backup's seal did not verify, so its password in the backup was " +
+				'not taken: it was given the password you confirmed this import with, but none of your authenticators, as no MFA key is loaded or none ' +
+				"of yours could be moved: it cannot sign in until the server's host resets its two-step sign-in with scripts/mfa-reset.mjs. Then sign " +
+				'in as it, the superadmin that now holds your email address, with that password.',
+			words: ", giving the backup's superadmin the importing account's password but no authenticator. The system log",
+			enrol: false
+		},
+		{
+			row: 'with no authenticator carried and your leave to set up on your password alone, its 14 days running (the code review’s FP6)',
+			stubbed: true,
+			said:
+				"The backup's superadmin is not the account you imported with, and the backup's seal did not verify, so its password in the backup was " +
+				'not taken: it was given the password you confirmed this import with, but none of your authenticators, as no MFA key is loaded or none ' +
+				'of yours could be moved, and your leave to set up two-step sign-in on that password alone. Sign in as it, the superadmin that now holds ' +
+				"your email address, with that password and set up an authenticator when asked, while that leave's 14 days run; if it is asked for a " +
+				"link instead, the server's host resets its two-step sign-in with scripts/mfa-reset.mjs.",
+			words: ", giving the backup's superadmin the importing account's password but no authenticator. The system log",
+			enrol: true
+		}
+	])('(x) card 3009, through the route: the superadmin given your password, $row, is pointed at by your email address and named by no username', async ({ stubbed, said, words, enrol }) => {
+		// The 14 days running, in the file as here (FP6).
+		if (enrol) openReleaseWindow();
+		const backup = fromElsewhere(ownBackup());
+		backup.prepare('UPDATE users SET created_at = ?, password_hash = ? WHERE id = ?').run(EARLIER, fileHash(), chief.id);
+		const newboss = makeUser({ username: 'newboss-of-3009', role: 'superadmin' });
+		giveFactor(newboss);
+		if (enrol) sqlite.prepare('UPDATE users SET mfa_password_enrol = 1 WHERE id = ?').run(newboss.id);
+		await routeMethods('/api/admin/import');
+		const dir = mkdtempSync(join(tmpdir(), 'dumpfire-import-'));
+		tempDirs.push(dir);
+		vi.spyOn(process, 'cwd').mockReturnValue(dir);
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const from = sqlite.prepare('SELECT COALESCE(MAX(id), 0) FROM system_logs').pluck().get() as number;
+		carryStub.none = stubbed;
+		let res: Awaited<ReturnType<typeof api>>;
+		try {
+			res = await api('POST', '/api/admin/import?outside=keep', {
+				user: newboss,
+				headers: { 'content-type': 'application/octet-stream', ...importConfirmation(newboss) },
+				body: backup.serialize()
+			});
+		} finally {
+			carryStub.none = false;
+		}
+
+		expect(res.status, res.body.message).toBe(200);
+		expect(res.body.passwordsKept).toMatchObject({ superadminGivenYours: 1, givenYoursWithoutFactor: stubbed ? 1 : 0, givenYoursMayEnrol: enrol ? 1 : 0 });
+		expect(res.body.accountsKeptLines).toContain(said);
+		// The superadmin the sentence points at holds the importer's address (FP7), and the importer's leave (FP6).
+		expect(accountOf(chief.id).email).toBe(newboss.email);
+		expect(userOf(chief.id)?.enrol).toBe(enrol ? 1 : 0);
+		expect(res.body.message).toContain(said);
+		const line = sqlite
+			.prepare("SELECT message, meta FROM system_logs WHERE context = 'IMPORT' AND level = 'CRITICAL' AND id > ? ORDER BY id")
+			.get(from) as { message: string; meta: string };
+		expect(line.message).toContain(words);
+		expect(JSON.parse(line.meta).installation).toBe('other');
+		// The sentence names no account: the superadmins are listed by the answer's own sentence, after it.
+		for (const name of ['chief', 'newboss-of-3009']) expect(said).not.toContain(name);
+	});
+
+	it('(n3) the carry with no MFA key loaded: the password and no authenticator, so it needs the host’s reset; the accounts with no factor counted, none named', async () => {
+		// The importer holds an authenticator, which the file holds too: the file's is left out as unsealed.
+		stepUpFactor(chief);
+		const backup = ownBackup();
+		// The file's user 1, made earlier, is not this server's chief: the importer is not in the file.
+		backup.prepare('UPDATE users SET created_at = ?, password_hash = ? WHERE id = ?').run(EARLIER, fileHash(), chief.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id, key: null });
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toEqual({ ...NONE, superadminGivenYours: 1, givenYoursWithoutFactor: 1 });
+		expect(accountOf(chief.id)).toMatchObject({ role: 'superadmin', disabledAt: null, passwordHash: fixtureHashOf(chief) });
+		expect(sqlite.prepare('SELECT COUNT(*) FROM mfa_factors WHERE user_id = ?').pluck().get(chief.id)).toBe(0);
+		// The carried superadmin is among the accounts with no factor, counted and not named; the same accounts here are
+		// counted too, and named by none, their usernames as restored being the file's (the code review's FP7).
+		expect(result.mfa).toMatchObject({ withoutFactor: [], withoutFactorUnnamed: 2, leftOut: [], leftOutBecause: 'unsealed', notSameHere: 1 });
+		const said = mfaWithoutFactorSentence(result.mfa)!;
+		expect(said).toContain('1 account(s) in the backup are not on this server as the same account and have no second factor');
+		expect(said).toContain("2 account(s) on this server have no second factor after this restore and each needs its two-step sign-in reset before it can sign in; the backup's seal did not verify, so none is named here.");
+		for (const name of ['chief', 'administrator', 'member']) expect(said).not.toContain(name);
+		// The password alone opens no second step: it needs a set-up link, which only the host makes for a superadmin.
+		expect(answerOf((await passwordStep({ username: 'chief' })).res)).toMatchObject({ type: 'failure', status: 403 });
+	});
+
+	it('(l3) card 2996’s role ceiling does not undo R2: a superadmin the host promoted after a recorded lowering, made an administrator by an unsealed file, stays a superadmin', () => {
+		const rex = makeUser({ username: 'rex', role: 'admin' });
+		const rexCreated = sqlite.prepare('SELECT created_at FROM users WHERE id = ?').pluck().get(rex.id) as string;
+		// Lowered to a user here, recorded, then promoted by the host, which writes no row.
+		sqlite.prepare("INSERT INTO account_endings (user_id, account_created, ending, role, ended_at) VALUES (?, ?, 'role', 'user', '2026-11-19 09:00:00')").run(rex.id, rexCreated);
+		sqlite.prepare("UPDATE users SET role = 'superadmin' WHERE id = ?").run(rex.id);
+		const backup = ownBackup();
+		backup.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(rex.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.installation).toBe('this');
+		expect(result.errors).toEqual([]);
+		expect(result.accountsKept).toMatchObject({ lowered: 0 });
+		expect(accountOf(rex.id)).toMatchObject({ role: 'superadmin', disabledAt: null, passwordHash: fixtureHashOf(rex) });
+	});
+});
+
+// ─── Card 3009: API keys from a backup whose seal did not verify ────────────
+
+describe('an unsealed backup brings back no API key this server did not hold for the same account (card 3009, slice 3)', () => {
+	const v1 = async (key: string) => (await gate('GET', '/api/v1/me', { headers: { authorization: `Bearer ${key}` } })).status;
+	const keyIds = () => sqlite.prepare('SELECT id FROM api_keys ORDER BY id').pluck().all() as number[];
+	const endsOf = (id: number) =>
+		sqlite.prepare('SELECT expires_at AS expiresAt, deadline_at AS deadlineAt FROM api_keys WHERE id = ?').get(id) as
+			| { expiresAt: string | null; deadlineAt: string | null }
+			| undefined;
+	const recorded = () => sqlite.prepare('SELECT COUNT(*) FROM api_key_revocations').pluck().get() as number;
+	/** A key of `user` the file holds and this server never did, at row `id`. */
+	const plantedKey = (backup: Database.Database, id: number, userId: number) => {
+		const made = generateApiKey();
+		backup.prepare('INSERT INTO api_keys (id, key_hash, key_prefix, name, user_id) VALUES (?, ?, ?, ?, ?)').run(id, made.keyHash, made.keyPrefix, `Planted ${id}`, userId);
+		return { id, key: made.plaintextKey };
+	};
+
+	beforeEach(() => {
+		resetAllRateLimits();
+	});
+
+	it('(s) an unsealed backup of this server’s own: a key this server holds, the same id, hash and owner, for the same account, is kept and works', async () => {
+		const K = makeApiKeyRow(member);
+		const backup = ownBackup({ edited: true });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut).toEqual({ count: 0, keyIds: [], workingCopy: 0, unsealed: 0 });
+		expect(keyIds()).toEqual([K.id]);
+		expect(await v1(K.key)).toBe(200);
+	});
+
+	it('(t) a key planted on an account that is the same here, never held here: left out with its reveals, set_by_key emptied, counted unsealed, not recorded', async () => {
+		const K = makeApiKeyRow(member);
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		const hook = makeWebhook(board, { url: 'https://hooks.example.test/planted', secret: 'a-secret' });
+		const backup = ownBackup({ edited: true });
+		const P = plantedKey(backup, 900, member.id);
+		backup.prepare('UPDATE webhooks SET set_by_key = ? WHERE id = ?').run(P.id, hook.id);
+		backup.prepare("INSERT INTO webhook_reveals (webhook_id, key_id, revealed_at) VALUES (?, ?, '2026-11-19 09:00:00')").run(hook.id, P.id);
+		const before = recorded();
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut).toEqual({ count: 0, keyIds: [], workingCopy: 0, unsealed: 1 });
+		expect(keyIds()).toEqual([K.id]);
+		expect(sqlite.prepare('SELECT COUNT(*) FROM webhook_reveals WHERE key_id = ?').pluck().get(P.id)).toBe(0);
+		expect(sqlite.prepare('SELECT set_by_key FROM webhooks WHERE id = ?').pluck().get(hook.id)).toBeNull();
+		expect(recorded()).toBe(before);
+		expect(await v1(P.key)).toBe(401);
+		expect(await v1(K.key)).toBe(200);
+	});
+
+	it('(u) an unsealed backup from another installation: a key with this server’s id and hash under the same user id is left out, its owner not the same account', async () => {
+		const K = makeApiKeyRow(member);
+		const backup = fromElsewhere(ownBackup({ edited: true }));
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.installation).toBe('other');
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut).toMatchObject({ count: 0, workingCopy: 0, unsealed: 1 });
+		expect(keyIds()).toEqual([]);
+		expect(await v1(K.key)).toBe(401);
+	});
+
+	it('(v) an unsealed working copy: every key counted workingCopy, none unsealed', () => {
+		makeApiKeyRow(member);
+		const backup = ownBackup({ edited: true });
+		plantedKey(backup, 900, member.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id, outside: 'off' });
+
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut).toEqual({ count: 0, keyIds: [], workingCopy: 2, unsealed: 0 });
+		expect(keyIds()).toEqual([]);
+	});
+
+	it.each([
+		{ row: 'expired here, no expiry in the file: kept with this server’s', column: 'expires_at' as const, here: '2026-01-01 00:00:00', file: null, kept: '2026-01-01 00:00:00' },
+		{ row: 'no expiry here, an expiry passed in the file: kept with the file’s', column: 'expires_at' as const, here: null, file: '2026-02-01 00:00:00', kept: '2026-02-01 00:00:00' },
+		{ row: 'both set: the earlier', column: 'expires_at' as const, here: '2026-03-01 00:00:00', file: '2099-01-01 00:00:00', kept: '2026-03-01 00:00:00' },
+		{ row: 'past its deadline here, none in the file: kept with this server’s', column: 'deadline_at' as const, here: '2026-01-01 00:00:00', file: null, kept: '2026-01-01 00:00:00' }
+	])('(s2) a kept key takes the earlier end, $row, and is refused at the gate (R5)', async ({ column, here, file, kept }) => {
+		const K = makeApiKeyRow(member);
+		sqlite.prepare(`UPDATE api_keys SET ${column} = ? WHERE id = ?`).run(here, K.id);
+		const backup = ownBackup({ edited: true });
+		backup.prepare(`UPDATE api_keys SET ${column} = ? WHERE id = ?`).run(file, K.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(result.apiKeysLeftOut).toMatchObject({ count: 0, unsealed: 0 });
+		expect(endsOf(K.id)).toEqual(column === 'expires_at' ? { expiresAt: kept, deadlineAt: null } : { expiresAt: null, deadlineAt: kept });
+		expect(await v1(K.key)).toBe(401);
+	});
+
+	it('(s2b) the code review’s FP9: an expiry in the file that names no moment, a later one here: kept with the file’s, which the gate reads as passed (earlierEnd)', async () => {
+		allowOtherTimestampForms();
+		const K = makeApiKeyRow(member);
+		sqlite.prepare('UPDATE api_keys SET expires_at = ? WHERE id = ?').run('2099-01-01 00:00:00', K.id);
+		const backup = ownBackup({ edited: true });
+		backup.prepare('UPDATE api_keys SET expires_at = ? WHERE id = ?').run('not a moment', K.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.apiKeysLeftOut).toMatchObject({ count: 0, unsealed: 0 });
+		expect(endsOf(K.id)).toEqual({ expiresAt: 'not a moment', deadlineAt: null });
+		expect(await v1(K.key)).toBe(401);
+	});
+
+	it('(t2) the unsealed key leave-out cannot be written: rolled back, and the hashes, schedules, keys, holds and installation id are unchanged (R8)', () => {
+		makeApiKeyRow(member);
+		const backup = ownBackup({ edited: true });
+		// An account not here, with a password and a schedule, so that the password step has written before the refusal.
+		backup
+			.prepare("INSERT INTO users (id, username, email, password_hash, role) VALUES (90, 'planted-90', 'planted-90@example.test', ?, 'user')")
+			.run(fixtureHashOf(member));
+		backup.prepare("INSERT INTO report_schedules (user_id, name, scope, enabled) VALUES (90, 'Weekly', 'all', 1)").run();
+		const P = plantedKey(backup, 900, member.id);
+		const idHere = sqlite.prepare('SELECT value FROM settings WHERE key = ?').pluck().get(INSTALLATION_ID);
+		const before = snapshotDb();
+		sqlite.exec(`CREATE TEMP TRIGGER refuse_3009 BEFORE DELETE ON api_keys WHEN OLD.id = ${P.id} BEGIN SELECT RAISE(ABORT, 'refused by (t2)'); END`);
+		let thrown: unknown = null;
+		try {
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+		} catch (e) {
+			thrown = e;
+		} finally {
+			sqlite.exec('DROP TRIGGER IF EXISTS temp.refuse_3009');
+		}
+
+		expect(thrown).toBeInstanceOf(RestoreError);
+		expect((thrown as RestoreError).committed).toBe(false);
+		expect((thrown as RestoreError).message).toContain('refused by (t2)');
+		expectUnchanged(before);
+		expect(sqlite.prepare('SELECT value FROM settings WHERE key = ?').pluck().get(INSTALLATION_ID)).toBe(idHere);
+		expect(sqlite.prepare('SELECT COUNT(*) FROM users WHERE id = 90').pluck().get()).toBe(0);
+	});
+});
+
+// ─── Card 3009's code review: the fix pass ──────────────────────────────────
+
+describe('card 3009’s code review: the fix pass (FP1, FP2, FP5, FP6, FP9, FP12)', () => {
+	const NONE = { here: 0, reset: 0, superadmin: 0, unsealed: 0, superadminGivenYours: 0, givenYoursWithoutFactor: 0, givenYoursMayEnrol: 0, emailGivenUp: 0 };
+	const EARLIER = '2020-01-01 00:00:00';
+	/** `backup`'s user 1, the superadmin, made earlier than this server's chief: not the same account here, the importer not in it. */
+	const importerNotIn = (backup: Database.Database) => {
+		backup.prepare('UPDATE users SET created_at = ?, password_hash = ? WHERE id = ?').run(EARLIER, hashSync('a password the forger knows', 4), chief.id);
+		return backup;
+	};
+	const schedulesOf = (id: number) => sqlite.prepare('SELECT enabled FROM report_schedules WHERE user_id = ? ORDER BY id').pluck().all(id) as number[];
+	const userRow = (id: number) =>
+		sqlite.prepare('SELECT email, password_hash AS passwordHash, mfa_password_enrol AS enrol FROM users WHERE id = ?').get(id) as { email: string; passwordHash: string; enrol: number };
+	const scheduleFor = (backup: Database.Database, id: number) =>
+		backup.prepare("INSERT INTO report_schedules (user_id, name, scope, enabled) VALUES (?, 'Weekly', 'all', 1)").run(id);
+	/** `backup`'s `invite_tokens` made again with `used` of no declared type, holding `rows` (token, user, used as stored). */
+	const untypedInvites = (backup: Database.Database, rows: [string, number, unknown][]) => {
+		backup.exec('DROP TABLE invite_tokens');
+		backup.exec('CREATE TABLE invite_tokens (token, user_id, expires_at, used, created_at)');
+		const put = backup.prepare("INSERT INTO invite_tokens VALUES (?, ?, '2099-01-01 00:00:00', ?, '2026-11-01 00:00:00')");
+		for (const [token, userId, used] of rows) put.run(inviteHashOf(token), userId, used);
+		return backup;
+	};
+
+	beforeEach(() => {
+		resetAllRateLimits();
+	});
+
+	it.each([
+		{ made: 'sealed', sealed: true },
+		{ made: 'unsealed', sealed: false }
+	])('(fp1a) FP1: a backup, $made, whose invites’ used column has no type and holds the text 0: no unused invite comes back usable', ({ sealed }) => {
+		const backup = untypedInvites(ownBackup(), [
+			['planted-unused', member.id, '0'],
+			['planted-text-one', member.id, '1'],
+			// Bound as a whole number, so stored as one, as a used invite of a backup's own is.
+			['really-used', admin.id, 1n]
+		]);
+		if (sealed) sealCopy(backup, backupSealKey(sqlite));
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(sealed);
+		expect(result.errors).toEqual([]);
+		expect(usableInvite('planted-unused')).toBeUndefined();
+		expect(usableInvite('planted-text-one')).toBeUndefined();
+		// Sealed: the one used, stored as an integer, comes back as history, used; unsealed: none at all.
+		expect(sqlite.prepare('SELECT user_id AS userId, used, typeof(used) AS type FROM invite_tokens').all()).toEqual(
+			sealed ? [{ userId: admin.id, used: 1, type: 'integer' }] : []
+		);
+	});
+
+	it('(fp1b) FP1: an unsealed backup of this server’s own restores no invite, the used one included', () => {
+		const backup = ownBackup({ edited: true });
+		// A backup holds the used one alone (card 2849).
+		expect(column(backup, 'SELECT used FROM invite_tokens ORDER BY used')).toEqual([1]);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(result.restored.invite_tokens ?? 0).toBe(0);
+		expect(sqlite.prepare('SELECT COUNT(*) FROM invite_tokens').pluck().get()).toBe(0);
+		expect(usableInvite(UNUSED_INVITE)).toBeUndefined();
+	});
+
+	it('(fp2a) FP2: an account not the same here that the file gives DUMMY_HASH itself still has its schedules paused, and is not counted', () => {
+		const backup = ownBackup();
+		backup
+			.prepare("INSERT INTO users (id, username, email, password_hash, role) VALUES (90, 'planted-90', 'planted-90@example.test', ?, 'admin')")
+			.run(DUMMY_HASH);
+		scheduleFor(backup, 90);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toEqual(NONE);
+		expect(userRow(90).passwordHash).toBe(DUMMY_HASH);
+		expect(schedulesOf(90)).toEqual([0]);
+	});
+
+	it.each([
+		{ made: 'as it is: paused', outside: 'keep' as const },
+		{ made: 'as a working copy: switched off with every other, and counted there (R7)', outside: 'off' as const }
+	])('(fp2b) FP2: the carried superadmin’s schedules, the file’s, $made', ({ outside }) => {
+		const backup = importerNotIn(ownBackup());
+		scheduleFor(backup, chief.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id, outside });
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toMatchObject({ superadminGivenYours: 1 });
+		expect(schedulesOf(chief.id)).toEqual([0]);
+		if (outside === 'off') expect(result.outside?.reportSchedules).toBeGreaterThanOrEqual(1);
+	});
+
+	it('(fp5a) FP5: another superadmin of this server, restored as the same account, enabled, with its usable hash: nothing is carried', () => {
+		const boss = makeUser({ username: 'boss', role: 'superadmin' });
+		const backup = importerNotIn(ownBackup());
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		// The file's user 1 is not the same here and is given a password nothing matches; boss can sign in as the superadmin.
+		expect(result.passwordsKept).toEqual({ ...NONE, unsealed: 1 });
+		expect(userRow(chief.id).passwordHash).toBe(DUMMY_HASH);
+		expect(userRow(boss.id).passwordHash).toBe(fixtureHashOf(boss));
+	});
+
+	it('(fp5b) FP5: an account not the same here holding the importer’s address gives it up for one that receives no mail; the carried superadmin holds it', () => {
+		const backup = importerNotIn(ownBackup());
+		backup.prepare("UPDATE users SET email = 'file-boss@example.test' WHERE id = ?").run(chief.id);
+		backup
+			.prepare("INSERT INTO users (id, username, email, password_hash, role) VALUES (90, 'planted-90', ?, 'x', 'user')")
+			.run(chief.email);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toMatchObject({ superadminGivenYours: 1, emailGivenUp: 1, unsealed: 1 });
+		expect(userRow(chief.id).email).toBe(chief.email);
+		expect(userRow(90).email).toBe('email-given-up-90@restore.invalid');
+	});
+
+	it.each([
+		{ row: 'the importer’s leave given and its 14 days running: it may set up on its password', importer: 1, file: 0, mayEnrol: 1 },
+		{ row: 'the importer holding none, the file’s leave overridden', importer: 0, file: 1, mayEnrol: 0 }
+	])('(fp6) FP6: the carried superadmin, no authenticator carried, takes the importer’s leave to set up on its password alone: $row', async ({ importer, file, mayEnrol }) => {
+		openReleaseWindow();
+		sqlite.prepare('UPDATE users SET mfa_password_enrol = ? WHERE id = ?').run(importer, chief.id);
+		const backup = importerNotIn(ownBackup());
+		backup.prepare('UPDATE users SET mfa_password_enrol = ? WHERE id = ?').run(file, chief.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id, key: null });
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toMatchObject({ superadminGivenYours: 1, givenYoursWithoutFactor: 1, givenYoursMayEnrol: mayEnrol });
+		expect(userRow(chief.id).enrol).toBe(importer);
+		// With the leave, the password leads to a set-up; without it, a link is needed (403).
+		const { res } = await passwordStep({ username: 'chief' });
+		if (mayEnrol === 1) expect(res).toMatchObject({ type: 'redirect' });
+		else expect(res).toMatchObject({ type: 'failure', status: 403 });
+	});
+
+	it('(fp9a) FP9, R3: an importer given but not held here: every superadmin of the file not the same here gets a password nothing matches', () => {
+		const backup = importerNotIn(ownBackup());
+
+		const result = restoreFromBackup(sqlite, backup, { importer: 9999 });
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toMatchObject({ superadminGivenYours: 0, unsealed: 1 });
+		expect(userRow(chief.id).passwordHash).toBe(DUMMY_HASH);
+	});
+
+	it('(fp9b) FP9: carryFactors carries the importer’s factor and skips one of another key and one that does not open', () => {
+		const here = readMfaHere(sqlite);
+		const mine = here.factors.find((factor) => Number(factor.user_id) === chief.id)!;
+		// As a restore leaves it: the importer's own rows cleared, read before.
+		sqlite.prepare('DELETE FROM mfa_factors WHERE user_id = ?').run(chief.id);
+		const factors = [
+			mine,
+			{ ...mine, factor_uid: 'of-another-key', key_id: 'another-key' },
+			{ ...mine, factor_uid: 'does-not-open', secret_ciphertext: Buffer.alloc(32, 7).toString('base64') }
+		];
+
+		const carried = inTransaction(() => carryFactors(sqlite, { ...here, factors }, currentMfaKey()!, chief.id, member.id));
+
+		expect(carried).toBe(1);
+		expect(sqlite.prepare('SELECT factor_uid FROM mfa_factors WHERE user_id = ?').pluck().all(member.id)).toEqual([mine.factor_uid]);
+	});
+
+	it('(fp12) FP12: on a server where nobody had a second factor, the carry adds the first; the others are counted as needing a reset, and named by none', () => {
+		// A backup from elsewhere made before two-step sign-in (card 2768): no MFA tables, so no factor is restored.
+		const backup = importerNotIn(fromElsewhere(ownBackup()));
+		backup.exec('DROP TABLE mfa_factors; DROP TABLE mfa_recovery_codes; DROP TABLE sign_in_challenges; DROP TABLE enrolment_links;');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept).toMatchObject({ superadminGivenYours: 1, givenYoursWithoutFactor: 0 });
+		expect(sqlite.prepare('SELECT COUNT(*) FROM mfa_factors').pluck().get()).toBe(1);
+		expect(result.mfa).toMatchObject({ firstFactorsCarried: true, withoutFactor: [], withoutFactorUnnamed: 0, notSameHere: 2 });
+		const said = mfaWithoutFactorSentence(result.mfa)!;
+		expect(said).toContain("Your authenticators, given to the backup's superadmin, are the first second factors on this server, so two-step sign-in is in use from this restore");
+		expect(said).toContain('2 account(s) in the backup are not on this server as the same account and have no second factor');
+		for (const name of ['chief', 'administrator', 'member']) expect(said).not.toContain(name);
 	});
 });

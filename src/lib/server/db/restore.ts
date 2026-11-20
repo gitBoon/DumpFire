@@ -24,12 +24,16 @@ import { REQUEST_FORM_SECRET_KEY, writeFormSecret } from '../request-tokens';
 import {
 	BACKUP_SEAL,
 	BACKUP_SEAL_KEY,
+	INSTALLATION_ID,
+	destinationPlace,
 	WEBHOOK_ADDRESSES_LEFT_OUT_KEY,
 	WEBHOOK_SECRETS_LEFT_OUT_KEY,
 	addressMacKeyHere,
 	fillAddressGaps,
 	fillSecretGaps,
 	fromTableStorage,
+	installationIdHere,
+	installationOf,
 	keepSealKey,
 	keepSetting,
 	nothingHere,
@@ -37,7 +41,9 @@ import {
 	readListed,
 	readSecretsHere,
 	sealKeyHere,
+	settingOf,
 	unsealedBecause,
+	type Installation,
 	type ListedWebhook,
 	type SecretsAccount,
 	type Unsealed,
@@ -45,7 +51,19 @@ import {
 } from '../backup-secrets';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
 import { BACKUP_SEAL_KEY_MADE_AT, NoKeyToSeal, SECRETS_SCRUB_PENDING, WEBHOOK_ADDRESS_MAC_KEY, addressToBind, checkpointTruncate, markScrubPending, receiverColumn, sealedForRestore } from '../stored-secrets';
-import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, sameMoment, type MfaRestore } from '../mfa-backup';
+import {
+	MFA_ROWS_NOT_RESTORED,
+	NO_MFA_RESTORE,
+	accountsWithoutFactor,
+	carryFactors,
+	readMfaHere,
+	restoreMfaRows,
+	sameAccountHere,
+	type GrantTrust,
+	type MfaHere,
+	type MfaRestore
+} from '../mfa-backup';
+import { TWO_STEP_RELEASED_AT, passwordSetUpEnds } from '../mfa-store';
 import { createLogger } from '../logger';
 import { REPLACE_PLAIN_USED_INVITES, inHashForm } from '../invites';
 import {
@@ -95,6 +113,8 @@ import {
 	type AccountRuling
 } from '../account-endings';
 import { DUMMY_HASH } from '../dummy-hash';
+import { appUrlAsRead } from '../email';
+import { APP_URL_SETTING, DESTINATION_SETTING, MAIL_SETTING, UNSEALED_RESTORE, appUrlPlaceOf, mailPlaceOf, placeKey } from '../setting-holds';
 import { sqlite } from './index';
 
 const log = createLogger('AUTH');
@@ -149,6 +169,11 @@ export type OutsideSwitchedOff = {
 	backupDestinations: number;
 	/** Mail settings removed. */
 	mailSettings: number;
+	/**
+	 * The App URL removed, 1: only on a working copy of a backup whose seal did not verify, whose App URL is only the
+	 * file's word (card 3009's code review, FP3); absent where none was removed, and on any other working copy, which keeps it.
+	 */
+	appUrl?: number;
 };
 
 export type RestoreResult = {
@@ -242,6 +267,12 @@ export type RestoreResult = {
 	 */
 	sealKeyHere: boolean;
 	/**
+	 * What the backup's installation id says of it beside this server's (card 3009, R6; `installationOf`): `this`,
+	 * `other` (another, malformed, doubled, or any where this server has none) or `none`. The verdict only, never the id.
+	 * With `sealVerified`, it decides the same account here for what this server grants (`sameAccountHere`).
+	 */
+	installation: Installation;
+	/**
 	 * Webhooks switched off for good inside the restore's transaction (card
 	 * 2752, S1): each restored on whose setter cannot open its board in the
 	 * restored data, or that nobody is recorded as having set up. 0 for a
@@ -295,15 +326,50 @@ export type RestoreResult = {
 	 * 2997, `applyPasswordRulings`), counted only, never named: `here`, the same account here, given back the password it
 	 * has on this server; `reset`, given a password nothing matches, needing one set or an invite; `superadmin`, a
 	 * superadmin left with the password it holds, so that the superadmin can still sign in. All 0 where none.
+	 *
+	 * And, where the backup's seal did not verify (card 3009): `unsealed`, the restored accounts not the same here
+	 * (`sameAccountHere`) given a password nothing matches in place of the file's; `superadminGivenYours`, 1 where the
+	 * backup's superadmin was given the importing account's own password, and its authenticators (R1), else 0; and
+	 * `givenYoursWithoutFactor`, 1 where it was given the password but no authenticator (no MFA key loaded, or none of the
+	 * importer's opened with it), so that it cannot sign in until the host resets its two-step sign-in, else 0;
+	 * `givenYoursMayEnrol`, 1 where, so given, it holds the importer's leave to set up two-step sign-in on its password
+	 * alone and that leave's 14 days still run, so that it may set up an authenticator itself (its code review, FP6); and
+	 * `emailGivenUp`, how many other restored accounts held the importer's email address, which the carried superadmin
+	 * always takes, and were given one that receives no mail (FP5).
 	 */
 	passwordsKept: PasswordsKept;
+	/**
+	 * What a restore of a backup whose seal did not verify, keeping what reaches outside (`outside` `keep`), held for the
+	 * superadmin's review (card 3009, R4; card 2922's `setting_holds`), counted only, never named: `mail`, 1 where the
+	 * restored mail settings are at another place than this server's were before the restore; `destinations`, the
+	 * restored backup destinations at a place this server did not hold; `appUrl`, 1 where the restored App URL differs
+	 * from this server's. All 0 for a sealed backup and a working copy, which removes the mail, destinations and App URL itself (FP3).
+	 */
+	unsealedHeld: UnsealedHeld;
 };
 
-/** The restored passwords a restore kept out of use (card 2997): see `RestoreResult.passwordsKept`. */
-export type PasswordsKept = { here: number; reset: number; superadmin: number };
+/** The settings of an unsealed backup held for review (card 3009, R4): see `RestoreResult.unsealedHeld`. */
+export type UnsealedHeld = { mail: number; destinations: number; appUrl: number };
+
+/** The restored passwords a restore kept out of use (cards 2997 and 3009): see `RestoreResult.passwordsKept`. */
+export type PasswordsKept = {
+	here: number;
+	reset: number;
+	superadmin: number;
+	unsealed: number;
+	superadminGivenYours: number;
+	givenYoursWithoutFactor: number;
+	/** Card 3009's code review, FP6: 1 where no authenticator was carried and the importer's leave to set up on its password alone was, while its 14 days run. */
+	givenYoursMayEnrol: number;
+	/** FP5: the other restored accounts that held the importer's email address and gave it up for one that receives no mail. */
+	emailGivenUp: number;
+};
+
+/** A restore's `passwordsKept` before anything is counted. */
+const NO_PASSWORDS_KEPT: PasswordsKept = { here: 0, reset: 0, superadmin: 0, unsealed: 0, superadminGivenYours: 0, givenYoursWithoutFactor: 0, givenYoursMayEnrol: 0, emailGivenUp: 0 };
 
 /** The keys a restore left out (card 2995): see `RestoreResult.apiKeysLeftOut`. */
-export type ApiKeysLeftOut = { count: number; keyIds: number[]; workingCopy: number };
+export type ApiKeysLeftOut = { count: number; keyIds: number[]; workingCopy: number; unsealed: number };
 
 /** The accounts a restore kept ended or lowered (card 2996): see `RestoreResult.accountsKept`. */
 export type AccountsKept = { deleted: number; beforeRecord: number; disabled: number; lowered: number };
@@ -318,12 +384,14 @@ export type CommittedRestore = Pick<
 	| 'sealVerified'
 	| 'unsealed'
 	| 'sealKeyHere'
+	| 'installation'
 	| 'mfa'
 	| 'systemLogLeftOut'
 	| 'apiKeysLeftOut'
 	| 'accountsKept'
 	| 'accountRecordLeftOut'
 	| 'passwordsKept'
+	| 'unsealedHeld'
 >;
 
 /**
@@ -487,6 +555,82 @@ function carryHolds(live: Database.Database, holds: readonly HoldHere[]): number
 		carried += carry.run(hold.heldBecause, hold.heldAt, row.id).changes;
 	}
 	return carried;
+}
+
+/** Where this server's settings that reach outside are (card 3009, R4), in the places `setting_holds` names them by. */
+type SettingPlaces = { mail: string | null; appUrl: string | null; destinations: { name: string; place: string }[] };
+
+/**
+ * Where the settings that reach outside are in `database` (card 3009, R4), as the readers that hold them ask: the
+ * mail settings' place as a mail reads them (`mailConnectionAsRead`, `mailHeldAt`; none without a host), the App URL's
+ * as a link reads it (`appUrlAsRead`, `appUrlHeldAt`), and each named destination's (`destinationPlace`,
+ * `destinationHeldAt`). Read before the clear for this server, and after the copy for the backup. Reads.
+ */
+function settingPlacesIn(database: Database.Database): SettingPlaces {
+	// backup-secrets' one read of a setting (card 3009's code review, FP15); a value that is not text is read as none.
+	const textSettingOf = (from: Database.Database, key: string) => {
+		const value = settingOf(from, key) as unknown;
+		return typeof value === 'string' ? value : null;
+	};
+	const host = textSettingOf(database, 'smtp_host') ?? '';
+	const mail =
+		host === ''
+			? null
+			: mailPlaceOf({
+					host,
+					port: Number(textSettingOf(database, 'smtp_port') || '587'),
+					user: textSettingOf(database, 'smtp_user') || '',
+					allowInsecure: textSettingOf(database, 'smtp_allow_insecure') === 'true'
+				});
+	const appUrl = appUrlPlaceOf(appUrlAsRead(textSettingOf(database, 'app_url') ?? ''));
+	const destinations: SettingPlaces['destinations'] = [];
+	let config: unknown = null;
+	try {
+		config = JSON.parse(textSettingOf(database, 'backup_config') ?? 'null');
+	} catch {
+		// Not JSON: no destination in it.
+	}
+	const listed = config !== null && typeof config === 'object' && Array.isArray((config as { destinations?: unknown }).destinations)
+		? ((config as { destinations: unknown[] }).destinations)
+		: [];
+	for (const entry of listed) {
+		const name = entry !== null && typeof entry === 'object' ? (entry as { name?: unknown }).name : undefined;
+		if (typeof name === 'string') destinations.push({ name, place: placeKey(destinationPlace(entry)) });
+	}
+	return { mail, appUrl, destinations };
+}
+
+/**
+ * Hold for the superadmin's review what a backup whose seal did not verify brings in that reaches outside (card 3009,
+ * R4), inside the restore's transaction, after the copy and the carry of this server's holds (`carrySettingHolds`),
+ * as card 2922's ending holds what an account set: a `setting_holds` row, `INSERT OR IGNORE`, set by nobody, for the
+ * restored mail settings where they are at another place than this server's were (`before`), for each restored
+ * destination at a place this server held no destination at, and for the restored App URL where it differs from this
+ * server's, wherever `ORIGIN` points: with the image's placeholder no origin restricts it (`appUrlOnEnvironment`).
+ * Nothing is sent through any of them, and no link begins with the App URL, until the superadmin keeps or removes it.
+ * Only on the server's own restore that keeps what reaches outside; a working copy removes the mail, the destinations and,
+ * for an unsealed backup, the App URL (`switchOffOutside`; card 3009's code review, FP3).
+ * Counts the rows it wrote (FP8), naming nothing. Not caught.
+ */
+function holdUnsealedSettings(live: Database.Database, before: SettingPlaces, at: string): UnsealedHeld {
+	const held: UnsealedHeld = { mail: 0, destinations: 0, appUrl: 0 };
+	const now = settingPlacesIn(live);
+	const hold = live.prepare(
+		'INSERT OR IGNORE INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) VALUES (?, ?, ?, ?, NULL, NULL)'
+	);
+	// Each counted by the rows it wrote (card 3009's code review, FP8): a hold this server carried there already is no new one.
+	if (now.mail !== null && now.mail !== before.mail) {
+		held.mail = hold.run(MAIL_SETTING, now.mail, UNSEALED_RESTORE, at).changes;
+	}
+	if (now.appUrl !== null && now.appUrl !== before.appUrl) {
+		held.appUrl = hold.run(APP_URL_SETTING, now.appUrl, UNSEALED_RESTORE, at).changes;
+	}
+	const placesHere = new Set(before.destinations.map((destination) => destination.place));
+	for (const destination of now.destinations) {
+		if (placesHere.has(destination.place)) continue;
+		held.destinations += hold.run(DESTINATION_SETTING + destination.name, destination.place, UNSEALED_RESTORE, at).changes;
+	}
+	return held;
 }
 
 /** A setting held for the superadmin's review here (card 2922, migration 0074), as `settingHoldsHere` reads it. */
@@ -728,8 +872,10 @@ type AccountsHere = {
 	/**
 	 * Every account it holds, whatever its id, by id, with its `created_at` and its password hash (card 2997): the same
 	 * account restored is given back this server's password where the backup's is one replaced here (`applyPasswordRulings`).
+	 * With its username, which `sameAccountHere` asks of a backup that carries no installation id, and its email (card
+	 * 3009).
 	 */
-	hashes: Map<number, { createdAt: string; passwordHash: string }>;
+	hashes: Map<number, { createdAt: string; username: string; email: string; passwordHash: string; enrol: number }>;
 };
 
 /**
@@ -741,17 +887,25 @@ function accountsHeldHere(live: Database.Database): AccountsHere {
 	const none: AccountsHere = { held: new Map(), superadmins: { ids: [], credentials: [] }, hashes: new Map() };
 	if (!hasAccountRecord(live) || !columnNamesOf(live, 'users').includes('created_at')) return none;
 	const watermark = accountWatermarkOf(live);
-	const rows = live.prepare('SELECT id, created_at AS createdAt, role, password_hash AS passwordHash FROM users ORDER BY id').all() as {
+	// The leave to set up on a password alone (card 2769), which the carry gives the backup's superadmin from the importer
+	// (card 3009's code review, FP6); none before migration 0066.
+	const enrol = columnNamesOf(live, 'users').includes('mfa_password_enrol') ? 'mfa_password_enrol' : '0';
+	const rows = live
+		.prepare(`SELECT id, created_at AS createdAt, username, email, role, password_hash AS passwordHash, ${enrol} AS enrol FROM users ORDER BY id`)
+		.all() as {
 		id: number;
 		createdAt: string;
+		username: string;
+		email: string;
 		role: string;
 		passwordHash: string;
+		enrol: number;
 	}[];
 	const supers = rows.filter((row) => row.role === 'superadmin');
 	return {
 		held: new Map(rows.filter((row) => watermark === null || row.id <= watermark).map((row) => [row.id, row.createdAt])),
 		superadmins: { ids: supers.map((row) => row.id), credentials: supers.map((row) => credentialOf(row.passwordHash)).filter((c) => c !== '') },
-		hashes: new Map(rows.map((row) => [row.id, { createdAt: row.createdAt, passwordHash: row.passwordHash }]))
+		hashes: new Map(rows.map((row) => [row.id, { createdAt: row.createdAt, username: row.username, email: row.email, passwordHash: row.passwordHash, enrol: row.enrol === 1 ? 1 : 0 }]))
 	};
 }
 
@@ -1030,7 +1184,8 @@ function applyAccountEndings(
  *   or, where the backup's seal did not verify, wherever it is the same account here holding another hash than this
  *   server's (R2: an edited or foreign backup can give a fresh hash of a leaked password). Otherwise left as the backup
  *   has it.
- * - **The same account here** (`here.hashes`, its creation time the same moment): this server's hash where that is
+ * - **The same account here** (`here.hashes`, by `sameAccountHere` under `trust`, card 3009: its creation time the
+ *   same moment, and, for an unsealed backup, this installation's id, or no id and the same username): this server's hash where that is
  *   usable, a bcrypt string the record does not name, counted `here`; otherwise `DUMMY_HASH`, no leave to set up
  *   two-step sign-in on it, and its access ended (`endRestoredAccess`, `access ended`), counted `reset` (R11); a
  *   superadmin instead given this server's hash where that is bcrypt, else left, and counted `superadmin`.
@@ -1047,25 +1202,55 @@ function applyAccountEndings(
  * backup cannot give it back. Written once (FP5); no other row is written, as a hash it replaces otherwise is recorded already and
  * `DUMMY_HASH` has no fingerprint. Its keys' ids go to `keyIds` and their reveals to `reveals`, counted and held with
  * the others. Not caught: a failure rolls the restore back.
+ *
+ * **Where the backup's seal did not verify** (card 3009, section 14.1 of its plan), before all of the above, an account
+ * that is not the same account here (`mineOf` null) takes nothing from the file that signs in:
+ * - anyone but a superadmin: `DUMMY_HASH` and no leave to set up two-step sign-in on it, whatever the file's value,
+ *   counted `unsealed`; one already holding `DUMMY_HASH` is not written or counted. Whatever its hash, its report
+ *   schedules paused where the restore keeps what reaches outside (`working` false; a working copy's `switchOffOutside`
+ *   counts them all, R7; the code review's FP2). No key is ended here and no `password` row is written: the hash was
+ *   never this server's (its keys are the key rule's);
+ * - a superadmin: decided after every other account. Where the importer is, as restored, the same account here (R2),
+ *   or a superadmin of this server is restored as the same account, enabled and holding a usable hash of this server's,
+ *   so that somebody can sign in as the superadmin (the code review's FP5): `DUMMY_HASH` as above. Otherwise, where the
+ *   importer is one this server held (`here.hashes`) and one of them is enabled, the one with the lowest id is given the
+ *   importer's hash as it was here, the importer's leave to set up on its password alone in place of the file's (FP6),
+ *   the importer's authenticators sealed again for it with `mfaKey` (R1, `carryFactors`; none where no key is loaded),
+ *   and the importer's email, which any other restored account holding that address gives up for one that receives no
+ *   mail (R2; FP5, counted `emailGivenUp`); its report schedules are paused as above (FP2); and `superadminGivenYours`
+ *   is 1, `givenYoursWithoutFactor` 1 where no authenticator was carried (it then needs the host's `mfa-reset`), and
+ *   `givenYoursMayEnrol` 1 where, so, the leave it was given still runs (FP6); every other `DUMMY_HASH`. Otherwise (no
+ *   importer, one this server did not hold, or none enabled: R3, failing closed) every one `DUMMY_HASH`.
+ *
+ * Returns the counts, and how many authenticators were carried, which the second factors' count of accounts with none
+ * then leaves out.
  */
 function applyPasswordRulings(
 	live: Database.Database,
 	here: AccountsHere,
 	options: {
-		sealVerified: boolean;
+		/** Whether the backup's seal verified, and its installation id's verdict: what decides the same account here (card 3009). */
+		trust: GrantTrust;
 		importer?: number;
 		ended: ReadonlyMap<number, 'deleted' | 'before record' | 'disabled'>;
 		/** The restore's moment, the stored form: R2's belts are stamped with it (FP6). */
 		at: string;
 		reveals: Reveal[];
 		keyIds: number[];
+		/** A working copy (`outside` `off`): no schedule is paused here, as `switchOffOutside` switches them all off (card 3009, R7). */
+		working: boolean;
+		/** This server's second factors as they were before the clear (`readMfaHere`): the importer's are carried (R1). */
+		mfaHere: MfaHere;
+		/** The restore's MFA key, or null where none is loaded: no authenticator is carried then. */
+		mfaKey: MfaKey | null;
 	}
-): PasswordsKept {
-	const kept: PasswordsKept = { here: 0, reset: 0, superadmin: 0 };
-	if (!hasAccountRecord(live)) return kept;
-	type Restored = { id: number; createdAt: unknown; role: string; passwordHash: unknown; disabledAt: string | null };
-	const restoredAll = live.prepare('SELECT id, created_at AS createdAt, role, password_hash AS passwordHash, disabled_at AS disabledAt FROM users ORDER BY id');
-	const restoredOne = live.prepare('SELECT id, created_at AS createdAt, role, password_hash AS passwordHash, disabled_at AS disabledAt FROM users WHERE id = ?');
+): { kept: PasswordsKept; factorsCarried: number } {
+	const kept: PasswordsKept = { ...NO_PASSWORDS_KEPT };
+	let factorsCarried = 0;
+	if (!hasAccountRecord(live)) return { kept, factorsCarried };
+	type Restored = { id: number; createdAt: unknown; username: unknown; role: string; passwordHash: unknown; disabledAt: string | null };
+	const restoredAll = live.prepare('SELECT id, created_at AS createdAt, username, role, password_hash AS passwordHash, disabled_at AS disabledAt FROM users ORDER BY id');
+	const restoredOne = live.prepare('SELECT id, created_at AS createdAt, username, role, password_hash AS passwordHash, disabled_at AS disabledAt FROM users WHERE id = ?');
 	const keep = live.prepare('UPDATE users SET password_hash = @hash WHERE id = @id');
 	const reset = live.prepare('UPDATE users SET password_hash = @dummy, mfa_password_enrol = 0 WHERE id = @id');
 	const endRestoredAccess = restoredAccessEnder(live);
@@ -1074,26 +1259,54 @@ function applyPasswordRulings(
 		endRestoredAccess(id, REVOKED_BECAUSE.accessEnded, options.reveals, options.keyIds);
 		kept.reset++;
 	};
-	/** This server's hash for the account, where it is the same account here. */
+	// Card 3009: the backup's seal did not verify, so its rows are only the uploader's word.
+	const unsealed = !options.trust.sealVerified;
+	const pauseSchedules = live.prepare('UPDATE report_schedules SET enabled = 0, updated_at = ? WHERE user_id = ? AND enabled = 1');
+	/** An account's report schedules paused, unless a working copy switches them all off (R7). */
+	const pauseOf = (id: number) => {
+		if (!options.working) pauseSchedules.run(stamp(), id);
+	};
+	/**
+	 * An account not the same here, from an unsealed backup (card 3009): the file's password not taken, whatever it is, and
+	 * no leave to enrol on it, written and counted only where it did not hold `DUMMY_HASH` already; and its schedules
+	 * paused whatever its hash (the code review's FP2). No key ended and no `password` row: the hash was never this server's.
+	 */
+	const notTakenOne = (account: Restored) => {
+		if (account.passwordHash !== DUMMY_HASH) {
+			reset.run({ dummy: DUMMY_HASH, id: account.id });
+			kept.unsealed++;
+		}
+		pauseOf(account.id);
+	};
+	/** This server's hash for the account, where it is the same account here (`sameAccountHere`, card 3009). */
 	const mineOf = (account: Restored) => {
 		const mine = here.hashes.get(account.id);
-		return mine !== undefined && sameMoment(mine.createdAt, account.createdAt) ? mine.passwordHash : null;
+		return mine !== undefined && sameAccountHere(mine, account, options.trust) ? mine.passwordHash : null;
 	};
 	/** Whether this server's hash is one to give back: bcrypt, and not named by the record (asked by the account's role). */
 	const usable = (account: Restored, mine: string) => credentialOf(mine) !== '' && !passwordReplacedHere(live, { ...account, passwordHash: mine });
 	/** Every superadmin not here with a hash that has a fingerprint, and whether its own exact row names that hash (R9, FP7). */
 	const notHereSupers: { account: Restored; replaced: boolean }[] = [];
+	/** Card 3009: every superadmin of an unsealed backup that is not the same here, decided after the loop (section 14.1). */
+	const unsealedSupers: Restored[] = [];
 	for (const account of restoredAll.all() as Restored[]) {
 		const ruled = options.ended.get(account.id);
 		if (ruled === 'deleted' || ruled === 'before record') continue;
 		const superadmin = account.role === 'superadmin';
-		const replaced = credentialOf(account.passwordHash) !== '' && passwordReplacedHere(live, account);
 		const mine = mineOf(account);
+		// Card 3009: not the same account here, from a backup whose seal did not verify. Before card 2997's rules, which
+		// the same account here and a sealed backup keep.
+		if (unsealed && mine === null) {
+			if (superadmin) unsealedSupers.push(account);
+			else notTakenOne(account);
+			continue;
+		}
+		const replaced = credentialOf(account.passwordHash) !== '' && passwordReplacedHere(live, account);
 		if (superadmin && mine === null) {
 			if (credentialOf(account.passwordHash) !== '') notHereSupers.push({ account, replaced });
 			continue;
 		}
-		const discarded = !options.sealVerified && mine !== null && account.passwordHash !== mine;
+		const discarded = !options.trust.sealVerified && mine !== null && account.passwordHash !== mine;
 		if (!replaced && !discarded) continue;
 		// FP6: the backup's hash R2 throws away, recorded before it is overwritten; never of a superadmin (R6), of the
 		// restored data or this server's (card 2996's FP2: a forged backup that lowers this server's superadmin writes no
@@ -1113,22 +1326,122 @@ function applyPasswordRulings(
 			resetOne(account.id);
 		}
 	}
-	if (notHereSupers.length > 0) {
-		// R9: the importer as restored, now that every other account is decided.
-		const importer = options.importer === undefined ? undefined : (restoredOne.get(options.importer) as Restored | undefined);
-		const mine = importer === undefined ? null : mineOf(importer);
-		const importerCanSignIn =
-			importer !== undefined && mine !== null && importer.role === 'superadmin' && importer.disabledAt === null && importer.passwordHash === mine && usable(importer, mine);
-		for (const { account, replaced } of notHereSupers) {
-			// FP7: with somebody able to sign in as the superadmin, asked as anyone else is, so that any row names it.
-			if (importerCanSignIn) {
-				if (passwordReplacedHere(live, { ...account, role: 'user' })) resetOne(account.id);
-			} else if (replaced) {
-				kept.superadmin++;
-			}
+	if (notHereSupers.length === 0 && unsealedSupers.length === 0) return { kept, factorsCarried };
+	// R9: the importer as restored, now that every other account is decided; the same account here (card 3009), and able
+	// to sign in as the superadmin with this server's password.
+	const importer = options.importer === undefined ? undefined : (restoredOne.get(options.importer) as Restored | undefined);
+	const importerMine = importer === undefined ? null : mineOf(importer);
+	const importerSame = importer !== undefined && importerMine !== null;
+	const importerCanSignIn =
+		importer !== undefined &&
+		importerMine !== null &&
+		importer.role === 'superadmin' &&
+		importer.disabledAt === null &&
+		importer.passwordHash === importerMine &&
+		usable(importer, importerMine);
+	for (const { account, replaced } of notHereSupers) {
+		// FP7: with somebody able to sign in as the superadmin, asked as anyone else is, so that any row names it.
+		if (importerCanSignIn) {
+			if (passwordReplacedHere(live, { ...account, role: 'user' })) resetOne(account.id);
+		} else if (replaced) {
+			kept.superadmin++;
 		}
 	}
-	return kept;
+	if (unsealedSupers.length === 0) return { kept, factorsCarried };
+	// The code review's FP5: a superadmin of this server, restored as the same account, enabled and holding a usable hash
+	// of this server's, so that somebody can sign in as the superadmin (the importer able to sign in among them).
+	const superadminHere = here.superadmins.ids.some((id) => {
+		const restored = restoredOne.get(id) as Restored | undefined;
+		if (restored === undefined || restored.role !== 'superadmin' || restored.disabledAt !== null) return false;
+		const mine = mineOf(restored);
+		return mine !== null && restored.passwordHash === mine && usable(restored, mine);
+	});
+	// Card 3009, section 14.1: the importer is in the backup as the same account (R2), or a superadmin here can sign in,
+	// so that no superadmin of the file's choosing is given anything.
+	if (importerSame || superadminHere) {
+		for (const account of unsealedSupers) notTakenOne(account);
+		return { kept, factorsCarried };
+	}
+	// Otherwise the importer's own password, the one this import was just confirmed with, as this server held it before
+	// the clear, to the lowest-numbered enabled one (`restoredAll` is by id); none where the importer is not one this
+	// server held or none is enabled (R3: failing closed).
+	let yours: { id: number; passwordHash: string; email: string; enrol: number } | undefined;
+	if (options.importer !== undefined) {
+		const held = here.hashes.get(options.importer);
+		if (held !== undefined) yours = { id: options.importer, passwordHash: held.passwordHash, email: held.email, enrol: held.enrol };
+	}
+	const chosen = yours === undefined ? undefined : unsealedSupers.find((account) => account.disabledAt === null);
+	for (const account of unsealedSupers) if (account !== chosen) notTakenOne(account);
+	if (chosen === undefined || yours === undefined) return { kept, factorsCarried };
+	keep.run({ hash: yours.passwordHash, id: chosen.id });
+	// FP6: the importer's leave to set up two-step sign-in on its password alone, in place of the file's, whatever is carried.
+	if (columnNamesOf(live, 'users').includes('mfa_password_enrol')) live.prepare('UPDATE users SET mfa_password_enrol = ? WHERE id = ?').run(yours.enrol, chosen.id);
+	// FP2: its report schedules, the file's, paused as every account's not the same here.
+	pauseOf(chosen.id);
+	// R1: the importer's authenticators, sealed again for it; its recovery codes stay behind. None without a key.
+	if (options.mfaKey !== null) factorsCarried = carryFactors(live, options.mfaHere, options.mfaKey, yours.id, chosen.id);
+	// R2, FP5: the importer's email, always: any other restored account holding that address (the column is unique) gives
+	// it up for one under `.invalid`, which receives no mail (RFC 2606), counted. So the answer can point at the account by it.
+	kept.emailGivenUp = live
+		.prepare("UPDATE users SET email = 'email-given-up-' || id || '@restore.invalid' WHERE lower(email) = lower(?) AND id <> ?")
+		.run(yours.email, chosen.id).changes;
+	live.prepare('UPDATE users SET email = ? WHERE id = ?').run(yours.email, chosen.id);
+	kept.superadminGivenYours = 1;
+	// No authenticator carried (no key loaded, or none of the importer's opened with it): the password alone does not
+	// sign in, as an account with no factor needs a set-up link, which only the host makes for a superadmin; unless it holds
+	// the leave to set up on its password alone, given above, and that leave's 14 days still run (FP6).
+	if (factorsCarried === 0) {
+		kept.givenYoursWithoutFactor = 1;
+		const releasedAt = settingOf(live, TWO_STEP_RELEASED_AT) as unknown;
+		const ends = passwordSetUpEnds(typeof releasedAt === 'string' ? releasedAt : null);
+		if (yours.enrol === 1 && ends !== null && ends.getTime() > Date.now()) kept.givenYoursMayEnrol = 1;
+	}
+	return { kept, factorsCarried };
+}
+
+/**
+ * Card 3009, R2: on a restore of a backup whose seal did not verify, each superadmin of this server whose restored row
+ * is the same account here (`sameAccountHere`, under `trust`) is a superadmin again and enabled, whatever the file made
+ * it: so that no file can lower or disable the superadmin it was imported over and hand the importer's password to an
+ * account of its choosing. Run before `carryDisabled`, `applyAccountEndings` and `applyPasswordRulings`, so that each,
+ * and the check that a superadmin remains, sees it. A superadmin here is never ended by this server's own record, and no
+ * row of a backup's naming one is taken (card 2996, R1), so nothing after it undoes it. Nothing for a sealed backup.
+ * Not caught.
+ */
+function keepSuperadminsHere(live: Database.Database, here: AccountsHere, trust: GrantTrust): void {
+	if (trust.sealVerified || here.superadmins.ids.length === 0) return;
+	const sameHere = restoredSameHere(live, here, trust);
+	const restore = live.prepare("UPDATE users SET role = 'superadmin', disabled_at = NULL, disabled_by = NULL WHERE id = ?");
+	for (const id of here.superadmins.ids) if (sameHere(id)) restore.run(id);
+}
+
+/**
+ * Whether the restored account of an id is the same account here (`sameAccountHere`, under `trust`), by its row as
+ * restored and this server's before the clear (`here.hashes`): the one read `keepSuperadminsHere` and
+ * `keysOfTheSameHere` share (card 3009's code review, FP15). False where no row of that id is restored. Reads.
+ */
+function restoredSameHere(live: Database.Database, here: AccountsHere, trust: GrantTrust): (id: number) => boolean {
+	const restoredOne = live.prepare('SELECT created_at AS createdAt, username FROM users WHERE id = ?');
+	return (id) => {
+		const restored = restoredOne.get(id) as { createdAt: unknown; username: unknown } | undefined;
+		return restored !== undefined && sameAccountHere(here.hashes.get(id), restored, trust);
+	};
+}
+
+/**
+ * This server's keys (`keysHeldHere(...).all`) whose owner, as restored, is the same account here (`sameAccountHere`,
+ * under `trust`; card 3009, section 3.6): the only keys a backup whose seal did not verify may bring back, and only
+ * where it holds that very key. None where this server held no account to compare (failing closed). Reads.
+ */
+function keysOfTheSameHere(live: Database.Database, here: AccountsHere, keys: readonly KeyHere[], trust: GrantTrust): KeyHere[] {
+	if (keys.length === 0 || here.hashes.size === 0) return [];
+	const restoredSame = restoredSameHere(live, here, trust);
+	const same = new Map<number, boolean>();
+	const sameHere = (userId: number) => {
+		if (!same.has(userId)) same.set(userId, restoredSame(userId));
+		return same.get(userId) as boolean;
+	};
+	return keys.filter((key) => sameHere(key.userId));
 }
 
 /**
@@ -1142,7 +1455,18 @@ function forgetSetByKey(live: Database.Database, keyIds: readonly number[]): voi
 }
 
 /** This server's keys up to W (card 2995, R1), read before the clear: a backup key with one of these ids and another hash is left out. */
-type KeysHeldHere = { watermark: number | null; held: [number, string][] };
+type KeysHeldHere = {
+	watermark: number | null;
+	held: [number, string][];
+	/**
+	 * Every key this server holds, whatever W, with its owner, expiry and deadline (card 3009, section 3.6 and R5): from a
+	 * backup whose seal did not verify only these are kept, for the same account here, each with the earlier expiry.
+	 */
+	all: KeyHere[];
+};
+
+/** One of this server's keys before the clear, as card 3009's unsealed rule reads it. */
+type KeyHere = { id: number; keyHash: string; userId: number; expiresAt: string | null; deadlineAt: string | null };
 
 /**
  * W, and the id and hash of every key this server holds with an id up to W, read before a restore clears `api_keys`
@@ -1150,12 +1474,18 @@ type KeysHeldHere = { watermark: number | null; held: [number, string][] };
  * has no record.
  */
 function keysHeldHere(live: Database.Database): KeysHeldHere {
-	if (!live.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(KEY_RECORD)) return { watermark: null, held: [] };
+	const keyColumns = columnNamesOf(live, 'api_keys');
+	const all = ['user_id', 'key_hash', 'expires_at', 'deadline_at'].every((column) => keyColumns.includes(column))
+		? (live
+				.prepare('SELECT id, key_hash AS keyHash, user_id AS userId, expires_at AS expiresAt, deadline_at AS deadlineAt FROM api_keys ORDER BY id')
+				.all() as KeyHere[])
+		: [];
+	if (!live.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(KEY_RECORD)) return { watermark: null, held: [], all };
 	const watermark = watermarkOf(live);
 	const held = live
 		.prepare('SELECT id, key_hash AS keyHash FROM api_keys WHERE ? IS NULL OR id <= ? ORDER BY id')
 		.all(watermark, watermark) as { id: number; keyHash: string }[];
-	return { watermark, held: held.map((key) => [key.id, key.keyHash]) };
+	return { watermark, held: held.map((key) => [key.id, key.keyHash]), all };
 }
 
 /** Why a row of a backup's record was left out (card 2995, R6), counted by reason: never the row's own text. */
@@ -1251,6 +1581,8 @@ type KeysLeftOut = {
 	keyIds: number[];
 	/** A working copy's other keys, left out as it is one (R4): counted only. */
 	workingCopy: number;
+	/** The keys of a backup whose seal did not verify that this server did not hold for the same account (card 3009): counted only. */
+	unsealed: number;
 	/** Every webhook a key left out may have been given the secret of, for the one `holdRevealedIn` (R3). */
 	reveals: Reveal[];
 };
@@ -1270,9 +1602,18 @@ type KeysLeftOut = {
  *    (R6), the gate's own predicate, then `set_by_key` emptied on every webhook naming one (R8).
  *
  * A working copy (`every`, R4) then leaves out every other key the same way, counted only: no key of a backup works
- * on a copy of it. Not caught: a failure rolls the restore back.
+ * on a copy of it.
+ *
+ * Otherwise, where the backup's seal did not verify (`unsealed`, card 3009, section 3.6), every other restored key is
+ * left out the same way unless this server held that very key, the same id, hash and owner, for an account that is the
+ * same account here (`unsealed.keep`), counted only, and never recorded in `api_key_revocations`: these keys never
+ * existed here. A key planted on an account that is here is left out too. Each key kept then takes the earlier of this
+ * server's expiry and deadline and the backup's (R5, `takeEarlierEnds`). Not caught: a failure rolls the restore back.
  */
-function leaveOutRecordedKeys(live: Database.Database, options: { held: KeysHeldHere['held']; every: boolean; at: string }): KeysLeftOut {
+function leaveOutRecordedKeys(
+	live: Database.Database,
+	options: { held: KeysHeldHere['held']; every: boolean; at: string; unsealed: { keep: readonly KeyHere[] } | null }
+): KeysLeftOut {
 	const hasReveals = !!live.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'webhook_reveals'").get();
 	const belt =
 		'INSERT OR IGNORE INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) ' +
@@ -1282,7 +1623,9 @@ function leaveOutRecordedKeys(live: Database.Database, options: { held: KeysHeld
 		"OR EXISTS (SELECT 1 FROM json_each(@held) AS h WHERE json_extract(h.value, '$[0]') = k.id AND json_extract(h.value, '$[1]') IS NOT k.key_hash))";
 	live.prepare(belt).run({ at: options.at, held: JSON.stringify(options.held) });
 
-	const leaveOut = (where: string): { keyIds: number[]; reveals: Reveal[] } => {
+	const leaveOut = (where: string, params: Record<string, string> = {}): { keyIds: number[]; reveals: Reveal[] } => {
+		// Bound parameters only where the condition names any (card 3009): better-sqlite3 refuses values a statement has no place for.
+		const args: unknown[] = Object.keys(params).length === 0 ? [] : [params];
 		const reveals: Reveal[] = [];
 		if (hasReveals) {
 			const given = live
@@ -1294,17 +1637,66 @@ function leaveOutRecordedKeys(live: Database.Database, options: { held: KeysHeld
 						`AND (w.set_by = k.user_id OR ${readableBy('k.user_id', 'u.role', 'w.board_id')}) WHERE ${where} ` +
 						'ORDER BY webhookId, keyId'
 				)
-				.all() as (Omit<Reveal, 'before'> & { before: number })[];
+				.all(...args) as (Omit<Reveal, 'before'> & { before: number })[];
 			for (const row of given) reveals.push({ ...row, before: row.before === 1 });
-			live.prepare(`DELETE FROM webhook_reveals WHERE key_id IN (SELECT k.id FROM api_keys AS k WHERE ${where})`).run();
+			live.prepare(`DELETE FROM webhook_reveals WHERE key_id IN (SELECT k.id FROM api_keys AS k WHERE ${where})`).run(...args);
 		}
-		const keyIds = (live.prepare(`DELETE FROM api_keys AS k WHERE ${where} RETURNING id`).all() as { id: number }[]).map((row) => row.id).sort((a, b) => a - b);
+		const keyIds = (live.prepare(`DELETE FROM api_keys AS k WHERE ${where} RETURNING id`).all(...args) as { id: number }[]).map((row) => row.id).sort((a, b) => a - b);
 		forgetSetByKey(live, keyIds);
 		return { keyIds, reveals };
 	};
 	const recorded = leaveOut(keyRecordedWhere('k.id', 'k.key_hash'));
 	const rest = options.every ? leaveOut('1 = 1') : { keyIds: [], reveals: [] };
-	return { keyIds: recorded.keyIds, workingCopy: rest.keyIds.length, reveals: [...recorded.reveals, ...rest.reveals] };
+	// Card 3009: a working copy has left out every key already, and counts it `workingCopy`.
+	const sealless = options.unsealed !== null && !options.every ? options.unsealed : null;
+	const unsealed =
+		sealless !== null
+			? leaveOut(
+					'NOT EXISTS (SELECT 1 FROM json_each(@keep) AS h ' +
+						"WHERE json_extract(h.value, '$[0]') = k.id AND json_extract(h.value, '$[1]') = k.key_hash AND json_extract(h.value, '$[2]') = k.user_id)",
+					{ keep: JSON.stringify(sealless.keep.map((key) => [key.id, key.keyHash, key.userId])) }
+				)
+			: { keyIds: [], reveals: [] };
+	if (sealless !== null) takeEarlierEnds(live, sealless.keep);
+	return {
+		keyIds: recorded.keyIds,
+		workingCopy: rest.keyIds.length,
+		unsealed: unsealed.keyIds.length,
+		reveals: [...recorded.reveals, ...rest.reveals, ...unsealed.reveals]
+	};
+}
+
+/**
+ * Of two moments a key ends at, as stored (card 3009, R5): the earlier; one that is set beats none; one that is set
+ * and names no moment beats any, as `keyExpired` and `deadlinePassed` read it as passed (the safe side).
+ */
+function earlierEnd(here: string | null, backup: string | null): string | null {
+	if (here === null) return backup;
+	if (backup === null) return here;
+	const mine = toStamp(here);
+	const theirs = toStamp(backup);
+	if (mine === null) return here;
+	if (theirs === null) return backup;
+	return theirs < mine ? backup : here;
+}
+
+/**
+ * Every key a restore of a backup whose seal did not verify kept (card 3009, R5), given the earlier of this server's
+ * expiry and the backup's, and likewise of the deadline (`earlierEnd`), inside the restore's transaction, so that a
+ * key expired or past its deadline here never comes back working from a file that says it has none. Written only
+ * where either changes. Not caught.
+ */
+function takeEarlierEnds(live: Database.Database, kept: readonly KeyHere[]): void {
+	if (kept.length === 0) return;
+	const restored = live.prepare('SELECT expires_at AS expiresAt, deadline_at AS deadlineAt FROM api_keys WHERE id = ?');
+	const tighten = live.prepare('UPDATE api_keys SET expires_at = @expiresAt, deadline_at = @deadlineAt WHERE id = @id');
+	for (const key of kept) {
+		const row = restored.get(key.id) as { expiresAt: string | null; deadlineAt: string | null } | undefined;
+		if (row === undefined) continue;
+		const expiresAt = earlierEnd(key.expiresAt, row.expiresAt);
+		const deadlineAt = earlierEnd(key.deadlineAt, row.deadlineAt);
+		if (expiresAt !== row.expiresAt || deadlineAt !== row.deadlineAt) tighten.run({ expiresAt, deadlineAt, id: key.id });
+	}
 }
 
 /** A row of this server's `webhook_reveals`, read before a restore clears it, with what its carry is matched on (card 2947). */
@@ -1681,7 +2073,9 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
 export function rowsToRestore(
 	backup: Database.Database,
 	table: string,
-	sealed: { count: number; secretsLeftOut?: ListedWebhook[] } = { count: 0 }
+	sealed: { count: number; secretsLeftOut?: ListedWebhook[] } = { count: 0 },
+	/** Whether the backup's seal verified (card 3009's code review, FP1): none of an unsealed backup's invites is read. Failing closed. */
+	trust: { sealVerified: boolean } = { sealVerified: false }
 ): Record<string, unknown>[] {
 	const sealing = (rows: Record<string, unknown>[]) => {
 		const result = sealedForRestore(table, rows);
@@ -1711,7 +2105,9 @@ export function rowsToRestore(
 				BACKUP_SEAL_KEY_MADE_AT,
 				MFA_KEY_CHECK_SETTING,
 				// This server's own: set by the restore itself (card 2898's code review, S1).
-				SECRETS_SCRUB_PENDING
+				SECRETS_SCRUB_PENDING,
+				// This server's installation id, put back as it was, or none where it had none (card 3009, R6).
+				INSTALLATION_ID
 			];
 			return sealing(
 				backup.prepare(fromTableStorage(backup, table, leftOut.map(() => 'key IS NOT ?').join(' AND '))).all(...leftOut) as Record<string, unknown>[]
@@ -1722,14 +2118,21 @@ export function rowsToRestore(
 		const hasUsed = (backup.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[]).some(
 			(column) => column.name === 'used'
 		);
-		if (!hasUsed) return [];
+		// Card 3009's code review, FP1: an invite is restored as history alone, and only from a backup whose seal verified.
+		// None of an unsealed backup's, whatever it says, as its rows are only the uploader's word.
+		if (!hasUsed || !trust.sealVerified) return [];
+		// A used one only, by the stored type as well as the value: a column the backup declares with no type can hold the
+		// text '0', which is not 0 here and would land as 0 in this server's integer column, an unused invite. And each
+		// is written used, whatever the backup holds.
 		// A backup made before card 2849 holds each used invite's token as it
 		// was mailed. It is given 0068's 32 random bytes here, as it is read, so
 		// that no plain token reaches the live file, not even to be written over
 		// (the code review, CR3). A token in hash form is kept.
-		return (backup.prepare(fromTableStorage(backup, table, 'used != 0')).all() as Record<string, unknown>[]).map((row) =>
-			'token' in row && !inHashForm(row.token) ? { ...row, token: randomBytes(32) } : row
-		);
+		return (backup.prepare(fromTableStorage(backup, table, "typeof(used) = 'integer' AND used <> 0")).all() as Record<string, unknown>[]).map((row) => ({
+			...row,
+			used: 1,
+			...('token' in row && !inHashForm(row.token) ? { token: randomBytes(32) } : {})
+		}));
 	}
 	// A requester's links are never brought in (card 2870, decision 10): a
 	// backup of another installation would bring hashes whose tokens that
@@ -1779,6 +2182,9 @@ const MAIL_SETTINGS = [
  * setting are left alone, and so is every other table but `setting_setters`,
  * whose rows for the mail and the destinations go with them (card 2406), and
  * `users.mfa_password_enrol`, set to 0 for every account (card 2769, CS5).
+ * With `appUrl` (a backup whose seal did not verify: card 3009's code review,
+ * FP3) the App URL is removed as the mail settings are, its setter rows and
+ * holds with it, and counted.
  *
  * A `backup_config` that is not a JSON object is removed rather than
  * rewritten. A missing one is read as no destinations and no schedule, which
@@ -1788,7 +2194,7 @@ const MAIL_SETTINGS = [
  * here. The caller has one open, and this is undone with the rest of it if it
  * rolls back.
  */
-export function switchOffOutside(database: Database.Database): OutsideSwitchedOff {
+export function switchOffOutside(database: Database.Database, options: { appUrl?: boolean } = {}): OutsideSwitchedOff {
 	const hasColumns = (table: string, ...columns: string[]) => {
 		const present = (database.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[]).map(
 			(c) => c.name
@@ -1860,6 +2266,14 @@ export function switchOffOutside(database: Database.Database): OutsideSwitchedOf
 	// settings or destinations to hold, and none of this server's is to be held there. The App URL's stay, as it does.
 	if (hasColumns('setting_holds', 'setting')) {
 		database.prepare("DELETE FROM setting_holds WHERE setting = 'mail' OR substr(setting, 1, 19) = 'backup_destination:'").run();
+	}
+	// A working copy of a backup whose seal did not verify (FP3): its App URL is only the file's word, so it goes as the
+	// mail settings do, with its setter rows and holds, and is counted. Links then begin with the environment's.
+	if (options.appUrl === true) {
+		const removed = database.prepare("DELETE FROM settings WHERE key = 'app_url'").run().changes;
+		if (removed > 0) done.appUrl = removed;
+		if (hasColumns('setting_setters', 'setting')) database.prepare("DELETE FROM setting_setters WHERE setting = 'app_url'").run();
+		if (hasColumns('setting_holds', 'setting')) database.prepare("DELETE FROM setting_holds WHERE setting = 'app_url'").run();
 	}
 
 	return done;
@@ -2038,12 +2452,19 @@ export function defaultOutside(
  * Two-step sign-in's rows have rules of their own (card 2768;
  * `restoreMfaRows`, in mfa-backup.ts). No pending sign-in or enrolment link
  * is brought in. Once the rows are copied, inside the transaction, an account
- * that is the same one here, by its id and `created_at` and never by its
- * username, gets this server's second factors and recovery codes back as they
- * are now, and its sign-in history; any other gets the backup's only when its
- * seal verified and its key check is this server's MFA key's (`options.key`,
- * this process's key unless a test gives another or none), and otherwise none,
- * named in `mfa.leftOut`. Every account's guessing counters and pauses are
+ * that is the same one here (`sameAccountHere`: its id and `created_at`, and,
+ * where the seal did not verify, the backup's installation id this server's,
+ * or none and the same username; card 3009) gets this server's second factors
+ * and recovery codes back as they are now, and its sign-in history; any other
+ * gets the backup's only when its seal verified and its key check is this
+ * server's MFA key's (`options.key`, this process's key unless a test gives
+ * another or none), and otherwise none, named in `mfa.leftOut` where the seal
+ * verified and counted in `mfa.notSameHere` where it did not (R10).
+ *
+ * This server's installation id (card 3009, R6) is read before the clear and
+ * put back after the copy, as the seal key is; where it had none, none is kept
+ * and none made. The backup's is never brought in, and only its verdict,
+ * `installation`, is answered. Every account's guessing counters and pauses are
  * zeroed. The key check is this key's when a factor exists afterwards, and
  * this server's as it was when none does; the backup's is never kept. Once a
  * factor exists, or one was left out, `mfa.withoutFactor` names every account
@@ -2127,6 +2548,20 @@ export function defaultOutside(
  * here, and otherwise one nothing matches, a superadmin left so that somebody
  * can still sign in as one (`applyPasswordRulings`; `importer`, the id the
  * importing account had before the import). `passwordsKept` counts them.
+ * And where the backup's seal did not verify (card 3009), no account that is
+ * not the same account here takes its password from the file: each is given
+ * one nothing matches, counted `unsealed`; this server's superadmin, restored
+ * as the same account, stays an enabled superadmin; and where the importer is
+ * not in the backup as the same account and could not otherwise sign in, the
+ * backup's lowest-numbered enabled superadmin is given the importer's own
+ * password and authenticators (`superadminGivenYours`), failing closed with
+ * no importer. From such a backup only the API keys this server held, the
+ * same id, hash and owner, for the same account here are kept, each with the
+ * earlier of the two expiries and deadlines; the rest are left out, counted
+ * `apiKeysLeftOut.unsealed` (`keysOfTheSameHere`, `takeEarlierEnds`). And,
+ * keeping what reaches outside, its mail settings, App URL and destinations
+ * at places this server did not hold are held for the superadmin's review
+ * (`holdUnsealedSettings`), counted `unsealedHeld`.
  *
  * Throws a `RestoreError` in every case but a clean return. Its `committed`
  * says whether the database was changed: it is false, and the database is as
@@ -2168,10 +2603,12 @@ function restoreInOneSnapshot(
 	let requestLinksReplaced = 0;
 	// The settings held for review here that the backup did not hold, carried over it (card 2922, R10).
 	let settingHoldsCarried = 0;
+	// What an unsealed backup brought in that reaches outside, held for review (card 3009, R4), counted only.
+	let unsealedHeld: UnsealedHeld = { mail: 0, destinations: 0, appUrl: 0 };
 	let apiKeyDeadlines = 0;
 	// The backup's keys left out: those the record of keys ended here names, those of accounts disabled here, and a
 	// working copy's every other key (card 2995).
-	let apiKeysLeftOut: ApiKeysLeftOut = { count: 0, keyIds: [], workingCopy: 0 };
+	let apiKeysLeftOut: ApiKeysLeftOut = { count: 0, keyIds: [], workingCopy: 0, unsealed: 0 };
 	let decisionLinksCleared = 0;
 	// The webhooks switched off for good inside the transaction (card 2752), told after the commit.
 	let swept: SwitchedOff[] = [];
@@ -2188,13 +2625,13 @@ function restoreInOneSnapshot(
 	// The rows of the backup's record of account endings left out whole, for its size (card 2996's code review, FP3, FP7).
 	let accountRecordLeftOut = 0;
 	// The restored passwords this server replaced, kept out of use (card 2997), counted only.
-	let passwordsKept: PasswordsKept = { here: 0, reset: 0, superadmin: 0 };
+	let passwordsKept: PasswordsKept = { ...NO_PASSWORDS_KEPT };
 	const sweptBecause = `found after a restore${options.by ? ` by ${options.by}` : ''}`;
 	let secrets: SecretsAccount = {
 		kept: { mailPassword: false, destinations: [], webhooks: [] },
 		toEnter: { mailPassword: false, destinations: [], webhooks: [] }
 	};
-	let mfa: MfaRestore = { keptFromHere: 0, takenFromBackup: 0, leftOut: [], leftOutBecause: null, withoutFactor: [] };
+	let mfa: MfaRestore = { ...NO_MFA_RESTORE, leftOut: [], withoutFactor: [] };
 	// This server's MFA key, unless the caller gives another or none (card
 	// 2768): the restore's second factors are taken from a backup only when
 	// its key check is this key's.
@@ -2247,6 +2684,14 @@ function restoreInOneSnapshot(
 	const sealKey = sealKeyHere(live);
 	const unsealed = unsealedBecause(backup, sealKey?.key ?? null);
 	const sealVerified = unsealed === null;
+	// This server's installation id, read now to be put back once the clear has taken it (never made here), and what
+	// the backup's says beside it, asked of the snapshot before anything is written (card 3009, R6). Never logged.
+	const installationHere = installationIdHere(live);
+	const installation = installationOf(backup, installationHere);
+	// What decides the same account here, for what this server grants a restored account (`sameAccountHere`).
+	const trust: GrantTrust = { sealVerified, installation };
+	// A working copy (`outside` `off`), asked by every step below that treats one apart (card 3009's code review, FP15).
+	const working = options.outside === 'off';
 	// How many secrets the backup held in plain and rowsToRestore sealed (card 2898, S7).
 	const sealedInRestore: { count: number; secretsLeftOut?: ListedWebhook[] } = { count: 0 };
 
@@ -2299,6 +2744,8 @@ function restoreInOneSnapshot(
 			const holdsHere = webhookHoldsHere(live);
 			// And its settings held for review, and whether mail was ever set up here (card 2922, R10 and R9).
 			const settingHoldsNow = settingHoldsHere(live);
+			// And where its mail, App URL and destinations are (card 3009, R4): see `holdUnsealedSettings`.
+			const placesNow = settingPlacesIn(live);
 			const mailEverHere = mailEverConfiguredHere(live);
 			// And its disabled accounts (card 2671, S6): see `carryDisabled`.
 			const disabledAccountsHere = disabledHere(live);
@@ -2340,7 +2787,7 @@ function restoreInOneSnapshot(
 					if (!exists) continue;
 
 					// Every row, but no session and no unused invite, every plain secret sealed: see rowsToRestore.
-					const rows = rowsToRestore(backup, table, sealedInRestore);
+					const rows = rowsToRestore(backup, table, sealedInRestore, { sealVerified });
 					if (rows.length === 0) continue;
 
 					// Only the columns both sides have.
@@ -2422,6 +2869,8 @@ function restoreInOneSnapshot(
 			}
 			// And its webhook address key (card 2928, R14), the same way.
 			if (macKeyHere !== null) keepSetting(live, WEBHOOK_ADDRESS_MAC_KEY, macKeyHere.stored);
+			// And its installation id (card 3009, R6): none kept, and none made, where it had none.
+			if (installationHere !== null) keepSetting(live, INSTALLATION_ID, installationHere);
 
 			// A new form signing key, which no restore brings in and the clear
 			// took (card 2158): made here, so the restore never commits without
@@ -2464,7 +2913,7 @@ function restoreInOneSnapshot(
 			// of account endings ended, and never the backup's to one it keeps
 			// disabled; none of them named (card 2996). Not caught: a restore that
 			// could not put them back is rolled back.
-			mfa = restoreMfaRows(live, backup, mfaHere, { sealVerified, key: mfaKey, ended: endedByRecord });
+			mfa = restoreMfaRows(live, backup, mfaHere, { trust, key: mfaKey, ended: endedByRecord });
 			for (const table of ['mfa_factors', 'mfa_recovery_codes']) {
 				if (!tables.includes(table)) continue;
 				const rows = (live.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get() as { n: number }).n;
@@ -2572,6 +3021,10 @@ function restoreInOneSnapshot(
 			// so that the answer is of the accounts as they will be, and before
 			// the sweep below, which then switches off the webhooks they set. Not
 			// caught: a restore that could not carry them is rolled back.
+			// Card 3009, R2: before that, where the backup's seal did not verify, this server's superadmin, restored as the same
+			// account, a superadmin again and enabled whatever the file made it, so that the carry, card 2996's rulings, card
+			// 2997's rules and the check that a superadmin remains all see it. Not caught.
+			if (tables.includes('users') && hasAccountRecord(live)) keepSuperadminsHere(live, accountsNow, trust);
 			if (tables.includes('users')) carryDisabled(live, disabledAccountsHere, disabledReveals, disabledKeyIds);
 
 			// Every restored account the record of account endings ends or lowers, ended or lowered (card 2996): after the
@@ -2583,15 +3036,30 @@ function restoreInOneSnapshot(
 			// Every restored password this server replaced kept out of use (card 2997, section 13.1): after the record's
 			// rulings, whose roles it asks (R10), and before card 2995's carry and the superadmin is asked about. Its keys are
 			// counted and their reveals held with the carry's. Not caught: a restore that could not do it is rolled back.
+			// Card 3009: where the seal did not verify, an account not the same here takes no password from the file, and the
+			// backup's superadmin may be given the importer's, with its authenticators: those it was given are then no longer
+			// counted among the accounts with none.
 			if (tables.includes('users') && hasAccountRecord(live)) {
-				passwordsKept = applyPasswordRulings(live, accountsNow, {
-					sealVerified,
+				// Whether any second factor is held before the carry (card 3009's code review, FP12): where none is, the
+				// importer's carried to the backup's superadmin are the first, and two-step sign-in is in use from here.
+				const factorsBefore = tableIn(live, 'mfa_factors') ? (live.prepare('SELECT COUNT(*) FROM mfa_factors').pluck().get() as number) : 0;
+				const passwords = applyPasswordRulings(live, accountsNow, {
+					trust,
 					importer: options.importer,
 					ended: endedByRecord,
 					at: restoredAt,
 					reveals: disabledReveals,
-					keyIds: disabledKeyIds
+					keyIds: disabledKeyIds,
+					working,
+					mfaHere,
+					mfaKey
 				});
+				passwordsKept = passwords.kept;
+				// Those carried are counted again with every account's (FP12): the carried superadmin holds one now, and, where they
+				// are the first, every other account with none now needs its two-step sign-in reset, counted and named by none.
+				if (passwords.factorsCarried > 0) {
+					mfa = { ...mfa, ...accountsWithoutFactor(live, mfaHere, { trust, ended: endedByRecord }), firstFactorsCarried: factorsBefore === 0 };
+				}
 			}
 
 			// The backup's record of ended API keys added to this server's, which the clear never touched, each row
@@ -2628,7 +3096,6 @@ function restoreInOneSnapshot(
 			// as they were.
 			// Only for a backup whose seal verified (S1): for any other, from
 			// nothing, so that nothing is filled and every gap is listed.
-			const working = options.outside === 'off';
 			// The addresses the backup left out filled first, switching nothing on (card 2928, R19), so that the holds
 			// are carried onto the same webhooks, their addresses opened, and the switch-on below sees them.
 			const addressesFilled = fillAddressGaps(live, sealVerified ? here : nothingHere(), addressListed.listed, macKeyHere?.key ?? null, {
@@ -2643,6 +3110,12 @@ function restoreInOneSnapshot(
 			// secret is filled, so that a destination or mail at a held place comes back held. And mail set up here
 			// once stays so (R9). Not caught: a restore that could not carry them is rolled back.
 			if (tables.includes('setting_holds')) settingHoldsCarried = carrySettingHolds(live, settingHoldsNow);
+			// Card 3009, R4: from a backup whose seal did not verify, restored keeping what reaches outside, its mail, App URL
+			// and destinations at places this server did not hold are held for the superadmin's review, before the commit
+			// and so before anything is mailed or sent. Not caught.
+			if (!sealVerified && !working && tables.includes('settings') && tables.includes('setting_holds')) {
+				unsealedHeld = holdUnsealedSettings(live, placesNow, restoredAt);
+			}
 			if (mailEverHere !== null && tables.includes('settings')) {
 				live.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run('mail_ever_configured_at', mailEverHere);
 			}
@@ -2679,10 +3152,12 @@ function restoreInOneSnapshot(
 				if (tables.includes('settings') && tables.includes('webhook_reveals') && !live.prepare('SELECT 1 FROM settings WHERE key = ?').get(WEBHOOK_REVEALS_SEEDED)) {
 					seedRevealsOnce(live);
 				}
-				const leftOutKeys = leaveOutRecordedKeys(live, { held: keysNow.held, every: working, at: restoredAt });
+				// Card 3009: where the seal did not verify, only this server's own keys of the same accounts here are kept.
+				const unsealedKeys = sealVerified ? null : { keep: keysOfTheSameHere(live, accountsNow, keysNow.all, trust) };
+				const leftOutKeys = leaveOutRecordedKeys(live, { held: keysNow.held, every: working, at: restoredAt, unsealed: unsealedKeys });
 				leftOutReveals = leftOutKeys.reveals;
 				const keyIds = [...new Set([...disabledKeyIds, ...leftOutKeys.keyIds])].sort((a, b) => a - b);
-				apiKeysLeftOut = { count: keyIds.length, keyIds, workingCopy: leftOutKeys.workingCopy };
+				apiKeysLeftOut = { count: keyIds.length, keyIds, workingCopy: leftOutKeys.workingCopy, unsealed: leftOutKeys.unsealed };
 			}
 
 			// Every restored webhook that is on and held switched off for good
@@ -2720,7 +3195,8 @@ function restoreInOneSnapshot(
 			// A working copy: see above. Not caught, so that a failure here rolls
 			// the restore back like any other.
 			if (working) {
-				const done = switchOffOutside(live);
+				// With the App URL where the seal did not verify (card 3009's code review, FP3).
+				const done = switchOffOutside(live, { appUrl: !sealVerified });
 				// What the backup had on, as before card 2169: a webhook that
 				// had a secret is off in a backup made since, and is counted
 				// from the list, where it was not switched on above (R3).
@@ -2767,7 +3243,7 @@ function restoreInOneSnapshot(
 			throw new RestoreError(
 				'The backup was restored and committed, but foreign keys could not be switched back on. Restart the ' +
 					'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it.',
-				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, mfa, systemLogLeftOut, apiKeysLeftOut, accountsKept, accountRecordLeftOut, passwordsKept } }
+				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, installation, mfa, systemLogLeftOut, apiKeysLeftOut, accountsKept, accountRecordLeftOut, passwordsKept, unsealedHeld } }
 			);
 		}
 		throw new RestoreError(
@@ -2876,5 +3352,5 @@ function restoreInOneSnapshot(
 		}
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut, settingHoldsCarried, apiKeysLeftOut, accountsKept, accountRecordLeftOut, passwordsKept };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, installation, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut, settingHoldsCarried, apiKeysLeftOut, accountsKept, accountRecordLeftOut, passwordsKept, unsealedHeld };
 }

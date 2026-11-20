@@ -709,27 +709,29 @@ describe('the code review’s fix pass (card 2996, FP1, FP5, FP6, FP16)', () => 
 	});
 
 	it('FP5: the same backup imported again an hour later, once its future-dated disable is past, adds no row and leaves an account enabled here since enabled', () => {
-		vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-11-20T10:00:00Z') });
+		// Years ahead (card 3009's code review): the accounts are made at SQLite's real time, which must come before the
+		// restore's faked one, or the record's rows read as later than the restore.
+		vi.useFakeTimers({ toFake: ['Date'], now: new Date('2099-11-20T10:00:00Z') });
 		try {
 			makeUser({ username: 'chief', role: 'superadmin' });
 			const ann = makeUser({ username: 'ann' });
 			const copy = backupNow();
 			// The backup's clock ran an hour fast: its disable of Ann is dated 11:00.
 			copy
-				.prepare("INSERT INTO account_endings (user_id, account_created, ending, ended_at, stated_ended, origin) VALUES (?, ?, 'disabled', '2026-11-20 11:00:00', '2026-11-20 11:00:00', 'here')")
+				.prepare("INSERT INTO account_endings (user_id, account_created, ending, ended_at, stated_ended, origin) VALUES (?, ?, 'disabled', '2099-11-20 11:00:00', '2099-11-20 11:00:00', 'here')")
 				.run(ann.id, createdOf(ann.id));
 			const bytes = Buffer.from(copy.serialize());
 
 			expect(restoreFromBackup(sqlite, new Database(bytes)).errors).toEqual([]);
 			expect(userOf(ann.id).disabledAt).not.toBeNull();
 			// Enabled here at 10:30, as the route records it.
-			vi.setSystemTime(new Date('2026-11-20T10:30:00Z'));
+			vi.setSystemTime(new Date('2099-11-20T10:30:00Z'));
 			sqlite.prepare('UPDATE users SET disabled_at = NULL, disabled_by = NULL WHERE id = ?').run(ann.id);
 			inTransaction(() => recordAccountEnding(sqlite, ann.id, 'enabled'));
 			const rows = recordOf().length;
 
 			// The same file, an hour after its disable's moment has passed.
-			vi.setSystemTime(new Date('2026-11-20T12:00:00Z'));
+			vi.setSystemTime(new Date('2099-11-20T12:00:00Z'));
 			expect(restoreFromBackup(sqlite, new Database(bytes)).errors).toEqual([]);
 
 			expect(recordOf()).toHaveLength(rows);
@@ -1112,7 +1114,7 @@ describe('the writers record every password they replace (card 2997, S2)', () =>
 		const result = restoreFromBackup(sqlite, backup);
 
 		expect(result.errors).toEqual([]);
-		expect(result.passwordsKept).toEqual({ here: 1, reset: 0, superadmin: 0 });
+		expect(result.passwordsKept).toEqual({ here: 1, reset: 0, superadmin: 0, unsealed: 0, superadminGivenYours: 0, givenYoursWithoutFactor: 0, givenYoursMayEnrol: 0, emailGivenUp: 0 });
 		// The account holds the hash the reset gave it, which the record does not name: the new password works.
 		const now = userOf(ann.id);
 		expect(now.passwordHash).toBe(reset);
