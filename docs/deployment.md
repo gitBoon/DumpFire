@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.151
+version: 1.152
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3012
+  - unsealed-backup-outside-reach
   - card-3009
   - unsealed-backup-grants
   - card-2997
@@ -100,7 +102,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Docker deployment, moving to a new host, a volume clone's seal key and installation id changed, and the release that takes nothing that signs in from an unsealed backup with its rollback (card 3009), a host file rollback after which every password changed since the copy needs 🔑 or 📧 and the superadmin is warned until it changes its own, and superadmin recovery promoting an account whose password works (card 2997), the release that brings every stored service account JSON to the one rule at start and tests only saved destinations (card 2939: the start's WARN line, its checks, GOOGLE_CLOUD_UNIVERSE_DOMAIN), the release that seals the stored secrets under the MFA key (card 2898: the read-only queries before, the first start's line, the scrub and Admin › Vacuum, copies made before, a value that does not open, and going back), the release that holds already-off webhooks when an account's access ends and mails the boards' owners (card 2923: OpenAPI 1.15.0, breaking, a one-time start-up hold, the host's command printing what it held), the release that ends API keys at a two-step reset (card 2915: always from the admin page, on the host unless --keep-api-keys, a read-only check of what will end, going back, OpenAPI 1.14.0 breaking), the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Docker deployment, moving to a new host, a volume clone's seal key and installation id changed, the release that keeps an unsealed backup from reaching outside with its cost and rollback (card 3012), and the release that takes nothing that signs in from an unsealed backup with its rollback (card 3009), a host file rollback after which every password changed since the copy needs 🔑 or 📧 and the superadmin is warned until it changes its own, and superadmin recovery promoting an account whose password works (card 2997), the release that brings every stored service account JSON to the one rule at start and tests only saved destinations (card 2939: the start's WARN line, its checks, GOOGLE_CLOUD_UNIVERSE_DOMAIN), the release that seals the stored secrets under the MFA key (card 2898: the read-only queries before, the first start's line, the scrub and Admin › Vacuum, copies made before, a value that does not open, and going back), the release that holds already-off webhooks when an account's access ends and mails the boards' owners (card 2923: OpenAPI 1.15.0, breaking, a one-time start-up hold, the host's command printing what it held), the release that ends API keys at a two-step reset (card 2915: always from the admin page, on the host unless --keep-api-keys, a read-only check of what will end, going back, OpenAPI 1.14.0 breaking), the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -1642,6 +1644,7 @@ flowchart TD
     Imp --> Sign["Sign in as the backup's superadmin\nwith your password and a code"]
     Sign --> Held["Settings held for review:\ncheck the App URL and the mail host,\nkeep or remove each"]
     Held --> Each["🔑 or 📧 each account,\nnew API keys, mfa-reset\nwhere the answer names it"]
+    Each --> Out["Switch on each webhook you recognise\n(new secret to its receiver);\nowners turn schedules back on;\npeople switch notification mail on"]
 ```
 
 **Import Backup onto a fresh installation is the fallback**, where the volume or the key file cannot be moved. Its seal does not verify there and it carries another installation's id, so no account in it is the same account there: none takes a password, a second factor or an API key from it. In this order:
@@ -1653,6 +1656,9 @@ flowchart TD
 5. **Then each account**: check its email address and role, then set its password (🔑) or send an invite (📧), and reset its two-step sign-in (🛡️).
 6. **New API keys**, made by their holders on the Account page: none of the backup's works.
 7. **The host's `scripts/mfa-reset.mjs`** for any account the answer says needs it.
+8. **Each webhook you recognise**: every one with an address came in switched off for good, its secret discarded (card 3012). Its board's owner or an administrator switches it on with `PUT /api/v1/webhooks/{id}` and `{"active": true}` alone, which gives it a new secret in that answer; put that secret in at its receiver. Delete any whose address you do not recognise.
+9. **Report schedules**: every one was paused; each owner turns theirs back on on the **Reports** page.
+10. **Notification mail**: every account not the same here has it switched off; each person switches it back on from the Account page once signed in. The backup failure mail goes to this server's address (Scheduled Backups) until changed there.
 
 **A clone of the volume shares this server's identity.** A copy of the volume or of the database file started as a second server (a rehearsal kept running, a test instance) has this server's backup seal key and installation id: its backups verify here as this server's own, and an account in them is the same account here. On any clone, change both, on the clone, with its container stopped: delete the `backup_seal_key` row, as [The Release That Makes the Signing Keys Anew](#the-release-that-makes-the-signing-keys-anew-card-2943) documents, and the `installation_id` row, so that its next start makes a new one of each:
 
@@ -8672,6 +8678,72 @@ whose id was copied.
 | H4 | On the second instance, sign in as an ordinary account with its first-server password | Refused | Signed in |
 | H5 | On the second instance, call `/api/v1/me` with that account's first-server key | `401` | Answered |
 | H6 | On the second instance, open Settings held for review | The mail settings and the App URL held | Neither held |
+
+### The Release That Keeps an Unsealed Backup From Reaching Outside (Card 3012)
+
+**Ships in the release since `332634f`** (production), with cards 2943, 2947, 2994 to 2997, 3006 and
+3009, together. **Card 3020 blocks the release**: a request's requester, a decision's participants
+and the people addresses of an unsealed file are still mailed as the file has them, and the release
+waits for it. No migration and no environment variable. The OpenAPI document stays `1.15.0`
+(unreleased) with point (10) added to its note: the hold, its `pausedBecause` sentence, and a new
+secret on switch-on.
+
+**What changes.** An import of a backup whose seal does not verify sends nothing outside as the file
+has it:
+
+- every webhook with an address is switched off for good, its secret discarded; switching it on gives
+  it a new secret;
+- every enabled report schedule is paused;
+- each person who is the same account here keeps the email address and notification choices they have
+  here;
+- every other account has notification mail switched off, its other choices kept;
+- the backup failure mail keeps this server's address;
+- the restore's notice of webhooks it switched off is written to the log and mailed to nobody.
+
+Counts only, in the answer and the `[CRITICAL] [IMPORT]` line. The invite confirm names the address.
+
+**The cost.** Production at `332634f` predates card 2928, so every backup it has made carries plain
+webhook addresses, and after this release's first start every one of them restores as unsealed. **The
+first restore of such a backup holds every webhook that has an address.** Each needs:
+
+1. switching on by its board's owner or an administrator (`PUT /api/v1/webhooks/{id}` with
+   `{"active": true}` alone);
+2. the new secret it is given put in at its receiver.
+
+Every schedule is paused too, for its owner to turn back on on the Reports page.
+
+**Nothing to set.** No migration, no environment variable.
+
+**Rolling back** goes to `332634f` only, after [card 2943's constraints](#the-release-that-makes-the-signing-keys-anew-card-2943).
+That image has no `held_because` and would let a held webhook be switched on with no new secret, to
+the file's address. **Before rolling back,** with the server stopped:
+
+```bash
+docker stop dumpfire
+# Preview, read-only: the webhooks held for this card's reason.
+docker run --rm --network none -v dumpfire-data:/app/data dumpfire:latest node -e "
+const db = require('better-sqlite3')('/app/data/dumpfire.db', { fileMustExist: true, readonly: true });
+console.log(db.prepare(\"SELECT id, board_id, receiver, held_at FROM webhooks WHERE held_because = 'restored from a backup whose seal did not verify' ORDER BY id\").all());
+db.close();
+"
+# Delete them, with their reveal rows.
+docker run --rm --network none -v dumpfire-data:/app/data dumpfire:latest node -e "
+const db = require('better-sqlite3')('/app/data/dumpfire.db', { fileMustExist: true });
+const why = 'restored from a backup whose seal did not verify';
+db.transaction(() => {
+  db.prepare('DELETE FROM webhook_reveals WHERE webhook_id IN (SELECT id FROM webhooks WHERE held_because = ?)').run(why);
+  console.log('webhooks removed:', db.prepare('DELETE FROM webhooks WHERE held_because = ?').run(why).changes);
+})();
+db.close();
+"
+```
+
+Then follow card 2943's rollback. Paused schedules, emails and choices stay as written.
+
+**What stays possible (residual).** Besides card 3020, invites and notices to an account not the same
+here still go to the file's address (card 3021). Webhooks and schedules switched off or deleted here
+coming back from a sealed backup are card 3004's, and board or team access an unsealed file grants
+is card 3002's.
 
 ## Changing the Schema
 

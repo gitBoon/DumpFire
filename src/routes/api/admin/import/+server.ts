@@ -127,7 +127,8 @@ import {
 	type PasswordsKept,
 	type RestoreResult,
 	type SystemLogLeftOut,
-	type UnsealedHeld
+	type UnsealedHeld,
+	type UnsealedReach
 } from '$lib/server/db/restore';
 import type { Installation } from '$lib/server/backup-secrets';
 import Database from 'better-sqlite3';
@@ -336,6 +337,58 @@ function unsealedHeldSentence(held: UnsealedHeld | undefined): string | null {
 		"were held for the superadmin's review: nothing is sent through them, and no link begins with the App URL, until the superadmin " +
 		'checks each and keeps or removes it under Settings held for review.'
 	);
+}
+
+/** Whether a restore of a backup whose seal did not verify kept anything from reaching outside (card 3012): any count above 0. */
+const anyUnsealedReach = (reach: UnsealedReach | undefined): reach is UnsealedReach =>
+	reach !== undefined && Object.values(reach).some((count) => count > 0);
+
+/**
+ * What the answer and the panel say of what a backup whose seal did not verify would have sent outside as the file has it,
+ * and the restore kept from it (card 3012, R16): counts only, naming no account, address, host or schedule. Each clause
+ * only where its count is above 0, and the sentence only where any is, after card 3009's `unsealedHeldSentence`. A
+ * working copy has no schedules clause: it switched every schedule off itself, and says so in its own sentence.
+ */
+function unsealedReachSentence(reach: UnsealedReach | undefined): string | null {
+	if (!anyUnsealedReach(reach)) return null;
+	const clauses = [
+		...(reach.webhooks > 0
+			? [
+					`${reach.webhooks} webhook(s) with an address were held and their secrets discarded: each sends nothing until an owner of its board or an ` +
+						'administrator switches it on, which gives it a new secret'
+				]
+			: []),
+		...(reach.schedules > 0 ? [`${reach.schedules} report schedule(s) were paused: each owner turns one on again on the Reports page`] : []),
+		...(reach.accountsAsHere > 0
+			? [`${reach.accountsAsHere} account(s) that are the same here keep the email address and notification choices they have on this server`]
+			: []),
+		...(reach.addressesGivenUp > 0
+			? [
+					`${reach.addressesGivenUp} other account(s) that held one of those addresses were given one that receives no mail: set each one's ` +
+						'address on the Users page before inviting it'
+				]
+			: []),
+		...(reach.notificationsOff > 0
+			? [`${reach.notificationsOff} account(s) not the same here have their notification mail switched off until each signs in and switches it on`]
+			: [])
+	];
+	const failureMail = reach.notifyEmail > 0 ? "the backup failure mail goes to this server's address, not the backup's" : null;
+	const said = failureMail === null ? clauses.join('; ') : clauses.length === 0 ? failureMail : `${clauses.join('; ')}; and ${failureMail}`;
+	return `The backup's seal did not verify, so what it would send outside was not taken as the file has it: ${said}.`;
+}
+
+/** The CRITICAL line's words for `unsealedReachSentence` (card 3012): counts only, each only where above 0; '' where none. */
+function unsealedReachWords(reach: UnsealedReach | undefined): string {
+	if (!anyUnsealedReach(reach)) return '';
+	const parts = [
+		...(reach.webhooks > 0 ? [`${reach.webhooks} webhook(s) held`] : []),
+		...(reach.schedules > 0 ? [`${reach.schedules} report schedule(s) paused`] : []),
+		...(reach.accountsAsHere > 0 ? [`${reach.accountsAsHere} account(s)' email address kept as on this server`] : []),
+		...(reach.addressesGivenUp > 0 ? [`${reach.addressesGivenUp} other account(s)' address given up`] : []),
+		...(reach.notificationsOff > 0 ? [`${reach.notificationsOff} account(s)' notification mail switched off`] : []),
+		...(reach.notifyEmail > 0 ? ["the backup failure mail's address kept as on this server"] : [])
+	];
+	return `, keeping what a backup whose seal did not verify would send outside: ${parts.join('; ')}`;
 }
 
 /** Sentences joined, the absent left out; null where none is present. */
@@ -612,7 +665,8 @@ function restoredWords(
 	kept?: AccountsKept,
 	recordLeftOut = 0,
 	passwords?: PasswordsKept,
-	held?: UnsealedHeld
+	held?: UnsealedHeld,
+	reach?: UnsealedReach
 ): string {
 	const how = outside === 'off' ? 'as a working copy' : 'as it is';
 	const accounts = accountsKeptCount(kept);
@@ -630,7 +684,9 @@ function restoredWords(
 			: '') +
 		(recordLeftOut > 0 ? `, the backup's record of account endings (${recordLeftOut} row(s)) left out for its size` : '') +
 		// Card 3009, R4: the mail, App URL and destinations of a backup whose seal did not verify, held, counted only.
-		(anyUnsealedHeld(held) ? `, holding ${held.mail + held.appUrl + held.destinations} setting(s) of a backup whose seal did not verify for the superadmin's review` : '');
+		(anyUnsealedHeld(held) ? `, holding ${held.mail + held.appUrl + held.destinations} setting(s) of a backup whose seal did not verify for the superadmin's review` : '') +
+		// Card 3012: what such a backup would have sent outside as the file has it, kept from it, counted only.
+		unsealedReachWords(reach);
 	if (left === undefined || (left.count === 0 && left.workingCopy === 0 && left.unsealed === 0)) return `${how}${keeping}`;
 	const parts = [
 		...(left.count > 0 ? [`${left.count} API key(s) ended on this server`] : []),
@@ -696,6 +752,7 @@ function importedLine(
 		accountRecordLeftOut?: number;
 		passwordsKept?: PasswordsKept;
 		unsealedHeld?: UnsealedHeld;
+		unsealedReach?: UnsealedReach;
 		installation?: Installation;
 	}
 ): { message: string; meta: Record<string, unknown> } {
@@ -709,7 +766,9 @@ function importedLine(
 		// The restored passwords kept out of use, counted, never named (card 2997): only where any.
 		...(anyPasswordsKept(done.passwordsKept) ? { passwordsKept: done.passwordsKept } : {}),
 		// The settings of a backup whose seal did not verify held for review, counted, never named (card 3009, R4).
-		...(anyUnsealedHeld(done.unsealedHeld) ? { unsealedHeld: done.unsealedHeld } : {})
+		...(anyUnsealedHeld(done.unsealedHeld) ? { unsealedHeld: done.unsealedHeld } : {}),
+		// What such a backup would have sent outside, kept from it, counted, never named (card 3012): only where any.
+		...(anyUnsealedReach(done.unsealedReach) ? { unsealedReach: done.unsealedReach } : {})
 	};
 	const logLeft = done.systemLogLeftOut;
 	const logPart =
@@ -724,7 +783,7 @@ function importedLine(
 		message:
 			`The database was replaced from an uploaded backup by ${caller.username} (user ${caller.id} before the import): ` +
 			`${file.size}, SHA-256 ${file.sha256}, ${sealWords(done.unsealed, done.sealKeyHere)}, ` +
-			`restored ${restoredWords(outside, left, done.accountsKept, done.accountRecordLeftOut, done.passwordsKept, done.unsealedHeld)}. The system log was kept as it was; ${logPart}`,
+			`restored ${restoredWords(outside, left, done.accountsKept, done.accountRecordLeftOut, done.passwordsKept, done.unsealedHeld, done.unsealedReach)}. The system log was kept as it was; ${logPart}`,
 		meta: {
 			by: { id: caller.id, username: caller.username },
 			ip: caller.ip,
@@ -1052,7 +1111,12 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 			// one the superadmin kept here since the backup was made is held again.
 			// And what a backup whose seal did not verify brought in that reaches outside, held for review (card 3009, R4): in
 			// the same sentence's place, which the panel shows.
-			const settingsHeld = sentences(settingsHeldCarriedSentence(result.settingHoldsCarried), unsealedHeldSentence(result.unsealedHeld));
+			// And what it would have sent outside as the file has it, kept from it (card 3012), after it.
+			const settingsHeld = sentences(
+				settingsHeldCarriedSentence(result.settingHoldsCarried),
+				unsealedHeldSentence(result.unsealedHeld),
+				unsealedReachSentence(result.unsealedReach)
+			);
 			const ending = (text: string) =>
 				[linksReplaced, keyDeadlines, keysLeftOut, accountsKeptSaid, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, settingsHeld, workingCopy, systemLog].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
@@ -1093,6 +1157,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				settingsHeld: settingsHeld ?? undefined,
 				// The settings of a backup whose seal did not verify held for review, counted (card 3009, R4): absent where none.
 				unsealedHeld: anyUnsealedHeld(result.unsealedHeld) ? result.unsealedHeld : undefined,
+				// What a backup whose seal did not verify would have sent outside, kept from it, counted (card 3012): absent where none.
+				unsealedReach: anyUnsealedReach(result.unsealedReach) ? result.unsealedReach : undefined,
 				systemLog: systemLog ?? undefined,
 				superadmins
 			};
@@ -1223,7 +1289,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				// This server's system log kept, as a restore that succeeded says it (the code review's F6).
 				const systemLog = done ? systemLogSentence(done.systemLogLeftOut) : null;
 				// The settings of a backup whose seal did not verify held for review, as a restore that succeeded says them (card 3009, R4).
-				const unsealedHeld = done ? unsealedHeldSentence(done.unsealedHeld) : null;
+				// And what it would have sent outside, kept from it (card 3012), the same way.
+				const unsealedHeld = done ? sentences(unsealedHeldSentence(done.unsealedHeld), unsealedReachSentence(done.unsealedReach)) : null;
 				const message = [linksReplaced, keyDeadlines, keysLeftOut, accountsKeptSaid, decisionLinks, secretsKept, secretsToEnter, mfaLine, unsealedHeld, systemLog].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					err.message
@@ -1258,6 +1325,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 						mfaWithoutFactor: mfaLine ?? undefined,
 						settingsHeld: unsealedHeld ?? undefined,
 						unsealedHeld: done && anyUnsealedHeld(done.unsealedHeld) ? done.unsealedHeld : undefined,
+						unsealedReach: done && anyUnsealedReach(done.unsealedReach) ? done.unsealedReach : undefined,
 						systemLog: systemLog ?? undefined
 					},
 					{ status: 500 }

@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.63
+version: 1.64
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3012
+  - unsealed-backup-outside-reach
   - card-3009
   - unsealed-backup-grants
   - card-2997
@@ -50,7 +52,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "Scheduled backup system with multi-destination support, an unsealed import holding every webhook with an address, pausing schedules and keeping emails, choices and notifyEmail as here (unsealedReach, card 3012), the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -306,6 +308,65 @@ sentence to `keysLeftOut` and the holds' to `settingsHeld`, all counts and no na
 the keys and holds of "a backup whose seal did not verify", and its details carry `passwordsKept`,
 `apiKeysLeftOut` and `unsealedHeld` with the new fields, and `installation`, the verdict alone. A
 backup this server sealed restores as before.
+
+An unsealed backup's webhooks, report schedules, email addresses, notification choices and failure
+mail address no longer reach outside as the file has them (card 3012). Inside the same transaction:
+
+- **Email and notification choices** (`keepAccountsHere`, right after the record of account endings is
+  applied and before card 3009's password rulings, as it is or as a working copy). Addresses under
+  `@restore.invalid` (compared ignoring case) are first set apart with the restore's nonce: an account
+  the same here's as `email-pending-<id>-<nonce>@restore.invalid`, and each one of an account not the
+  same here becomes `email-given-up-<id>-<nonce>@restore.invalid`, so that none meets a value this
+  server holds. Every account that is the same here (`sameAccountHere`) takes this server's
+  `users.email` and `notification_prefs`; every other account holding one of those addresses, ignoring
+  case (each address read as text, a BLOB included), gets `email-given-up-<id>@restore.invalid`; and of
+  other accounts sharing an address apart from case, every one but the lowest id gets its own too.
+  Every other account, the superadmin given the importer's password included, has its
+  `notification_prefs` read with `JSON.parse`, as the mail reads them (so a key written twice counts
+  once, the last), and written back with `email_all` `false`, its other choices kept (a value that is
+  not a JSON object becomes `{"email_all":false}`); it keeps the file's address. An account the record
+  of endings deleted is switched off too but not counted.
+- **Report schedules** (`pauseUnsealedSchedules`, restored as it is only; a working copy switches every
+  one off already). Every schedule still enabled is paused (`enabled = 0`), beyond card 3009's pause of
+  the accounts not the same here. Each owner turns one on again on the Reports page, with password and
+  code.
+- **Webhooks** (`holdUnsealedWebhooks`, after the address fill and before `carryHolds`, as it is or as
+  a working copy). Every restored webhook with an address is held: `active = 0`, `held_because`
+  `restored from a backup whose seal did not verify` whatever reason the file gave, `held_at` the
+  restore's moment, `secret = ''`, and its `webhook_reveals` rows deleted. One with no address that was
+  on is switched off, not held, and listed to enter as before; where the file has no
+  `webhooks_already_off_held` (a backup from before card 2923's release), the restore's own pass then
+  holds it as "setter access ended", like every webhook already off, which is more conservative.
+  `carryHolds` gives such a row this server's own reason only where both addresses open and are equal,
+  and only on an unsealed restore. Switching on any held webhook gives it a new secret, whatever the
+  reason (see [authentication-security.md](authentication-security.md)).
+- **Failure mail** (`keepNotifyEmailHere`, after `holdUnsealedSettings`, as it is or as a working copy).
+  `backup_config.notifyEmail` becomes this server's, read before the clear (`''` where it has none),
+  unless the restored one is exactly that string; counted only where the address the failure mail goes
+  to changes, not where neither side had one.
+- **No owner mail.** After the commit, the notice of webhooks the restore switched off or held is
+  written at `WARN` only: they "were not mailed, as the backup's seal did not verify".
+
+`RestoreResult.unsealedReach` counts them, naming nothing: `{ webhooks, schedules, accountsAsHere,
+addressesGivenUp, notificationsOff, notifyEmail }`, where `webhooks` is the rows newly held and still
+held for this reason after `carryHolds`; a working copy does not count them again among the webhooks it
+switched off. Every row held for this reason after `carryHolds`, one the file already held included, is
+added to `secrets.toEnter.heldWebhooks` (`{ id, boardId, board }`), so the to-enter sentence lists each
+as switched off for good; it names at most ten, then "and N more", each board name quoted and cut to 60
+characters. The import's
+figures carry `unsealedReach` (absent where every count is 0, and on the committed-then-failed answer
+too), and `settingsHeld` gains, after card 3009's sentence, "The backup's seal did not verify, so what
+it would send outside was not taken as the file has it: N webhook(s) with an address were held and
+their secrets discarded: …; N report schedule(s) were paused: …; N account(s) that are the same here
+keep the email address and notification choices they have on this server; N other account(s) that
+held one of those addresses were given one that receives no mail: …; N account(s) not the same here
+have their notification mail switched off until each signs in and switches it on; and the backup
+failure mail goes to this server's address, not the backup's.", each clause only where its count is
+above 0 (the whole sentence is in [api-reference.md](api-reference.md)). The `[CRITICAL] [IMPORT]`
+line adds `keeping what a backup whose seal did not verify would send outside: …`, and its details
+carry `unsealedReach` where any count is above 0. Still open: a request's requester, a decision's
+participants and the people addresses of such a file are mailed as the file has them (card 3020), and
+invites and notices to an account not the same here go to the file's address (card 3021).
 
 ```mermaid
 flowchart LR

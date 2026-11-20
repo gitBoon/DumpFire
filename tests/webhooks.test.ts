@@ -118,6 +118,7 @@ import {
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { readOpened, readOpenedUrl } from './helpers/reads';
+import { HELD_FROM_UNSEALED_BACKUP } from '$lib/settings-held';
 import {
 	TYPED_SECRET_LOOKS_SEALED,
 	openStored,
@@ -2731,6 +2732,52 @@ describe('a webhook whose setter can no longer open the board is switched off fo
 		expect(rowOf(held.id)).toEqual({ active: 1, heldBecause: null, heldAt: null, setBy: s.owner.id, secret: on.body.secret });
 		expect(await event(s)).toEqual([held.url]);
 		expect(signedWith(on.body.secret, sent.webhooks[0])).toBe(true);
+	});
+
+	it("3012 (b). one held because it came in with a backup whose seal did not verify gives that sentence, word for word; a secret sent with the switch-on is refused; switched on alone, it is given a new one", async () => {
+		const s = scene();
+		const made = makeWebhook(s.board, { url: 'https://hooks.example.test/unsealed', secret: '', setBy: s.editor, heldBecause: HELD_FROM_UNSEALED_BACKUP });
+		expect(rowOf(made.id)).toMatchObject({ active: 0, heldBecause: HELD_FROM_UNSEALED_BACKUP });
+
+		const [listed, one] = await answersTo(s, s.owner, made.id);
+		for (const answer of [listed, one]) {
+			expect(answer).toMatchObject({
+				active: false,
+				pausedBecause:
+					"This was switched off because it came in with a backup whose seal did not verify, so its address, its secret and who set it up are only the file's word, and its secret was discarded. " +
+					"Delete it unless you recognise the address; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board's owner or an administrator, and update the receiver."
+			});
+		}
+
+		const before = snapshotDb();
+		const refused = await put(s.owner, made.id, { active: true, secret: 'mine' });
+		expect(refused.status).toBe(400);
+		expect(refused.body.message).toBe(NEW_SECRET_REFUSAL);
+		expectUnchanged(before, 'after a secret sent with the switch-on');
+
+		const on = await put(s.owner, made.id, { active: true });
+		expect(on.status).toBe(200);
+		expect(on.body).toMatchObject({ active: true, pausedBecause: null });
+		expect(on.body.secret).toMatch(/^[0-9a-f]{64}$/);
+		expect(rowOf(made.id)).toEqual({ active: 1, heldBecause: null, heldAt: null, setBy: s.owner.id, secret: on.body.secret });
+		expect(await event(s)).toEqual([made.address]);
+		expect(signedWith(on.body.secret, sent.webhooks[0])).toBe(true);
+	});
+
+	it("3012 FP2. one held for a reason this build does not name, its secret discarded, fails closed: a secret sent with the switch-on is refused; switched on alone, it is given a new one", async () => {
+		const s = scene();
+		const made = makeWebhook(s.board, { url: 'https://hooks.example.test/later-build', secret: '', setBy: s.editor, heldBecause: 'a reason from a later build' });
+
+		const before = snapshotDb();
+		const refused = await put(s.owner, made.id, { active: true, secret: 'mine' });
+		expect(refused.status).toBe(400);
+		expect(refused.body.message).toBe(NEW_SECRET_REFUSAL);
+		expectUnchanged(before, 'after a secret sent with the switch-on');
+
+		const on = await put(s.owner, made.id, { active: true });
+		expect(on.status).toBe(200);
+		expect(on.body.secret).toMatch(/^[0-9a-f]{64}$/);
+		expect(rowOf(made.id)).toEqual({ active: 1, heldBecause: null, heldAt: null, setBy: s.owner.id, secret: on.body.secret });
 	});
 
 	it('16. (2752 case 16) a secret sent with that switch-on is refused 400 and nothing is written; the former setter, given the board back, cannot switch it on', async () => {

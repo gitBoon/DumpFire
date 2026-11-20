@@ -72,6 +72,7 @@ import {
 } from '$lib/server/db/schema';
 import { MAX_TOKENS_PER_ENTRY } from '$lib/server/tokens';
 import { SWITCHED_OFF_BECAUSE } from '$lib/server/webhooks';
+import { HELD_FROM_UNSEALED_BACKUP } from '$lib/settings-held';
 import { stamp } from '$lib/timestamps';
 import { api as call, routeMethods, routePatterns, type ApiOptions, type ApiResult } from './helpers/api';
 import {
@@ -2920,13 +2921,13 @@ describe('what a route answers, against the schema the document gives for it', (
 		const held = note.slice(note.indexOf('**Changed on 2026-11-18 (version 1.15.0), breaking.**'), note.indexOf('**Changed on 2026-11-18 (version 1.14.0), breaking.**'));
 		// And points for card 2928's sealed webhook urls (case 46) and card 2935's webhooks an owner or administrator
 		// could read; card 2920's 507 on the image upload is (8), and card 2947's keys given a secret (9), before "nothing
-		// else changed", now (10).
-		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+		// else changed", then (10); card 3012's webhooks from a backup whose seal did not verify are (10), so it is now (11).
+		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 		expect(held).toContain(
 			"(7) when a board owner's or an administrator's access ends with its keys (a password reset, a two-step reset, on the server's host too unless run with --keep-api-keys, an invite used, its own password change that ends keys, a disable, or a delete, unless the account's disable already covered it and it held no key), or an administrator is made an ordinary user, or an owner of a board is made an editor or a viewer or taken off it, "
 		);
 		expect(held).toContain('unless the account provably read nothing (never signed in, no API key, no invite used, made after two-step sign-in was released)');
-		expect(held).toContain('(10) nothing else changed: no operation, field or schema.');
+		expect(held).toContain('(11) nothing else changed: no operation, field or schema.');
 		// Card 2947: what an API key was given, held when it ends; the PUT's answer; no-store; the seed; the exposed secret.
 		for (const words of [
 			"(9) every answer that gives a webhook's secret records the API key it was given to (card 2947)",
@@ -2939,7 +2940,13 @@ describe('what a route answers, against the schema the document gives for it', (
 			expect(held, words).toContain(words);
 		}
 		expect(held.indexOf('(9) every answer')).toBeGreaterThan(held.indexOf('(8) the upload of an image'));
-		expect(held.indexOf('(10) nothing else changed')).toBeGreaterThan(held.indexOf('(9) every answer'));
+		expect(held.indexOf('(10) a webhook that comes in')).toBeGreaterThan(held.indexOf('(9) every answer'));
+		expect(held.indexOf('(11) nothing else changed')).toBeGreaterThan(held.indexOf('(10) a webhook that comes in'));
+		// Card 3012 (R10): point (10), and its pausedBecause sentence word for word.
+		expect(held).toContain(
+			'(10) a webhook that comes in with a backup whose seal did not verify and has an address is switched off for good, whatever the file says of it, and its secret is discarded; pausedBecause says so, and switching it on gives it a new secret and refuses a secret sent with it (card 3012); '
+		);
+		expect(spec.components.schemas.Webhook.properties.pausedBecause.description).toContain(`"${SWITCHED_OFF_BECAUSE[HELD_FROM_UNSEALED_BACKUP]}"`);
 		expect(spec.components.schemas.Webhook.description).toContain(
 			"Since 1.15.0 every API key given its secret is recorded, and the webhook is held as setter access ended when that key is revoked, expires or passes its deadline, or its account's access ends (card 2947)."
 		);
@@ -2963,7 +2970,7 @@ describe('what a route answers, against the schema the document gives for it', (
 			"(6) webhook urls are stored sealed too, bound to the webhook's id, board and receiver (card 2928)",
 			"a backup holds no url: a restore onto the server that made it puts each back, and any other gives url '' until it is entered",
 			'a PUT that switches such a webhook on must send url in the same request (400 otherwise)',
-			'(10) nothing else changed: no operation, field or schema.'
+			'(11) nothing else changed: no operation, field or schema.'
 		]) {
 			expect(held, words).toContain(words);
 		}

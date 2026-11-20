@@ -62,6 +62,7 @@ import { addressRefusal, guardedLookup, hostOf, receiverOf } from './webhook-add
 import { stamp, toStamp } from '$lib/timestamps';
 import { registerStampFunctions } from './db/timestamps';
 import { openStored, openedUrl, webhookSecretAad, type Opened } from './stored-secrets';
+import { HELD_FROM_UNSEALED_BACKUP } from '$lib/settings-held';
 
 const log = createLogger('Webhooks');
 
@@ -368,14 +369,14 @@ export function keyOfWrite(credential: App.Locals['credential']): { setByKey: nu
  * setter is disabled or not recorded (`holdUnheldOfGoneSetters`). `'key
  * ended'` is card 2893's hold.
  */
-export type HeldBecause = Hold | 'setter access ended';
+export type HeldBecause = Hold | 'setter access ended' | typeof HELD_FROM_UNSEALED_BACKUP;
 
 /**
  * The reasons whose switch-on gives the webhook a new secret: a known account held the old one (D3, S4; CS4).
  * Every reason since card 2923's code review (S1): one held for want of a setter may have had its secret set,
  * by a `PUT`, by an account whose access has ended since, which its hold does not record.
  */
-export const NEW_SECRET_REASONS: readonly string[] = ['setter cannot open', 'no setter', 'setter access ended', 'key ended'];
+export const NEW_SECRET_REASONS: readonly string[] = ['setter cannot open', 'no setter', 'setter access ended', 'key ended', HELD_FROM_UNSEALED_BACKUP];
 
 /**
  * What `pausedBecause` says of a webhook switched off for each reason, word
@@ -407,7 +408,13 @@ export const SWITCHED_OFF_BECAUSE: Record<HeldBecause, string> = {
 		"This was switched off because the API key that set it up ended: it expired, passed its deadline, was deleted or is not the setter's; " +
 		'or, for a webhook set up before keys were recorded, the account that set it up has no working key from then. To keep it, ' +
 		'switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by ' +
-		"the board's owner or an administrator, and update the receiver."
+		"the board's owner or an administrator, and update the receiver.",
+	// Card 3012 (R1): every webhook with an address that a restore of a backup whose seal did not verify brought in.
+	[HELD_FROM_UNSEALED_BACKUP]:
+		'This was switched off because it came in with a backup whose seal did not verify, so its address, its secret and who ' +
+		"set it up are only the file's word, and its secret was discarded. Delete it unless you recognise the address; to keep " +
+		'it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and ' +
+		"readable by the board's owner or an administrator, and update the receiver."
 };
 
 /**
@@ -637,7 +644,9 @@ const HOLD_IN_WORDS: Record<HeldBecause, (hook: SwitchedOff) => string> = {
 	'key ended': (hook) =>
 		hook.setWithKey === null
 			? `the account that set it up${userWord(hook, hook.setBy)} has no working API key from before keys were recorded`
-			: `the API key that set it up (${hook.setByKey === null ? 'no key recorded' : `key ${hook.setByKey}`}${hook.unnamed ? '' : `, user ${hook.setBy}`}) has ended`
+			: `the API key that set it up (${hook.setByKey === null ? 'no key recorded' : `key ${hook.setByKey}`}${hook.unnamed ? '' : `, user ${hook.setBy}`}) has ended`,
+	// Card 3012 (R16): the restore that holds it tells nobody of it, but the type asks for the words.
+	[HELD_FROM_UNSEALED_BACKUP]: () => 'it came in with a backup whose seal did not verify'
 };
 
 /** Why, in the owners' mail: the hold in words, naming nobody. */
@@ -661,7 +670,8 @@ const HOLD_IN_MAIL: Record<HeldBecause, (hook: SwitchedOff) => string> = {
 	'key ended': (hook) =>
 		hook.setWithKey === null
 			? 'it was set up before keys were recorded, and the account that set it up has no working API key from then'
-			: 'the API key that set it up ended'
+			: 'the API key that set it up ended',
+	[HELD_FROM_UNSEALED_BACKUP]: () => 'it came in with a backup whose seal did not verify'
 };
 
 /**

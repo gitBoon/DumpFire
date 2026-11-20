@@ -456,7 +456,10 @@ export const webhooks = sqliteTable('webhooks', {
 	// or not recorded, holdUnheldOfGoneSetters at the first start of card 2923's
 	// release and after a restore; card 2935: also for one whose secret an owner
 	// or administrator whose access ended, or whose role was lowered, could
-	// read, whoever set it, and the start pass's), and card 2893's 'key ended'. Set only with
+	// read, whoever set it, and the start pass's), card 2893's 'key ended', and
+	// card 3012's HELD_FROM_UNSEALED_BACKUP ('restored from a backup whose seal
+	// did not verify': every restored webhook with an address, its secret
+	// discarded, holdUnsealedWebhooks in restore.ts). Set only with
 	// `active` off; carried by a restore onto the same webhook (carryHolds,
 	// fillSecretGaps); cleared only when the board's owner or an administrator
 	// switches it on. NULL for one that is on, and for one switched off without

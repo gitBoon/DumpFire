@@ -46,9 +46,12 @@ import {
 	type Installation,
 	type ListedWebhook,
 	type SecretsAccount,
+	type SecretsToEnter,
 	type Unsealed,
+	boardName,
 	withHeldApart
 } from '../backup-secrets';
+import { HELD_FROM_UNSEALED_BACKUP } from '$lib/settings-held';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
 import { BACKUP_SEAL_KEY_MADE_AT, NoKeyToSeal, SECRETS_SCRUB_PENDING, WEBHOOK_ADDRESS_MAC_KEY, addressToBind, checkpointTruncate, markScrubPending, receiverColumn, sealedForRestore } from '../stored-secrets';
 import {
@@ -114,6 +117,7 @@ import {
 } from '../account-endings';
 import { DUMMY_HASH } from '../dummy-hash';
 import { appUrlAsRead } from '../email';
+import { failureConfigOf } from '../setting-setters';
 import { APP_URL_SETTING, DESTINATION_SETTING, MAIL_SETTING, UNSEALED_RESTORE, appUrlPlaceOf, mailPlaceOf, placeKey } from '../setting-holds';
 import { sqlite } from './index';
 
@@ -346,10 +350,40 @@ export type RestoreResult = {
 	 * from this server's. All 0 for a sealed backup and a working copy, which removes the mail, destinations and App URL itself (FP3).
 	 */
 	unsealedHeld: UnsealedHeld;
+	/**
+	 * What a restore of a backup whose seal did not verify kept from reaching outside as the file has it (card 3012),
+	 * counted only, never named: `webhooks`, the restored webhooks with an address it newly held, their secrets discarded,
+	 * and still held for that reason once this server's holds were carried (R1, R15); `schedules`, the enabled report
+	 * schedules it paused, kept as it is, beyond those card 3009 paused (R4); `accountsAsHere`, the accounts that are the
+	 * same here given this server's email address and notification choices; `addressesGivenUp`, the other accounts that
+	 * held one of those addresses and were given one that receives no mail (R7); `notificationsOff`, the accounts not the
+	 * same here whose notification mail it switched off (R6); `notifyEmail`, 1 where it gave the backup failure mail this
+	 * server's address (R5). All 0 for a sealed backup.
+	 */
+	unsealedReach: UnsealedReach;
 };
 
 /** The settings of an unsealed backup held for review (card 3009, R4): see `RestoreResult.unsealedHeld`. */
 export type UnsealedHeld = { mail: number; destinations: number; appUrl: number };
+
+/** What a restore of a backup whose seal did not verify kept from reaching outside (card 3012), counted only. */
+export type UnsealedReach = {
+	/** Newly held and still held for the unsealed reason after `carryHolds` (R1, R15). */
+	webhooks: number;
+	/** Enabled schedules this restore paused, beyond card 3009's (R4); 0 on a working copy, which switches every one off. */
+	schedules: number;
+	/** Same-here accounts given this server's email and notification choices. */
+	accountsAsHere: number;
+	/** Other accounts given `email-given-up-<id>@restore.invalid` for holding a same-here account's address (R7, R15). */
+	addressesGivenUp: number;
+	/** Accounts not the same here whose `email_all` was not already false (R6). */
+	notificationsOff: number;
+	/** 1 where the backup failure mail's address was replaced with this server's (R5). */
+	notifyEmail: number;
+};
+
+/** A restore's `unsealedReach` before anything is counted. */
+export const NO_UNSEALED_REACH: UnsealedReach = { webhooks: 0, schedules: 0, accountsAsHere: 0, addressesGivenUp: 0, notificationsOff: 0, notifyEmail: 0 };
 
 /** The restored passwords a restore kept out of use (cards 2997 and 3009): see `RestoreResult.passwordsKept`. */
 export type PasswordsKept = {
@@ -392,6 +426,7 @@ export type CommittedRestore = Pick<
 	| 'accountRecordLeftOut'
 	| 'passwordsKept'
 	| 'unsealedHeld'
+	| 'unsealedReach'
 >;
 
 /**
@@ -540,21 +575,232 @@ function webhookHoldsHere(live: Database.Database): HoldHere[] {
  * two envelopes. Where either side's address is '' or does not open, the hold
  * is carried on the id, board and setter alone (R17): failing closed, a hold
  * is never lost because an address could not be read.
+ *
+ * Card 3012 (R3): a restored row `holdUnsealedWebhooks` held, for a backup whose seal did not verify, takes this server's
+ * reason only where both addresses open and are equal; otherwise it keeps the unsealed reason, which is then the true
+ * one. Held either way: R3 decides only the words. Only where `sealVerified` is false (its code review, FP9): a sealed
+ * backup's row held for that reason by an earlier restore takes this server's hold as any other does.
  */
-function carryHolds(live: Database.Database, holds: readonly HoldHere[]): number {
+function carryHolds(live: Database.Database, holds: readonly HoldHere[], sealVerified: boolean): number {
 	if (holds.length === 0) return 0;
-	const find = live.prepare(`SELECT id, board_id AS boardId, url, ${receiverColumn(live)} AS receiver FROM webhooks WHERE id = ? AND board_id = ? AND set_by IS ?`);
+	const find = live.prepare(
+		`SELECT id, board_id AS boardId, url, ${receiverColumn(live)} AS receiver, held_because AS heldBecause FROM webhooks WHERE id = ? AND board_id = ? AND set_by IS ?`
+	);
 	const carry = live.prepare('UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE id = ?');
 	let carried = 0;
 	for (const hold of holds) {
-		const row = find.get(hold.id, hold.boardId, hold.setBy) as { id: number; boardId: number; url: string; receiver: string } | undefined;
+		const row = find.get(hold.id, hold.boardId, hold.setBy) as { id: number; boardId: number; url: string; receiver: string; heldBecause: string | null } | undefined;
 		if (row === undefined) continue;
 		const here = addressToBind(hold);
 		const restored = addressToBind(row);
 		if (here !== null && restored !== null && here !== restored) continue;
+		if (!sealVerified && row.heldBecause === HELD_FROM_UNSEALED_BACKUP && (here === null || restored === null)) continue;
 		carried += carry.run(hold.heldBecause, hold.heldAt, row.id).changes;
 	}
 	return carried;
+}
+
+/**
+ * Card 3012 (R1, R2): on a restore of a backup whose seal did not verify, as it is or as a working copy, hold every
+ * restored webhook with an address, whatever the file says of it: switched off, `held_because`
+ * `HELD_FROM_UNSEALED_BACKUP` over any reason the file gave, `held_at` the restore's moment, its secret discarded and
+ * its `webhook_reveals` rows deleted, so that switching it on gives it a new secret (`NEW_SECRET_REASONS`). Every one
+ * with no address the file has on is switched off, not held, and stays listed to enter. After the address fill (which
+ * fills nothing here) and before `carryHolds`. Returns the ids it newly held, those on or not held just before it,
+ * which are counted (R15), and every id it held, the file's own holds among them, which are listed (its code review,
+ * FP19). Nothing where the live table lacks the columns. Not caught.
+ */
+function holdUnsealedWebhooks(live: Database.Database, at: string): { newly: number[]; held: number[] } {
+	const present = live
+		.prepare("SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name IN ('url', 'active', 'secret', 'held_because', 'held_at')")
+		.pluck()
+		.get() as number;
+	if (present < 5) return { newly: [], held: [] };
+	const newly = live.prepare("SELECT id FROM webhooks WHERE url <> '' AND (active = 1 OR held_because IS NULL) ORDER BY id").pluck().all() as number[];
+	const held = live.prepare("SELECT id FROM webhooks WHERE url <> '' ORDER BY id").pluck().all() as number[];
+	if (tableIn(live, 'webhook_reveals')) live.prepare("DELETE FROM webhook_reveals WHERE webhook_id IN (SELECT id FROM webhooks WHERE url <> '')").run();
+	live.prepare("UPDATE webhooks SET active = 0, secret = '', held_because = ?, held_at = ? WHERE url <> ''").run(HELD_FROM_UNSEALED_BACKUP, at);
+	live.prepare("UPDATE webhooks SET active = 0 WHERE url = '' AND active <> 0").run();
+	return { newly, held };
+}
+
+/**
+ * `toEnter` with every webhook `holdUnsealedWebhooks` held and still holds (card 3012, R15; its code review, FP19) among
+ * `heldWebhooks`, by id and board name, never by host, deduplicated and sorted: the panel lists them as switched off for
+ * good.
+ */
+function withUnsealedHeld(live: Database.Database, toEnter: SecretsToEnter, ids: readonly number[]): SecretsToEnter {
+	const already = new Set((toEnter.heldWebhooks ?? []).map((hook) => hook.id));
+	const boardOf = live.prepare('SELECT board_id FROM webhooks WHERE id = ?').pluck();
+	const added = ids
+		.filter((id) => !already.has(id))
+		.map((id) => {
+			const boardId = boardOf.get(id) as number;
+			return { id, boardId, board: boardName(live, boardId) };
+		});
+	if (added.length === 0) return toEnter;
+	return { ...toEnter, heldWebhooks: [...(toEnter.heldWebhooks ?? []), ...added].sort((a, b) => a.id - b.id) };
+}
+
+/** The placeholder addresses a restore writes end in this (RFC 2606: receives no mail), compared ignoring case. */
+const NO_MAIL_DOMAIN = '@restore.invalid';
+
+/**
+ * The address an account gives its own up for, one that receives no mail (card 3009, R2; card 3012, R7): the one both
+ * cards' give-ups write (card 3012's code review, FP14). With `nonce`, the restore's own, where no value this server
+ * already holds may be met (FP6).
+ */
+function givenUpAddress(id: number, nonce?: string): string {
+	return `email-given-up-${id}${nonce === undefined ? '' : `-${nonce}`}${NO_MAIL_DOMAIN}`;
+}
+
+/**
+ * Notification choices with `email_all` false, read as `getUserNotifPrefs` reads them, with `JSON.parse` (card 3012,
+ * R6; its code review, FP1): a JSON object keeps its other choices, and of a key written twice the last is the one that
+ * counts, as it is for the reader; anything else becomes `{"email_all":false}`. `off` where they were an object whose
+ * `email_all` was already false, which is not counted.
+ */
+function mailSwitchedOff(prefs: unknown): { value: string; off: boolean } {
+	let parsed: unknown = null;
+	try {
+		parsed = typeof prefs === 'string' ? (JSON.parse(prefs) as unknown) : null;
+	} catch {
+		parsed = null;
+	}
+	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return { value: '{"email_all":false}', off: false };
+	const choices = parsed as Record<string, unknown>;
+	return { value: JSON.stringify({ ...choices, email_all: false }), off: choices.email_all === false };
+}
+
+/**
+ * Card 3012 (R6, R7): on a restore of a backup whose seal did not verify, as it is or as a working copy, every restored
+ * account that is the same here (`sameAccountHere` under `trust`) takes this server's email address and notification
+ * choices, and every other has its notification mail switched off (`email_all` false, its other choices kept), the
+ * file's address left as it is: so that no mail goes to an address only the file vouches for. Any other account holding
+ * one of the same-here accounts' addresses, compared ignoring case, gives it up for one that receives no mail, and so
+ * does every other account but the lowest-numbered of those sharing one apart from case (its code review, FP5).
+ * Placeholder addresses (`@restore.invalid`) are rewritten first, with a nonce, so that none the file planted, and none
+ * this server holds, can break the unique index (FP6). After `applyAccountEndings` (FP7) and before card 3009's carry,
+ * whose email write then sees the addresses settled. Counts what it changed, naming nobody; an account the record of
+ * endings deleted (`ended`) is not counted as switched off. Where this server held no account to compare, every account
+ * is another. Not caught.
+ */
+function keepAccountsHere(
+	live: Database.Database,
+	here: AccountsHere,
+	trust: GrantTrust,
+	ended: ReadonlyMap<number, 'deleted' | 'before record' | 'disabled'>
+): Pick<UnsealedReach, 'accountsAsHere' | 'addressesGivenUp' | 'notificationsOff'> {
+	const counted = { accountsAsHere: 0, addressesGivenUp: 0, notificationsOff: 0 };
+	const columns = columnNamesOf(live, 'users');
+	if (!columns.includes('email')) return counted;
+	const prefs = columns.includes('notification_prefs');
+	// Each address read as text (the code review's FP11): one the file stored as a BLOB is compared, never thrown on.
+	const restored = live
+		.prepare(`SELECT id, coalesce(CAST(email AS TEXT), '') AS email, ${prefs ? 'notification_prefs' : 'NULL'} AS prefs FROM users ORDER BY id`)
+		.all() as { id: number; email: string; prefs: unknown }[];
+	if (restored.length === 0) return counted;
+	const sameHere = restoredSameHere(live, here, trust);
+	const same = restored.filter((account) => sameHere(account.id));
+	const sameIds = new Set(same.map((account) => account.id));
+	const others = restored.filter((account) => !sameIds.has(account.id));
+	const nonce = randomBytes(16).toString('hex');
+	const setEmail = live.prepare('UPDATE users SET email = ? WHERE id = ?');
+	const pending = (id: number) => setEmail.run(`email-pending-${id}-${nonce}${NO_MAIL_DOMAIN}`, id);
+	const givenUp = new Set<number>();
+	const giveUp = (id: number, withNonce = false) => {
+		givenUp.add(id);
+		return setEmail.run(givenUpAddress(id, withNonce ? nonce : undefined), id).changes;
+	};
+	const placeholder = (email: string) => email.toLowerCase().endsWith(NO_MAIL_DOMAIN);
+
+	// Step 0 (R7): every placeholder made one that nothing planted, and nothing this server holds, can be (the code
+	// review's FP6): a same-here account's set apart, each other account's its own given-up address, both with the
+	// nonce. Not counted: such an address receives no mail anyway.
+	for (const account of restored) {
+		if (!placeholder(account.email)) continue;
+		if (sameIds.has(account.id)) pending(account.id);
+		else giveUp(account.id, true);
+	}
+	// Step 1: every same-here account whose address differs from this server's set apart, so that two swapped in the file
+	// break no unique index.
+	const rowHere = (id: number) => here.hashes.get(id)!;
+	for (const account of same) if (account.email !== rowHere(account.id).email && !placeholder(account.email)) pending(account.id);
+	// Step 2 (R7): every other account holding a same-here account's final address, this server's, ignoring case.
+	const finals = new Set(same.map((account) => rowHere(account.id).email.toLowerCase()));
+	for (const account of others) {
+		if (placeholder(account.email) || !finals.has(account.email.toLowerCase())) continue;
+		counted.addressesGivenUp += giveUp(account.id);
+	}
+	// Step 2b (the code review's FP5): no two other accounts left sharing an address apart from case; the lowest id keeps
+	// it, and each higher one gives it up, counted. Two same-here accounts sharing one are this server's own state.
+	const keptBy = new Set<string>();
+	for (const account of others) {
+		if (givenUp.has(account.id)) continue;
+		const folded = account.email.toLowerCase();
+		if (keptBy.has(folded)) counted.addressesGivenUp += giveUp(account.id);
+		else keptBy.add(folded);
+	}
+	// Step 3: every same-here account given this server's address and choices, counted where either differed in the file.
+	const setPrefs = prefs ? live.prepare('UPDATE users SET notification_prefs = ? WHERE id = ?') : null;
+	for (const account of same) {
+		const ours = rowHere(account.id);
+		if (account.email !== ours.email || placeholder(account.email)) setEmail.run(ours.email, account.id);
+		const prefsDiffer = setPrefs !== null && account.prefs !== ours.notificationPrefs;
+		if (prefsDiffer) setPrefs!.run(ours.notificationPrefs, account.id);
+		if (account.email !== ours.email || prefsDiffer) counted.accountsAsHere++;
+	}
+	// Step 4 (R6): every other account's notification mail switched off, its other choices kept where they are a JSON
+	// object, read with the reader's own parser (the code review's FP1: SQLite's JSON functions take the first of a key
+	// written twice, `JSON.parse` the last); counted unless `email_all` was already false, or the record of account
+	// endings deleted the account (FP7, N1: inert, it is mailed nothing anyway). The carried superadmin among them.
+	if (setPrefs !== null) {
+		for (const account of others) {
+			const switched = mailSwitchedOff(account.prefs);
+			setPrefs.run(switched.value, account.id);
+			if (!switched.off && ended.get(account.id) !== 'deleted') counted.notificationsOff++;
+		}
+	}
+	return counted;
+}
+
+/**
+ * Card 3012 (R4): on a restore of a backup whose seal did not verify, kept as it is, every enabled report schedule
+ * paused, after card 3009's pause of the accounts not the same here, which it does not count again. A working copy
+ * switches every one off itself (`switchOffOutside`). Each owner turns one on again on the Reports page, with their
+ * password and a code. Counts those it paused. Not caught.
+ */
+function pauseUnsealedSchedules(live: Database.Database, at: string): number {
+	const columns = columnNamesOf(live, 'report_schedules');
+	if (!columns.includes('enabled') || !columns.includes('updated_at')) return 0;
+	return live.prepare('UPDATE report_schedules SET enabled = 0, updated_at = ? WHERE enabled = 1').run(at).changes;
+}
+
+/**
+ * This server's backup failure mail address (`backup_config.notifyEmail`), where it is a string, read before the clear
+ * (card 3012, R5) as the failure address is read (`failureConfigOf`, its code review's FP14).
+ */
+function notifyEmailHere(live: Database.Database): string | null {
+	const notifyEmail = failureConfigOf(settingOf(live, 'backup_config'))?.config.notifyEmail;
+	return typeof notifyEmail === 'string' ? notifyEmail : null;
+}
+
+/**
+ * Card 3012 (R5): on a restore of a backup whose seal did not verify, as it is or as a working copy, the backup failure
+ * mail's address is this server's (`before`, or '' where it had none) unless the restored one is exactly that string,
+ * whatever its type: written back into the restored configuration where that is a JSON object; one that is not is left,
+ * as nothing reads an address from it. The last of card 3012's steps (R14). Counts 1 only where the address the failure
+ * mail would go to changes (its code review, FP18): not where neither side had one, which is written and not counted.
+ */
+function keepNotifyEmailHere(live: Database.Database, before: string | null): number {
+	const read = failureConfigOf(settingOf(live, 'backup_config'));
+	if (read === null) return 0;
+	const was = read.config;
+	const addressHere = before ?? '';
+	if (was.notifyEmail === addressHere) return 0;
+	live.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(JSON.stringify({ ...was, notifyEmail: addressHere }));
+	// The failure mail goes only to a value that is set (`config.notifyEmail &&`, backup.ts): none for none is no change.
+	return was.notifyEmail || addressHere !== '' ? 1 : 0;
 }
 
 /** Where this server's settings that reach outside are (card 3009, R4), in the places `setting_holds` names them by. */
@@ -873,9 +1119,10 @@ type AccountsHere = {
 	 * Every account it holds, whatever its id, by id, with its `created_at` and its password hash (card 2997): the same
 	 * account restored is given back this server's password where the backup's is one replaced here (`applyPasswordRulings`).
 	 * With its username, which `sameAccountHere` asks of a backup that carries no installation id, and its email (card
-	 * 3009).
+	 * 3009). And its notification choices, which the same account restored from an unsealed backup is given back (card
+	 * 3012), null where the column is not there or holds none.
 	 */
-	hashes: Map<number, { createdAt: string; username: string; email: string; passwordHash: string; enrol: number }>;
+	hashes: Map<number, { createdAt: string; username: string; email: string; passwordHash: string; enrol: number; notificationPrefs: string | null }>;
 };
 
 /**
@@ -890,8 +1137,12 @@ function accountsHeldHere(live: Database.Database): AccountsHere {
 	// The leave to set up on a password alone (card 2769), which the carry gives the backup's superadmin from the importer
 	// (card 3009's code review, FP6); none before migration 0066.
 	const enrol = columnNamesOf(live, 'users').includes('mfa_password_enrol') ? 'mfa_password_enrol' : '0';
+	// Card 3012: the notification choices, which `keepAccountsHere` gives back to the same account here.
+	const prefs = columnNamesOf(live, 'users').includes('notification_prefs') ? 'notification_prefs' : 'NULL';
 	const rows = live
-		.prepare(`SELECT id, created_at AS createdAt, username, email, role, password_hash AS passwordHash, ${enrol} AS enrol FROM users ORDER BY id`)
+		.prepare(
+			`SELECT id, created_at AS createdAt, username, email, role, password_hash AS passwordHash, ${enrol} AS enrol, ${prefs} AS notificationPrefs FROM users ORDER BY id`
+		)
 		.all() as {
 		id: number;
 		createdAt: string;
@@ -900,12 +1151,13 @@ function accountsHeldHere(live: Database.Database): AccountsHere {
 		role: string;
 		passwordHash: string;
 		enrol: number;
+		notificationPrefs: string | null;
 	}[];
 	const supers = rows.filter((row) => row.role === 'superadmin');
 	return {
 		held: new Map(rows.filter((row) => watermark === null || row.id <= watermark).map((row) => [row.id, row.createdAt])),
 		superadmins: { ids: supers.map((row) => row.id), credentials: supers.map((row) => credentialOf(row.passwordHash)).filter((c) => c !== '') },
-		hashes: new Map(rows.map((row) => [row.id, { createdAt: row.createdAt, username: row.username, email: row.email, passwordHash: row.passwordHash, enrol: row.enrol === 1 ? 1 : 0 }]))
+		hashes: new Map(rows.map((row) => [row.id, { createdAt: row.createdAt, username: row.username, email: row.email, passwordHash: row.passwordHash, enrol: row.enrol === 1 ? 1 : 0, notificationPrefs: row.notificationPrefs }]))
 	};
 }
 
@@ -1382,9 +1634,17 @@ function applyPasswordRulings(
 	if (options.mfaKey !== null) factorsCarried = carryFactors(live, options.mfaHere, options.mfaKey, yours.id, chosen.id);
 	// R2, FP5: the importer's email, always: any other restored account holding that address (the column is unique) gives
 	// it up for one under `.invalid`, which receives no mail (RFC 2606), counted. So the answer can point at the account by it.
-	kept.emailGivenUp = live
-		.prepare("UPDATE users SET email = 'email-given-up-' || id || '@restore.invalid' WHERE lower(email) = lower(?) AND id <> ?")
-		.run(yours.email, chosen.id).changes;
+	// Card 3012's code review (FP15): never from an account that is the same here and holds this server's own address
+	// for it, one apart from the importer's only in case: that pair is this server's own state, not the file's.
+	const sameHereNow = restoredSameHere(live, here, options.trust);
+	const holders = live
+		.prepare('SELECT id, CAST(email AS TEXT) AS email FROM users WHERE lower(email) = lower(?) AND id <> ?')
+		.all(yours.email, chosen.id) as { id: number; email: string }[];
+	const giveUp = live.prepare('UPDATE users SET email = ? WHERE id = ?');
+	for (const holder of holders) {
+		if (sameHereNow(holder.id) && holder.email === here.hashes.get(holder.id)?.email) continue;
+		kept.emailGivenUp += giveUp.run(givenUpAddress(holder.id), holder.id).changes;
+	}
 	live.prepare('UPDATE users SET email = ? WHERE id = ?').run(yours.email, chosen.id);
 	kept.superadminGivenYours = 1;
 	// No authenticator carried (no key loaded, or none of the importer's opened with it): the password alone does not
@@ -2605,6 +2865,12 @@ function restoreInOneSnapshot(
 	let settingHoldsCarried = 0;
 	// What an unsealed backup brought in that reaches outside, held for review (card 3009, R4), counted only.
 	let unsealedHeld: UnsealedHeld = { mail: 0, destinations: 0, appUrl: 0 };
+	// What an unsealed backup would have sent outside as the file has it, kept from it (card 3012), counted only.
+	let unsealedReach: UnsealedReach = { ...NO_UNSEALED_REACH };
+	// The webhooks held for that reason, by id, listed among those held for good (R15; its code review, FP19).
+	let unsealedWebhooks: number[] = [];
+	// Those of them counted in it, which a working copy does not count again among those it switched off (FP8).
+	let unsealedCounted = new Set<number>();
 	let apiKeyDeadlines = 0;
 	// The backup's keys left out: those the record of keys ended here names, those of accounts disabled here, and a
 	// working copy's every other key (card 2995).
@@ -2746,6 +3012,8 @@ function restoreInOneSnapshot(
 			const settingHoldsNow = settingHoldsHere(live);
 			// And where its mail, App URL and destinations are (card 3009, R4): see `holdUnsealedSettings`.
 			const placesNow = settingPlacesIn(live);
+			// And its backup failure mail's address (card 3012, R5): see `keepNotifyEmailHere`.
+			const notifyEmailNow = notifyEmailHere(live);
 			const mailEverHere = mailEverConfiguredHere(live);
 			// And its disabled accounts (card 2671, S6): see `carryDisabled`.
 			const disabledAccountsHere = disabledHere(live);
@@ -3032,6 +3300,13 @@ function restoreInOneSnapshot(
 			// readable pass, the fill and card 2995's carry, so that each sees the accounts as they will be. Not caught.
 			const applied = applyAccountEndings(live, rulings, restoredAt, disabledReveals, disabledKeyIds);
 			accountsKept = applied.kept;
+			// Card 3012 (R6, R7): then, where the seal did not verify, as it is or as a working copy, the same accounts here
+			// given this server's email address and notification choices, and every other's notification mail switched off:
+			// after the record's endings, whose deleted accounts it does not count (its code review, FP7, N1), and before
+			// card 3009's carry writes the importer's address. Not caught.
+			if (!sealVerified && tables.includes('users') && hasAccountRecord(live)) {
+				unsealedReach = { ...unsealedReach, ...keepAccountsHere(live, accountsNow, trust, endedByRecord) };
+			}
 
 			// Every restored password this server replaced kept out of use (card 2997, section 13.1): after the record's
 			// rulings, whose roles it asks (R10), and before card 2995's carry and the superadmin is asked about. Its keys are
@@ -3061,6 +3336,9 @@ function restoreInOneSnapshot(
 					mfa = { ...mfa, ...accountsWithoutFactor(live, mfaHere, { trust, ended: endedByRecord }), firstFactorsCarried: factorsBefore === 0 };
 				}
 			}
+			// Card 3012 (R4): where the seal did not verify, kept as it is, every enabled report schedule paused, after card
+			// 3009's pause of the accounts not the same here, which it does not count again. Not caught.
+			if (!sealVerified && !working) unsealedReach = { ...unsealedReach, schedules: pauseUnsealedSchedules(live, restoredAt) };
 
 			// The backup's record of ended API keys added to this server's, which the clear never touched, each row
 			// within the backup's own bounds; and the key counter raised over every seed row (card 2995, R6). Not
@@ -3105,7 +3383,18 @@ function restoreInOneSnapshot(
 			// 2752's code review, CS5): see above. Before the secrets are filled,
 			// and before any webhook is switched on, so that no fill switches one
 			// on. Not caught.
-			carryHolds(live, holdsHere);
+			// Card 3012 (R1, R2): before that, where the seal did not verify, every restored webhook with an address held, its
+			// secret discarded, and every one without switched off, as it is or as a working copy. Not caught.
+			const unsealedHeldNow = sealVerified ? { newly: [], held: [] } : holdUnsealedWebhooks(live, restoredAt);
+			carryHolds(live, holdsHere, sealVerified);
+			// Only those still held for that reason once this server's holds are carried (R3): every one listed below (its
+			// code review, FP19), and those newly held counted (R15).
+			const stillUnsealed = new Set(
+				unsealedHeldNow.held.length === 0 ? [] : (live.prepare('SELECT id FROM webhooks WHERE held_because = ?').pluck().all(HELD_FROM_UNSEALED_BACKUP) as number[])
+			);
+			unsealedWebhooks = unsealedHeldNow.held.filter((id) => stillUnsealed.has(id));
+			unsealedCounted = new Set(unsealedHeldNow.newly.filter((id) => stillUnsealed.has(id)));
+			unsealedReach = { ...unsealedReach, webhooks: unsealedCounted.size };
 			// This server's settings held for review carried over the backup's, a union (card 2922, R10), before any
 			// secret is filled, so that a destination or mail at a held place comes back held. And mail set up here
 			// once stays so (R9). Not caught: a restore that could not carry them is rolled back.
@@ -3116,6 +3405,9 @@ function restoreInOneSnapshot(
 			if (!sealVerified && !working && tables.includes('settings') && tables.includes('setting_holds')) {
 				unsealedHeld = holdUnsealedSettings(live, placesNow, restoredAt);
 			}
+			// Card 3012 (R5): and, as it is or as a working copy, the backup failure mail's address this server's, called on its
+			// own: the last of card 3012's steps (R14). Not caught.
+			if (!sealVerified && tables.includes('settings')) unsealedReach = { ...unsealedReach, notifyEmail: keepNotifyEmailHere(live, notifyEmailNow) };
 			if (mailEverHere !== null && tables.includes('settings')) {
 				live.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run('mail_ever_configured_at', mailEverHere);
 			}
@@ -3200,7 +3492,8 @@ function restoreInOneSnapshot(
 				// What the backup had on, as before card 2169: a webhook that
 				// had a secret is off in a backup made since, and is counted
 				// from the list, where it was not switched on above (R3).
-				outside = { ...done, webhooks: done.webhooks + filled.listedOnLeftOff };
+				// Card 3012's code review (FP8): one held because the seal did not verify is counted there, not here too.
+				outside = { ...done, webhooks: done.webhooks + filled.listedOnLeftOff.filter((id) => !unsealedCounted.has(id)).length };
 			}
 			// A working copy has removed its mail settings and destinations, so
 			// it says nothing of their secrets, kept or to enter: only of its
@@ -3214,14 +3507,18 @@ function restoreInOneSnapshot(
 							webhooks: filled.kept.webhooks,
 							...(filled.kept.webhookAddresses ? { webhookAddresses: filled.kept.webhookAddresses } : {})
 						},
-						toEnter: withHeldApart(live, {
-							mailPassword: false,
-							destinations: [],
-							webhooks: filled.unfilled.webhooks,
-							...(filled.unfilled.webhookAddresses ? { webhookAddresses: filled.unfilled.webhookAddresses } : {})
-						})
+						toEnter: withUnsealedHeld(
+							live,
+							withHeldApart(live, {
+								mailPassword: false,
+								destinations: [],
+								webhooks: filled.unfilled.webhooks,
+								...(filled.unfilled.webhookAddresses ? { webhookAddresses: filled.unfilled.webhookAddresses } : {})
+							}),
+							unsealedWebhooks
+						)
 					}
-				: { kept: filled.kept, toEnter: withHeldApart(live, filled.unfilled) };
+				: { kept: filled.kept, toEnter: withUnsealedHeld(live, withHeldApart(live, filled.unfilled), unsealedWebhooks) };
 		})();
 	} catch (e) {
 		failure = e;
@@ -3243,7 +3540,7 @@ function restoreInOneSnapshot(
 			throw new RestoreError(
 				'The backup was restored and committed, but foreign keys could not be switched back on. Restart the ' +
 					'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it.',
-				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, installation, mfa, systemLogLeftOut, apiKeysLeftOut, accountsKept, accountRecordLeftOut, passwordsKept, unsealedHeld } }
+				{ errors, committed: true, cause, done: { requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, installation, mfa, systemLogLeftOut, apiKeysLeftOut, accountsKept, accountRecordLeftOut, passwordsKept, unsealedHeld, unsealedReach } }
 			);
 		}
 		throw new RestoreError(
@@ -3284,7 +3581,12 @@ function restoreInOneSnapshot(
 			tellSwitchedOff(
 				[...swept, ...readableTold.switchedOff, ...revealed.switchedOff, ...ruledTold.switchedOff],
 				sweptBecause,
-				setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` },
+				// Card 3012 (R9): mailed to nobody where the seal did not verify, since the owners' addresses are the file's word.
+				!sealVerified
+					? { mail: false, because: "the backup's seal did not verify" }
+					: setting.run
+						? { mail: true }
+						: { mail: false, because: `the schedulers are off (${setting.reason})` },
 				[...held, ...readableTold.held, ...revealed.held, ...ruledTold.held],
 				// The owners' mail names no account (card 2947's code review, FP5): who restored is in the log alone.
 				SWEPT_IN_MAIL
@@ -3352,5 +3654,5 @@ function restoreInOneSnapshot(
 		}
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, installation, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut, settingHoldsCarried, apiKeysLeftOut, accountsKept, accountRecordLeftOut, passwordsKept, unsealedHeld };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, apiKeyDeadlines, decisionLinksCleared, secrets, sealVerified, unsealed, sealKeyHere: sealKey !== null, installation, webhooksSwitchedOff: swept.length, mfa, systemLogLeftOut, settingHoldsCarried, apiKeysLeftOut, accountsKept, accountRecordLeftOut, passwordsKept, unsealedHeld, unsealedReach };
 }

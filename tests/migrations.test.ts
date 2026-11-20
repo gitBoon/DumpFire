@@ -64,6 +64,13 @@ const GIVEN_YOURS_NO_FACTOR =
 	'not taken: it was given the password you confirmed this import with, but none of your authenticators, as no MFA key is loaded or none ' +
 	"of yours could be moved: it cannot sign in until the server's host resets its two-step sign-in with scripts/mfa-reset.mjs. Then sign " +
 	'in as it, the superadmin that now holds your email address, with that password.';
+/**
+ * What the answer says an unsealed backup's accounts not the same here were kept from (card 3012, R6): their notification
+ * mail switched off, `count` of them, the carried superadmin among them.
+ */
+const NOTIFICATIONS_OFF = (count: number) =>
+	"The backup's seal did not verify, so what it would send outside was not taken as the file has it: " +
+	`${count} account(s) not the same here have their notification mail switched off until each signs in and switches it on.`;
 /** Card 3009: and of one account in it not the same here, its password not taken. */
 const ONE_PASSWORD_NOT_TAKEN =
 	"1 account(s) in the backup are not on this server as the same account, and the backup's seal did not verify, so the password each " +
@@ -5205,7 +5212,7 @@ describe('restoring a backup taken before the latest migrations', () => {
 						'a new one sent from the page it opens\\. ' +
 						// Card 3009: one account's password not taken, its superadmin given the importer's, and (R4) its mail
 						// settings, from a file with no seal, at a place this server did not hold, held.
-						`${literally(`${ONE_PASSWORD_NOT_TAKEN} ${GIVEN_YOURS_NO_FACTOR} ${HELD_MAIL_UNSEALED}`)}$`
+						`${literally(`${ONE_PASSWORD_NOT_TAKEN} ${GIVEN_YOURS_NO_FACTOR} ${HELD_MAIL_UNSEALED} ${NOTIFICATIONS_OFF(2)}`)}$`
 				)
 			);
 			expect(logged[1]).toBe(`[ERROR] [IMPORT] Restore committed, with 1 problem(s): ${problem}`);
@@ -5253,7 +5260,7 @@ describe('restoring a backup taken before the latest migrations', () => {
 						'a new one sent from the page it opens\\. ' +
 						// Card 3009: one account's password not taken, its superadmin given the importer's, and (R4) its mail
 						// settings, from a file with no seal, at a place this server did not hold, held.
-						`${literally(`${ONE_PASSWORD_NOT_TAKEN} ${GIVEN_YOURS_NO_FACTOR} ${HELD_MAIL_UNSEALED}`)}$`
+						`${literally(`${ONE_PASSWORD_NOT_TAKEN} ${GIVEN_YOURS_NO_FACTOR} ${HELD_MAIL_UNSEALED} ${NOTIFICATIONS_OFF(2)}`)}$`
 				)
 			);
 			expect(sqlite.prepare('SELECT id, wip_limit FROM columns ORDER BY id').all()).toEqual([
@@ -5334,7 +5341,7 @@ describe('restoring a backup taken before the latest migrations', () => {
 				// Card 3009: then the backup's superadmin given the importer's password.
 				new RegExp(
 					'Filled in: first_completed_at on 0 card\\(s\\), committed_at and committed_by on 1 card\\(s\\) not upstream\\. Cleared: the commitment of 1 upstream ' +
-						`card\\(s\\), the discard mark of 1 card\\(s\\) that are not archived\\. ${literally(GIVEN_YOURS_NO_FACTOR)}$`
+						`card\\(s\\), the discard mark of 1 card\\(s\\) that are not archived\\. ${literally(`${GIVEN_YOURS_NO_FACTOR} ${NOTIFICATIONS_OFF(1)}`)}$`
 				)
 			);
 			// A restore that clears nothing says nothing of clearing: the pre-0060 ones above end at their Filled in.
@@ -5369,7 +5376,7 @@ describe('restoring a backup taken before the latest migrations', () => {
 				// Card 3009: then the backup's superadmin given the importer's password.
 				new RegExp(
 					'Filled in: first_completed_at on 0 card\\(s\\), an Options column at the far left of 1 delivery board\\(s\\), the title Options on 1 Options ' +
-						`column\\(s\\)\\. Cleared: the Options role of 1 second Options column\\(s\\), each board keeping its leftmost\\. ${literally(GIVEN_YOURS_NO_FACTOR)}$`
+						`column\\(s\\)\\. Cleared: the Options role of 1 second Options column\\(s\\), each board keeping its leftmost\\. ${literally(`${GIVEN_YOURS_NO_FACTOR} ${NOTIFICATIONS_OFF(1)}`)}$`
 				)
 			);
 			expect(sqlite.prepare("SELECT board_id AS boardId, title FROM columns WHERE role IS 'options' ORDER BY board_id").all()).toEqual([
@@ -5425,7 +5432,7 @@ describe('restoring a backup taken before the latest migrations', () => {
 				// It replaced every request's link, and listed the secrets, as a restore that succeeded does, and says so (O8).
 				'2 request link(s) replaced: a link mailed before this restore no longer works, and its requester can have ' +
 				// Card 3009 (R4): its mail settings, from a backup with no seal, held for review.
-				`a new one sent from the page it opens. ${ONE_PASSWORD_NOT_TAKEN} ${GIVEN_YOURS_NO_FACTOR} ${toEnter} ${HELD_MAIL_UNSEALED} ${kept}`;
+				`a new one sent from the page it opens. ${ONE_PASSWORD_NOT_TAKEN} ${GIVEN_YOURS_NO_FACTOR} ${toEnter} ${HELD_MAIL_UNSEALED} ${NOTIFICATIONS_OFF(2)} ${kept}`;
 			expect(response.status).toBe(500);
 			// The page reloads its data on this, and not on any other failure.
 			expect(response.body.committed).toBe(true);
@@ -5447,7 +5454,9 @@ describe('restoring a backup taken before the latest migrations', () => {
 						'a backup this server could not check, as it has no key to check a seal with, ' +
 						// Card 3009 (R4): its mail settings held for review, counted.
 						"restored as it is, keeping 1 of the backup's password\\(s\\) out of use, giving the backup's superadmin the importing account's password but no authenticator, " +
-							"holding 1 setting\\(s\\) of a backup whose seal did not verify for the superadmin's review\\. The system log was kept as it was; "
+							"holding 1 setting\\(s\\) of a backup whose seal did not verify for the superadmin's review, " +
+							// Card 3012: and what it would send outside, kept from it, counted.
+							"keeping what a backup whose seal did not verify would send outside: 2 account\\(s\\)' notification mail switched off\\. The system log was kept as it was; "
 				)
 			);
 			expect(logged[0]).toContain('"seal":"not checked"');

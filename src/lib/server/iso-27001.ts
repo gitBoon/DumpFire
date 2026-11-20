@@ -667,11 +667,16 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Export is the superadmin\'s, behind a step-up. Report schedules and report mail ask for the password and a code before board data goes to an address, and owners were told of the schedules already running (card 2751). ' +
 			'Every password change and a reset of the two-step sign-in pause the account\'s report schedules, each turned on again only with the password and a code (card 2894). ' +
 			'There is a Content-Security-Policy and a Referrer-Policy. Backups hold no secret and no requester link. ' +
-			'Still open: a schedule covers boards added to its grouping later. ' +
+			'A restore of a backup whose seal did not verify sends nothing outside as the file has it: every webhook with an address is held with its secret discarded, every report schedule is paused, the accounts that are the same here keep this server\'s email address and notification choices, every other account has its notification mail switched off, and the backup failure mail keeps this server\'s address (card 3012). ' +
+			'Still open: a schedule covers boards added to its grouping later; requester, decision participant and people addresses from such a file are still mailed as it has them (card 3020). ' +
 			'Any administrator can still add a backup destination of their own and Run Now, which sends it a full copy of the database, and whoever sets the mail server reads every mail (card 2906, to be ruled).',
 		evidence: [
 			{ path: 'src/routes/api/admin/export/+server.ts', symbol: 'requireSuperadmin' },
 			{ path: 'src/routes/api/report-schedules/[id]/+server.ts', symbol: 'confirmStepUp' },
+			// Card 3012: what an unsealed backup would send outside, kept from it.
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'holdUnsealedWebhooks' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'pauseUnsealedSchedules' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'keepAccountsHere' },
 			{ path: 'src/routes/api/reports/email/+server.ts', symbol: 'confirmStepUp' },
 			{ path: 'svelte.config.js', symbol: 'csp' },
 			{ path: 'src/lib/server/gate-answers.ts', symbol: 'Referrer-Policy' },

@@ -1,10 +1,12 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.158
+version: 1.159
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3012
+  - unsealed-backup-outside-reach
   - api
   - card-3009
   - unsealed-backup-grants
@@ -66,7 +68,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "REST API reference for DumpFire's external v1 API: authentication, the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -433,6 +435,59 @@ and its access; and at the write). Not marked Breaking. The admin page's load
 `null` when unreadable, `freeInodes` `null` where the volume counts none. The 507 is given too when
 fewer than 1,000 inodes are free, when the free space is not read within 2 seconds, and for 5
 minutes after a write found the disk full unless the free space has grown since.
+
+### Changes on 2026-11-20: an unsealed backup's webhooks, schedules and addresses no longer reach outside (card 3012)
+
+**Within 1.15.0 (point 10).** A webhook that comes in with a backup whose seal did not verify and
+has an address is switched off for good, whatever the file says of it, and its secret is discarded.
+`pausedBecause` says so: "This was switched off because it came in with a backup whose seal did not
+verify, so its address, its secret and who set it up are only the file's word, and its secret was
+discarded. Delete it unless you recognise the address; to keep it, switch it on with your own key,
+which makes you its setter and gives it a new secret, given in that answer and readable by the
+board's owner or an administrator, and update the receiver." Switching it on (`PUT
+/api/v1/webhooks/{webhookId}` with `{"active": true}` alone, by the board's owner or an administrator)
+gives it a new secret in that answer, and a `secret` sent with it is `400`, as for every other hold.
+OpenAPI stays `1.15.0` (unreleased); its note gains point (10), and "nothing else changed" is now
+(11). No migration and no environment variable.
+
+Internal (`/api`):
+
+- `POST /api/admin/import` (additive) gains `unsealedReach`, `{ webhooks, schedules, accountsAsHere,
+  addressesGivenUp, notificationsOff, notifyEmail }`, counts only and absent where all are 0, also on
+  the answer of a restore that committed and then failed. `webhooks` counts those newly held and still
+  held for this reason after this server's own holds were carried; `schedules` the report schedules
+  paused (restored as it is only); `accountsAsHere` the accounts that are the same here given this
+  server's email address and notification choices; `addressesGivenUp` the other accounts that held
+  one of those addresses, or shared one apart from case with a lower-numbered account not the same
+  here, given `email-given-up-<id>@restore.invalid`; `notificationsOff` the accounts not the same here
+  whose notification mail was switched off (not one the record of account endings deleted);
+  `notifyEmail` 1 where the address the backup failure mail goes to changed to this server's. `settingsHeld` gains, after card 3009's sentence, each
+  clause only where its count is above 0: "The backup's seal did not verify, so what it would send
+  outside was not taken as the file has it: N webhook(s) with an address were held and their secrets
+  discarded: each sends nothing until an owner of its board or an administrator switches it on, which
+  gives it a new secret; N report schedule(s) were paused: each owner turns one on again on the
+  Reports page; N account(s) that are the same here keep the email address and notification choices
+  they have on this server; N other account(s) that held one of those addresses were given one that
+  receives no mail: set each one's address on the Users page before inviting it; N account(s) not the
+  same here have their notification mail switched off until each signs in and switches it on; and the
+  backup failure mail goes to this server's address, not the backup's."
+- Every webhook held for this reason, one the file already held included, is added to
+  `toEnter.heldWebhooks` (`{ id, boardId, board }`), so the "To enter again" sentence lists each by id
+  and board as switched off for good: at most ten, then "and N more", each board name quoted as JSON
+  and cut to 60 characters. The restore's notice of the
+  webhooks it switched off or held is a `WARN` line only: they "were not mailed, as the backup's seal
+  did not verify".
+- The `[CRITICAL] [IMPORT]` line gains ", keeping what a backup whose seal did not verify would send
+  outside: N webhook(s) held; N report schedule(s) paused; N account(s)' email address kept as on this
+  server; N other account(s)' address given up; N account(s)' notification mail switched off; the
+  backup failure mail's address kept as on this server" (the parts above 0 only), and its details
+  carry `unsealedReach` where any count is above 0. No username, email address, host or schedule name.
+- The Users page's 📧 confirm reads "Send {username} a new invite, to {address}? …", the username
+  through `printable` and each character of the address outside printable ASCII shown as its code
+  point (`\u{202E}`).
+- `PUT /api/v1/webhooks/{id}` switching on any held webhook gives it a new secret and refuses one
+  sent with it, whatever its reason, one this build does not name included (no change to the
+  OpenAPI document: a reason this build does not name is none it describes).
 
 ### Changes on 2026-11-20: an unsealed backup gives no account not here a password, key or factor (card 3009)
 
@@ -6060,7 +6115,12 @@ flowchart TD
   recorded as having set it up. Delete it unless you recognise the address; to keep it, switch
   it on with your own key, which makes you its setter and gives it a new secret, given in that
   answer and readable by the board's owner or an administrator, and update the receiver." (since
-  1.15.0; it said "and set a new secret" before). For one still on
+  1.15.0; it said "and set a new secret" before), or "This was switched off because it came in
+  with a backup whose seal did not verify, so its address, its secret and who set it up are only
+  the file's word, and its secret was discarded. Delete it unless you recognise the address; to
+  keep it, switch it on with your own key, which makes you its setter and gives it a new secret,
+  given in that answer and readable by the board's owner or an administrator, and update the
+  receiver." (since 1.15.0, card 3012). For one still on
   and held by a change made outside DumpFire's own writes it begins "Nothing is sent: " until its
   next event switches it off; it is `null` for one that is sent, and for one switched off by a
   `PUT` whose setter's access has not ended since, or ended keeping their keys. **Switching it on**: the board's owner or an administrator sends `{"active": true}`

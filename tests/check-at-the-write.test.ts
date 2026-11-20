@@ -4275,7 +4275,17 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 	'src/lib/server/db/restore.ts#carryHolds': {
 		does: 'switches off only',
 		writes: 1,
-		why: "A restore carries this server's hold onto the same webhook restored, so that no restore switches back on one held off here (card 2752's code review, CS5): active off, held_because and held_at."
+		why:
+			"A restore carries this server's hold onto the same webhook restored, so that no restore switches back on one held off here (card 2752's code review, CS5): active off, held_because and held_at. " +
+			"A row card 3012 held for a backup whose seal did not verify takes this server's reason only where both addresses open and are equal, and keeps its own otherwise (R3): held either way."
+	},
+	// Card 3012 (R1, R2): a restore of a backup whose seal did not verify.
+	'src/lib/server/db/restore.ts#holdUnsealedWebhooks': {
+		does: 'switches off only',
+		writes: 2,
+		why:
+			"A restore of a backup whose seal did not verify holds every restored webhook with an address, its secret blanked: active off, secret '', held_because and held_at (R1); " +
+			'and switches off every one with no address, not held, in a second statement (R2).'
 	},
 	// Card 2898 (E15): the start's sealing of the stored secrets, each the same secret as it was.
 	'src/lib/server/stored-secrets.ts#sealPlainSecrets': {

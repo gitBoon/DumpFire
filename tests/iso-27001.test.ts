@@ -174,6 +174,19 @@ describe('the checklist source', () => {
 		expect(item.how).toContain('(card 3009)');
 	});
 
+	it('(z) card 3012: A.8.12 names what an unsealed backup is kept from sending outside, cites the three steps as evidence, each exists, and names the open card for the addresses it still mails', () => {
+		const item = CHECKLIST.find((entry) => entry.ref === 'A.8.12')!;
+		for (const symbol of ['holdUnsealedWebhooks', 'pauseUnsealedSchedules', 'keepAccountsHere']) {
+			const evidence = item.evidence.find((e) => e.symbol === symbol);
+			expect(evidence, symbol).toBeDefined();
+			expect(evidenceFault(evidence!), symbol).toBeNull();
+		}
+		expect(item.how).toContain('A restore of a backup whose seal did not verify sends nothing outside as the file has it');
+		expect(item.how).toContain('every webhook with an address is held with its secret discarded, every report schedule is paused');
+		expect(item.how).toContain('(card 3012)');
+		expect(item.how).toContain('(card 3020)');
+	});
+
 	it('names every gap: a card or an accepted risk for each item short of met, and neither for a met one', () => {
 		const faults: string[] = [];
 		for (const item of APPLICATION_SIDE) {

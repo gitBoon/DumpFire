@@ -10,7 +10,6 @@ import {
 	forgetDelivery,
 	forgetReveals,
 	keyOfWrite,
-	NEW_SECRET_REASONS,
 	openedSecret,
 	receiverOf,
 	storedEvents,
@@ -116,6 +115,9 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
  * refused 400 before anything is written. Since card 2923's code review (S1)
  * one held because nobody was recorded as its setter is given a new secret
  * too: its secret may have been set since by an account whose access ended.
+ * Since card 3012's code review (FP2) every held one is, whatever the reason,
+ * one this build does not name included: a hold carried onto a row whose
+ * secret a restore discarded may name any reason this server held.
  *
  * Whoever becomes its setter has the API key they came in with recorded too
  * (`keyOfWrite`, card 2893), so that it is switched off when that key ends;
@@ -155,7 +157,8 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			throw error(403, "Only the board's owner or an administrator can switch a webhook on. Ask the board's owner.");
 		}
 		// Switched off for good, for any reason: a new secret, never one sent (card 2752, D3; card 2923's code review, S1).
-		const givenNewSecret = switchedOn && hook.heldBecause !== null && NEW_SECRET_REASONS.includes(hook.heldBecause);
+		// Failing closed for a reason not in `NEW_SECRET_REASONS` too (card 3012's code review, FP2).
+		const givenNewSecret = switchedOn && hook.heldBecause !== null;
 		if (givenNewSecret && Object.hasOwn(body, 'secret')) {
 			throw error(400, NEW_SECRET_ON_SWITCH_ON);
 		}

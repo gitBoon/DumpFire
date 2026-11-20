@@ -18,6 +18,7 @@ import { sqlite } from './db';
 // uploads.ts imports nothing that imports this module, and has to stay so.
 import { emptyTrash } from './uploads';
 import { stamp } from '$lib/timestamps';
+import { printable, UNPRINTABLE } from '$lib/printable';
 
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'CRITICAL';
 
@@ -274,41 +275,15 @@ function formatLine(entry: LogEntry, at: Date): string {
 }
 
 /**
- * Text as a log line holds it: each control character as one space (card
- * 2214). That is the C0 range with the tab and every line break, DEL, the C1
- * range (U+0085 is a line break to some viewers), U+2028 and U+2029; the
- * bidi controls (U+202A to U+202E, U+2066 to U+2069), which can make a line
- * read in an order other than its own; U+200B to U+200F and U+FEFF, which
- * show as nothing; and every other format character (`\p{Cf}`, below).
- *
- * Lines carry stored names and titles, and one holding a line break began a
- * second line on the console, which could read as anything (`[CRITICAL]
- * [AUTH] ...`), while an ESC reached the terminal of whoever tailed the log.
- * `emit` passes the message, the context, the serialised meta and the
- * address through this once, so the console, the row and the live feed hold
- * the same text. What is not text is made text first, so a caller that
- * passes `undefined` gets a line and not a throw. startup-checks.ts uses it
- * for what it prints itself (card 2142), and backup-secrets.ts for the names
- * its sentences quote.
+ * Text as a log line holds it: each control, direction and invisible character as one space (card 2214), as
+ * `$lib/printable` defines them (card 3012, R8: moved there, browser-safe, so a page can show a stored value the same
+ * way). Lines carry stored names and titles, and one holding a line break began a second line on the console, which
+ * could read as anything (`[CRITICAL] [AUTH] ...`), while an ESC reached the terminal of whoever tailed the log. `emit`
+ * passes the message, the context, the serialised meta and the address through this once, so the console, the row and
+ * the live feed hold the same text. startup-checks.ts uses it for what it prints itself (card 2142), and
+ * backup-secrets.ts for the names its sentences quote. Re-exported here with `UNPRINTABLE`, so that no importer changes.
  */
-export function printable(text: string): string {
-	return String(text).replace(UNPRINTABLE_EVERYWHERE, ' ');
-}
-
-/**
- * The characters `printable` replaces, as one class: the control, direction
- * and invisible characters above, and every other format character Unicode
- * names (`\p{Cf}`, card 2675's code review, S6): U+00AD, U+061C, U+180E,
- * U+2060 to U+2064, U+206A to U+206F, U+FFF9 to U+FFFB and the tag
- * characters among them, each of which shows as nothing or turns the text
- * round. A decision's title may hold none of them (card 2675, decision 30),
- * so that a mail's subject and heading read as written; the class has its
- * home here, so the two cannot drift. No `g` flag: `.test` keeps no state.
- */
-export const UNPRINTABLE = /[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff\p{Cf}]/u;
-
-/** `UNPRINTABLE`, for every match in a text. */
-const UNPRINTABLE_EVERYWHERE = new RegExp(UNPRINTABLE.source, 'gu');
+export { printable, UNPRINTABLE };
 
 function emit(level: LogLevel, context: string, message: string, meta?: unknown, fields?: LogFields): void {
 	if (LEVEL_RANK[level] < currentThreshold()) return;

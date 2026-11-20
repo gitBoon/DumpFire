@@ -246,7 +246,7 @@ const folded = (address: string) => address.replace(/[A-Z]/g, (c) => c.toLowerCa
  * the addresses of its `notifyEmail`, or null for a value that is missing or
  * not a JSON object, which is left alone.
  */
-function failureConfigOf(stored: unknown): { config: Record<string, unknown>; addresses: string[] } | null {
+export function failureConfigOf(stored: unknown): { config: Record<string, unknown>; addresses: string[] } | null {
 	if (typeof stored !== 'string') return null;
 	let config: unknown;
 	try {

@@ -166,6 +166,7 @@ import {
 } from '$lib/server/request-tokens';
 import { maskLiveLog, reportInstallation, reportNoSuperadmin, sealStoredSecretsAtStart } from '$lib/server/startup-checks';
 import { NEW_SECRET_REASONS, dispatchWebhook } from '$lib/server/webhooks';
+import { HELD_FROM_UNSEALED_BACKUP } from '$lib/settings-held';
 import { api, routeMethods } from './helpers/api';
 import { effects } from './helpers/effects';
 import {
@@ -1220,6 +1221,95 @@ describe('a restore', () => {
 			}
 		});
 
+		// Card 3012 (x): what an unsealed backup would have sent outside, kept from it, said through the route in counts only.
+		/** This server's own backup, edited since, planting a webhook, a changed address, an account not here and a failure address. */
+		const reachingOutside = () => {
+			const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+			sqlite.prepare("INSERT INTO report_schedules (user_id, name, scope, enabled) VALUES (?, 'Weekly to the board', 'all', 1)").run(member.id);
+			const backup = ownBackup({ edited: true });
+			backup
+				.prepare("INSERT INTO webhooks (id, board_id, url, secret, events, active, set_by, set_with_key) VALUES (950, ?, 'https://hooks.example.test/x-3012', 'the-files-secret', '[]', 1, ?, 0)")
+				.run(board.id, admin.id);
+			backup.prepare('UPDATE users SET email = ? WHERE id = ?').run('member@file.test', member.id);
+			backup.prepare("INSERT INTO users (id, username, email, password_hash, role) VALUES (960, 'planted-960', 'other@file.test', 'x', 'user')").run();
+			backup
+				.prepare("INSERT INTO settings (key, value) VALUES ('backup_config', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+				.run(JSON.stringify({ schedule: 'disabled', retention: 7, destinations: [], notifyOnFailure: true, notifyEmail: 'ops@file.test' }));
+			return backup;
+		};
+		const REACH_OPENING = "The backup's seal did not verify, so what it would send outside was not taken as the file has it: ";
+		const REACH_WEBHOOKS =
+			'1 webhook(s) with an address were held and their secrets discarded: each sends nothing until an owner of its board or an administrator ' +
+			'switches it on, which gives it a new secret; ';
+		const REACH_SCHEDULES = '1 report schedule(s) were paused: each owner turns one on again on the Reports page; ';
+		const REACH_ACCOUNTS =
+			'1 account(s) that are the same here keep the email address and notification choices they have on this server; ' +
+			'1 account(s) not the same here have their notification mail switched off until each signs in and switches it on; ' +
+			"and the backup failure mail goes to this server's address, not the backup's.";
+		const REACH_KEEP = REACH_OPENING + REACH_WEBHOOKS + REACH_SCHEDULES + REACH_ACCOUNTS;
+		const REACH_CRITICAL =
+			", keeping what a backup whose seal did not verify would send outside: 1 webhook(s) held; 1 report schedule(s) paused; 1 account(s)' " +
+			"email address kept as on this server; 1 account(s)' notification mail switched off; the backup failure mail's address kept as on this server";
+		/** What the file planted, none of which any word of the import names (card 2997's FP14). */
+		const expectNamesNone = (...said: string[]) => {
+			for (const text of said) {
+				for (const planted of ['member@file.test', 'other@file.test', 'planted-960', 'hooks.example.test', 'ops@file.test', 'Weekly to the board', 'the-files-secret']) {
+					expect(text, planted).not.toContain(planted);
+				}
+			}
+		};
+
+		it('(x) card 3012: kept as it is, the sentence in settingsHeld and the answer, the figures, and the CRITICAL words and details, counts only', async () => {
+			const backup = reachingOutside();
+			const from = newestLine();
+
+			const res = await importAnswer(backup);
+
+			expect(res.status, res.message).toBe(200);
+			const reach = { webhooks: 1, schedules: 1, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1 };
+			expect(res.body.unsealedReach).toEqual(reach);
+			expect(res.body.settingsHeld).toBe(REACH_KEEP);
+			expect(res.message).toContain(REACH_KEEP);
+			const line = criticalSince(from);
+			expect(line.message).toContain(REACH_CRITICAL);
+			expect(JSON.parse(line.meta).unsealedReach).toEqual(reach);
+			expectNamesNone(res.message, line.message, line.meta);
+		});
+
+		it('(x2) card 3012: a working copy says it with no schedules clause, its own sentence saying the schedules switched off', async () => {
+			const backup = reachingOutside();
+			const from = newestLine();
+
+			const res = await importing(async () => {
+				const sent = await api('POST', '/api/admin/import?outside=off', { user: chief, headers: confirmedImport(), body: backup.serialize() });
+				return { status: sent.status, message: sent.body.message as string, body: sent.body };
+			});
+
+			expect(res.status, res.message).toBe(200);
+			expect(res.body.unsealedReach).toEqual({ webhooks: 1, schedules: 0, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1 });
+			expect(res.body.settingsHeld).toBe(REACH_OPENING + REACH_WEBHOOKS + REACH_ACCOUNTS);
+			expect(res.body.settingsHeld).not.toContain('report schedule');
+			expect(criticalSince(from).message).toContain(REACH_CRITICAL.replace(' 1 report schedule(s) paused;', ''));
+			expectNamesNone(res.message, criticalSince(from).message);
+		});
+
+		it('(x3) card 3012: a restore that committed and then failed says it too', async () => {
+			const backup = reachingOutside();
+			const real = sqlite.pragma.bind(sqlite) as Database.Database['pragma'];
+			vi.spyOn(sqlite, 'pragma').mockImplementation(((source: string, options?: Database.PragmaOptions) =>
+				/^foreign_keys\s*=\s*ON$/i.test(source) ? [] : real(source, options)) as typeof sqlite.pragma);
+
+			const failed = await importAnswer(backup);
+			vi.mocked(sqlite.pragma).mockRestore();
+
+			expect(failed.status, failed.message).toBe(500);
+			expect(failed.body.committed).toBe(true);
+			expect(failed.body.unsealedReach).toEqual({ webhooks: 1, schedules: 1, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1 });
+			expect(failed.body.settingsHeld).toBe(REACH_KEEP);
+			expect(failed.message).toContain(REACH_KEEP);
+			expectNamesNone(failed.message);
+		});
+
 		// Card 3009 (x): the words of an unsealed import, counts only: no username, id or key prefix (card 2997's FP14).
 		const UNSEALED_PASSWORDS =
 			"1 account(s) in the backup are not on this server as the same account, and the backup's seal did not verify, so the password each " +
@@ -1231,7 +1321,9 @@ describe('a restore', () => {
 			"1 API key(s) in the backup were left out, because the backup's seal did not verify and this server did not hold them for the same " +
 			'account: none of them works, and their holders make new ones on the Account page.';
 		const UNSEALED_WORDS =
-			"restored as it is, keeping 1 of the backup's password(s) out of use, leaving out 1 API key(s) of a backup whose seal did not verify. The system log was kept as it was;";
+			"restored as it is, keeping 1 of the backup's password(s) out of use, keeping what a backup whose seal did not verify would send outside: " +
+			// Card 3012: the administrator not here, its notification mail switched off.
+			"1 account(s)' notification mail switched off, leaving out 1 API key(s) of a backup whose seal did not verify. The system log was kept as it was;";
 		/** This server's own backup with an administrator it never held, and a key planted on the member, which is here. */
 		const plantedBackup = () => {
 			const backup = opening(generateBackupData());
@@ -3797,7 +3889,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		});
 	});
 
-	it('restores a backup made before card 2169, which holds its secrets, as it has them, and says nothing of secrets', () => {
+	it("restores a backup made before card 2169, which holds its secrets and is never sealed as this server's: each webhook with an address held, its secret discarded, everything else as it has it", () => {
 		// As an older build made it: the running database, secrets and all.
 		const backup = opening(Buffer.from(sqlite.serialize()));
 		const live = sameButOwnSecrets();
@@ -3805,10 +3897,20 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		const result = restoreFromBackup(live, backup);
 
 		expect(result.errors).toEqual([]);
-		expect(secretsOf(live)).toEqual(secretsOf(backup));
-		expect(result.secrets).toEqual({ kept: NOTHING_KEPT, toEnter: NOTHING_TO_ENTER });
+		// Card 3012 (R1, R2): a backup from before card 2169 is never sealed as this server's, so each webhook with an
+		// address is held, its secret discarded, and listed as held for good; everything else is as the backup has it.
+		expect(secretsOf(live)).toEqual({
+			...secretsOf(backup),
+			hooks: secretsOf(backup).hooks.map((hook) => ({ ...hook, secret: '', active: 0 }))
+		});
+		expect(live.prepare('SELECT DISTINCT held_because FROM webhooks').pluck().all()).toEqual([HELD_FROM_UNSEALED_BACKUP]);
+		expect(result.unsealedReach.webhooks).toBe(3);
+		expect(result.secrets).toEqual({
+			kept: NOTHING_KEPT,
+			toEnter: { ...NOTHING_TO_ENTER, heldWebhooks: addressesToEnter() }
+		});
 		expect(secretsKeptSentence(result.secrets.kept)).toBeNull();
-		expect(secretsToEnterSentence(result.secrets.toEnter)).toBeNull();
+		expect(secretsToEnterSentence(result.secrets.toEnter)).toMatch(/^Nothing to enter for webhook\(s\) /);
 	});
 
 	it('leaves this server’s secrets and webhooks as they were when the restore rolls back', () => {
@@ -4227,8 +4329,8 @@ describe('a restore switches off a restored webhook whose setter cannot open its
 		const signed = makeWebhook(board, { url: 'https://hooks.example.test/signed', secret: 'kept-secret' });
 		const bare = makeWebhook(board, { url: 'https://hooks.example.test/bare' });
 		const moved = makeWebhook(board, { url: 'https://hooks.example.test/before' });
-		// The backup: all three on, their setter the board's owner.
-		const backup = opening(Buffer.from(sqlite.serialize()));
+		// The backup: all three on, their setter the board's owner. Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+		const backup = sealedFor(sqlite, opening(Buffer.from(sqlite.serialize())));
 		// Here, since: the three held off, the third re-pointed first.
 		const heldAt = '2026-11-18 09:00:00';
 		sqlite.prepare("UPDATE webhooks SET url = 'https://hooks.example.test/after' WHERE id = ?").run(moved.id);
@@ -4261,7 +4363,8 @@ describe('a restore switches off a restored webhook whose setter cannot open its
 		// The backup: the editor off the board, their webhook on, and no hold columns.
 		const backup = opening(Buffer.from(sqlite.serialize()));
 		backup.prepare('DELETE FROM board_members WHERE board_id = ? AND user_id = ?').run(board.id, editor.id);
-		before0071(backup);
+		// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+		sealedFor(sqlite, before0071(backup));
 		expect(backup.prepare('SELECT active FROM webhooks WHERE id = ?').pluck().get(theirs.id)).toBe(1);
 		const level = process.env.LOG_LEVEL;
 		process.env.LOG_LEVEL = 'WARN';
@@ -4311,7 +4414,8 @@ describe('a restore switches off a restored webhook whose setter cannot open its
 		// The backup: the editor off every board, their webhooks on, and no hold columns.
 		const backup = opening(Buffer.from(sqlite.serialize()));
 		backup.prepare('DELETE FROM board_members WHERE user_id = ?').run(editor.id);
-		before0071(backup);
+		// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+		sealedFor(sqlite, before0071(backup));
 		const level = process.env.LOG_LEVEL;
 		process.env.LOG_LEVEL = 'WARN';
 		const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -6476,7 +6580,8 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 		const failureAddressNow = () =>
 			JSON.parse((sqlite.prepare("SELECT value FROM settings WHERE key = 'backup_config'").get() as { value: string }).value).notifyEmail;
 		failureTo(`ops@example.test, ${bob.email}`);
-		const backup = backupNow();
+		// Sealed as this server's own (card 3012, R5): an unsealed one would keep this server's failure address itself.
+		const backup = sealedFor(sqlite, backupNow());
 		inTransaction(() => disableAccount(db.select().from(users).all().find((u) => u.id === bob.id)!, { id: admin.id, username: 'admin', role: 'admin' }));
 		expect(failureAddressNow()).toBe('ops@example.test');
 
@@ -6489,7 +6594,8 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 	});
 
 	it("case 41: the carried account's webhook is switched off by the same restore's sweep, which runs after the carry", () => {
-		const backup = backupNow();
+		// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+		const backup = sealedFor(sqlite, backupNow());
 		disableBob();
 
 		const result = restoreFromBackup(sqlite, backup);
@@ -6499,6 +6605,23 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 			active: 0,
 			heldBecause: 'setter cannot open'
 		});
+	});
+
+	it("case 41, unsealed (card 3012's code review, FP20): the same restore's sweep, run after an unsealed restore, finds the carried account's webhook already held because the seal did not verify, and leaves it so", () => {
+		const backup = backupNow();
+		disableBob();
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(result.webhooksSwitchedOff).toBe(0);
+		expect(sqlite.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(hook)).toEqual({
+			active: 0,
+			heldBecause: HELD_FROM_UNSEALED_BACKUP
+		});
+		expect(result.unsealedReach.webhooks).toBe(1);
+		expect(bobNow()).toEqual({ disabledAt: DISABLED_AT, disabledBy: admin.id });
 	});
 
 	// Card 2923 (case 17, S3), as its code review ruled (S2, S3, E2, S4): the restore holds already-off webhooks, after its
@@ -6535,7 +6658,8 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 		it("2923 case 17: from a backup made since the release, the server's restore holds the one of an account disabled here, not an enabled account's, and tells the owners with its sweep", async () => {
 			startedSinceAlreadyOffHeld();
 			makeSmtp();
-			const backup = backupNow();
+			// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+			const backup = sealedFor(sqlite, backupNow());
 			disableBob();
 			process.env.SCHEDULERS = 'on';
 			const sent = effects();
@@ -6567,7 +6691,8 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 		});
 
 		it('2923 R2: from a backup made before the release, the restore holds every webhook already off with no hold, whoever set it, and writes no flag', () => {
-			const backup = backupNow();
+			// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+			const backup = sealedFor(sqlite, backupNow());
 			expect(backup.prepare("SELECT 1 FROM settings WHERE key = 'webhooks_already_off_held'").get()).toBeUndefined();
 			process.env.SCHEDULERS = 'off';
 
@@ -6589,7 +6714,8 @@ describe('a restore and the accounts disabled here (card 2671, S6)', () => {
 		it("2923 R4, R8: a working copy, restored over the server's own database, holds the same way before it switches every webhook off, and tells nobody", async () => {
 			startedSinceAlreadyOffHeld();
 			makeSmtp();
-			const backup = backupNow();
+			// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+			const backup = sealedFor(sqlite, backupNow());
 			disableBob();
 			process.env.SCHEDULERS = 'on';
 			const sent = effects();
@@ -6863,6 +6989,8 @@ describe('the secrets the server keeps, sealed at rest (card 2898)', () => {
 		const live = new Database(path);
 		opened.push(live);
 		live.pragma('journal_mode = WAL');
+		// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+		sealedFor(live, backup);
 
 		const result = restoreFromBackup(live, backup);
 
@@ -7093,8 +7221,8 @@ describe("a webhook's address, sealed at rest (card 2928)", () => {
 	])("13: this server's hold is carried onto the restored webhook: $row", ({ change }) => {
 		const owner = makeUser();
 		const hook = makeWebhook(makeBoard({ owner }).board, { url: SLACK });
-		// The backup: on, its setter the board's owner.
-		const backup = opening(Buffer.from(sqlite.serialize()));
+		// The backup: on, its setter the board's owner. Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+		const backup = sealedFor(sqlite, opening(Buffer.from(sqlite.serialize())));
 		if (change === 'reseal') resealed(hook.id);
 		else {
 			const { url } = rowOf(hook.id);
@@ -7115,7 +7243,8 @@ describe("a webhook's address, sealed at rest (card 2928)", () => {
 		const owner = makeUser();
 		const hook = makeWebhook(makeBoard({ owner }).board, { url: SLACK, secret: 'whsec-2928-34' });
 		sqlite.prepare('UPDATE webhooks SET url = ?, receiver = ? WHERE id = ?').run(SLACK, receiver, hook.id);
-		const backup = opening(Buffer.from(sqlite.serialize()));
+		// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+		const backup = sealedFor(sqlite, opening(Buffer.from(sqlite.serialize())));
 
 		const result = restoreFromBackup(sqlite, backup);
 
@@ -7134,7 +7263,8 @@ describe("a webhook's address, sealed at rest (card 2928)", () => {
 		const owner = makeUser();
 		const hook = makeWebhook(makeBoard({ owner }).board, { url: SLACK, secret: 'whsec-2928-35' });
 		sqlite.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run(sealValue(SLACK, webhookUrlAad(hook.id, hook.boardId, hook.receiver), keyFromBytes(randomBytes(32))), hook.id);
-		const backup = opening(Buffer.from(sqlite.serialize()));
+		// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+		const backup = sealedFor(sqlite, opening(Buffer.from(sqlite.serialize())));
 
 		const result = restoreFromBackup(sqlite, backup);
 
@@ -7372,7 +7502,8 @@ describe("the restore's own run of the readable pass (card 2935, P12)", () => {
 	});
 
 	it('a backup with no moment: the webhook its disabled administrator could read is held, before any secret is filled, and the moment written', () => {
-		const backup = opening(Buffer.from(sqlite.serialize()));
+		// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+		const backup = sealedFor(sqlite, opening(Buffer.from(sqlite.serialize())));
 
 		const result = restoreFromBackup(sqlite, backup);
 
@@ -7388,7 +7519,8 @@ describe("the restore's own run of the readable pass (card 2935, P12)", () => {
 		{ row: 'a moment after its disable: nothing to hold', backupMoment: '2099-06-01 00:00:00', here: '2099-06-01 00:00:00', held: false }
 	])('a backup with $row', ({ backupMoment, here, held }) => {
 		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(FLAG, backupMoment);
-		const backup = opening(Buffer.from(sqlite.serialize()));
+		// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+		const backup = sealedFor(sqlite, opening(Buffer.from(sqlite.serialize())));
 		if (here === null) sqlite.prepare('DELETE FROM settings WHERE key = ?').run(FLAG);
 		else sqlite.prepare('UPDATE settings SET value = ? WHERE key = ?').run(here, FLAG);
 
@@ -7481,8 +7613,8 @@ describe('a restore never fails open on which key was given which secret (card 2
 
 	it('FP6: a backup that still carries its secrets (a whole database copy): a key it did not bring back holds the webhook; one it did is carried', () => {
 		const kept = makeApiKeyRow(owner);
-		// The backup holds the secret itself, as a serialized database does, and the kept key.
-		const backup = opening(Buffer.from(sqlite.serialize()));
+		// The backup holds the secret itself, as a serialized database does, and the kept key. Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+		const backup = sealedFor(sqlite, opening(Buffer.from(sqlite.serialize())));
 		const later = makeApiKeyRow(owner);
 		reveal(hook, later.id);
 		reveal(hook, kept.id);
@@ -8134,6 +8266,8 @@ describe('a restore never brings back an API key ended on this server (card 2995
 			sqlite.prepare("UPDATE api_keys SET last_used_at = '2026-11-01 09:00:00' WHERE id = ?").run(K.id);
 			const backup = opening(Buffer.from(sqlite.serialize()));
 			backup.exec("DROP TABLE webhook_reveals; DELETE FROM settings WHERE key = 'webhook_reveals_seeded'");
+			// Sealed with this server's key, as its own backup is: one whose seal did not verify holds every webhook (card 3012, R1).
+			sealedFor(sqlite, backup);
 			revokedHere(K.id);
 
 			const result = withWarnings(() => restoreFromBackup(sqlite, backup, { outside, by: 'chief' }));
@@ -9698,12 +9832,14 @@ describe('an unsealed backup gives no account a password this server did not hol
 
 	it.each([
 		{ row: 'free: the carried superadmin takes it', holder: null },
-		{ row: 'held by another restored account: the carried superadmin takes it all the same, and the holder gives it up (FP5)', holder: 'member' as const }
+		// Card 3012 (R7): a holder not the same here; the same account here keeps its own address before the carry runs.
+		{ row: 'held by another restored account: the carried superadmin takes it all the same, and the holder gives it up (FP5)', holder: 'planted' as const }
 	])('(m2) the importer’s email, $row (R2)', ({ holder }) => {
 		const backup = ownBackup();
 		// The file's user 1, made earlier, is not this server's chief, and has an address of its own.
 		backup.prepare("UPDATE users SET created_at = ?, email = 'file-boss@example.test' WHERE id = ?").run(EARLIER, chief.id);
-		if (holder !== null) backup.prepare('UPDATE users SET email = ? WHERE id = ?').run(chief.email.toUpperCase(), member.id);
+		const holderId = holder === null ? null : planted(backup, 91, 'user').id;
+		if (holderId !== null) backup.prepare('UPDATE users SET email = ? WHERE id = ?').run(chief.email.toUpperCase(), holderId);
 
 		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
 
@@ -9711,7 +9847,7 @@ describe('an unsealed backup gives no account a password this server did not hol
 		expect(result.passwordsKept).toMatchObject({ superadminGivenYours: 1, emailGivenUp: holder === null ? 0 : 1 });
 		// The code review's FP5: always the importer's, so the answer can point at it by that address.
 		expect(accountOf(chief.id).email).toBe(chief.email);
-		if (holder !== null) expect(accountOf(member.id).email).toBe(`email-given-up-${member.id}@restore.invalid`);
+		if (holderId !== null) expect(accountOf(holderId).email).toBe(`email-given-up-${holderId}@restore.invalid`);
 	});
 
 	it('(p2) the importer in the file as the same account, unable to sign in: nothing is carried, and a superadmin of the file not here gets one nothing matches (R2)', () => {
@@ -9737,7 +9873,7 @@ describe('an unsealed backup gives no account a password this server did not hol
 				"The backup's superadmin is not the account you imported with, and the backup's seal did not verify, so its password in the backup was " +
 				'not taken: it was given the password you confirmed this import with, and your authenticators. Sign in as it, the superadmin that now ' +
 				'holds your email address, with that password and a code from your authenticator, and change the password on the Account page if you wish.',
-			words: ", giving the backup's superadmin the importing account's password. The system log",
+			words: ", giving the backup's superadmin the importing account's password, keeping what a backup whose seal did not verify would send outside: 3 account(s)' notification mail switched off. The system log",
 			enrol: false
 		},
 		{
@@ -9748,7 +9884,7 @@ describe('an unsealed backup gives no account a password this server did not hol
 				'not taken: it was given the password you confirmed this import with, but none of your authenticators, as no MFA key is loaded or none ' +
 				"of yours could be moved: it cannot sign in until the server's host resets its two-step sign-in with scripts/mfa-reset.mjs. Then sign " +
 				'in as it, the superadmin that now holds your email address, with that password.',
-			words: ", giving the backup's superadmin the importing account's password but no authenticator. The system log",
+			words: ", giving the backup's superadmin the importing account's password but no authenticator, keeping what a backup whose seal did not verify would send outside: 3 account(s)' notification mail switched off. The system log",
 			enrol: false
 		},
 		{
@@ -9760,7 +9896,7 @@ describe('an unsealed backup gives no account a password this server did not hol
 				'of yours could be moved, and your leave to set up two-step sign-in on that password alone. Sign in as it, the superadmin that now holds ' +
 				"your email address, with that password and set up an authenticator when asked, while that leave's 14 days run; if it is asked for a " +
 				"link instead, the server's host resets its two-step sign-in with scripts/mfa-reset.mjs.",
-			words: ", giving the backup's superadmin the importing account's password but no authenticator. The system log",
+			words: ", giving the backup's superadmin the importing account's password but no authenticator, keeping what a backup whose seal did not verify would send outside: 3 account(s)' notification mail switched off. The system log",
 			enrol: true
 		}
 	])('(x) card 3009, through the route: the superadmin given your password, $row, is pointed at by your email address and named by no username', async ({ stubbed, said, words, enrol }) => {
@@ -10178,5 +10314,555 @@ describe('card 3009’s code review: the fix pass (FP1, FP2, FP5, FP6, FP9, FP12
 		expect(said).toContain("Your authenticators, given to the backup's superadmin, are the first second factors on this server, so two-step sign-in is in use from this restore");
 		expect(said).toContain('2 account(s) in the backup are not on this server as the same account and have no second factor');
 		for (const name of ['chief', 'administrator', 'member']) expect(said).not.toContain(name);
+	});
+});
+
+// ─── Card 3012: what an unsealed backup would send outside ─────────────────────
+
+describe('an unsealed backup sends nothing outside as the file has it (card 3012)', () => {
+	const STAMP = /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/;
+	const SLACK = 'https://hooks.slack.com/services/T000/B000/xyz-3012';
+	const hookRow = (id: number) =>
+		sqlite.prepare('SELECT active, secret, held_because AS heldBecause, held_at AS heldAt FROM webhooks WHERE id = ?').get(id) as {
+			active: number;
+			secret: string;
+			heldBecause: string | null;
+			heldAt: string | null;
+		};
+	const revealsOf = (id: number) => sqlite.prepare('SELECT COUNT(*) FROM webhook_reveals WHERE webhook_id = ?').pluck().get(id) as number;
+	/** A webhook planted in `backup` with a plain address and secret, as the file's word, set by `setBy` with no key. */
+	const plantHook = (
+		backup: Database.Database,
+		hook: { id: number; boardId: number; setBy: number | null; active?: number; heldBecause?: string | null; url?: string; secret?: string }
+	) =>
+		backup
+			.prepare("INSERT INTO webhooks (id, board_id, url, secret, events, active, set_by, set_with_key, held_because) VALUES (?, ?, ?, ?, '[]', ?, ?, 0, ?)")
+			.run(hook.id, hook.boardId, hook.url ?? `https://hooks.example.test/planted-${hook.id}`, hook.secret ?? 'the-files-secret', hook.active ?? 1, hook.setBy, hook.heldBecause ?? null);
+	/** An account the file adds, which no account here is: never the same here. */
+	const plantUser = (backup: Database.Database, id: number, email: string, prefs = '{}') =>
+		backup
+			.prepare("INSERT INTO users (id, username, email, password_hash, role, notification_prefs) VALUES (?, ?, ?, 'x', 'user', ?)")
+			.run(id, `planted-${id}`, email, prefs);
+	const accountRow = (id: number) => sqlite.prepare('SELECT email, notification_prefs AS prefs FROM users WHERE id = ?').get(id) as { email: string; prefs: string | null };
+	const prefsHere = (id: number, prefs: string) => sqlite.prepare('UPDATE users SET notification_prefs = ? WHERE id = ?').run(prefs, id);
+	const configWith = (notifyEmail: unknown) => JSON.stringify({ schedule: 'disabled', retention: 7, destinations: [], notifyOnFailure: true, notifyEmail });
+	const failureMailHere = (address: string) =>
+		sqlite.prepare("INSERT INTO settings (key, value) VALUES ('backup_config', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(configWith(address));
+	const failureMailIn = (backup: Database.Database, address: unknown) =>
+		backup.prepare("INSERT INTO settings (key, value) VALUES ('backup_config', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(configWith(address));
+	const failureMailNow = () => JSON.parse(sqlite.prepare("SELECT value FROM settings WHERE key = 'backup_config'").pluck().get() as string).notifyEmail as unknown;
+	/** A given-up address with the restore's nonce (the code review's FP6). */
+	const NONCED = (id: number) => new RegExp(`^email-given-up-${id}-[0-9a-f]{32}@restore\\.invalid$`);
+
+	it('(a) a webhook the file adds, on, with a plain address and secret, set with no key by an administrator here, is held, its secret and reveals gone, counted and listed (R1, R15)', () => {
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		const K = makeApiKeyRow(admin);
+		const backup = ownBackup({ edited: true });
+		plantHook(backup, { id: 900, boardId: board.id, setBy: admin.id });
+		backup.prepare("INSERT INTO webhook_reveals (webhook_id, key_id, revealed_at) VALUES (900, ?, '2026-11-19 09:00:00')").run(K.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(result.errors).toEqual([]);
+		expect(hookRow(900)).toEqual({ active: 0, secret: '', heldBecause: HELD_FROM_UNSEALED_BACKUP, heldAt: expect.stringMatching(STAMP) });
+		expect(revealsOf(900)).toBe(0);
+		expect(result.unsealedReach.webhooks).toBe(1);
+		expect(result.secrets.toEnter.heldWebhooks).toEqual([{ id: 900, boardId: board.id, board: 'Hooks' }]);
+	});
+
+	it('(a2) R14, FP19: one the file holds off for a reason this build does not know, beside a plain secret, takes the new reason and loses its secret, not counted but listed; switched on through the route it is given a new secret, and a secret sent is refused', async () => {
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		const backup = ownBackup({ edited: true });
+		plantHook(backup, { id: 901, boardId: board.id, setBy: admin.id, active: 0, heldBecause: 'a reason from a later build' });
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(hookRow(901)).toEqual({ active: 0, secret: '', heldBecause: HELD_FROM_UNSEALED_BACKUP, heldAt: expect.stringMatching(STAMP) });
+		// Already held in the file: not newly held, so not counted (R15); listed all the same (the code review's FP19).
+		expect(result.unsealedReach.webhooks).toBe(0);
+		expect(result.secrets.toEnter.heldWebhooks).toEqual([{ id: 901, boardId: board.id, board: 'Hooks' }]);
+
+		expect((await api('PUT', '/api/v1/webhooks/901', { user: member, body: { active: true, secret: 'mine' } })).status).toBe(400);
+		expect(hookRow(901)).toMatchObject({ active: 0, secret: '' });
+		const on = await api('PUT', '/api/v1/webhooks/901', { user: member, body: { active: true } });
+		expect(on.status).toBe(200);
+		expect(on.body.secret).toMatch(/^[0-9a-f]{64}$/);
+		expect(hookRow(901)).toMatchObject({ active: 1, heldBecause: null });
+		expect(readOpened('webhooks', 901)).toBe(on.body.secret);
+	});
+
+	it("(f) R2: one with no address the file has on comes in off, not held, and still listed to enter", () => {
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		const hook = makeWebhook(board, { url: SLACK, secret: 'whsec-3012-f' });
+		startedSinceAlreadyOffHeld();
+		const backup = ownBackup({ edited: true });
+		expect(backup.prepare('SELECT url, active FROM webhooks WHERE id = ?').get(hook.id)).toEqual({ url: '', active: 0 });
+		backup.prepare('UPDATE webhooks SET active = 1 WHERE id = ?').run(hook.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(hookRow(hook.id)).toEqual({ active: 0, secret: '', heldBecause: null, heldAt: null });
+		expect(result.unsealedReach.webhooks).toBe(0);
+		expect(result.secrets.toEnter.webhooks.map((each) => each.id)).toEqual([hook.id]);
+		expect(result.secrets.toEnter.heldWebhooks ?? []).toEqual([]);
+	});
+
+	it("(f2) FP10: one with no address the file has on, from a backup made before card 2923's release, comes in off and is then held as every webhook already off is, which asks a new secret too", () => {
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		const hook = makeWebhook(board, { url: SLACK, secret: 'whsec-3012-f2' });
+		const backup = ownBackup({ edited: true });
+		backup.prepare("DELETE FROM settings WHERE key = 'webhooks_already_off_held'").run();
+		expect(backup.prepare('SELECT url, active FROM webhooks WHERE id = ?').get(hook.id)).toEqual({ url: '', active: 0 });
+		backup.prepare('UPDATE webhooks SET active = 1 WHERE id = ?').run(hook.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(hookRow(hook.id)).toMatchObject({ active: 0, secret: '', heldBecause: 'setter access ended' });
+		expect(result.unsealedReach.webhooks).toBe(0);
+		expect(result.secrets.toEnter.heldWebhooks).toEqual([{ id: hook.id, boardId: board.id, board: 'Hooks' }]);
+	});
+
+	it.each([
+		{ row: 'both addresses open and are equal: this server\'s reason, not counted', spoil: false, reason: 'setter access ended', counted: 0 },
+		{ row: "the restored address does not open (another key's envelope): the unsealed reason stays, counted", spoil: true, reason: HELD_FROM_UNSEALED_BACKUP, counted: 1 }
+	])('(g) R3: a webhook held here and the same id, board and setter in the file: $row', ({ spoil, reason, counted }) => {
+		const owner = makeUser();
+		const hook = makeWebhook(makeBoard({ owner }).board, { url: SLACK, secret: 'whsec-3012-g' });
+		// The backup, unsealed: on, its setter the board's owner.
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		if (spoil) {
+			backup.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run(sealValue(SLACK, webhookUrlAad(hook.id, hook.boardId, hook.receiver), keyFromBytes(randomBytes(32))), hook.id);
+		}
+		sqlite.prepare("UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = '2026-11-18 09:00:00' WHERE id = ?").run(hook.id);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.sealVerified).toBe(false);
+		expect(hookRow(hook.id)).toMatchObject({ active: 0, secret: '', heldBecause: reason });
+		expect(result.unsealedReach.webhooks).toBe(counted);
+	});
+
+	it("(g2) FP9: a backup sealed as this server's own, whose row an earlier restore held for that reason and whose address does not open, takes this server's hold", () => {
+		const owner = makeUser();
+		const hook = makeWebhook(makeBoard({ owner }).board, { url: SLACK, secret: 'whsec-3012-g2' });
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		backup
+			.prepare("UPDATE webhooks SET url = ?, active = 0, secret = '', held_because = ?, held_at = '2026-11-17 09:00:00' WHERE id = ?")
+			.run(sealValue(SLACK, webhookUrlAad(hook.id, hook.boardId, hook.receiver), keyFromBytes(randomBytes(32))), HELD_FROM_UNSEALED_BACKUP, hook.id);
+		sealedFor(sqlite, backup);
+		sqlite.prepare("UPDATE webhooks SET active = 0, held_because = 'setter access ended', held_at = '2026-11-18 09:00:00' WHERE id = ?").run(hook.id);
+
+		const result = restoreFromBackup(sqlite, backup);
+
+		expect(result.sealVerified).toBe(true);
+		expect(hookRow(hook.id)).toMatchObject({ active: 0, heldBecause: 'setter access ended', heldAt: '2026-11-18 09:00:00' });
+		expect(result.unsealedReach.webhooks).toBe(0);
+	});
+
+	it('(h) a working copy of an unsealed backup holds its webhooks with an address, their secrets discarded, before it switches the rest off, which does not count them; and settles the accounts and the failure mail as a restore kept as it is does (R14)', () => {
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		prefsHere(member.id, '{"email_comments":false}');
+		failureMailHere('ops@here.test');
+		const backup = ownBackup({ edited: true });
+		plantHook(backup, { id: 902, boardId: board.id, setBy: admin.id });
+		backup.prepare('UPDATE users SET email = ?, notification_prefs = ? WHERE id = ?').run('member@file.test', '{"email_all":true}', member.id);
+		plantUser(backup, 96, 'other@file.test');
+		failureMailIn(backup, 'ops@file.test');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id, outside: 'off' });
+
+		expect(result.errors).toEqual([]);
+		expect(hookRow(902)).toEqual({ active: 0, secret: '', heldBecause: HELD_FROM_UNSEALED_BACKUP, heldAt: expect.stringMatching(STAMP) });
+		expect(result.outside?.webhooks).toBe(0);
+		expect(accountRow(member.id)).toEqual({ email: member.email, prefs: '{"email_comments":false}' });
+		expect(accountRow(96)).toEqual({ email: 'other@file.test', prefs: '{"email_all":false}' });
+		expect(failureMailNow()).toBe('ops@here.test');
+		// No schedule paused by the step: a working copy switches every one off itself.
+		expect(result.unsealedReach).toEqual({ webhooks: 1, schedules: 0, accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 1, notifyEmail: 1 });
+	});
+
+	it('(h2) FP8: a working copy of a backup made after card 2169 and before card 2928, its addresses plain, counts each webhook it holds once, and not again among those it switched off', () => {
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		const hook = makeWebhook(board, { url: SLACK, secret: 'whsec-3012-h2' });
+		startedSinceAlreadyOffHeld();
+		const backup = ownBackup({ edited: true });
+		// As such a build made it: the address plain, the secret left out and listed as on, and no list of addresses.
+		backup.prepare('UPDATE webhooks SET url = ? WHERE id = ?').run(SLACK, hook.id);
+		backup.prepare('DELETE FROM settings WHERE key = ?').run(WEBHOOK_ADDRESSES_LEFT_OUT_KEY);
+		expect(JSON.parse(backup.prepare('SELECT value FROM settings WHERE key = ?').pluck().get(WEBHOOK_SECRETS_LEFT_OUT_KEY) as string)).toEqual([
+			{ id: hook.id, active: true }
+		]);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id, outside: 'off' });
+
+		expect(result.errors).toEqual([]);
+		expect(hookRow(hook.id)).toMatchObject({ active: 0, heldBecause: HELD_FROM_UNSEALED_BACKUP });
+		expect(result.unsealedReach.webhooks).toBe(1);
+		expect(result.outside?.webhooks).toBe(0);
+	});
+
+	// ─── Slice 2: accounts, report schedules and the failure mail ───
+
+	it("(k) R4: every enabled schedule is paused, a same-here account's and an orphan's counted, a not-same account's paused by card 3009 and not counted again", () => {
+		const mine = sqlite.prepare("INSERT INTO report_schedules (user_id, name, scope, enabled) VALUES (?, 'Weekly', 'all', 1)").run(member.id).lastInsertRowid as number;
+		const backup = ownBackup({ edited: true });
+		// An owner no restored account is: planted with the file's foreign keys off.
+		backup.pragma('foreign_keys = OFF');
+		backup.prepare("INSERT INTO report_schedules (id, user_id, name, scope, enabled) VALUES (800, 999, 'Orphan', 'all', 1)").run();
+		plantUser(backup, 97, 'planted-97@file.test');
+		backup.prepare("INSERT INTO report_schedules (id, user_id, name, scope, enabled) VALUES (801, 97, 'Planted', 'all', 1)").run();
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors.filter((line) => !line.startsWith('report_schedules:'))).toEqual([]);
+		expect(sqlite.prepare('SELECT id, enabled FROM report_schedules ORDER BY id').all()).toEqual([
+			{ id: mine, enabled: 0 },
+			{ id: 800, enabled: 0 },
+			{ id: 801, enabled: 0 }
+		]);
+		expect(result.unsealedReach.schedules).toBe(2);
+	});
+
+	it("(o) a same-here account whose email and choices the file changed takes this server's, counted", () => {
+		prefsHere(member.id, '{"email_comments":false}');
+		const backup = ownBackup({ edited: true });
+		backup.prepare('UPDATE users SET email = ?, notification_prefs = ? WHERE id = ?').run('member@file.test', '{"email_all":true}', member.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(accountRow(member.id)).toEqual({ email: member.email, prefs: '{"email_comments":false}' });
+		expect(result.unsealedReach).toMatchObject({ accountsAsHere: 1, addressesGivenUp: 0, notificationsOff: 0 });
+	});
+
+	it('(p) two same-here accounts whose addresses the file swapped each end with its own, with no unique failure', () => {
+		const backup = ownBackup({ edited: true });
+		backup.prepare('UPDATE users SET email = ? WHERE id = ?').run('swapping@file.test', member.id);
+		backup.prepare('UPDATE users SET email = ? WHERE id = ?').run(member.email, admin.id);
+		backup.prepare('UPDATE users SET email = ? WHERE id = ?').run(admin.email, member.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(accountRow(member.id).email).toBe(member.email);
+		expect(accountRow(admin.id).email).toBe(admin.email);
+		expect(result.unsealedReach).toMatchObject({ accountsAsHere: 2, addressesGivenUp: 0 });
+	});
+
+	it("(q) another account holding a same-here account's address gives it up for one that receives no mail, counted", () => {
+		const backup = ownBackup({ edited: true });
+		backup.prepare('UPDATE users SET email = ? WHERE id = ?').run('member@file.test', member.id);
+		plantUser(backup, 98, member.email);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(accountRow(member.id).email).toBe(member.email);
+		expect(accountRow(98).email).toBe('email-given-up-98@restore.invalid');
+		expect(result.unsealedReach).toMatchObject({ accountsAsHere: 1, addressesGivenUp: 1 });
+	});
+
+	it('(q2) R7: placeholders planted for accounts the step gives up, in another case or exactly, break no unique index; each ends with its own', () => {
+		const backup = ownBackup({ edited: true });
+		backup.prepare('UPDATE users SET email = ? WHERE id = ?').run('member@file.test', member.id);
+		// 93 holds a placeholder, so it is given its own with the nonce; 95 was planted with its plain form exactly: no clash.
+		plantUser(backup, 93, 'stale@restore.invalid');
+		plantUser(backup, 94, member.email);
+		plantUser(backup, 95, 'email-given-up-93@restore.invalid');
+		plantUser(backup, 96, 'EMAIL-GIVEN-UP-94@Restore.Invalid');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		// 94 held an address that receives mail: its own given-up one. Each placeholder's holder its own with the restore's
+		// nonce (the code review's FP6).
+		expect(accountRow(94).email).toBe('email-given-up-94@restore.invalid');
+		for (const id of [93, 95, 96]) expect(accountRow(id).email).toMatch(NONCED(id));
+		// Only 94 held an address that receives mail: the placeholders are not counted.
+		expect(result.unsealedReach.addressesGivenUp).toBe(1);
+	});
+
+	it('(q4) FP5: accounts not the same here that share an address apart from case: the lowest id keeps it, each higher one gives it up, counted', () => {
+		const backup = ownBackup({ edited: true });
+		plantUser(backup, 131, 'twin@file.test');
+		plantUser(backup, 132, 'TWIN@file.test');
+		plantUser(backup, 133, 'Twin@File.Test');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect([131, 132, 133].map((id) => accountRow(id).email)).toEqual(['twin@file.test', 'email-given-up-132@restore.invalid', 'email-given-up-133@restore.invalid']);
+		expect(result.unsealedReach.addressesGivenUp).toBe(2);
+	});
+
+	it("(q5) FP6: a placeholder planted for an account not here never meets the given-up address this server holds on another account", () => {
+		sqlite.prepare('UPDATE users SET email = ? WHERE id = ?').run('email-given-up-134@restore.invalid', member.id);
+		const backup = ownBackup({ edited: true });
+		plantUser(backup, 134, 'planted@restore.invalid');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(accountRow(member.id).email).toBe('email-given-up-134@restore.invalid');
+		expect(accountRow(134).email).toMatch(NONCED(134));
+	});
+
+	it("(q6) FP11: an address the file stored as a BLOB is read as text and aborts nothing: one holding a same-here account's address in another case gives it up", () => {
+		const backup = ownBackup({ edited: true });
+		plantUser(backup, 135, 'blob@file.test');
+		backup.prepare('UPDATE users SET email = ? WHERE id = 135').run(Buffer.from(member.email.toUpperCase()));
+		expect(backup.prepare('SELECT typeof(email) FROM users WHERE id = 135').pluck().get()).toBe('blob');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(accountRow(135).email).toBe('email-given-up-135@restore.invalid');
+		expect(result.unsealedReach.addressesGivenUp).toBe(1);
+	});
+
+	it('(q7) FP7: an account this server deleted, which its record of endings ends again, inert, has its mail switched off but is not counted', () => {
+		const gone = makeUser({ username: 'gone-3012' });
+		const backup = ownBackup({ edited: true });
+		const created = sqlite.prepare('SELECT created_at FROM users WHERE id = ?').pluck().get(gone.id) as string;
+		sqlite.prepare('DELETE FROM users WHERE id = ?').run(gone.id);
+		sqlite
+			.prepare("INSERT INTO account_endings (user_id, account_created, ending, ended_at) VALUES (?, ?, 'deleted', '2026-11-19 09:00:00')")
+			.run(gone.id, created);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(result.accountsKept.deleted).toBe(1);
+		expect(sqlite.prepare('SELECT disabled_at IS NOT NULL FROM users WHERE id = ?').pluck().get(gone.id)).toBe(1);
+		expect(accountRow(gone.id).prefs).toBe('{"email_all":false}');
+		expect(result.unsealedReach.notificationsOff).toBe(0);
+	});
+
+	it("(q3) R7: a same-here account's address, unchanged, held by another in another case is given up", () => {
+		const backup = ownBackup({ edited: true });
+		plantUser(backup, 99, member.email.toUpperCase());
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(accountRow(member.id).email).toBe(member.email);
+		expect(accountRow(99).email).toBe('email-given-up-99@restore.invalid');
+		expect(result.unsealedReach).toMatchObject({ accountsAsHere: 0, addressesGivenUp: 1 });
+	});
+
+	it("(r) R6: another account's notification mail is switched off, its other choices and the file's address kept, counted", () => {
+		const backup = ownBackup({ edited: true });
+		plantUser(backup, 100, 'r@file.test', '{"email_comments":false}');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(accountRow(100)).toEqual({ email: 'r@file.test', prefs: '{"email_comments":false,"email_all":false}' });
+		expect(result.unsealedReach.notificationsOff).toBe(1);
+		expect(shouldNotifyUser(100, 'email_comments')).toBe(false);
+		expect(shouldNotifyUser(100, 'email_mentions')).toBe(false);
+	});
+
+	it.each([
+		{
+			row: 'choices that are not a JSON object, or hold a 0 for the switch (section 12, item 3), are made off, each counted',
+			prefs: ['not json', '[]', '{"email_all":0}'],
+			after: ['{"email_all":false}', '{"email_all":false}', '{"email_all":false}'],
+			counted: 3
+		},
+		{ row: 'choices already off are left as they are, not counted', prefs: ['{"email_all":false,"email_comments":true}'], after: ['{"email_all":false,"email_comments":true}'], counted: 0 },
+		{
+			row: "the switch written twice, or with its name escaped, read as the reader reads it, the last counting (the code review's FP1): each made off, counted",
+			prefs: ['{"email_all":false,"email_all":true}', '{"email_all":true,"email_all":false,"email_all":true}', '{"email_all":false,"\\u0065mail_all":true}', '{"\\u0065mail_all":true}'],
+			after: ['{"email_all":false}', '{"email_all":false}', '{"email_all":false}', '{"email_all":false}'],
+			counted: 4
+		},
+		{ row: 'the switch written twice, the last false: already off, written once, not counted (FP1)', prefs: ['{"email_all":true,"email_all":false}'], after: ['{"email_all":false}'], counted: 0 }
+	])('(r2) R6: $row', ({ prefs, after, counted }) => {
+		const backup = ownBackup({ edited: true });
+		prefs.forEach((each, at) => plantUser(backup, 110 + at, `r2-${at}@file.test`, each));
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(prefs.map((_each, at) => accountRow(110 + at).prefs)).toEqual(after);
+		expect(result.unsealedReach.notificationsOff).toBe(counted);
+		// Read as the mail reads them: none is sent.
+		expect(prefs.map((_each, at) => shouldNotifyUser(110 + at, 'email_comments'))).toEqual(prefs.map(() => false));
+	});
+
+	it("(r3) R6: the backup's superadmin given the importer's password has its notification mail switched off too", () => {
+		const backup = ownBackup({ edited: true });
+		// The file's superadmin, made earlier, is not this server's: card 3009 carries the importer's password to it.
+		backup.prepare('UPDATE users SET created_at = ?, email = ? WHERE id = ?').run('2001-01-01 00:00:00', 'file-boss@file.test', chief.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept.superadminGivenYours).toBe(1);
+		expect(JSON.parse(accountRow(chief.id).prefs!)).toMatchObject({ email_all: false });
+		expect(result.unsealedReach.notificationsOff).toBe(1);
+	});
+
+	it("(r4) FP15: card 3009's give-up of the importer's address never takes this server's own address from an account that is the same here, though it differs only in case", () => {
+		const twin = chief.email.toUpperCase();
+		sqlite.prepare('UPDATE users SET email = ? WHERE id = ?').run(twin, member.id);
+		const backup = ownBackup({ edited: true });
+		backup.prepare('UPDATE users SET created_at = ?, email = ? WHERE id = ?').run('2001-01-01 00:00:00', 'file-boss@file.test', chief.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(result.passwordsKept.superadminGivenYours).toBe(1);
+		expect(accountRow(chief.id).email).toBe(chief.email);
+		expect(accountRow(member.id).email).toBe(twin);
+		expect(result.passwordsKept.emailGivenUp).toBe(0);
+	});
+
+	it.each([
+		{ row: 'a different address: this server\'s, counted', file: 'ops@file.test' as unknown, counted: 1 },
+		{ row: 'the same address: left, not counted', file: 'ops@here.test' as unknown, counted: 0 },
+		{ row: '(t3) an array: this server\'s string, counted', file: ['x@evil.test'] as unknown, counted: 1 }
+	])('(t) R5: the backup failure mail, $row', ({ file, counted }) => {
+		failureMailHere('ops@here.test');
+		const backup = ownBackup({ edited: true });
+		failureMailIn(backup, file);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(failureMailNow()).toBe('ops@here.test');
+		expect(result.unsealedReach.notifyEmail).toBe(counted);
+	});
+
+	it('(t4) FP18: neither this server nor the file with a failure address: written as none, and not counted', () => {
+		failureMailHere('');
+		const backup = ownBackup({ edited: true });
+		failureMailIn(backup, null);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(failureMailNow()).toBe('');
+		expect(result.unsealedReach.notifyEmail).toBe(0);
+	});
+
+	// ─── Slice 3: the sealed half, and a failure on the last write ───
+
+	/** The plants of (h), (k), (o) and (t) at once, in `backup`: a webhook on with an address, a changed address and choices, an account not here, a failure address. */
+	const plantEverything = (backup: Database.Database, boardId: number) => {
+		plantHook(backup, { id: 903, boardId, setBy: admin.id });
+		backup.prepare('UPDATE users SET email = ?, notification_prefs = ? WHERE id = ?').run('member@file.test', '{"email_all":true}', member.id);
+		plantUser(backup, 120, 'other@file.test');
+		failureMailIn(backup, 'ops@file.test');
+	};
+
+	it('(v) a backup sealed as this server\'s own brings the same plants in as it has them, and counts nothing', () => {
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		sqlite.prepare("INSERT INTO report_schedules (user_id, name, scope, enabled) VALUES (?, 'Weekly', 'all', 1)").run(member.id);
+		prefsHere(member.id, '{"email_comments":false}');
+		failureMailHere('ops@here.test');
+		const backup = ownBackup();
+		plantEverything(backup, board.id);
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.errors).toEqual([]);
+		expect(hookRow(903)).toMatchObject({ active: 1, heldBecause: null });
+		expect(readOpened('webhooks', 903)).toBe('the-files-secret');
+		expect(sqlite.prepare('SELECT enabled FROM report_schedules').pluck().all()).toEqual([1]);
+		expect(accountRow(member.id)).toEqual({ email: 'member@file.test', prefs: '{"email_all":true}' });
+		expect(accountRow(120)).toEqual({ email: 'other@file.test', prefs: '{}' });
+		expect(failureMailNow()).toBe('ops@file.test');
+		expect(result.unsealedReach).toEqual({ webhooks: 0, schedules: 0, accountsAsHere: 0, addressesGivenUp: 0, notificationsOff: 0, notifyEmail: 0 });
+	});
+
+	it('(w) R14: a failure at the failure mail write, the last on the keep path, rolls every step back', () => {
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		sqlite.prepare("INSERT INTO report_schedules (user_id, name, scope, enabled) VALUES (?, 'Weekly', 'all', 1)").run(member.id);
+		failureMailHere('ops@here.test');
+		const backup = ownBackup({ edited: true });
+		plantEverything(backup, board.id);
+		sqlite.exec(`
+			CREATE TEMP TRIGGER failure_mail_refused BEFORE UPDATE ON settings
+			WHEN NEW.key = 'backup_config' AND json_extract(NEW.value, '$.notifyEmail') IS NOT json_extract(OLD.value, '$.notifyEmail')
+			BEGIN SELECT RAISE(ABORT, 'the failure mail write is refused'); END
+		`);
+		const before = snapshotDb();
+		try {
+			let thrown: unknown;
+			try {
+				restoreFromBackup(sqlite, backup, { importer: chief.id });
+			} catch (error) {
+				thrown = error;
+			}
+
+			expect(thrown).toBeInstanceOf(RestoreError);
+			expect((thrown as RestoreError).committed).toBe(false);
+			expect((thrown as RestoreError).message).toBe('The restore failed and nothing was changed: the failure mail write is refused');
+			expectUnchanged(before);
+			expect(sqlite.prepare('SELECT COUNT(*) FROM webhooks').pluck().get()).toBe(0);
+			expect(sqlite.prepare('SELECT enabled FROM report_schedules').pluck().all()).toEqual([1]);
+			expect(accountRow(member.id)).toEqual({ email: member.email, prefs: '{}' });
+			expect(failureMailNow()).toBe('ops@here.test');
+		} finally {
+			sqlite.exec('DROP TRIGGER IF EXISTS temp.failure_mail_refused');
+		}
+	});
+
+	it("(y) R9: the restore's switch-off notice for an unsealed backup is written to the log and mailed to nobody", async () => {
+		startedSinceAlreadyOffHeld();
+		makeSmtp();
+		const board = makeBoard({ owner: member, name: 'Hooks' }).board;
+		// Already off with no hold, no address and no setter: the restore's own pass holds it (holdRestoredAlreadyOff).
+		const hook = makeWebhook(board, { url: SLACK, setBy: null, active: false });
+		sqlite.prepare("UPDATE webhooks SET url = '', held_because = NULL, held_at = NULL WHERE id = ?").run(hook.id);
+		expect(hookRow(hook.id)).toMatchObject({ active: 0, heldBecause: null });
+		const backup = opening(Buffer.from(sqlite.serialize()));
+		const was = { schedulers: process.env.SCHEDULERS, level: process.env.LOG_LEVEL };
+		process.env.SCHEDULERS = 'on';
+		// The WARN lines written to the system log (the tests' own level is ERROR).
+		process.env.LOG_LEVEL = 'WARN';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const sent = effects();
+		try {
+			const result = restoreFromBackup(sqlite, backup, { by: 'chief' });
+			await sent.settle();
+
+			expect(result.sealVerified).toBe(false);
+			expect(result.errors).toEqual([]);
+			expect(hookRow(hook.id)).toMatchObject({ active: 0, heldBecause: 'setter access ended' });
+			const warned = column<string>(sqlite, "SELECT message FROM system_logs WHERE context = 'Webhooks' AND level = 'WARN' ORDER BY id");
+			expect(warned).toHaveLength(2);
+			expect(warned[0]).toContain(`Webhook ${hook.id} on board ${board.id}, already switched off, is now held`);
+			expect(warned[1]).toBe(
+				"The owners of the boards of the 1 webhook(s) switched off or held above were not mailed, as the backup's seal did not verify. The line above names it."
+			);
+			expect(sent.emails).toEqual([]);
+		} finally {
+			sent.restore();
+			for (const [name, value] of [['SCHEDULERS', was.schedulers], ['LOG_LEVEL', was.level]] as const) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
+	});
+
+	it('(y2) FP4: the to-enter sentence names at most ten webhooks, then how many more, each board name quoted as JSON and cut to 60 characters', () => {
+		const names = ['Say "hi" \\ there', 'L'.repeat(100), ...Array.from({ length: 10 }, () => 'Hooks')];
+		const heldWebhooks = names.map((board, at) => ({ id: 1000 + at, boardId: 7, board }));
+
+		const said = secretsToEnterSentence({ mailPassword: false, destinations: [], webhooks: [], heldWebhooks })!;
+
+		expect(said).toContain(String.raw`Nothing to enter for webhook(s) 1000 (board "Say \"hi\" \\ there"), 1001 (board "${'L'.repeat(59)}…"), 1002 (board "Hooks"), `);
+		expect(said).toContain('1009 (board "Hooks") and 2 more, switched off for good');
+		expect(said).not.toContain('1010');
+		expect(said).not.toContain('L'.repeat(60));
 	});
 });

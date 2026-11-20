@@ -1825,6 +1825,37 @@ describe('the users panel, mounted', () => {
 		expect(target.querySelector<HTMLButtonElement>('button[title="Resend invite email"]')!.disabled).toBe(false);
 	});
 
+	// Card 3012 (R8): 📧's confirm names the address the invite goes to, which a restore may have taken from a file.
+	it("(s) 3012: 📧's confirm names the account's address", () => {
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+
+		target.querySelector<HTMLButtonElement>('button[title="Resend invite email"]')!.click();
+
+		expect(confirm.mock.calls[0][0]).toBe('Send Invite');
+		expect(confirm.mock.calls[0][1]).toMatch(/^Send bob a new invite, to bob@example\.com\? Whoever opens its link sets the account's password/);
+	});
+
+	it("(s2) 3012, FP3: each character of the address outside printable ASCII is shown as its code point, a look-alike's too, and the name holds no direction override", () => {
+		const RLO = String.fromCharCode(0x202e);
+		const BELL = String.fromCharCode(0x07);
+		const CYRILLIC_A = String.fromCharCode(0x430);
+		const turned = {
+			...pageData,
+			users: pageData.users.map((user) =>
+				user.id === bob.id ? { ...user, username: `bob${RLO}evil`, email: `bob${RLO}moc.elpmaxe${BELL}@ex${CYRILLIC_A}mple.com` } : user
+			)
+		};
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: turned, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+
+		target.querySelector<HTMLButtonElement>('button[title="Resend invite email"]')!.click();
+
+		const said = confirm.mock.calls[0][1] as string;
+		expect(said).toContain(String.raw`Send bob evil a new invite, to bob\u{202E}moc.elpmaxe\u{7}@ex\u{430}mple.com? `);
+		for (const character of [RLO, BELL, CYRILLIC_A]) expect(said).not.toContain(character);
+	});
+
 	// Card 2380: the delete is refused for an account that alone owns a team (card 2377); the confirmation says so first.
 	it('names in the confirmation the teams the account alone owns, from the page’s data, in name order, and still sends the delete on Confirm', async () => {
 		const member = (userId: number, role: string) => ({ userId, role, username: userId === 1 ? 'chief' : 'bob', emoji: '🙂' });

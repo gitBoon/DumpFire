@@ -52,6 +52,7 @@
 		type SettingsGone
 	} from '$lib/api';
 	import { mayManageAccount } from '$lib/account-rule';
+	import { asciiShown, printable } from '$lib/printable';
 	import { NO_ANSWER, sentAsking, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
@@ -636,7 +637,10 @@
 		if (data.users.find((u) => u.id === userId)?.twoStep === true) return;
 		confirm(
 			'Send Invite',
-			`Send ${username} a new invite? Whoever opens its link sets the account's password, and an invite sent earlier stops working.${inviteHeldWords(settingsOf(userId))} ${ASKS_FOR_PASSWORD}`,
+			// Card 3012 (R8): the address it goes to, which a restore may have taken from a file, each character outside printable
+			// ASCII shown as its code point, and the name with none that could turn it round or hide part of it (its code
+			// review, FP3).
+			`Send ${printable(username)} a new invite, to ${asciiShown(data.users.find((u) => u.id === userId)?.email ?? '')}? Whoever opens its link sets the account's password, and an invite sent earlier stops working.${inviteHeldWords(settingsOf(userId))} ${ASKS_FOR_PASSWORD}`,
 			(proof: StepUpProof) => resendInvite(userId, proof, control),
 			{ askPassword: true }
 		);

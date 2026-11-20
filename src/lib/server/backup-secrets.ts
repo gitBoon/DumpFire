@@ -1740,7 +1740,7 @@ function withoutHostKey(restored: unknown): unknown {
 }
 
 /** A board's name in `database`, or null where it is not there. */
-function boardName(database: Database.Database, boardId: number): string | null {
+export function boardName(database: Database.Database, boardId: number): string | null {
 	try {
 		const row = database.prepare('SELECT name FROM boards WHERE id = ?').get(boardId) as { name: string } | undefined;
 		return row ? row.name : null;
@@ -1785,19 +1785,20 @@ function boardName(database: Database.Database, boardId: number): string | null 
  * A value the backup has is never replaced. `writeMarker`, for a restore as it
  * is, writes the marker into the restored settings trimmed to the webhooks
  * not filled (R2), so that every start names them; a working copy writes none.
- * `listedOnLeftOff` counts the webhooks the marker lists as on that are not
- * filled and are off, which a working copy counts among those switched off
- * (R3). Opens no transaction: the restore's is open.
+ * `listedOnLeftOff` holds the ids of the webhooks the marker lists as on
+ * that are not filled and are off, which a working copy counts among those
+ * switched off (R3): by id, so that one counted elsewhere is not counted twice
+ * (card 3012's code review, FP8). Opens no transaction: the restore's is open.
  */
 export function fillSecretGaps(
 	live: Database.Database,
 	here: SecretsHere,
 	listed: readonly ListedWebhook[],
 	options: { writeMarker: boolean; addressListed?: readonly ListedAddress[] }
-): { kept: SecretsKept; unfilled: SecretsToEnter; listedOnLeftOff: number } {
+): { kept: SecretsKept; unfilled: SecretsToEnter; listedOnLeftOff: number[] } {
 	const kept = emptyKept();
 	const unfilled = emptyToEnter();
-	let listedOnLeftOff = 0;
+	const listedOnLeftOff: number[] = [];
 	const hasSettings = hasColumns(live, 'settings', 'key', 'value');
 
 	// The mail password.
@@ -1919,7 +1920,7 @@ export function fillSecretGaps(
 			} else {
 				unfilled.webhooks.push({ id: row.id, boardId: row.boardId, board: boardName(live, row.boardId) });
 				leftListed.push(entry);
-				if (entry.active && row.active === 0) listedOnLeftOff++;
+				if (entry.active && row.active === 0) listedOnLeftOff.push(row.id);
 			}
 		}
 	}
@@ -1941,7 +1942,7 @@ export function fillSecretGaps(
 			if (!row) continue;
 			const opens = addressToBind(row) !== null;
 			if (entry.active && opens && row.heldBecause === null) switchOn.run(row.id);
-			else if (entry.active && row.active === 0) listedOnLeftOff++;
+			else if (entry.active && row.active === 0) listedOnLeftOff.push(row.id);
 		}
 	}
 
@@ -2094,6 +2095,25 @@ export function secretsKeptSentence(kept: SecretsKept): string | null {
 	return parts.length > 0 ? `Kept from this server, because a backup does not hold them: ${parts.join('; ')}.` : null;
 }
 
+/** How many webhooks a sentence names before "and N more", and how many characters of a board's name (card 3012's code review, FP4). */
+const WEBHOOKS_NAMED = 10;
+const BOARD_NAME_SHOWN = 60;
+
+/**
+ * Webhooks as `secretsToEnterSentence` names them: each by id and board, the board's name printable, cut to
+ * `BOARD_NAME_SHOWN` characters and quoted as JSON, so that no name can close its quotes or run on (card 3012's code
+ * review, FP4); the first `WEBHOOKS_NAMED`, then how many more.
+ */
+function webhooksNamed(hooks: readonly { id: number; boardId: number; board: string | null }[]): string {
+	const boardOf = (hook: { boardId: number; board: string | null }) => {
+		if (hook.board === null) return String(hook.boardId);
+		const name = Array.from(printable(hook.board));
+		return JSON.stringify(name.length > BOARD_NAME_SHOWN ? `${name.slice(0, BOARD_NAME_SHOWN - 1).join('')}…` : name.join(''));
+	};
+	const named = hooks.slice(0, WEBHOOKS_NAMED).map((hook) => `${hook.id} (board ${boardOf(hook)})`).join(', ');
+	return hooks.length > WEBHOOKS_NAMED ? `${named} and ${hooks.length - WEBHOOKS_NAMED} more` : named;
+}
+
 /**
  * Decision 5's second sentence, or null when nothing is to enter. `atStart`
  * gives the start-up line's words for the webhooks (R2), which add that an
@@ -2118,11 +2138,8 @@ export function secretsToEnterSentence(toEnter: SecretsToEnter, atStart = false,
 		parts.push(`backup destination(s) ${named} (Admin, Scheduled Backups)`);
 	}
 	if (toEnter.webhooks.length > 0) {
-		const named = toEnter.webhooks
-			.map((hook) => `${hook.id} (board ${hook.board === null ? hook.boardId : `"${printable(hook.board)}"`})`)
-			.join(', ');
 		parts.push(
-			`the signing secret(s) of webhook(s) ${named}, which stay switched off until the board's owner or an administrator ` +
+			`the signing secret(s) of webhook(s) ${webhooksNamed(toEnter.webhooks)}, which stay switched off until the board's owner or an administrator ` +
 				(atStart
 					? "sets each one's secret and switches it on with PUT /api/v1/webhooks/{id}, or deletes it if it is no longer wanted"
 					: 'sets each one and switches it on with PUT /api/v1/webhooks/{id}')
@@ -2133,18 +2150,16 @@ export function secretsToEnterSentence(toEnter: SecretsToEnter, atStart = false,
 	const heldIds = new Set((toEnter.heldWebhooks ?? []).map((hook) => hook.id));
 	const addresses = (toEnter.webhookAddresses ?? []).filter((hook) => !heldIds.has(hook.id));
 	const heldAddresses = (toEnter.webhookAddresses ?? []).filter((hook) => heldIds.has(hook.id));
-	const nameAll = (hooks: readonly { id: number; boardId: number; board: string | null }[]) =>
-		hooks.map((hook) => `${hook.id} (board ${hook.board === null ? hook.boardId : `"${printable(hook.board)}"`})`).join(', ');
 	if (addresses.length > 0) {
 		parts.push(
-			`the address(es) of webhook(s) ${nameAll(addresses)}, which stay switched off until the board's owner or an administrator ` +
+			`the address(es) of webhook(s) ${webhooksNamed(addresses)}, which stay switched off until the board's owner or an administrator ` +
 				'sends each one its url (and its secret) with active true in PUT /api/v1/webhooks/{id}' +
 				(atStart ? ', or deletes it if it is no longer wanted' : '')
 		);
 	}
 	if (heldAddresses.length > 0) {
 		parts.push(
-			`the address(es) of webhook(s) ${nameAll(heldAddresses)}, switched off for good: to keep one, the board's owner or an ` +
+			`the address(es) of webhook(s) ${webhooksNamed(heldAddresses)}, switched off for good: to keep one, the board's owner or an ` +
 				'administrator switches it on with its url and active true, and no secret, in PUT /api/v1/webhooks/{id} (it is given a new ' +
 				'secret, returned once in that answer)' +
 				(atStart ? ', or deletes it if it is no longer wanted' : '')
@@ -2155,9 +2170,7 @@ export function secretsToEnterSentence(toEnter: SecretsToEnter, atStart = false,
 	const heldSaid =
 		held.length === 0
 			? null
-			: `Nothing to enter for webhook(s) ${held
-					.map((hook) => `${hook.id} (board ${hook.board === null ? hook.boardId : `"${printable(hook.board)}"`})`)
-					.join(', ')}, switched off for good: to keep one, the board's owner or an administrator should switch it on with no secret; ` +
+			: `Nothing to enter for webhook(s) ${webhooksNamed(held)}, switched off for good: to keep one, the board's owner or an administrator should switch it on with no secret; ` +
 				'it is given a new one, returned once in that answer (PUT /api/v1/webhooks/{id} with active true alone)' +
 				(atStart ? ', or delete it if it is no longer wanted.' : '.');
 	if (parts.length === 0 && heldSaid === null) return null;
