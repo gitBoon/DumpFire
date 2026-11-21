@@ -74,7 +74,8 @@ const spec = {
 			'the board\'s owners are mailed as in point (2), told to treat the old secret as exposed and change it at the receiver now, and the setter access ended sentence says so; ' +
 			'(10) a webhook that comes in with a backup whose seal did not verify and has an address is switched off for good, whatever the file says of it, and its secret is discarded; pausedBecause says so, and switching it on gives it a new secret and refuses a secret sent with it (card 3012); ' +
 			'(11) a person whose address and account came in with a backup whose seal did not verify, and are not the ones this server held for them, or whose status in it was neither active nor left, is listed with status left and leftAt the restore\'s moment, and one this server has as left stays left (card 3020); ' +
-			'(12) nothing else changed: no operation, field or schema.\n\n' +
+			'(12) a board\'s Product Owner named by PUT /boards/{boardId}, a decider named by PUT /decisions/{decisionId}/decider, and the decider a decision made by POST /boards/{boardId}/decisions or POST /decisions/{decisionId}/supersede would be given, are refused with 409 and nothing written where that account\'s creation time cannot be read on this server, as the record of access changes, which a restore reads, could not name it (card 3033); ' +
+			'(13) nothing else changed: no operation, field or schema.\n\n' +
 			'**Changed on 2026-11-18 (version 1.14.0), breaking.** A reset of an account\'s two-step sign-in, by an administrator or on the server\'s host, ends the account\'s API keys and switches off the webhooks it set (card 2915): ' +
 			'(1) its keys answer 401, as after a password reset; ' +
 			'(2) the webhooks it set are switched off, active false, recording setter access ended, so switching one on again is the board owner\'s or an administrator\'s and gives it a new secret; ' +
@@ -3803,7 +3804,8 @@ const spec = {
 					'409': {
 						description:
 							'A change of kind that cannot be made, and nothing was written: the board is a sub-board, which is a delivery board (`A sub-board is a delivery board.`); ' +
-							'or the board holds cards, archived ones included, whose commitment the change would decide without anyone deciding it: to "ideas" the message names POST /api/v1/boards/{boardId}/convert, which is the example, and back to "delivery" it says to move or delete them first.',
+							'or the board holds cards, archived ones included, whose commitment the change would decide without anyone deciding it: to "ideas" the message names POST /api/v1/boards/{boardId}/convert, which is the example, and back to "delivery" it says to move or delete them first. ' +
+								"Since 1.15.0 (card 3033), also a productOwnerUserId whose account's creation time cannot be read on this server, and nothing was written.",
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
@@ -8766,6 +8768,11 @@ const spec = {
 						description: 'There is no such board',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
 					},
+					'409': {
+						description:
+							"The decider the draft would be given, the board's Product Owner or the caller, has an account whose creation time cannot be read on this server, and nothing was written (since 1.15.0, card 3033)",
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } }
+					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
@@ -9014,7 +9021,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Decision not found' } } }
 					},
 					'409': {
-						description: 'The revision is stale; the status does not allow it; the board is gone; or it supersedes a ruled decision',
+						description:
+							"The revision is stale; the status does not allow it; the board is gone; it supersedes a ruled decision; or, since 1.15.0, the account's creation time cannot be read on this server (card 3033)",
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This decision is withdrawn: its decider cannot be changed' } } }
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
@@ -9257,7 +9265,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Decision not found' } } }
 					},
 					'409': {
-						description: 'It is not ruled; its board is gone; or another decision already supersedes it',
+						description:
+							"It is not ruled; its board is gone; another decision already supersedes it; or, since 1.15.0, the draft's decider would be an account whose creation time cannot be read on this server (card 3033)",
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'A later decision that supersedes this one already exists' } } }
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },

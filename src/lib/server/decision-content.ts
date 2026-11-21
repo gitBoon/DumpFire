@@ -595,9 +595,19 @@ export function liveOptionsOf(decisionId: number): DecisionOption[] {
 		.all();
 }
 
-/** Every participant row of the decision, removed ones included, in order. */
-export function participantsOf(decisionId: number): DecisionParticipant[] {
-	return db.select().from(decisionParticipants).where(eq(decisionParticipants.decisionId, decisionId)).orderBy(asc(decisionParticipants.id)).all();
+/**
+ * Every participant row of the decision, removed ones included, in order; with `live`, the rows not removed alone
+ * (card 3033 R10: opening a draft and saving a draft's participants skip a place a restore or the start marked
+ * removed, so it is neither invited, snapshotted, kept nor deleted).
+ */
+export function participantsOf(decisionId: number, opts: { live?: boolean } = {}): DecisionParticipant[] {
+	const which = eq(decisionParticipants.decisionId, decisionId);
+	return db
+		.select()
+		.from(decisionParticipants)
+		.where(opts.live ? and(which, isNull(decisionParticipants.removedAt)) : which)
+		.orderBy(asc(decisionParticipants.id))
+		.all();
 }
 
 /** A label as this module issues them: one capital letter. */
@@ -659,6 +669,10 @@ export function optionChanges(live: DecisionOption[], listed: Set<number> | null
  * participants in id order with their persons, the snapshots taken again
  * now for one account held twice (card 2675, decision 29), and the mail
  * settings. It never leaves the server: `refusalsOf` turns it into words.
+ *
+ * Card 3033 (N7): the live places alone, as `openDecision` opens them (R10):
+ * a place a restore or the start marked removed neither counts as the
+ * consulted participant opening needs nor stops it for a person who left.
  */
 export function openFactsOf(decision: Decision, now: Stamp): OpenFacts {
 	const decider =
@@ -670,7 +684,7 @@ export function openFactsOf(decision: Decision, now: Stamp): OpenFacts {
 		.from(decisionOptions)
 		.where(and(eq(decisionOptions.decisionId, decision.id), isNull(decisionOptions.retiredInVersion)))
 		.all().length;
-	const rows = db.select().from(decisionParticipants).where(eq(decisionParticipants.decisionId, decision.id)).orderBy(asc(decisionParticipants.id)).all();
+	const rows = participantsOf(decision.id, { live: true });
 	const persons = peopleById(rows.map((row) => row.personId).filter((id): id is number => id !== null));
 
 	const holders = new Map<number, string>();

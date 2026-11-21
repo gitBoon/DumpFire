@@ -521,6 +521,46 @@ describe('the revision on opening and re-publishing (35)', () => {
 	});
 });
 
+describe('opening reads the live places of a draft alone (card 3033, R10)', () => {
+	it('(aa2) a place a restore or the start marked removed on a draft is not snapshotted, written included or sent anything at open', async () => {
+		const r = readyDraft({ board });
+		const person = makePerson({ fullName: 'Gone', email: 'gone@example.test' });
+		const gone = makeParticipant(r.draft, { person, role: 'consulted', name: 'Old name', removedAt: '2026-11-02 09:00:00' });
+		db.update(people).set({ fullName: 'New name' }).where(eq(people.id, person.id)).run();
+
+		open(r.author, r.draft.id);
+		await sent.settle();
+
+		expect(sqlite.prepare('SELECT name, included_at, removed_at FROM decision_participants WHERE id = ?').raw().get(gone.id)).toEqual([
+			'Old name',
+			'2026-11-01 09:00:00',
+			'2026-11-02 09:00:00'
+		]);
+		expect(sqlite.prepare('SELECT count(*) FROM decision_events WHERE participant_id = ?').pluck().get(gone.id)).toBe(0);
+		expect(sent.emails.map((mail) => mail.to)).not.toContain('gone@example.test');
+		// The live places were opened as before.
+		expect(sqlite.prepare("SELECT count(*) FROM decision_events WHERE decision_id = ? AND kind = 'included'").pluck().get(r.draft.id)).toBe(2);
+	});
+
+	it('(N7)[1] a draft whose only consulted place is marked removed cannot open: no consulted participant, nothing written', () => {
+		const r = readyDraft({ board });
+		db.update(decisionParticipants).set({ removedAt: '2026-11-02 09:00:00' }).where(eq(decisionParticipants.id, r.holder.id)).run();
+		const before = written();
+
+		expect(outcome(() => open(r.author, r.draft.id))).toEqual({ status: 409, message: 'This decision has no consulted participant: it cannot be opened' });
+		expect(written()).toEqual(before);
+	});
+
+	it('(N7)[2] a place marked removed on a draft whose person has left no longer stops it opening', () => {
+		const r = readyDraft({ board });
+		const person = makePerson({ fullName: 'Departed', status: 'left' });
+		makeParticipant(r.draft, { person, role: 'consulted', removedAt: '2026-11-02 09:00:00' });
+
+		expect(outcome(() => open(r.author, r.draft.id))).toBe('passed');
+		expect(decisionRow(r.draft.id).status).toBe('open');
+	});
+});
+
 // ─── The six lifecycle routes, through the gate (case 36) ────────────────────
 
 describe('the lifecycle routes, through the gate (36)', () => {

@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.103
+version: 1.104
 status: As-Built
-date: 2026-11-20
+date: 2026-11-21
 tags:
+  - card-3033
   - card-3002
   - card-3020
   - unsealed-request-addresses
@@ -77,7 +78,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "access_changes, the append-only record of every change of board, team and person access by identity, its kinds, words, indexes, writers, readers and once-only seed (migration 0079, card 3002); Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
+description: "access_changes' four decision kinds (decision, decision_decider, decision_participant, decision_account) and its index on changed_at, migration 0080 (card 3033). access_changes, the append-only record of every change of board, team and person access by identity, its kinds, words, indexes, writers, readers and once-only seed (migration 0079, card 3002); Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -1900,7 +1901,7 @@ erDiagram
     users ||--o{ access_changes : "holder (id, created) for board, product_owner, board_member, team_member, person_link"
     access_changes {
         integer seq PK "order of writing; this server's rows rank by it alone"
-        text kind "board, board_public, product_owner, board_member, board_team, team, team_member, person_link"
+        text kind "board, board_public, product_owner, board_member, board_team, team, team_member, person_link; decision, decision_decider, decision_participant, decision_account (card 3033)"
         integer subject_id "board, team or person id"
         text subject_created "its created_at, stored form"
         integer holder_id "account or team id; 0 for none"
@@ -1922,6 +1923,26 @@ erDiagram
 | `team` | team | always 0, `''` | `tracked`, `deleted` |
 | `team_member` | team | account | `none` < `member` < `owner` |
 | `person_link` | person | `linked`: the account; `none`: 0, `''` | `none`, `linked` |
+| `decision` (card 3033) | decision | always 0, `''` | `tracked`, `deleted` |
+| `decision_decider` | decision | `yes`: the account; `none`: 0, `''` | `none`, `yes` |
+| `decision_participant` | decision | the place: its `decision_participants` row id, with **the decision's** creation time | `removed` < `informed` < `consulted` |
+| `decision_account` | the place (row id, the decision's creation time) | account | `none` < `held` |
+
+**The decision kinds** (card 3033, migration 0080). A place is named by its row id and its decision's
+creation time, never its own `included_at`, which opening takes again; `decision_account` is keyed per
+place, so an account moved between places is capped on each. A decision is tracked while the record
+holds its `decision` row, and a place through its decision. 0080 seeds every decision whose creation
+time reads as a moment, its decider (not written where the account's time does not read; `none`, holder
+0, where it names no account), each place's standing and each place's account, dated at the earliest
+stamp. A decision whose creation time does not read is not tracked, but is matched by id alone while any
+row of the record has that id.
+
+```mermaid
+erDiagram
+    decisions ||--o{ access_changes : "subject of decision, decision_decider, decision_participant; no foreign key"
+    decision_participants ||--o{ access_changes : "holder of decision_participant; subject of decision_account (row id, the decision's created_at)"
+    users ||--o{ access_changes : "holder of decision_decider (yes) and decision_account"
+```
 
 A subject is *tracked* while the record holds its marker: a `board` row, a `team` row, or any
 `person_link` row. A role a member row holds that is not one of the kind's words ranks as the role it
@@ -1930,7 +1951,7 @@ reads as (a member's as `viewer`, a share's as `viewer`, a team member's as `mem
 | Column | Type | Meaning |
 |---|---|---|
 | `seq` | integer, primary key (the rowid) | The order of writing. This server's rows rank by it alone, never by `changed_at`, so a clock stepped back never reorders them |
-| `kind` | text | One of the eight kinds above |
+| `kind` | text | One of the twelve kinds above (card 3002's eight and card 3033's four) |
 | `subject_id` | integer | The board, team or person id |
 | `subject_created` | text, not an `*_at` column | Its `created_at` in the stored form. Not `*_at`, so the timestamp normaliser never rewrites a row of an append-only table |
 | `holder_id` | integer, default 0 | The account or team id, or 0 for none |
@@ -1944,7 +1965,14 @@ Three indexes: `access_changes_pair (subject_id, kind, subject_created, holder_i
 origin)` and `access_changes_subject (subject_id, kind, subject_created, origin)`, each read for an
 item's latest row by `seq` with no sort (the rowid ends every index entry), and `access_changes_union
 (subject_id, kind, subject_created, holder_id, holder_created, stated_changed, access)`, the union's key
-(tests/access-changes.test.ts, case (v)).
+(tests/access-changes.test.ts, case (v)). A fourth, `access_changes_changed (changed_at)` (card 3033,
+migration 0080), serves the start pass's one read of whether any `here` row is dated after now; the
+item reads write `+changed_at`, so they stay on their own indexes (case (v-changed)).
+
+**Writers of the decision kinds** (card 3033). Migration 0080's seed; `recordAccessChange` from
+`createDecision`, `setDecider`, `supersedeDecision`, `setParticipants`, `setParticipantAccount`,
+`openDecision` and `deleteDecision` (D1 to D8, on `DECISION_ROLE_WRITES`); and the carry, from a sealed
+backup only. The restore's decision steps and the start pass apply the record and write none of it.
 
 **Writers.** Migration 0079 (the seed: every board, team and person whose creation time reads as a
 moment, with each board's creator, visibility, Product Owner, members and shares, each team's members

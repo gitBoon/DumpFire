@@ -1,10 +1,11 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.163
+version: 1.164
 status: As-Built
-date: 2026-11-20
+date: 2026-11-21
 tags:
+  - card-3033
   - card-3002
   - card-3020
   - unsealed-request-addresses
@@ -71,7 +72,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "A restore keeps decision roles as recorded: the import's accessKept and accessAsHere fields, and point (12)'s 409 for a Product Owner or decider whose account time does not read (card 3033). The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -438,6 +439,39 @@ and its access; and at the write). Not marked Breaking. The admin page's load
 `null` when unreadable, `freeInodes` `null` where the volume counts none. The 507 is given too when
 fewer than 1,000 inodes are free, when the free space is not read within 2 seconds, and for 5
 minutes after a write found the disk full unless the free space has grown since.
+
+### Changes on 2026-11-21: a restore keeps decision roles as this server recorded them (card 3033)
+
+**Within 1.15.0 (point 12).** A board's Product Owner named by `PUT /api/v1/boards/{boardId}`, a
+decider named by `PUT /api/v1/decisions/{decisionId}/decider`, and the decider a decision made by
+`POST /api/v1/boards/{boardId}/decisions` or `POST /api/v1/decisions/{decisionId}/supersede` would be
+given, are refused with **`409`** and nothing written where that account's creation time cannot be
+read on this server, as the record of access changes, which a restore reads, could not name it. No
+account made through DumpFire has such a time: a fault answer, not a new contract. Each of the four
+operations' `409` says so. OpenAPI stays `1.15.0` (unreleased); its note gains point (12), and
+"nothing else changed" is now (13). The v1 decision and board routes write one more record row in their
+transaction (migration 0080), nothing a caller sees.
+
+Internal (`/api`):
+
+- `POST /api/admin/import` (additive): `accessKept` gains `participantsRemoved`, `participantsLowered`,
+  `accountsCleared`, `decidersCleared`, `decidersFixed` and `decisionsEnded`, the decision roles this
+  server's record kept as it says; `accessAsHere` gains `decisions` and `decisionsNotHere`, on a backup
+  whose seal does not verify, the decisions this server holds kept with their board, stage and roles as
+  here, and those it does not hold brought in with no board, no account and nobody on them. Each object
+  is still present only where a count is above 0, all its fields counted, `decisionsEnded` included.
+  `accountsKeptLines` and the message gain, each only where its count is above 0: "N place(s) on
+  decisions removed on this server after the backup was made stay removed.", "N participant(s) made
+  informed on this server stay informed.", "N account(s) taken off a place on a decision on this server
+  stay off it: …", "N decision(s) keep no decider, as this server's record says: …", "N decision(s)
+  keep no decider and cannot be given one here, …" and "N decision(s) deleted on this server came back
+  with no author, decider or participants: …"; card 3002's unsealed sentence gains "… and of the
+  decisions in it, N this server holds kept their board, stage, author, decider and participants as
+  here, and N it does not hold came in with no board, no account and nobody on them.", and the records
+  sentence reads "change(s) of board, team and decision access and person links". The `[CRITICAL]
+  [IMPORT]` line counts the decision roles among "keeping N access change(s) made on this server" and
+  adds "N decision(s) no role this server did not give". Counts only, naming no decision, person or
+  account.
 
 ### Changes on 2026-11-20: a restore keeps board, team and person access as this server recorded it (card 3002)
 

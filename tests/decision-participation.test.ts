@@ -35,6 +35,7 @@ import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { decisions, people, peopleGroupMembers, peopleGroups, type Board, type Decision, type DecisionOption } from '$lib/server/db/schema';
 import { recordSeen, recordSeenByLink, respondByLink, respondToDecision } from '$lib/server/decision-response-writes';
 import { releaseResults } from '$lib/server/decision-ruling-writes';
+import { setParticipants } from '$lib/server/decision-participant-writes';
 import { resultsRevisionFor } from '$lib/server/decision-results';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
 import { DEAD_DECISION_LINK, STALE_REVISION, tooManyWrongLinks, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
@@ -58,6 +59,7 @@ import {
 	resetDb
 } from './helpers/fixtures';
 import { gate, gateRoutes } from './helpers/gate';
+import { revisionNow } from './helpers/decision-faults';
 
 const UI: ServiceOptions = { source: 'ui' };
 const API: ServiceOptions = { source: 'api' };
@@ -1016,6 +1018,23 @@ describe('readDecisionPage and readLinkPage', () => {
 });
 
 // ─── The routes' guard, through the gate (case 20) ───────────────────────────
+
+describe("a draft's participants saved over a place marked removed (card 3033, R10)", () => {
+	it('(aa3) a draft save naming a person whose only place is removed gives them a new place; the removed one is left as it is', () => {
+		const author = makeUser({ username: 'author' });
+		addBoardMember(board, author, 'editor');
+		const draft = makeDecision({ board, author, decider: author, status: 'draft' });
+		const person = makePerson({ fullName: 'Pat' });
+		const removed = makeParticipant(draft, { person, role: 'consulted', removedAt: '2026-11-02 09:00:00' });
+
+		as(author, (caller) => setParticipants(caller, { decisionId: draft.id }, { participants: [{ personId: person.id, role: 'informed' }], revision: revisionNow(draft.id) }, UI));
+
+		expect(sqlite.prepare('SELECT id, role, removed_at FROM decision_participants WHERE decision_id = ? ORDER BY id').raw().all(draft.id)).toEqual([
+			[removed.id, 'consulted', '2026-11-02 09:00:00'],
+			[expect.any(Number), 'informed', null]
+		]);
+	});
+});
 
 describe('the four routes, through the gate', () => {
 	// The first request through the harness starts SvelteKit's server for this file.

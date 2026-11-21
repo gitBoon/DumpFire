@@ -29,7 +29,7 @@
  */
 import { error } from '@sveltejs/kit';
 import { and, eq, isNull } from 'drizzle-orm';
-import { db } from './db';
+import { db, sqlite } from './db';
 import { cards, columns, decisionCardLinks, decisionOptions, decisionParticipants, decisions, type Decision, type DecisionOption, type DecisionParticipant } from './db/schema';
 import { requirePasswordHeld, type SessionUser } from './auth';
 import { listedOptionIds, liveOptionsOf, openFactsOf, optionChanges, participantsOf } from './decision-content';
@@ -60,6 +60,7 @@ import {
 	snapshotColumns,
 	sourceOf
 } from './decision-write-shared';
+import { ACCESS_KIND, recordAccessChange } from './access-changes';
 
 /**
  * The functions here that only read: the guards of the withdrawal and the
@@ -125,6 +126,12 @@ const EXTENDS_EARLIER = "closesAt must be later than the decision's current clos
  * `CALLER_MAIL_DAILY_CAP` in 24 hours. Last of all, the caller's publish
  * limit (Q23): 429 once they have opened or re-published `PUBLISH_DAILY_CAP`
  * decisions in 24 hours.
+ *
+ * Card 3033: the live places alone are read (R10), so a place a restore or
+ * the start marked removed is not counted, snapshotted or included; and where
+ * a place's snapshot, taken again, holds another account than the place did,
+ * `decision_account` is recorded (D7): `none` for the one it held and `held`
+ * for the one it now holds.
  */
 export function openDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -141,7 +148,7 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
 	const [refusal] = refusalsOf(openFactsOf(decision, now));
 	if (refusal !== undefined) error(409, refusal.words);
 	const options = liveOptionsOf(decision.id);
-	const rows = participantsOf(decision.id);
+	const rows = participantsOf(decision.id, { live: true });
 	// The code review's part B (S2): every participant counted, as each may be invited.
 	requireRecordMailAllowed(user, rows.length, now);
 	requirePublishAllowed(user, now);
@@ -155,6 +162,9 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
 			.set({ ...snapshotColumns(snapshot), includedAt: now })
 			.where(eq(decisionParticipants.id, row.id))
 			.run();
+		if (row.userId === snapshot.userId) continue;
+		if (row.userId !== null) recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionAccount, subject: row.id, holder: row.userId, access: 'none' });
+		if (snapshot.userId !== null) recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionAccount, subject: row.id, holder: snapshot.userId, access: 'held' });
 	}
 	const opened = db
 		.update(decisions)
@@ -466,6 +476,9 @@ export function decisionDeleteGuard(caller: SessionUser | null, at: { decisionId
  * record (card 2697, Q9). Where it holds one, the service itself refuses 400
  * `STEP_UP_MISSING` unless it runs inside `whilePasswordHolds` for the
  * caller's own account (`requirePasswordHeld`, card 2726), as the withdrawal.
+ *
+ * Card 3033 (D8): `decision deleted` recorded before the delete, while the
+ * decision's creation time can be read, as a team's deletion is.
  */
 export function deleteDecision(caller: SessionUser | null, at: { decisionId: number }, body: null, opts: ServiceOptions): void {
 	inWrite();
@@ -488,6 +501,7 @@ export function deleteDecision(caller: SessionUser | null, at: { decisionId: num
 	for (const link of links) {
 		logActivity({ action: ACTIONS.decisionCardLinkDeleted, ...decisionEntry(link.boardId, 'a linked decision was deleted', user, opts, link.cardId) });
 	}
+	recordAccessChange(sqlite, { kind: ACCESS_KIND.decision, subject: decision.id, access: 'deleted' });
 	db.delete(decisions).where(eq(decisions.id, decision.id)).run();
 
 	if (decision.openedAt === null || decision.boardId === null) return;

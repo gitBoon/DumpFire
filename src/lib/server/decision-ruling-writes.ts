@@ -23,7 +23,7 @@
  */
 import { error } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
-import { db } from './db';
+import { db, sqlite } from './db';
 import { boards, decisionOptions, decisionVersions, decisions, users, type Decision, type DecisionParticipant } from './db/schema';
 import type { SessionUser } from './auth';
 import { canEditBoard } from './board-access';
@@ -64,9 +64,11 @@ import {
 	MOST_PARTICIPANTS,
 	participantOn,
 	requireLinkHolder,
+	requireDeciderRecordable,
 	requireReachedByAccount,
 	sourceOf
 } from './decision-write-shared';
+import { ACCESS_KIND, recordAccessChange } from './access-changes';
 
 /**
  * The functions here that only read: the guards of the ruling and the
@@ -311,6 +313,9 @@ export function releaseResults(caller: SessionUser | null, at: { decisionId: num
  * live event and no mail (a draft). Card 2728 (D6): the version's
  * `participants` and `decider` flags are not carried, and its `title` flag
  * only with the old title; a new title given through an API key is flagged.
+ * Card 3033 (D3): `decision tracked` and `decision_decider yes` recorded for
+ * the draft after its insert; R14: 409 first where the decider's account's
+ * creation time names no moment.
  */
 export function supersedeDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -329,6 +334,7 @@ export function supersedeDecision(caller: SessionUser | null, at: { decisionId: 
 			? undefined
 			: db.select({ id: users.id, username: users.username, role: users.role }).from(users).where(eq(users.id, decision.deciderUserId)).get();
 	const decider = previous !== undefined && canEditBoard(previous, board.id) ? previous : null;
+	requireDeciderRecordable(decider ?? user);
 	const version = db
 		.select({ content: decisionVersions.content })
 		.from(decisionVersions)
@@ -355,6 +361,8 @@ export function supersedeDecision(caller: SessionUser | null, at: { decisionId: 
 		})
 		.returning()
 		.get();
+	recordAccessChange(sqlite, { kind: ACCESS_KIND.decision, subject: draft.id, access: 'tracked' });
+	recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionDecider, subject: draft.id, holder: draft.deciderUserId, access: 'yes' });
 	const optionIds = new Map<number, number>();
 	content.options.forEach((option, index) => {
 		const made = db.insert(decisionOptions).values({ decisionId: draft.id, label: String.fromCharCode(65 + index), position: index }).returning().get();

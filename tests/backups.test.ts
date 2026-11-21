@@ -144,8 +144,15 @@ import { carryFactors, mfaWithoutFactorSentence, readMfaHere, sameAccountHere, t
 import { usableInvite } from '$lib/server/invites';
 import { notifyRequesterProgress, shouldNotifyUser } from '$lib/server/notifications';
 import { queueRecordMails } from '$lib/server/decision-mail';
-import { SYSTEM_ACTOR } from '$lib/server/decision-record';
-import { resendInvitation } from '$lib/server/decision-participant-writes';
+import { SYSTEM_ACTOR, accountHistory, appendEvent } from '$lib/server/decision-record';
+import { decisionAccess, mayDo } from '$lib/server/decision-access';
+import type { DecisionAction } from '$lib/server/decision-status';
+import { reachOf } from '$lib/server/decision-links';
+import { openDecision } from '$lib/server/decision-lifecycle-writes';
+import { setDecider } from '$lib/server/decision-authoring-writes';
+import { respondToDecision } from '$lib/server/decision-response-writes';
+import { revisionFor } from '$lib/server/decision-authoring';
+import { resendInvitation, setParticipantAccount, setParticipants } from '$lib/server/decision-participant-writes';
 import { writeAs } from '$lib/server/write-as';
 import { eq } from 'drizzle-orm';
 import { canViewBoard } from '$lib/server/board-access';
@@ -167,7 +174,7 @@ import {
 	rowsToRestore,
 	superadminsOf
 } from '$lib/server/db/restore';
-import { inviteTokens, taskRequests, users, type Board } from '$lib/server/db/schema';
+import { decisionParticipants, decisions, inviteTokens, people, taskRequests, users, type Board, type Decision } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
 import { disableAccount } from '$lib/server/account-disable';
 import { removeSettingsOfFormerAdministrators } from '$lib/server/setting-setters';
@@ -1031,7 +1038,7 @@ describe('a restore', () => {
 			const drafted = makeParticipant(draft, { linkTokenHash: 'hand-set-hash-on-a-draft', linkIssuedAt: '2026-11-01 09:00:00' });
 			const live = migratedDb();
 
-			const result = restoreFromBackup(live, opening(Buffer.from(sqlite.serialize())));
+			const result = restoreFromBackup(live, sealedFor(live, opening(Buffer.from(sqlite.serialize()))));
 
 			expect(result.errors).toEqual([]);
 			expect(result.restored.decision_participants).toBe(4);
@@ -11471,7 +11478,7 @@ describe('an unsealed backup marks left each person this server did not hold as 
 		for (const text of ['evil', '<b>', 'not a time', '7946', 'paused']) expect(recorded, text).not.toContain(text);
 	});
 
-	it("(t) card 3020: contract, record mail: after (o)'s restore, the invitation to that participant is recorded skipped as left and sends nothing, and Resend is refused", async () => {
+	it("(t) card 3020: contract, record mail: after (o)'s restore, the invitation to that participant sends nothing, and Resend is refused (card 3033: the place is removed)", async () => {
 		const { decision, backup, participantId } = plantedOnADecision();
 		restoreFromBackup(sqlite, backup, { importer: chief.id });
 		// Mail and the App URL set up after the restore, so that nothing else stops the mail.
@@ -11493,8 +11500,42 @@ describe('an unsealed backup marks left each person this server did not hold as 
 			}
 			await sent.settle();
 
-			expect(eventsSince(from)).toEqual([{ kind: 'mail_skipped', participantId, detail: '{"mail":"invitation","reason":"left"}' }]);
-			expect(refused).toMatchObject({ status: 409, body: { message: 'Eve has left: they cannot be mailed about this decision' } });
+			// Card 3033 (plan 3.7): the place the file added on a decision this server holds is removed at the restore, so the
+			// invitation is not even tried for it, and Resend is refused as for a removed participant.
+			expect(eventsSince(from)).toEqual([]);
+			expect(refused).toMatchObject({ status: 409, body: { message: 'Eve has been removed from this decision: they cannot be mailed about it' } });
+			expect(sent.emails).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+	});
+
+	it("(t2) card 3033's code review, FP11: a place this server held on an open decision, whose person the file gives another address: the place kept as here, the person marked left, and the invitation to it skipped as left", async () => {
+		annHere();
+		const decision = makeDecision({ status: 'open', closesAt: '2099-01-01 00:00:00' });
+		const participantId = makeParticipant(decision, { personId: 3, name: 'Ann', email: 'ann@x.test' }).id;
+		const backup = ownBackup({ edited: true });
+		backup.prepare("UPDATE people SET email = 'eve@x.test' WHERE id = 3").run();
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(personOf(3)).toMatchObject({ email: 'eve@x.test', status: 'left' });
+		expect(sqlite.prepare('SELECT person_id AS personId, email, removed_at AS removedAt FROM decision_participants WHERE id = ?').get(participantId)).toEqual({
+			personId: 3,
+			email: 'ann@x.test',
+			removedAt: null
+		});
+		makeSmtp();
+		sqlite.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://dumpfire.example.test') ON CONFLICT (key) DO UPDATE SET value = excluded.value").run();
+		const from = sqlite.prepare('SELECT coalesce(max(id), 0) FROM decision_events').pluck().get() as number;
+		const sent = effects();
+		try {
+			inTransaction(() => queueRecordMails(decision, 'invitation', { by: SYSTEM_ACTOR }));
+			await sent.settle();
+			expect(sqlite.prepare('SELECT kind, participant_id AS participantId, detail FROM decision_events WHERE decision_id = ? AND id > ? ORDER BY id').all(decision.id, from)).toEqual([
+				{ kind: 'mail_skipped', participantId, detail: JSON.stringify({ mail: 'invitation', reason: 'left' }) }
+			]);
 			expect(sent.emails).toEqual([]);
 		} finally {
 			sent.restore();
@@ -12745,7 +12786,7 @@ describe('a restore keeps board, team and person access as this server recorded 
 	const backupRows = () => sqlite.prepare("SELECT kind, subject_id, holder_id, access, changed_at, stated_changed FROM access_changes WHERE origin = 'backup' ORDER BY seq").all() as Record<string, unknown>[];
 	/** This server's backup now, its seal verifying. */
 	const backupNow = () => opening(generateBackupData());
-	const NO_KEPT = { removed: 0, lowered: 0, madePrivate: 0, productOwners: 0, creators: 0, teamsEnded: 0, unlinked: 0 };
+	const NO_KEPT = { removed: 0, lowered: 0, madePrivate: 0, productOwners: 0, creators: 0, teamsEnded: 0, unlinked: 0, participantsRemoved: 0, participantsLowered: 0, accountsCleared: 0, decidersCleared: 0, decidersFixed: 0, decisionsEnded: 0 };
 	const AS_RESTORED = [
 		['as it is', {}],
 		['as a working copy', { outside: 'off' as const }]
@@ -12778,7 +12819,7 @@ describe('a restore keeps board, team and person access as this server recorded 
 		expect(membersOf(board.id)).toEqual([]);
 		expect(canViewBoard(bob, board.id)).toBe(false);
 		expect(result.accessKept).toEqual({ ...NO_KEPT, removed: 1 });
-		expect(result.accessAsHere).toEqual({ boards: 0, teams: 0, people: 0 });
+		expect(result.accessAsHere).toEqual({ boards: 0, teams: 0, people: 0, decisions: 0, decisionsNotHere: 0 });
 	});
 
 	it('(h) an owner lowered here: the lower role, and a webhook with a secret on the board the owner did not set held, unnamed', () => {
@@ -13027,7 +13068,7 @@ describe('a restore keeps board, team and person access as this server recorded 
 		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
 
 		expect(result.errors.filter((line) => line.includes('record of access changes'))).toEqual([
-			expect.stringMatching(/^101 row\(s\) .* 101 with more than 100 rows for one board, team or person and holder\./)
+			expect.stringMatching(/^101 row\(s\) .* 101 with more than 100 rows for one board, team, person or decision and holder\./)
 		]);
 		expect(backupRows().map((row) => row.kind)).toEqual(['board_member']);
 	});
@@ -13079,7 +13120,7 @@ describe('a restore keeps board, team and person access as this server recorded 
 			expect(sharesOf(board.id)).toEqual([]);
 			expect(boardRow(board.id)).toEqual({ isPublic: 0, createdBy: chief.id, productOwner: null });
 			expect(teamOf(team.id)).toEqual([[bob.id, 'member']]);
-			expect(result.accessAsHere).toEqual({ boards: 1, teams: 1, people: 0 });
+			expect(result.accessAsHere).toEqual({ boards: 1, teams: 1, people: 0, decisions: 0, decisionsNotHere: 0 });
 			// R4: what keepAccessHere set is not counted again.
 			expect(result.accessKept).toEqual(NO_KEPT);
 			expect(recordNow()).toEqual(record);
@@ -13144,7 +13185,7 @@ describe('a restore keeps board, team and person access as this server recorded 
 			const personRow = (id: number) => sqlite.prepare('SELECT user_id AS userId, status FROM people WHERE id = ?').get(id);
 			expect(personRow(950)).toEqual({ userId: null, status: 'left' });
 			expect(personRow(person.id)).toEqual({ userId: ann.id, status: 'left' });
-			expect(result.accessAsHere).toEqual({ boards: 0, teams: 0, people: 2 });
+			expect(result.accessAsHere).toEqual({ boards: 0, teams: 0, people: 2, decisions: 0, decisionsNotHere: 0 });
 			const links = sqlite
 				.prepare("SELECT subject_id AS id, before, after FROM people_changes WHERE id > ? AND source = 'restore' AND before LIKE '%account%' ORDER BY subject_id")
 				.all(from);
@@ -13250,7 +13291,7 @@ describe('a restore keeps board, team and person access as this server recorded 
 		expect(result.errors).toEqual([]);
 		expect({ members: membersOf(board.id), team: teamOf(team.id), board: boardRow(board.id), record: recordNow() }).toEqual(before);
 		expect(result.accessKept).toEqual(NO_KEPT);
-		expect(result.accessAsHere).toEqual({ boards: 0, teams: 0, people: 0 });
+		expect(result.accessAsHere).toEqual({ boards: 0, teams: 0, people: 0, decisions: 0, decisionsNotHere: 0 });
 		expect(result.recordsNotTaken.accessChanges).toBe(0);
 	});
 
@@ -13370,7 +13411,7 @@ describe('a restore keeps board, team and person access as this server recorded 
 			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
 
 			expect(result.errors).toEqual([
-				"110 row(s) of the backup's record of access changes were left out, by reason: 110 with more than 100 rows for one board, team or person and holder. The rest of the record was added to this server's."
+				"110 row(s) of the backup's record of access changes were left out, by reason: 110 with more than 100 rows for one board, team, person or decision and holder. The rest of the record was added to this server's."
 			]);
 			expect(backupRows().map((row) => row.subject_id)).toEqual([902]);
 		});
@@ -13455,7 +13496,7 @@ describe('a restore keeps board, team and person access as this server recorded 
 
 			const res = await importThrough(backup, failsAfter);
 
-			const kept = { removed: 3, lowered: 1, madePrivate: 1, productOwners: 1, creators: 1, teamsEnded: 1, unlinked: 1 };
+			const kept = { removed: 3, lowered: 1, madePrivate: 1, productOwners: 1, creators: 1, teamsEnded: 1, unlinked: 1, participantsRemoved: 0, participantsLowered: 0, accountsCleared: 0, decidersCleared: 0, decidersFixed: 0, decisionsEnded: 0 };
 			const LINES = [
 				'3 board or team membership(s) and share(s) in the backup were removed on this server after it was made, and are left out.',
 				'1 role(s) on boards and teams were given back the lower role they have on this server.',
@@ -13512,11 +13553,11 @@ describe('a restore keeps board, team and person access as this server recorded 
 				'the access they have on this server, and accounts on this server were given none on the boards and teams it does not hold. A person ' +
 				'whose account link the backup changed stays marked as left until an administrator marks them active.';
 			const RECORDS =
-				`The backup's seal did not verify, so its record of ${inFile} change(s) of board and team access and person links was not added to this server's: a file ` +
+				`The backup's seal did not verify, so its record of ${inFile} change(s) of board, team and decision access and person links was not added to this server's: a file ` +
 				"this server cannot check gives no access here, and this server's own records are kept as they were.";
 			const message = res.body.message as string;
 			expect(res.status, message).toBe(failsAfter ? 500 : 200);
-			expect(res.body.accessAsHere).toEqual({ boards: 1, teams: 1, people: 1 });
+			expect(res.body.accessAsHere).toEqual({ boards: 1, teams: 1, people: 1, decisions: 0, decisionsNotHere: 0 });
 			expect(res.body.accessKept).toBeUndefined();
 			expect(res.body.recordsNotTaken).toEqual({ accountEndings: 0, keyRevocations: 0, accessChanges: inFile });
 			expect(res.body.accountsKeptLines).toEqual([AS_HERE, RECORDS]);
@@ -13524,9 +13565,9 @@ describe('a restore keeps board, team and person access as this server recorded 
 			const line = importedSince(from);
 			// Card 3012's clause (the person marked left) sits between the two.
 			expect(line.message).toContain(", restored as it is, giving 3 board(s), team(s) and person(s) this server's access, keeping what");
-			expect(line.message).toContain(`, adding none of the backup's ${inFile} change(s) of board and team access and person links to this server's records, as its seal did not verify.`);
+			expect(line.message).toContain(`, adding none of the backup's ${inFile} change(s) of board, team and decision access and person links to this server's records, as its seal did not verify.`);
 			const meta = JSON.parse(line.meta);
-			expect(meta.accessAsHere).toEqual({ boards: 1, teams: 1, people: 1 });
+			expect(meta.accessAsHere).toEqual({ boards: 1, teams: 1, people: 1, decisions: 0, decisionsNotHere: 0 });
 			expect(meta.recordsNotTaken).toEqual({ accountEndings: 0, keyRevocations: 0, accessChanges: inFile });
 			expect(meta).not.toHaveProperty('accessKept');
 			const said = `${res.body.accountsKeptLines.join(' ')} ${line.message} ${line.meta}`;
@@ -13554,6 +13595,1037 @@ describe('a restore keeps board, team and person access as this server recorded 
 			expect(meta).not.toHaveProperty('accessKept');
 			expect(meta).not.toHaveProperty('accessAsHere');
 			expect(meta).not.toHaveProperty('recordsNotTaken');
+		});
+	});
+});
+
+// ─── Card 3033, slice 2: a restore never gives or brings back a decision role ─────────────
+
+describe('a restore never brings back a decision role removed here, and an unchecked backup gives none (card 3033, slice 2)', () => {
+	type Decided = { id: number };
+	const createdOf = (table: string, id: number) => sqlite.prepare(`SELECT created_at FROM ${table} WHERE id = ?`).pluck().get(id) as string;
+	/** A row of this server's record, by hand, as a writer will put it in slice 3 (R13 L9): `here`, dated now. */
+	const note = (kind: string, subject: number, subjectCreated: string, holder: number, holderCreated: string, access: string) => {
+		const at = stamp();
+		sqlite
+			.prepare(
+				'INSERT INTO access_changes (kind, subject_id, subject_created, holder_id, holder_created, access, changed_at, stated_changed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+			)
+			.run(kind, subject, subjectCreated, holder, holderCreated, access, at, at);
+	};
+	const decisionMade = (decision: Decided) => createdOf('decisions', decision.id);
+	/** The decider row of `decision`, naming `user`. */
+	const noteDecider = (decision: Decided, user: SessionUser) => note('decision_decider', decision.id, decisionMade(decision), user.id, createdOf('users', user.id), 'yes');
+	/** A place's row: the place, with its decision's time (R13 L1). */
+	const notePlace = (decision: Decided, placeId: number, access: string) => note('decision_participant', decision.id, decisionMade(decision), placeId, decisionMade(decision), access);
+	/** A place's account row (R5). */
+	const noteAccount = (decision: Decided, placeId: number, user: SessionUser, access: 'held' | 'none') =>
+		note('decision_account', placeId, decisionMade(decision), user.id, createdOf('users', user.id), access);
+	/** A decision on `board`, by `chief`, decided by `decider`, open unless said, tracked with its decider. */
+	const trackedDecision = (board: Board | null, decider: SessionUser = chief, opts: { status?: string } = {}) => {
+		const status = opts.status ?? 'open';
+		const decision = makeDecision({ board, author: chief, decider, status, closesAt: '2099-01-01 00:00:00', ...(status === 'draft' ? {} : { openedAt: '2026-11-01 09:00:00' }) });
+		note('decision', decision.id, decisionMade(decision), 0, '', 'tracked');
+		noteDecider(decision, decider);
+		return decision;
+	};
+	/** A place for `user`'s person (or a link holder's, `user` null) on `decision`, recorded with its account. */
+	const placeOn = (decision: Decision, user: SessionUser | null, role: 'consulted' | 'informed' = 'consulted', opts: { token?: string } = {}) => {
+		const person = makePerson({ user, email: `${user?.username ?? `link${decision.id}`}@place.test` });
+		const place = makeParticipant(decision, { person, role, ...(decision.status === 'draft' ? {} : { hadAccount: user !== null }), ...opts });
+		notePlace(decision, place.id, role);
+		if (user !== null) noteAccount(decision, place.id, user, 'held');
+		return { place, person };
+	};
+	/** A place removed here, as the writer does it, recorded. */
+	const removeHere = (decision: Decided, placeId: number) => {
+		sqlite.prepare("UPDATE decision_participants SET removed_at = '2026-11-10 09:00:00', removed_by = ? WHERE id = ?").run(chief.id, placeId);
+		notePlace(decision, placeId, 'removed');
+	};
+	const placeRow = (id: number) =>
+		sqlite.prepare('SELECT person_id AS personId, email, role, removed_at AS removedAt, removed_by AS removedBy, user_id AS userId FROM decision_participants WHERE id = ?').get(id) as
+			| { personId: number | null; email: string; role: string; removedAt: string | null; removedBy: number | null; userId: number | null }
+			| undefined;
+	const decisionRow = (id: number) =>
+		sqlite
+			.prepare('SELECT board_id AS boardId, board_name AS boardName, status, opened_at AS openedAt, author_user_id AS authorUserId, decider_user_id AS deciderUserId, decider_name AS deciderName FROM decisions WHERE id = ?')
+			.get(id) as { boardId: number | null; boardName: string; status: string; openedAt: string | null; authorUserId: number | null; deciderUserId: number | null; deciderName: string | null };
+	const decisionNow = (id: number) => db.select().from(decisions).where(eq(decisions.id, id)).get()!;
+	/** The events the restore wrote on `decisionId`: by DumpFire, but the link ends card 2675 records and the fixtures' inclusions. */
+	const restoreEvents = (decisionId: number) =>
+		sqlite
+			.prepare(
+				"SELECT participant_id AS place, kind, detail, actor_user_id AS actor, source FROM decision_events WHERE decision_id = ? AND actor_name = 'DumpFire' AND kind NOT IN ('link_revoked', 'included') ORDER BY id"
+			)
+			.all(decisionId);
+	const REMOVED = (place: number) => ({ place, kind: 'removed', detail: '{"reason":"restore"}', actor: null, source: 'system' });
+	const roles = (user: SessionUser, id: number) => [...decisionAccess(user, decisionNow(id)).roles].sort();
+	const mayView = (user: SessionUser, id: number) => mayDo(decisionAccess(user, decisionNow(id)), 'view', decisionNow(id));
+	const NO_KEPT = {
+		removed: 0,
+		lowered: 0,
+		madePrivate: 0,
+		productOwners: 0,
+		creators: 0,
+		teamsEnded: 0,
+		unlinked: 0,
+		participantsRemoved: 0,
+		participantsLowered: 0,
+		accountsCleared: 0,
+		decidersCleared: 0,
+		decidersFixed: 0,
+		decisionsEnded: 0
+	};
+	const NO_AS_HERE = { boards: 0, teams: 0, people: 0, decisions: 0, decisionsNotHere: 0 };
+	const AS_RESTORED = [
+		['as it is', {}],
+		['as a working copy', { outside: 'off' as const }]
+	] as const;
+	/** This server's backup now, its seal verifying. */
+	const backupNow = () => opening(generateBackupData());
+	/** A ruling of `decision` recorded here, naming `owner` its Product Owner. */
+	const ruledHere = (decision: Decided, owner: SessionUser | null) =>
+		appendEvent({ decisionId: decision.id, kind: 'ruled', detail: { optionId: null, productOwnerUserId: owner?.id ?? null } }, SYSTEM_ACTOR);
+	const detailOfEvent = (id: number) => sqlite.prepare('SELECT detail, typeof(detail) AS type FROM decision_events WHERE id = ?').get(id) as { detail: unknown; type: string };
+	let board: Board;
+	let bob: SessionUser;
+	let carol: SessionUser;
+	let mallory: SessionUser;
+	beforeEach(() => {
+		board = makeBoard({ owner: chief, name: 'Decisions' }).board;
+		bob = makeUser({ username: 'bob' });
+		carol = makeUser({ username: 'carol' });
+		mallory = makeUser({ username: 'mallory' });
+		addBoardMember(board, carol, 'editor');
+	});
+
+	describe('sealed: the record caps each role (plan 3.6)', () => {
+		it.each(AS_RESTORED)("(e) the card's case, %s: Bob removed here after the backup: removed, one removed {reason: 'restore'} by DumpFire, no role, his GET 404, counted (R9)", async (_, opts) => {
+			const decision = trackedDecision(board);
+			const { place } = placeOn(decision, bob);
+			const backup = backupNow();
+			removeHere(decision, place.id);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id, ...opts });
+
+			expect(result.sealVerified).toBe(true);
+			expect(result.errors).toEqual([]);
+			expect(placeRow(place.id)).toMatchObject({ removedAt: expect.any(String), removedBy: null, userId: bob.id });
+			expect(restoreEvents(decision.id)).toEqual([REMOVED(place.id)]);
+			expect(roles(bob, decision.id)).toEqual([]);
+			expect((await api('GET', `/api/v1/decisions/${decision.id}`, { user: bob })).status).toBe(404);
+			const record = await api('GET', `/api/v1/decisions/${decision.id}/record`, { user: chief });
+			expect(JSON.stringify(record.body)).toMatch(/"kind":"removed"[^}]*"DumpFire"|"DumpFire"[^}]*"kind":"removed"/);
+			expect(result.accessKept).toEqual({ ...NO_KEPT, participantsRemoved: 1 });
+			expect(result.accessAsHere).toEqual(NO_AS_HERE);
+		});
+
+		it('(f) a link holder removed here: removed; a ruling mailed after the restore reaches nobody', async () => {
+			const decision = trackedDecision(board);
+			const { place } = placeOn(decision, null, 'informed', { token: 'link-of-3033-f' });
+			const backup = backupNow();
+			removeHere(decision, place.id);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.errors).toEqual([]);
+			expect(placeRow(place.id)?.removedAt).not.toBeNull();
+			makeSmtp();
+			sqlite.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://dumpfire.example.test') ON CONFLICT (key) DO UPDATE SET value = excluded.value").run();
+			const sent = effects();
+			try {
+				inTransaction(() => queueRecordMails(decisionNow(decision.id), 'ruling', { by: SYSTEM_ACTOR }));
+				await sent.settle();
+				expect(sent.emails).toEqual([]);
+			} finally {
+				sent.restore();
+			}
+		});
+
+		it('(g) consulted made informed here: informed, one role_changed by DumpFire; a response is not his to give', () => {
+			const decision = trackedDecision(board);
+			const { place } = placeOn(decision, bob, 'consulted');
+			const backup = backupNow();
+			sqlite.prepare("UPDATE decision_participants SET role = 'informed' WHERE id = ?").run(place.id);
+			notePlace(decision, place.id, 'informed');
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.errors).toEqual([]);
+			expect(placeRow(place.id)).toMatchObject({ role: 'informed', removedAt: null });
+			expect(restoreEvents(decision.id)).toEqual([{ place: place.id, kind: 'role_changed', detail: '{"from":"consulted","to":"informed"}', actor: null, source: 'system' }]);
+			expect(() => writeAs({ user: bob } as App.Locals, (caller) => respondToDecision(caller, { decisionId: decision.id }, { kind: 'no_concerns' }, { source: 'ui' }))).toThrow(
+				expect.objectContaining({ status: 403, body: { message: 'Someone kept informed gives no response' } })
+			);
+			expect(result.accessKept).toEqual({ ...NO_KEPT, participantsLowered: 1 });
+		});
+
+		it("(h) an account taken off a place here: the place holds none, no account event; delivery reads it as an account removed", () => {
+			const decision = trackedDecision(board);
+			const { place, person } = placeOn(decision, bob);
+			const backup = backupNow();
+			sqlite.prepare('UPDATE decision_participants SET user_id = NULL WHERE id = ?').run(place.id);
+			noteAccount(decision, place.id, bob, 'none');
+			sqlite.prepare('UPDATE people SET user_id = NULL WHERE id = ?').run(person.id);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.errors).toEqual([]);
+			expect(placeRow(place.id)).toMatchObject({ userId: null, removedAt: null });
+			expect(restoreEvents(decision.id)).toEqual([]);
+			const row = db.select().from(decisionParticipants).where(eq(decisionParticipants.id, place.id)).get()!;
+			const personNow = db.select().from(people).where(eq(people.id, person.id)).get()!;
+			expect(reachOf(row, { ...personNow, userId: null }, accountHistory(decision.id).get(place.id) ?? false)).toEqual({ skip: 'account_removed' });
+			expect(result.accessKept).toEqual({ ...NO_KEPT, accountsCleared: 1 });
+		});
+
+		it('(i1) a decider replaced here: no decider, the name kept; the old one cannot rule; counted; the author names one again', () => {
+			const decision = trackedDecision(board, bob);
+			const backup = backupNow();
+			sqlite.prepare('UPDATE decisions SET decider_user_id = ?, decider_name = ? WHERE id = ?').run(carol.id, 'carol', decision.id);
+			noteDecider(decision, carol);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.errors).toEqual([]);
+			expect(decisionRow(decision.id)).toMatchObject({ deciderUserId: null, deciderName: 'bob' });
+			expect(mayDo(decisionAccess(bob, decisionNow(decision.id)), 'rule', decisionNow(decision.id))).toBe(false);
+			expect(result.accessKept).toEqual({ ...NO_KEPT, decidersCleared: 1 });
+			writeAs({ user: chief } as App.Locals, (caller) => setDecider(caller, { decisionId: decision.id }, { deciderUserId: carol.id, revision: revisionFor(decision.id) }, { source: 'ui' }));
+			expect(decisionRow(decision.id).deciderUserId).toBe(carol.id);
+		});
+
+		it('(i2) the same on a decision that supersedes another: counted decidersFixed, not decidersCleared (R13 L6)', () => {
+			const earlier = trackedDecision(board, bob, { status: 'ruled' });
+			const decision = trackedDecision(board, bob);
+			sqlite.prepare('UPDATE decisions SET supersedes_id = ? WHERE id = ?').run(earlier.id, decision.id);
+			const backup = backupNow();
+			sqlite.prepare('UPDATE decisions SET decider_user_id = ? WHERE id = ?').run(carol.id, decision.id);
+			noteDecider(decision, carol);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.errors).toEqual([]);
+			expect(decisionRow(decision.id).deciderUserId).toBeNull();
+			expect(decisionRow(earlier.id).deciderUserId).toBe(bob.id);
+			expect(result.accessKept).toEqual({ ...NO_KEPT, decidersFixed: 1 });
+		});
+
+		it("(j1) a draft's place deleted here: deleted again at the restore (R10)", () => {
+			const decision = trackedDecision(board, chief, { status: 'draft' });
+			const { place } = placeOn(decision, bob);
+			const backup = backupNow();
+			sqlite.prepare('DELETE FROM decision_participants WHERE id = ?').run(place.id);
+			notePlace(decision, place.id, 'removed');
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.errors).toEqual([]);
+			expect(placeRow(place.id)).toBeUndefined();
+			expect(restoreEvents(decision.id)).toEqual([]);
+			expect(result.accessKept).toEqual({ ...NO_KEPT, participantsRemoved: 1 });
+		});
+
+		it("(j2) a draft's place a response names in the backup: marked removed, no event (R10)", () => {
+			const decision = trackedDecision(board, chief, { status: 'draft' });
+			const { place } = placeOn(decision, bob);
+			const backup = backupNow();
+			backup
+				.prepare("INSERT INTO decision_responses (decision_id, participant_id, version_number, round, kind, via) VALUES (?, ?, 1, 1, 'no_concerns', 'session')")
+				.run(decision.id, place.id);
+			sealedFor(sqlite, backup);
+			sqlite.prepare('DELETE FROM decision_participants WHERE id = ?').run(place.id);
+			notePlace(decision, place.id, 'removed');
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(true);
+			expect(result.errors).toEqual([]);
+			expect(placeRow(place.id)).toMatchObject({ removedAt: expect.any(String), removedBy: null });
+			expect(restoreEvents(decision.id)).toEqual([]);
+		});
+
+		/** (k1)'s case: Bob's place and Carol the decider on a decision withdrawn and deleted here, then the backup restored. */
+		const deletedHere = () => {
+			const decision = trackedDecision(board, carol);
+			const { place } = placeOn(decision, bob);
+			const backup = backupNow();
+			sqlite.prepare("UPDATE decisions SET status = 'withdrawn', withdrawn_at = '2026-11-10 09:00:00' WHERE id = ?").run(decision.id);
+			note('decision', decision.id, decisionMade(decision), 0, '', 'deleted');
+			sqlite.prepare('DELETE FROM decisions WHERE id = ?').run(decision.id);
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+			return { decision, place, backup, result };
+		};
+
+		it('(k1) a decision withdrawn and deleted here: back with no author, decider or participant, its place holding no account; decisionsEnded 1, its place, account and decider not counted again (R6, R13 L7; code review FP4, FP5)', () => {
+			const { decision, place, result } = deletedHere();
+
+			expect(result.errors).toEqual([]);
+			expect(decisionRow(decision.id)).toMatchObject({ authorUserId: null, deciderUserId: null });
+			expect(placeRow(place.id)).toMatchObject({ removedAt: expect.any(String), userId: null });
+			expect(restoreEvents(decision.id)).toEqual([REMOVED(place.id)]);
+			expect(result.accessKept).toEqual({ ...NO_KEPT, decisionsEnded: 1 });
+		});
+
+		it("(k2) R6: after (k1), Carol named again, Bob's place brought back and his account attached to it again here through the writers, which record the decider, the place and its account (D2, D5, D6), the same backup restored again: all kept, the author still none, decisionsEnded 0", () => {
+			const { decision, place, backup } = deletedHere();
+			sqlite.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://here.example.test')").run();
+			writeAs({ user: chief } as App.Locals, (caller) => setDecider(caller, { decisionId: decision.id }, { deciderUserId: carol.id, revision: revisionFor(decision.id) }, { source: 'ui' }));
+			writeAs({ user: carol } as App.Locals, (caller) =>
+				setParticipants(
+					caller,
+					{ decisionId: decision.id },
+					{ participants: [{ personId: place.personId!, role: 'consulted' }], revision: revisionFor(decision.id) },
+					{ source: 'ui' }
+				)
+			);
+			// Code review, FP5: (k1)'s restore took Bob's account off the place with the decision's deletion, so including him
+			// again brings the place back with none, and an administrator attaches it.
+			expect(placeRow(place.id)).toMatchObject({ removedAt: null, userId: null });
+			writeAs({ user: chief } as App.Locals, (caller) => setParticipantAccount(caller, { decisionId: decision.id, participantId: place.id }, { account: 'person' }, { source: 'ui' }));
+			expect(placeRow(place.id)).toMatchObject({ removedAt: null, userId: bob.id });
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.errors).toEqual([]);
+			expect(decisionRow(decision.id)).toMatchObject({ authorUserId: null, deciderUserId: carol.id });
+			expect(placeRow(place.id)).toMatchObject({ removedAt: null, userId: bob.id });
+			expect(result.accessKept).toEqual(NO_KEPT);
+		});
+
+		it('(l)[1] control: removed, then included again here: live, nothing written', () => {
+			const decision = trackedDecision(board);
+			const { place } = placeOn(decision, bob);
+			const backup = backupNow();
+			removeHere(decision, place.id);
+			sqlite.prepare('UPDATE decision_participants SET removed_at = NULL, removed_by = NULL WHERE id = ?').run(place.id);
+			notePlace(decision, place.id, 'consulted');
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(placeRow(place.id)).toMatchObject({ removedAt: null, role: 'consulted', userId: bob.id });
+			expect(restoreEvents(decision.id)).toEqual([]);
+			expect(result.accessKept).toEqual(NO_KEPT);
+		});
+
+		it('(l)[2] control: a decision the record does not track comes back as the backup has it', () => {
+			const decision = makeDecision({ board, author: chief, decider: bob, status: 'open', openedAt: '2026-11-01 09:00:00' });
+			const place = makeParticipant(decision, { person: makePerson({ user: bob }) });
+			const backup = backupNow();
+			sqlite.prepare("UPDATE decision_participants SET removed_at = '2026-11-10 09:00:00' WHERE id = ?").run(place.id);
+			sqlite.prepare('UPDATE decisions SET decider_user_id = NULL WHERE id = ?').run(decision.id);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(placeRow(place.id)).toMatchObject({ removedAt: null, userId: bob.id });
+			expect(decisionRow(decision.id).deciderUserId).toBe(bob.id);
+			expect(result.accessKept).toEqual(NO_KEPT);
+		});
+
+		it('(l)[3] 3002-R20: a place informed here with no row of the record, consulted in the backup: informed', () => {
+			const decision = trackedDecision(board);
+			const place = makeParticipant(decision, { person: makePerson({ user: bob }), role: 'consulted' });
+			const backup = backupNow();
+			sqlite.prepare("UPDATE decision_participants SET role = 'informed' WHERE id = ?").run(place.id);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(placeRow(place.id)).toMatchObject({ role: 'informed', removedAt: null });
+			expect(result.accessKept).toEqual({ ...NO_KEPT, participantsLowered: 1 });
+		});
+
+		it("(m) the guess, R8's key: a place on a tracked decision with no row, whose id this server held only on a decision of another creation time: removed", () => {
+			const decision = trackedDecision(board);
+			const other = makeDecision({ board, author: chief, status: 'open', openedAt: '2026-11-01 09:00:00' });
+			sqlite.prepare("UPDATE decisions SET created_at = '2026-01-01 09:00:00' WHERE id = ?").run(other.id);
+			const place = makeParticipant(other, { person: makePerson({ user: bob }) });
+			const backup = backupNow();
+			backup.prepare('UPDATE decision_participants SET decision_id = ? WHERE id = ?').run(decision.id, place.id);
+			sealedFor(sqlite, backup);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(true);
+			expect(placeRow(place.id)).toMatchObject({ removedAt: expect.any(String), userId: null });
+			// Code review, FP5: its account, which this server did not hold on it either, is taken off the removed place too.
+			expect(result.accessKept).toEqual({ ...NO_KEPT, participantsRemoved: 1, accountsCleared: 1 });
+		});
+
+		it("(m2) R5: Bob's account moved here from place R1 to R2: an older backup with him on R1 gives R1 none; a later one with him on R2 keeps him there", () => {
+			const decision = trackedDecision(board);
+			const { place: r1 } = placeOn(decision, bob);
+			const { place: r2 } = placeOn(decision, null);
+			const older = backupNow();
+			sqlite.prepare('UPDATE decision_participants SET user_id = NULL WHERE id = ?').run(r1.id);
+			noteAccount(decision, r1.id, bob, 'none');
+			sqlite.prepare('UPDATE decision_participants SET user_id = ? WHERE id = ?').run(bob.id, r2.id);
+			noteAccount(decision, r2.id, bob, 'held');
+			const later = backupNow();
+
+			const first = restoreFromBackup(sqlite, older, { importer: chief.id });
+
+			expect(placeRow(r1.id)?.userId).toBeNull();
+			expect(placeRow(r2.id)?.userId).toBeNull();
+			expect(first.accessKept).toEqual({ ...NO_KEPT, accountsCleared: 1 });
+
+			const second = restoreFromBackup(sqlite, later, { importer: chief.id });
+
+			expect(placeRow(r2.id)?.userId).toBe(bob.id);
+			expect(second.accessKept).toEqual(NO_KEPT);
+		});
+	});
+
+	describe('unsealed: held decisions as here, the rest inert (plan 3.7)', () => {
+		/** The file's place for `user` on decision `decisionId`, consulted, live. */
+		const plantPlace = (backup: Database.Database, decisionId: number, user: SessionUser | null, opts: { personId?: number | null } = {}) =>
+			Number(
+				backup
+					.prepare(
+						"INSERT INTO decision_participants (decision_id, person_id, role, name, email, job_title, groups, included_at, user_id) VALUES (?, ?, 'consulted', ?, ?, '', '[]', '2026-11-01 09:00:00', ?)"
+					)
+					.run(decisionId, opts.personId ?? null, user?.username ?? 'Linda', `${user?.username ?? 'linda'}@file.test`, user?.id ?? null).lastInsertRowid
+			);
+		/** A decision the file adds, at `id`, open on `boardId` unless said, by and decided by `by`. */
+		const plantDecision = (backup: Database.Database, id: number, opts: { boardId?: number | null; by?: number | null; status?: string } = {}) =>
+			backup
+				.prepare(
+					"INSERT INTO decisions (id, board_id, board_name, title, status, author_user_id, author_name, decider_user_id, decider_name, opened_at, closes_at) VALUES (?, ?, 'Decisions', 'Planted', ?, ?, 'mallory', ?, 'mallory', ?, '2099-01-01 00:00:00')"
+				)
+				.run(id, opts.boardId === undefined ? board.id : opts.boardId, opts.status ?? 'open', opts.by ?? null, opts.by ?? null, (opts.status ?? 'open') === 'draft' ? null : '2026-11-01 09:00:00');
+		const registerOf = async (user: SessionUser) => JSON.stringify((await api('GET', '/api/v1/decisions', { user })).body);
+
+		it.each(AS_RESTORED)("(n1, n4) held, %s: a place the file adds for same-here Mallory: removed with an event, her account off it; she cannot open it, nor finds it in the register", async (_, opts) => {
+			const decision = trackedDecision(board);
+			const backup = ownBackup({ edited: true });
+			const planted = plantPlace(backup, decision.id, mallory);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id, ...opts });
+
+			expect(result.sealVerified).toBe(false);
+			expect(placeRow(planted)).toMatchObject({ removedAt: expect.any(String), userId: null });
+			expect(restoreEvents(decision.id)).toEqual([REMOVED(planted)]);
+			expect((await api('GET', `/api/v1/decisions/${decision.id}`, { user: mallory })).status).toBe(404);
+			expect(await registerOf(mallory)).not.toContain('"Decision ');
+			expect(result.accessAsHere).toEqual({ ...NO_AS_HERE, decisions: 1 });
+			expect(result.accessKept).toEqual(NO_KEPT);
+		});
+
+		it("(n2) held: places the file changed (Bob back, Carol consulted, Dan's person and address): every column as here, each change recorded", () => {
+			const decision = trackedDecision(board);
+			const dan = makeUser({ username: 'dan' });
+			const { place: bobs } = placeOn(decision, bob);
+			const { place: carols } = placeOn(decision, carol, 'informed');
+			const { place: dans } = placeOn(decision, dan);
+			removeHere(decision, bobs.id);
+			const before = [bobs, carols, dans].map((p) => placeRow(p.id));
+			const elsewhere = makePerson({ email: 'elsewhere@x.test' });
+			const backup = ownBackup({ edited: true });
+			backup.prepare('UPDATE decision_participants SET removed_at = NULL, removed_by = NULL WHERE id = ?').run(bobs.id);
+			backup.prepare("UPDATE decision_participants SET role = 'consulted' WHERE id = ?").run(carols.id);
+			backup.prepare("UPDATE decision_participants SET person_id = ?, email = 'elsewhere@x.test' WHERE id = ?").run(elsewhere.id, dans.id);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect([bobs, carols, dans].map((p) => placeRow(p.id))).toEqual(before);
+			expect(restoreEvents(decision.id)).toEqual([REMOVED(bobs.id), { place: carols.id, kind: 'role_changed', detail: '{"from":"consulted","to":"informed"}', actor: null, source: 'system' }]);
+			expect(result.accessAsHere).toEqual({ ...NO_AS_HERE, decisions: 1 });
+		});
+
+		it('(n3) held: an author and decider the file set to Mallory: this server\'s', () => {
+			const decision = trackedDecision(board, bob);
+			const backup = ownBackup({ edited: true });
+			backup.prepare("UPDATE decisions SET author_user_id = ?, author_name = 'mallory', decider_user_id = ?, decider_name = 'mallory' WHERE id = ?").run(mallory.id, mallory.id, decision.id);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(decisionRow(decision.id)).toMatchObject({ authorUserId: chief.id, deciderUserId: bob.id, deciderName: 'bob' });
+			expect(roles(mallory, decision.id)).toEqual([]);
+		});
+
+		it("(n5) R1: the file moves a held decision to another board: this server's board and name; a reader of the other board cannot view it", () => {
+			const decision = trackedDecision(board);
+			const other = makeBoard({ owner: mallory, name: 'Elsewhere' }).board;
+			const backup = ownBackup({ edited: true });
+			backup.prepare("UPDATE decisions SET board_id = ?, board_name = 'Elsewhere' WHERE id = ?").run(other.id, decision.id);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(decisionRow(decision.id)).toMatchObject({ boardId: board.id, boardName: board.name });
+			expect(mayView(mallory, decision.id)).toBe(false);
+		});
+
+		it("(n6) R1: the file makes a held open decision a draft: this server's status and opening; its participant still views it, and its author cannot open it", () => {
+			const decision = trackedDecision(board);
+			placeOn(decision, bob);
+			const was = decisionRow(decision.id);
+			const backup = ownBackup({ edited: true });
+			backup.prepare("UPDATE decisions SET status = 'draft', opened_at = NULL WHERE id = ?").run(decision.id);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(decisionRow(decision.id)).toMatchObject({ status: 'open', openedAt: was.openedAt });
+			expect(mayView(bob, decision.id)).toBe(true);
+			expect(() => writeAs({ user: chief } as App.Locals, (caller) => openDecision(caller, { decisionId: decision.id }, {}, { source: 'ui' }))).toThrow();
+		});
+
+		it("(n6′) R1, code review FP3: the file opens a held draft: this server's draft, never opened; its consulted participant cannot view it", () => {
+			const decision = trackedDecision(board, chief, { status: 'draft' });
+			placeOn(decision, bob);
+			const backup = ownBackup({ edited: true });
+			backup.prepare("UPDATE decisions SET status = 'open', opened_at = '2026-11-01 09:00:00' WHERE id = ?").run(decision.id);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(decisionRow(decision.id)).toMatchObject({ status: 'draft', openedAt: null });
+			expect(mayView(bob, decision.id)).toBe(false);
+		});
+
+		it('(n7) R7: a live link holder the file removed, put back: re_included {hadAccount: false}; the next ruling mails them', async () => {
+			const decision = trackedDecision(board);
+			const { place } = placeOn(decision, null, 'informed');
+			const backup = ownBackup({ edited: true });
+			backup.prepare("UPDATE decision_participants SET removed_at = '2026-11-10 09:00:00' WHERE id = ?").run(place.id);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(placeRow(place.id)?.removedAt).toBeNull();
+			expect(restoreEvents(decision.id)).toEqual([{ place: place.id, kind: 're_included', detail: '{"role":"informed","hadAccount":false}', actor: null, source: 'system' }]);
+			makeSmtp();
+			sqlite.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://dumpfire.example.test') ON CONFLICT (key) DO UPDATE SET value = excluded.value").run();
+			const sent = effects();
+			try {
+				inTransaction(() => queueRecordMails(decisionNow(decision.id), 'ruling', { by: SYSTEM_ACTOR }));
+				await sent.settle();
+				expect(sent.emails.map((mail) => mail.to)).toEqual([placeRow(place.id)!.email]);
+			} finally {
+				sent.restore();
+			}
+		});
+
+		it("(n8) R12: a held decision whose author, a place's role and its ruling's Product Owner the file changed is counted once", () => {
+			const decision = trackedDecision(board);
+			const { place } = placeOn(decision, bob);
+			const ruled = ruledHere(decision, chief);
+			const backup = ownBackup({ edited: true });
+			backup.prepare('UPDATE decisions SET author_user_id = ? WHERE id = ?').run(mallory.id, decision.id);
+			backup.prepare("UPDATE decision_participants SET role = 'informed' WHERE id = ?").run(place.id);
+			backup.prepare('UPDATE decision_events SET detail = ? WHERE id = ?').run(JSON.stringify({ optionId: null, productOwnerUserId: mallory.id }), ruled);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.accessAsHere).toEqual({ ...NO_AS_HERE, decisions: 1 });
+		});
+
+		it("(n9) code review FP1: the file re-dates the board of a held decision, so it is not the same board here: no board, and no author or decider account; its author and decider, viewers of that board here, can do nothing the board would refuse them", () => {
+			const ann = makeUser({ username: 'ann' });
+			const dan = makeUser({ username: 'dan' });
+			addBoardMember(board, ann, 'viewer');
+			addBoardMember(board, dan, 'viewer');
+			const decision = makeDecision({ board, author: ann, decider: dan, status: 'open', closesAt: '2099-01-01 00:00:00', openedAt: '2026-11-01 09:00:00' });
+			const may = (user: SessionUser, action: DecisionAction) => mayDo(decisionAccess(user, decisionNow(decision.id)), action, decisionNow(decision.id));
+			const AUTHOR: DecisionAction[] = ['withdraw', 'delete', 'edit'];
+			const DECIDER: DecisionAction[] = ['rule', 'record', 'extend', 'release'];
+			expect([...AUTHOR.map((action) => may(ann, action)), ...DECIDER.map((action) => may(dan, action))]).toEqual(Array(7).fill(false));
+			const backup = ownBackup({ edited: true });
+			backup.prepare("UPDATE boards SET created_at = '2020-01-01 00:00:00' WHERE id = ?").run(board.id);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(decisionRow(decision.id)).toMatchObject({ boardId: null, boardName: board.name, authorUserId: null, deciderUserId: null, deciderName: 'dan' });
+			expect(AUTHOR.map((action) => may(ann, action))).toEqual([false, false, false]);
+			expect(DECIDER.map((action) => may(dan, action))).toEqual([false, false, false, false]);
+			expect(result.accessAsHere).toMatchObject({ decisions: 1, decisionsNotHere: 0 });
+		});
+
+		it("(o1) held, failing closed: this server's decider and Bob's account, whose restored accounts are another installation's: none", () => {
+			const decision = trackedDecision(board, bob);
+			const { place } = placeOn(decision, bob);
+			const backup = fromElsewhere(ownBackup({ edited: true }));
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(decisionRow(decision.id)).toMatchObject({ deciderUserId: null, authorUserId: null });
+			expect(placeRow(place.id)?.userId).toBeNull();
+		});
+
+		it("(p1) not held: every live place removed, a link holder's too, each recorded; an administrator's withdraw mails nobody", async () => {
+			const backup = ownBackup({ edited: true });
+			plantDecision(backup, 700, { by: mallory.id });
+			const theirs = plantPlace(backup, 700, mallory);
+			const linkHolder = plantPlace(backup, 700, null);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect([theirs, linkHolder].map((id) => placeRow(id)?.removedAt)).toEqual([expect.any(String), expect.any(String)]);
+			expect(restoreEvents(700)).toEqual([REMOVED(theirs), REMOVED(linkHolder)]);
+			expect(result.accessAsHere).toEqual({ ...NO_AS_HERE, decisionsNotHere: 1 });
+			makeSmtp();
+			sqlite.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://dumpfire.example.test') ON CONFLICT (key) DO UPDATE SET value = excluded.value").run();
+			const sent = effects();
+			try {
+				// The superadmin, an administrator, through the page's route, confirming as it asks for a decision ever opened.
+				const withdrawn = await api('POST', '/api/decisions/700/withdraw', stepUp(chief, { reason: 'Not ours' }));
+				await sent.settle();
+				expect(withdrawn.status).toBe(200);
+				expect(decisionRow(700).status).toBe('withdrawn');
+				expect(sent.emails).toEqual([]);
+			} finally {
+				sent.restore();
+			}
+		});
+
+		it("(p2) not held, R3: no author, decider or place account, one not the same here included; Mallory finds it neither in the register nor in her person's record", async () => {
+			const person = makePerson({ user: mallory, email: 'mallory@file.test' });
+			const backup = ownBackup({ edited: true });
+			backup.exec("INSERT INTO users (id, username, email, password_hash, role, created_at) VALUES (950, 'zed', 'zed@file.test', 'x', 'user', '2026-01-01 09:00:00')");
+			plantDecision(backup, 701, { by: mallory.id });
+			const hers = plantPlace(backup, 701, mallory, { personId: person.id });
+			const zeds = Number(
+				backup
+					.prepare("INSERT INTO decision_participants (decision_id, role, name, email, job_title, groups, included_at, user_id) VALUES (701, 'informed', 'Zed', 'zed@file.test', '', '[]', '2026-11-01 09:00:00', 950)")
+					.run().lastInsertRowid
+			);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(decisionRow(701)).toMatchObject({ authorUserId: null, deciderUserId: null });
+			expect([hers, zeds].map((id) => placeRow(id)?.userId)).toEqual([null, null]);
+			expect(await registerOf(mallory)).not.toContain('Planted');
+			expect(JSON.stringify(readPersonRecord(mallory, person.id, { before: null }, { source: 'ui' }))).not.toContain('Planted');
+		});
+
+		it('(p3) not held, R1: no board, its name kept; a reader of that board cannot view it', () => {
+			addBoardMember(board, bob, 'viewer');
+			const backup = ownBackup({ edited: true });
+			plantDecision(backup, 702);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(decisionRow(702)).toMatchObject({ boardId: null, boardName: 'Decisions' });
+			expect(mayView(bob, 702)).toBe(false);
+		});
+
+		it('(p4) not held, a draft: its places deleted (R10)', () => {
+			const backup = ownBackup({ edited: true });
+			plantDecision(backup, 703, { status: 'draft' });
+			const planted = plantPlace(backup, 703, mallory);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(placeRow(planted)).toBeUndefined();
+			expect(restoreEvents(703)).toEqual([]);
+		});
+
+		it('(p5) not held, as a working copy (R12): every place removed and no account on it, none on the decision', () => {
+			const backup = ownBackup({ edited: true });
+			plantDecision(backup, 704, { by: mallory.id });
+			const planted = plantPlace(backup, 704, mallory);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id, outside: 'off' });
+
+			expect(placeRow(planted)).toMatchObject({ removedAt: expect.any(String), userId: null });
+			expect(decisionRow(704)).toMatchObject({ boardId: null, authorUserId: null, deciderUserId: null });
+			expect(result.accessAsHere).toEqual({ ...NO_AS_HERE, decisionsNotHere: 1 });
+		});
+
+		it("(q1) R2: a held ruling keeps this server's Product Owner, written as text", () => {
+			const decision = trackedDecision(board);
+			const ruled = ruledHere(decision, chief);
+			const backup = ownBackup({ edited: true });
+			backup.prepare('UPDATE decision_events SET detail = ? WHERE id = ?').run(JSON.stringify({ optionId: null, productOwnerUserId: mallory.id }), ruled);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(detailOfEvent(ruled)).toEqual({ detail: JSON.stringify({ optionId: null, productOwnerUserId: chief.id }), type: 'text' });
+		});
+
+		it('(q2) a ruling planted on a decision not held, naming same-here board editor Carol: none; she may not supersede it', () => {
+			const backup = ownBackup({ edited: true });
+			plantDecision(backup, 705, { status: 'ruled' });
+			const ruled = Number(
+				backup
+					.prepare("INSERT INTO decision_events (decision_id, kind, detail, actor_name, source, created_at) VALUES (705, 'ruled', ?, 'mallory', 'ui', '2026-11-02 09:00:00')")
+					.run(JSON.stringify({ productOwnerUserId: carol.id })).lastInsertRowid
+			);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(JSON.parse(String(detailOfEvent(ruled).detail))).toEqual({ productOwnerUserId: null });
+			expect(roles(carol, 705)).not.toContain('productOwner');
+			expect(mayDo(decisionAccess(carol, decisionNow(705)), 'supersede', decisionNow(705))).toBe(false);
+		});
+
+		it('(q3) a ruling of a held decision whose event is not the same (another created_at): none', () => {
+			const decision = trackedDecision(board);
+			const ruled = ruledHere(decision, chief);
+			const backup = ownBackup({ edited: true });
+			backup.prepare("UPDATE decision_events SET created_at = '2026-01-01 09:00:00' WHERE id = ?").run(ruled);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(JSON.parse(String(detailOfEvent(ruled).detail))).toMatchObject({ productOwnerUserId: null });
+		});
+
+		/** A ruling the file adds on held `decision`, its detail as given. */
+		const plantRuling = (backup: Database.Database, decision: Decided, detail: unknown) =>
+			Number(
+				backup
+					.prepare("INSERT INTO decision_events (decision_id, kind, detail, actor_name, source, created_at) VALUES (?, 'ruled', ?, 'mallory', 'ui', '2026-11-02 09:00:00')")
+					.run(decision.id, detail).lastInsertRowid
+			);
+
+		it('(q4) a ruling whose detail is a BLOB naming Carol: read as its text, written back as TEXT naming none', () => {
+			const decision = trackedDecision(board);
+			const backup = ownBackup({ edited: true });
+			const ruled = plantRuling(backup, decision, Buffer.from(JSON.stringify({ productOwnerUserId: carol.id })));
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(detailOfEvent(ruled)).toEqual({ detail: '{"productOwnerUserId":null}', type: 'text' });
+			expect(roles(carol, decision.id)).not.toContain('productOwner');
+		});
+
+		it('(q5) a ruling whose detail names the Product Owner twice, Carol last: rewritten, Carol has no role', () => {
+			const decision = trackedDecision(board);
+			const backup = ownBackup({ edited: true });
+			const ruled = plantRuling(backup, decision, `{"productOwnerUserId":null,"productOwnerUserId":${carol.id}}`);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(detailOfEvent(ruled)).toEqual({ detail: '{"productOwnerUserId":null}', type: 'text' });
+			expect(roles(carol, decision.id)).not.toContain('productOwner');
+		});
+
+		it('(q6) a ruling whose detail is not JSON: copied as it is; no role', () => {
+			const decision = trackedDecision(board);
+			const backup = ownBackup({ edited: true });
+			const ruled = plantRuling(backup, decision, `productOwnerUserId: ${carol.id}`);
+
+			restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(detailOfEvent(ruled)).toEqual({ detail: `productOwnerUserId: ${carol.id}`, type: 'text' });
+			expect(roles(carol, decision.id)).not.toContain('productOwner');
+		});
+
+		it('(o2) R4: a board not held whose member row, creator and Product Owner name id 999, which no restored account holds: the row gone, both none', () => {
+			const backup = ownBackup({ edited: true });
+			backup.pragma('foreign_keys = OFF');
+			backup.exec(`
+				INSERT INTO boards (id, name, created_by, product_owner_user_id) VALUES (881, 'Orphaned', 999, 999);
+				INSERT INTO board_members (board_id, user_id, role) VALUES (881, 999, 'editor'), (881, ${bob.id}, 'viewer');
+			`);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(sqlite.prepare('SELECT user_id FROM board_members WHERE board_id = 881').pluck().all()).toEqual([]);
+			expect(sqlite.prepare('SELECT created_by AS createdBy, product_owner_user_id AS productOwner FROM boards WHERE id = 881').get()).toEqual({ createdBy: null, productOwner: null });
+		});
+	});
+
+	it('(o3) R4: a restored decision naming author 1600, no account above it: the next account made here takes an id above 1600', () => {
+		const backup = backupNow();
+		backup.pragma('foreign_keys = OFF');
+		backup.exec("INSERT INTO decisions (id, board_name, title, status, author_user_id, author_name) VALUES (706, 'None', 'Named', 'withdrawn', 1600, 'gone')");
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(true);
+		expect(sqlite.prepare('SELECT max(id) FROM users').pluck().get()).toBeLessThan(1600);
+		expect(makeUser({ username: 'next' }).id).toBeGreaterThan(1600);
+	});
+
+	/** The users counter: its type, and whether it is a whole number no larger than 2^53 - 1. */
+	const usersCounter = () => sqlite.prepare("SELECT typeof(seq) AS type, seq <= 9007199254740991 AS inRange FROM sqlite_sequence WHERE name = 'users'").get();
+
+	it('(o4) code review FP2: a card naming creator 2^60: cleared and counted in one line naming nothing, and the users counter stays a whole number in range', () => {
+		const card = makeCard(makeBoard({ owner: chief, name: 'Cards' }).cols['To Do'], { title: 'Named' });
+		const backup = backupNow();
+		backup.pragma('foreign_keys = OFF');
+		backup.prepare('UPDATE cards SET created_by = 1152921504606846976 WHERE id = ?').run(card.id);
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(true);
+		expect(sqlite.prepare('SELECT created_by FROM cards WHERE id = ?').pluck().get(card.id)).toBeNull();
+		// The backup's own reference to no account is said as card 2675's check says it, and the clearing in one line of its own.
+		expect(result.errors).toContain(
+			'1 restored account number(s) that are not a whole number from 1 to 2^53 - 1 were cleared, or their rows left out where one is needed, so that no account made here can take them.'
+		);
+		expect(usersCounter()).toEqual({ type: 'integer', inRange: 1 });
+		expect(Number.isSafeInteger(makeUser({ username: 'next' }).id)).toBe(true);
+	});
+
+	it('(o5) code review FP2: an unchecked backup whose card names creator 2^53 + 1, which a counter read into JavaScript would round to 2^53, the next account then taking that number: cleared, and the users counter stays in range', () => {
+		const card = makeCard(makeBoard({ owner: chief, name: 'Cards' }).cols['To Do'], { title: 'Named' });
+		const backup = ownBackup({ edited: true });
+		backup.pragma('foreign_keys = OFF');
+		backup.prepare('UPDATE cards SET created_by = 9007199254740993 WHERE id = ?').run(card.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(false);
+		expect(sqlite.prepare('SELECT created_by FROM cards WHERE id = ?').pluck().get(card.id)).toBeNull();
+		expect(usersCounter()).toEqual({ type: 'integer', inRange: 1 });
+	});
+
+	it('(o6) code review FP2: a ruling naming Product Owner 1700, no account above it: the next account made here takes an id above 1700', () => {
+		const decision = makeDecision({ board, author: chief, decider: chief, status: 'ruled', closesAt: '2099-01-01 00:00:00', openedAt: '2026-11-01 09:00:00' });
+		const ruled = appendEvent({ decisionId: decision.id, kind: 'ruled', detail: { optionId: null, productOwnerUserId: chief.id } }, SYSTEM_ACTOR);
+		const backup = backupNow();
+		backup.prepare('UPDATE decision_events SET detail = ? WHERE id = ?').run(JSON.stringify({ optionId: null, productOwnerUserId: 1700 }), ruled);
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(true);
+		expect(sqlite.prepare('SELECT max(id) FROM users').pluck().get()).toBeLessThan(1700);
+		expect(makeUser({ username: 'next' }).id).toBeGreaterThan(1700);
+	});
+
+	describe('rolled back whole', () => {
+		const triggered = (sql: string, run: () => unknown) => {
+			sqlite.exec(sql);
+			try {
+				let thrown: unknown;
+				try {
+					run();
+				} catch (e) {
+					thrown = e;
+				}
+				return thrown;
+			} finally {
+				sqlite.exec('DROP TRIGGER IF EXISTS temp.card_3033_t');
+			}
+		};
+
+		it("(r)[1] sealed: applyDecisionRecord's removal refused: not committed, the trigger's message in the cause, the database as before", () => {
+			const decision = trackedDecision(board);
+			const { place } = placeOn(decision, bob);
+			const backup = backupNow();
+			removeHere(decision, place.id);
+			const before = snapshotDb();
+
+			const thrown = triggered(
+				`CREATE TEMP TRIGGER card_3033_t BEFORE UPDATE OF removed_at ON decision_participants WHEN old.id = ${place.id} BEGIN SELECT RAISE(ABORT, 'card 3033 r1 refused'); END;`,
+				() => restoreFromBackup(sqlite, backup, { importer: chief.id })
+			);
+
+			expect(thrown).toBeInstanceOf(RestoreError);
+			expect((thrown as RestoreError).committed).toBe(false);
+			expect(String(((thrown as RestoreError).cause as Error).message)).toContain('card 3033 r1 refused');
+			expectUnchanged(before);
+		});
+
+		it("(r)[2] unsealed: keepDecisionRolesHere's write refused: not committed, the trigger's message in the cause, the database as before", () => {
+			const decision = trackedDecision(board, bob);
+			const backup = ownBackup({ edited: true });
+			const before = snapshotDb();
+
+			const thrown = triggered(
+				`CREATE TEMP TRIGGER card_3033_t BEFORE UPDATE OF decider_user_id ON decisions WHEN old.id = ${decision.id} BEGIN SELECT RAISE(ABORT, 'card 3033 r2 refused'); END;`,
+				() => restoreFromBackup(sqlite, backup, { importer: chief.id })
+			);
+
+			expect(thrown).toBeInstanceOf(RestoreError);
+			expect((thrown as RestoreError).committed).toBe(false);
+			expect(String(((thrown as RestoreError).cause as Error).message)).toContain('card 3033 r2 refused');
+			expectUnchanged(before);
+		});
+	});
+
+	it('(s) sealed control: nothing narrowed here: nothing changed, no event, every count 0, no line', () => {
+		const decision = trackedDecision(board, bob);
+		const { place } = placeOn(decision, carol);
+		placeOn(decision, null, 'informed');
+		const backup = backupNow();
+		const before = { decision: decisionRow(decision.id), place: placeRow(place.id) };
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect({ decision: decisionRow(decision.id), place: placeRow(place.id) }).toEqual(before);
+		expect(restoreEvents(decision.id)).toEqual([]);
+		expect(result.accessKept).toEqual(NO_KEPT);
+		expect(result.accessAsHere).toEqual(NO_AS_HERE);
+	});
+
+	it("(t) a sealed backup whose record holds no decision row: capped by this server's record, no line", () => {
+		const decision = trackedDecision(board);
+		const { place } = placeOn(decision, bob);
+		const backup = backupNow();
+		backup.exec("DELETE FROM access_changes WHERE kind LIKE 'decision%'");
+		sealedFor(sqlite, backup);
+		removeHere(decision, place.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.errors).toEqual([]);
+		expect(placeRow(place.id)?.removedAt).not.toBeNull();
+		expect(result.accessKept).toEqual({ ...NO_KEPT, participantsRemoved: 1 });
+	});
+
+	it("(u) the carry: a sealed backup's decision rows added as backup; a place with holder 0 and a decider 'yes' with holder 0 left out in one line", () => {
+		const backup = backupNow();
+		const row = (kind: string, holder: number, holderCreated: string, access: string) =>
+			backup
+				.prepare(
+					"INSERT INTO access_changes (kind, subject_id, subject_created, holder_id, holder_created, access, changed_at, stated_changed) VALUES (?, 990, '2026-01-01 09:00:00', ?, ?, ?, '2026-05-01 09:00:00', '2026-05-01 09:00:00')"
+				)
+				.run(kind, holder, holderCreated, access);
+		row('decision', 0, '', 'tracked');
+		row('decision_participant', 991, '2026-01-01 09:00:00', 'informed');
+		row('decision_participant', 0, '', 'informed');
+		row('decision_decider', 0, '', 'yes');
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(sqlite.prepare("SELECT kind, holder_id AS holder, access FROM access_changes WHERE origin = 'backup' AND subject_id = 990 ORDER BY seq").all()).toEqual([
+			{ kind: 'decision', holder: 0, access: 'tracked' },
+			{ kind: 'decision_participant', holder: 991, access: 'informed' }
+		]);
+		expect(result.errors).toEqual([
+			"2 row(s) of the backup's record of access changes were left out, by reason: 2 with a holder the kind cannot have. The rest of the record was added to this server's."
+		]);
+	});
+
+	// Slice 4 (plan 3.12, case (gg)): the import's answer, the panel's lines, the message and the CRITICAL line's words and
+	// details count the decision roles kept and the decisions given this server's, each only where above 0, naming no
+	// decision, person or account.
+	describe('the words, through the route (card 3033, slice 4)', () => {
+		/** `backup` sent to the import route as it is; `failsAfter`, committed and then failed (as card 2697's case 46). */
+		const importThrough = async (backup: Database.Database, failsAfter: boolean) => {
+			await routeMethods('/api/admin/import');
+			const dir = mkdtempSync(`${tmpdir()}${sep}dumpfire-import-`);
+			tempDirs.push(dir);
+			vi.spyOn(process, 'cwd').mockReturnValue(dir);
+			vi.spyOn(console, 'error').mockImplementation(() => {});
+			if (failsAfter) {
+				const real = sqlite.pragma.bind(sqlite) as Database.Database['pragma'];
+				vi.spyOn(sqlite, 'pragma').mockImplementation(((source: string, options?: Database.PragmaOptions) =>
+					/^foreign_keys\s*=\s*ON$/i.test(source) ? [] : real(source, options)) as typeof sqlite.pragma);
+			}
+			try {
+				return await api('POST', '/api/admin/import?outside=keep', { user: chief, headers: confirmedImport(), body: backup.serialize() });
+			} finally {
+				if (failsAfter) vi.mocked(sqlite.pragma).mockRestore();
+			}
+		};
+		const newest = () => sqlite.prepare('SELECT COALESCE(MAX(id), 0) FROM system_logs').pluck().get() as number;
+		/** The import's CRITICAL line of who imported which file, the first written after `from`. */
+		const importedSince = (from: number) =>
+			sqlite.prepare("SELECT message, meta FROM system_logs WHERE context = 'IMPORT' AND level = 'CRITICAL' AND id > ? ORDER BY id").get(from) as {
+				message: string;
+				meta: string;
+			};
+		/** Nothing said names a person, an account or a decision: the lines are whole, so they hold no id either. */
+		const NAMES = /\b(bob|carol|dan|mallory)\b|Decision \d|Planted|place\.test|file\.test/;
+		const BOTH = [
+			{ how: 'a restore that commits', failsAfter: false },
+			{ how: 'a restore that commits and then fails', failsAfter: true }
+		];
+
+		it.each(BOTH)("(gg)[1, 2] sealed, $how: each decision role the record kept has its sentence and count, and the CRITICAL line's words and details count them, naming nothing", async ({ failsAfter }) => {
+			const dan = makeUser({ username: 'dan' });
+			// Decision 1: Bob's place removed, Carol's made informed, Dan's account taken off, and its decider Bob replaced, here.
+			const first = trackedDecision(board, bob);
+			const { place: bobs } = placeOn(first, bob);
+			const { place: carols } = placeOn(first, carol);
+			const { place: dans } = placeOn(first, dan);
+			// Decision 3 supersedes decision 2, and its decider is replaced here: it cannot be named again (R13 L6).
+			const earlier = trackedDecision(board, bob, { status: 'ruled' });
+			const superseding = trackedDecision(board, bob);
+			sqlite.prepare('UPDATE decisions SET supersedes_id = ? WHERE id = ?').run(earlier.id, superseding.id);
+			// Decision 4 is withdrawn and deleted here: back with no author or decider, counted under decisionsEnded alone (FP4).
+			const ended = trackedDecision(board, carol);
+			const backup = backupNow();
+			removeHere(first, bobs.id);
+			sqlite.prepare("UPDATE decision_participants SET role = 'informed' WHERE id = ?").run(carols.id);
+			notePlace(first, carols.id, 'informed');
+			sqlite.prepare('UPDATE decision_participants SET user_id = NULL WHERE id = ?').run(dans.id);
+			noteAccount(first, dans.id, dan, 'none');
+			for (const decision of [first, superseding]) {
+				sqlite.prepare('UPDATE decisions SET decider_user_id = ? WHERE id = ?').run(carol.id, decision.id);
+				noteDecider(decision, carol);
+			}
+			sqlite.prepare("UPDATE decisions SET status = 'withdrawn', withdrawn_at = '2026-11-10 09:00:00' WHERE id = ?").run(ended.id);
+			note('decision', ended.id, decisionMade(ended), 0, '', 'deleted');
+			sqlite.prepare('DELETE FROM decisions WHERE id = ?').run(ended.id);
+			const from = newest();
+
+			const res = await importThrough(backup, failsAfter);
+
+			const kept = { ...NO_KEPT, participantsRemoved: 1, participantsLowered: 1, accountsCleared: 1, decidersCleared: 1, decidersFixed: 1, decisionsEnded: 1 };
+			const LINES = [
+				'1 place(s) on decisions removed on this server after the backup was made stay removed.',
+				'1 participant(s) made informed on this server stay informed.',
+				"1 account(s) taken off a place on a decision on this server stay off it: an administrator attaches it again on the decision's page if needed.",
+				"1 decision(s) keep no decider, as this server's record says: their author, a board owner or an administrator names one on the decision's page.",
+				'1 decision(s) keep no decider and cannot be given one here, as they supersede another decision or their board was deleted: an administrator ' +
+					'withdraws them if they are not wanted.',
+				'1 decision(s) deleted on this server came back with no author, decider or participants: delete them again if they are not wanted.'
+			];
+			const message = res.body.message as string;
+			expect(res.status, message).toBe(failsAfter ? 500 : 200);
+			expect(res.body.committed).toBe(failsAfter ? true : undefined);
+			expect(res.body.accessKept).toEqual(kept);
+			expect(res.body.accessAsHere).toBeUndefined();
+			expect(res.body.recordsNotTaken).toBeUndefined();
+			// The panel's lines, whole: no sentence for a count at 0, card 3002's among them.
+			expect(res.body.accountsKeptLines).toEqual(LINES);
+			expect(message).toContain(LINES.join(' '));
+			// The CRITICAL line: one count of them all, decisionsEnded included (its places are counted nowhere else, R13 L7).
+			const line = importedSince(from);
+			expect(line.message).toContain('restored as it is, keeping 6 access change(s) made on this server. The system log was kept as it was;');
+			const meta = JSON.parse(line.meta);
+			expect(meta.accessKept).toEqual(kept);
+			expect(meta).not.toHaveProperty('accessAsHere');
+			expect(`${res.body.accountsKeptLines.join(' ')} ${line.message} ${line.meta}`).not.toMatch(NAMES);
+		});
+
+		it("(gg)[3] unsealed: the decisions kept as here and those brought in inert are appended to card 3002's sentence, the record's rows not taken name decision access, and the CRITICAL line counts them, naming nothing", async () => {
+			const held = trackedDecision(board);
+			const backup = ownBackup({ edited: true });
+			backup.exec(`
+				INSERT INTO board_members (board_id, user_id, role) VALUES (${board.id}, ${mallory.id}, 'owner');
+				INSERT INTO decision_participants (decision_id, role, name, email, job_title, groups, included_at, user_id)
+					VALUES (${held.id}, 'consulted', 'mallory', 'mallory@file.test', '', '[]', '2026-11-01 09:00:00', ${mallory.id});
+				INSERT INTO decisions (id, board_id, board_name, title, status, author_user_id, author_name, decider_user_id, decider_name, opened_at, closes_at)
+					VALUES (700, ${board.id}, 'Decisions', 'Planted', 'open', ${mallory.id}, 'mallory', ${mallory.id}, 'mallory', '2026-11-01 09:00:00', '2099-01-01 00:00:00');
+			`);
+			const inFile = backup.prepare('SELECT count(*) FROM access_changes').pluck().get() as number;
+			expect(inFile).toBeGreaterThan(0);
+			const from = newest();
+
+			const res = await importThrough(backup, false);
+
+			const AS_HERE =
+				"The backup's seal did not verify, so who may open what is not taken from it: 1 board(s) in it were given the access they have on this " +
+				'server, and accounts on this server were given none on the boards and teams it does not hold, and of the decisions in it, 1 this server ' +
+				'holds kept their board, stage, author, decider and participants as here, and 1 it does not hold came in with no board, no account and nobody on them.';
+			const RECORDS =
+				`The backup's seal did not verify, so its record of ${inFile} change(s) of board, team and decision access and person links was not added to ` +
+				"this server's: a file this server cannot check gives no access here, and this server's own records are kept as they were.";
+			const message = res.body.message as string;
+			expect(res.status, message).toBe(200);
+			expect(res.body.accessAsHere).toEqual({ ...NO_AS_HERE, boards: 1, decisions: 1, decisionsNotHere: 1 });
+			expect(res.body.accessKept).toBeUndefined();
+			expect(res.body.accountsKeptLines).toEqual([AS_HERE, RECORDS]);
+			expect(message).toContain(`${AS_HERE} ${RECORDS}`);
+			const line = importedSince(from);
+			expect(line.message).toContain(", restored as it is, giving 1 board(s), team(s) and person(s) this server's access and 2 decision(s) no role this server did not give,");
+			expect(line.message).toContain(`, adding none of the backup's ${inFile} change(s) of board, team and decision access and person links to this server's records`);
+			const meta = JSON.parse(line.meta);
+			expect(meta.accessAsHere).toEqual({ ...NO_AS_HERE, boards: 1, decisions: 1, decisionsNotHere: 1 });
+			expect(meta).not.toHaveProperty('accessKept');
+			expect(`${res.body.accountsKeptLines.join(' ')} ${line.message} ${line.meta}`).not.toMatch(NAMES);
 		});
 	});
 });

@@ -49,7 +49,7 @@ import { COLUMN_ORDER } from './card-order';
 import { stamp } from '$lib/timestamps';
 import { switchOffLostWebhooks } from './webhooks';
 import { inWrite, type ServiceOptions } from './write-as';
-import { ACCESS_KIND, recordAccessChange } from './access-changes';
+import { ACCESS_KIND, accountTimeUnreadable, recordAccessChange } from './access-changes';
 import { BOARD_KINDS, OPTIONS_COLOUR, OPTIONS_TITLE, columnRole, isOptionsColumn, isUpstreamColumn, type BoardKind, type StoredColumnRole } from '$lib/column-role';
 
 /** The functions here that only read. Every other export is a write, and starts with `inWrite()`. */
@@ -519,12 +519,20 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
  * default decider, and a decider must be able to edit the board (card 2673,
  * decision 4). A disabled account can edit no board (card 2671), so it is
  * refused here in the same words, read from the same row.
+ *
+ * Card 3033 R14: 409 for an account whose creation time names no moment. The
+ * record of access changes names a Product Owner by its account's id and
+ * creation time, so such an account could only be recorded as none, and a
+ * later restore would take it off.
  */
 function requireProductOwner(userId: number, boardId: number): void {
 	const account = db.select({ id: users.id, role: users.role, disabledAt: users.disabledAt }).from(users).where(eq(users.id, userId)).get();
 	if (!account) error(400, `productOwnerUserId ${userId} is not an account`);
 	if (!canEditBoard(account, boardId)) {
 		error(400, `productOwnerUserId ${userId} cannot edit this board: a board's Product Owner must be an account that can edit it`);
+	}
+	if (accountTimeUnreadable(sqlite, userId)) {
+		error(409, `productOwnerUserId ${userId} has a creation time this server cannot read, so it cannot be recorded as the board's Product Owner: an administrator puts it right on the host first`);
 	}
 }
 

@@ -88,7 +88,7 @@ import { posix } from 'node:path';
 import { dev } from '$app/environment';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { createdAtStart, db, getDbPath, otherDatabaseAtStart, sqlite } from './db';
-import { webhooks } from './db/schema';
+import { decisionEvents, decisionParticipants, decisionQuestions, decisionResponses, decisions, webhooks } from './db/schema';
 import { stamp, toStamp } from '$lib/timestamps';
 import { DatabaseLocationError, described, heldInContainerLayer, importFiles, type OtherDatabase } from './db/location';
 import {
@@ -146,7 +146,10 @@ import {
 	type Telling
 } from './webhooks';
 import { inTransaction } from './db/transaction';
-import { ACCESS_KIND, ACCESS_WORDS, accessCeiling, accessRank, type AccessItem, type AccessKind } from './access-changes';
+import { ACCESS_KIND, ACCESS_READS, ACCESS_WORDS, accessCeiling, accessRank, type AccessItem, type AccessKind } from './access-changes';
+import { registerStampFunctions } from './db/timestamps';
+import { appendEvent, SYSTEM_ACTOR } from './decision-record';
+import { revokeLinks } from './decision-links';
 import { raiseKeyCounterOverRecord } from './key-revocations';
 import { endRecordedKeysPresent } from './api-key-revoke';
 import { endRecordedAccountsPresent, endReplacedPasswordsPresent, type AccountsEndedAgain, type PasswordsEndedAgain } from './account-ending-bodies';
@@ -1557,7 +1560,7 @@ function capAccessAtStartPass(value: string | undefined, isDev: boolean): Access
 	} catch (err) {
 		try {
 			authLog.warn(
-				`The board, team and person access above this server's record of access changes could not be lowered: ${(err as Error)?.message ?? err}. ` +
+				`The board, team, person and decision access above this server's record of access changes could not be lowered: ${(err as Error)?.message ?? err}. ` +
 					'The next sweep, within five minutes, tries again.'
 			);
 		} catch {
@@ -1568,7 +1571,7 @@ function capAccessAtStartPass(value: string | undefined, isDev: boolean): Access
 	if (done.lowered > 0) {
 		try {
 			authLog.warn(
-				`${done.lowered} board, team or person access(es) above this server's record of access changes were found (an older image’s import or a host edit) ` +
+				`${done.lowered} board, team, person or decision access(es) above this server's record of access changes were found (an older image’s import or a host edit) ` +
 					'and lowered as the record says.',
 				{ lowered: done.lowered }
 			);
@@ -1601,10 +1604,14 @@ function capAccessAtStartPass(value: string | undefined, isDev: boolean): Access
 function capAccessAtStart(telling: Telling, now: string): AccessCappedAgain {
 	const done: AccessCappedAgain = { lowered: 0, future: 0 };
 	const side = (id: number, created: unknown) => ({ id, created: toStamp(created) });
+	// Card 3033 (R13 L10): whether any row of this server's is dated after now, read once; where none is, each ceiling is
+	// asked once, as both asks below would answer the same.
+	const future = sqlite.prepare(ACCESS_READS.futureHere).get({ asOf: now }) !== undefined;
 	/** The ceiling of `item`, whose rank now is `live`: this server's rows dated after now set aside where they would raise it (R1). */
 	const ceilingOf = (item: AccessItem, live: number): number | null => {
-		const all = accessCeiling(sqlite, item, { teamDeletions: false });
-		const past = accessCeiling(sqlite, item, { teamDeletions: false, asOf: now });
+		if (!future) return accessCeiling(sqlite, item, { deletions: false, asOf: now });
+		const all = accessCeiling(sqlite, item, { deletions: false });
+		const past = accessCeiling(sqlite, item, { deletions: false, asOf: now });
 		if (all === null || past === null || all <= past) return all;
 		if (live > past) done.future++;
 		return past;
@@ -1731,6 +1738,8 @@ function capAccessAtStart(telling: Telling, now: string): AccessCappedAgain {
 		}
 	}
 
+	done.lowered += capDecisionRolesAtStart(ceilingOf, now);
+
 	// The writers' own effects, naming no account (R3).
 	const cause = "access found above this server's record of access changes was lowered as the record says (found when the server started)";
 	if (boardIds.size > 0) switchOffLostWebhooks({ boardIds: [...boardIds].sort((a, b) => a - b) }, cause, { telling, unnamed: true });
@@ -1739,6 +1748,97 @@ function capAccessAtStart(telling: Telling, now: string): AccessCappedAgain {
 		holdNoLongerReadable(userId, [...lost].sort((a, b) => a - b), { log: cause, mail: ENDING_IN_MAIL.ownerLowered, telling, unnamed: true });
 	}
 	return done;
+}
+
+/**
+ * Card 3033 (plan 3.11): the start's candidates among decision roles, each read only where the record holds a row of its
+ * item (R13 L10), on the `access_changes_pair` and `access_changes_subject` prefixes: live places, the accounts live
+ * places hold, and deciders. A decision whose creation time names no moment is matched by id alone, as the rule matches
+ * it (N4). Exported for tests/access-changes.test.ts (ee5).
+ */
+export const START_DECISION_CANDIDATES = {
+	places:
+		'SELECT p.id, p.decision_id AS decisionId, d.created_at AS decisionCreated, d.status, p.role FROM decision_participants AS p ' +
+		'JOIN decisions AS d ON d.id = p.decision_id WHERE p.removed_at IS NULL AND EXISTS (SELECT 1 FROM access_changes AS r ' +
+		"WHERE r.subject_id = d.id AND r.kind = 'decision_participant' AND (r.subject_created = stamp_of(d.created_at) OR stamp_of(d.created_at) IS NULL) " +
+		'AND r.holder_id = p.id) ORDER BY p.id',
+	accounts:
+		'SELECT p.id, p.decision_id AS decisionId, d.created_at AS decisionCreated, p.user_id AS userId, u.created_at AS userCreated FROM decision_participants AS p ' +
+		'JOIN decisions AS d ON d.id = p.decision_id JOIN users AS u ON u.id = p.user_id WHERE p.removed_at IS NULL AND EXISTS (SELECT 1 FROM access_changes AS r ' +
+		"WHERE r.subject_id = p.id AND r.kind = 'decision_account' AND (r.subject_created = stamp_of(d.created_at) OR stamp_of(d.created_at) IS NULL) " +
+		'AND r.holder_id = p.user_id) ORDER BY p.id',
+	deciders:
+		'SELECT d.id, d.created_at AS createdAt, d.decider_user_id AS deciderUserId, u.created_at AS deciderCreated FROM decisions AS d ' +
+		'LEFT JOIN users AS u ON u.id = d.decider_user_id WHERE d.decider_user_id IS NOT NULL AND EXISTS (SELECT 1 FROM access_changes AS r ' +
+		"WHERE r.subject_id = d.id AND r.kind = 'decision_decider' AND (r.subject_created = stamp_of(d.created_at) OR stamp_of(d.created_at) IS NULL)) ORDER BY d.id"
+} as const;
+
+/**
+ * Card 3033 (plan 3.11; R10, R13 L10): every decision role present lowered to this server's record, rules 1 and 3, only
+ * where the item has a recorded row (`START_DECISION_CANDIDATES`): never the guess, never a decision's deletion
+ * (`deletions: false` in `ceilingOf`), a row dated after now never raising. Each ceiling asked once (`ceilingOf`).
+ *
+ * - A place at 0: on a decision past its draft, `removed_at` now, one `removed` and its link ended (`revokeLinks`, by
+ *   DumpFire), as a writer's removal; on a draft (R10), deleted where no response, question or event names it, read by
+ *   Drizzle, else marked removed with no event. At 1, a consulted place made informed, with `role_changed` past a draft.
+ * - A live place's account at 0: `user_id` NULL, no event.
+ * - A decider the record does not name: `decider_user_id` NULL, its name kept.
+ *
+ * The record's tables are reached through `appendEvent`, `revokeLinks` and Drizzle objects alone (R18 Q8). Writes
+ * nothing to the record of access changes. Answers how many it lowered. Inside the caller's transaction.
+ */
+function capDecisionRolesAtStart(ceilingOf: (item: AccessItem, live: number) => number | null, now: string): number {
+	registerStampFunctions(sqlite);
+	let lowered = 0;
+	const side = (id: number, created: unknown) => ({ id, created: toStamp(created) });
+	const PLACE = ACCESS_KIND.decisionParticipant;
+	const places = sqlite.prepare(START_DECISION_CANDIDATES.places).all() as { id: number; decisionId: number; decisionCreated: unknown; status: unknown; role: unknown }[];
+	for (const place of places) {
+		const decision = side(place.decisionId, place.decisionCreated);
+		const live = accessRank(PLACE, place.role);
+		const ceiling = ceilingOf({ kind: PLACE, subject: decision, holder: { id: place.id, created: decision.created } }, live);
+		if (ceiling === null || ceiling >= live) continue;
+		lowered++;
+		const draft = place.status === 'draft';
+		if (ceiling > 0) {
+			const word = ACCESS_WORDS[PLACE][ceiling];
+			db.update(decisionParticipants).set({ role: word }).where(eq(decisionParticipants.id, place.id)).run();
+			if (!draft) appendEvent({ decisionId: place.decisionId, kind: 'role_changed', participantId: place.id, detail: { from: place.role, to: word } }, SYSTEM_ACTOR);
+			continue;
+		}
+		if (draft) {
+			// R10: deleted where nothing names it, else marked removed; no event names a draft's place.
+			const named =
+				db.select({ id: decisionResponses.id }).from(decisionResponses).where(eq(decisionResponses.participantId, place.id)).limit(1).get() !== undefined ||
+				db.select({ id: decisionQuestions.id }).from(decisionQuestions).where(eq(decisionQuestions.participantId, place.id)).limit(1).get() !== undefined ||
+				db.select({ id: decisionEvents.id }).from(decisionEvents).where(eq(decisionEvents.participantId, place.id)).limit(1).get() !== undefined;
+			if (!named) db.delete(decisionParticipants).where(eq(decisionParticipants.id, place.id)).run();
+			else db.update(decisionParticipants).set({ removedAt: now, removedBy: null }).where(eq(decisionParticipants.id, place.id)).run();
+			continue;
+		}
+		db.update(decisionParticipants).set({ removedAt: now, removedBy: null }).where(eq(decisionParticipants.id, place.id)).run();
+		appendEvent({ decisionId: place.decisionId, kind: 'removed', participantId: place.id }, SYSTEM_ACTOR);
+		revokeLinks({ participantId: place.id }, 'removed', SYSTEM_ACTOR);
+	}
+
+	// Each live place's account (R5), read after the places, so that a place removed above is not read.
+	const accounts = sqlite.prepare(START_DECISION_CANDIDATES.accounts).all() as { id: number; decisionId: number; decisionCreated: unknown; userId: number; userCreated: unknown }[];
+	for (const place of accounts) {
+		const decision = side(place.decisionId, place.decisionCreated);
+		const item: AccessItem = { kind: ACCESS_KIND.decisionAccount, subject: { id: place.id, created: decision.created }, holder: side(place.userId, place.userCreated), marker: decision };
+		if (ceilingOf(item, 1) !== 0) continue;
+		db.update(decisionParticipants).set({ userId: null }).where(eq(decisionParticipants.id, place.id)).run();
+		lowered++;
+	}
+
+	const deciders = sqlite.prepare(START_DECISION_CANDIDATES.deciders).all() as { id: number; createdAt: unknown; deciderUserId: number; deciderCreated: unknown }[];
+	for (const row of deciders) {
+		const item: AccessItem = { kind: ACCESS_KIND.decisionDecider, subject: side(row.id, row.createdAt), holder: side(row.deciderUserId, row.deciderCreated) };
+		if (ceilingOf(item, 1) !== 0) continue;
+		db.update(decisions).set({ deciderUserId: null }).where(eq(decisions.id, row.id)).run();
+		lowered++;
+	}
+	return lowered;
 }
 
 /**

@@ -1137,7 +1137,9 @@ export const accessChanges = sqliteTable('access_changes', {
 	// The latest row of a subject by origin, any holder.
 	index('access_changes_subject').on(table.subjectId, table.kind, table.subjectCreated, table.origin),
 	// The restore's union.
-	index('access_changes_union').on(table.subjectId, table.kind, table.subjectCreated, table.holderId, table.holderCreated, table.statedChanged, table.access)
+	index('access_changes_union').on(table.subjectId, table.kind, table.subjectCreated, table.holderId, table.holderCreated, table.statedChanged, table.access),
+	// The start and five-minute pass's one read of whether any row is dated after now (card 3033, migration 0080).
+	index('access_changes_changed').on(table.changedAt)
 ]);
 
 // ─── System Logs (structured application logging) ───────────────────────────

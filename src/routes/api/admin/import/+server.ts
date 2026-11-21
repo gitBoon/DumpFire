@@ -574,7 +574,7 @@ function keysLeftOutSentence(left: ApiKeysLeftOut): string | null {
  * Then the restored board, team and person access (card 3002, plan 3.8): the access this server's record of access
  * changes kept as it says (`access.kept`), and, where the seal did not verify, the boards, teams and people given this
  * server's access (`access.asHere`), before card 3013's sentences; each only where its count is above 0, counts only,
- * naming no board, team, person or account.
+ * naming no board, team, person or account. Card 3033 adds the decision roles to both (plan 3.12), naming no decision.
  */
 function accountsKeptLines(
 	kept: AccountsKept | undefined,
@@ -596,13 +596,25 @@ function accountsKeptLines(
 
 /**
  * How many items of access the record kept as it says (card 3002): 0 where none. `teamsEnded` is not among them (code
- * review, FP7): it counts the teams whose removed rows `removed` counts already.
+ * review, FP7): it counts the teams whose removed rows `removed` counts already. And the decision roles (card 3033, plan
+ * 3.12), `decisionsEnded` among them: the places, places' accounts and decider of a decision deleted here are counted
+ * there alone (R13 L7; code review, FP4), so it is no second count of them.
  */
 const accessKeptCount = (kept: AccessKept | undefined) =>
-	kept === undefined ? 0 : kept.removed + kept.lowered + kept.madePrivate + kept.productOwners + kept.creators + kept.unlinked;
+	kept === undefined
+		? 0
+		: kept.removed + kept.lowered + kept.madePrivate + kept.productOwners + kept.creators + kept.unlinked + decisionRolesKeptCount(kept);
 
-/** How many boards, teams and people an unsealed backup's restore gave this server's access (card 3002): 0 where none. */
-const accessAsHereCount = (asHere: AccessAsHere | undefined) => (asHere === undefined ? 0 : asHere.boards + asHere.teams + asHere.people);
+/** How many decision roles the record kept as it says (card 3033): places, accounts, deciders and decisions ended. */
+const decisionRolesKeptCount = (kept: AccessKept) =>
+	kept.participantsRemoved + kept.participantsLowered + kept.accountsCleared + kept.decidersCleared + kept.decidersFixed + kept.decisionsEnded;
+
+/**
+ * How many boards, teams and people an unsealed backup's restore gave this server's access (card 3002), and decisions
+ * it kept as here or brought in inert (card 3033): 0 where none.
+ */
+const accessAsHereCount = (asHere: AccessAsHere | undefined) =>
+	asHere === undefined ? 0 : asHere.boards + asHere.teams + asHere.people + asHere.decisions + asHere.decisionsNotHere;
 
 /** `parts` as one list in words: `a`, `a and b`, `a, b and c`; each after the first opened by `opening`. */
 function inWords(parts: string[], opening = ''): string {
@@ -634,14 +646,35 @@ function accessKeptLines(kept: AccessKept | undefined): string[] {
 			? `${kept.teamsEnded} team(s) deleted on this server came back without the members and boards they had then: delete them again on the ` +
 				'Teams page if they are not wanted.'
 			: null,
-		kept.unlinked > 0 ? `${kept.unlinked} person(s) unlinked from an account on this server since the backup stay unlinked.` : null
+		kept.unlinked > 0 ? `${kept.unlinked} person(s) unlinked from an account on this server since the backup stay unlinked.` : null,
+		// Card 3033 (plan 3.12): the decision roles, counts only, naming no decision, person or account.
+		kept.participantsRemoved > 0 ? `${kept.participantsRemoved} place(s) on decisions removed on this server after the backup was made stay removed.` : null,
+		kept.participantsLowered > 0 ? `${kept.participantsLowered} participant(s) made informed on this server stay informed.` : null,
+		kept.accountsCleared > 0
+			? `${kept.accountsCleared} account(s) taken off a place on a decision on this server stay off it: an administrator attaches it again on the ` +
+				"decision's page if needed."
+			: null,
+		kept.decidersCleared > 0
+			? `${kept.decidersCleared} decision(s) keep no decider, as this server's record says: their author, a board owner or an administrator names ` +
+				"one on the decision's page."
+			: null,
+		kept.decidersFixed > 0
+			? `${kept.decidersFixed} decision(s) keep no decider and cannot be given one here, as they supersede another decision or their board was ` +
+				'deleted: an administrator withdraws them if they are not wanted.'
+			: null,
+		kept.decisionsEnded > 0
+			? `${kept.decisionsEnded} decision(s) deleted on this server came back with no author, decider or participants: delete them again if they ` +
+				'are not wanted.'
+			: null
 	].filter((line): line is string => line !== null);
 }
 
 /**
  * Card 3002's sentence of `accountsKeptLines` where the seal did not verify (plan 3.8, R15): the boards, teams and people
  * given this server's access, each count only where above 0, naming nothing; and, where any person was, that a person
- * whose link the backup changed stays marked as left. Never worded as a problem.
+ * whose link the backup changed stays marked as left. And (card 3033, plan 3.12) the decisions in it this server holds,
+ * kept with their board, stage and roles as here, and those it does not hold, brought in inert: counts only, appended to
+ * the sentence, or its only part where no board, team or person was counted. Never worded as a problem.
  */
 function accessAsHereLine(asHere: AccessAsHere): string {
 	const counted = [
@@ -649,9 +682,18 @@ function accessAsHereLine(asHere: AccessAsHere): string {
 		...(asHere.teams > 0 ? [`${asHere.teams} team(s)`] : []),
 		...(asHere.people > 0 ? [`${asHere.people} person(s)`] : [])
 	];
+	const decided = [
+		...(asHere.decisions > 0 ? [`${asHere.decisions} this server holds kept their board, stage, author, decider and participants as here`] : []),
+		...(asHere.decisionsNotHere > 0 ? [`${asHere.decisionsNotHere} it does not hold came in with no board, no account and nobody on them`] : [])
+	];
+	const given =
+		counted.length > 0
+			? `${inWords(counted)} in it were given the access they have on this server, and accounts on this server were given none on the boards and ` +
+				'teams it does not hold'
+			: '';
+	const decisions = decided.length > 0 ? `${given === '' ? '' : ', and '}of the decisions in it, ${decided.join(', and ')}` : '';
 	return (
-		`The backup's seal did not verify, so who may open what is not taken from it: ${inWords(counted)} in it were given the access ` +
-		'they have on this server, and accounts on this server were given none on the boards and teams it does not hold.' +
+		`The backup's seal did not verify, so who may open what is not taken from it: ${given}${decisions}.` +
 		(asHere.people > 0 ? ' A person whose account link the backup changed stays marked as left until an administrator marks them active.' : '')
 	);
 }
@@ -677,7 +719,8 @@ const stateAsHereLine = (count: number) =>
 const recordHalves = (notTaken: RecordsNotTaken): string[] => [
 	...(notTaken.accountEndings > 0 ? [`${notTaken.accountEndings} account ending(s)`] : []),
 	...(notTaken.keyRevocations > 0 ? [`${notTaken.keyRevocations} ended API key(s)`] : []),
-	...(notTaken.accessChanges > 0 ? [`${notTaken.accessChanges} change(s) of board and team access and person links`] : [])
+	// Card 3033 (plan 3.12): the record holds decision access too.
+	...(notTaken.accessChanges > 0 ? [`${notTaken.accessChanges} change(s) of board, team and decision access and person links`] : [])
 ];
 
 /**
@@ -704,14 +747,18 @@ function unsealedRecordsWords(notTaken: RecordsNotTaken | undefined, stateAsHere
 
 /**
  * The CRITICAL line's words for card 3002 (plan 3.8): the access the record kept as it says and, where the seal did not
- * verify, the boards, teams and people given this server's access, each a count only where above 0; '' where none.
+ * verify, the boards, teams and people given this server's access, each a count only where above 0; '' where none. The
+ * decision roles the record kept are among the first (card 3033, plan 3.12); the decisions of an unsealed backup, kept
+ * as here or brought in inert, are counted on their own.
  */
 function accessWords(kept: AccessKept | undefined, asHere: AccessAsHere | undefined): string {
 	const keeping = accessKeptCount(kept);
-	const giving = accessAsHereCount(asHere);
+	const giving = asHere === undefined ? 0 : asHere.boards + asHere.teams + asHere.people;
+	const deciding = asHere === undefined ? 0 : asHere.decisions + asHere.decisionsNotHere;
 	return (
 		(keeping > 0 ? `, keeping ${keeping} access change(s) made on this server` : '') +
-		(giving > 0 ? `, giving ${giving} board(s), team(s) and person(s) this server's access` : '')
+		(giving > 0 ? `, giving ${giving} board(s), team(s) and person(s) this server's access` : '') +
+		(deciding > 0 ? `${giving > 0 ? ' and' : ', giving'} ${deciding} decision(s) no role this server did not give` : '')
 	);
 }
 

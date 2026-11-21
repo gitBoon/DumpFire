@@ -25,7 +25,7 @@
  */
 import { error } from '@sveltejs/kit';
 import { eq, inArray } from 'drizzle-orm';
-import { db } from './db';
+import { db, sqlite } from './db';
 import { decisionOptions, decisions, users, type Decision, type DecisionOption } from './db/schema';
 import type { SessionUser } from './auth';
 import { canEditBoard, isAdmin } from './board-access';
@@ -40,7 +40,8 @@ import { CLOSES_TOO_FAR, closesTooFar } from '$lib/decision-readiness';
 import { requireBoard, requireDecision, requireUser } from './route-guards';
 import { stamp, type Stamp } from '$lib/timestamps';
 import { inWrite, type ServiceOptions } from './write-as';
-import { dayBefore, keyed, MAIL_ACT, OPENED_PEOPLE, requireRevision, sourceOf } from './decision-write-shared';
+import { dayBefore, keyed, MAIL_ACT, OPENED_PEOPLE, requireDeciderRecordable, requireRevision, sourceOf } from './decision-write-shared';
+import { ACCESS_KIND, accessAsRecorded, recordAccessChange } from './access-changes';
 
 /** None of the drafting writes has a guard of its own: every export here is a write, and starts with `inWrite()`. */
 export const READS: readonly string[] = [];
@@ -60,6 +61,9 @@ const SUPERSEDING_DECIDER_FIXED =
  * activity entry, live event or mail. Through an API key the title is the
  * key's choice, flagged `agentDrafted.title` until a person marks it
  * reviewed (card 2728, D2); the decider is the server's, and flagged nowhere.
+ * Card 3033 (D1): `decision tracked` and `decision_decider yes` recorded after
+ * the insert; R14: 409 first where the decider's account's creation time
+ * names no moment.
  */
 export function createDecision(caller: SessionUser | null, at: { boardId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -78,6 +82,7 @@ export function createDecision(caller: SessionUser | null, at: { boardId: number
 					.where(eq(users.id, board.productOwnerUserId))
 					.get();
 	const productOwner = owner && canEditBoard(owner, board.id) ? owner : null;
+	requireDeciderRecordable(productOwner ?? user);
 
 	const now = stamp();
 	const decision = db
@@ -96,6 +101,8 @@ export function createDecision(caller: SessionUser | null, at: { boardId: number
 		})
 		.returning()
 		.get();
+	recordAccessChange(sqlite, { kind: ACCESS_KIND.decision, subject: decision.id, access: 'tracked' });
+	recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionDecider, subject: decision.id, holder: decision.deciderUserId, access: 'yes' });
 	appendEvent({ decisionId: decision.id, kind: 'created', detail: { decider: productOwner ? 'product_owner' : 'author' } }, actorFor(user, sourceOf(opts)));
 	return decision;
 }
@@ -114,6 +121,13 @@ export function createDecision(caller: SessionUser | null, at: { boardId: number
  * 2728 (D2): a key's change of decider is flagged `agentDrafted.decider`, its
  * review stamp removed, until a person marks it reviewed; a person's change
  * keeps the flag (D3).
+ *
+ * Card 3033 (D2): `decision_decider yes` recorded after the write. R14: 409
+ * for an account whose creation time names no moment, asked last of the
+ * refusals, after the account and its board edit (code review, FP13), and
+ * before the decider it has is compared or anything is written. R15: naming
+ * the decider it has records the decider where the record names another or
+ * none (`accessAsRecorded`), with no other write.
  */
 export function setDecider(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -142,7 +156,12 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
 	if (!account || !canEditBoard(account, decision.boardId)) {
 		error(400, `deciderUserId ${deciderUserId} cannot edit this board: a decision's decider must be an account that can edit its board`);
 	}
-	if (account.id === decision.deciderUserId) return decision;
+	requireDeciderRecordable(account);
+	const recorded = { kind: ACCESS_KIND.decisionDecider, subject: decision.id, holder: account.id, access: 'yes' };
+	if (account.id === decision.deciderUserId) {
+		if (!accessAsRecorded(sqlite, recorded)) recordAccessChange(sqlite, recorded);
+		return decision;
+	}
 
 	const row = db
 		.update(decisions)
@@ -155,6 +174,7 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
 		.where(eq(decisions.id, decision.id))
 		.returning()
 		.get();
+	recordAccessChange(sqlite, recorded);
 	appendEvent(
 		{
 			decisionId: decision.id,

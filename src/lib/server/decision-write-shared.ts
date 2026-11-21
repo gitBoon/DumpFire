@@ -44,8 +44,9 @@
  */
 import { error } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
-import { db } from './db';
+import { db, sqlite } from './db';
 import { decisionParticipants, type Decision, type DecisionParticipant } from './db/schema';
+import { accountTimeUnreadable } from './access-changes';
 import type { SessionUser } from './auth';
 import { allOptionsOf, participantsOf, revisionOf } from './decision-content';
 import { accountHistory, lastMailAt, mailsSince, peopleById, recordMailsSince, snapshotOf, type RecordActor } from './decision-record';
@@ -149,6 +150,18 @@ export function reachesOf(decisionId: number, rows: DecisionParticipant[]): Map<
 	return new Map(
 		rows.map((row) => [row.id, reachOf(row, row.personId === null ? null : (persons.get(row.personId) ?? null), history.get(row.id) ?? false)])
 	);
+}
+
+/**
+ * Card 3033 R14: a 409 for a decider whose account's creation time names no
+ * moment, before anything is written. The record of access changes names a
+ * decider by its account's id and creation time, so such an account could
+ * only be recorded as no decider, and a later restore would take it off.
+ */
+export function requireDeciderRecordable(account: { id: number; username: string }): void {
+	if (accountTimeUnreadable(sqlite, account.id)) {
+		error(409, `${account.username}'s account has a creation time this server cannot read, so it cannot be recorded as a decision's decider: an administrator puts it right on the host first`);
+	}
 }
 
 /**

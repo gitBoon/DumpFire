@@ -24,7 +24,7 @@
  */
 import { error } from '@sveltejs/kit';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
-import { db } from './db';
+import { db, sqlite } from './db';
 import { decisionParticipants, decisions, users, type Decision, type DecisionParticipant } from './db/schema';
 import type { SessionUser } from './auth';
 import { isAdmin } from './board-access';
@@ -54,6 +54,7 @@ import {
 	snapshotColumns,
 	sourceOf
 } from './decision-write-shared';
+import { ACCESS_KIND, recordAccessChange } from './access-changes';
 
 /**
  * The functions here that only read: the guards of the administrator's two
@@ -131,6 +132,15 @@ const STEP_UP_ACT = "Changing a participant's account or address asks for your p
  * that is no person, is told only that the id cannot be included, as their
  * picker holds neither (R6); a participant of this decision who has since
  * left is named to every editor, as their name is already on it (D6).
+ *
+ * Card 3033 (D4, D5): each change of a place is recorded in the record of
+ * access changes, in the write's transaction: a place deleted from a draft as
+ * `removed` (before the delete, while the place can be read), one removed,
+ * re-roled, brought back or added as its role after the write, and the
+ * account a place brought back or added holds as `held`. R10: on a draft only
+ * the live places are read, so a place a restore or the start marked removed
+ * is neither kept nor deleted, and a person whose only place is removed is
+ * given a new one.
  */
 export function setParticipants(
 	caller: SessionUser | null,
@@ -157,7 +167,7 @@ export function setParticipants(
 		seen.add(personId);
 	}
 	const persons = peopleById([...seen]);
-	const rows = participantsOf(decision.id);
+	const rows = participantsOf(decision.id, { live: decision.status === 'draft' });
 	const admin = isAdmin(user);
 	for (const { personId } of wanted) {
 		const person = persons.get(personId);
@@ -185,17 +195,24 @@ export function setParticipants(
 		);
 
 		const gone = rows.filter((row) => row.personId === null || !named.has(row.personId)).map((row) => row.id);
+		// Card 3033 (D4): recorded before the delete, as the record reads the place it names.
+		for (const id of gone) recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionParticipant, subject: decision.id, holder: id, access: 'removed' });
 		for (let from = 0; from < gone.length; from += IDS_AT_ONCE) {
 			db.delete(decisionParticipants).where(inArray(decisionParticipants.id, gone.slice(from, from + IDS_AT_ONCE))).run();
 		}
 		const reRoled = kept.filter((row) => named.get(row.personId!) !== row.role);
 		for (const row of reRoled) {
 			db.update(decisionParticipants).set({ role: named.get(row.personId!)! }).where(eq(decisionParticipants.id, row.id)).run();
+			recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionParticipant, subject: decision.id, holder: row.id, access: named.get(row.personId!)! });
 		}
 		for (const insert of inserts) {
-			db.insert(decisionParticipants)
+			const row = db
+				.insert(decisionParticipants)
 				.values({ decisionId: decision.id, personId: insert.personId, role: insert.role, ...snapshotColumns(insert.snapshot), includedAt: now, includedBy: user.id, includedByName: user.username })
-				.run();
+				.returning({ id: decisionParticipants.id, userId: decisionParticipants.userId })
+				.get();
+			recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionParticipant, subject: decision.id, holder: row.id, access: insert.role });
+			if (row.userId !== null) recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionAccount, subject: row.id, holder: row.userId, access: 'held' });
 		}
 		// Card 2728 (D2): a key's save that adds, removes or re-roles anyone is the key's choice of who is mailed at Open.
 		const changed = gone.length > 0 || reRoled.length > 0 || inserts.length > 0;
@@ -260,11 +277,13 @@ export function setParticipants(
 
 	for (const row of removals) {
 		db.update(decisionParticipants).set({ removedAt: now, removedBy: user.id }).where(eq(decisionParticipants.id, row.id)).run();
+		recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionParticipant, subject: decision.id, holder: row.id, access: 'removed' });
 		appendEvent({ decisionId: decision.id, kind: 'removed', participantId: row.id }, by);
 		revokeLinks({ participantId: row.id }, 'removed', by);
 	}
 	for (const change of roleChanges) {
 		db.update(decisionParticipants).set({ role: change.role }).where(eq(decisionParticipants.id, change.row.id)).run();
+		recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionParticipant, subject: decision.id, holder: change.row.id, access: change.role });
 		appendEvent({ decisionId: decision.id, kind: 'role_changed', participantId: change.row.id, detail: { from: change.row.role, to: change.role } }, by);
 		const hold = held.get(change.row.id);
 		if (hold !== undefined) appendEvent({ decisionId: decision.id, kind: 'mail_skipped', participantId: change.row.id, detail: { mail: 'invitation', reason: hold } }, by);
@@ -273,6 +292,9 @@ export function setParticipants(
 	const history = returns.length > 0 ? accountHistory(decision.id) : new Map<number, boolean>();
 	for (const back of returns) {
 		db.update(decisionParticipants).set({ role: back.role, removedAt: null, removedBy: null }).where(eq(decisionParticipants.id, back.row.id)).run();
+		// Card 3033 (D5): the place's role and the account it comes back with, so that a later restore keeps both (R6).
+		recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionParticipant, subject: decision.id, holder: back.row.id, access: back.role });
+		if (back.row.userId !== null) recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionAccount, subject: back.row.id, holder: back.row.userId, access: 'held' });
 		// Once a row held an account on this decision it is never read as one that did not: bringing it back cannot undo R1.
 		const hadAccount = back.row.userId !== null || history.get(back.row.id) === true;
 		appendEvent({ decisionId: decision.id, kind: 're_included', participantId: back.row.id, detail: { role: back.role, hadAccount } }, by);
@@ -292,6 +314,8 @@ export function setParticipants(
 			})
 			.returning()
 			.get();
+		recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionParticipant, subject: decision.id, holder: row.id, access: addition.role });
+		if (row.userId !== null) recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionAccount, subject: row.id, holder: row.userId, access: 'held' });
 		appendEvent({ decisionId: decision.id, kind: 'included', participantId: row.id, detail: { role: addition.role, hadAccount: row.userId !== null } }, by);
 		if (mailedNow(addition.role)) invited.push(row.id);
 	}
@@ -393,6 +417,10 @@ export function participantAccountGuard(
  * after which the row is read as never having held one (decision 16). 409
  * when the row holds none and is not read as having held one: there is
  * nothing to clear.
+ *
+ * Card 3033 (D6): recorded after the write, per place (R5): attached, `held`
+ * for the account and `none` for the one the place held before; cleared,
+ * `none` for the account it held.
  */
 export function setParticipantAccount(
 	caller: SessionUser | null,
@@ -410,10 +438,15 @@ export function setParticipantAccount(
 	const now = stamp();
 	if (change.account === 'person') {
 		db.update(decisionParticipants).set({ userId: change.accountId }).where(eq(decisionParticipants.id, participant.id)).run();
+		recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionAccount, subject: participant.id, holder: change.accountId, access: 'held' });
+		if (participant.userId !== null && participant.userId !== change.accountId) {
+			recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionAccount, subject: participant.id, holder: participant.userId, access: 'none' });
+		}
 		revokeLinks({ participantId: participant.id }, 'account_attached', by);
 		appendEvent({ decisionId: decision.id, kind: 'account_attached', participantId: participant.id, detail: { userId: change.accountId } }, by);
 	} else {
 		db.update(decisionParticipants).set({ userId: null }).where(eq(decisionParticipants.id, participant.id)).run();
+		if (participant.userId !== null) recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionAccount, subject: participant.id, holder: participant.userId, access: 'none' });
 		appendEvent({ decisionId: decision.id, kind: 'account_cleared', participantId: participant.id, detail: { userId: participant.userId } }, by);
 	}
 	touch(decision.id, now);

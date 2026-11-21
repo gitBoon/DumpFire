@@ -259,6 +259,30 @@ describe('the checklist source', () => {
 		expect(restriction.how.slice(restriction.how.indexOf('Still open:'))).not.toContain('3002');
 	});
 
+	it("(hh) card 3033: A.5.15 and A.8.3 say a restore brings no decision role back above the record and an unsealed backup gives none this server did not give, before what is still open, and cite applyDecisionRecord and keepDecisionRolesHere, each of which exists", () => {
+		for (const ref of ['A.5.15', 'A.8.3']) {
+			const item = CHECKLIST.find((entry) => entry.ref === ref)!;
+			for (const symbol of ['applyDecisionRecord', 'keepDecisionRolesHere']) {
+				const evidence = item.evidence.find((e) => e.path === 'src/lib/server/db/restore.ts' && e.symbol === symbol);
+				expect(evidence, `${ref} ${symbol}`).toBeDefined();
+				expect(evidenceFault(evidence!), `${ref} ${symbol}`).toBeNull();
+			}
+		}
+		const control = CHECKLIST.find((entry) => entry.ref === 'A.5.15')!;
+		expect(control.how).toContain(
+			"So is every change of a decision's participants, the account each of its places holds, and its decider, and a restore brings no decision role back above the record, " +
+				'while a backup whose seal does not verify gives none this server did not give (card 3033). '
+		);
+		const restriction = CHECKLIST.find((entry) => entry.ref === 'A.8.3')!;
+		const said =
+			'Nor does a restore bring back a decision role whose removal or lowering here is recorded: a participant removed or made informed, an account taken off a place, a decider replaced; ' +
+			"and a backup whose seal does not verify leaves every decision this server holds with its board, stage, author, decider and participants as here, takes no ruling's Product Owner from the file, " +
+			'and brings the decisions this server does not hold in with no board, no account and nobody on them (card 3033). ';
+		expect(restriction.how).toContain(said);
+		expect(restriction.how.indexOf(said)).toBeLessThan(restriction.how.indexOf('Still open:'));
+		expect(restriction.how.slice(restriction.how.indexOf('Still open:'))).not.toContain('3033');
+	});
+
 	it("(g) card 3029: A.8.12 says, right after card 3020's rule, that an unsealed restore kept as it is keeps this server's From, not as open, and cites both symbols, each of which exists", () => {
 		const item = CHECKLIST.find((entry) => entry.ref === 'A.8.12')!;
 		for (const [path, symbol] of [

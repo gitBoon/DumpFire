@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.148
+version: 1.149
 status: As-Built
-date: 2026-11-20
+date: 2026-11-21
 tags:
+  - card-3033
   - card-3002
   - card-3020
   - unsealed-request-addresses
@@ -60,7 +61,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -291,8 +292,8 @@ a superadmin holding a password the record says was replaced here is given `DUMM
 its keys ended (`endReplacedPasswordsPresent`), with one `WARN` under AUTH of counts; a superadmin holding
 one is left, with a `WARN` of its own at every run. Since card 3002 the password pass is followed, before the
 key pass and in a transaction of its own (`capAccessAtStart`), by the access pass: every board member,
-share, team member, board visibility, creator, Product Owner and person link that has a recorded row
-and is above it is lowered to it (never the restore's guess, never a team's deletion, never "no
+share, team member, board visibility, creator, Product Owner and person link, and (card 3033) every
+live decision place, place's account and decider, that has a recorded row and is above it is lowered to it (never the restore's guess, never a team's deletion, never "no
 Product Owner row means none"), a row of this server's dated after now never raising a ceiling; each
 change with the writers' own effects (`switchOffLostWebhooks` and, for an owner lowered,
 `holdNoLongerReadable` of that board), told as the sweep is (`schedulerSetting`); one `WARN` under
@@ -3275,6 +3276,53 @@ sequenceDiagram
     R->>L: COMMIT
     R-->>I: accessKept, accessAsHere, recordsNotTaken.accessChanges
     I->>I: sentences, CRITICAL words and details, counts only
+```
+
+### The restore keeps decision roles as recorded (card 3033)
+
+Card 3033 adds four kinds to the same record (`decision`, `decision_decider`, `decision_participant`,
+`decision_account`; migration 0080) and five steps to `restoreInOneSnapshot`, in its one transaction:
+
+1. `decisionRolesHeldHere`, before the clear, on **every** restore: each decision (id, `created_at`,
+   board, status, opening, author, decider and their names) and each place keyed by (row id, decision
+   id, the decision's `created_at`), with its person, account, address, role, removal and whether it
+   had an account by this server's own events.
+2. `rulingOwnersHere`, before the clear, unsealed only: each `ruled` event's Product Owner, with its
+   decision's `created_at`. `rowsToRestore` (its `trust.rulingOwners`) writes every `ruled` detail back
+   as text, this server's Product Owner only for the same event of a held decision, else `null`.
+3. After card 3020's people step and `keepPersonLinksHere`, exactly one of: `applyDecisionRecord`
+   (sealed, where the record is there), each place, its account, the decider and the author capped at
+   the record, as of the restore's moment, with the guess only where this server did not hold the
+   item; or `keepDecisionRolesHere` (unsealed, never gated on the record), held decisions as here, the
+   rest with no board, no account and nobody on them. Both write their DumpFire events through one
+   `INSERT … SELECT` statement (`RECORD_PLACE_CHANGED`), run once per place changed, never on a draft,
+   and delete a capped draft place where nothing names it.
+4. `raiseUserCounterOverNamed`, every restore: a restored account id that is not a whole number from 1
+   to 2^53 - 1 cleared (its row deleted where the column takes no NULL; never in an insert-only table)
+   and counted in one `errors` line; then the `users` row of `sqlite_sequence` raised, in SQL alone,
+   over the largest such id left and every ruling's Product Owner (code review, FP2).
+5. Card 3002's `keepAccessHere` also clears, on boards not held, member rows, creators and Product
+   Owners naming an id no restored account holds.
+
+None writes to `access_changes`. Counts go to `accessKept` and `accessAsHere`, then to the import's
+words. The start's access pass (`capAccessAtStart`) gains live places, places' accounts and deciders
+with a recorded row, pre-filtered in SQL, and asks each ceiling once unless a `here` row is dated after
+now, which it reads once on `access_changes_changed`.
+
+```mermaid
+sequenceDiagram
+    participant R as restoreInOneSnapshot
+    participant L as Live database (one transaction)
+    R->>L: decisionRolesHeldHere (every restore), rulingOwnersHere (unsealed)
+    R->>L: clear, copy (unsealed: ruled details rewritten at the copy)
+    R->>L: card 3002's steps, card 3020's people step, keepPersonLinksHere
+    alt seal verified and the record there
+        R->>L: applyDecisionRecord
+    else seal not verified
+        R->>L: keepDecisionRolesHere
+    end
+    R->>L: raiseUserCounterOverNamed
+    R->>L: readable pass, fill, sweep, COMMIT
 ```
 
 ### Log lines written during a transaction

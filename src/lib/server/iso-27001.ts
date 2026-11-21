@@ -217,6 +217,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Every route passes the gate, and every board read and write asks who may view or change that board, pinned by the route-by-route access tests. ' +
 			'Every change of who may open a board, who is in a team and which account a person is linked to is recorded by identity in the transaction that makes it, ' +
 			'and a restore brings that access back no higher than recorded, never taking on a guess access this server holds when it runs (card 3002). ' +
+			'So is every change of a decision\'s participants, the account each of its places holds, and its decider, and a restore brings no decision role back above the record, ' +
+			'while a backup whose seal does not verify gives none this server did not give (card 3033). ' +
 			'An API key carries its owner\'s full rights, with no scopes.',
 		evidence: [
 			{ path: 'src/hooks.server.ts', symbol: 'ADMIN_ROUTES' },
@@ -224,6 +226,9 @@ export const CHECKLIST: readonly IsoItem[] = [
 			// Card 3002: the record of access changes, its writer and the restore's application of it.
 			{ path: 'src/lib/server/access-changes.ts', symbol: 'recordAccessChange' },
 			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyAccessRecord' },
+			// Card 3033: the restore's two decision steps, sealed and unsealed.
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyDecisionRecord' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'keepDecisionRolesHere' },
 			{ path: 'tests/access-changes.test.ts' },
 			{ path: 'tests/access-every-route.test.ts' },
 			{ path: 'tests/access-control.test.ts' }
@@ -492,6 +497,9 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'A restore never brings back board, team or person access whose removal, lowering or making private here since the backup was made is recorded, and a backup whose seal does not verify ' +
 			'gives every account that is the same here exactly the access it has here, and none on the boards and teams this server does not hold (card 3002). ' +
 			'Not recorded, so not kept by a restore: a change made by a host edit or while an older image ran, and the boards and teams deleted before the record began, which come back whole. ' +
+			'Nor does a restore bring back a decision role whose removal or lowering here is recorded: a participant removed or made informed, an account taken off a place, a decider replaced; ' +
+			'and a backup whose seal does not verify leaves every decision this server holds with its board, stage, author, decider and participants as here, takes no ruling\'s Product Owner from the file, ' +
+			'and brings the decisions this server does not hold in with no board, no account and nobody on them (card 3033). ' +
 			'Still open: the dependency lists still give the ids of work on a board the caller cannot open that is linked to their own, withheld but numbered (card 2129\'s design; a loop withholds its nodes\' ids, card 2719), awaiting the owner\'s ruling (2917); ' +
 			'reads under an API key rely on a test scan rather than a refusal at run time (2730).',
 		evidence: [
@@ -504,6 +512,9 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: 'src/lib/server/access-changes.ts', symbol: 'recordAccessChange' },
 			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyAccessRecord' },
 			{ path: 'src/lib/server/db/restore.ts', symbol: 'keepAccessHere' },
+			// Card 3033: the decision roles, sealed and unsealed.
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyDecisionRecord' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'keepDecisionRolesHere' },
 			{ path: 'tests/load-access-reads.test.ts' },
 			{ path: 'tests/access-every-route.test.ts' },
 			{ path: 'tests/not-found-not-forbidden.test.ts' }

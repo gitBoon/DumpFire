@@ -25,6 +25,12 @@
  *
  * **The writers** (slice 3, plan section 5) call `recordAccessChange` in the transaction of each change, after it.
  *
+ * **Decision roles** (card 3033, migration 0080) are four kinds more: a decision tracked or `deleted`, its decider by
+ * identity, each place on it (a `decision_participants` row, named by its id and **its decision's** creation time, as
+ * opening rewrites the row's own) as `removed`, `informed` or `consulted`, and which account each place holds
+ * (`decision_account`, keyed per place, R5). A decision's `deleted` row is a `none` row, at its own place, for its
+ * decider, its places and its places' accounts (R6), as a team's is for its members and shares.
+ *
  * This module imports only the database's types, the stored form of a moment and the two SQL functions that read one:
  * the restore, the start pass and the writers all read it.
  */
@@ -44,7 +50,11 @@ export const ACCESS_KIND = {
 	boardTeam: 'board_team',
 	team: 'team',
 	teamMember: 'team_member',
-	personLink: 'person_link'
+	personLink: 'person_link',
+	decision: 'decision',
+	decisionDecider: 'decision_decider',
+	decisionParticipant: 'decision_participant',
+	decisionAccount: 'decision_account'
 } as const;
 export type AccessKind = (typeof ACCESS_KIND)[keyof typeof ACCESS_KIND];
 
@@ -53,7 +63,8 @@ export const ACCESS_ORIGIN = { here: 'here', backup: 'backup' } as const;
 
 /**
  * The words each kind's `access` may hold, low to high for the ordinal kinds (plan 3.2's kinds table). Index 0 is
- * `none` for every kind a restore can cap but the board's visibility, whose lowest is `private`.
+ * `none` for every kind a restore can cap but the board's visibility, whose lowest is `private`, and a place on a
+ * decision, whose lowest is `removed` (card 3033).
  */
 export const ACCESS_WORDS: Readonly<Record<AccessKind, readonly string[]>> = {
 	board: ['tracked'],
@@ -63,16 +74,23 @@ export const ACCESS_WORDS: Readonly<Record<AccessKind, readonly string[]>> = {
 	board_team: ['none', 'viewer', 'editor'],
 	team: ['tracked', 'deleted'],
 	team_member: ['none', 'member', 'owner'],
-	person_link: ['none', 'linked']
+	person_link: ['none', 'linked'],
+	decision: ['tracked', 'deleted'],
+	decision_decider: ['none', 'yes'],
+	decision_participant: ['removed', 'informed', 'consulted'],
+	decision_account: ['none', 'held']
 };
 
 /** The kinds whose word is a rank: the lower of the restored value and the ceiling is kept. */
-export const ORDINAL_KINDS: readonly AccessKind[] = ['board_public', 'board_member', 'board_team', 'team_member'];
+export const ORDINAL_KINDS: readonly AccessKind[] = ['board_public', 'board_member', 'board_team', 'team_member', 'decision_participant', 'decision_account'];
 
 /** The kinds that name one holder of the subject: kept only where the record names that holder. */
-export const IDENTITY_KINDS: readonly AccessKind[] = ['board', 'product_owner', 'person_link'];
+export const IDENTITY_KINDS: readonly AccessKind[] = ['board', 'product_owner', 'person_link', 'decision_decider'];
 
-/** What a subject's marker row is: a board's, a team's, or any person link. */
+/**
+ * What a subject's marker row is: a board's, a team's, any person link, or a decision's. A `decision_account` item's
+ * subject is a place, so its marker is read on the item's `marker`, its decision (R5).
+ */
 const MARKER_OF: Readonly<Record<AccessKind, AccessKind | null>> = {
 	board: 'board',
 	board_public: 'board',
@@ -81,16 +99,23 @@ const MARKER_OF: Readonly<Record<AccessKind, AccessKind | null>> = {
 	board_team: 'board',
 	team: 'team',
 	team_member: 'team',
-	person_link: 'person_link'
+	person_link: 'person_link',
+	decision: 'decision',
+	decision_decider: 'decision',
+	decision_participant: 'decision',
+	decision_account: 'decision'
 };
+
+/** The kinds a decision's deletion ends, each at its own place (R6): its places and its places' accounts. Its decider is ended in `namedHolder`. */
+const ENDED_BY_DECISION_DELETION: readonly AccessKind[] = ['decision_participant', 'decision_account'];
 
 /**
  * The rank of a word of an ordinal kind (A3): its place among the kind's words; a role that is not one of them ranks
- * as the role it reads as, the lowest grant (a member as `viewer`, a share as `viewer`, a team member as `member`). A
- * team's `deleted` ranks as `none` for the pairs it ends (R2).
+ * as the role it reads as, the lowest grant (a member as `viewer`, a share as `viewer`, a team member as `member`, a
+ * place as `informed`). A team's or a decision's `deleted` ranks as `none` for the pairs it ends (R2; card 3033 R6, R13 L2).
  */
 export function accessRank(kind: AccessKind, word: unknown): number {
-	if (kind === ACCESS_KIND.team) return word === 'deleted' ? 0 : 1;
+	if (kind === ACCESS_KIND.team || kind === ACCESS_KIND.decision) return word === 'deleted' ? 0 : 1;
 	const at = typeof word === 'string' ? ACCESS_WORDS[kind].indexOf(word) : -1;
 	if (at >= 0) return at;
 	return kind === ACCESS_KIND.boardPublic ? 0 : 1;
@@ -99,7 +124,8 @@ export function accessRank(kind: AccessKind, word: unknown): number {
 /**
  * Whether a row's holder is as the kinds table says (R13, R15): an account or team, id at least 1 with a creation time
  * in the stored form, where the kind always names one; 0 and '' where it never does; and, for the creator, Product
- * Owner and person link, either, by the word. No row has a real holder with ''.
+ * Owner, decider and person link, either, by the word. No row has a real holder with ''. A place on a decision (the
+ * holder of `decision_participant`) and a place's account are always real.
  */
 export function wellFormedHolder(kind: AccessKind, access: string, holderId: unknown, holderCreated: unknown): boolean {
 	const real = typeof holderId === 'number' && Number.isSafeInteger(holderId) && holderId >= 1 && isStamp(holderCreated);
@@ -109,8 +135,10 @@ export function wellFormedHolder(kind: AccessKind, access: string, holderId: unk
 			return real || none;
 		case 'board_public':
 		case 'team':
+		case 'decision':
 			return none;
 		case 'product_owner':
+		case 'decision_decider':
 			return access === 'yes' ? real : none;
 		case 'person_link':
 			return access === 'linked' ? real : none;
@@ -130,8 +158,22 @@ export function hasAccessRecord(database: Database.Database): boolean {
 /** One side of an item: its id, and its creation time in the stored form, or null where it names no moment. */
 export type AccessSide = { id: number; created: string | null };
 
-/** An item as the rule asks about it: its kind, its subject, and its holder (`{ id: 0, created: '' }` for none). */
-export type AccessItem = { kind: AccessKind; subject: AccessSide; holder: AccessSide };
+/**
+ * An item as the rule asks about it: its kind, its subject, and its holder (`{ id: 0, created: '' }` for none); and, for
+ * a `decision_account` place, `marker`, the place's decision (R5), whose rows say whether the place is tracked and
+ * whose deletion ends it. Absent, the subject is its own marker. A `decision_account` item without one is refused.
+ */
+export type AccessItem = { kind: AccessKind; subject: AccessSide; holder: AccessSide; marker?: AccessSide };
+
+/**
+ * The side an item's marker and its decision's deletion are read on: `marker` where given, else the subject. A place's
+ * time is its decision's (R13 L1), so a marker whose time is not given takes the subject's.
+ */
+function markerOf(item: AccessItem): AccessSide {
+	if (item.marker !== undefined) return { id: item.marker.id, created: item.marker.created ?? item.subject.created };
+	if (item.kind === ACCESS_KIND.decisionAccount) throw new Error('A decision_account item names its decision as its marker, and this one names none');
+	return item.subject;
+}
 
 /** The row that decides, as a reader takes it. */
 export type AccessRow = { seq: number; access: string; changedAt: string; holderId: number; holderCreated: string };
@@ -144,23 +186,46 @@ const SUBJECT = "subject_id = @subject AND kind = @kind AND subject_created = @s
  * The reads, by name, so that tests/access-changes.test.ts can ask SQLite's plan of each (case (v)): the latest `here`
  * row in `seq` order on `access_changes_pair` or `access_changes_subject`, the `backup` rows after a moment, and the
  * latest `backup` row as a `max` and then one row. None reads every row of an item to find its latest (R11).
+ *
+ * Card 3033: a read of an item's rows by their moment writes `+changed_at`, so that SQLite never takes
+ * `access_changes_changed` (migration 0080, the start pass's `futureHere` alone) over the item's own index: with the
+ * statistics better-sqlite3's SQLite keeps of the values, a moment no row holds would otherwise look the narrower.
  */
 export const ACCESS_READS = {
 	pairHere: `SELECT ${COLUMNS} FROM access_changes WHERE ${PAIR} AND origin = 'here' ORDER BY seq DESC LIMIT 1`,
-	pairBackupAfter: `SELECT ${COLUMNS} FROM access_changes WHERE ${PAIR} AND origin = 'backup' AND changed_at > @after`,
+	pairBackupAfter: `SELECT ${COLUMNS} FROM access_changes WHERE ${PAIR} AND origin = 'backup' AND +changed_at > @after`,
 	pairBackupLatestAt: `SELECT max(changed_at) FROM access_changes WHERE ${PAIR} AND origin = 'backup'`,
-	pairBackupLatest: `SELECT ${COLUMNS} FROM access_changes WHERE ${PAIR} AND origin = 'backup' AND changed_at = @at ORDER BY seq DESC LIMIT 1`,
+	pairBackupLatest: `SELECT ${COLUMNS} FROM access_changes WHERE ${PAIR} AND origin = 'backup' AND +changed_at = @at ORDER BY seq DESC LIMIT 1`,
 	subjectHere: `SELECT ${COLUMNS} FROM access_changes WHERE ${SUBJECT} AND origin = 'here' ORDER BY seq DESC LIMIT 1`,
-	subjectBackupAfter: `SELECT ${COLUMNS} FROM access_changes WHERE ${SUBJECT} AND origin = 'backup' AND changed_at > @after`,
+	subjectBackupAfter: `SELECT ${COLUMNS} FROM access_changes WHERE ${SUBJECT} AND origin = 'backup' AND +changed_at > @after`,
 	subjectBackupLatestAt: `SELECT max(changed_at) FROM access_changes WHERE ${SUBJECT} AND origin = 'backup'`,
-	subjectBackupLatest: `SELECT ${COLUMNS} FROM access_changes WHERE ${SUBJECT} AND origin = 'backup' AND changed_at = @at ORDER BY seq DESC LIMIT 1`,
+	subjectBackupLatest: `SELECT ${COLUMNS} FROM access_changes WHERE ${SUBJECT} AND origin = 'backup' AND +changed_at = @at ORDER BY seq DESC LIMIT 1`,
 	// The start pass's (R1): this server's latest row dated no later than its moment, so that a row dated after now never raises a ceiling.
-	pairHereAsOf: `SELECT ${COLUMNS} FROM access_changes WHERE ${PAIR} AND origin = 'here' AND changed_at <= @asOf ORDER BY seq DESC LIMIT 1`,
-	subjectHereAsOf: `SELECT ${COLUMNS} FROM access_changes WHERE ${SUBJECT} AND origin = 'here' AND changed_at <= @asOf ORDER BY seq DESC LIMIT 1`,
+	pairHereAsOf: `SELECT ${COLUMNS} FROM access_changes WHERE ${PAIR} AND origin = 'here' AND +changed_at <= @asOf ORDER BY seq DESC LIMIT 1`,
+	subjectHereAsOf: `SELECT ${COLUMNS} FROM access_changes WHERE ${SUBJECT} AND origin = 'here' AND +changed_at <= @asOf ORDER BY seq DESC LIMIT 1`,
 	tracked: 'SELECT 1 FROM access_changes WHERE subject_id = @subject AND kind = @kind AND subject_created = @subjectCreated LIMIT 1',
 	trackedById: 'SELECT 1 FROM access_changes WHERE subject_id = @subject AND kind = @kind LIMIT 1',
 	createdOfSubject: 'SELECT DISTINCT subject_created FROM access_changes WHERE subject_id = @subject AND kind = @kind',
-	createdOfHolder: 'SELECT DISTINCT holder_created FROM access_changes WHERE subject_id = @subject AND kind = @kind AND subject_created = @subjectCreated AND holder_id = @holder'
+	createdOfHolder: 'SELECT DISTINCT holder_created FROM access_changes WHERE subject_id = @subject AND kind = @kind AND subject_created = @subjectCreated AND holder_id = @holder',
+	// Card 3033 (R13 L10): the start pass's one read of whether any row of this server's is dated after its moment, on
+	// `access_changes_changed` (migration 0080) rather than a scan of the whole record.
+	futureHere: "SELECT 1 FROM access_changes WHERE changed_at > @asOf AND origin = 'here' LIMIT 1",
+	// Card 3033 (R6; code review, FP7): `decisionDeletedHere`'s two reads, each by the decision's identity and, where its
+	// time names no moment, by its id alone (N4): whether any `deleted` row names it, and this server's latest row of the
+	// decision, its decider, its places and its places' accounts, no later than `asOf` where given.
+	decisionDeleted: "SELECT 1 FROM access_changes WHERE subject_id = @subject AND kind = 'decision' AND subject_created = @subjectCreated AND access = 'deleted' LIMIT 1",
+	decisionDeletedById: "SELECT 1 FROM access_changes WHERE subject_id = @subject AND kind = 'decision' AND access = 'deleted' LIMIT 1",
+	decisionLatestHere:
+		"SELECT kind, access FROM (SELECT seq, kind, access FROM access_changes WHERE subject_id = @subject AND kind IN ('decision', 'decision_decider', 'decision_participant') " +
+		"AND subject_created = @subjectCreated AND origin = 'here' AND (@asOf IS NULL OR +changed_at <= @asOf) " +
+		'UNION ALL SELECT a.seq, a.kind, a.access FROM decision_participants AS p CROSS JOIN access_changes AS a ON a.subject_id = p.id ' +
+		"WHERE p.decision_id = @subject AND a.kind = 'decision_account' AND a.subject_created = @subjectCreated AND a.origin = 'here' AND (@asOf IS NULL OR +a.changed_at <= @asOf)) " +
+		'ORDER BY seq DESC LIMIT 1',
+	decisionLatestHereById:
+		"SELECT kind, access FROM (SELECT seq, kind, access FROM access_changes WHERE subject_id = @subject AND kind IN ('decision', 'decision_decider', 'decision_participant') " +
+		"AND origin = 'here' AND (@asOf IS NULL OR +changed_at <= @asOf) " +
+		'UNION ALL SELECT a.seq, a.kind, a.access FROM decision_participants AS p CROSS JOIN access_changes AS a ON a.subject_id = p.id ' +
+		"WHERE p.decision_id = @subject AND a.kind = 'decision_account' AND a.origin = 'here' AND (@asOf IS NULL OR +a.changed_at <= @asOf)) ORDER BY seq DESC LIMIT 1"
 } as const;
 
 type Reads = { [K in keyof typeof ACCESS_READS]: Database.Statement };
@@ -229,7 +294,10 @@ function deciding(reads: Reads, keys: readonly Key[], asOf?: string): { here?: [
 	return { later: [], backup };
 }
 
-/** Whether a subject is tracked: its marker row is held, by id and creation time, or by id alone where its time names no moment. */
+/**
+ * Whether a subject is tracked: its marker row is held, by id and creation time, or by id alone where its time names no
+ * moment. For a `decision_account` place, `subject` is its decision, the item's marker (card 3033 R5).
+ */
 export function accessTracked(database: Database.Database, kind: AccessKind, subject: AccessSide): boolean {
 	const reads = readsOf(database);
 	const marker = MARKER_OF[kind] as AccessKind;
@@ -239,22 +307,26 @@ export function accessTracked(database: Database.Database, kind: AccessKind, sub
 }
 
 /**
- * The ceiling of one exact ordinal pair, its team's deletions counted as `none` rows at their own place (R2) unless
- * `start` says not, or null where no row names it.
+ * The ceiling of one exact ordinal pair, its team's or its decision's deletions counted as `none` rows at their own
+ * place (R2; card 3033 R6) unless `start` says not, or null where no row names it. `marker` is the decision a place's
+ * account is read under (R5), its time the place's.
  */
 function pairCeiling(
 	reads: Reads,
 	kind: AccessKind,
 	subject: { id: number; created: string },
 	holder: { id: number; created: string },
+	marker: { id: number; created: string },
 	start: StartOptions = {}
 ): number | null {
 	const keys: Key[] = [{ kind, subject: subject.id, subjectCreated: subject.created, holder }];
-	// A team's deletion ends its members (the team is the subject) and its shares (the team is the holder): at a restore
-	// and at a writer's comparison, never at the start pass (R2).
-	if (start.teamDeletions !== false) {
+	// A team's deletion ends its members (the team is the subject) and its shares (the team is the holder); a decision's
+	// ends each of its places and each place's account (card 3033 R6): at a restore and at a writer's comparison, never at
+	// the start pass (R2).
+	if (start.deletions !== false) {
 		if (kind === ACCESS_KIND.teamMember) keys.push({ kind: 'team', subject: subject.id, subjectCreated: subject.created, deleted: true });
 		if (kind === ACCESS_KIND.boardTeam) keys.push({ kind: 'team', subject: holder.id, subjectCreated: holder.created, deleted: true });
+		if (ENDED_BY_DECISION_DELETION.includes(kind)) keys.push({ kind: 'decision', subject: marker.id, subjectCreated: marker.created, deleted: true });
 	}
 	const rank = ([row, i]: [AccessRow, number]) => (i === 0 ? accessRank(kind, row.access) : 0);
 	const found = deciding(reads, keys, start.asOf);
@@ -265,10 +337,14 @@ function pairCeiling(
 /**
  * The holder the record names for an identity kind's subject: the account (by id and creation time), `none`, or null
  * where no row names the subject. This server's latest row by `seq`, made `none` by any `backup` row after it naming
- * another holder; else the latest `backup` row by `(changed_at, seq)`.
+ * another holder; else the latest `backup` row by `(changed_at, seq)`. A decider's decision's `deleted` rows rank among
+ * the decider's own (card 3033 R6), each naming none (holder 0): a `here` deletion later in `seq` than the latest decider
+ * row makes it `none`, and a decider row later than the deletion counts; never at the start pass (`deletions`).
  */
-function namedHolder(reads: Reads, kind: AccessKind, subject: { id: number; created: string }, asOf?: string): { id: number; created: string } | 'none' | null {
-	const found = deciding(reads, [{ kind, subject: subject.id, subjectCreated: subject.created }], asOf);
+function namedHolder(reads: Reads, kind: AccessKind, subject: { id: number; created: string }, start: StartOptions = {}): { id: number; created: string } | 'none' | null {
+	const keys: Key[] = [{ kind, subject: subject.id, subjectCreated: subject.created }];
+	if (kind === ACCESS_KIND.decisionDecider && start.deletions !== false) keys.push({ kind: 'decision', subject: subject.id, subjectCreated: subject.created, deleted: true });
+	const found = deciding(reads, keys, start.asOf);
 	const holderOf = (row: AccessRow) => (row.holderId === 0 || row.access === 'none' ? ('none' as const) : { id: row.holderId, created: row.holderCreated });
 	if (found.here !== undefined) {
 		const named = holderOf(found.here[0]);
@@ -282,10 +358,11 @@ function namedHolder(reads: Reads, kind: AccessKind, subject: { id: number; crea
 
 /**
  * The start pass's options (R1, R2): `asOf`, the pass's moment, past which no row of this server's is read (a restore
- * passes its own moment too, code review FP12); and `teamDeletions: false`, so that a team's deletion ends none of its
- * members or shares there.
+ * passes its own moment too, code review FP12); and `deletions: false`, read as "no deletion counts": a team's
+ * deletion ends none of its members or shares there, and a decision's none of its decider, places or places' accounts
+ * (card 3033 R6). Named `teamDeletions` before card 3033's code review (FP9), when it covered a team's alone.
  */
-export type StartOptions = { asOf?: string; teamDeletions?: boolean };
+export type StartOptions = { asOf?: string; deletions?: boolean };
 
 /** The rule's options: `guess` at a restore alone, with `heldBefore`, whether this server held the item before its clear (R4). */
 export type CeilingOptions = StartOptions & { guess?: boolean; heldBefore?: boolean };
@@ -298,11 +375,13 @@ export type CeilingOptions = StartOptions & { guess?: boolean; heldBefore?: bool
  * - An identity kind: 1 where the record names `item.holder` (by id and creation time), 0 where it names another or
  *   none, or where a creation time names no moment and the subject has any row (R8).
  * - With `guess`: an item no row names, on a tracked subject, that this server did not hold before the clear, is 0;
- *   for an identity kind, only the Product Owner (a board's creator and a person's link are tracked by their own rows).
+ *   for an identity kind, only the Product Owner and a decision's decider (card 3033; a board's creator and a person's
+ *   link are tracked by their own rows). A `decision_account` place is tracked through its decision, `item.marker` (R5).
  */
 export function accessCeiling(database: Database.Database, item: AccessItem, options: CeilingOptions = {}): number | null {
 	const reads = readsOf(database);
 	const { kind, subject, holder } = item;
+	const marker = markerOf(item);
 	let ceiling: number | null;
 	if (IDENTITY_KINDS.includes(kind)) {
 		if (subject.created === null || holder.created === null) {
@@ -313,14 +392,18 @@ export function accessCeiling(database: Database.Database, item: AccessItem, opt
 					: reads.tracked.get({ subject: subject.id, kind, subjectCreated: subject.created }) !== undefined;
 			ceiling = any ? 0 : null;
 		} else {
-			const named = namedHolder(reads, kind, { id: subject.id, created: subject.created }, options.asOf);
+			const named = namedHolder(reads, kind, { id: subject.id, created: subject.created }, options);
 			ceiling = named === null ? null : named !== 'none' && named.id === holder.id && named.created === holder.created ? 1 : 0;
 		}
 	} else if (subject.created === null || holder.created === null) {
 		// By id alone: every creation time the record holds for the unknown side, the lowest ceiling.
 		const subjects = subject.created === null ? (reads.createdOfSubject.pluck().all({ subject: subject.id, kind }) as string[]) : [subject.created];
-		if (kind === ACCESS_KIND.teamMember && subject.created === null && options.teamDeletions !== false) {
+		if (kind === ACCESS_KIND.teamMember && subject.created === null && options.deletions !== false) {
 			subjects.push(...(reads.createdOfSubject.pluck().all({ subject: subject.id, kind: 'team' }) as string[]));
+		}
+		// A place's time is its decision's (card 3033 R13 L1): the decision's recorded times, for its deletion (R6).
+		if (ENDED_BY_DECISION_DELETION.includes(kind) && subject.created === null && options.deletions !== false) {
+			subjects.push(...(reads.createdOfSubject.pluck().all({ subject: marker.id, kind: 'decision' }) as string[]));
 		}
 		ceiling = null;
 		for (const subjectCreated of new Set(subjects)) {
@@ -328,21 +411,31 @@ export function accessCeiling(database: Database.Database, item: AccessItem, opt
 				holder.created !== null
 					? [holder.created]
 					: (reads.createdOfHolder.pluck().all({ subject: subject.id, kind, subjectCreated, holder: holder.id }) as string[]);
-			if (kind === ACCESS_KIND.boardTeam && holder.created === null && options.teamDeletions !== false) {
+			if (kind === ACCESS_KIND.boardTeam && holder.created === null && options.deletions !== false) {
 				holders.push(...(reads.createdOfSubject.pluck().all({ subject: holder.id, kind: 'team' }) as string[]));
 			}
+			// A place, the holder of `decision_participant`, has its decision's time.
+			if (kind === ACCESS_KIND.decisionParticipant && holder.created === null) holders.push(subjectCreated);
+			const decision = { id: marker.id, created: marker.created ?? subjectCreated };
 			for (const holderCreated of new Set(holders)) {
-				const one = pairCeiling(reads, kind, { id: subject.id, created: subjectCreated }, { id: holder.id, created: holderCreated }, options);
+				const one = pairCeiling(reads, kind, { id: subject.id, created: subjectCreated }, { id: holder.id, created: holderCreated }, decision, options);
 				if (one !== null) ceiling = ceiling === null ? one : Math.min(ceiling, one);
 			}
 		}
 	} else {
-		ceiling = pairCeiling(reads, kind, { id: subject.id, created: subject.created }, { id: holder.id, created: holder.created }, options);
+		ceiling = pairCeiling(
+			reads,
+			kind,
+			{ id: subject.id, created: subject.created },
+			{ id: holder.id, created: holder.created },
+			{ id: marker.id, created: marker.created ?? subject.created },
+			options
+		);
 	}
 	if (ceiling !== null || !options.guess || options.heldBefore) return ceiling;
 	// The guess (rule 2, R4): no row, on a tracked subject, not held here before the clear.
 	if (kind === ACCESS_KIND.board || kind === ACCESS_KIND.personLink) return null;
-	return accessTracked(database, kind, subject) ? 0 : null;
+	return accessTracked(database, kind, marker) ? 0 : null;
 }
 
 /**
@@ -356,8 +449,26 @@ export function accessTeamDeleted(database: Database.Database, team: AccessSide,
 	return row?.access === 'deleted' || found.later.some(([later]) => later.access === 'deleted');
 }
 
-/** The table each kind's subject is in. */
-const SUBJECT_TABLE: Readonly<Record<AccessKind, 'boards' | 'teams' | 'people'>> = {
+/**
+ * A decision's deletion as the record holds it (card 3033, R6, plan 3.4), at a restore: `deleted`, whether any `deleted`
+ * row names the decision, of either origin (its author is then cleared); and `ended`, whether a `here` `deleted` row is
+ * the decision's latest `here` row by `seq` among its `decision`, `decision_decider` and `decision_participant` rows and
+ * the `decision_account` rows of its places (the restored `decision_participants` rows on it, each with the decision's
+ * time): only then is it counted among the decisions a restore brought back deleted. A decision whose time names no
+ * moment is matched by id alone (N4). With `asOf`, no `here` row dated after it is read (FP12).
+ */
+export function decisionDeletedHere(database: Database.Database, decision: AccessSide, asOf?: string): { deleted: boolean; ended: boolean } {
+	const reads = readsOf(database);
+	const params = { subject: decision.id, subjectCreated: decision.created, asOf: asOf ?? null };
+	const byId = decision.created === null;
+	const deleted = (byId ? reads.decisionDeletedById : reads.decisionDeleted).get(params) !== undefined;
+	if (!deleted) return { deleted, ended: false };
+	const latest = (byId ? reads.decisionLatestHereById : reads.decisionLatestHere).get(params) as { kind: string; access: string } | undefined;
+	return { deleted, ended: latest?.kind === ACCESS_KIND.decision && latest.access === 'deleted' };
+}
+
+/** The table each kind's subject is in: a place's account's subject is the place, which has its decision's time. */
+const SUBJECT_TABLE: Readonly<Record<AccessKind, 'boards' | 'teams' | 'people' | 'decisions' | 'decision_participants'>> = {
 	board: 'boards',
 	board_public: 'boards',
 	product_owner: 'boards',
@@ -365,11 +476,15 @@ const SUBJECT_TABLE: Readonly<Record<AccessKind, 'boards' | 'teams' | 'people'>>
 	board_team: 'boards',
 	team: 'teams',
 	team_member: 'teams',
-	person_link: 'people'
+	person_link: 'people',
+	decision: 'decisions',
+	decision_decider: 'decisions',
+	decision_participant: 'decisions',
+	decision_account: 'decision_participants'
 };
 
-/** The table each kind's holder is in: an account, a team for a share, or none. */
-const HOLDER_TABLE: Readonly<Record<AccessKind, 'users' | 'teams' | null>> = {
+/** The table each kind's holder is in: an account, a team for a share, a place on the decision, or none. */
+const HOLDER_TABLE: Readonly<Record<AccessKind, 'users' | 'teams' | 'decision_participants' | null>> = {
 	board: 'users',
 	board_public: null,
 	product_owner: 'users',
@@ -377,7 +492,11 @@ const HOLDER_TABLE: Readonly<Record<AccessKind, 'users' | 'teams' | null>> = {
 	board_team: 'teams',
 	team: null,
 	team_member: 'users',
-	person_link: 'users'
+	person_link: 'users',
+	decision: null,
+	decision_decider: 'users',
+	decision_participant: 'decision_participants',
+	decision_account: 'users'
 };
 
 /**
@@ -386,6 +505,10 @@ const HOLDER_TABLE: Readonly<Record<AccessKind, 'users' | 'teams' | null>> = {
  * subject whose creation time names no moment is not tracked, and nothing is written. A pair whose holder's time names
  * none is not written; a creator, Product Owner or link whose account is not there, or whose time names none, is
  * written as holder 0 and `''`, with `none` (the creator `tracked`), as the seed writes it. `origin` is `here`.
+ *
+ * A place has no creation time of its own (card 3033 R13 L1): a `decision_participant` row names the place, which must
+ * be on the decision, with the decision's time; a `decision_account` row names the place by its id and its decision's
+ * time, through the same join, so that a place's time is always its decision's (0080 writes them so).
  */
 function accessRecordSql(kind: AccessKind): string {
 	const subject = SUBJECT_TABLE[kind];
@@ -393,6 +516,21 @@ function accessRecordSql(kind: AccessKind): string {
 	const into =
 		'INSERT INTO access_changes (kind, subject_id, subject_created, holder_id, holder_created, access, changed_at, stated_changed) ';
 	const where = 'WHERE s.id = @subject AND stamp_of(s.created_at) IS NOT NULL';
+	if (kind === ACCESS_KIND.decisionParticipant) {
+		return (
+			into +
+			'SELECT @kind, s.id, stamp_of(s.created_at), h.id, stamp_of(s.created_at), @access, @at, @at ' +
+			`FROM decisions AS s JOIN decision_participants AS h ON h.id = @holder AND h.decision_id = s.id ${where}`
+		);
+	}
+	if (kind === ACCESS_KIND.decisionAccount) {
+		return (
+			into +
+			'SELECT @kind, p.id, stamp_of(d.created_at), h.id, stamp_of(h.created_at), @access, @at, @at ' +
+			'FROM decision_participants AS p JOIN decisions AS d ON d.id = p.decision_id JOIN users AS h ON h.id = @holder ' +
+			'WHERE p.id = @subject AND stamp_of(d.created_at) IS NOT NULL AND stamp_of(h.created_at) IS NOT NULL'
+		);
+	}
 	if (holder === null) return into + `SELECT @kind, s.id, stamp_of(s.created_at), 0, '', @access, @at, @at FROM ${subject} AS s ${where}`;
 	if (IDENTITY_KINDS.includes(kind)) {
 		return (
@@ -421,15 +559,35 @@ function recordedWord(kind: AccessKind, access: string): string {
 	return ORDINAL_KINDS.includes(kind) ? ACCESS_WORDS[kind][accessRank(kind, access)] : access;
 }
 
+/** The identity kinds a writer names an account for and that must never be recorded `none` for one that is there (card 3033 R14). */
+const NAMED_ACCOUNT_KINDS: readonly AccessKind[] = ['product_owner', 'decision_decider'];
+
+/**
+ * Whether `userId` is an account here whose creation time names no moment (card 3033 R14): the record cannot name it,
+ * so a writer that would make it a board's Product Owner or a decision's decider refuses, 409, before it writes. False
+ * for an account that is not there (recorded as none) and for one whose time reads.
+ */
+export function accountTimeUnreadable(database: Database.Database, userId: number): boolean {
+	const created = database.prepare('SELECT created_at FROM users WHERE id = ?').pluck().get(userId) as unknown;
+	return created !== undefined && toStamp(created) === null;
+}
+
 /**
  * Record one change of access here (plan 3.1, section 5), in the transaction of the change, after it, on `database`:
  * one row by `accessRecordSql`, `changed_at` and `stated_changed` now in the stored form. Throws, writing nothing,
  * where no transaction is open on `database`: a change recorded apart from its write could be kept without it, or
  * lost with it. Returns whether a row was written (none for a subject or holder whose creation time names no moment).
+ *
+ * Card 3033 R14, the belt: a Product Owner or decider naming an account that is there but whose creation time names no
+ * moment throws, so that the write it belongs to rolls back rather than being recorded as `none`. Each writer refuses
+ * such an account first, 409 (`accountTimeUnreadable`).
  */
 export function recordAccessChange(database: Database.Database, change: AccessChange): boolean {
 	if (!database.inTransaction) {
 		throw new Error('recordAccessChange records inside the transaction of the change, and none is open on the connection it was given');
+	}
+	if (NAMED_ACCOUNT_KINDS.includes(change.kind) && change.holder != null && accountTimeUnreadable(database, change.holder)) {
+		throw new Error(`A ${change.kind} naming account ${change.holder}, whose creation time names no moment, is never recorded as none (card 3033 R14)`);
 	}
 	registerStampFunctions(database);
 	const none = change.kind === ACCESS_KIND.board ? 'tracked' : 'none';
@@ -452,20 +610,55 @@ export function recordAccessChange(database: Database.Database, change: AccessCh
  * as the live row only where the record says otherwise, so that a grant an older image or a host edit made is recorded
  * when it is sent again. True for a subject or holder that is not there, or whose creation time names no moment:
  * nothing would be recorded; and for a subject the record does not track where no row names the pair (FP1). Ordinal
- * kinds only.
+ * kinds, and an identity kind naming an account (card 3033 R15: whether the record names exactly that holder).
+ *
+ * A place's time is its decision's (card 3033 R13 L1), read through the join as `accessRecordSql` writes it: a place
+ * has no creation time of its own, and its `included_at` is retaken at open. A place not on the decision named is not
+ * recorded, so it is as recorded.
+ *
+ * An identity kind naming no holder (a decider or Product Owner cleared): as recorded where the record names none; not
+ * where it names a holder, or names nothing on a tracked subject (S2a's note).
  */
 export function accessAsRecorded(database: Database.Database, change: AccessChange): boolean {
+	if (IDENTITY_KINDS.includes(change.kind) && change.holder == null) {
+		const created = database.prepare(`SELECT created_at FROM ${SUBJECT_TABLE[change.kind]} WHERE id = ?`).pluck().get(change.subject) as unknown;
+		const subject = toStamp(created);
+		if (subject === null) return true;
+		const named = namedHolder(readsOf(database), change.kind, { id: change.subject, created: subject });
+		if (named === null) return !accessTracked(database, change.kind, { id: change.subject, created: subject });
+		return named === 'none';
+	}
 	const createdOf = (table: string, id: number | null | undefined) =>
 		id === null || id === undefined ? undefined : (database.prepare(`SELECT created_at FROM ${table} WHERE id = ?`).pluck().get(id) as unknown);
-	const subject = toStamp(createdOf(SUBJECT_TABLE[change.kind], change.subject));
+	const placeOf = (id: number | null | undefined) =>
+		id === null || id === undefined
+			? undefined
+			: (database
+					.prepare('SELECT d.id AS decision, d.created_at AS created FROM decision_participants AS p JOIN decisions AS d ON d.id = p.decision_id WHERE p.id = ?')
+					.get(id) as { decision: number; created: unknown } | undefined);
+	let subject: string | null;
+	let marker: AccessSide | undefined;
+	if (change.kind === ACCESS_KIND.decisionAccount) {
+		const place = placeOf(change.subject);
+		subject = toStamp(place?.created);
+		if (place !== undefined) marker = { id: place.decision, created: subject };
+	} else {
+		subject = toStamp(createdOf(SUBJECT_TABLE[change.kind], change.subject));
+	}
 	const table = HOLDER_TABLE[change.kind];
-	const holder = table === null ? '' : toStamp(createdOf(table, change.holder));
+	let holder: string | null;
+	if (table === null) holder = '';
+	else if (change.kind === ACCESS_KIND.decisionParticipant) {
+		const place = placeOf(change.holder);
+		holder = place !== undefined && place.decision === change.subject ? toStamp(place.created) : null;
+	} else holder = toStamp(createdOf(table, change.holder));
 	if (subject === null || holder === null) return true;
-	const ceiling = accessCeiling(database, { kind: change.kind, subject: { id: change.subject, created: subject }, holder: { id: table === null ? 0 : change.holder!, created: holder } });
+	const item: AccessItem = { kind: change.kind, subject: { id: change.subject, created: subject }, holder: { id: table === null ? 0 : change.holder!, created: holder }, marker };
+	const ceiling = accessCeiling(database, item);
 	// A subject the record does not track (a fixture, or one made on an older image), where no row names the pair: the
 	// record says nothing of it, and a restore takes it as the backup has it, so a role sent again unchanged writes nothing
 	// (card 2378's rule). Where a row does name the pair, it is compared as on a tracked subject (code review, FP1): a
 	// grant a host edit or an older image made is recorded when it is sent again, so that no later pass lowers it.
-	if (ceiling === null && !accessTracked(database, change.kind, { id: change.subject, created: subject })) return true;
+	if (ceiling === null && !accessTracked(database, change.kind, markerOf(item))) return true;
 	return ceiling === accessRank(change.kind, change.access);
 }

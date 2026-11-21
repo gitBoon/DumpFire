@@ -5746,6 +5746,10 @@ const KEY_DYNAMIC_CLEARS: Record<string, { count: number; why: string }> = {
 		count: 1,
 		why: "The restore's clear of every restorable table, which `restorableTables` keeps the record out of: the backup's keys replace this server's, which is not an ending (decision 18); those the record names are then left out."
 	},
+	'src/lib/server/db/restore.ts#raiseUserCounterOverNamed': {
+		count: 1,
+		why: "Card 3033's code review (FP2): a restored row whose account column, which takes no NULL, names no whole number from 1 to 2^53 - 1, deleted; never in api_keys (ROWS_LEFT_AS_THEY_ARE), and users has no such column."
+	},
 	'src/routes/api/admin/reset/+server.ts#POST': {
 		count: 1,
 		why: "Reset Everything's clear of every restorable table, after endApiKeys has recorded and deleted every key, `reset` (R5); KEPT names the record."
@@ -6518,7 +6522,7 @@ const ACCESS_WRITES: Record<string, { count: number; why: string }> = {
 	}
 };
 
-/** Card 3002 (test ee): the functions that may call `recordAccessChange`, with how many calls: W1 to W13. */
+/** Card 3002 (test ee): the functions that may call `recordAccessChange`, with how many calls: W1 to W13; card 3033's D1 to D8. */
 const RECORD_ACCESS_CHANGE_CALLERS: Record<string, number> = {
 	'src/lib/server/boards.ts#createBoard': 3,
 	'src/lib/server/boards.ts#updateBoard': 2,
@@ -6531,7 +6535,16 @@ const RECORD_ACCESS_CHANGE_CALLERS: Record<string, number> = {
 	'src/routes/api/teams/[id]/members/[userId]/+server.ts#DELETE': 1,
 	'src/lib/server/people.ts#createPerson': 1,
 	'src/lib/server/people.ts#updatePerson': 1,
-	'src/lib/server/people.ts#addFromAccounts': 1
+	'src/lib/server/people.ts#addFromAccounts': 1,
+	// Card 3033 (section 5): D1 and D2, the decision and its decider; D3, a superseding draft's; D4 and D5, every change of
+	// a place (draft and open: removed, a role, an account held); D6, a place's account; D7, an account retaken at open; D8.
+	'src/lib/server/decision-authoring-writes.ts#createDecision': 2,
+	'src/lib/server/decision-authoring-writes.ts#setDecider': 2,
+	'src/lib/server/decision-ruling-writes.ts#supersedeDecision': 2,
+	'src/lib/server/decision-participant-writes.ts#setParticipants': 10,
+	'src/lib/server/decision-participant-writes.ts#setParticipantAccount': 3,
+	'src/lib/server/decision-lifecycle-writes.ts#openDecision': 2,
+	'src/lib/server/decision-lifecycle-writes.ts#deleteDecision': 1
 };
 
 /**
@@ -6784,6 +6797,214 @@ describe('every write of board, team and person access, and the record of access
 		])('(ee, ff) lets $form through', ({ code }) => {
 			expect(findingsOf(code)).toEqual([]);
 		});
+	});
+});
+
+// ─── Card 3033: every write of a decision role, and the record of access changes ─────────────
+
+/**
+ * Card 3033 (section 5, test dd): every write under src and scripts of a decision role, by `file#function`
+ * (`writerNameOf`), with how many such statements and why: each row of `decision_participants` (a place, its role,
+ * its removal and its account), a decision made or deleted, and a decision's author or decider. Each is a writer that
+ * records the change (`recordAccessChange`, D1 to D8), or one of section 5's "record nothing": reach and links, content,
+ * the restore's own steps, which apply the record, and the start's pass, which lowers to it.
+ */
+const DECISION_ROLE_WRITES: Record<string, { count: number; why: string }> = {
+	'src/lib/server/decision-authoring-writes.ts#createDecision': { count: 1, why: 'D1: the decision, its author and decider; `decision tracked` and `decision_decider yes` recorded after it (R14: 409 first).' },
+	'src/lib/server/decision-authoring-writes.ts#setDecider': {
+		count: 1,
+		why: 'D2: `.set` spreads the key flag beside deciderUserId; `decision_decider yes` recorded after it, and for the decider it has where the record names another or none (R15).'
+	},
+	'src/lib/server/decision-authoring-writes.ts#updateDraft': {
+		count: 1,
+		why: 'Records nothing: `.set` spreads title, closesAt, voteMode and workingContent, content; it names no author or decider.'
+	},
+	'src/lib/server/decision-ruling-writes.ts#supersedeDecision': { count: 1, why: 'D3: the superseding draft, its author and decider; `decision tracked` and `decision_decider yes` recorded after it (R14: 409 first).' },
+	'src/lib/server/decision-participant-writes.ts#setParticipants': {
+		count: 7,
+		why: 'D4 and D5: a place deleted from a draft (`removed`, recorded before), re-roled, inserted, removed, brought back or added; each recorded with its role, and `held` for the account it comes with.'
+	},
+	'src/lib/server/decision-participant-writes.ts#setParticipantAccount': { count: 2, why: "D6: a place's account attached (`held`, and `none` for the one it held) or cleared (`none`)." },
+	'src/lib/server/decision-participant-writes.ts#changeParticipantAddress': { count: 1, why: "Records nothing: a place's address, reach; an unsealed restore puts it back as this server held it (plan 3.7)." },
+	'src/lib/server/decision-lifecycle-writes.ts#openDecision': {
+		count: 1,
+		why: "D7: the live places' snapshots taken again (R10); where a place's account changed, `none` for the old and `held` for the new."
+	},
+	'src/lib/server/decision-lifecycle-writes.ts#republishDecision': { count: 1, why: 'Records nothing: `.set` built from what the publish changes, its status and version; it names no author or decider.' },
+	'src/lib/server/decision-lifecycle-writes.ts#deleteDecision': { count: 1, why: 'D8: the decision deleted, its places with it; `decision deleted` recorded just before, while its creation time can be read.' },
+	'src/lib/server/decision-links.ts#issueLink': { count: 1, why: "Records nothing: a place's link, reach; a restore ends every link." },
+	'src/lib/server/decision-links.ts#revokeLinks': { count: 1, why: "Records nothing: a place's link ended, reach." },
+	'src/lib/server/decision-links.ts#revokeEveryLink': { count: 1, why: 'Records nothing: every link ended, reach.' },
+	'src/lib/server/db/restore.ts#(top level)': {
+		count: 2,
+		why: "Records nothing: the restore's statements, the links it ends (card 2675) and the draft place it deletes where nothing names it (R10), run by its steps."
+	},
+	'src/lib/server/db/restore.ts#placeWriter': { count: 2, why: "Records nothing: the restore's removal of a place the record or this server's roles end (plan 3.6, 3.7); its statements prepared once (code review, FP10)." },
+	'src/lib/server/db/restore.ts#applyDecisionRecord': { count: 4, why: "Records nothing: the restore's application of the record (plan 3.6), which lowers to what it says." },
+	'src/lib/server/db/restore.ts#keepDecisionRolesHere': {
+		count: 4,
+		why: "Records nothing: an unsealed restore's decisions given exactly this server's roles, or none where not held (plan 3.7); it puts back what the record already says."
+	},
+	'src/lib/server/startup-checks.ts#capDecisionRolesAtStart': {
+		count: 6,
+		why: "Records nothing: the start's and five-minute pass lowers a decision role above the record to what it already says (plan 3.11)."
+	}
+};
+
+/** Any write of a place on a decision, and a decision made, deleted or replaced. */
+const DECISION_ROW_SQL_WRITE = new RegExp(
+	String.raw`\b(DELETE${SQL_GAP}+FROM|INSERT(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+INTO|REPLACE${SQL_GAP}+INTO|UPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?)${SQL_GAP}+(${sqlName('decision_participants')})` +
+		String.raw`|\b(DELETE${SQL_GAP}+FROM|INSERT(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+INTO|REPLACE${SQL_GAP}+INTO)${SQL_GAP}+(${sqlName('decisions')})`,
+	'gi'
+);
+
+/** An update of decisions, with what it sets. */
+const DECISION_SQL_UPDATE = new RegExp(
+	String.raw`\bUPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+(${sqlName('decisions')})${SQL_GAP}+SET\b([\s\S]*?)(?=\bWHERE\b|\bRETURNING\b|\bFROM\b|;|$)`,
+	'gi'
+);
+
+/** A decision's role columns, and their Drizzle fields. */
+const DECISION_ROLE_COLUMNS = ['author_user_id', 'decider_user_id'];
+const DECISION_ROLE_FIELDS = ['authorUserId', 'deciderUserId'];
+
+/** What the decision role inventory found in one file (card 3033). */
+type DecisionRoleReading = { writes: string[]; findings: string[] };
+
+/**
+ * Card 3033 (test dd) for one file under src or scripts, read as card 3002's `judgeAccessWrites` reads (`scriptsOf`,
+ * `writerNameOf`, `SQL_GAP`, every string built from literals read as SQL, a substitution as `\u0000`). Counted under
+ * its `file#function`, and a finding where that is not on DECISION_ROLE_WRITES: every write of `decision_participants`;
+ * every delete, insert or replace of `decisions`; every update of `decisions` that sets `author_user_id` or
+ * `decider_user_id`, or columns built at run time. In Drizzle the same: `.insert`, `.update` or `.delete` of
+ * `decisionParticipants`; `.insert` or `.delete` of `decisions`; `.update(decisions)` whose `.set` names `authorUserId`
+ * or `deciderUserId`, or is not an object literal written out, or spreads one. Not seen: a table named at run time (the
+ * restore's copy, which card 3013's rule pins), a statement held in a variable built elsewhere.
+ */
+function judgeDecisionRoleWrites(file: string, source: string): DecisionRoleReading {
+	const kind = /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+	const tree = ts.createSourceFile(file, file.endsWith('.svelte') ? scriptsOf(source) : source, ts.ScriptTarget.Latest, true, kind);
+	const at = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const keyOf = (node: ts.Node) => `${file}#${writerNameOf(node)}`;
+	const reading: DecisionRoleReading = { writes: [], findings: [] };
+	const write = (node: ts.Node, what: string) => {
+		reading.writes.push(keyOf(node));
+		if (!(keyOf(node) in DECISION_ROLE_WRITES)) {
+			reading.findings.push(`${file}:${at(node)} ${what} in ${writerNameOf(node)}, which is not on DECISION_ROLE_WRITES: a decision role changed unrecorded comes back with the next restore (card 3033)`);
+		}
+	};
+	const textOf = (node: ts.Expression): string => {
+		const inner = bare(node);
+		if (ts.isStringLiteral(inner) || ts.isNoSubstitutionTemplateLiteral(inner)) return inner.text;
+		if (ts.isTemplateExpression(inner)) return inner.head.text + inner.templateSpans.map((span) => `\u0000${span.literal.text}`).join('');
+		if (ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.PlusToken) return textOf(inner.left) + textOf(inner.right);
+		return '\u0000';
+	};
+	const isText = (node: ts.Node): boolean =>
+		ts.isStringLiteral(node) ||
+		ts.isNoSubstitutionTemplateLiteral(node) ||
+		ts.isTemplateExpression(node) ||
+		(ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken);
+	const inChain = (node: ts.Node): boolean => {
+		let parent = node.parent;
+		while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+		return !!parent && ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.PlusToken;
+	};
+	const named = (found: string) => found.replace(/["'`[\]]/g, '').split('.').pop()!.toLowerCase();
+
+	const judgeSql = (node: ts.Node, text: string) => {
+		for (const found of text.matchAll(DECISION_ROW_SQL_WRITE)) write(node, `${(found[1] ?? found[3]).replace(/\s+/g, ' ').toUpperCase()} ${named(found[2] ?? found[4])}`);
+		for (const found of text.matchAll(DECISION_SQL_UPDATE)) {
+			const columns = found[2].split(',').map((part) => part.trim().split(/\s*=/)[0].replace(/["`[\]]/g, '').toLowerCase());
+			const roles = found[2].includes('\u0000') ? ['columns built at run time'] : columns.filter((column) => DECISION_ROLE_COLUMNS.includes(column));
+			if (roles.length > 0) write(node, `UPDATE decisions (${roles.join(', ')})`);
+		}
+	};
+
+	const visit = (node: ts.Node): void => {
+		if (isText(node) && !inChain(node)) {
+			judgeSql(node, textOf(node as ts.Expression));
+			if (ts.isBinaryExpression(node)) return;
+		}
+		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+			const method = node.expression.name.text;
+			const [first] = node.arguments;
+			const table = first !== undefined && ts.isIdentifier(bare(first)) ? (bare(first) as ts.Identifier).text : null;
+			const writes = method === 'insert' || method === 'update' || method === 'delete';
+			if (writes && table === 'decisionParticipants') write(node, `.${method}(${table})`);
+			if ((method === 'insert' || method === 'delete') && table === 'decisions') write(node, `.${method}(${table})`);
+			if (method === 'update' && table === 'decisions') {
+				const set = node.parent;
+				const values = ts.isPropertyAccessExpression(set) && set.name.text === 'set' && ts.isCallExpression(set.parent) ? set.parent.arguments[0] : undefined;
+				const fields =
+					values !== undefined && ts.isObjectLiteralExpression(values)
+						? values.properties.map((property) =>
+								(ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) && ts.isIdentifier(property.name) ? property.name.text : null
+							)
+						: [null];
+				const roles = fields.filter((field) => field === null || DECISION_ROLE_FIELDS.includes(field)).map((field) => field ?? 'fields not written out here');
+				if (roles.length > 0) write(node, `.update(decisions) setting ${roles.join(', ')}`);
+			}
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(tree);
+	return reading;
+}
+
+describe('every write of a decision role, and the record of access changes (card 3033, test dd)', () => {
+	const walked = [...filesUnder('src', (path) => WEBHOOK_WALKED.test(path)), ...filesUnder('scripts', (path) => WEBHOOK_WALKED.test(path))].map((file) => ({
+		file,
+		source: readFileSync(join(ROOT, file), 'utf8')
+	}));
+
+	it('(dd) every write of a place, a decision made or deleted, and a decision’s author or decider is on DECISION_ROLE_WRITES, each as many times as listed, with its reason; the rule finds each form', () => {
+		const readings = walked.map(({ file, source }) => judgeDecisionRoleWrites(file, source));
+		expect(readings.flatMap(({ findings }) => findings)).toEqual([]);
+		expect(walked.length).toBeGreaterThan(300);
+		const counts: Record<string, number> = {};
+		for (const reading of readings) for (const key of reading.writes) counts[key] = (counts[key] ?? 0) + 1;
+		expect(counts).toEqual(Object.fromEntries(Object.entries(DECISION_ROLE_WRITES).map(([key, { count }]) => [key, count])));
+		for (const [key, { why }] of Object.entries(DECISION_ROLE_WRITES)) expect(why, key).not.toBe('');
+		// Every writer section 5 names records; the restore's steps and the start's pass record nothing (they apply the record).
+		for (const key of Object.keys(DECISION_ROLE_WRITES)) {
+			const recorder = key in RECORD_ACCESS_CHANGE_CALLERS;
+			expect(recorder || /^Records nothing/.test(DECISION_ROLE_WRITES[key].why), key).toBe(true);
+		}
+		for (const key of ['src/lib/server/db/restore.ts#applyDecisionRecord', 'src/lib/server/db/restore.ts#keepDecisionRolesHere', 'src/lib/server/startup-checks.ts#capDecisionRolesAtStart']) {
+			expect(DECISION_ROLE_WRITES[key]?.why, key).toMatch(/^Records nothing/);
+		}
+
+		// The rule itself, on a made-up fixture: each form found on its line, in its function; a content write let through.
+		const inSeed = (code: string) =>
+			[
+				"import { db, sqlite } from '$lib/server/db'; import { eq } from 'drizzle-orm';",
+				"import { decisionParticipants, decisions } from '$lib/server/db/schema';",
+				'export function seed(id: number, fields: object) {',
+				`\t${code}`,
+				'}'
+			].join('\n');
+		const findingsOf = (code: string) => judgeDecisionRoleWrites('tests/helpers/fixtures.ts', inSeed(code)).findings;
+		for (const code of [
+			"sqlite.prepare(\"UPDATE decision_participants SET role = 'consulted' WHERE id = ?\").run(id);",
+			'db.update(decisionParticipants).set({ removedAt: null }).where(eq(decisionParticipants.id, id)).run();',
+			'sqlite.prepare(`UPDATE decisions\n\t\tSET decider_user_id = ? WHERE id = ?`).run(2, id);',
+			'db.update(decisions).set(fields).where(eq(decisions.id, id)).run();',
+			'db.update(decisions).set({ authorUserId: 2 }).where(eq(decisions.id, id)).run();',
+			'db.delete(decisions).where(eq(decisions.id, id)).run();',
+			"sqlite.prepare('INSERT INTO main.\"decisions\" (title) VALUES (?)').run('x');"
+		]) {
+			const found = findingsOf(code);
+			expect(found, code).toHaveLength(1);
+			expect(found[0], code).toMatch(/^tests\/helpers\/fixtures\.ts:4 .* in seed,/);
+		}
+		for (const code of [
+			"sqlite.prepare('UPDATE decisions SET title = ? WHERE id = ?').run('x', id);",
+			'db.update(decisions).set({ workingContent: null }).where(eq(decisions.id, id)).run();',
+			'sqlite.prepare("SELECT role FROM decision_participants WHERE id = ?").get(id);'
+		]) {
+			expect(findingsOf(code), code).toEqual([]);
+		}
 	});
 });
 

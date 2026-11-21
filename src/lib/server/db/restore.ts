@@ -126,6 +126,7 @@ import {
 	accessCeiling,
 	accessRank,
 	accessTeamDeleted,
+	decisionDeletedHere,
 	hasAccessRecord,
 	ORDINAL_KINDS,
 	wellFormedHolder,
@@ -1517,34 +1518,51 @@ type AccountsHere = {
 	hashes: Map<number, { createdAt: string; username: string; email: string; role: string; passwordHash: string; enrol: number; notificationPrefs: string | null }>;
 };
 
+/** An account row as this server holds it before the clear, read once for every step that asks (card 3033's code review, FP10). */
+type UserRowHere = {
+	id: number;
+	createdAt: string;
+	username: string;
+	email: string;
+	role: string;
+	passwordHash: string;
+	enrol: number;
+	notificationPrefs: string | null;
+};
+
+/**
+ * Every account this server holds before the clear, read once (card 3033's code review, FP10): `accountsHeldHere`,
+ * `accessHeldHere` and `decisionRolesHeldHere` all take it. Reads.
+ */
+function userRowsHere(live: Database.Database): UserRowHere[] {
+	const columns = columnNamesOf(live, 'users');
+	const created = columns.includes('created_at') ? 'created_at' : 'NULL';
+	// The leave to set up on a password alone (card 2769), which the carry gives the backup's superadmin from the importer
+	// (card 3009's code review, FP6); none before migration 0066.
+	const enrol = columns.includes('mfa_password_enrol') ? 'mfa_password_enrol' : '0';
+	// Card 3012: the notification choices, which `keepAccountsHere` gives back to the same account here.
+	const prefs = columns.includes('notification_prefs') ? 'notification_prefs' : 'NULL';
+	return live
+		.prepare(
+			`SELECT id, ${created} AS createdAt, username, email, role, password_hash AS passwordHash, ${enrol} AS enrol, ${prefs} AS notificationPrefs FROM users ORDER BY id`
+		)
+		.all() as UserRowHere[];
+}
+
+/** Each account's creation time by id, from rows read once (card 3033's code review, FP10). */
+function accountTimesOf(rows: readonly { id: number; createdAt: unknown }[]): Map<number, unknown> {
+	return new Map(rows.map((row) => [row.id, row.createdAt]));
+}
+
 /**
  * W, and the id and `created_at` of every account this server holds with an id up to W, with its superadmins, and every
  * account's `created_at` and password hash (card 2997), read before a restore clears `users` (card 2996), as
- * `keysHeldHere` is read. None where the database has no record.
+ * `keysHeldHere` is read, from `rows` (`userRowsHere`). None where the database has no record.
  */
-function accountsHeldHere(live: Database.Database): AccountsHere {
+function accountsHeldHere(live: Database.Database, rows: readonly UserRowHere[]): AccountsHere {
 	const none: AccountsHere = { held: new Map(), superadmins: { ids: [], credentials: [] }, hashes: new Map() };
 	if (!hasAccountRecord(live) || !columnNamesOf(live, 'users').includes('created_at')) return none;
 	const watermark = accountWatermarkOf(live);
-	// The leave to set up on a password alone (card 2769), which the carry gives the backup's superadmin from the importer
-	// (card 3009's code review, FP6); none before migration 0066.
-	const enrol = columnNamesOf(live, 'users').includes('mfa_password_enrol') ? 'mfa_password_enrol' : '0';
-	// Card 3012: the notification choices, which `keepAccountsHere` gives back to the same account here.
-	const prefs = columnNamesOf(live, 'users').includes('notification_prefs') ? 'notification_prefs' : 'NULL';
-	const rows = live
-		.prepare(
-			`SELECT id, created_at AS createdAt, username, email, role, password_hash AS passwordHash, ${enrol} AS enrol, ${prefs} AS notificationPrefs FROM users ORDER BY id`
-		)
-		.all() as {
-		id: number;
-		createdAt: string;
-		username: string;
-		email: string;
-		role: string;
-		passwordHash: string;
-		enrol: number;
-		notificationPrefs: string | null;
-	}[];
 	const supers = rows.filter((row) => row.role === 'superadmin');
 	// Card 3013 (D8, R3): only an account this server's record attests, by an exact row of its id and creation time, is
 	// held here for rule 2's held-here half. A creation time an earlier unsealed import wrote, with no row of its own, is
@@ -1607,11 +1625,8 @@ function groupedBy<T extends Record<string, unknown>>(rows: T[], by: keyof T): M
 	return out;
 }
 
-/** This server's access before the clear (card 3002): see `AccessHere`. Reads. */
-function accessHeldHere(live: Database.Database): AccessHere {
-	const accounts = new Map(
-		(live.prepare('SELECT id, created_at AS createdAt FROM users').all() as { id: number; createdAt: unknown }[]).map((row) => [row.id, row.createdAt])
-	);
+/** This server's access before the clear (card 3002): see `AccessHere`. `accounts`, each account's creation time here, read once (FP10). Reads. */
+function accessHeldHere(live: Database.Database, accounts: ReadonlyMap<number, unknown>): AccessHere {
 	const boardRows = live.prepare('SELECT id, created_at AS createdAt, created_by AS createdBy, is_public AS isPublic, product_owner_user_id AS productOwner FROM boards').all() as ({ id: number } & BoardHere)[];
 	const teamRows = live.prepare('SELECT id, created_at AS createdAt FROM teams').all() as { id: number; createdAt: unknown }[];
 	const memberRows = live.prepare('SELECT board_id AS boardId, user_id AS userId, role FROM board_members').all() as { boardId: number; userId: number; role: unknown }[];
@@ -1650,7 +1665,7 @@ type AccessRowFault =
 	| 'a creation time that is not a moment'
 	| 'a holder the kind cannot have'
 	| 'a creation time later than the restore'
-	| 'more than 100 rows for one board, team or person and holder';
+	| 'more than 100 rows for one board, team, person or decision and holder';
 
 /** The most rows one backup's record may hold for one item, by kind, subject and holder (R11): over that, none of that item's is taken. */
 const MOST_ACCESS_ROWS_PER_ITEM = 100;
@@ -1827,7 +1842,7 @@ function carryAccessChanges(
 	}
 	const crowded = new Set([...notHeld].filter(([, n]) => n > MOST_ACCESS_ROWS_PER_ITEM).map(([item]) => item));
 	const judge = (row: Record<string, unknown>): UnionRow | AccessRowFault | 'held' => {
-		if (crowded.has(itemOf(row))) return held(row) ? 'held' : 'more than 100 rows for one board, team or person and holder';
+		if (crowded.has(itemOf(row))) return held(row) ? 'held' : 'more than 100 rows for one board, team, person or decision and holder';
 		const kind = row.kind;
 		if (typeof kind !== 'string' || !Object.hasOwn(ACCESS_WORDS, kind)) return 'a kind this build does not know';
 		const access = row.access;
@@ -1862,17 +1877,57 @@ function carryAccessChanges(
 	return { added, notTaken: 0 };
 }
 
-/** The boards, teams and people a restore of an unsealed backup gave this server's access (card 3002, plan 3.6): see `RestoreResult.accessAsHere`. */
-export type AccessAsHere = { boards: number; teams: number; people: number };
+/**
+ * The boards, teams and people a restore of an unsealed backup gave this server's access (card 3002, plan 3.6), and the
+ * decisions (card 3033, plan 3.7, R12), each counted once whatever changed on it: `decisions`, those this server holds,
+ * given their board, stage, author, decider and places as here; `decisionsNotHere`, those it does not, brought in with no
+ * board, no account and nobody on them. See `RestoreResult.accessAsHere`.
+ */
+export type AccessAsHere = { boards: number; teams: number; people: number; decisions: number; decisionsNotHere: number };
 
 /** A restore's `accessAsHere` before anything is counted. */
-const NO_ACCESS_AS_HERE: AccessAsHere = { boards: 0, teams: 0, people: 0 };
+const NO_ACCESS_AS_HERE: AccessAsHere = { boards: 0, teams: 0, people: 0, decisions: 0, decisionsNotHere: 0 };
 
-/** The access a restore kept as this server's record of access changes says (card 3002): see `RestoreResult.accessKept`. */
-export type AccessKept = { removed: number; lowered: number; madePrivate: number; productOwners: number; creators: number; teamsEnded: number; unlinked: number };
+/**
+ * The access a restore kept as this server's record of access changes says (card 3002), and the decision roles (card
+ * 3033, plan 3.6): places removed and made informed, accounts taken off places, deciders cleared (`decidersFixed`
+ * those on a decision that supersedes another or has no board, which cannot be named again here, R13 L6), and decisions
+ * deleted here that came back (`decisionsEnded`, their places, places' accounts and decider not counted again, R13 L7,
+ * code review FP4). See
+ * `RestoreResult.accessKept`.
+ */
+export type AccessKept = {
+	removed: number;
+	lowered: number;
+	madePrivate: number;
+	productOwners: number;
+	creators: number;
+	teamsEnded: number;
+	unlinked: number;
+	participantsRemoved: number;
+	participantsLowered: number;
+	accountsCleared: number;
+	decidersCleared: number;
+	decidersFixed: number;
+	decisionsEnded: number;
+};
 
 /** A restore's `accessKept` before anything is counted. */
-const NO_ACCESS_KEPT: AccessKept = { removed: 0, lowered: 0, madePrivate: 0, productOwners: 0, creators: 0, teamsEnded: 0, unlinked: 0 };
+const NO_ACCESS_KEPT: AccessKept = {
+	removed: 0,
+	lowered: 0,
+	madePrivate: 0,
+	productOwners: 0,
+	creators: 0,
+	teamsEnded: 0,
+	unlinked: 0,
+	participantsRemoved: 0,
+	participantsLowered: 0,
+	accountsCleared: 0,
+	decidersCleared: 0,
+	decidersFixed: 0,
+	decisionsEnded: 0
+};
 
 /**
  * Card 3002's code review (FP2): nothing planted with a creation time that names no moment sits outside the record of
@@ -1968,6 +2023,24 @@ function teamAccessOf(live: Database.Database, id: number): string {
 	return JSON.stringify(live.prepare('SELECT user_id, role FROM team_members WHERE team_id = ? ORDER BY user_id').raw().all(id));
 }
 
+/** Each restored row's creation time by id, of `table` (card 3033's code review, FP10). Reads. */
+function restoredTimesOf(live: Database.Database, table: 'users' | 'boards' | 'teams' | 'people'): Map<number, unknown> {
+	return accountTimesOf(live.prepare(`SELECT id, created_at AS createdAt FROM ${table}`).all() as { id: number; createdAt: unknown }[]);
+}
+
+/**
+ * Whether a restored board, team or person is the same here (cards 3002 and 3033, FP10): the same id, restored
+ * (`restored`) and held here before the clear (`here`), with the same creation time (`sameCreation`).
+ */
+function sameRowHere<T>(restored: ReadonlyMap<number, unknown>, here: ReadonlyMap<number, T>, createdOf: (row: T) => unknown): (id: unknown) => boolean {
+	return (id) => typeof id === 'number' && restored.has(id) && here.has(id) && sameCreation(restored.get(id), createdOf(here.get(id) as T));
+}
+
+/** Whether a restored row's account column names an account that is the same here (`sameHere`, card 3002): never a value that is not a number. */
+function accountColumnSameHere(sameHere: (id: number) => boolean): (id: unknown) => boolean {
+	return (id) => typeof id === 'number' && sameHere(id);
+}
+
 /**
  * Card 3002 (plan 3.6; decision 5), where the seal did not verify, as it is or as a working copy: no account that is the
  * same here (`sameHere`) is given any board or team access this server did not give it, and none it did is taken.
@@ -1977,7 +2050,8 @@ function teamAccessOf(live: Database.Database, id: number): string {
  *   restored team of that id is the same team here (id and `created_at`); `is_public` this server's; `created_by` and
  *   `product_owner_user_id` this server's where that account is the same here, else NULL.
  * - A board not here: the member rows of accounts the same here deleted, and its shares to teams the same here;
- *   `created_by` and `product_owner_user_id` NULL where they name an account the same here; private.
+ *   `created_by` and `product_owner_user_id` NULL where they name an account the same here; private. And (card 3033,
+ *   R4) its member rows, creator and Product Owner naming an account id no restored account holds, the same.
  * - A team the same here: every restored member deleted, this server's put back where the account is the same here.
  * - A team not here: its members that are accounts the same here deleted.
  *
@@ -1987,15 +2061,17 @@ function teamAccessOf(live: Database.Database, id: number): string {
 function keepAccessHere(
 	live: Database.Database,
 	here: AccessHere,
-	sameHere: (id: number) => boolean
+	sameHere: (id: number) => boolean,
+	restoredAccounts: ReadonlyMap<number, unknown>
 ): { asHere: Pick<AccessAsHere, 'boards' | 'teams'>; handled: AccessHandled } {
 	const handled: AccessHandled = { boards: new Set(), teams: new Set() };
 	const asHere = { boards: 0, teams: 0 };
-	const restoredTeams = new Map(
-		(live.prepare('SELECT id, created_at AS createdAt FROM teams').all() as { id: number; createdAt: unknown }[]).map((row) => [row.id, row.createdAt])
-	);
-	const teamSameHere = (id: number) => restoredTeams.has(id) && here.teams.has(id) && sameCreation(restoredTeams.get(id), here.teams.get(id));
-	const accountSameHere = (id: unknown) => typeof id === 'number' && sameHere(id);
+	const restoredTeams = restoredTimesOf(live, 'teams');
+	const teamSameHere = sameRowHere(restoredTeams, here.teams, (created) => created);
+	const accountSameHere = accountColumnSameHere(sameHere);
+	// Card 3033 (R4): an account id no restored account holds (`restoredAccounts`, read once, FP10), which an account made
+	// here later could take.
+	const orphan = (id: unknown) => id !== null && !(typeof id === 'number' && restoredAccounts.has(id));
 	const boards = live.prepare('SELECT id, created_at AS createdAt, created_by AS createdBy, product_owner_user_id AS productOwner FROM boards ORDER BY id').all() as {
 		id: number;
 		createdAt: unknown;
@@ -2020,9 +2096,10 @@ function keepAccessHere(
 			setBoard.run(ours.isPublic, accountSameHere(ours.createdBy) ? ours.createdBy : null, accountSameHere(ours.productOwner) ? ours.productOwner : null, board.id);
 			handled.boards.add(board.id);
 		} else {
-			for (const userId of members.all(board.id) as number[]) if (sameHere(userId)) dropMember.run(board.id, userId);
+			for (const userId of members.all(board.id) as unknown[]) if (accountSameHere(userId) || orphan(userId)) dropMember.run(board.id, userId);
 			for (const teamId of shares.all(board.id) as number[]) if (teamSameHere(teamId)) dropShare.run(board.id, teamId);
-			setBoard.run(0, accountSameHere(board.createdBy) ? null : board.createdBy, accountSameHere(board.productOwner) ? null : board.productOwner, board.id);
+			const cleared = (id: unknown) => accountSameHere(id) || orphan(id);
+			setBoard.run(0, cleared(board.createdBy) ? null : board.createdBy, cleared(board.productOwner) ? null : board.productOwner, board.id);
 		}
 		if (boardAccessOf(live, board.id) !== before) asHere.boards++;
 	}
@@ -2258,6 +2335,476 @@ function keepPersonLinksHere(
 		changed++;
 	}
 	return changed;
+}
+
+/** A decision as this server held it before a restore's clear (card 3033, plan 3.5 step 1): its access columns. */
+type DecisionHere = {
+	createdAt: unknown;
+	boardId: unknown;
+	boardName: unknown;
+	status: unknown;
+	openedAt: unknown;
+	authorUserId: unknown;
+	authorName: unknown;
+	deciderUserId: unknown;
+	deciderName: unknown;
+};
+
+/**
+ * A place on a decision as this server held it before the clear (card 3033, plan 3.5 step 1): its reach and roles, and
+ * `hadAccount`, what this server's account events said of it last, as `accountHistory` reads them, or undefined where
+ * none names it (R7).
+ */
+type PlaceHere = {
+	personId: unknown;
+	userId: unknown;
+	email: unknown;
+	role: unknown;
+	removedAt: unknown;
+	removedBy: unknown;
+	hadAccount: boolean | undefined;
+};
+
+/**
+ * This server's decisions and places before a restore's clear (card 3033, plan 3.5 step 1), read on every restore: each
+ * decision by id; each place by its row id, its decision's id and its decision's creation time (R8, `placeHeldKey`); and
+ * every account's creation time by id, so that a place's account and a decider are held here only as the same account.
+ */
+type DecisionRolesHere = { decisions: Map<number, DecisionHere>; places: Map<string, PlaceHere>; accounts: ReadonlyMap<number, unknown> };
+
+/** A place's key in `DecisionRolesHere.places` (R8): its row id with its decision's identity (id and creation time). */
+function placeHeldKey(placeId: number, decisionId: number, decisionCreated: unknown): string {
+	return `${placeId}|${identityOf(decisionId, decisionCreated)}`;
+}
+
+/** What one account event says of `hadAccount`, as `decision-record.ts`'s `hadAccountOf` reads it (R7). */
+function hadAccountSaid(kind: unknown, detail: unknown): boolean {
+	if (kind === 'account_attached') return true;
+	if (kind === 'account_cleared') return false;
+	try {
+		const read = JSON.parse(detail === null || detail === undefined ? 'null' : String(detail)) as { hadAccount?: unknown } | null;
+		return read?.hadAccount !== false;
+	} catch {
+		return true;
+	}
+}
+
+/** This server's decision roles before the clear (card 3033): see `DecisionRolesHere`, `accounts` read once (FP10). Empty where it has no decisions. Reads. */
+function decisionRolesHeldHere(live: Database.Database, accounts: ReadonlyMap<number, unknown>): DecisionRolesHere {
+	const here: DecisionRolesHere = { decisions: new Map(), places: new Map(), accounts };
+	if (!tableIn(live, 'decisions') || !tableIn(live, 'decision_participants')) return here;
+	const decisionRows = live
+		.prepare(
+			'SELECT id, created_at AS createdAt, board_id AS boardId, board_name AS boardName, status, opened_at AS openedAt, author_user_id AS authorUserId, ' +
+				'author_name AS authorName, decider_user_id AS deciderUserId, decider_name AS deciderName FROM decisions'
+		)
+		.all() as ({ id: number } & DecisionHere)[];
+	for (const { id, ...row } of decisionRows) here.decisions.set(id, row);
+	// The account events, as `accountHistory` reads them: the last one of each place on its decision.
+	const history = new Map<string, boolean>();
+	if (tableIn(live, 'decision_events')) {
+		const events = live
+			.prepare(
+				"SELECT decision_id AS decisionId, participant_id AS participantId, kind, detail FROM decision_events WHERE participant_id IS NOT NULL AND kind IN ('included', 're_included', 'account_attached', 'account_cleared') ORDER BY id"
+			)
+			.all() as { decisionId: number; participantId: number; kind: unknown; detail: unknown }[];
+		for (const event of events) history.set(`${event.decisionId}|${event.participantId}`, hadAccountSaid(event.kind, event.detail));
+	}
+	const placeRows = live
+		.prepare(
+			'SELECT id, decision_id AS decisionId, person_id AS personId, user_id AS userId, email, role, removed_at AS removedAt, removed_by AS removedBy FROM decision_participants'
+		)
+		.all() as ({ id: number; decisionId: number } & Omit<PlaceHere, 'hadAccount'>)[];
+	for (const { id, decisionId, ...row } of placeRows) {
+		here.places.set(placeHeldKey(id, decisionId, here.decisions.get(decisionId)?.createdAt), { ...row, hadAccount: history.get(`${decisionId}|${id}`) });
+	}
+	return here;
+}
+
+/** A ruling of this server's before the clear (card 3033, plan 3.8): its event's identity, its decision's time, and its Product Owner as `detailOf` reads it. */
+type RulingHere = { decisionId: unknown; createdAt: unknown; decisionCreated: unknown; owner: unknown };
+
+/**
+ * What `rowsToRestore` rewrites every ruling's Product Owner with, on an unsealed restore (card 3033, plan 3.8, R2):
+ * this server's rulings by event id (`here`), and `changed`, the decisions whose ruling it changed, filled by the copy,
+ * for the count of decisions (R12).
+ */
+export type RulingOwners = { here: Map<number, RulingHere>; changed: Set<number> };
+
+/** The parsed detail of an event, as `detailOf` in `decision-record.ts` reads it (`JSON.parse(String(v))`): an object, or null. */
+function detailObjectOf(detail: unknown): Record<string, unknown> | null {
+	try {
+		const read = JSON.parse(String(detail)) as unknown;
+		return read !== null && typeof read === 'object' && !Array.isArray(read) ? (read as Record<string, unknown>) : null;
+	} catch {
+		return null;
+	}
+}
+
+/** This server's rulings before the clear, where the seal did not verify (card 3033, plan 3.5 step 2): see `RulingOwners`. Reads. */
+function rulingOwnersHere(live: Database.Database): RulingOwners {
+	const here = new Map<number, RulingHere>();
+	if (tableIn(live, 'decision_events') && tableIn(live, 'decisions')) {
+		const rows = live
+			.prepare(
+				"SELECT e.id, e.decision_id AS decisionId, e.created_at AS createdAt, e.detail, d.created_at AS decisionCreated FROM decision_events AS e JOIN decisions AS d ON d.id = e.decision_id WHERE e.kind = 'ruled'"
+			)
+			.all() as { id: number; decisionId: unknown; createdAt: unknown; detail: unknown; decisionCreated: unknown }[];
+		for (const row of rows) here.set(row.id, { decisionId: row.decisionId, createdAt: row.createdAt, decisionCreated: row.decisionCreated, owner: detailObjectOf(row.detail)?.productOwnerUserId });
+	}
+	return { here, changed: new Set() };
+}
+
+/**
+ * Every ruling's Product Owner, at the copy, where the seal did not verify (card 3033, plan 3.8, R2): `decision_events`
+ * takes no update, so the value is set before the insert. Each row of kind `ruled` whose detail parses, as `detailOf`
+ * parses it, to an object is written back as TEXT with `productOwnerUserId` this server's for the same event (id,
+ * decision and `created_at`) of a decision it holds (id and `created_at`, the backup's own), else null, whether or not
+ * the key was there; any other detail is copied as it is, and reads as no role. The decisions whose value it changed are
+ * added to `owners.changed`.
+ */
+function withRulingOwnersHere(backup: Database.Database, rows: Record<string, unknown>[], owners: RulingOwners): Record<string, unknown>[] {
+	const decisionsInBackup = new Map<unknown, unknown>(
+		tableIn(backup, 'decisions') && hasColumns(backup, 'decisions', ['id', 'created_at'])
+			? (backup.prepare(`SELECT id, created_at AS createdAt FROM (${fromTableStorage(backup, 'decisions')})`).all() as { id: unknown; createdAt: unknown }[]).map((row) => [row.id, row.createdAt])
+			: []
+	);
+	return rows.map((row) => {
+		if (row.kind !== 'ruled') return row;
+		const parsed = detailObjectOf(row.detail);
+		if (parsed === null) return row;
+		const ours = typeof row.id === 'number' ? owners.here.get(row.id) : undefined;
+		const same =
+			ours !== undefined &&
+			ours.decisionId === row.decision_id &&
+			sameCreation(row.created_at, ours.createdAt) &&
+			decisionsInBackup.has(row.decision_id) &&
+			sameCreation(decisionsInBackup.get(row.decision_id), ours.decisionCreated);
+		const owner = same ? (ours.owner ?? null) : null;
+		if ((parsed.productOwnerUserId ?? null) !== owner && typeof row.decision_id === 'number') owners.changed.add(row.decision_id);
+		return { ...row, detail: JSON.stringify({ ...parsed, productOwnerUserId: owner }) };
+	});
+}
+
+/**
+ * The restore's one record of a change to a place on a decision (card 3033, plan 3.6 and 3.7): a `removed`
+ * `{reason: 'restore'}` (R9), a `role_changed {from, to}` or a `re_included {role, hadAccount}` (R7), by DumpFire, at the
+ * restore's moment, never on a draft (comment 5599). Never an account event. The kind and detail bound.
+ */
+const RECORD_PLACE_CHANGED =
+	'INSERT INTO decision_events (decision_id, participant_id, kind, detail, actor_name, source, created_at) ' +
+	"SELECT p.decision_id, p.id, @kind, @detail, 'DumpFire', 'system', @at FROM decision_participants AS p JOIN decisions AS d ON d.id = p.decision_id " +
+	"WHERE p.id = @place AND d.status <> 'draft'";
+
+/** A draft's place deleted where no response, question or event names it (card 3033, R10). */
+const DELETE_DRAFT_PLACE =
+	'DELETE FROM decision_participants WHERE id = @place ' +
+	'AND NOT EXISTS (SELECT 1 FROM decision_responses WHERE participant_id = @place) ' +
+	'AND NOT EXISTS (SELECT 1 FROM decision_questions WHERE participant_id = @place) ' +
+	'AND NOT EXISTS (SELECT 1 FROM decision_events WHERE participant_id = @place)';
+
+/** One place change the restore records (`RECORD_PLACE_CHANGED`): its kind and its detail, as an object. */
+type PlaceChange = { kind: 'removed' | 'role_changed' | 're_included'; detail: Record<string, unknown> };
+
+/**
+ * The restore's writes of a place (card 3033, plan 3.6 rule 1 and 3.7), each statement prepared once (code review,
+ * FP10): `record`, one `RECORD_PLACE_CHANGED` at the restore's moment (none on a draft, by its SQL); and `remove`, a
+ * place's removal: on a decision past its draft, `removed_at` the restore's moment, `removed_by` and (`clearAccount`)
+ * `user_id` NULL, and one `removed {reason: 'restore'}`; on a draft (R10), the place deleted where nothing names it,
+ * else marked removed with no event. Not caught.
+ */
+function placeWriter(
+	live: Database.Database,
+	at: string
+): { record: (place: number, change: PlaceChange) => void; remove: (place: number, draft: boolean, clearAccount: boolean) => void } {
+	const recordOne = live.prepare(RECORD_PLACE_CHANGED);
+	const drop = live.prepare(DELETE_DRAFT_PLACE);
+	const removeOne = live.prepare('UPDATE decision_participants SET removed_at = @at, removed_by = NULL WHERE id = @place');
+	const clear = live.prepare('UPDATE decision_participants SET user_id = NULL WHERE id = @place');
+	const record = (place: number, change: PlaceChange) => void recordOne.run({ place, kind: change.kind, detail: JSON.stringify(change.detail), at });
+	return {
+		record,
+		remove: (place, draft, clearAccount) => {
+			if (draft && drop.run({ place }).changes > 0) return;
+			removeOne.run({ place, at });
+			if (clearAccount) clear.run({ place });
+			if (!draft) record(place, { kind: 'removed', detail: { reason: 'restore' } });
+		}
+	};
+}
+
+/** The decision role counts a sealed restore adds to `AccessKept` (card 3033). */
+type DecisionRolesKept = Pick<AccessKept, 'participantsRemoved' | 'participantsLowered' | 'accountsCleared' | 'decidersCleared' | 'decidersFixed' | 'decisionsEnded'>;
+
+/**
+ * The record's caps applied to the restored decision roles (card 3033, plan 3.6), where the seal verified and the record
+ * is there, inside the restore's transaction, after card 3020's step. Per restored decision in id order, its time read
+ * once as `toStamp(created_at)`, the rule asked as of the restore's moment (`asOf`, FP12), with the guess told whether
+ * this server held the item before the clear (`here`, R4, R8):
+ *
+ * 1. each place: at `removed`, removed (`placeWriter`: R9's event, or R10 on a draft); at `informed`, a consulted one
+ *    made informed with one `role_changed`. 3002-R20: a place held here that the record has no row of is capped at
+ *    what it held here;
+ * 2. each place with an account, removed ones included (`decision_account`, keyed per place, R5; code review, FP5): at
+ *    `none`, `user_id` NULL, no event, so that a removed place included again never brings it back;
+ * 3. the decider (identity, the decision's deletion ranked by `seq`, R6): not named, NULL, its name kept; counted
+ *    `decidersFixed` where it supersedes another or has no board, else `decidersCleared` (R13 L6);
+ * 4. the author, NULL wherever any `deleted` row names the decision (R6).
+ *
+ * `decisionsEnded` counts a decision whose `here` deletion is its latest `here` row (`decisionDeletedHere`), its places,
+ * their accounts and its decider then not counted again (R13 L7; code review, FP4). An untracked decision has no row and
+ * no guess: as the backup has it. `accounts` is the restored accounts' creation times by id, read once (FP10). Writes
+ * nothing to the record. Not caught.
+ */
+function applyDecisionRecord(live: Database.Database, here: DecisionRolesHere, accounts: ReadonlyMap<number, unknown>, options: { at: string }): DecisionRolesKept {
+	const asOf = options.at;
+	const kept: DecisionRolesKept = { participantsRemoved: 0, participantsLowered: 0, accountsCleared: 0, decidersCleared: 0, decidersFixed: 0, decisionsEnded: 0 };
+	const accountSide = (id: unknown): AccessSide => (typeof id === 'number' && accounts.has(id) ? { id, created: toStamp(accounts.get(id)) } : { id: Number(id), created: null });
+	// Held here as the same account: the same id, its creation time here and as restored the same.
+	const sameAccount = (here_: unknown, restored: unknown) =>
+		typeof restored === 'number' && here_ === restored && here.accounts.has(restored) && accounts.has(restored) && sameCreation(accounts.get(restored), here.accounts.get(restored));
+	const decisionRows = live
+		.prepare(
+			'SELECT id, created_at AS createdAt, status, board_id AS boardId, supersedes_id AS supersedesId, author_user_id AS authorUserId, decider_user_id AS deciderUserId FROM decisions ORDER BY id'
+		)
+		.all() as { id: number; createdAt: unknown; status: unknown; boardId: unknown; supersedesId: unknown; authorUserId: unknown; deciderUserId: unknown }[];
+	const placesOf = live.prepare('SELECT id, role, removed_at AS removedAt, user_id AS userId FROM decision_participants WHERE decision_id = ? ORDER BY id');
+	const places = placeWriter(live, options.at);
+	const setRole = live.prepare('UPDATE decision_participants SET role = ? WHERE id = ?');
+	const clearAccount = live.prepare('UPDATE decision_participants SET user_id = NULL WHERE id = ?');
+	const clearDecider = live.prepare('UPDATE decisions SET decider_user_id = NULL WHERE id = ?');
+	const clearAuthor = live.prepare('UPDATE decisions SET author_user_id = NULL WHERE id = ?');
+	const PLACE = ACCESS_KIND.decisionParticipant;
+	for (const decision of decisionRows) {
+		const created = toStamp(decision.createdAt);
+		const side: AccessSide = { id: decision.id, created };
+		const ours = here.decisions.get(decision.id);
+		const heldDecision = ours !== undefined && sameCreation(decision.createdAt, ours.createdAt);
+		const deletion = decisionDeletedHere(live, side, asOf);
+		const draft = decision.status === 'draft';
+		for (const place of placesOf.all(decision.id) as { id: number; role: unknown; removedAt: unknown; userId: unknown }[]) {
+			// Held here before the clear (R4, R8): the place live on this decision here; a removed one holds nothing, as a
+			// member row this server did not have.
+			const found = heldDecision ? here.places.get(placeHeldKey(place.id, decision.id, decision.createdAt)) : undefined;
+			const placeHere = found !== undefined && found.removedAt === null ? found : undefined;
+			const now = place.removedAt !== null ? 0 : accessRank(PLACE, place.role);
+			let ceiling = accessCeiling(live, { kind: PLACE, subject: side, holder: { id: place.id, created } }, { guess: true, heldBefore: placeHere !== undefined, asOf });
+			// 3002-R20: held here, with no row of the record: capped at what it held here.
+			if (ceiling === null && placeHere !== undefined) ceiling = accessRank(PLACE, placeHere.role);
+			if (ceiling !== null && ceiling < now) {
+				if (ceiling === 0) {
+					places.remove(place.id, draft, false);
+					if (!deletion.ended) kept.participantsRemoved++;
+				} else {
+					const word = ACCESS_WORDS[PLACE][ceiling];
+					setRole.run(word, place.id);
+					places.record(place.id, { kind: 'role_changed', detail: { from: place.role, to: word } });
+					kept.participantsLowered++;
+				}
+			}
+			// FP5: a removed place's account too, so that including the place again never brings back an account the record
+			// took off it. A draft's place deleted above holds none.
+			if (place.userId === null) continue;
+			const heldAccount = placeHere !== undefined && sameAccount(placeHere.userId, place.userId);
+			const item = { kind: ACCESS_KIND.decisionAccount, subject: { id: place.id, created }, holder: accountSide(place.userId), marker: side };
+			if (accessCeiling(live, item, { guess: true, heldBefore: heldAccount, asOf }) === 0 && clearAccount.run(place.id).changes > 0 && !deletion.ended) kept.accountsCleared++;
+		}
+		if (decision.deciderUserId !== null) {
+			const heldDecider = heldDecision && sameAccount(ours.deciderUserId, decision.deciderUserId);
+			const item = { kind: ACCESS_KIND.decisionDecider, subject: side, holder: accountSide(decision.deciderUserId) };
+			if (accessCeiling(live, item, { guess: true, heldBefore: heldDecider, asOf }) === 0) {
+				clearDecider.run(decision.id);
+				// FP4: a decision deleted here is counted under `decisionsEnded` alone, its decider with it.
+				if (!deletion.ended) {
+					if (decision.supersedesId !== null || decision.boardId === null) kept.decidersFixed++;
+					else kept.decidersCleared++;
+				}
+			}
+		}
+		if (deletion.deleted && decision.authorUserId !== null) clearAuthor.run(decision.id);
+		if (deletion.ended) kept.decisionsEnded++;
+	}
+	return kept;
+}
+
+/** A decision's access columns and places as restored, as one text, to tell whether a step changed it (R12); its statements prepared once (FP10). */
+function decisionRolesReader(live: Database.Database): (id: number) => string {
+	const decision = live.prepare('SELECT board_id, board_name, status, opened_at, author_user_id, author_name, decider_user_id, decider_name FROM decisions WHERE id = ?').raw();
+	const places = live.prepare('SELECT id, person_id, user_id, email, role, removed_at, removed_by FROM decision_participants WHERE decision_id = ? ORDER BY id').raw();
+	return (id) => JSON.stringify([decision.get(id), places.all(id)]);
+}
+
+/**
+ * Card 3033 (plan 3.7, R1, R3), where the seal did not verify, as it is or as a working copy, after card 3020's step, so
+ * that its count of places reads the file's rows. Never gated on the record (R13 L4). No account that is the same here
+ * (`sameHere`) is given a role on any decision this server did not give it, no decision this server holds is moved to
+ * another board or between a draft and past one, and no decision it does not hold comes in with a board, an account or
+ * anyone on it. Held = the same id and `created_at` (`sameCreation`).
+ *
+ * - **Held:** `board_id` this server's where the restored board of that id is the same board here (else NULL, as its
+ *   foreign key would leave it), `board_name` this server's; `status` and `opened_at` this server's wherever either
+ *   side is a draft (R1, the owner's ruling, code review FP3); `author_user_id` and `decider_user_id` this server's where
+ *   that account is the same here and the decision keeps its board as here, else NULL (FP1: a decision whose board here
+ *   is not the same board restored comes in with none, and a board-less author or decider would escape the board-edit
+ *   check), their names this server's. Each place this server held on it (R8): `email`, `role`, `removed_at` this
+ *   server's, `person_id` this server's where the restored person of that id is the same here, else NULL, `user_id` and
+ *   `removed_by` this server's where the same here, else NULL. Each place it did not hold: removed, `user_id` NULL (R10
+ *   on a draft). Places it held that the file lacks stay out.
+ * - **Not held:** `board_id`, `author_user_id`, `decider_user_id` and every place's `user_id` NULL, the names kept;
+ *   every live place removed (R10 on a draft). Its status the file's.
+ *
+ * Events, never on a draft: `removed {reason: 'restore'}` (R9), `role_changed {from, to}`, `re_included {role,
+ * hadAccount}` with `hadAccount` this server's for the place: true where it held an account here or its history here
+ * says so, false where its history says not, true where unknown (R7). Never an account event, nothing to the record.
+ * Counts each decision once, by a Set (R12), with those whose ruling's Product Owner the copy changed (`owners`).
+ * Not caught.
+ */
+function keepDecisionRolesHere(
+	live: Database.Database,
+	here: DecisionRolesHere,
+	access: Pick<AccessHere, 'boards' | 'people'>,
+	sameHere: (id: number) => boolean,
+	at: string,
+	owners: ReadonlySet<number>
+): Pick<AccessAsHere, 'decisions' | 'decisionsNotHere'> {
+	const held = new Set<number>();
+	const notHere = new Set<number>();
+	const accountSameHere = accountColumnSameHere(sameHere);
+	const boardSameHere = sameRowHere(restoredTimesOf(live, 'boards'), access.boards, (board) => board.createdAt);
+	const personSameHere = sameRowHere(restoredTimesOf(live, 'people'), access.people, (person) => person.createdAt);
+	const decisionRows = live.prepare('SELECT id, created_at AS createdAt, status, opened_at AS openedAt FROM decisions ORDER BY id').all() as {
+		id: number;
+		createdAt: unknown;
+		status: unknown;
+		openedAt: unknown;
+	}[];
+	const placesOf = live.prepare('SELECT id, role, removed_at AS removedAt FROM decision_participants WHERE decision_id = ? ORDER BY id');
+	const setHeld = live.prepare(
+		'UPDATE decisions SET board_id = ?, board_name = ?, status = ?, opened_at = ?, author_user_id = ?, author_name = ?, decider_user_id = ?, decider_name = ? WHERE id = ?'
+	);
+	const setNotHere = live.prepare('UPDATE decisions SET board_id = NULL, author_user_id = NULL, decider_user_id = NULL WHERE id = ?');
+	const setPlace = live.prepare('UPDATE decision_participants SET person_id = ?, email = ?, role = ?, removed_at = ?, user_id = ?, removed_by = ? WHERE id = ?');
+	const clearAccount = live.prepare('UPDATE decision_participants SET user_id = NULL WHERE id = ?');
+	const places = placeWriter(live, at);
+	const decisionRolesOf = decisionRolesReader(live);
+	/** A place this server did not hold: removed where live, its account cleared either way. */
+	const notHeldPlace = (place: { id: number; removedAt: unknown }, draft: boolean) => {
+		if (place.removedAt === null) places.remove(place.id, draft, true);
+		else clearAccount.run(place.id);
+	};
+	for (const decision of decisionRows) {
+		const before = decisionRolesOf(decision.id);
+		const ours = here.decisions.get(decision.id);
+		const placeRows = placesOf.all(decision.id) as { id: number; role: unknown; removedAt: unknown }[];
+		const isHeld = ours !== undefined && sameCreation(decision.createdAt, ours.createdAt);
+		if (isHeld) {
+			const keepStage = ours.status === 'draft' || decision.status === 'draft';
+			const status = keepStage ? ours.status : decision.status;
+			// FP1: its board as here, or no board where here it had none; a board this server holds that is not the same board
+			// restored leaves it with none, and then, as a decision not held (R3), with no author or decider account.
+			const boardAsHere = ours.boardId === null || boardSameHere(ours.boardId);
+			const account = (id: unknown) => (boardAsHere && accountSameHere(id) ? id : null);
+			setHeld.run(
+				boardAsHere ? ours.boardId : null,
+				ours.boardName,
+				status,
+				keepStage ? ours.openedAt : decision.openedAt,
+				account(ours.authorUserId),
+				ours.authorName,
+				account(ours.deciderUserId),
+				ours.deciderName,
+				decision.id
+			);
+			const draft = status === 'draft';
+			for (const place of placeRows) {
+				const placeHere = here.places.get(placeHeldKey(place.id, decision.id, decision.createdAt));
+				if (placeHere === undefined) {
+					notHeldPlace(place, draft);
+					continue;
+				}
+				setPlace.run(
+					personSameHere(placeHere.personId) ? placeHere.personId : null,
+					placeHere.email,
+					placeHere.role,
+					placeHere.removedAt,
+					accountSameHere(placeHere.userId) ? placeHere.userId : null,
+					accountSameHere(placeHere.removedBy) ? placeHere.removedBy : null,
+					place.id
+				);
+				if (draft) continue;
+				const wasLive = place.removedAt === null;
+				const isLive = placeHere.removedAt === null;
+				if (wasLive && !isLive) places.record(place.id, { kind: 'removed', detail: { reason: 'restore' } });
+				else if (!wasLive && isLive) {
+					const hadAccount = placeHere.userId !== null || placeHere.hadAccount !== false;
+					places.record(place.id, { kind: 're_included', detail: { role: placeHere.role, hadAccount } });
+				} else if (wasLive && isLive && place.role !== placeHere.role) {
+					places.record(place.id, { kind: 'role_changed', detail: { from: place.role, to: placeHere.role } });
+				}
+			}
+		} else {
+			setNotHere.run(decision.id);
+			for (const place of placeRows) notHeldPlace(place, decision.status === 'draft');
+		}
+		if (decisionRolesOf(decision.id) !== before || owners.has(decision.id)) (isHeld ? held : notHere).add(decision.id);
+	}
+	return { decisions: held.size, decisionsNotHere: notHere.size };
+}
+
+/**
+ * The tables whose rows `raiseUserCounterOverNamed` never updates or deletes: the insert-only ones (decision 27; card
+ * 2678, decision 7), the decision record, the people directory's record and the settled-once questions; and
+ * `api_keys`, whose every deletion is recorded as an ending (card 2995). It counts their account ids in range and
+ * leaves the rest as they are: a key naming no account in range acts as nobody.
+ */
+const ROWS_LEFT_AS_THEY_ARE: readonly string[] = ['decision_versions', 'decision_responses', 'decision_rulings', 'decision_events', 'people_changes', 'decision_questions', 'api_keys'];
+
+/** The largest account id one restore may name and the counter be raised to: 2^53 - 1, the largest a number in JavaScript holds exactly. */
+const MOST_ACCOUNT_ID = Number.MAX_SAFE_INTEGER;
+
+/**
+ * Card 3033 (plan 3.9, R4; code review, FP2): the `users` id counter raised over every account id a restored row names,
+ * on every restore, after the decision step, so that no account made later takes an id a restored row names, and with
+ * it that row's role. For each restorable table, each column whose foreign key names `users`:
+ *
+ * - a value that is not a whole number from 1 to 2^53 - 1 (larger, a fraction, text or a BLOB) is cleared, NULL, or its
+ *   row deleted where the column takes no NULL, and counted; never in an insert-only table or `api_keys`
+ *   (`ROWS_LEFT_AS_THEY_ARE`), whose rows are left as they are and whose values out of range are not counted;
+ * - the largest value left, worked out in SQL and never read into JavaScript, raises the counter with `max()`;
+ *
+ * and every ruling's Product Owner (`decision_events` of kind `ruled`), parsed as `detailOf` parses it
+ * (`detailObjectOf`), where it is a whole number in that range. The `users` row of `sqlite_sequence` is raised, written
+ * where there is none, as `raiseUserCounterOverSeed` does, and stays an INTEGER. Returns how many values were cleared.
+ * Not caught.
+ */
+function raiseUserCounterOverNamed(live: Database.Database, tables: readonly string[]): number {
+	let cleared = 0;
+	const largest: string[] = [];
+	for (const table of tables) {
+		const columns = live
+			.prepare(`SELECT f."from" AS name, i."notnull" AS required FROM pragma_foreign_key_list(?) AS f JOIN pragma_table_info(?) AS i ON i.name = f."from" WHERE lower(f."table") = 'users'`)
+			.all(table, table) as { name: string; required: number }[];
+		for (const column of columns) {
+			const named = `"${table}"."${column.name}"`;
+			const inRange = `typeof(${named}) = 'integer' AND ${named} BETWEEN 1 AND ${MOST_ACCOUNT_ID}`;
+			if (!ROWS_LEFT_AS_THEY_ARE.includes(table)) {
+				const outOfRange = `${named} IS NOT NULL AND NOT (${inRange})`;
+				cleared += live.prepare(column.required === 1 ? `DELETE FROM "${table}" WHERE ${outOfRange}` : `UPDATE "${table}" SET "${column.name}" = NULL WHERE ${outOfRange}`).run().changes;
+			}
+			largest.push(`SELECT max(${named}) AS id FROM "${table}" WHERE ${inRange}`);
+		}
+	}
+	let owner = 0;
+	if (tables.includes('decision_events')) {
+		for (const detail of live.prepare("SELECT detail FROM decision_events WHERE kind = 'ruled'").pluck().all()) {
+			const id = detailObjectOf(detail)?.productOwnerUserId;
+			if (typeof id === 'number' && Number.isSafeInteger(id) && id >= 1 && id > owner) owner = id;
+		}
+	}
+	const most = `max(coalesce((SELECT max(id) FROM (${largest.length > 0 ? largest.join(' UNION ALL ') : 'SELECT NULL AS id'})), 0), @owner)`;
+	live.prepare(`UPDATE sqlite_sequence SET seq = max(seq, ${most}) WHERE name = 'users'`).run({ owner });
+	live.prepare(`INSERT INTO sqlite_sequence (name, seq) SELECT 'users', ${most} WHERE ${most} > 0 AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'users')`).run({ owner });
+	return cleared;
 }
 
 /** Why a row of a backup's record of account endings was left out (card 2996, R14, R1), counted by reason: never the row's own text. */
@@ -3553,13 +4100,16 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
  * webhook's secret. `sealed` counts them, for the restore's checkpoint after
  * its commit. With no MFA key loaded that is a `NoKeyToSeal`, which the
  * restore does not catch: it rolls back (E9).
+ *
+ * And, where the seal did not verify (`trust.rulingOwners`, card 3033, plan 3.8, R2), every ruling's Product Owner is
+ * this server's for the same ruling of a decision it holds, else null (`withRulingOwnersHere`).
  */
 export function rowsToRestore(
 	backup: Database.Database,
 	table: string,
 	sealed: { count: number; secretsLeftOut?: ListedWebhook[] } = { count: 0 },
 	/** Whether the backup's seal verified (card 3009's code review, FP1): none of an unsealed backup's invites is read. Failing closed. */
-	trust: { sealVerified: boolean } = { sealVerified: false }
+	trust: { sealVerified: boolean; rulingOwners?: RulingOwners } = { sealVerified: false }
 ): Record<string, unknown>[] {
 	const sealing = (rows: Record<string, unknown>[]) => {
 		const result = sealedForRestore(table, rows);
@@ -3628,6 +4178,8 @@ export function rowsToRestore(
 	const rows = backup.prepare(fromTableStorage(backup, table)).all() as Record<string, unknown>[];
 	if (name === 'task_requests') return rows.map((row) => ('access_token' in row ? { ...row, access_token: null } : row));
 	if (name === 'webhooks') return sealing(rows);
+	// Card 3033 (plan 3.8, R2): where the seal did not verify, every ruling's Product Owner as this server's, at the copy.
+	if (name === 'decision_events' && trust.rulingOwners !== undefined) return withRulingOwnersHere(backup, rows, trust.rulingOwners);
 	return rows;
 }
 
@@ -4266,7 +4818,10 @@ function restoreInOneSnapshot(
 			// And W, and its keys up to W by id and hash (card 2995, R1): see `leaveOutRecordedKeys`.
 			const keysNow = keysHeldHere(live);
 			// And its accounts up to the account watermark, with its superadmins (card 2996): see `accountRulings`.
-			const accountsNow = accountsHeldHere(live);
+			// Every account is read once here and shared (card 3033's code review, FP10).
+			const usersNow = userRowsHere(live);
+			const accountsNow = accountsHeldHere(live, usersNow);
+			const accountTimesNow = accountTimesOf(usersNow);
 			// And its requests, with their cards and boards, where the seal did not verify (card 3020, R1): see
 			// `holdUnsealedRequestMail`.
 			const requestsNow = sealVerified ? new Map<number, RequestIdentity>() : requestRowsOf(live);
@@ -4275,7 +4830,11 @@ function restoreInOneSnapshot(
 			const peopleNow = sealVerified ? new Map<number, PersonIdentity>() : peopleRowsOf(live);
 			// And who could open what, every board, member, share, team, team member and person, on every restore (card 3002,
 			// R4): see `applyAccessRecord`, `keepAccessHere` and `keepPersonLinksHere`.
-			const accessNow = accessHeldHere(live);
+			const accessNow = accessHeldHere(live, accountTimesNow);
+			// And its decisions and their places, on every restore, and its rulings' Product Owners where the seal did not
+			// verify (card 3033, plan 3.5 steps 1 and 2): see `applyDecisionRecord`, `keepDecisionRolesHere` and `rowsToRestore`.
+			const decisionRolesNow = decisionRolesHeldHere(live, accountTimesNow);
+			const rulingOwners: RulingOwners | undefined = sealVerified ? undefined : rulingOwnersHere(live);
 			// The rows of the keys `carryDisabled` deletes, for the hold below (R2).
 			const disabledReveals: Reveal[] = [];
 			// And those keys' ids, counted with the keys left out (card 2995, R13).
@@ -4308,7 +4867,7 @@ function restoreInOneSnapshot(
 					if (!exists) continue;
 
 					// Every row, but no session and no unused invite, every plain secret sealed: see rowsToRestore.
-					const rows = rowsToRestore(backup, table, sealedInRestore, { sealVerified });
+					const rows = rowsToRestore(backup, table, sealedInRestore, { sealVerified, rulingOwners });
 					if (rows.length === 0) continue;
 
 					// Only the columns both sides have.
@@ -4597,6 +5156,11 @@ function restoreInOneSnapshot(
 			// Card 3002: which restored accounts are the same here, where the seal did not verify, read once and shared with
 			// card 3020's people step below. Reads.
 			const sameHereNow = sealVerified ? null : restoredSameHere(live, accountsNow, trust);
+			// Card 3033's code review (FP10): the restored accounts' creation times, read once, at their first use, by card
+			// 3002's `keepAccessHere` or card 3033's `applyDecisionRecord` (never both), each after the restore's one write of
+			// a creation time (`stampUnreadableCreations`); no step between writes `users`.
+			let restoredAccounts: Map<number, unknown> | undefined;
+			const restoredAccountsNow = () => (restoredAccounts ??= restoredTimesOf(live, 'users'));
 			// Card 3002 (plan 3.4 steps 3 to 5): the backup's record of access changes added to this server's, bounded, where
 			// the seal verified, and counted where it did not; then, where it did not, the boards and teams the same here given
 			// this server's access exactly and accounts the same here none on the others (`keepAccessHere`); then, on every
@@ -4622,7 +5186,7 @@ function restoreInOneSnapshot(
 				recordsNotTaken = { ...recordsNotTaken, accessChanges: carryAccessChanges(live, backup, errors, restoredAt, sealVerified).notTaken };
 				let handled: AccessHandled = { boards: new Set(), teams: new Set() };
 				if (sameHereNow !== null) {
-					const kept = keepAccessHere(live, accessNow, sameHereNow);
+					const kept = keepAccessHere(live, accessNow, sameHereNow, restoredAccountsNow());
 					accessAsHere = { ...accessAsHere, ...kept.asHere };
 					handled = kept.handled;
 				}
@@ -4761,6 +5325,28 @@ function restoreInOneSnapshot(
 					// Card 3002 (plan 3.4 step 6): then each person's account as this server links it, where both sides are the
 					// same here, after card 3020's step, so that its reading of the file's links and its counts do not change. Not caught.
 					accessAsHere = { ...accessAsHere, people: keepPersonLinksHere(live, accessNow.people, sameHere, restoredAt) };
+				}
+			}
+			// Card 3033 (plan 3.5 step 4): then the decision roles, after card 3020's step, so that its count of places reads
+			// the file's rows. Exactly one of the two runs: where the seal verified and the record is there, the record's caps
+			// (`applyDecisionRecord`); where it did not, as it is or as a working copy, held decisions as here and the rest
+			// inert (`keepDecisionRolesHere`), never gated on the record (R13 L4). Then, on every restore, the users counter
+			// over every account id a restored row names (R4). Not caught.
+			if (tables.includes('decisions') && tables.includes('decision_participants')) {
+				if (sameHereNow === null) {
+					if (hasAccessRecord(live)) accessKept = { ...accessKept, ...applyDecisionRecord(live, decisionRolesNow, restoredAccountsNow(), { at: restoredAt }) };
+				} else {
+					const owners = rulingOwners?.changed ?? new Set<number>();
+					accessAsHere = { ...accessAsHere, ...keepDecisionRolesHere(live, decisionRolesNow, accessNow, sameHereNow, restoredAt, owners) };
+				}
+			}
+			if (tableIn(live, 'sqlite_sequence')) {
+				// Code review, FP2: an account id out of range is cleared and counted, in one line naming none.
+				const outOfRange = raiseUserCounterOverNamed(live, tables);
+				if (outOfRange > 0) {
+					errors.push(
+						`${outOfRange} restored account number(s) that are not a whole number from 1 to 2^53 - 1 were cleared, or their rows left out where one is needed, so that no account made here can take them.`
+					);
 				}
 			}
 			if (mailEverHere !== null && tables.includes('settings')) {
