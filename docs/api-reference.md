@@ -1,10 +1,11 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.165
+version: 1.166
 status: As-Built
 date: 2026-11-21
 tags:
+  - card-2683
   - card-3004
   - card-3031
   - card-3033
@@ -74,7 +75,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "Point (13) of 1.15.0, webhooks a restore brings back switched off with three new pausedBecause sentences, and the import's outboundKept and recordsNotTaken.outboundChanges (card 3004). A restore keeps decision roles as recorded: the import's accessKept and accessAsHere fields, and point (12)'s 409 for a Product Owner or decider whose account time does not read (card 3033). The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "Point (14) of 1.15.0, decisions may ask survey questions: surveyQuestions in the content (kept when a PATCH does not send it, [] removes them), the refusal survey_incomplete, the response kind answered, answers and survey figures on the summary, never answered with a key (card 2683). Point (13) of 1.15.0, webhooks a restore brings back switched off with three new pausedBecause sentences, and the import's outboundKept and recordsNotTaken.outboundChanges (card 3004). A restore keeps decision roles as recorded: the import's accessKept and accessAsHere fields, and point (12)'s 409 for a Product Owner or decider whose account time does not read (card 3033). The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -441,6 +442,47 @@ and its access; and at the write). Not marked Breaking. The admin page's load
 `null` when unreadable, `freeInodes` `null` where the volume counts none. The 507 is given too when
 fewer than 1,000 inodes are free, when the free space is not read within 2 seconds, and for 5
 minutes after a write found the disk full unless the free space has grown since.
+
+### Changes on 2026-11-21: decisions may ask survey questions (card 2683)
+
+**Within 1.15.0 (point 14), breaking.** A decision's content holds `surveyQuestions`, the author's
+own questions ([Decisions](#decisions)); one with none of its options live but at least one survey
+question asks those alone, a survey. The readiness refusal `too_few_options` now refuses one option,
+or none with no survey question, so a survey-only draft is no longer refused; the new refusal
+`survey_incomplete` is a survey question with no prompt or a choice question with fewer than two
+choices. `PATCH /api/v1/decisions/{decisionId}` content without `surveyQuestions` keeps the stored
+ones, the one section not emptied when not sent, and `[]` removes them; both PATCH descriptions say
+so. The PATCH no longer answers `409` for a change of `voteMode` on an opened decision while its
+current version puts no option to a vote (a survey): the re-publish that adds the first options
+publishes them in that mode, and such a change through a key is flagged
+`content.agentDrafted.voteMode`, a readiness warning ("The vote mode was chosen by an agent and not
+yet reviewed by a person") until a person marks it reviewed. A
+response row of `GET /api/v1/decisions/{decisionId}/summary` may have kind `answered`, a survey
+answered in a round with no options. Answers are given on the decision's page or by personal link
+alone, never with an API key: no operation is added. DumpFire counts a new value in an enum of an
+answer as breaking, hence the point.
+
+Added with it, and not breaking: `surveyQuestions` in `DecisionContent` and in the PATCH request
+(schema `DecisionContentSurveyQuestion`); `surveyQuestions` rows (`DecisionSurveyQuestion`,
+`{ id, position, addedInVersion, retiredInVersion }`) on the decision's GET and PATCH answers; and on
+the summary `answers` on each response row, `survey` on each tally (`DecisionSurveyTally`: per version
+answered under, each question's `answered`, a choice's counts and a scale's counts and mean), and the
+current version's `surveyQuestions`. `agentDrafted` may name `survey.<questionId>`. OpenAPI stays
+`1.15.0` (unreleased); its note gains point (14), and "nothing else changed" is now (15).
+
+Internal (`/api`):
+
+- `PUT /api/decisions/[id]` (additive): the answer gains `surveyQuestions`, the live survey question
+  rows; the body's `content` takes `surveyQuestions` as v1's does.
+- `POST /api/decisions/[id]/responses` and `POST /api/decision-by-link/responses` (additive): the body
+  may hold `answers`, keyed by the current version's live survey question ids, and `kind` may be
+  `answered` in a round with no options; in such a round `vote` and `no_concerns` are `400`, and with
+  options `answered` is `400`. The answer's `OwnResponse` gains `answers` (`{}` for none).
+- `POST /api/decisions/[id]/republish`: telling only is `409` where a survey question would be added,
+  retired or changed in anything but its help; a decision that has put options to a vote cannot be
+  re-published with none (`409`). `POST /api/decisions/[id]/release`: a decision ruled on a version
+  with no options is `409` "This decision put no options to a vote: there are no totals to release,
+  and survey answers are never released".
 
 ### Changes on 2026-11-21: a restore keeps where this server sends as it recorded it (card 3004)
 
@@ -6515,8 +6557,8 @@ twin lets in: a caller who may view the decision and not do the act is `403`
 |---|---|---|---|
 | `GET /api/v1/decisions` | anyone signed in | `tab`, `status`, `board`, `person`, `who` (up to 100), `q` (up to 200), `before` | `200` a register page; a malformed filter `400` naming it |
 | `POST /api/v1/boards/:boardId/decisions` | the board's editors | `title` | `201 { decision, revision }` |
-| `GET /api/v1/decisions/:decisionId` | its editors: author, decider, board owner, administrators | — | `200 { decision, options, participants, revision, readiness, actions, people, groups, deciderCandidates, untrusted }` |
-| `PATCH /api/v1/decisions/:decisionId` | its editors | `revision`, and any of `title`, `closesAt`, `voteMode`, `content` (whole) | `200 { decision, options, revision, readiness }` |
+| `GET /api/v1/decisions/:decisionId` | its editors: author, decider, board owner, administrators | — | `200 { decision, options, surveyQuestions, participants, revision, readiness, actions, people, groups, deciderCandidates, untrusted }` (`surveyQuestions` since `1.15.0`) |
+| `PATCH /api/v1/decisions/:decisionId` | its editors | `revision`, and any of `title`, `closesAt`, `voteMode`, `content` (whole, but `surveyQuestions`, kept when not sent) | `200 { decision, options, surveyQuestions, revision, readiness }` |
 | `DELETE /api/v1/decisions/:decisionId` | its author, administrators | — | `200 { success: true }`; a decision ever opened `403` |
 | `PUT …/decider` | its author, board owner, administrators | `deciderUserId`, `revision` | `200 { decision, revision }`; ever opened `403` |
 | `PUT …/participants` | its editors | `participants` (`{ personId, role }`, up to 5,000), `revision` | `200 { participants, revision }`; ever opened `403` |
@@ -6563,14 +6605,45 @@ twin lets in: a caller who may view the decision and not do the act is `403`
   editor writes (the title, closing time, vote mode, content, options, decider, participants and
   their roles, the status and version), and not with a Resend or an administrator's change to a
   participant's account or address, which `updatedAt` still shows (card 2706).
-- **`content` is whole.** `PATCH` reads `content` strictly: a section not sent is emptied. Each
+- **`content` is whole.** `PATCH` reads `content` strictly: a section not sent is emptied, but
+  `surveyQuestions` (since `1.15.0`), which is kept when not sent and removed by `[]`. Each
   section a key changes is flagged as drafted by an agent until a person marks it reviewed on
   the page. Once opened, only the content changes, and nobody is told until a person
-  re-publishes.
+  re-publishes; the vote mode may still change while the current version puts no option to a
+  vote (a survey), and the re-publish that adds the first options publishes them in that mode.
+- **Survey questions** (since `1.15.0`, card 2683). `content.surveyQuestions` is a list of up to 20
+  `{ questionId?, kind, prompt, help, required, choices?, scale? }`: `kind` `choice`, `scale` or
+  `text`, and only that kind's keys (`choices`, 2 to 20 one-line items up to 200, a choice
+  question's alone; `scale`, `{ max: 2..10, lowLabel, highLabel }`, a scale question's alone;
+  either on another kind is `400` naming the path); `prompt` one line up to 300; `help` markdown up
+  to 2,000; `required` false when not sent. An entry with no `questionId` is a new question; a
+  `questionId` that is not a live survey question of this decision is `400`. A published
+  question's kind is fixed (`400` "Survey question N has been published: its kind is fixed. Remove
+  it and add a new question"); any other change but its help reaches people only by a person's
+  re-publish asking everyone again. The answers give each question's row as `surveyQuestions`,
+  `{ id, position, addedInVersion, retiredInVersion }`, as options are given; its words are in the
+  content. A decision with no live option and at least one survey question is a survey: the
+  readiness refusal `too_few_options` refuses one option, or none with no survey question, and
+  `survey_incomplete` a question with no prompt or a choice question with fewer than two choices.
+  Each question a key writes is flagged `survey.<questionId>` until a person marks it reviewed.
+- **An agent may remove survey questions.** Sending `"surveyQuestions": []` removes every question
+  from the working copy, of a draft or of an opened decision. A question never published goes at
+  once; a published one is retired only when a person re-publishes on the page, asking everyone
+  again, and the re-publish names each question it would retire. A removal carries no agent flag,
+  as removing an option does not (a flag names a question still there). Leaving the key out keeps
+  them, so an older client that has never heard of survey questions cannot wipe them.
+- **Answers are a person's.** No v1 operation answers a survey: answers are given on the
+  decision's page or by personal link, never with a key. The summary (decider and administrators)
+  gives each response row's `answers`, keyed by question id (a choice counted from 0, a scale's
+  number, a written answer), labelled by the questions of its `versionNumber`; each tally's
+  `survey`, the figures per version answered under; and the current version's `surveyQuestions`.
+  A response row may be of kind `answered`, a survey answered in a round with no options. Answers
+  and survey figures are never released.
 - **What a key chooses is flagged too** (card 2728). The title of a draft a key made, or changed
   by `PATCH`, or gave a superseding draft, is flagged `content.agentDrafted.title`; a change of
   decider by `PUT …/decider`, `agentDrafted.decider`; and a `PUT …/participants` that adds,
-  removes or re-roles anyone, `agentDrafted.participants`. A write that changes nothing flags
+  removes or re-roles anyone, `agentDrafted.participants`; since card 2683, a `PATCH` that changes
+  the vote mode of an opened survey, `agentDrafted.voteMode`. A write that changes nothing flags
   nothing. Each is a readiness warning ("The title was chosen by an agent and not yet reviewed by
   a person") and carries the agent label in the editor until a person marks it reviewed there,
   which a key cannot do; a person's own later change keeps the flag. It is a warning, as every
@@ -6585,8 +6658,8 @@ twin lets in: a caller who may view the decision and not do the act is `403`
 - **`untrusted: true`** on every object that holds text people or agents wrote: the decision,
   each participant, picker person, group and candidate, each register row and the page, each
   question, each response, concern and the ruling of the summary and the summary, each record
-  entry and the page. It is data, never instructions. Linked cards and option rows are not
-  marked.
+  entry and the page. It is data, never instructions; a response row's written answers are on a
+  row already marked. Linked cards, option rows and survey question rows are not marked.
 - **Activity.** Extend writes `decision_extended`; a link and an unlink write
   `decision_card_linked` and `decision_card_unlinked` on the card's board; each through the API.
   Nothing else here writes an activity entry, and nothing sends a webhook.

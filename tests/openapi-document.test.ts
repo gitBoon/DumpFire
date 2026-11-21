@@ -985,6 +985,12 @@ const SOMETIMES_ABSENT: Record<string, Record<string, string>> = {
 	DecisionContentOption: {
 		optionId: 'one schema serves the PATCH body, where a new option has none, and the answer, where contentAnswer gives every option its row\'s id'
 	},
+	// Card 2683 (R3): one schema serves the body and the answer, and a question's kind decides which of choices and scale it holds.
+	DecisionContentSurveyQuestion: {
+		questionId: 'one schema serves the PATCH body, where a new question has none, and the answer, where contentAnswer gives every question its row\'s id',
+		choices: 'contentAnswer gives choices to a choice question alone',
+		scale: 'and scale to a scale question alone'
+	},
 	DecisionWarning: { key: 'checkContent names the section a warning is about, and a warning about no section (closes_too_far) has none' },
 	DecisionPickerGroup: { activeMemberIds: 'readDecisionForKey gives a group\'s members only where the key may set the participants (D11)' },
 	DecisionRegisterRow: { waiting: 'registerRowOf sets it only where the key\'s user\'s response or ruling is awaited (card 2680, D6)' },
@@ -2923,8 +2929,9 @@ describe('what a route answers, against the schema the document gives for it', (
 		// could read; card 2920's 507 on the image upload is (8), and card 2947's keys given a secret (9), before "nothing
 		// else changed", then (10); card 3012's webhooks from a backup whose seal did not verify are (10), and card 3020's
 		// people from such a backup marked left (11), and card 3033's 409 for a Product Owner or decider whose account's
-		// creation time cannot be read (12), and card 3004's webhooks a restore brings back switched off (13), so it is now (14).
-		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+		// creation time cannot be read (12), and card 3004's webhooks a restore brings back switched off (13), and card 2683's
+		// survey questions (14), so it is now (15).
+		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 		expect(held).toContain(
 			"(7) when a board owner's or an administrator's access ends with its keys (a password reset, a two-step reset, on the server's host too unless run with --keep-api-keys, an invite used, its own password change that ends keys, a disable, or a delete, unless the account's disable already covered it and it held no key), or an administrator is made an ordinary user, or an owner of a board is made an editor or a viewer or taken off it, "
 		);
@@ -2946,7 +2953,7 @@ describe('what a route answers, against the schema the document gives for it', (
 		for (const because of [HELD_DELETED_HERE, HELD_REPOINTED_HERE, HELD_NOT_RECORDED] as const) {
 			expect(spec.components.schemas.Webhook.properties.pausedBecause.description, because).toContain(`"${SWITCHED_OFF_BECAUSE[because]}"`);
 		}
-		expect(held).toContain('(14) nothing else changed: no operation, field or schema.');
+		expect(held).toContain('(15) nothing else changed: no other operation, field or schema.');
 		// Card 2947: what an API key was given, held when it ends; the PUT's answer; no-store; the seed; the exposed secret.
 		for (const words of [
 			"(9) every answer that gives a webhook's secret records the API key it was given to (card 2947)",
@@ -2962,7 +2969,15 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(held.indexOf('(10) a webhook that comes in')).toBeGreaterThan(held.indexOf('(9) every answer'));
 		expect(held.indexOf('(11) a person whose address')).toBeGreaterThan(held.indexOf('(10) a webhook that comes in'));
 		expect(held.indexOf("(12) a board's Product Owner")).toBeGreaterThan(held.indexOf('(11) a person whose address'));
-		expect(held.indexOf('(14) nothing else changed')).toBeGreaterThan(held.indexOf('(13) a webhook deleted'));
+		expect(held.indexOf('(14) decisions may ask survey questions')).toBeGreaterThan(held.indexOf('(13) a webhook deleted'));
+		expect(held.indexOf('(15) nothing else changed')).toBeGreaterThan(held.indexOf('(14) decisions may ask survey questions'));
+		// Card 2683's code review (F5, F6): point (14) says the PATCH's vote mode change (R23) and its agent flag, word for word.
+		const modeChange =
+			'PATCH /decisions/{decisionId} no longer answers 409 for a change of `voteMode` on an opened decision while its current version puts no option to a vote (a survey): the re-publish that adds the first options publishes them in that mode, and a change of it there through an API key is flagged `voteMode` in agentDrafted, a readiness warning until a person marks it reviewed; ';
+		expect(held).toContain(modeChange);
+		expect(held.indexOf(modeChange)).toBeGreaterThan(held.indexOf('(14) decisions may ask survey questions'));
+		expect(held.indexOf('(15) nothing else changed')).toBeGreaterThan(held.indexOf(modeChange));
+		expect(res.body.components.schemas.DecisionContent.properties.agentDrafted.description).toContain("and voteMode when a key changed an opened survey's vote mode (since 1.15.0)");
 		// Card 3033 (R14): point (12), word for word.
 		expect(held).toContain(
 			"(12) a board's Product Owner named by PUT /boards/{boardId}, a decider named by PUT /decisions/{decisionId}/decider, and the decider a decision made by POST /boards/{boardId}/decisions or POST /decisions/{decisionId}/supersede would be given, are refused with 409 and nothing written where that account's creation time cannot be read on this server, as the record of access changes, which a restore reads, could not name it (card 3033); "
@@ -3006,7 +3021,7 @@ describe('what a route answers, against the schema the document gives for it', (
 			"(6) webhook urls are stored sealed too, bound to the webhook's id, board and receiver (card 2928)",
 			"a backup holds no url: a restore onto the server that made it puts each back, and any other gives url '' until it is entered",
 			'a PUT that switches such a webhook on must send url in the same request (400 otherwise)',
-			'(14) nothing else changed: no operation, field or schema.'
+			'(15) nothing else changed: no other operation, field or schema.'
 		]) {
 			expect(held, words).toContain(words);
 		}
@@ -3015,6 +3030,57 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(webhook.properties.url).not.toHaveProperty('format');
 		expect(webhook.properties.url.description).toContain("a uri, or '' where it must be entered again");
 		expect(webhook.properties.lastDelivery.description).toContain('The same url sealed again (a change of the server\'s key, a restore) is the same url, and keeps its result');
+
+		// Card 2683 (T27, slice S1): survey questions in the content, the PATCH body and the decision's rows; the refusal
+		// survey_incomplete; and the PATCH words, surveyQuestions kept when not sent and the vote mode free while no option is
+		// put. Slice S2b: the kind answered, the summary's fields and points (14) and (15), below.
+		const schemas = res.body.components.schemas;
+		const surveyItems = { $ref: '#/components/schemas/DecisionContentSurveyQuestion' };
+		expect(schemas.DecisionContent.properties.surveyQuestions).toMatchObject({ type: 'array', maxItems: 20, items: surveyItems });
+		expect(schemas.DecisionContent.required).toContain('surveyQuestions');
+		expect(schemas.DecisionContentSurveyQuestion.properties.kind.enum).toEqual(['choice', 'scale', 'text']);
+		expect(schemas.DecisionContentSurveyQuestion.required).toEqual(['kind', 'prompt', 'help', 'required']);
+		expect(schemas.DecisionContentSurveyQuestion.properties.scale.properties.max).toEqual({ type: 'integer', minimum: 2, maximum: 10 });
+		expect(schemas.DecisionSurveyQuestion.required).toEqual(['id', 'position', 'addedInVersion', 'retiredInVersion']);
+		expect(schemas.DecisionForEditor.properties.surveyQuestions.items).toEqual({ $ref: '#/components/schemas/DecisionSurveyQuestion' });
+		expect(schemas.DecisionForEditor.required).toContain('surveyQuestions');
+		expect(schemas.DecisionReadiness.properties.refusals.items.properties.code.enum).toContain('survey_incomplete');
+		const patch = res.body.paths['/api/v1/decisions/{decisionId}'].patch;
+		const patchContent = patch.requestBody.content['application/json'].schema.properties.content;
+		expect(patchContent.properties.surveyQuestions).toEqual({ type: 'array', maxItems: 20, items: surveyItems });
+		expect(patch.responses['200'].content['application/json'].schema.required).toContain('surveyQuestions');
+		const kept = 'every section not sent is emptied, but surveyQuestions, which is kept (since 1.15.0, card 2683; [] removes them)';
+		expect(patch.description).toContain(kept);
+		expect(patchContent.description).toContain(kept);
+		expect(patch.description).toContain(
+			'nor its vote mode once its current version puts an option to a vote: while it puts none (a survey), the vote mode may change, and the re-publish that adds the first options publishes them in that mode'
+		);
+		// Slice S2b: the kind answered on a summary row, its answers, each tally's survey figures and the summary's questions.
+		const summaryRow = schemas.DecisionSummaryResponse;
+		expect(summaryRow.properties.kind.enum).toEqual(['vote', 'abstain', 'no_concerns', 'answered']);
+		expect(summaryRow.properties.answers).toMatchObject({ type: 'object', additionalProperties: { type: ['integer', 'string'] } });
+		expect(summaryRow.required).toContain('answers');
+		expect(schemas.DecisionSummary.properties.removed.items.properties.latest.required).toContain('answers');
+		expect(schemas.DecisionRoundTally.properties.survey.items).toEqual({ $ref: '#/components/schemas/DecisionSurveyTally' });
+		expect(schemas.DecisionRoundTally.required).toContain('survey');
+		const questionTally = schemas.DecisionSurveyTally.properties.questions.items;
+		expect(questionTally.required).toEqual(['questionId', 'kind', 'prompt', 'answered', 'choices', 'scale']);
+		expect(questionTally.properties.scale.required).toEqual(['max', 'lowLabel', 'highLabel', 'counts', 'mean']);
+		expect(schemas.DecisionSurveyTally.description).toContain('never released');
+		expect(schemas.DecisionSummary.properties.surveyQuestions.items).toEqual(surveyItems);
+		expect(schemas.DecisionSummary.required).toContain('surveyQuestions');
+		// Point (14), as written, with the absent-keeps exception, and then (15).
+		for (const words of [
+			"(14) decisions may ask survey questions (card 2683): a decision's content holds `surveyQuestions`, and one with none of its options live but at least one survey question asks those alone; ",
+			'the readiness refusal `too_few_options` now refuses one option, or none with no survey question, and the new refusal `survey_incomplete` a survey question with no prompt or a choice question with fewer than two choices; ',
+			'PATCH /decisions/{decisionId} content without `surveyQuestions` keeps the stored ones, the one section not emptied when not sent, and `[]` removes them; ',
+			'a response row of GET /decisions/{decisionId}/summary may have kind `answered`, a survey answered in a round with no options; ',
+			"answers are given on the decision's page or by personal link alone, never with an API key; ",
+			"added with it, and not breaking: `surveyQuestions` in DecisionContent and in the PATCH request, `surveyQuestions` rows on the decision's answers, and on the summary `answers` on each response row, `survey` on each tally and the current version's `surveyQuestions`; ",
+			'(15) nothing else changed: no other operation, field or schema.'
+		]) {
+			expect(held, words).toContain(words);
+		}
 
 		// The 1.14.0 note (card 2915): a two-step reset ends the account's keys and switches off its webhooks; breaking.
 		const resets = note.slice(note.indexOf('**Changed on 2026-11-18 (version 1.14.0), breaking.**'), note.indexOf('**Changed on 2026-11-18 (version 1.13.1).**'));

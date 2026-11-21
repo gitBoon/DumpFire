@@ -468,6 +468,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\t`replaces_id` integer,",
 		"\t`via` text NOT NULL,",
 		"\t`created_at` text DEFAULT (datetime('now')) NOT NULL,",
+		"\t`answers` text,",
 		"\tFOREIGN KEY (`decision_id`) REFERENCES `decisions`(`id`) ON UPDATE no action ON DELETE cascade,",
 		"\tFOREIGN KEY (`participant_id`) REFERENCES `decision_participants`(`id`) ON UPDATE no action ON DELETE no action,",
 		"\tFOREIGN KEY (`option_id`) REFERENCES `decision_options`(`id`) ON UPDATE no action ON DELETE no action,",
@@ -497,6 +498,17 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	].join('\n'),
 	"CREATE INDEX `idx_decision_rulings_option_id` ON `decision_rulings` (`option_id`);",
 	"CREATE INDEX `idx_decision_rulings_ruled_by` ON `decision_rulings` (`ruled_by`);",
+	[
+		"CREATE TABLE `decision_survey_questions` (",
+		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
+		"\t`decision_id` integer NOT NULL,",
+		"\t`position` real NOT NULL,",
+		"\t`added_in_version` integer,",
+		"\t`retired_in_version` integer,",
+		"\tFOREIGN KEY (`decision_id`) REFERENCES `decisions`(`id`) ON UPDATE no action ON DELETE cascade",
+		");"
+	].join('\n'),
+	"CREATE INDEX `idx_decision_survey_questions_decision_id` ON `decision_survey_questions` (`decision_id`);",
 	[
 		"CREATE TABLE `decision_versions` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",

@@ -219,6 +219,9 @@
 					<p class="note" data-note="release-refusal">{data.releaseRefusal}</p>
 				{/if}
 			</section>
+		{:else if data.ruling?.noOptions && data.releaseRefusal !== null}
+			<!-- Card 2683 (R11): a ruled survey has no preview, as nothing of it can be released; why is said. -->
+			<p class="note" data-note="release-refusal">{data.releaseRefusal}</p>
 		{/if}
 
 		<!-- Drawn from the start, so a screen reader hears each change of its words; a refusal is an alert of its own. -->

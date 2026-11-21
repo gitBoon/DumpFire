@@ -40,6 +40,15 @@
   not yet saved kept (F1); a closing time more than a year ahead is warned of
   (S3); and the help sentence and the field's form are `$lib/decision-readiness`'s,
   shared with Extend (F5).
+
+  Card 2683 (slice S3a): the survey questions, after the options, in
+  `SurveyEditor`, bound to the form and sent with every save (R15: the list
+  as edited, `[]` once all are removed). A question published in a version,
+  by `surveyQuestions`' rows, keeps its kind (R8); one an agent wrote carries
+  the label under `survey.<questionId>` (R16). While the current version puts
+  no option to a vote (no live option row published), the vote mode may be
+  changed on an opened decision too (R23), so that a survey becomes a vote in
+  either mode; otherwise it is fixed once opened.
 -->
 <script lang="ts">
 	import { untrack, type Snippet } from 'svelte';
@@ -50,6 +59,7 @@
 	import { failureMessage } from '$lib/api';
 	import AgentLabel from './AgentLabel.svelte';
 	import ReadinessPanel from './ReadinessPanel.svelte';
+	import SurveyEditor, { surveyContentOf, surveyFormOf, type SurveyDraft } from './SurveyEditor.svelte';
 
 	type Decision = {
 		id: number;
@@ -62,7 +72,10 @@
 		deciderName: string | null;
 		content: ContentAnswer;
 	};
-	type Option = { id: number; label: string };
+	/** An option row; `addedInVersion` set once a version has published it (card 2683, R23). */
+	type Option = { id: number; label: string; addedInVersion?: number | null };
+	/** A survey question row (card 2683): its words are in the content. */
+	type SurveyRow = { id: number; addedInVersion: number | null };
 	type Participant = { personId: number | null; removedAt: string | null };
 	/** A group by name; its active members only where the caller may save the participants (C4). */
 	type Group = { id: number; name: string; activeMemberIds?: number[] };
@@ -71,6 +84,7 @@
 	let {
 		decision,
 		options,
+		surveyQuestions = [],
 		participants,
 		groups,
 		revision,
@@ -89,6 +103,8 @@
 		decision: Decision;
 		/** The live options, by the labels the server issued. */
 		options: Option[];
+		/** Card 2683: the live survey question rows, which say which questions a version has published. */
+		surveyQuestions?: SurveyRow[];
 		participants: Participant[];
 		groups: Group[];
 		/** The decision's revision as the page holds it: every save sends it. */
@@ -126,6 +142,7 @@
 		question: string;
 		ask: string;
 		options: OptionDraft[];
+		surveyQuestions: SurveyDraft[];
 		audiences: AudienceDraft[];
 		stories: StoryDraft[];
 		unknowns: string;
@@ -151,6 +168,7 @@
 				cons: option.cons.join('\n'),
 				commercial: option.commercial
 			})),
+			surveyQuestions: surveyFormOf(content.surveyQuestions, key),
 			audiences: content.audiences.map((audience) => ({ key: key(), groupId: audience.groupId === null ? '' : String(audience.groupId), heading: audience.heading, body: audience.body })),
 			stories: content.stories.map((story) => ({ key: key(), title: story.title, body: story.body })),
 			unknowns: content.unknowns,
@@ -175,6 +193,8 @@
 				cons: lines(option.cons),
 				commercial: option.commercial
 			})),
+			// Card 2683 (R15): always sent, so a question removed here is removed, and `[]` clears them.
+			surveyQuestions: surveyContentOf(form.surveyQuestions),
 			audiences: form.audiences.map((audience) => ({ groupId: audience.groupId === '' ? null : Number(audience.groupId), heading: audience.heading, body: audience.body })),
 			stories: form.stories.map((story) => ({ title: story.title, body: story.body })),
 			unknowns: form.unknowns,
@@ -198,6 +218,15 @@
 	let saving = $state(false);
 
 	let draft = $derived(saved.status === 'draft');
+	/**
+	 * Card 2683 (R23): whether the vote mode may be changed: on a draft, and on
+	 * an opened decision while no live option has been published, as the
+	 * server's `updateDraft` asks it. The re-publish that adds the first
+	 * options puts them in the mode saved.
+	 */
+	let modeFree = $derived(draft || !options.some((option) => option.addedInVersion !== null && option.addedInVersion !== undefined));
+	/** Card 2683 (R8): the survey questions a version has published, by id: their kind is fixed. */
+	let publishedQuestions = $derived(new Set(surveyQuestions.filter((row) => row.addedInVersion !== null).map((row) => row.id)));
 
 	/**
 	 * The status, the shown status and the closing time follow the decision as
@@ -231,7 +260,8 @@
 
 	let dirty = $derived(
 		JSON.stringify(edited) !== JSON.stringify(savedContent) ||
-			(draft && (title.trim() !== saved.title || closes !== closesField(saved.closesAt) || voteMode !== saved.voteMode))
+			(draft && (title.trim() !== saved.title || closes !== closesField(saved.closesAt))) ||
+			(modeFree && voteMode !== saved.voteMode)
 	);
 
 	/**
@@ -245,10 +275,18 @@
 	function unsavedKey(k: string): boolean {
 		if (k === 'title') return draft && title.trim() !== saved.title;
 		if (k === 'decider') return chosenDecider !== storedDecider;
+		// Card 2683 (code review F5): the vote mode as selected, while it may still change (R23).
+		if (k === 'voteMode') return modeFree && voteMode !== saved.voteMode;
 		const optionId = /^options\.(\d+)$/.exec(k)?.[1];
 		if (optionId !== undefined) {
 			const optionIn = (body: typeof edited) => JSON.stringify(body.options.find((option) => option.optionId === Number(optionId)));
 			return optionIn(edited) !== optionIn(savedContent);
+		}
+		// Card 2683 (R16): a survey question by the id its row holds, as an option.
+		const questionId = /^survey\.(\d+)$/.exec(k)?.[1];
+		if (questionId !== undefined) {
+			const questionIn = (body: typeof edited) => JSON.stringify(body.surveyQuestions.find((question) => question.questionId === Number(questionId)));
+			return questionIn(edited) !== questionIn(savedContent);
 		}
 		return k in edited && JSON.stringify(edited[k as keyof typeof edited]) !== JSON.stringify(savedContent[k as keyof typeof savedContent]);
 	}
@@ -329,7 +367,7 @@
 			revision,
 			title: draft ? title : saved.title,
 			closesAt: closesToSend(),
-			voteMode: draft ? voteMode : saved.voteMode,
+			voteMode: modeFree ? voteMode : saved.voteMode,
 			content: contentOf(form)
 		};
 		try {
@@ -491,6 +529,11 @@
 	{/if}
 	{#if !editable}
 		<p class="note">This decision is {(STATUS_WORDS[saved.shownStatus] ?? saved.shownStatus).toLowerCase()}: nothing in it can be changed.</p>
+	{:else if !draft && modeFree}
+		<p class="note" data-note="mode-free">
+			This decision has been opened: its title and closing time are fixed. It puts no options to a vote yet, so its vote mode can still be changed: the re-publish
+			that adds options puts them to a vote in that mode. Its working copy can still be edited; participants see only what is published.
+		</p>
 	{:else if !draft}
 		<p class="note">This decision has been opened: its title, closing time and vote mode are fixed. Its working copy can still be edited; participants see only what is published.</p>
 	{/if}
@@ -540,6 +583,8 @@
 				</div>
 				{#if editable}<button type="button" class="btn-ghost btn-sm" onclick={addOption}>+ Add option</button>{/if}
 			</section>
+
+			<SurveyEditor bind:questions={form.surveyQuestions} {editable} published={publishedQuestions} flag={agentLabel} newKey={key} />
 
 			<section class="editor-section">
 				<div class="section-head"><h2>How it affects you</h2>{@render agentLabel('audiences', 'How it affects you')}</div>
@@ -595,8 +640,8 @@
 				{:else}
 					<p id="{uid}-closes" class="fixed">{shownMoment(saved.closesAt, 'Not set')}</p>
 				{/if}
-				<label class="small" for="{uid}-vote">Vote mode</label>
-				{#if draft && editable}
+				<div class="side-head"><label class="small" for="{uid}-vote">Vote mode</label>{@render agentLabel('voteMode', 'Vote mode')}</div>
+				{#if modeFree && editable}
 					<select id="{uid}-vote" class="field" bind:value={voteMode}>
 						<option value="single">{VOTE_WORDS.single}</option>
 						<option value="score">{VOTE_WORDS.score}</option>

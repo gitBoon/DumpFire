@@ -24,7 +24,7 @@
 import { error } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
 import { db, sqlite } from './db';
-import { boards, decisionOptions, decisionVersions, decisions, users, type Decision, type DecisionParticipant } from './db/schema';
+import { boards, decisionOptions, decisionSurveyQuestions, decisionVersions, decisions, users, type Decision, type DecisionParticipant } from './db/schema';
 import type { SessionUser } from './auth';
 import { canEditBoard } from './board-access';
 import { decisionAccess, mayDo } from './decision-access';
@@ -199,9 +199,11 @@ export function ruleDecision(caller: SessionUser | null, at: { decisionId: numbe
 
 	const chosen = ruling.optionId === null ? undefined : versionOptionsOf(decision.id, decision.currentVersion).find((option) => option.optionId === ruling.optionId);
 	const label = ruling.optionId === null ? null : (chosen?.label ?? allOptionsOf(decision.id).find((option) => option.id === ruling.optionId)?.label ?? null);
+	// Card 2683 (R18): a survey's ruling says no options were put to a vote, not "None of these".
+	const noOptions = versionOptionsOf(decision.id, decision.currentVersion).length === 0;
 	queueRecordMails(row, 'ruling', {
 		by,
-		ruling: { optionLabel: label, optionTitle: chosen?.title || null, reason: ruling.reason, conditions: ruling.conditions }
+		ruling: { optionLabel: label, optionTitle: chosen?.title || null, reason: ruling.reason, conditions: ruling.conditions, noOptions }
 	});
 
 	if (row.boardId !== null) {
@@ -226,7 +228,8 @@ export function ruleDecision(caller: SessionUser | null, at: { decisionId: numbe
  * checked (`release`: its decider alone; 401, 404, 403), 403 through an API
  * key, the body (400): `revision`, required, and `omit`, an optional list of
  * the preview's comment keys; the status (409: stored `ruled` alone); then
- * `releaseRefusals`' 409s, already released, fewer than 3 responses, a
+ * `releaseRefusals`' 409s, already released, ruled on a version that put no
+ * options to a vote (card 2683, R11), fewer than 3 responses, a
  * response given before the who-sees statement said the results could be
  * released, and a release in the supersede chain from people 1 or 2 apart; a
  * results revision that is not the decision's as it is now (409); and, last,
@@ -316,6 +319,9 @@ export function releaseResults(caller: SessionUser | null, at: { decisionId: num
  * Card 3033 (D3): `decision tracked` and `decision_decider yes` recorded for
  * the draft after its insert; R14: 409 first where the decider's account's
  * creation time names no moment.
+ *
+ * Card 2683 (R9): the version's survey questions are copied too, each a new
+ * row in order, its id mapped and its `survey.<id>` flag renamed.
  */
 export function supersedeDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -368,8 +374,13 @@ export function supersedeDecision(caller: SessionUser | null, at: { decisionId: 
 		const made = db.insert(decisionOptions).values({ decisionId: draft.id, label: String.fromCharCode(65 + index), position: index }).returning().get();
 		optionIds.set(option.optionId, made.id);
 	});
+	const questionIds = new Map<number, number>();
+	content.surveyQuestions.forEach((question, index) => {
+		const made = db.insert(decisionSurveyQuestions).values({ decisionId: draft.id, position: index }).returning().get();
+		questionIds.set(question.questionId, made.id);
+	});
 	// Card 2728 (D6): the old title's flag goes with the old title; a new title replaces it, flagged when a key chose it.
-	const working = workingFromVersion(content, optionIds);
+	const working = workingFromVersion(content, optionIds, questionIds);
 	if (title !== decision.title) {
 		delete working.agentDrafted.title;
 		if (keyed(opts)) working.agentDrafted.title = true;
@@ -484,6 +495,7 @@ function concernAs(
 		scores: null,
 		comment,
 		optionComments: null,
+		answers: null,
 		replacesId: null,
 		via
 	});

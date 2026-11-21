@@ -77,6 +77,11 @@
  * ask: a question seen that card 2738's reach would not count (`reaches`)
  * no longer hides a later view that it would.
  *
+ * Card 2683 adds the survey question reads: the ids live in a version
+ * (`liveSurveyQuestionIds`), the questions each version asked
+ * (`surveysAskedIn`), and a response's answers read against them
+ * (`answersOf`, R22), which every read of a response asks.
+ *
  * Plain functions with no caller, called inside a service write's
  * transaction, or by the mail effect in a transaction of its own.
  */
@@ -88,6 +93,7 @@ import {
 	decisionQuestions,
 	decisionResponses,
 	decisionRulings,
+	decisionSurveyQuestions,
 	decisionVersions,
 	decisions,
 	people,
@@ -103,8 +109,10 @@ import {
 import type { SessionUser } from './auth';
 import { decisionStatus } from './decision-status';
 import type { ActivitySource } from './logActivity';
+import { SURVEY_KINDS, type SurveyKind, type SurveyScale } from '$lib/decision-readiness';
 import type { OwnResponse } from '$lib/decision-view-types';
 import type { ToldMail } from '$lib/decision-words';
+import { UNPRINTABLE } from '$lib/printable';
 import { stamp, type Stamp } from '$lib/timestamps';
 
 /** Who an entry on the record is by: an account (its id while it lasts, and its name kept), a link holder, or DumpFire. */
@@ -175,8 +183,12 @@ export type EventKind = (typeof EVENT_KINDS)[number];
  * participant's own response reads these kinds alone. An allow-list, so that
  * a `concern`, and a kind a later card adds, is never read as a vote until it
  * is named here.
+ *
+ * Card 2683 (R12): `answered`, survey questions answered in a round that puts
+ * no options to a vote. It counts as responded wherever a response does; a
+ * tally names the kinds it counts, so it is never counted as a vote.
  */
-export const RESPONSE_KINDS = ['vote', 'abstain', 'no_concerns'] as const;
+export const RESPONSE_KINDS = ['vote', 'abstain', 'no_concerns', 'answered'] as const;
 
 /**
  * The events that are the decider's and administrators' alone (card 2679,
@@ -441,8 +453,9 @@ export function appendVersion(
 /**
  * Append one response (card 2677, decision 11), `created_at` stamped. Its
  * `scores` and `option_comments` are JSON the write built from the live
- * option ids, never from a body's keys (R9). A change of answer is a new row,
- * `replacesId` the one before it in the same round.
+ * option ids, never from a body's keys (R9), and its `answers` (card 2683,
+ * R2) JSON the write built from the live survey question ids. A change of
+ * answer is a new row, `replacesId` the one before it in the same round.
  */
 export function appendResponse(r: {
 	decisionId: number;
@@ -454,6 +467,7 @@ export function appendResponse(r: {
 	scores: string | null;
 	comment: string | null;
 	optionComments: string | null;
+	answers: string | null;
 	replacesId: number | null;
 	via: 'session' | 'link';
 }): DecisionResponse {
@@ -469,6 +483,7 @@ export function appendResponse(r: {
 			scores: r.scores,
 			comment: r.comment,
 			optionComments: r.optionComments,
+			answers: r.answers,
 			replacesId: r.replacesId,
 			via: r.via,
 			createdAt: stamp()
@@ -701,9 +716,11 @@ export function questionsBy(participantId: number): DecisionQuestion[] {
  * page shows and every write that answers a response answers. No row id of
  * the response, its decision, its participant or the response it replaced: a
  * response's id would count others' responses between two of one's own (S4).
- * A keyed object is read tolerantly, an option id's key alone kept.
+ * A keyed object is read tolerantly, an option id's key alone kept. Card
+ * 2683 (R2): `answers` keyed by survey question id, each a number or a text,
+ * `{}` for none.
  */
-export function ownResponseOf(row: DecisionResponse): OwnResponse {
+export function ownResponseOf(row: DecisionResponse, asked?: AskedSurveys): OwnResponse {
 	return {
 		versionNumber: row.versionNumber,
 		round: row.round,
@@ -712,11 +729,165 @@ export function ownResponseOf(row: DecisionResponse): OwnResponse {
 		scores: row.scores === null ? null : keyedOf(row.scores, (value): value is number => typeof value === 'number'),
 		comment: row.comment,
 		optionComments: row.optionComments === null ? {} : keyedOf(row.optionComments, (value): value is string => typeof value === 'string'),
+		// Card 2683 (R22): read against the questions of the version it was given under, so a planted row shows nothing it could not have been given.
+		answers: answersOf(row, asked),
 		createdAt: row.createdAt
 	};
 }
 
-/** A stored object keyed by option id, each value one `is` accepts; anything else is left out. */
+/**
+ * A survey question as one version asked it (card 2683, R17, R22): what an
+ * answer to it is read against and labelled with. `choices` empty but for a
+ * choice question, `scale` null but for a scale question.
+ */
+export type AskedQuestion = { questionId: number; kind: SurveyKind; prompt: string; choices: string[]; scale: SurveyScale | null };
+
+/** The survey questions each version of some decisions asked, in each version's order: decision id, then version number, then question id. */
+export type AskedSurveys = Map<number, Map<number, Map<number, AskedQuestion>>>;
+
+/** The longest written answer (card 2683, R13), as a response's option comment. */
+export const ANSWER_TEXT_MAX = 2_000;
+
+/** What a written answer may hold of `UNPRINTABLE`, as a markdown field may (`readMultiline`): tab, newline, carriage return and the zero-width joiner. */
+const ANSWER_TEXT_ALLOWED = /[\t\n\r‍]/g;
+
+/**
+ * The survey questions every version of `decisionIds` asked (card 2683, R22),
+ * in two reads however many decisions: each version's content, and the
+ * decisions' survey question rows. A version's question is one its content
+ * holds, of a kind `SURVEY_KINDS` names, with a numeric id that is a survey
+ * question row of the same decision live in that version (added by it, not
+ * retired by it, as `liveSurveyQuestionIds` reads them); a scale question
+ * whose top is not a whole number from 2 to 10 is left out, as
+ * decision-content.ts's reader leaves it out. Read here, and not through
+ * decision-content.ts, which imports this module.
+ *
+ * Code review F3: the rows are read first, and a version's content only of a
+ * decision with a question ever published, so a decision that never asked
+ * one parses nothing; and, where the caller knows them (`versionNumbers`),
+ * only those versions. A version not read is simply absent, which every
+ * reader takes as asking nothing, as an empty one.
+ */
+export function surveysAskedIn(decisionIds: readonly number[], versionNumbers?: readonly number[]): AskedSurveys {
+	const unique = [...new Set(decisionIds)];
+	const surveys: AskedSurveys = new Map(unique.map((id) => [id, new Map()]));
+	const numbers = versionNumbers === undefined ? undefined : [...new Set(versionNumbers)];
+	if (numbers?.length === 0) return surveys;
+	for (let from = 0; from < unique.length; from += IDS_AT_ONCE) {
+		const rows = db
+			.select({
+				id: decisionSurveyQuestions.id,
+				decisionId: decisionSurveyQuestions.decisionId,
+				addedInVersion: decisionSurveyQuestions.addedInVersion,
+				retiredInVersion: decisionSurveyQuestions.retiredInVersion
+			})
+			.from(decisionSurveyQuestions)
+			.where(and(inArray(decisionSurveyQuestions.decisionId, unique.slice(from, from + IDS_AT_ONCE)), isNotNull(decisionSurveyQuestions.addedInVersion)))
+			.all();
+		const ids = [...new Set(rows.map((row) => row.decisionId))];
+		if (ids.length === 0) continue;
+		const versions = db
+			.select({ decisionId: decisionVersions.decisionId, number: decisionVersions.number, content: decisionVersions.content })
+			.from(decisionVersions)
+			.where(and(inArray(decisionVersions.decisionId, ids), numbers === undefined ? undefined : inArray(decisionVersions.number, numbers)))
+			.all();
+		for (const version of versions) {
+			const live = new Set(
+				rows
+					.filter(
+						(row) =>
+							row.decisionId === version.decisionId &&
+							row.addedInVersion !== null &&
+							row.addedInVersion <= version.number &&
+							(row.retiredInVersion === null || row.retiredInVersion > version.number)
+					)
+					.map((row) => row.id)
+			);
+			surveys.get(version.decisionId)?.set(version.number, askedOfContent(version.content, live));
+		}
+	}
+	return surveys;
+}
+
+/** The survey questions a version's stored content holds, by id, those whose id is not in `live` left out; none for content that does not read. */
+function askedOfContent(content: string, live: ReadonlySet<number>): Map<number, AskedQuestion> {
+	const asked = new Map<number, AskedQuestion>();
+	let read: unknown;
+	try {
+		read = JSON.parse(content);
+	} catch {
+		return asked;
+	}
+	const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+	if (!isRecord(read) || !Array.isArray(read.surveyQuestions)) return asked;
+	for (const entry of read.surveyQuestions as unknown[]) {
+		if (!isRecord(entry) || typeof entry.questionId !== 'number' || !live.has(entry.questionId) || asked.has(entry.questionId)) continue;
+		if (typeof entry.kind !== 'string' || !(SURVEY_KINDS as readonly string[]).includes(entry.kind)) continue;
+		const kind = entry.kind as SurveyKind;
+		const text = (value: unknown) => (typeof value === 'string' ? value : '');
+		let scale: SurveyScale | null = null;
+		if (kind === 'scale') {
+			const max = isRecord(entry.scale) ? entry.scale.max : undefined;
+			if (!isRecord(entry.scale) || typeof max !== 'number' || !Number.isInteger(max) || max < 2 || max > 10) continue;
+			scale = { max, lowLabel: text(entry.scale.lowLabel), highLabel: text(entry.scale.highLabel) };
+		}
+		const choices = kind === 'choice' && Array.isArray(entry.choices) ? entry.choices.filter((choice): choice is string => typeof choice === 'string') : [];
+		asked.set(entry.questionId, { questionId: entry.questionId, kind, prompt: text(entry.prompt), choices, scale });
+	}
+	return asked;
+}
+
+/** Whether `value` is an answer `question` could have been given (card 2683, R13, R22). */
+function answerFits(question: AskedQuestion, value: unknown): value is number | string {
+	switch (question.kind) {
+		case 'choice':
+			return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < question.choices.length;
+		case 'scale':
+			return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= (question.scale?.max ?? 0);
+		case 'text':
+			return (
+				typeof value === 'string' &&
+				value.trim() !== '' &&
+				value.length <= ANSWER_TEXT_MAX &&
+				!UNPRINTABLE.test(value.replace(ANSWER_TEXT_ALLOWED, ''))
+			);
+	}
+}
+
+/**
+ * The answers a response holds, read tolerantly (card 2683, R22), as every
+ * read gives them: the results, the summary, the person record and the
+ * participant's own. Only a key written as a whole number, naming a survey
+ * question the version the response was given under asked of this decision
+ * (`surveysAskedIn`); a choice question's index in range of that version's
+ * choices, a scale question's whole number from 1 to that version's top, a
+ * written answer's text of at most 2,000 that is not blank and holds of
+ * `UNPRINTABLE` only what a markdown field may. Anything else is left out,
+ * and a row with nothing left shows none: a planted row (an unsealed restore,
+ * card 3030) shows nothing it could not have been given. `asked`, where the
+ * caller has read it for many rows; otherwise read for this one, and only
+ * when it holds answers.
+ */
+export function answersOf(row: Pick<DecisionResponse, 'decisionId' | 'versionNumber' | 'answers'>, asked?: AskedSurveys): Record<string, number | string> {
+	const read: Record<string, number | string> = {};
+	if (row.answers === null) return read;
+	const questions = (asked ?? surveysAskedIn([row.decisionId], [row.versionNumber])).get(row.decisionId)?.get(row.versionNumber);
+	if (questions === undefined) return read;
+	try {
+		const parsed = JSON.parse(row.answers) as unknown;
+		if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return read;
+		for (const [key, value] of Object.entries(parsed)) {
+			if (!/^[1-9]\d*$/.test(key)) continue;
+			const question = questions.get(Number(key));
+			if (question !== undefined && answerFits(question, value)) read[key] = value;
+		}
+	} catch {
+		// Not JSON: nothing is kept.
+	}
+	return read;
+}
+
+/** A stored object keyed by id (an option's, or a survey question's), each value one `is` accepts; anything else is left out. */
 function keyedOf<T>(json: string, is: (value: unknown) => value is T): Record<string, T> {
 	const read: Record<string, T> = {};
 	try {
@@ -785,6 +956,28 @@ export function liveOptionIds(decisionId: number, versionNumber: number): number
 		.orderBy(asc(decisionOptions.position), asc(decisionOptions.id))
 		.all()
 		.map((option) => option.id);
+}
+
+/**
+ * The ids of the survey questions live in version `versionNumber` (card 2683,
+ * R13), as `liveOptionIds` reads options: added by then, and not retired by
+ * then, in order. An answer is to one of these, or it is refused.
+ */
+export function liveSurveyQuestionIds(decisionId: number, versionNumber: number): number[] {
+	return db
+		.select({ id: decisionSurveyQuestions.id })
+		.from(decisionSurveyQuestions)
+		.where(
+			and(
+				eq(decisionSurveyQuestions.decisionId, decisionId),
+				isNotNull(decisionSurveyQuestions.addedInVersion),
+				lte(decisionSurveyQuestions.addedInVersion, versionNumber),
+				or(isNull(decisionSurveyQuestions.retiredInVersion), gt(decisionSurveyQuestions.retiredInVersion, versionNumber))
+			)
+		)
+		.orderBy(asc(decisionSurveyQuestions.position), asc(decisionSurveyQuestions.id))
+		.all()
+		.map((question) => question.id);
 }
 
 /**

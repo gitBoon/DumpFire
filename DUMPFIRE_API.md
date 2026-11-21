@@ -3194,8 +3194,22 @@ caller who may view the decision and not do the act is `403`, anyone else `404`.
   participants, its decider, withdrawing it and deleting it (`403`). The service refuses each by
   the credential the write came in with, whatever the route says.
 - **`revision`** comes with the `GET`; `PATCH`, `…/decider` and `…/participants` need it, and a
-  stale one is `409`. **`content` is whole**: a section not sent is emptied, and each section a
-  key changes is flagged as drafted by an agent until a person marks it reviewed on the page.
+  stale one is `409`. **`content` is whole**: a section not sent is emptied, but
+  `surveyQuestions` (since `1.15.0`), which is kept when not sent and removed by `[]`; each
+  section a key changes is flagged as drafted by an agent until a person marks it reviewed on the
+  page.
+- **Survey questions** (since `1.15.0`, card 2683): `content.surveyQuestions`, up to 20
+  `{ questionId?, kind, prompt, help, required, choices?, scale? }`, `kind` one of `choice` (with
+  `choices`, 2 to 20), `scale` (with `scale: { max: 2..10, lowLabel, highLabel }`) or `text`, and only
+  that kind's keys. A new question has no `questionId`; the answers give each question's row as
+  `surveyQuestions` (`{ id, position, addedInVersion, retiredInVersion }`). A published question's
+  kind is fixed (`400`). A decision with no options and a survey question is a survey; the
+  readiness refusals are `too_few_options` (one option, or none with no question) and
+  `survey_incomplete`. Each question a key writes is flagged `survey.<questionId>`.
+- **Answers are a person's**: given on the decision's page or by personal link, never with a key.
+  The summary gives each response row's `answers` (by question id), each tally's `survey` figures
+  per version answered under, and the current version's `surveyQuestions`; a row may be of kind
+  `answered`. Never released.
 - **Extend never brings the closing time earlier** (`400`), for anyone.
 - **No email address, no account id, no asker**, to any key, an administrator's included; the
   record leaves its four question events out of every page, filtered or not.
@@ -3205,6 +3219,14 @@ caller who may view the decision and not do the act is `403`, anyone else `404`.
 ```bash
 curl -X PATCH -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
   -d '{"revision": "b5c1...", "content": {"situation": "Money is short.", "question": "Which budget?", "ask": "", "unknowns": "", "alreadyRuled": "", "technicalDetail": "", "options": [{"title": "Lean"}, {"title": "Full"}], "audiences": [], "stories": []}}' \
+  https://dumpfire.example.com/api/v1/decisions/42
+```
+
+A survey's content (no options, two questions; `surveyQuestions` sent, so it replaces the stored ones):
+
+```bash
+curl -X PATCH -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"revision": "c7d2...", "content": {"situation": "We are choosing a carrier.", "question": "How do we ship today?", "ask": "Tell us how you ship.", "unknowns": "", "alreadyRuled": "", "technicalDetail": "", "options": [], "audiences": [], "stories": [], "surveyQuestions": [{"kind": "choice", "prompt": "Which depot do you ship from?", "help": "", "required": true, "choices": ["Leeds", "Bristol", "Neither"]}, {"kind": "scale", "prompt": "How reliable is the current carrier?", "help": "", "required": false, "scale": {"max": 5, "lowLabel": "Never on time", "highLabel": "Always on time"}}]}}' \
   https://dumpfire.example.com/api/v1/decisions/42
 ```
 

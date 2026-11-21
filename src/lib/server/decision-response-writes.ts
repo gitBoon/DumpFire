@@ -23,7 +23,7 @@
 import { error } from '@sveltejs/kit';
 import type { Decision, DecisionParticipant } from './db/schema';
 import type { SessionUser } from './auth';
-import { readMultiline, requireClosed } from './decision-content';
+import { publishedSurveyOf, readMultiline, requireClosed, type VersionContent } from './decision-content';
 import {
 	actorFor,
 	appendEvent,
@@ -31,11 +31,13 @@ import {
 	currentRound,
 	latestResponse,
 	liveOptionIds,
+	liveSurveyQuestionIds,
 	ownResponseOf,
 	RESPONSE_KINDS,
 	responsesInRound,
 	seenStands,
 	statementsOf,
+	surveysAskedIn,
 	type RecordActor
 } from './decision-record';
 import { DECISION_ACTION_WORDS, decisionStatus, requireTransition } from './decision-status';
@@ -58,6 +60,12 @@ const RESPONSES_PER_ROUND = 50;
 
 /** How long each comment on an option may be (decision 11); a response's comment's is decision-write-shared.ts's `COMMENT_MAX`. */
 const OPTION_COMMENT_MAX = 2000;
+
+/** How long a written answer to a survey question may be (card 2683, R13): an option comment's limit. */
+const ANSWER_MAX = 2000;
+
+/** A survey question as the current version published it, with the id of its row. */
+type AskedQuestion = VersionContent['surveyQuestions'][number];
 
 /** The 403 for a participant's write through an API key (decision 10, D19). */
 const PERSONS_ACT = "Responding is a person's act: it cannot be done with an API key";
@@ -148,15 +156,16 @@ function ownParticipant(decision: Decision, participantId: number | null): Decis
 
 /**
  * A response, from either way in (card 2677, decisions 11 to 13). The body:
- * `versionNumber` and `kind` (`vote`, `abstain`, `no_concerns`), required; a
+ * `versionNumber` and `kind` (`vote`, `abstain`, `no_concerns`, `answered`), required; a
  * vote's `optionId`, one of the current version's live options, in single
  * mode, or its `scores`, a whole number 0 to 5 for every live option and no
  * other, in score mode; neither for the others; `comment`, trimmed, up to
  * 4,000; `optionComments`, keyed by live option ids, each trimmed, up to
  * 2,000, the empty ones dropped. The keyed objects are stored as built from
- * the live ids, never from the body's keys (R9). Then 409 unless the decision
- * is stored and shown open (decision 12), for a version that is not the
- * current one, and past `RESPONSES_PER_ROUND` in the round. A response the
+ * the live ids, never from the body's keys (R9). A version that is not the
+ * current one is a 409 as soon as it is read, before any other field (card
+ * 2683, code review F2). Then 409 unless the decision is stored and shown
+ * open (decision 12), and past `RESPONSES_PER_ROUND` in the round. A response the
  * same as the participant's latest in the round, for the same version,
  * writes nothing; the same answer for a newer version is a new row bound to
  * it. Otherwise the
@@ -171,6 +180,18 @@ function ownParticipant(decision: Decision, participantId: number | null): Decis
  * statement, where the latest was recorded under none, is a new row, so that
  * a participant can bring an answer under the statement that says the results
  * may be released.
+ *
+ * Card 2683 (R12, R13): in a survey-only round (no live option, at least one
+ * live survey question) `kind` is `answered` or `abstain`, and `vote` and
+ * `no_concerns` are refused by name before anything else is read, so a vote
+ * with no live option is never read (F1); with options, `answered` is
+ * refused. `answers`, optional, keyed by the current version's live survey
+ * question ids (`liveSurveyQuestionIds`) and by no other, a draft-only or
+ * retired one included, each read by `answerOf`; stored as JSON built by
+ * walking those ids, a written answer empty once trimmed left out as
+ * unanswered, null when none is left. `answered` needs at least one answer,
+ * and every kind but `abstain` an answer to every required question. A
+ * refusal names the question by its number, never what was written.
  */
 function respondAs(
 	decision: Decision,
@@ -181,9 +202,19 @@ function respondAs(
 	signedIn: { userId: number; name: string } | null
 ): { response: OwnResponse; unchanged: boolean } {
 	const versionNumber = readNumber(body, 'versionNumber', { required: true, whole: true, min: 1 });
+	// Card 2683 (code review F2): a page of another version is out of date, refused before the kinds, scores and answers
+	// are read against the current version's, so it is told to reload, not given a refusal its page cannot explain.
+	if (versionNumber !== decision.currentVersion) error(409, STALE_REVISION);
 	const kind = readChoice(body, 'kind', { required: true, from: RESPONSE_KINDS });
 	const live = liveOptionIds(decision.id, decision.currentVersion);
 	const keys = live.map((id) => `${id}`);
+	const asked = askedQuestions(decision);
+	// Card 2683 (R12): the kinds the round allows, asked by name before a vote's fields are read (F1).
+	const surveyOnly = live.length === 0 && asked.length > 0;
+	if (surveyOnly && (kind === 'vote' || kind === 'no_concerns')) {
+		error(400, `kind ${kind} cannot be given: this decision puts no options to a vote, so answer its survey questions (kind answered), or abstain`);
+	}
+	if (!surveyOnly && kind === 'answered') error(400, 'kind answered cannot be given: this decision puts options to a vote, so vote, abstain or say you have no concerns');
 	let optionId: number | null = null;
 	let scores: string | null = null;
 	if (kind === 'vote' && decision.voteMode === 'score') {
@@ -200,6 +231,13 @@ function respondAs(
 	}
 	const comment = readMultiline(body.comment, 'comment', COMMENT_MAX, { trim: true });
 	const optionComments = readOptionComments(body, keys);
+	const answers = readAnswers(body, asked);
+	if (kind === 'answered' && answers.given.size === 0) error(400, 'kind answered must hold an answer to at least one survey question');
+	if (kind !== 'abstain') {
+		asked.forEach((question, index) => {
+			if (question.required && !answers.given.has(question.questionId)) error(400, `Survey question ${index + 1} must be answered: answer it, or abstain`);
+		});
+	}
 	// Card 2679 (decision 25): the version of the who-sees statement the page showed.
 	const statement = readNumber(body, 'statement', { whole: true });
 
@@ -207,12 +245,13 @@ function respondAs(
 	requireTransition(decision, 'respond', now);
 	// Decision 12: stored open is not enough once `closes_at` has passed.
 	if (decisionStatus(decision, now) !== 'open') error(409, 'This decision is awaiting a ruling: responses are closed');
-	if (versionNumber !== decision.currentVersion) error(409, STALE_REVISION);
 	// A page that showed another statement is out of date: it must be reloaded (card 2679, decision 25).
 	if (statement !== undefined && statement !== WHO_SEES_STATEMENT_VERSION) error(409, STALE_REVISION);
 	const round = currentRound(decision.id);
 	const latest = latestResponse(participant.id, round);
-	const answer = { kind, optionId, scores, comment: comment === '' ? null : comment, optionComments };
+	const answer = { kind, optionId, scores, comment: comment === '' ? null : comment, optionComments, answers: answers.json };
+	// Code review F4: the questions the answers are read back against, read once, and only where there are answers to read.
+	const answeredAgainst = answers.json === null ? undefined : surveysAskedIn([decision.id], [decision.currentVersion]);
 	// The same answer on the same version alone writes nothing: confirmed on a newer one, it is bound to that one (code review C1);
 	// sent under the current statement where the last was given under none, it is recorded anew under it (card 2679, decision 25).
 	if (
@@ -223,9 +262,10 @@ function respondAs(
 		latest.scores === answer.scores &&
 		latest.comment === answer.comment &&
 		latest.optionComments === answer.optionComments &&
+		latest.answers === answer.answers &&
 		(statement === undefined || statementsOf(decision.id).get(latest.id) === WHO_SEES_STATEMENT_VERSION)
 	) {
-		return { response: ownResponseOf(latest), unchanged: true };
+		return { response: ownResponseOf(latest, answeredAgainst), unchanged: true };
 	}
 	if (responsesInRound(participant.id, round) >= RESPONSES_PER_ROUND) {
 		error(409, 'You have changed your response too many times in this round: ask the decider');
@@ -255,16 +295,18 @@ function respondAs(
 	if (!seenStands(decision, participant, versionNumber, 'question', now)) {
 		appendEvent({ decisionId: decision.id, kind: 'seen', participantId: participant.id, versionNumber, detail: { stage: 'question', ...signed } }, by);
 	}
-	return { response: ownResponseOf(row), unchanged: false };
+	return { response: ownResponseOf(row, answeredAgainst), unchanged: false };
 }
 
 /**
  * A score-mode vote's `scores` (decision 11, R9): an object holding a whole
  * number 0 to 5 for each of `keys`, the live option ids, and no other key,
  * which `requireClosed` refuses before any is read. Stored as JSON built by
- * walking `keys`.
+ * walking `keys`. Card 2683 (F1, R12): refused when there is no live option,
+ * so that no path can store a vote of `{}`, whatever refused it before.
  */
 function readScores(body: RequestBody, keys: string[]): string {
+	if (keys.length === 0) error(400, 'scores cannot be given: this decision has no options to score');
 	const sent = asObject(body.scores);
 	if (sent === undefined) error(400, body.scores === undefined ? 'scores is required' : 'scores must be an object');
 	requireClosed(sent, keys, 'scores', "this decision's current options");
@@ -295,6 +337,66 @@ function readOptionComments(body: RequestBody, keys: string[]): string | null {
 		if (text !== '') kept.push([key, text]);
 	}
 	return kept.length === 0 ? null : JSON.stringify(Object.fromEntries(kept));
+}
+
+/**
+ * The survey questions a response may answer (card 2683, R13): the current
+ * version's live ids (`liveSurveyQuestionIds`), in their order, each with its
+ * kind, choices, scale and required flag as that version published it. A
+ * question's number in a refusal is its place in this list, from 1.
+ */
+function askedQuestions(decision: Decision): AskedQuestion[] {
+	const ids = liveSurveyQuestionIds(decision.id, decision.currentVersion);
+	if (ids.length === 0) return [];
+	const published = new Map(publishedSurveyOf(decision.id, decision.currentVersion).map((question) => [question.questionId, question]));
+	return ids.flatMap((id) => published.get(id) ?? []);
+}
+
+/**
+ * A response's `answers` (card 2683, R2, R13): an object keyed by the ids of
+ * `asked` and by no other, which `requireClosed` refuses before any is read,
+ * each value read by `answerOf`. Stored as JSON built by walking `asked`, a
+ * written answer empty once trimmed left out; null when none is left. `given`
+ * holds the ids answered, for the required check.
+ */
+function readAnswers(body: RequestBody, asked: AskedQuestion[]): { json: string | null; given: Set<number> } {
+	if (body.answers === undefined) return { json: null, given: new Set() };
+	const sent = asObject(body.answers);
+	if (sent === undefined) error(400, 'answers must be an object');
+	requireClosed(
+		sent,
+		asked.map((question) => `${question.questionId}`),
+		'answers',
+		"this decision's current survey questions"
+	);
+	const kept: [string, number | string][] = [];
+	asked.forEach((question, index) => {
+		const key = `${question.questionId}`;
+		if (!Object.hasOwn(sent, key)) return;
+		const value = answerOf(question, sent, key, `Survey question ${index + 1}`);
+		if (value !== '') kept.push([key, value]);
+	});
+	return { json: kept.length === 0 ? null : JSON.stringify(Object.fromEntries(kept)), given: new Set(kept.map(([key]) => Number(key))) };
+}
+
+/**
+ * One answer, `sent[key]` (card 2683, R13), refused in words that name the
+ * question, `named`, and never repeat what was sent: a choice question's the
+ * 0-based index of one of its choices, a scale question's a whole number from
+ * 1 to its top, each read as a score is (`readNumber`); a text question's
+ * text, trimmed, up to `ANSWER_MAX`, holding of `UNPRINTABLE` only what a
+ * comment may, `''` when nothing is left.
+ */
+function answerOf(question: AskedQuestion, sent: RequestBody, key: string, named: string): number | string {
+	if (question.kind === 'text') {
+		const text = readText(sent, key, { required: true, says: `${named} asks for a written answer` });
+		return readMultiline(text, `${named}'s answer`, ANSWER_MAX, { trim: true });
+	}
+	const [min, max, asks] =
+		question.kind === 'choice'
+			? [0, (question.choices ?? []).length - 1, 'the number of one of its choices, counted from 0']
+			: [1, question.scale?.max ?? 0, 'a whole number on its scale'];
+	return readNumber(sent, key, { required: true, whole: true, min, max, says: `${named} asks for ${asks}, from ${min} to ${max}` });
 }
 
 /**

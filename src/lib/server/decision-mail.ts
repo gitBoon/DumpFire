@@ -67,7 +67,7 @@
  */
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { escapeHtml } from '$lib/escape-html';
-import { LATEST_LINK_LINE } from '$lib/decision-words';
+import { LATEST_LINK_LINE, NO_OPTIONS_PUT } from '$lib/decision-words';
 import { db } from './db';
 import { decisionParticipants, decisions, decisionVersions, people, type Decision, type DecisionParticipant } from './db/schema';
 import { afterCommit, inTransaction } from './db/transaction';
@@ -238,8 +238,11 @@ export type RecordMailOptions = {
 	reason?: string;
 	/** An invitation sent again (`resendInvitation`): its event says so, `invited { resend: true }`. */
 	resend?: boolean;
-	/** The ruling (card 2679, `ruleDecision`): the option chosen by label and title, or none of them (null), the reason and the conditions. No figure, no "against" and no cut-off (S4). */
-	ruling?: { optionLabel: string | null; optionTitle: string | null; reason: string; conditions: string | null };
+	/**
+	 * The ruling (card 2679, `ruleDecision`): the option chosen by label and title, or none of them (null), the reason and the conditions. No figure, no "against" and no cut-off (S4).
+	 * Card 2683 (R18): `noOptions` where the version ruled on put no options to a vote, said in place of "None of these".
+	 */
+	ruling?: { optionLabel: string | null; optionTitle: string | null; reason: string; conditions: string | null; noOptions?: boolean };
 };
 
 /**
@@ -506,7 +509,12 @@ function bodyOf(
 			break;
 		case 'ruling': {
 			const ruling = opts.ruling;
-			const chosen = ruling && ruling.optionLabel !== null ? [ruling.optionLabel, ruling.optionTitle].filter(Boolean).join(': ') : 'None of these';
+			const chosen =
+				ruling && ruling.optionLabel !== null
+					? [ruling.optionLabel, ruling.optionTitle].filter(Boolean).join(': ')
+					: ruling?.noOptions
+						? NO_OPTIONS_PUT
+						: 'None of these';
 			parts.push(paragraph(chosen, 'Ruled:'));
 			parts.push(paragraph(ruling?.reason ?? null, 'Why:'));
 			parts.push(paragraph(ruling?.conditions ?? null, 'Conditions:'));

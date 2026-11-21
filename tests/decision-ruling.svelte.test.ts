@@ -36,7 +36,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Svelte from 'svelte';
-import type { DecisionPageData, ReleasedResults as Released, ResultsData, RoundTally, RulingView } from '$lib/decision-view-types';
+import type { DecisionPageData, ReleasedResults as Released, ResultRow, ResultsData, RoundTally, RulingRecord, RulingView, SurveyTally } from '$lib/decision-view-types';
 
 const navigation = vi.hoisted(() => ({ invalidateAll: vi.fn(async () => {}), goto: vi.fn(async (_to: string) => {}) }));
 vi.mock('$app/navigation', () => ({
@@ -59,7 +59,7 @@ import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
 import ResultsView from '$lib/components/decision/ResultsView.svelte';
 import RulingBanner from '$lib/components/decision/RulingBanner.svelte';
 import RulingForm from '$lib/components/decision/RulingForm.svelte';
-import { CONCERN_WHO_SEES, RELEASE_INFERENCE, RESULTS_READ_AGAIN, STALE_REVISION } from '$lib/decision-words';
+import { CONCERN_WHO_SEES, NO_OPTIONS_PUT, NO_OPTIONS_TO_RELEASE, RELEASE_INFERENCE, RESULTS_READ_AGAIN, STALE_REVISION } from '$lib/decision-words';
 import DecisionPage from '../src/routes/decisions/[id]/+page.svelte';
 import ResultsPage from '../src/routes/decisions/[id]/results/+page.svelte';
 import { CODE, codeFieldIn } from './helpers/step-up-code';
@@ -433,6 +433,7 @@ const tally = (round: number, more: Partial<RoundTally> = {}): RoundTally => ({
 	scores: [],
 	abstained: 1,
 	noConcerns: 0,
+	survey: [],
 	rows: [
 		{
 			participantId: 1,
@@ -444,6 +445,7 @@ const tally = (round: number, more: Partial<RoundTally> = {}): RoundTally => ({
 			scores: null,
 			comment: 'Plan A is enough.',
 			optionComments: { '12': 'B costs too much.' },
+			answers: {},
 			versionNumber: 1,
 			createdAt: '2026-11-03 10:00:00',
 			via: 'session',
@@ -469,6 +471,7 @@ function results(more: Partial<ResultsData> = {}): ResultsData {
 		revision: 'rev-1',
 		round: 2,
 		options: OPTIONS,
+		surveyQuestions: [],
 		current: tally(2),
 		earlierRounds: [tally(1, { responded: 1 })],
 		notResponded: [{ participantId: 4, name: 'Sil Ent', groups: [], reached: true }],
@@ -1039,6 +1042,7 @@ describe('the decision page and DecisionActions (47, 48)', () => {
 			draft: false,
 			version: { number: 1, publishedAt: '2026-11-01 09:00:00', content: CONTENT },
 			options: [],
+			surveyQuestions: [],
 			audiences: [],
 			participant: null,
 			ownResponse: null,
@@ -1149,5 +1153,205 @@ describe('the decision page and DecisionActions (47, 48)', () => {
 		expect(textOf(link)).toBe('Results and ruling');
 		expect(link.getAttribute('href')).toBe('/decisions/7/results');
 		expect(textOf(withResults)).not.toContain('Nothing in its lifecycle');
+	});
+});
+
+// ─── Survey questions (card 2683, slice S3b: cases U6 and U7) ───────────────
+
+describe('survey questions on the results and the ruling (card 2683)', () => {
+	const row = (participantId: number, name: string, more: Partial<ResultRow>): ResultRow => ({
+		participantId,
+		name,
+		role: 'consulted',
+		groups: [],
+		kind: 'answered',
+		optionId: null,
+		scores: null,
+		comment: null,
+		optionComments: {},
+		answers: {},
+		versionNumber: 1,
+		createdAt: '2026-11-03 10:00:00',
+		via: 'session',
+		changes: 0,
+		...more
+	});
+	// Version 2 asked the same question with its choices reordered (asked again, R8): each version's figures apart.
+	const SURVEY: SurveyTally[] = [
+		{
+			versionNumber: 1,
+			questions: [
+				{ questionId: 41, kind: 'choice', prompt: 'Where do you ship from?', answered: 1, choices: [{ choice: 'Leeds', count: 1 }, { choice: 'York', count: 0 }], scale: null },
+				{
+					questionId: 42,
+					kind: 'scale',
+					prompt: 'How busy are you?',
+					answered: 1,
+					choices: null,
+					scale: { max: 3, lowLabel: 'Quiet', highLabel: 'Flat out', counts: [{ value: 1, count: 0 }, { value: 2, count: 0 }, { value: 3, count: 1 }], mean: 3 }
+				},
+				{ questionId: 43, kind: 'text', prompt: 'Anything else?', answered: 1, choices: null, scale: null }
+			]
+		},
+		{
+			versionNumber: 2,
+			questions: [{ questionId: 41, kind: 'choice', prompt: 'Where do you ship from?', answered: 1, choices: [{ choice: 'York', count: 0 }, { choice: 'Leeds', count: 1 }], scale: null }]
+		}
+	];
+	const surveyed = (more: Partial<ResultsData> = {}) =>
+		results({
+			options: [],
+			surveyQuestions: [{ questionId: 41, kind: 'choice', prompt: 'Where do you ship from?', help: '', required: true, choices: ['York', 'Leeds'] }],
+			current: tally(2, {
+				responded: 3,
+				voted: 0,
+				votes: [],
+				abstained: 1,
+				survey: SURVEY,
+				rows: [
+					row(1, 'Pat Person', { answers: { '41': 0, '42': 3, '43': 'We ship on Tuesdays' } }),
+					row(2, 'Sam Sender', { versionNumber: 2, answers: { '41': 1 } }),
+					row(3, 'Abe Stain', { kind: 'abstain' })
+				]
+			}),
+			earlierRounds: [],
+			releasePreview: null,
+			mayRelease: false,
+			mostChosen: [],
+			...more
+		});
+	const SURVEY_RULING: RulingRecord = {
+		optionId: null,
+		label: null,
+		title: null,
+		reason: 'Leeds it is.',
+		conditions: null,
+		early: false,
+		closedEarly: false,
+		againstResponses: false,
+		cutOff: [],
+		cutOffReached: [],
+		supersededOld: null,
+		byName: 'decider',
+		at: '2026-11-04 09:00:00',
+		noOptions: true
+	};
+	const rowsOf = (table: Element) => [...table.querySelectorAll('tbody tr')].map((tr) => [...tr.children].map(textOf));
+
+	it('U6: a survey round is counted as answered and abstained; each question’s figures are given per version, by its words; each answer by prompt, a written one with its name', () => {
+		const target = draw(ResultsView, { results: surveyed() });
+		expect(target.querySelector('[data-table="tally"]')).toBeNull();
+		expect(rowsOf(target.querySelector('[data-table="survey-counts"]')!)).toEqual([
+			['Answered the survey', '2'],
+			['Abstained', '1']
+		]);
+
+		const [first, second] = [...target.querySelectorAll<HTMLElement>('[data-survey-version]')];
+		expect([first.dataset.surveyVersion, second.dataset.surveyVersion]).toEqual(['1', '2']);
+		expect(textOf(first.querySelector('h4')!)).toBe('Survey questions, as version 1 asked them');
+		const [choice, scale] = [...first.querySelectorAll('[data-table="survey"]')];
+		expect(textOf(choice.querySelector('caption')!)).toBe('1. Where do you ship from?: 1 answered');
+		expect(rowsOf(choice)).toEqual([
+			['Leeds', '1'],
+			['York', '0']
+		]);
+		expect(textOf(scale.querySelector('caption')!)).toBe('2. How busy are you?: 1 answered, mean 3.0 of 3');
+		expect(rowsOf(scale)).toEqual([
+			['1 (Quiet)', '0'],
+			['2', '0'],
+			['3 (Flat out)', '1']
+		]);
+		expect(textOf(first.querySelector('.survey-text')!)).toBe('3. Anything else?: 1 answered. Each written answer is in the responses, with its name.');
+		expect(rowsOf(second.querySelector('[data-table="survey"]')!)).toEqual([
+			['York', '0'],
+			['Leeds', '1']
+		]);
+
+		const responses = target.querySelector('[data-table="responses"]')!;
+		expect([...responses.querySelectorAll('thead th')].map(textOf)).toEqual(['Who', 'Answer', 'Survey answers', 'Comments', 'Given']);
+		const byName = Object.fromEntries([...responses.querySelectorAll('tbody tr')].map((tr) => [textOf(tr.children[0]), tr]));
+		expect(textOf(byName['Pat Person'].children[1])).toBe('Answered the survey');
+		expect([...byName['Pat Person'].querySelectorAll('[data-answer]')].map(textOf)).toEqual([
+			'Where do you ship from?: Leeds',
+			'How busy are you?: 3 of 3',
+			'Anything else?: We ship on Tuesdays'
+		]);
+		// Given under version 2, so labelled by its words: index 1 there is Leeds, never York by position.
+		expect([...byName['Sam Sender'].querySelectorAll('[data-answer]')].map(textOf)).toEqual(['Where do you ship from?: Leeds']);
+		expect(textOf(byName['Abe Stain'].children[1])).toBe('Abstained');
+		expect(textOf(target)).not.toContain('None of these');
+	});
+
+	it('F7: an earlier survey round where everyone abstained is counted as a survey, with no option table; the vote round after it as a vote', () => {
+		const target = draw(ResultsView, {
+			results: results({
+				current: tally(2),
+				earlierRounds: [tally(1, { responded: 2, voted: 0, votes: [], scores: [], abstained: 2, rows: [row(1, 'Pat Person', { kind: 'abstain' }), row(2, 'Sam Sender', { kind: 'abstain' })] })]
+			})
+		});
+		const [current, earlier] = [...target.querySelectorAll<HTMLElement>('[data-table="tally"], [data-table="survey-counts"]')];
+		expect(current.dataset.table).toBe('tally');
+		expect(earlier.dataset.table).toBe('survey-counts');
+		expect(rowsOf(earlier)).toEqual([
+			['Answered the survey', '0'],
+			['Abstained', '2']
+		]);
+		expect(target.querySelectorAll('[data-table="tally"]')).toHaveLength(1);
+	});
+
+	it('U6: a release and its preview of a decision with options hold no survey answer or figure', () => {
+		const voting = results({
+			current: tally(2, {
+				survey: [SURVEY[1]],
+				rows: [row(1, 'Pat Person', { kind: 'vote', optionId: 11, comment: 'Plan A is enough.', versionNumber: 2, answers: { '41': 1 } })]
+			})
+		});
+		const target = draw(ResultsPage, { data: voting });
+		expect([...target.querySelectorAll('[data-table="responses"] [data-answer]')].map(textOf)).toEqual(['Where do you ship from?: Leeds']);
+		const release = target.querySelector('[data-block="release"]')!;
+		expect(release.querySelector('[data-table="preview"]')).not.toBeNull();
+		expect(textOf(release)).not.toMatch(/Leeds|York|ship from|survey/i);
+	});
+
+	it('U7: the ruling form on a survey offers no option and says no options were put to a vote; the ruling is sent with none, and said so', async () => {
+		const onRuled = vi.fn(async () => {});
+		const target = draw(RulingForm, {
+			decisionId: 7,
+			title: 'Where to ship from?',
+			revision: 'rev-1',
+			options: [],
+			mostChosen: [],
+			voted: 0,
+			early: false,
+			cutOff: [],
+			openQuestions: 0,
+			onRuled
+		});
+		expect(target.querySelector('input[type="radio"]')).toBeNull();
+		expect(target.querySelector('fieldset')).toBeNull();
+		expect(textOf(target)).not.toContain('None of these');
+		expect(textOf(target.querySelector('[data-note="no-options"]')!)).toContain(NO_OPTIONS_PUT);
+		const rule = target.querySelector<HTMLButtonElement>('[data-action="rule"]')!;
+		expect(rule.disabled).toBe(true);
+		typeInto(target.querySelector<HTMLTextAreaElement>('textarea')!, 'Leeds it is.');
+		expect(rule.disabled).toBe(false);
+		target.querySelector<HTMLFormElement>('[data-form="ruling"]')!.requestSubmit();
+		flushSync();
+		expect(textOf(dialog()!)).toContain('"Where to ship from?" is ruled for good on no option, as none were put to a vote');
+		typeInto(passwordIn()!, 'my password');
+		typeCode(dialog()!);
+		answer('POST /api/decisions/7/rule', 200, { decision: {}, revision: 'rev-2' });
+		confirmButton().click();
+		await settle();
+		expect(sent.map((request) => JSON.parse(String(request.body)).optionId)).toEqual([null]);
+		expect(onRuled).toHaveBeenCalledTimes(1);
+
+		const banner = draw(RulingBanner, { ruling: { label: null, title: null, noneOfThese: true, reason: 'Leeds it is.', conditions: null, ruledByName: 'Dee Cider', noOptions: true } });
+		expect(textOf(banner.querySelector('[data-line="ruling"]')!)).toBe(`Ruled by Dee Cider: ${NO_OPTIONS_PUT}`);
+
+		const page = draw(ResultsPage, { data: surveyed({ ruling: SURVEY_RULING, releaseRefusal: NO_OPTIONS_TO_RELEASE }) });
+		expect(textOf(page.querySelector('[data-block="ruling"] dd')!)).toBe(NO_OPTIONS_PUT);
+		expect(page.querySelector('[data-block="release"]')).toBeNull();
+		expect(textOf(page.querySelector('[data-note="release-refusal"]')!)).toBe(NO_OPTIONS_TO_RELEASE);
 	});
 });

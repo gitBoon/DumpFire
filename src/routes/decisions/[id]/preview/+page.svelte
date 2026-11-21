@@ -10,7 +10,9 @@
 	 * role in a group; each choice reads the page again with `?as=`, or with
 	 * `?role=` and `?group=`. The banner says nothing is recorded. A consulted
 	 * participant is shown the response form, switched off: it sends nothing.
-	 * An informed one is shown none. No seen watch is armed, and the page
+	 * An informed one is shown none. Card 2683: the survey questions the next
+	 * version would ask, in the form, its inputs switched off, or alone, as
+	 * `DecisionView` draws them; never a response or an answer. No seen watch is armed, and the page
 	 * fetches and posts nothing of its own.
 	 */
 	import type { PageData } from './$types';
@@ -59,7 +61,7 @@
 {/snippet}
 
 {#snippet response()}
-	<ResponseForm voteMode={data.decision.voteMode} options={data.options} disabled />
+	<ResponseForm voteMode={data.decision.voteMode} options={data.options} surveyQuestions={data.surveyQuestions} deciderName={data.decision.deciderName} disabled />
 {/snippet}
 
 <div class="decision-page">
@@ -116,6 +118,7 @@
 			decision={data.decision}
 			content={data.content}
 			options={data.options}
+			surveyQuestions={data.surveyQuestions}
 			audiences={data.audiences}
 			participant={data.participant}
 			mode="preview"

@@ -5,7 +5,9 @@
 
   "Ruled by <decider>: Option <label>: <title>", or "None of these", then the
   reason and the conditions, each as text, never markdown. No moment, no
-  "against" and no "early": the page is given none (decision 26).
+  "against" and no "early": the page is given none (decision 26). Card 2683
+  (R18): where the version ruled on put no options to a vote, "No options
+  were put to a vote" in place of "None of these" (`rulingWords`).
 
   Then, where it applies, the decision that superseded this one, or was ruled
   on beside it, and the decision this one supersedes. Each is named, and

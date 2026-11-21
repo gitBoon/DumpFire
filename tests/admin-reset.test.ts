@@ -209,7 +209,8 @@ function everything(): Everything {
 		.prepare("INSERT INTO request_links (token_hash, request_id, source) VALUES (?, ?, 'mail')")
 		.run('d'.repeat(64), request.id);
 
-	// A decision record, a row in each of its twelve tables (card 2673, migration 0061), and a Product Owner.
+	// A decision record, a row in each of its twelve tables (card 2673, migration 0061) and in its survey questions (card
+	// 2683, migration 0082), and a Product Owner.
 	const at = '2026-11-03 09:00:00';
 	sqlite.exec(`
 		UPDATE boards SET product_owner_user_id = ${member.id} WHERE id = ${A.board.id};
@@ -219,6 +220,7 @@ function everything(): Everything {
 		INSERT INTO decisions (id, board_id, board_name, title, author_user_id, author_name, decider_user_id)
 			VALUES (1, ${A.board.id}, 'A', 'Which supplier', ${owner.id}, 'owner', ${member.id});
 		INSERT INTO decision_options (id, decision_id, label, position) VALUES (1, 1, 'A', 1);
+		INSERT INTO decision_survey_questions (id, decision_id, position, added_in_version) VALUES (1, 1, 0, 1);
 		INSERT INTO decision_versions (decision_id, number, content, asks_again, published_by, published_by_name, published_at)
 			VALUES (1, 1, '{}', 1, ${owner.id}, 'owner', '${at}');
 		INSERT INTO decision_participants (id, decision_id, person_id, role, name, email, job_title, groups, included_at, included_by, user_id)

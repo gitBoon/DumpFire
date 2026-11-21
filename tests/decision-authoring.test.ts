@@ -26,6 +26,7 @@ import type { SessionUser } from '$lib/server/auth';
 import {
 	decisionOptions,
 	decisionParticipants,
+	decisionSurveyQuestions,
 	decisions,
 	people,
 	peopleGroupMembers,
@@ -795,6 +796,7 @@ describe('checkContent (15)', () => {
 		unknowns: '',
 		alreadyRuled: '',
 		technicalDetail: '',
+		surveyQuestions: [],
 		agentDrafted: {},
 		reviewed: {},
 		lastLabel: 'A'
@@ -1178,6 +1180,8 @@ describe('every card-A route answers through the one projection (20)', () => {
 			(_answer, asAdmin) => ({
 				decision: decisionAnswer(decisionRow(draft.id), asAdmin),
 				options: optionAnswers(optionRows(draft.id)),
+				// Card 2683 (R15): and the live survey questions' rows, none here.
+				surveyQuestions: [],
 				revision: revisionNow(draft.id),
 				readiness: readinessOf(decisionRow(draft.id))
 			})
@@ -1270,5 +1274,298 @@ describe('readBoardDecisions (21)', () => {
 			['Open', false],
 			["The editor's draft", true]
 		]);
+	});
+});
+
+// ─── Survey questions: the content and the draft rows (card 2683, slice S1) ──
+
+describe('survey questions in the working copy (card 2683)', () => {
+	/** The survey question rows of the decision, in id order. */
+	const surveyRows = (id: number) =>
+		db.select().from(decisionSurveyQuestions).where(eq(decisionSurveyQuestions.decisionId, id)).orderBy(decisionSurveyQuestions.id).all();
+	/** A survey question of the content: a text question with a prompt, and `more` over it. */
+	const questionOf = (more: Record<string, unknown> = {}) => ({ kind: 'text', prompt: 'Where do you ship from?', help: '', required: false, ...more });
+	const choiceOf = (choices: string[], more: Record<string, unknown> = {}) => questionOf({ kind: 'choice', prompt: 'Which depot?', choices, ...more });
+	const scaleOf = (max: number, more: Record<string, unknown> = {}) =>
+		questionOf({ kind: 'scale', prompt: 'How urgent?', scale: { max, lowLabel: 'Not at all', highLabel: 'Very' }, ...more });
+
+	/**
+	 * An open decision of `owner`'s asking `questions` and no option, made by hand: each a row published in version 1,
+	 * version 1 holding them, and the working copy too. `options` published options besides.
+	 */
+	function openSurvey(questions: Record<string, unknown>[], opts: { options?: number } = {}) {
+		const decision = draftOf({ status: 'open', closesAt: FUTURE, currentVersion: 1, openedAt: '2026-11-01 09:00:00', voteMode: 'single' });
+		const rows = questions.map((_question, index) => db.insert(decisionSurveyQuestions).values({ decisionId: decision.id, position: index, addedInVersion: 1 }).returning().get());
+		const options = Array.from({ length: opts.options ?? 0 }, (_none, index) => makeOption(decision, { label: String.fromCharCode(65 + index), position: index, addedInVersion: 1 }));
+		const asked = questions.map((question, index) => ({ ...question, questionId: rows[index].id }));
+		const listed = options.map((option) => optionOf({ optionId: option.id, title: option.label }));
+		db.update(decisions).set({ workingContent: JSON.stringify(contentOf({ options: listed, surveyQuestions: asked })) }).where(eq(decisions.id, decision.id)).run();
+		appendVersion(
+			{
+				decisionId: decision.id,
+				number: 1,
+				content: JSON.stringify({ options: options.map((option) => ({ optionId: option.id, label: option.label })), surveyQuestions: asked }),
+				changeNote: null,
+				asksAgain: true
+			},
+			SYSTEM_ACTOR
+		);
+		return { decision: decisionRow(decision.id), rows, asked, options };
+	}
+
+	it.each([
+		['a choice question with a scale', [choiceOf(['Leeds', 'York'], { scale: { max: 5, lowLabel: '', highLabel: '' } })], 'content.surveyQuestions[0].scale is not a field of a choice question'],
+		['a text question with choices', [questionOf({ choices: ['Leeds'] })], 'content.surveyQuestions[0].choices is not a field of a text question']
+	])('T5: refuses %s, 400 naming the path, with nothing written', (_case, surveyQuestions, message) => {
+		const draft = draftOf();
+		const before = decisionRow(draft.id);
+		expect(outcome(() => save(owner, draft.id, { content: contentOf({ surveyQuestions }) }))).toEqual({ status: 400, message });
+		expect(decisionRow(draft.id)).toEqual(before);
+		expect(surveyRows(draft.id)).toEqual([]);
+	});
+
+	it('T7: refuses a scale whose top is outside 2 to 10, 400', () => {
+		const draft = draftOf();
+		for (const max of [1, 11]) {
+			expect(outcome(() => save(owner, draft.id, { content: contentOf({ surveyQuestions: [scaleOf(max)] }) }))).toEqual({
+				status: 400,
+				message: 'surveyQuestions[0].scale.max must be from 2 to 10'
+			});
+		}
+		expect(surveyRows(draft.id)).toEqual([]);
+	});
+
+	it('T8: refuses more than 20 questions, 400', () => {
+		const draft = draftOf();
+		expect(outcome(() => save(owner, draft.id, { content: contentOf({ surveyQuestions: Array.from({ length: 21 }, () => questionOf()) }) }))).toEqual({
+			status: 400,
+			message: 'surveyQuestions must have at most 20 entries'
+		});
+		expect(surveyRows(draft.id)).toEqual([]);
+	});
+
+	it('T8: refuses more than 20 choices, 400', () => {
+		const draft = draftOf();
+		const choices = Array.from({ length: 21 }, (_none, index) => `Depot ${index + 1}`);
+		expect(outcome(() => save(owner, draft.id, { content: contentOf({ surveyQuestions: [choiceOf(choices)] }) }))).toEqual({
+			status: 400,
+			message: 'surveyQuestions[0].choices must have at most 20 entries'
+		});
+		expect(surveyRows(draft.id)).toEqual([]);
+	});
+
+	it('T9: refuses a kind that is none of choice, scale and text, 400', () => {
+		const draft = draftOf();
+		expect(outcome(() => save(owner, draft.id, { content: contentOf({ surveyQuestions: [questionOf({ kind: 'ranking' })] }) }))).toEqual({
+			status: 400,
+			message: 'surveyQuestions[0].kind must be one of: choice, scale, text'
+		});
+	});
+
+	it("T10: gives a new question a row, whose id its questionId then names, each at its index, choices' empty ones dropped", () => {
+		const draft = draftOf();
+
+		const answer = save(owner, draft.id, {
+			content: contentOf({ surveyQuestions: [questionOf({ required: true }), choiceOf(['Leeds', '  ', 'York']), scaleOf(5)] })
+		});
+
+		const rows = surveyRows(draft.id);
+		expect(rows.map((row) => [row.position, row.addedInVersion, row.retiredInVersion])).toEqual([
+			[0, null, null],
+			[1, null, null],
+			[2, null, null]
+		]);
+		expect(stored(draft.id).surveyQuestions).toEqual([
+			{ questionId: rows[0].id, kind: 'text', prompt: 'Where do you ship from?', help: '', required: true },
+			{ questionId: rows[1].id, kind: 'choice', prompt: 'Which depot?', help: '', required: false, choices: ['Leeds', 'York'] },
+			{ questionId: rows[2].id, kind: 'scale', prompt: 'How urgent?', help: '', required: false, scale: { max: 5, lowLabel: 'Not at all', highLabel: 'Very' } }
+		]);
+		expect(answer.surveyQuestions).toEqual(rows);
+	});
+
+	it('T10: refuses a questionId that is no live survey question of this decision, 400, with nothing written', () => {
+		const draft = draftOf();
+		const elsewhere = db.insert(decisionSurveyQuestions).values({ decisionId: draftOf().id, position: 0 }).returning().get();
+		const before = decisionRow(draft.id);
+
+		expect(outcome(() => save(owner, draft.id, { content: contentOf({ surveyQuestions: [questionOf({ questionId: elsewhere.id })] }) }))).toEqual({
+			status: 400,
+			message: `surveyQuestions[0].questionId ${elsewhere.id} is not a live survey question of this decision`
+		});
+		expect(decisionRow(draft.id)).toEqual(before);
+		expect(surveyRows(draft.id)).toEqual([]);
+	});
+
+	it('T11: deletes the row of a question never published that is left out, and keeps the other in its new place', () => {
+		const draft = draftOf();
+		save(owner, draft.id, { content: contentOf({ surveyQuestions: [questionOf({ prompt: 'First?' }), questionOf({ prompt: 'Second?' })] }) });
+		const [first, second] = surveyRows(draft.id);
+
+		save(owner, draft.id, { content: contentOf({ surveyQuestions: [questionOf({ questionId: second.id, prompt: 'Second?' })] }) });
+
+		expect(surveyRows(draft.id).map((row) => [row.id, row.position])).toEqual([[second.id, 0]]);
+		expect(surveyRows(draft.id).map((row) => row.id)).not.toContain(first.id);
+		expect(stored(draft.id).surveyQuestions.map((question) => question.questionId)).toEqual([second.id]);
+	});
+
+	it('T11: keeps a published question left out live, to be retired at the next publish', () => {
+		const { decision, rows, asked } = openSurvey([questionOf({ prompt: 'First?' }), questionOf({ prompt: 'Second?' })]);
+
+		save(owner, decision.id, { content: contentOf({ surveyQuestions: [asked[0]] }) });
+
+		expect(surveyRows(decision.id).map((row) => [row.id, row.addedInVersion, row.retiredInVersion])).toEqual([
+			[rows[0].id, 1, null],
+			[rows[1].id, 1, null]
+		]);
+		expect(stored(decision.id).surveyQuestions.map((question) => question.questionId)).toEqual([rows[0].id]);
+	});
+
+	it("T12: refuses a change of a published question's kind, 400, with nothing written", () => {
+		const { decision, asked } = openSurvey([questionOf(), choiceOf(['Leeds', 'York'])]);
+		const before = { row: decisionRow(decision.id), rows: surveyRows(decision.id) };
+		const asText: Record<string, unknown> = { ...asked[1] };
+		delete asText.choices;
+
+		expect(outcome(() => save(owner, decision.id, { content: contentOf({ surveyQuestions: [asked[0], { ...asText, kind: 'text' }] }) }))).toEqual({
+			status: 400,
+			message: 'Survey question 2 has been published: its kind is fixed. Remove it and add a new question'
+		});
+		expect(decisionRow(decision.id)).toEqual(before.row);
+		expect(surveyRows(decision.id)).toEqual(before.rows);
+	});
+
+	it("T13: saves a published question's changed prompt, choice words, choice count and scale top to the working copy", () => {
+		const { decision, asked } = openSurvey([choiceOf(['Leeds', 'York']), scaleOf(5)]);
+
+		save(owner, decision.id, {
+			content: contentOf({
+				surveyQuestions: [
+					{ ...asked[0], prompt: 'Which depot now?', choices: ['Leeds North', 'York', 'Hull'] },
+					{ ...asked[1], scale: { max: 7, lowLabel: 'Not at all', highLabel: 'Very' } }
+				]
+			})
+		});
+
+		expect(stored(decision.id).surveyQuestions).toEqual([
+			{ ...asked[0], prompt: 'Which depot now?', choices: ['Leeds North', 'York', 'Hull'] },
+			{ ...asked[1], scale: { max: 7, lowLabel: 'Not at all', highLabel: 'Very' } }
+		]);
+	});
+
+	it('T14: content that does not send surveyQuestions keeps the stored ones and their rows', () => {
+		const draft = draftOf();
+		save(owner, draft.id, { content: contentOf({ surveyQuestions: [questionOf(), choiceOf(['Leeds', 'York'])] }) });
+		const before = { questions: stored(draft.id).surveyQuestions, rows: surveyRows(draft.id) };
+
+		save(owner, draft.id, { content: contentOf({ situation: 'An older client saved this.' }) });
+
+		expect(stored(draft.id).situation).toBe('An older client saved this.');
+		expect(stored(draft.id).surveyQuestions).toEqual(before.questions);
+		expect(surveyRows(draft.id)).toEqual(before.rows);
+	});
+
+	it('T14: surveyQuestions sent as [] clears them, and the rows never published go', () => {
+		const draft = draftOf();
+		save(owner, draft.id, { content: contentOf({ surveyQuestions: [questionOf(), choiceOf(['Leeds', 'York'])] }) });
+
+		save(owner, draft.id, { content: contentOf({ surveyQuestions: [] }) });
+
+		expect(stored(draft.id).surveyQuestions).toEqual([]);
+		expect(surveyRows(draft.id)).toEqual([]);
+	});
+
+	it("T15: a key's save flags survey.<id>, the readiness warns of it by that key, and a person's Mark reviewed clears it", () => {
+		const draft = draftOf();
+		save(owner, draft.id, { content: contentOf({ surveyQuestions: [questionOf()] }) }, API);
+		const [row] = surveyRows(draft.id);
+		const key = `survey.${row.id}`;
+		expect(stored(draft.id).agentDrafted).toEqual({ [key]: true });
+		expect(readinessOf(decisionRow(draft.id)).warnings.filter((warning) => warning.code === 'agent_drafted').map((warning) => warning.key)).toEqual([key]);
+
+		review(owner, draft.id, [key]);
+
+		expect(stored(draft.id).agentDrafted).toEqual({});
+		expect(stored(draft.id).reviewed[key]).toMatchObject({ byUserId: owner.id, byName: 'owner' });
+		expect(readinessOf(decisionRow(draft.id)).warnings.filter((warning) => warning.code === 'agent_drafted')).toEqual([]);
+	});
+
+	it('T65: the agent_drafted warning names a survey question by its number and prompt, never by its key', () => {
+		const draft = draftOf();
+		save(owner, draft.id, { content: contentOf({ surveyQuestions: [questionOf({ prompt: 'First?' })] }) });
+		const [first] = surveyRows(draft.id);
+		save(owner, draft.id, { content: contentOf({ surveyQuestions: [questionOf({ questionId: first.id, prompt: 'First?' }), questionOf({ prompt: '  Second?  ' })] }) }, API);
+		const second = surveyRows(draft.id)[1];
+
+		const warnings = readinessOf(decisionRow(draft.id)).warnings.filter((warning) => warning.code === 'agent_drafted');
+
+		expect(warnings).toEqual([
+			{ code: 'agent_drafted', key: `survey.${second.id}`, words: "Survey question 2, 'Second?', was drafted by an agent and not yet reviewed by a person" }
+		]);
+		expect(warnings[0].words).not.toContain('survey.');
+	});
+
+	it('T59: the vote mode changes on an opened survey, and is fixed once its current version puts an option to a vote', () => {
+		const survey = openSurvey([questionOf()]);
+		save(owner, survey.decision.id, { voteMode: 'score' });
+		expect(decisionRow(survey.decision.id).voteMode).toBe('score');
+
+		const vote = openSurvey([questionOf()], { options: 2 });
+		const before = decisionRow(vote.decision.id);
+		expect(outcome(() => save(owner, vote.decision.id, { voteMode: 'score' }))).toEqual({
+			status: 409,
+			message: 'This decision has been opened: its vote mode cannot be changed'
+		});
+		expect(decisionRow(vote.decision.id)).toEqual(before);
+	});
+
+	it("F5: a key's change of an opened survey's vote mode is flagged voteMode and warned of by name until a person marks it reviewed; a person's change and the same mode flag nothing", () => {
+		const { decision } = openSurvey([questionOf()]);
+		const modeWarnings = () =>
+			readinessOf(decisionRow(decision.id))
+				.warnings.filter((warning) => warning.code === 'agent_drafted')
+				.map((warning) => [warning.key, warning.words]);
+
+		save(owner, decision.id, { voteMode: 'score' });
+		expect(stored(decision.id).agentDrafted ?? {}).toEqual({});
+		save(owner, decision.id, { voteMode: 'score' }, API);
+		expect(stored(decision.id).agentDrafted ?? {}).toEqual({});
+
+		save(owner, decision.id, { voteMode: 'single' }, API);
+		expect(decisionRow(decision.id).voteMode).toBe('single');
+		expect(stored(decision.id).agentDrafted).toEqual({ voteMode: true });
+		expect(modeWarnings()).toEqual([['voteMode', 'The vote mode was chosen by an agent and not yet reviewed by a person']]);
+
+		review(owner, decision.id, ['voteMode']);
+		expect(stored(decision.id).agentDrafted).toEqual({});
+		expect(stored(decision.id).reviewed.voteMode).toMatchObject({ byUserId: owner.id, byName: 'owner' });
+		expect(modeWarnings()).toEqual([]);
+
+		// With content too: the vote mode's flag beside the changed section's, and its stamp removed.
+		save(owner, decision.id, { voteMode: 'score', content: contentOf({ situation: 'Now a vote.', surveyQuestions: stored(decision.id).surveyQuestions }) }, API);
+		expect(stored(decision.id).agentDrafted).toEqual({ situation: true, voteMode: true });
+		expect(stored(decision.id).reviewed.voteMode).toBeUndefined();
+	});
+
+	it('T60: the re-publish summary names the survey questions a re-publish adds, retires and changes, by number and prompt', () => {
+		const { decision, asked } = openSurvey([questionOf({ prompt: 'Where from?' }), questionOf({ prompt: 'How many?' }), questionOf({ prompt: 'When?', help: 'Old help' })]);
+		save(owner, decision.id, {
+			content: contentOf({
+				surveyQuestions: [{ ...asked[0], prompt: 'Where from, now?' }, { ...asked[2], help: 'New help' }, questionOf({ prompt: 'Anything else?' })]
+			})
+		});
+
+		expect(readEditPage(owner, decision.id).republishSummary).toEqual({
+			changesOptions: false,
+			adding: [],
+			retiring: [],
+			changesSurvey: true,
+			surveyAdding: [{ number: 3, prompt: 'Anything else?' }],
+			surveyRetiring: [{ number: 2, prompt: 'How many?' }],
+			surveyChanging: [{ number: 1, prompt: 'Where from, now?' }]
+		});
+
+		// Help alone is no change to what people answer.
+		save(owner, decision.id, { content: contentOf({ surveyQuestions: asked.map((question) => ({ ...question, help: 'Better help' })) }) });
+		expect(readEditPage(owner, decision.id).republishSummary).toMatchObject({ changesSurvey: false, surveyAdding: [], surveyRetiring: [], surveyChanging: [] });
 	});
 });

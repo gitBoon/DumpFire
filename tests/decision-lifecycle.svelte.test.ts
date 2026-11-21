@@ -434,6 +434,7 @@ describe('DecisionActions (51 to 54)', () => {
 		unknowns: '',
 		alreadyRuled: '',
 		technicalDetail: '',
+		surveyQuestions: [],
 		agentDrafted: {},
 		reviewed: {}
 	};
@@ -596,6 +597,44 @@ describe('DecisionActions (51 to 54)', () => {
 			expect(textOf(panel.querySelector('[data-note="tell-only"]')!)).toBe(
 				'Tell them only is off: this version adds option C and retires option A, so everyone consulted is asked again; people kept informed are told.'
 			);
+		});
+
+		it('U9 (card 2683): holds Tell them only off where the working copy adds, retires or changes a survey question, naming each by number and prompt', () => {
+			const noOptionChange = { changesOptions: false, adding: [], retiring: [] };
+			const { target } = drawActions(
+				{
+					republishSummary: {
+						...noOptionChange,
+						changesSurvey: true,
+						surveyAdding: [{ number: 3, prompt: 'How many pallets a week?' }],
+						surveyRetiring: [{ number: 2, prompt: 'Which depot?' }],
+						surveyChanging: [{ number: 1, prompt: 'Where do you ship from?' }]
+					}
+				},
+				{ republish: true }
+			);
+
+			control(target, 'republish')!.click();
+			flushSync();
+			const panel = target.querySelector<HTMLElement>('[data-panel="republish"]')!;
+			const [askAgain, tellOnly] = panel.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+			expect(tellOnly.disabled).toBe(true);
+			expect(askAgain.checked).toBe(true);
+			const note = panel.querySelector<HTMLElement>('[data-note="tell-only"]')!;
+			expect(tellOnly.getAttribute('aria-describedby')).toBe(note.id);
+			expect(textOf(note)).toBe(
+				"Tell them only is off: this version adds survey question 3 ('How many pallets a week?'), retires survey question 2 ('Which depot?') and changes survey question 1 ('Where do you ship from?'), so everyone consulted is asked again; people kept informed are told. Only a survey question's help can be changed by telling them only."
+			);
+
+			// Two changed, one with no prompt yet: "questions", the number alone.
+			const two = drawActions(
+				{ republishSummary: { ...noOptionChange, changesSurvey: true, surveyAdding: [], surveyRetiring: [], surveyChanging: [{ number: 1, prompt: 'Which day?' }, { number: 2, prompt: '' }] } },
+				{ republish: true }
+			);
+			control(two.target, 'republish')!.click();
+			flushSync();
+			expect(textOf(two.target.querySelector('[data-note="tell-only"]')!)).toContain("this version changes survey questions 1 ('Which day?'), 2, so everyone");
+			expect(two.target.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1].disabled).toBe(true);
 		});
 
 		it('says who each choice asks, tells or invites: the informed are told, never asked (card 2739, 2739-5)', () => {

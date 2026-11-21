@@ -26,11 +26,24 @@
 import { error } from '@sveltejs/kit';
 import { eq, inArray } from 'drizzle-orm';
 import { db, sqlite } from './db';
-import { decisionOptions, decisions, users, type Decision, type DecisionOption } from './db/schema';
+import { decisionOptions, decisionSurveyQuestions, decisions, users, type Decision, type DecisionOption, type DecisionSurveyQuestion } from './db/schema';
 import type { SessionUser } from './auth';
 import { canEditBoard, isAdmin } from './board-access';
-import { changedSections, liveOptionsOf, nextLabel, parseWorkingContent, readContent, readTitle, sectionKeysOf, withChosenFlag, type WorkingContent } from './decision-content';
-import { actorFor, appendEvent, dryRunsSince, lastDryRunAt, personOfAccount } from './decision-record';
+import {
+	changedSections,
+	liveOptionsOf,
+	liveSurveyQuestionsOf,
+	nextLabel,
+	parseWorkingContent,
+	publishedSurveyOf,
+	readContent,
+	readTitle,
+	sectionKeysOf,
+	sendsSurveyQuestions,
+	withChosenFlag,
+	type WorkingContent
+} from './decision-content';
+import { actorFor, appendEvent, dryRunsSince, lastDryRunAt, liveOptionIds, personOfAccount } from './decision-record';
 import { DAY_MS, dailyCapFrom, decisionLinkBase, DRY_RUN_DAILY_CAP, DRY_RUN_MIN_MINUTES, later, queueDryRun } from './decision-mail';
 import { requireTransition } from './decision-status';
 import { isSmtpConfigured, NO_LINK_ADDRESS } from './email';
@@ -213,13 +226,28 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
  * (decision 9). So is a draft's title the save changed, as
  * `agentDrafted.title` (card 2728, D2), with or without `content`. No event,
  * activity entry, live event or mail.
+ *
+ * Card 2683: the survey question rows are kept in step with
+ * `content.surveyQuestions` as option rows are (R5), with no label: a new
+ * entry is given a row, whose id its `questionId` then names; an entry's
+ * `questionId` must be a live survey question of this decision (400); one
+ * left out is deleted if never published, and otherwise stays live, to be
+ * retired at the next publish. Content that does not send `surveyQuestions`
+ * keeps the stored ones (R15). A published question's kind is fixed (R8,
+ * 400); its other words may change here, and a re-publish carrying such a
+ * change asks everyone again. Its agent flag is `survey.<questionId>` (R16).
+ * The vote mode may change on an opened decision while its current version
+ * has no live option (R23), so that a survey becomes a vote in either mode;
+ * a key's change of it there is flagged `agentDrafted.voteMode` (code review
+ * F5), as a key's change of a draft's title is. Answers the survey question
+ * rows besides.
  */
 export function updateDraft(
 	caller: SessionUser | null,
 	at: { decisionId: number },
 	body: RequestBody,
 	opts: ServiceOptions
-): { decision: Decision; options: DecisionOption[] } {
+): { decision: Decision; options: DecisionOption[]; surveyQuestions: DecisionSurveyQuestion[] } {
 	inWrite();
 	const user = requireUser(caller);
 	const { decision } = requireDecision(user, at.decisionId, 'edit');
@@ -235,6 +263,7 @@ export function updateDraft(
 	// Card 2697, Q25: as the future rule, asked of a changed value alone (D5).
 	if (closesAt !== undefined && closesAt !== null && closesAt !== decision.closesAt && closesTooFar(closesAt, now)) error(400, CLOSES_TOO_FAR);
 	const live = liveOptionsOf(decision.id);
+	const liveQuestions = liveSurveyQuestionsOf(decision.id);
 	if (content) {
 		const liveIds = new Set(live.map((option) => option.id));
 		content.options.forEach((option, index) => {
@@ -242,15 +271,37 @@ export function updateDraft(
 				error(400, `options[${index}].optionId ${option.optionId} is not a live option of this decision`);
 			}
 		});
+		const liveQuestionIds = new Set(liveQuestions.map((row) => row.id));
+		// R15: not sent, the stored questions stand as they are, but any whose row is no longer live.
+		if (!sendsSurveyQuestions(body)) {
+			content.surveyQuestions = content.surveyQuestions.filter((question) => question.questionId !== undefined && liveQuestionIds.has(question.questionId));
+		}
+		// R8: the kind of a published question is fixed, as published in the current version (or, failing that, as saved).
+		const published = publishedSurveyOf(decision.id, decision.currentVersion);
+		content.surveyQuestions.forEach((question, index) => {
+			if (question.questionId === undefined) return;
+			if (!liveQuestionIds.has(question.questionId)) {
+				error(400, `surveyQuestions[${index}].questionId ${question.questionId} is not a live survey question of this decision`);
+			}
+			const row = liveQuestions.find((one) => one.id === question.questionId)!;
+			if (row.addedInVersion === null) return;
+			const was =
+				published.find((one) => one.questionId === question.questionId) ?? stored.surveyQuestions.find((one) => one.questionId === question.questionId);
+			if (was !== undefined && was.kind !== question.kind) {
+				error(400, `Survey question ${index + 1} has been published: its kind is fixed. Remove it and add a new question`);
+			}
+		});
 	}
 
 	requireTransition(decision, 'edit');
 	requireRevision(decision, revision);
 	const draft = decision.status === 'draft';
+	// Card 2683 (R23): while the current version puts no option, the vote mode is unused and may change, opened or not.
+	const modeFree = draft || liveOptionIds(decision.id, decision.currentVersion).length === 0;
 	if (!draft) {
 		if (title !== undefined && title !== decision.title) error(409, 'This decision has been opened: its title cannot be changed');
 		if (closesAt !== undefined && closesAt !== decision.closesAt) error(409, 'This decision has been opened: the closing time of an open decision changes by Extend');
-		if (voteMode !== undefined && voteMode !== decision.voteMode) error(409, 'This decision has been opened: its vote mode cannot be changed');
+		if (!modeFree && voteMode !== undefined && voteMode !== decision.voteMode) error(409, 'This decision has been opened: its vote mode cannot be changed');
 	}
 
 	let working: WorkingContent | undefined;
@@ -272,8 +323,22 @@ export function updateDraft(
 		const unpublished = live.filter((option) => !kept.has(option.id) && option.addedInVersion === null).map((option) => option.id);
 		if (unpublished.length > 0) db.delete(decisionOptions).where(inArray(decisionOptions.id, unpublished)).run();
 
+		// Card 2683 (R5): the survey question rows as the option rows, with no label.
+		const asked = content.surveyQuestions.map((question, index) => {
+			if (question.questionId !== undefined) {
+				const row = liveQuestions.find((one) => one.id === question.questionId)!;
+				if (row.position !== index) db.update(decisionSurveyQuestions).set({ position: index }).where(eq(decisionSurveyQuestions.id, row.id)).run();
+				return question;
+			}
+			const row = db.insert(decisionSurveyQuestions).values({ decisionId: decision.id, position: index }).returning().get();
+			return { ...question, questionId: row.id };
+		});
+		const keptQuestions = new Set(asked.map((question) => question.questionId));
+		const unasked = liveQuestions.filter((row) => !keptQuestions.has(row.id) && row.addedInVersion === null).map((row) => row.id);
+		if (unasked.length > 0) db.delete(decisionSurveyQuestions).where(inArray(decisionSurveyQuestions.id, unasked)).run();
+
 		// Decision 9: the flags are the server's; through an API key each changed section is flagged again.
-		const after = { ...content, options: listed };
+		const after = { ...content, options: listed, surveyQuestions: asked };
 		const agentDrafted = { ...stored.agentDrafted };
 		const reviewed = { ...stored.reviewed };
 		if (keyed(opts)) {
@@ -285,21 +350,28 @@ export function updateDraft(
 		for (const key of Object.keys(agentDrafted)) {
 			const optionId = /^options\.(\d+)$/.exec(key);
 			if (optionId !== null && !kept.has(Number(optionId[1]))) delete agentDrafted[key];
+			// Card 2683 (R16): a survey question's flag goes with it.
+			const questionId = /^survey\.(\d+)$/.exec(key);
+			if (questionId !== null && !keptQuestions.has(Number(questionId[1]))) delete agentDrafted[key];
 		}
 		working = { ...after, agentDrafted, reviewed, lastLabel };
 	}
 
 	// Card 2728 (D2): a key's change of a draft's title is the key's choice of every invitation's subject.
 	const keyTitle = keyed(opts) && draft && title !== undefined && title !== decision.title;
+	// Card 2683 (R23, code review F5): a key's change of an opened survey's vote mode is the key's choice of how the
+	// options a re-publish puts are voted on, flagged as card 2728 flags the title.
+	const keyMode = keyed(opts) && !draft && modeFree && voteMode !== undefined && voteMode !== decision.voteMode;
+	const chosen = [...(keyTitle ? (['title'] as const) : []), ...(keyMode ? (['voteMode'] as const) : [])];
 	let workingContent: string | undefined;
 	if (working) {
-		if (keyTitle) {
-			working.agentDrafted.title = true;
-			delete working.reviewed.title;
+		for (const key of chosen) {
+			working.agentDrafted[key] = true;
+			delete working.reviewed[key];
 		}
 		workingContent = JSON.stringify(working);
-	} else if (keyTitle) {
-		workingContent = withChosenFlag(decision.workingContent, 'title');
+	} else {
+		for (const key of chosen) workingContent = withChosenFlag(workingContent ?? decision.workingContent, key);
 	}
 
 	const row = db
@@ -307,14 +379,14 @@ export function updateDraft(
 		.set({
 			...(draft && title !== undefined ? { title } : {}),
 			...(draft && closesAt !== undefined ? { closesAt } : {}),
-			...(draft && voteMode !== undefined ? { voteMode } : {}),
+			...(modeFree && voteMode !== undefined ? { voteMode } : {}),
 			...(workingContent !== undefined ? { workingContent } : {}),
 			updatedAt: now
 		})
 		.where(eq(decisions.id, decision.id))
 		.returning()
 		.get();
-	return { decision: row, options: liveOptionsOf(decision.id) };
+	return { decision: row, options: liveOptionsOf(decision.id), surveyQuestions: liveSurveyQuestionsOf(decision.id) };
 }
 
 /**

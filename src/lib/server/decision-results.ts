@@ -34,6 +34,19 @@
  * results: `readResults` under the key's source, allowed field by field, with
  * nothing to rule or release by, and every response, concern and the ruling
  * marked `untrusted` on the object that holds the words (D10).
+ *
+ * Card 2683 adds survey answers to the decider's and administrators' reads:
+ * each row's answers, read against the version it was given under
+ * (`answersOf`, R22), and each round's figures per question, grouped by that
+ * version and labelled with its words (`surveyTallyOf`, R17), never added
+ * together across versions. Answers are never released (R11):
+ * `releaseRowsOf` leaves an `answered` row out by name, `ReleaseRow` names no
+ * answer, and a decision ruled on a version that put no options to a vote is
+ * refused a release (`NO_OPTIONS_TO_RELEASE`). Binding on later cards (R21):
+ * 2686's group figures show survey figures to the decider alone and never per
+ * group in a release; 2688's PDF holds answers only in the decider's and
+ * administrators' export; 2689's webhooks never carry answers or survey
+ * figures.
  */
 import { createHmac } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
@@ -41,24 +54,38 @@ import { db } from './db';
 import { decisionQuestions, decisionVersions, decisions, type Decision, type DecisionParticipant, type DecisionResponse } from './db/schema';
 import type { SessionUser } from './auth';
 import { mayDo } from './decision-access';
-import { allOptionsOf, parseVersionContent, participantsOf, resultsRevisionOf } from './decision-content';
+import { allOptionsOf, parseVersionContent, participantsOf, publishedSurveyOf, resultsRevisionOf } from './decision-content';
 import { mayAnswerOf, openQuestionWhere } from './decision-questions';
-import { concernsOf, currentRound, eventsOfKind, ownResponseOf, reachedInRound, responsesOf, revisionResponseIdsOf, rulingOf, statementsOf } from './decision-record';
+import {
+	concernsOf,
+	currentRound,
+	eventsOfKind,
+	ownResponseOf,
+	reachedInRound,
+	responsesOf,
+	revisionResponseIdsOf,
+	rulingOf,
+	statementsOf,
+	surveysAskedIn,
+	type AskedSurveys
+} from './decision-record';
 import { decisionStatus, rulesEarly, TRANSITIONS } from './decision-status';
 import { purposeKey } from './request-tokens';
 import { requireDecision } from './route-guards';
 import { mostChosenOf } from '$lib/decision-rules';
-import { STALE_REVISION, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
+import { NO_OPTIONS_TO_RELEASE, STALE_REVISION, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
 import type {
 	OpenQuestion,
 	PreviewComment,
+	PublishedSurveyQuestion,
 	ReleasedFigure,
 	ReleasedResults,
 	ReleasePreview,
 	ResultRow,
 	ResultsData,
 	RoundTally,
-	RulingRecord
+	RulingRecord,
+	SurveyTally
 } from '$lib/decision-view-types';
 import { stamp, type Stamp } from '$lib/timestamps';
 import type { ServiceOptions } from './write-as';
@@ -84,7 +111,7 @@ type Counted = { kind: string; optionId: number | null; scores: Record<string, n
  * abstained and had no concerns, and each option's votes in single mode, or
  * its total score and mean in score mode (the other list empty).
  */
-export function tallyOf(rows: readonly Counted[], optionIds: readonly number[], voteMode: VoteMode): Omit<RoundTally, 'round' | 'rows'> {
+export function tallyOf(rows: readonly Counted[], optionIds: readonly number[], voteMode: VoteMode): Omit<RoundTally, 'round' | 'rows' | 'survey'> {
 	const votes = rows.filter((row) => row.kind === 'vote');
 	return {
 		responded: rows.length,
@@ -126,9 +153,12 @@ function groupNamesOf(json: string): string[] {
 	}
 }
 
-/** A response as the results give it, with how many earlier rows its participant gave in the round. No response id. */
-function resultRowOf(participant: DecisionParticipant, row: DecisionResponse, changes: number): ResultRow {
-	const own = ownResponseOf(row);
+/**
+ * A response as the results give it, with how many earlier rows its participant gave in the round. No response id.
+ * Card 2683: its answers read against `asked` (`answersOf`, R22).
+ */
+function resultRowOf(participant: DecisionParticipant, row: DecisionResponse, changes: number, asked: AskedSurveys): ResultRow {
+	const own = ownResponseOf(row, asked);
 	return {
 		participantId: participant.id,
 		name: participant.name,
@@ -139,11 +169,58 @@ function resultRowOf(participant: DecisionParticipant, row: DecisionResponse, ch
 		scores: own.scores,
 		comment: own.comment,
 		optionComments: own.optionComments,
+		answers: own.answers,
 		versionNumber: own.versionNumber,
 		createdAt: own.createdAt,
 		via: row.via,
 		changes
 	};
+}
+
+/**
+ * The survey figures of `rows` (card 2683, R17): for each version they were
+ * given under that asked a survey question, oldest first, each question it
+ * asked in its order, labelled with that version's words, with how many of
+ * `rows` answered it; a choice question's count for each of its choices; a
+ * scale question's count for each value from 1 to its top and the mean to one
+ * decimal. Rows given under one version are never counted with another's, so
+ * a question whose choices changed between them is never added by position.
+ * The answers are `answersOf`'s, so each is in range of its version.
+ */
+function surveyTallyOf(decisionId: number, rows: readonly ResultRow[], asked: AskedSurveys): SurveyTally[] {
+	const versions = [...new Set(rows.map((row) => row.versionNumber))].sort((a, b) => a - b);
+	const tallies: SurveyTally[] = [];
+	for (const versionNumber of versions) {
+		const questions = asked.get(decisionId)?.get(versionNumber);
+		if (questions === undefined || questions.size === 0) continue;
+		const under = rows.filter((row) => row.versionNumber === versionNumber);
+		tallies.push({
+			versionNumber,
+			questions: [...questions.values()].map((question) => {
+				const given = under.map((row) => row.answers[`${question.questionId}`]).filter((value) => value !== undefined);
+				const numbers = given.filter((value): value is number => typeof value === 'number');
+				const countOf = (value: number) => numbers.filter((number) => number === value).length;
+				return {
+					questionId: question.questionId,
+					kind: question.kind,
+					prompt: question.prompt,
+					answered: given.length,
+					choices: question.kind === 'choice' ? question.choices.map((choice, index) => ({ choice, count: countOf(index) })) : null,
+					scale:
+						question.kind === 'scale' && question.scale !== null
+							? {
+									max: question.scale.max,
+									lowLabel: question.scale.lowLabel,
+									highLabel: question.scale.highLabel,
+									counts: Array.from({ length: question.scale.max }, (_, index) => ({ value: index + 1, count: countOf(index + 1) })),
+									mean: numbers.length === 0 ? null : oneDecimal(numbers.reduce((sum, value) => sum + value, 0) / numbers.length)
+								}
+							: null
+				};
+			})
+		});
+	}
+	return tallies;
 }
 
 /** Each participant's latest response in `round`, by participant id, with how many they gave there before it. `responses` in id order. */
@@ -160,16 +237,25 @@ function latestInRound(responses: readonly DecisionResponse[], round: number): M
 /** The live consulted participants: whose responses a tally and a release count. */
 const liveConsulted = (participants: readonly DecisionParticipant[]) => participants.filter((row) => row.removedAt === null && row.role === 'consulted');
 
-/** The tally of `round`, over its version's options, of each live consulted participant's latest response there. */
-function roundTally(decision: Decision, participants: readonly DecisionParticipant[], responses: readonly DecisionResponse[], round: number): RoundTally {
+/**
+ * The tally of `round`, over its version's options, of each live consulted participant's latest response there.
+ * Card 2683 (R17): and its survey figures, per version answered under (`surveyTallyOf`).
+ */
+function roundTally(
+	decision: Decision,
+	participants: readonly DecisionParticipant[],
+	responses: readonly DecisionResponse[],
+	round: number,
+	asked: AskedSurveys
+): RoundTally {
 	const latest = latestInRound(responses, round);
 	const rows: ResultRow[] = [];
 	for (const participant of liveConsulted(participants)) {
 		const found = latest.get(participant.id);
-		if (found !== undefined) rows.push(resultRowOf(participant, found.row, found.changes));
+		if (found !== undefined) rows.push(resultRowOf(participant, found.row, found.changes, asked));
 	}
 	const optionIds = versionOptionsOf(decision.id, round === 0 ? decision.currentVersion : round).map((option) => option.optionId);
-	return { round, ...tallyOf(rows, optionIds, voteModeOf(decision)), rows };
+	return { round, ...tallyOf(rows, optionIds, voteModeOf(decision)), survey: surveyTallyOf(decision.id, rows, asked), rows };
 }
 
 /**
@@ -182,7 +268,7 @@ function roundTally(decision: Decision, participants: readonly DecisionParticipa
 export function currentResultsOf(decision: Decision): { tally: RoundTally; notResponded: DecisionParticipant[]; reached: Set<number> } {
 	const participants = participantsOf(decision.id);
 	const round = currentRound(decision.id);
-	const tally = roundTally(decision, participants, responsesOf(decision.id), round);
+	const tally = roundTally(decision, participants, responsesOf(decision.id), round, surveysAskedIn([decision.id]));
 	const answered = new Set(tally.rows.map((row) => row.participantId));
 	const notResponded = liveConsulted(participants).filter((row) => !answered.has(row.id));
 	return { tally, notResponded, reached: reachedInRound(decision.id, round, notResponded) };
@@ -280,6 +366,9 @@ export type ReleaseRow = {
 	optionComments: Record<string, string>;
 };
 
+/** No survey asked of any decision (card 2683, R11): what a release reads answers against, so it reads none. Never written to. */
+const NO_SURVEYS_ASKED: AskedSurveys = new Map();
+
 /**
  * What a release of the decision counts (decision 10, S9): the latest
  * response of each live consulted participant in the ruling round, the
@@ -296,7 +385,12 @@ export function releaseRowsOf(decision: Decision, upToResponseId: number | null)
 	for (const participant of liveConsulted(participantsOf(decision.id))) {
 		const found = latest.get(participant.id);
 		if (found === undefined) continue;
-		const own = ownResponseOf(found.row);
+		// Card 2683 (R11): a survey answered is never released, nor the comment given with it: left out before anything of it is read.
+		if (found.row.kind === 'answered') continue;
+		// Card 2683 (R11, code review F1): a release reads no answer. Against no survey asked, `answersOf` gives `{}` without a read.
+		const own = ownResponseOf(found.row, NO_SURVEYS_ASKED);
+		// Never true after the skip above: the kind narrowed for `ReleaseRow`, which is not widened (R11).
+		if (own.kind === 'answered') continue;
 		rows.push({
 			responseId: found.row.id,
 			participantId: participant.id,
@@ -558,20 +652,34 @@ export const TOO_FEW_TO_RELEASE = `Fewer than ${RELEASE_MIN_RESPONSES} people re
 /** The 409 of a second release. */
 export const ALREADY_RELEASED = "This decision's results have already been released";
 
+/**
+ * Whether the version the decision was ruled on put no options to a vote
+ * (card 2683, R11, R18): a survey, whose answers are never released, and
+ * whose ruling is said as "No options were put to a vote". False before a
+ * ruling.
+ */
+export function ruledWithNoOptions(decisionId: number): boolean {
+	const ruling = rulingOf(decisionId);
+	return ruling !== null && versionOptionsOf(decisionId, ruling.versionNumber).length === 0;
+}
+
 /** The 409 of a release in a chain of near-identical releases (decision 27). */
 export const CHAIN_TOO_CLOSE =
 	'A decision this one supersedes, or that supersedes it, released results from almost the same people: releasing these could show who said what';
 
 /**
  * The 409s a release meets after its status, in order, each in its words
- * (decisions 10, 25 and 27): already released; fewer than 3 responses in the
- * ruling round; any of them given before the page said the results could be
- * released; and another release in the supersede chain from people 1 or 2
- * apart. The first is answered; the results page says it beside the control.
+ * (decisions 10, 25 and 27): already released; card 2683 (R11), ruled on a
+ * version that put no options to a vote, whose survey answers are never
+ * released; fewer than 3 responses in the ruling round; any of them given
+ * before the page said the results could be released; and another release in
+ * the supersede chain from people 1 or 2 apart. The first is answered; the
+ * results page says it beside the control.
  */
 export function releaseRefusals(decision: Decision): string[] {
 	const refusals: string[] = [];
 	if (decision.resultsReleasedAt !== null) refusals.push(ALREADY_RELEASED);
+	if (ruledWithNoOptions(decision.id)) refusals.push(NO_OPTIONS_TO_RELEASE);
 	const rows = releaseRowsOf(decision, null);
 	if (rows.length < RELEASE_MIN_RESPONSES) refusals.push(TOO_FEW_TO_RELEASE);
 	const statements = statementsOf(decision.id);
@@ -582,6 +690,19 @@ export function releaseRefusals(decision: Decision): string[] {
 }
 
 // ─── The results page (decision 16) ──────────────────────────────────────────
+
+/** Card 2683: the current version's survey questions as it published them, field by field, `choices` and `scale` where its kind holds them. */
+function surveyQuestionsOf(decision: Decision): PublishedSurveyQuestion[] {
+	return publishedSurveyOf(decision.id, decision.currentVersion).map((question) => ({
+		questionId: question.questionId,
+		kind: question.kind,
+		prompt: question.prompt,
+		help: question.help,
+		required: question.required,
+		...(question.choices === undefined ? {} : { choices: [...question.choices] }),
+		...(question.scale === undefined ? {} : { scale: { max: question.scale.max, lowLabel: question.scale.lowLabel, highLabel: question.scale.highLabel } })
+	}));
+}
 
 /**
  * The results of a decision (decision 16), for its decider and
@@ -602,7 +723,9 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 	const participants = participantsOf(decision.id);
 	const responses = responsesOf(decision.id);
 	const round = currentRound(decision.id);
-	const current = roundTally(decision, participants, responses, round);
+	// Card 2683 (R22): the questions each version asked, read once, for every row's answers and every round's figures.
+	const asked = surveysAskedIn([decision.id]);
+	const current = roundTally(decision, participants, responses, round, asked);
 	const answered = new Set(current.rows.map((row) => row.participantId));
 	const notResponded = liveConsulted(participants).filter((row) => !answered.has(row.id));
 	// Card 2738: the same read the ruling writes on each cut_off, so the page marks whom a ruling now would record as never reached.
@@ -633,7 +756,9 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 			cutOffReached: cutOff.map((event) => (typeof event.detail.reached === 'boolean' ? event.detail.reached : null)),
 			supersededOld: typeof ruled?.detail.supersededOld === 'boolean' ? ruled.detail.supersededOld : null,
 			byName: record.ruledByName,
-			at: record.ruledAt
+			at: record.ruledAt,
+			// Card 2683 (R18): said in place of "None of these" where the version ruled on put no options.
+			...(versionOptionsOf(decision.id, record.versionNumber).length === 0 ? { noOptions: true as const } : {})
 		};
 	}
 
@@ -659,14 +784,15 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 		revision: resultsRevisionFor(decision.id),
 		round,
 		options: versionOptionsOf(decision.id, decision.currentVersion),
+		surveyQuestions: surveyQuestionsOf(decision),
 		current,
-		earlierRounds: earlier.map((r) => roundTally(decision, participants, responses, r)),
+		earlierRounds: earlier.map((r) => roundTally(decision, participants, responses, r, asked)),
 		notResponded: notResponded.map((row) => ({ participantId: row.id, name: row.name, groups: groupNamesOf(row.groups), reached: reached.has(row.id) })),
 		removed: participants
 			.filter((row) => row.removedAt !== null)
 			.map((row) => {
 				const found = latest.get(row.id);
-				return { participantId: row.id, name: row.name, role: row.role, latest: found === undefined ? null : resultRowOf(row, found.row, found.changes) };
+				return { participantId: row.id, name: row.name, role: row.role, latest: found === undefined ? null : resultRowOf(row, found.row, found.changes, asked) };
 			}),
 		openQuestions: openQuestionsOf(decision.id, { source: opts.source }),
 		// Card 2678 (decision 9, F11): the link to answer them only where the caller may, now.
@@ -680,7 +806,8 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 		ruling,
 		released:
 			decision.resultsReleasedAt === null ? null : { at: decision.resultsReleasedAt, byName: released?.byName ?? '', omitted: released?.omitted.length ?? 0 },
-		releasePreview: releasable && decision.resultsReleasedAt === null ? previewOf(decision) : null,
+		// Card 2683 (R11): a survey's ruling is never released, so nothing is previewed for it.
+		releasePreview: releasable && decision.resultsReleasedAt === null && !ruledWithNoOptions(decision.id) ? previewOf(decision) : null,
 		mayRule: (TRANSITIONS.rule as readonly string[]).includes(decision.status) && mayDo(access, 'rule', decision),
 		// Card 2727: the rule ruleDecision records by, so the form names who a ruling now cuts off.
 		rulesEarly: rulesEarly(decision, now),
@@ -710,14 +837,16 @@ export type DecisionSummary = {
 	decision: ResultsData['decision'];
 	round: number;
 	options: ResultsData['options'];
+	/** Card 2683: the current version's survey questions' words. */
+	surveyQuestions: ResultsData['surveyQuestions'];
 	current: SummaryTally;
 	earlierRounds: SummaryTally[];
 	notResponded: ResultsData['notResponded'];
 	removed: { participantId: number; name: string; role: string; latest: SummaryRow | null }[];
 	openQuestions: OpenQuestion[];
 	concerns: { name: string; comment: string; createdAt: Stamp; via: string; untrusted: true }[];
-	// Card 2738 (code review R6): `closedEarly` is the results page's alone; the summary is unchanged.
-	ruling: (Omit<RulingRecord, 'closedEarly'> & { untrusted: true }) | null;
+	// Card 2738 (code review R6): `closedEarly` is the results page's alone; the summary is unchanged. So is card 2683's `noOptions`.
+	ruling: (Omit<RulingRecord, 'closedEarly' | 'noOptions'> & { untrusted: true }) | null;
 	released: ResultsData['released'];
 	mostChosen: ResultsData['mostChosen'];
 	untrusted: true;
@@ -735,6 +864,7 @@ function summaryRowOf(row: ResultRow): SummaryRow {
 		scores: row.scores,
 		comment: row.comment,
 		optionComments: row.optionComments,
+		answers: row.answers,
 		versionNumber: row.versionNumber,
 		createdAt: row.createdAt,
 		via: row.via,
@@ -753,6 +883,7 @@ function summaryTallyOf(tally: RoundTally): SummaryTally {
 		scores: tally.scores,
 		abstained: tally.abstained,
 		noConcerns: tally.noConcerns,
+		survey: tally.survey,
 		rows: tally.rows.map(summaryRowOf)
 	};
 }
@@ -764,7 +895,9 @@ function summaryTallyOf(tally: RoundTally): SummaryTally {
  * marked, rebuilt field by field. The ruling keeps `early`,
  * `againstResponses`, `cutOff` and `cutOffReached` (card 2738), and
  * `notResponded` its `reached`, the decider's and administrators' alone
- * (card 2679, decision 26), as is every reader of this.
+ * (card 2679, decision 26), as is every reader of this. Card 2683: each row's
+ * answers (on a row already marked), each tally's survey figures and the
+ * current version's survey questions' words.
  */
 export function readSummary(user: SessionUser, decisionId: number, opts: { source: 'api' }): DecisionSummary {
 	const results = readResults(user, decisionId, { source: opts.source });
@@ -773,6 +906,7 @@ export function readSummary(user: SessionUser, decisionId: number, opts: { sourc
 		decision: results.decision,
 		round: results.round,
 		options: results.options,
+		surveyQuestions: results.surveyQuestions,
 		current: summaryTallyOf(results.current),
 		earlierRounds: results.earlierRounds.map(summaryTallyOf),
 		notResponded: results.notResponded,

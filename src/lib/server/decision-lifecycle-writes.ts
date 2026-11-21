@@ -30,9 +30,30 @@
 import { error } from '@sveltejs/kit';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db, sqlite } from './db';
-import { cards, columns, decisionCardLinks, decisionOptions, decisionParticipants, decisions, type Decision, type DecisionOption, type DecisionParticipant } from './db/schema';
+import {
+	cards,
+	columns,
+	decisionCardLinks,
+	decisionOptions,
+	decisionParticipants,
+	decisionSurveyQuestions,
+	decisions,
+	type Decision,
+	type DecisionOption,
+	type DecisionParticipant,
+	type DecisionSurveyQuestion
+} from './db/schema';
 import { requirePasswordHeld, type SessionUser } from './auth';
-import { listedOptionIds, liveOptionsOf, openFactsOf, optionChanges, participantsOf } from './decision-content';
+import {
+	hasPutOptions,
+	listedOptionIds,
+	liveOptionsOf,
+	liveSurveyQuestionsOf,
+	openFactsOf,
+	optionChanges,
+	participantsOf,
+	surveyChanges
+} from './decision-content';
 import { actorFor, appendEvent, appendVersion, askingMailsOf, currentRound, publishesSince, snapshotOf, type RecordActor } from './decision-record';
 import { currentResultsOf } from './decision-results';
 import { DAY_MS, dailyCapFrom, decisionLinkBase, PUBLISH_DAILY_CAP, queueRecordMails } from './decision-mail';
@@ -42,7 +63,7 @@ import { emit } from './events';
 import { ACTIONS, logActivity } from './logActivity';
 import { takeAllowance } from './rate-limit';
 import { readBoolean, readText, readTimestamp, type RequestBody } from './request-body';
-import { CLOSES_TOO_FAR, CLOSES_TOO_FAR_TO_REPUBLISH, closesTooFar, refusalsOf } from '$lib/decision-readiness';
+import { CLOSES_TOO_FAR, CLOSES_TOO_FAR_TO_REPUBLISH, closesTooFar, refusalsOf, surveyFactsOf, surveyRefusalsOf } from '$lib/decision-readiness';
 import { openForInput } from '$lib/decision-rules';
 import { requireDecision, requireUser } from './route-guards';
 import { stamp, type Stamp } from '$lib/timestamps';
@@ -132,6 +153,11 @@ const EXTENDS_EARLIER = "closesAt must be later than the decision's current clos
  * a place's snapshot, taken again, holds another account than the place did,
  * `decision_account` is recorded (D7): `none` for the one it held and `held`
  * for the one it now holds.
+ *
+ * Card 2683 (R6): a draft with no option opens with a survey question, and
+ * each survey question must have a prompt and a choice question two choices
+ * (`survey_incomplete`); its live survey questions are added in version 1,
+ * which holds their words, each with its `questionId`.
  */
 export function openDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -176,7 +202,14 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
 		.set({ addedInVersion: 1 })
 		.where(and(eq(decisionOptions.decisionId, decision.id), isNull(decisionOptions.retiredInVersion)))
 		.run();
-	appendVersion({ decisionId: decision.id, number: 1, content: versionContent(decision, options), changeNote: null, asksAgain: true }, by);
+	db.update(decisionSurveyQuestions)
+		.set({ addedInVersion: 1 })
+		.where(and(eq(decisionSurveyQuestions.decisionId, decision.id), isNull(decisionSurveyQuestions.retiredInVersion)))
+		.run();
+	appendVersion(
+		{ decisionId: decision.id, number: 1, content: versionContent(decision, options, liveSurveyQuestionsOf(decision.id)), changeNote: null, asksAgain: true },
+		by
+	);
 
 	appendEvent({ decisionId: decision.id, kind: 'published', versionNumber: 1, detail: { asksAgain: true, changeNote: null } }, by);
 	appendEvent({ decisionId: decision.id, kind: 'opened', detail: { closesAt: opened.closesAt } }, by);
@@ -229,6 +262,16 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
  * participants alone; an informed participant is asked nothing, and cannot
  * respond, so is sent `told_of_change`, as telling only sends everyone it
  * mails. Every one of these mails counts against the rest and the caps.
+ *
+ * Card 2683 (R7, R8): telling only is refused, 409, where a survey question
+ * would be added or retired, or a published one changed in anything but its
+ * help, so that one round's answers are all to one set of questions, worded
+ * one way (`surveyChanges`). The new version holds two or more live options,
+ * or none and at least one survey question (a survey); and once any version
+ * has put options to a vote (`hasPutOptions`), never none. Each survey
+ * question it holds must have a prompt, and a choice question two choices,
+ * as on opening. A question not yet published is added in the new version,
+ * and a published one the working copy no longer lists is retired in it.
  */
 export function republishDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -254,8 +297,27 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 	if (!askAgain && adding.length + retiring.length > 0) {
 		error(409, 'Telling of a change cannot add or retire an option: publish a change to the options by asking everyone again');
 	}
-	// Decision 20, as opening holds it: the new version keeps two live options (the code review's F4).
-	if (live.length - retiring.length < 2) error(409, 'This decision would have fewer than two options: it cannot be re-published');
+	// Card 2683 (R7, R8): telling only changes no survey question but its help.
+	const survey = surveyChanges(decision);
+	if (!askAgain && survey.adding.length + survey.retiring.length + survey.changing.length > 0) {
+		error(
+			409,
+			'Telling of a change cannot add, retire or change a survey question, but for its help: publish a change to the survey questions by asking everyone again'
+		);
+	}
+	// Decision 20, as opening holds it: the new version keeps two live options (the code review's F4); card 2683 (R7): or
+	// none and a survey question, unless options have ever been put to a vote.
+	const optionsAfter = live.length - retiring.length;
+	if (optionsAfter === 0) {
+		if (hasPutOptions(decision.id)) {
+			error(409, 'This decision has put options to a vote: it keeps at least two, and cannot be re-published with none');
+		}
+		if (survey.kept.length === 0) error(409, 'This decision would have no options and no survey questions: it cannot be re-published');
+	} else if (optionsAfter < 2) {
+		error(409, 'This decision would have fewer than two options: it cannot be re-published');
+	}
+	const [incomplete] = surveyRefusalsOf(survey.kept.map(surveyFactsOf), 're-published');
+	if (incomplete !== undefined) error(409, incomplete);
 	if (decisionLinkBase() === null) error(409, NO_LINK_ADDRESS);
 	// Card 2744 (D3), card 2739 (D2): whom the round has not reached, open or closed, read before the new version: asking again
 	// sends them the invitation (and reopens a closed decision); telling only sends them nothing, nor counts them.
@@ -273,6 +335,8 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 	const by = actorFor(user, sourceOf(opts));
 	for (const option of adding) db.update(decisionOptions).set({ addedInVersion: number }).where(eq(decisionOptions.id, option.id)).run();
 	for (const option of retiring) db.update(decisionOptions).set({ retiredInVersion: number }).where(eq(decisionOptions.id, option.id)).run();
+	for (const row of survey.addingRows) db.update(decisionSurveyQuestions).set({ addedInVersion: number }).where(eq(decisionSurveyQuestions.id, row.id)).run();
+	for (const row of survey.retiringRows) db.update(decisionSurveyQuestions).set({ retiredInVersion: number }).where(eq(decisionSurveyQuestions.id, row.id)).run();
 	const reopens = askAgain && decision.status === 'closed';
 	const row = db
 		.update(decisions)
@@ -280,7 +344,10 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 		.where(eq(decisions.id, decision.id))
 		.returning()
 		.get();
-	appendVersion({ decisionId: decision.id, number, content: versionContent(decision, liveOptionsOf(decision.id)), changeNote, asksAgain: askAgain }, by);
+	appendVersion(
+		{ decisionId: decision.id, number, content: versionContent(decision, liveOptionsOf(decision.id), liveSurveyQuestionsOf(decision.id)), changeNote, asksAgain: askAgain },
+		by
+	);
 	appendEvent({ decisionId: decision.id, kind: 'published', versionNumber: number, detail: { asksAgain: askAgain, changeNote } }, by);
 	// Card 2744 (D3), card 2739 (D3): one never asked is sent the first-time invitation, not words that assume an earlier ask.
 	const inviting = current.filter((participant) => unasked.has(participant.id));
@@ -584,6 +651,8 @@ const VERSION_TEXT_KEYS = ['situation', 'question', 'ask', 'unknowns', 'alreadyR
 const VERSION_OPTION_KEYS = ['title', 'summary', 'pros', 'cons', 'commercial'] as const;
 const VERSION_AUDIENCE_KEYS = ['groupId', 'heading', 'body'] as const;
 const VERSION_STORY_KEYS = ['title', 'body'] as const;
+/** Card 2683: what a version copies of each survey question's entry, besides the id it is given. */
+const VERSION_SURVEY_KEYS = ['kind', 'prompt', 'help', 'required', 'choices', 'scale'] as const;
 
 /**
  * A version's content: of the working content an allowlist alone (the code
@@ -593,8 +662,13 @@ const VERSION_STORY_KEYS = ['title', 'body'] as const;
  * its id and label; its agent flags; and each review stamp as `{ byName, at }`,
  * the record of who reviewed what (R7). Never `lastLabel`, nor a reviewer's
  * account id, nor a key the content may hold that is none of these.
+ *
+ * Card 2683 (R3): its survey questions those still live (`questions`, in
+ * their order), each with its words from the working content and its
+ * `questionId`; the key only where it holds one, so that a version with none
+ * reads as every version before this card.
  */
-function versionContent(decision: Decision, options: DecisionOption[]): string {
+function versionContent(decision: Decision, options: DecisionOption[], questions: DecisionSurveyQuestion[]): string {
 	const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 	let working: Record<string, unknown> = {};
 	try {
@@ -614,6 +688,13 @@ function versionContent(decision: Decision, options: DecisionOption[]): string {
 		optionId: option.id,
 		label: option.label
 	}));
+	const asked = Array.isArray(working.surveyQuestions) ? working.surveyQuestions.filter(isRecord) : [];
+	if (questions.length > 0) {
+		version.surveyQuestions = questions.map((question) => ({
+			...pick(asked.find((entry) => entry.questionId === question.id) ?? {}, VERSION_SURVEY_KEYS),
+			questionId: question.id
+		}));
+	}
 	if (isRecord(working.agentDrafted)) version.agentDrafted = Object.fromEntries(Object.entries(working.agentDrafted).filter(([, flag]) => flag === true));
 	if (isRecord(working.reviewed)) {
 		version.reviewed = Object.fromEntries(

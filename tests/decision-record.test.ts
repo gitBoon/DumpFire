@@ -13,14 +13,16 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isHttpError } from '@sveltejs/kit';
 import ts from 'typescript';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, sqlite } from '$lib/server/db';
-import { decisions, type Decision } from '$lib/server/db/schema';
-import { appendEvent, appendVersion, currentRound, SYSTEM_ACTOR } from '$lib/server/decision-record';
+import { decisions, decisionSurveyQuestions, type Decision } from '$lib/server/db/schema';
+import { appendEvent, appendVersion, currentRound, surveysAskedIn, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { issueLink, mayHoldLink, participantForLink } from '$lib/server/decision-links';
+import { readPersonRecord } from '$lib/server/decision-register';
+import { readResults, readSummary } from '$lib/server/decision-results';
 import { awaitingRulingSql, decisionStatus, linkUsable, requireTransition, TRANSITIONS } from '$lib/server/decision-status';
 import { stamp } from '$lib/timestamps';
-import { linkHashOf, makeDecision, makeParticipant, makePerson, makeUser, resetDb } from './helpers/fixtures';
+import { linkHashOf, makeBoard, makeDecision, makeParticipant, makePerson, makeResponse, makeUser, makeVersion, resetDb } from './helpers/fixtures';
 
 const ROOT = process.cwd();
 
@@ -797,5 +799,116 @@ describe('participantForLink', () => {
 		expect(cases.map(([label, decision, now]) => [label, linkUsable(decision, now)])).toEqual(
 			cases.map(([label, , , usable]) => [label, usable])
 		);
+	});
+});
+
+// ─── Stored answers, read tolerantly (card 2683, R22) ────────────────────────
+
+describe('answersOf (card 2683, R22)', () => {
+	it('T57. shows of each planted row only the answer it could have been given, in the results, the summary and the person record', () => {
+		const owner = makeUser({ username: 'owner' });
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const { board } = makeBoard({ owner });
+		const opened = { board, author: owner, decider: owner, status: 'open', closesAt: '2099-01-01 12:00:00', openedAt: '2026-11-01 09:00:00' };
+		const decision = makeDecision(opened);
+		const other = makeDecision(opened);
+		const row = (decisionId: number, position: number, addedInVersion: number | null) =>
+			db.insert(decisionSurveyQuestions).values({ decisionId, position, addedInVersion }).returning().get();
+		const [choice, scale, text] = [0, 1, 2].map((position) => row(decision.id, position, 1));
+		const unpublished = row(decision.id, 3, null);
+		const later = row(decision.id, 4, 2);
+		const elsewhere = row(other.id, 0, 1);
+		const asked = [
+			{ questionId: choice.id, kind: 'choice', prompt: 'Which depot?', help: '', required: false, choices: ['Leeds', 'York'] },
+			{ questionId: scale.id, kind: 'scale', prompt: 'How urgent?', help: '', required: false, scale: { max: 5, lowLabel: 'Low', highLabel: 'High' } },
+			{ questionId: text.id, kind: 'text', prompt: 'Anything else?', help: '', required: false }
+		];
+		const written = (questionId: number) => ({ questionId, kind: 'text', prompt: 'Planted?', help: '', required: false });
+		// Version 1 names, beside its three, a question never published and another decision's; version 2 alone asks `later`.
+		makeVersion(decision, { surveyQuestions: [...asked, written(unpublished.id), written(elsewhere.id)] }, { number: 1 });
+		makeVersion(decision, { surveyQuestions: [...asked, written(later.id)] }, { number: 2, asksAgain: false });
+		const scaled = { [scale.id]: 3 };
+		const chosen = { [choice.id]: 1 };
+		const planted: [string, string, Record<string, number>][] = [
+			['a key that is not a whole number written plainly', JSON.stringify({ ...scaled, x: 'x', [`0${text.id}`]: 'Leading zero.', '-1': 'Minus.' }), scaled],
+			["another decision's question", JSON.stringify({ ...scaled, [elsewhere.id]: 'Elsewhere.' }), scaled],
+			['a question not asked in the version answered under', JSON.stringify({ ...scaled, [unpublished.id]: 'Never published.', [later.id]: 'Asked later.' }), scaled],
+			['a choice out of range', JSON.stringify({ ...scaled, [choice.id]: 2 }), scaled],
+			['a choice below 0', JSON.stringify({ ...scaled, [choice.id]: -1 }), scaled],
+			['a choice not whole', JSON.stringify({ ...scaled, [choice.id]: 1.5 }), scaled],
+			['a scale value over its top', JSON.stringify({ ...chosen, [scale.id]: 6 }), chosen],
+			['a scale value under 1', JSON.stringify({ ...chosen, [scale.id]: 0 }), chosen],
+			['a written answer over 2,000', JSON.stringify({ ...chosen, [text.id]: 'x'.repeat(2001) }), chosen],
+			['a written answer holding a control character', JSON.stringify({ ...chosen, [text.id]: 'Bell\u0007here.' }), chosen],
+			['a written answer of spaces', JSON.stringify({ ...chosen, [text.id]: '   ' }), chosen],
+			['a value of the wrong type', JSON.stringify({ ...chosen, [scale.id]: '4', [text.id]: 5 }), chosen],
+			['not JSON', 'not json', {}],
+			['a list', JSON.stringify([1, 2]), {}]
+		];
+		const persons = planted.map(([name, answers], index) => {
+			const person = makePerson({ fullName: `Planted ${index}` });
+			makeResponse(makeParticipant(decision, { person }), { kind: 'answered', answers });
+			return { name, person };
+		});
+		const expected = planted.map(([name, , shown]) => [name, shown]);
+
+		const results = readResults(owner, decision.id, { source: 'ui' });
+		expect(results.current.rows.map((shown, index) => [planted[index][0], shown.answers]), 'results').toEqual(expected);
+		const summary = readSummary(owner, decision.id, { source: 'api' });
+		expect(summary.current.rows.map((shown, index) => [planted[index][0], shown.answers]), 'summary').toEqual(expected);
+		// The figures count the valid answers alone: 6 of the choice (York), 6 of the scale (3), and no written answer.
+		expect(results.current.survey[0].questions.map((question) => question.answered)).toEqual([6, 6, 0]);
+
+		const recordOf = (shown: Record<string, number>) =>
+			Object.keys(shown).length === 0
+				? []
+				: shown[`${scale.id}`] === 3
+					? [{ prompt: 'How urgent?', kind: 'scale', value: 3, max: 5 }]
+					: [{ prompt: 'Which depot?', kind: 'choice', choice: 'York' }];
+		for (const [index, { name, person }] of persons.entries()) {
+			const record = readPersonRecord(admin, person.id, { before: null }, { source: 'ui' });
+			expect(record.participations[0].responses.map((response) => response.answers), `person record: ${name}`).toEqual([recordOf(planted[index][2])]);
+		}
+	});
+
+	it('F3. reads no version of a decision that never published a survey question, and only the versions asked for', () => {
+		const owner = makeUser({ username: 'owner' });
+		const { board } = makeBoard({ owner });
+		const opened = { board, author: owner, decider: owner, status: 'open', closesAt: '2099-01-01 12:00:00', openedAt: '2026-11-01 09:00:00' };
+		const asking = makeDecision(opened);
+		const drafting = makeDecision(opened);
+		const silent = makeDecision(opened);
+		const question = db.insert(decisionSurveyQuestions).values({ decisionId: asking.id, position: 0, addedInVersion: 1 }).returning().get();
+		// A question in the working copy alone: never published, so no version can have asked it.
+		db.insert(decisionSurveyQuestions).values({ decisionId: drafting.id, position: 0 }).returning().get();
+		const words = { questionId: question.id, kind: 'text', prompt: 'Anything else?', help: '', required: false };
+		for (const number of [1, 2]) makeVersion(asking, { surveyQuestions: [words] }, { number, asksAgain: false });
+		for (const decision of [drafting, silent]) for (const number of [1, 2]) makeVersion(decision, { situation: 'Stock is short.' }, { number, asksAgain: false });
+
+		/** What `read` gives, and how many statements it prepares that read the versions. */
+		const versionReadsIn = <T>(read: () => T): { value: T; reads: number } => {
+			const prepare = vi.spyOn(sqlite, 'prepare');
+			try {
+				const value = read();
+				return { value, reads: prepare.mock.calls.filter(([source]) => String(source).includes('decision_versions')).length };
+			} finally {
+				prepare.mockRestore();
+			}
+		};
+		const shape = (asked: ReturnType<typeof surveysAskedIn>) => [...asked].map(([id, versions]) => [id, [...versions].map(([number, questions]) => [number, [...questions.keys()]])]);
+
+		const none = versionReadsIn(() => surveysAskedIn([drafting.id, silent.id]));
+		expect(none.reads).toBe(0);
+		expect(shape(none.value)).toEqual([
+			[drafting.id, []],
+			[silent.id, []]
+		]);
+		const all = versionReadsIn(() => surveysAskedIn([asking.id, silent.id]));
+		expect(all.reads).toBe(1);
+		expect(shape(all.value)).toEqual([
+			[asking.id, [[1, [question.id]], [2, [question.id]]]],
+			[silent.id, []]
+		]);
+		expect(shape(surveysAskedIn([asking.id], [2]))).toEqual([[asking.id, [[2, [question.id]]]]]);
 	});
 });

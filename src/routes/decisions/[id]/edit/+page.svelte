@@ -13,6 +13,9 @@
 	 * write's answer gives the next, and the page's data is read again after
 	 * it (decision 23). Reload, offered after a 409, reads the decision again
 	 * and draws it afresh, the edits not yet saved given up.
+	 *
+	 * Card 2683: the editor is handed the survey question rows too, which say
+	 * which questions a version has published (their kind is fixed, R8).
 	 */
 	import { untrack } from 'svelte';
 	import type { PageData } from './$types';
@@ -95,6 +98,7 @@
 			<DecisionEditor
 				decision={data.decision}
 				options={data.options}
+				surveyQuestions={data.surveyQuestions}
 				participants={data.participants}
 				groups={data.groups}
 				{revision}

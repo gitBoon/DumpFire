@@ -22,7 +22,9 @@
     `{ revision }`.
   - **Re-publish** asks for a change note and Ask everyone again or Tell them
     only, which is off, with its reason, where the working copy adds or
-    retires an option (`republishSummary`). A note under the choice says who
+    retires an option, or (card 2683, R7) adds, retires or changes a survey
+    question but for its help, each named by number and prompt
+    (`republishSummary`). A note under the choice says who
     is asked, told or invited by it (card 2739, D5); the server decides who at
     the write. It sends `{ changeNote, askAgain, revision }`.
   - Open, Re-publish and the dry run act on the saved working copy, so each is
@@ -142,9 +144,12 @@
 	let section = $state<HTMLElement>();
 	let statusRegion = $state<HTMLElement>();
 
+	/** Whether Tell them only would be refused: an option added or retired, or (card 2683, R7) a survey question added, retired or changed but for its help. */
+	let tellOnlyRefused = $derived(republishSummary !== null && (republishSummary.changesOptions || republishSummary.changesSurvey === true));
+
 	// Tell them only cannot be chosen once it would be refused.
 	$effect(() => {
-		if (republishSummary?.changesOptions) askAgain = true;
+		if (tellOnlyRefused) askAgain = true;
 	});
 
 	/** Each form's id, which its toggle names (`aria-controls`). */
@@ -319,13 +324,28 @@
 
 	const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
 
-	/** Why Tell them only is off: the options this version would add and retire, by label. */
+	/** A survey question as a summary names it (card 2683): its number, and its prompt where it has one. */
+	const surveyNamed = (question: Summary['surveyAdding'][number]) => (question.prompt.trim() === '' ? `${question.number}` : `${question.number} ('${question.prompt.trim()}')`);
+	/** `what` and the questions it names: "adds survey question 2 ('…')", or "questions" for more than one. */
+	const surveyPart = (what: string, list: Summary['surveyAdding']) =>
+		list.length === 0 ? [] : [`${what} survey question${list.length === 1 ? '' : 's'} ${list.map(surveyNamed).join(', ')}`];
+	/** A list in words: "a", "a and b", "a, b and c". */
+	const listed = (parts: string[]) => (parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`);
+
+	/**
+	 * Why Tell them only is off: the options this version would add and retire, by label; and (card 2683, R7, R8) the
+	 * survey questions it would add, retire or change, by number and prompt, as only a question's help may be told of.
+	 */
 	function tellOnlyOff(summary: Summary): string {
 		const changes = [
 			...(summary.adding.length > 0 ? [`adds option ${summary.adding.join(', ')}`] : []),
-			...(summary.retiring.length > 0 ? [`retires option ${summary.retiring.join(', ')}`] : [])
+			...(summary.retiring.length > 0 ? [`retires option ${summary.retiring.join(', ')}`] : []),
+			...(summary.changesSurvey
+				? [...surveyPart('adds', summary.surveyAdding), ...surveyPart('retires', summary.surveyRetiring), ...surveyPart('changes', summary.surveyChanging)]
+				: [])
 		];
-		return `Tell them only is off: this version ${changes.join(' and ')}, so everyone consulted is asked again; people kept informed are told.`;
+		const helpOnly = summary.changesSurvey ? " Only a survey question's help can be changed by telling them only." : '';
+		return `Tell them only is off: this version ${listed(changes)}, so everyone consulted is asked again; people kept informed are told.${helpOnly}`;
 	}
 	// Card 2739 (D5): who each choice mails, and with what. Advice: the server reads who the round reached at the write.
 	const republishWho = $derived(
@@ -451,11 +471,18 @@
 				<legend class="small">Then</legend>
 				<label><input type="radio" name="ask-again-{decisionId}" value={true} bind:group={askAgain} /> Ask everyone again</label>
 				<label>
-					<input type="radio" name="ask-again-{decisionId}" value={false} bind:group={askAgain} disabled={republishSummary?.changesOptions ?? false} />
+					<input
+						type="radio"
+						name="ask-again-{decisionId}"
+						value={false}
+						bind:group={askAgain}
+						disabled={tellOnlyRefused}
+						aria-describedby={tellOnlyRefused ? `tell-only-${decisionId}` : undefined}
+					/>
 					Tell them only
 				</label>
-				{#if republishSummary?.changesOptions}
-					<p class="note" data-note="tell-only">{tellOnlyOff(republishSummary)}</p>
+				{#if republishSummary !== null && tellOnlyRefused}
+					<p class="note" id="tell-only-{decisionId}" data-note="tell-only">{tellOnlyOff(republishSummary)}</p>
 				{/if}
 				<p class="note" data-note="republish-who">{republishWho}</p>
 			</fieldset>

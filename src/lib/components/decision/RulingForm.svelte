@@ -28,6 +28,10 @@
     unticked, as the questions may have changed, and a choice no longer among
     the options holds Rule off. The focus goes to those words, as Rule may be
     off.
+  - Card 2683 (R18): a decision whose version puts no options to a vote (a
+    survey) offers no option and no "None of these": it says
+    `NO_OPTIONS_PUT`, and the ruling, with no option, records the decider's
+    conclusion in its reason.
 -->
 <script lang="ts">
 	import { tick } from 'svelte';
@@ -35,7 +39,7 @@
 	import { failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { againstOf, DECISION_TEXT_MAX } from '$lib/decision-rules';
-	import { NOT_REACHED_WORDS, RESULTS_READ_AGAIN, STALE_REVISION } from '$lib/decision-words';
+	import { NOT_REACHED_WORDS, NO_OPTIONS_PUT, RESULTS_READ_AGAIN, STALE_REVISION } from '$lib/decision-words';
 	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	let {
@@ -90,13 +94,17 @@
 	let ruleButton = $state<HTMLButtonElement>();
 	let saidRegion = $state<HTMLElement>();
 
-	const optionId = $derived(choice === '' || choice === NONE ? null : Number(choice));
+	/** Card 2683 (R18): no option was put to a vote, so the ruling is on none, with nothing to choose. */
+	const noOptions = $derived(options.length === 0);
+	const chosen = $derived(noOptions ? NONE : choice);
+	const optionId = $derived(chosen === '' || chosen === NONE ? null : Number(chosen));
 	/** Decision 11: the rule `ruleDecision` records, shared (code review F8): against when there were votes and the choice is not among the most chosen. */
 	/** Card 2734 (D3): a choice is only one still offered, as the options may change when the page is read again. */
-	const offered = $derived(choice === NONE || options.some((option) => String(option.optionId) === choice));
+	const offered = $derived(chosen === NONE || options.some((option) => String(option.optionId) === chosen));
 	const against = $derived(offered && againstOf(optionId, voted, mostChosen));
 	const ready = $derived(offered && reason.trim() !== '' && (openQuestions === 0 || confirmedOpen));
 	const chosenWords = $derived.by(() => {
+		if (noOptions) return 'no option, as none were put to a vote';
 		if (optionId === null) return 'None of these';
 		const option = options.find((candidate) => candidate.optionId === optionId);
 		return option === undefined ? '' : `Option ${option.label}${option.title ? `: ${option.title}` : ''}`;
@@ -166,19 +174,23 @@
 </script>
 
 <form class="ruling-form" data-form="ruling" onsubmit={ask}>
-	<fieldset class="choices">
-		<legend>The ruling</legend>
-		{#each options as option (option.optionId)}
+	{#if noOptions}
+		<p class="note" data-note="no-options">{NO_OPTIONS_PUT}: the ruling chooses none, and your reason records what you concluded.</p>
+	{:else}
+		<fieldset class="choices">
+			<legend>The ruling</legend>
+			{#each options as option (option.optionId)}
+				<label>
+					<input type="radio" name="ruling-{id}" value={String(option.optionId)} bind:group={choice} aria-describedby={against ? warningId : undefined} />
+					Option {option.label}{option.title ? `: ${option.title}` : ''}
+				</label>
+			{/each}
 			<label>
-				<input type="radio" name="ruling-{id}" value={String(option.optionId)} bind:group={choice} aria-describedby={against ? warningId : undefined} />
-				Option {option.label}{option.title ? `: ${option.title}` : ''}
+				<input type="radio" name="ruling-{id}" value={NONE} bind:group={choice} aria-describedby={against ? warningId : undefined} />
+				None of these
 			</label>
-		{/each}
-		<label>
-			<input type="radio" name="ruling-{id}" value={NONE} bind:group={choice} aria-describedby={against ? warningId : undefined} />
-			None of these
-		</label>
-	</fieldset>
+		</fieldset>
+	{/if}
 	{#if against}
 		<p class="warning" id={warningId} data-note="against">This goes against the responses: it is not the most chosen option. Only you and DumpFire's administrators are shown this.</p>
 	{/if}

@@ -43,7 +43,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Svelte from 'svelte';
-import type { DecisionPageData, OwnResponse, RulingView, ViewContent, ViewOption } from '$lib/decision-view-types';
+import type { DecisionPageData, OwnResponse, RulingView, ViewContent, ViewOption, ViewSurveyQuestion } from '$lib/decision-view-types';
 
 const navigation = vi.hoisted(() => ({ invalidateAll: vi.fn(async () => {}) }));
 vi.mock('$app/navigation', () => ({
@@ -74,7 +74,7 @@ vi.mock('svelte', async () => {
 import DecisionView from '$lib/components/decision/DecisionView.svelte';
 import MarkdownBlock from '$lib/components/decision/MarkdownBlock.svelte';
 import ResponseForm from '$lib/components/decision/ResponseForm.svelte';
-import { STALE_REVISION, signedInNoteWords, type ToldMail } from '$lib/decision-words';
+import { STALE_REVISION, SURVEY_TEXT_NOTE, signedInNoteWords, surveyWhoSees, whoSeesStatement, type ToldMail } from '$lib/decision-words';
 import { renderMarkdown } from '$lib/markdown';
 import DecisionPage from '../src/routes/decisions/[id]/+page.svelte';
 import LinkPage from '../src/routes/decision-link/[token]/+page.svelte';
@@ -198,6 +198,7 @@ function pageData(more: Partial<DecisionPageData> = {}): DecisionPageData & { us
 		draft: false,
 		version: { number: 1, publishedAt: '2026-11-01 09:00:00', content: CONTENT },
 		options: OPTIONS,
+		surveyQuestions: [],
 		audiences: AUDIENCES,
 		participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: '2026-11-01 09:05:00', delivered: true, sentAs: 'consulted' } },
 		ownResponse: null,
@@ -233,6 +234,7 @@ const response = (more: Partial<OwnResponse> = {}): OwnResponse => ({
 	scores: null,
 	comment: null,
 	optionComments: {},
+	answers: {},
 	createdAt: '2026-11-02 10:00:00',
 	...more
 });
@@ -986,5 +988,171 @@ describe('the parts both participant pages share (card 2707)', () => {
 			expect(radio(target, 'option-12').checked, name).toBe(false);
 			expect(target.querySelector('[role="alert"]'), name).toBeNull();
 		}
+	});
+});
+
+// ─── Survey questions (card 2683, slice S3b: cases U1 to U3 and U8) ─────────
+
+describe('survey questions (card 2683)', () => {
+	const SURVEY: ViewSurveyQuestion[] = [
+		{ questionId: 41, kind: 'choice', prompt: 'Where do you ship from?', help: 'The **main** site.', required: true, choices: ['Leeds', 'York'], agentDrafted: false },
+		{ questionId: 42, kind: 'scale', prompt: 'How busy are you?', help: '', required: false, scale: { max: 5, lowLabel: 'Quiet', highLabel: 'Flat out' }, agentDrafted: true },
+		{ questionId: 43, kind: 'text', prompt: 'Anything else?', help: '', required: true, agentDrafted: false }
+	];
+	const question = (within: ParentNode, id: number) => within.querySelector<HTMLFieldSetElement>(`fieldset[data-question="${id}"]`)!;
+	const pick = (within: ParentNode, id: number, value: string) => {
+		question(within, id).querySelector<HTMLInputElement>(`input[type="radio"][value="${value}"]`)!.click();
+		flushSync();
+	};
+	const writtenIn = (within: ParentNode, id: number) => question(within, id).querySelector<HTMLTextAreaElement>('textarea')!;
+	const survey = (more: Partial<DecisionPageData> = {}) => pageData({ options: [], surveyQuestions: SURVEY, ...more });
+
+	it('U1: a survey offers "I answer the questions" and "I abstain" alone, and sends the answers keyed by question id, said back by prompt', async () => {
+		const target = drawForm({ options: [], surveyQuestions: SURVEY, deciderName: 'Dee Cider' });
+		expect([...target.querySelectorAll<HTMLInputElement>('fieldset.choices input[type="radio"]')].map((r) => r.value)).toEqual(['answered', 'abstain']);
+		expect(target.querySelector('input[value="no_concerns"], input[value^="option-"]')).toBeNull();
+		expect(target.querySelector('.option-comments')).toBeNull();
+
+		// Answering chooses "I answer the questions" where nothing is chosen yet.
+		pick(target, 41, '1');
+		expect(radio(target, 'answered').checked).toBe(true);
+		pick(target, 42, '4');
+		type(writtenIn(target, 43), 'We ship on Tuesdays');
+		const given = { '41': 1, '42': 4, '43': 'We ship on Tuesdays' };
+		answer('POST /api/decisions/5/responses', { response: response({ kind: 'answered', optionId: null, answers: given }), unchanged: false });
+		button(target, 'Send my response').click();
+		await settle();
+
+		expect(requests('POST /api/decisions/5/responses')).toEqual([{ versionNumber: 1, statement: 2, kind: 'answered', comment: '', optionComments: {}, answers: given }]);
+		expect(linesOf(target.querySelector('.recorded')!)).toEqual([
+			'Your response was recorded on 2026-11-02 10:00 UTC:',
+			'You answered the survey questions.',
+			'Where do you ship from?: York',
+			'How busy are you?: 4 of 5',
+			'Anything else?: We ship on Tuesdays'
+		]);
+	});
+
+	it('U2: Send is held until every required question is answered, spaces alone being no answer; abstaining is not held', async () => {
+		const target = drawForm({ surveyQuestions: SURVEY });
+		const send = button(target, 'Send my response');
+		radio(target, 'option-11').click();
+		flushSync();
+		expect(send.disabled).toBe(true);
+		expect(target.querySelector('[data-note="required"]')).not.toBeNull();
+		pick(target, 41, '0');
+		type(writtenIn(target, 43), '   ');
+		expect(send.disabled, 'spaces alone').toBe(true);
+		type(writtenIn(target, 43), 'Tuesdays');
+		expect(send.disabled).toBe(false);
+		expect(target.querySelector('[data-note="required"]')).toBeNull();
+		answer('POST /api/decisions/5/responses', { response: response({ answers: { '41': 0, '43': 'Tuesdays' } }), unchanged: false });
+		send.click();
+		await settle();
+		expect(requests('POST /api/decisions/5/responses')).toEqual([
+			{ versionNumber: 1, statement: 2, kind: 'vote', optionId: 11, comment: '', optionComments: {}, answers: { '41': 0, '43': 'Tuesdays' } }
+		]);
+
+		clear();
+		const abstaining = drawForm({ options: [], surveyQuestions: SURVEY });
+		radio(abstaining, 'abstain').click();
+		flushSync();
+		expect(button(abstaining, 'Send my response').disabled).toBe(false);
+		radio(abstaining, 'answered').click();
+		flushSync();
+		expect(button(abstaining, 'Send my response').disabled).toBe(true);
+	});
+
+	it('F8: an optional choice or scale answer can be cleared, and is not sent; a required one has no Clear; each scale point is described by the words at its ends', async () => {
+		const target = drawForm({ options: [], surveyQuestions: SURVEY });
+		const clearIn = (id: number) => question(target, id).querySelector<HTMLButtonElement>('[data-action="clear-answer"]');
+		const points = [...question(target, 42).querySelectorAll<HTMLInputElement>('input[type="radio"]')];
+		const ends = document.getElementById(points[0].getAttribute('aria-describedby')!)!;
+		expect(textOf(ends)).toBe('A number from 1 (Quiet) to 5 (Flat out).');
+		expect(points.map((point) => point.getAttribute('aria-describedby'))).toEqual(points.map(() => ends.id));
+		expect(points.map((point) => point.getAttribute('aria-label'))).toEqual(['1 of 5, Quiet', '2 of 5', '3 of 5', '4 of 5', '5 of 5, Flat out']);
+
+		expect(clearIn(42)).toBeNull();
+		pick(target, 41, '0');
+		pick(target, 42, '4');
+		expect(clearIn(41), 'required').toBeNull();
+		expect(clearIn(42)!.getAttribute('aria-label')).toBe('Clear the answer to question 2');
+		clearIn(42)!.click();
+		flushSync();
+		expect(points.filter((point) => point.checked)).toEqual([]);
+		expect(clearIn(42)).toBeNull();
+
+		type(writtenIn(target, 43), 'Tuesdays');
+		answer('POST /api/decisions/5/responses', { response: response({ kind: 'answered', optionId: null, answers: { '41': 0, '43': 'Tuesdays' } }), unchanged: false });
+		button(target, 'Send my response').click();
+		await settle();
+		expect(requests('POST /api/decisions/5/responses')).toEqual([
+			{ versionNumber: 1, statement: 2, kind: 'answered', comment: '', optionComments: {}, answers: { '41': 0, '43': 'Tuesdays' } }
+		]);
+	});
+
+	it('U3: an informed participant reads the questions with no input, and who sees the answers; a consulted one answers them in the form, each box with the note', () => {
+		const informed = draw(DecisionPage, { data: survey({ participant: { role: 'informed', includedAt: '2026-11-01 09:00:00', told: null }, mayRespond: false }) });
+		const section = informed.querySelector('[data-section="survey"]')!;
+		expect(section.querySelector('input, textarea')).toBeNull();
+		expect([...section.querySelectorAll('legend')].map(textOf)).toEqual(['1. Where do you ship from? (required)', '2. How busy are you?', '3. Anything else? (required)']);
+		expect([...section.querySelectorAll('li')].map(textOf)).toEqual(['Leeds', 'York']);
+		expect(textOf(question(section, 42).querySelector('.scale-ends')!)).toBe('A number from 1 (Quiet) to 5 (Flat out).');
+		expect(textOf(question(section, 41).querySelector('.markdown-body strong')!)).toBe('main');
+		expect([...section.querySelectorAll<HTMLElement>('.agent-label')].map((l) => l.dataset.flag)).toEqual(['survey.42']);
+		const whoSees = textOf(section.querySelector('[data-note="survey-who-sees"]')!);
+		expect(whoSees).toBe(surveyWhoSees('Dee Cider'));
+		expect(whoSees).toContain('whoever decides (now Dee Cider)');
+		expect(whoSees).toContain('releases nothing');
+		expect(section.querySelector('[data-note="survey-text"]')).toBeNull();
+
+		clear();
+		const consulted = draw(DecisionPage, { data: survey() });
+		expect(consulted.querySelector('[data-section="survey"]'), 'drawn once, in the form').toBeNull();
+		const form = consulted.querySelector('[data-section="response"] .response-form')!;
+		expect(textOf(form.querySelector('[data-note="survey-who-sees"]')!)).toBe(surveyWhoSees('Dee Cider'));
+		expect([...form.querySelectorAll('[data-note="survey-text"]')].map(textOf)).toEqual([SURVEY_TEXT_NOTE]);
+		expect(writtenIn(form, 43).getAttribute('aria-describedby')).toBe(form.querySelector('[data-note="survey-text"]')!.id);
+	});
+
+	it('U8: on a survey round who sees a response is said without its release sentence; on a round with options it is whole', () => {
+		const surveyed = draw(DecisionPage, { data: survey() });
+		const words = textOf(surveyed.querySelector('[data-section="who-sees"] p')!);
+		expect(words).toBe(whoSeesStatement('Dee Cider', false));
+		expect(words).not.toContain('After the ruling');
+		expect(words).toContain('No other participant sees it, or any totals.');
+
+		clear();
+		const voting = draw(DecisionPage, { data: pageData({ surveyQuestions: SURVEY }) });
+		expect(textOf(voting.querySelector('[data-section="who-sees"] p')!)).toBe(whoSeesStatement('Dee Cider'));
+		expect(textOf(voting.querySelector('[data-section="who-sees"] p')!)).toContain('After the ruling, the decider may show the totals');
+	});
+
+	it('S3b: a response of this round is said back with its answers by prompt; one of an earlier round says how many, not what', () => {
+		const closed = draw(DecisionPage, {
+			data: survey({
+				decision: { id: 5, ...DECISION, shownStatus: 'awaiting_ruling', boardName: 'Website', withdrawnAt: null, withdrawnReason: null },
+				mayRespond: false,
+				ownResponse: response({ kind: 'answered', optionId: null, answers: { '41': 0, '43': 'Tuesdays' } })
+			})
+		});
+		const section = closed.querySelector('[data-section="response"]')!;
+		expect(section.querySelector('input, textarea')).toBeNull();
+		expect(section.querySelectorAll('fieldset[data-question]')).toHaveLength(3);
+		expect([...section.querySelectorAll('.response-line')].map(textOf)).toEqual(['You answered the survey questions.', 'Where do you ship from?: Leeds', 'Anything else?: Tuesdays']);
+
+		clear();
+		const later = draw(DecisionPage, {
+			data: survey({
+				version: { number: 2, publishedAt: '2026-11-02 09:00:00', content: CONTENT },
+				earlierResponse: response({ kind: 'answered', optionId: null, answers: { '41': 0, '43': 'Tuesdays' } })
+			})
+		});
+		expect(linesOf(later.querySelector('.earlier')!)).toEqual([
+			'This decision changed on 2026-11-02 09:00 UTC. Your earlier response was for version 1:',
+			'You answered the survey questions.',
+			'You also answered 2 survey questions as that version asked them.'
+		]);
+		expect(textOf(later.querySelector('.earlier')!)).not.toContain('Tuesdays');
 	});
 });

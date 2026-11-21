@@ -18,6 +18,13 @@
   2679, decisions 21 and 25). What an agent drafted and no person has
   reviewed carries `AgentLabel` (card 2712).
 
+  Card 2683: the survey questions (`surveyQuestions`) follow the options.
+  A consulted participant given the `response` snippet answers them there; to
+  anyone else they are drawn here alone, with no input (`SurveyQuestions`),
+  with `surveyWhoSees`' sentence to a participant. On a round that puts no
+  options to a vote, who sees a response is said without its last sentence,
+  the release one, as such a round releases nothing (R10).
+
   Its props are `DecisionViewProps` (src/lib/decision-view-types.ts): no
   version number, publication or inclusion moment, so that a preview builds
   them from the working content. The pages draw the banner and the form, which
@@ -28,14 +35,16 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { DecisionViewProps } from '$lib/decision-view-types';
-	import { STATUS_WORDS, shownMoment, whoSeesStatement } from '$lib/decision-words';
+	import { STATUS_WORDS, shownMoment, surveyWhoSees, whoSeesStatement } from '$lib/decision-words';
 	import AgentLabel from './AgentLabel.svelte';
 	import MarkdownBlock from './MarkdownBlock.svelte';
+	import SurveyQuestions from './SurveyQuestions.svelte';
 
 	let {
 		decision,
 		content,
 		options,
+		surveyQuestions = [],
 		audiences,
 		participant,
 		mode,
@@ -51,6 +60,8 @@
 	const flagged = (key: string) => Object.hasOwn(content.agentDrafted, key);
 	const consulted = $derived(participant?.role === 'consulted');
 	const decider = $derived(decision.deciderName ?? 'the decider');
+	/** Card 2683 (R10): a survey round releases nothing, so who sees a response is said without the release sentence. */
+	const releases = $derived(!(options.length === 0 && surveyQuestions.length > 0));
 </script>
 
 {#snippet agentLabel(key: string)}
@@ -94,7 +105,7 @@
 		<section data-section="who-sees">
 			<h2>Who sees your response</h2>
 			<!-- The words and their version are one bundle's, so the version a response sends is the one shown (card 2679, decisions 21 and 25). -->
-			<p>{whoSeesStatement(decider)}</p>
+			<p>{whoSeesStatement(decider, releases)}</p>
 		</section>
 	{/if}
 
@@ -123,6 +134,13 @@
 					</div>
 				{/each}
 			</div>
+		</section>
+	{/if}
+
+	{#if surveyQuestions.length > 0 && !(consulted && response)}
+		<section data-section="survey">
+			<h2>Survey questions</h2>
+			<SurveyQuestions questions={surveyQuestions} whoSees={participant !== null ? surveyWhoSees(decider) : null} />
 		</section>
 	{/if}
 

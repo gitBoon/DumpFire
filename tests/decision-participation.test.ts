@@ -28,11 +28,11 @@ import { db, sqlite } from '$lib/server/db';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { addressToCount } from '$lib/server/client-address';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
-import { readDecisionPage, readLinkPage, refuseWrongLink } from '$lib/server/decision-view';
+import { readDecisionPage, readLinkPage, readPreview, refuseWrongLink } from '$lib/server/decision-view';
 import { requireSameOriginJson } from '$lib/server/same-origin';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
-import { decisions, people, peopleGroupMembers, peopleGroups, type Board, type Decision, type DecisionOption } from '$lib/server/db/schema';
+import { decisions, decisionSurveyQuestions, people, peopleGroupMembers, peopleGroups, type Board, type Decision, type DecisionOption } from '$lib/server/db/schema';
 import { recordSeen, recordSeenByLink, respondByLink, respondToDecision } from '$lib/server/decision-response-writes';
 import { releaseResults } from '$lib/server/decision-ruling-writes';
 import { setParticipants } from '$lib/server/decision-participant-writes';
@@ -225,6 +225,7 @@ describe('respondToDecision', () => {
 				scores: null,
 				comment: 'Lean is enough.',
 				optionComments: { [b.id]: 'Too dear.' },
+				answers: {},
 				createdAt: row.createdAt
 			},
 			unchanged: false
@@ -479,6 +480,396 @@ describe('respondByLink', () => {
 	});
 });
 
+// ─── Survey answers (card 2683, slice S2a: T28 to T42, T58, T61, T64) ────────
+
+/** The words of the survey questions `surveyed` makes, in order: a choice, a scale and a text question. */
+const SURVEY_WORDS = [
+	{ kind: 'choice', prompt: 'Which depot ships it?', help: '', required: false, choices: ['Leeds', 'York', 'Hull'] },
+	{ kind: 'scale', prompt: 'How urgent is it?', help: '', required: false, scale: { max: 5, lowLabel: 'Not at all', highLabel: 'Very' } },
+	{ kind: 'text', prompt: 'Anything else?', help: '', required: false }
+] as const;
+
+/**
+ * Card 2683: an opened decision asking survey questions, as `openDecision`
+ * leaves one: version 1 holding `SURVEY_WORDS`, each a row added in version 1,
+ * those named in `required` required; and a question made but never
+ * published. With no options unless `options` puts A and B live beside them.
+ */
+function surveyed(opts: { options?: boolean; required?: ('choice' | 'scale' | 'text')[]; row?: Partial<Decision> } = {}) {
+	const decider = makeUser({ username: `decider${count('users')}` });
+	addBoardMember(board, decider, 'editor');
+	const made = makeDecision({ board, author: decider, decider, status: 'open', closesAt: FUTURE, openedAt: '2026-11-01 09:00:00', ...opts.row });
+	const options = opts.options ? [makeOption(made, { label: 'A', position: 0, addedInVersion: 1 }), makeOption(made, { label: 'B', position: 1, addedInVersion: 1 })] : [];
+	const [choice, scale, text] = SURVEY_WORDS.map((_words, position) =>
+		db.insert(decisionSurveyQuestions).values({ decisionId: made.id, position, addedInVersion: 1 }).returning().get()
+	);
+	const draftOnly = db.insert(decisionSurveyQuestions).values({ decisionId: made.id, position: 3 }).returning().get();
+	const required = opts.required ?? [];
+	makeVersion(
+		made,
+		{
+			situation: 'Stock is short.',
+			options: options.map((o) => ({ optionId: o.id, label: o.label, title: o.label })),
+			surveyQuestions: SURVEY_WORDS.map((words, index) => ({ ...words, questionId: [choice, scale, text][index].id, required: required.includes(words.kind) }))
+		},
+		{ number: 1 }
+	);
+	return { decision: decisionRow(made.id), choice, scale, text, draftOnly, options };
+}
+
+/** The decision's response rows as their kind, answers and the row each replaced, in order. */
+const storedAnswers = (decisionId: number) =>
+	sqlite.prepare('SELECT id, kind, answers, replaces_id AS replacesId FROM decision_responses WHERE decision_id = ? ORDER BY id').all(decisionId) as {
+		id: number;
+		kind: string;
+		answers: string | null;
+		replacesId: number | null;
+	}[];
+
+describe('survey answers (card 2683)', () => {
+	it('T28. survey-only: an answered response is recorded, its answers built from the live question ids in their order, and the answer gives them back', () => {
+		const { decision, choice, scale, text } = surveyed();
+		const { account } = withAccount(decision);
+
+		const answer = respond(account, decision, {
+			versionNumber: 1,
+			kind: 'answered',
+			answers: { [text.id]: '  We ship from Leeds on Tuesdays  ', [scale.id]: 4, [choice.id]: 0 },
+			comment: 'Ask the depot.'
+		});
+
+		const [row] = storedAnswers(decision.id);
+		expect(row).toMatchObject({ kind: 'answered', replacesId: null });
+		expect(row.answers).toBe(JSON.stringify({ [choice.id]: 0, [scale.id]: 4, [text.id]: 'We ship from Leeds on Tuesdays' }));
+		expect(responsesOf(decision.id)[0]).toMatchObject({ optionId: null, scores: null, comment: 'Ask the depot.', via: 'session' });
+		expect(answer).toEqual({
+			response: expect.objectContaining({
+				kind: 'answered',
+				optionId: null,
+				scores: null,
+				answers: { [choice.id]: 0, [scale.id]: 4, [text.id]: 'We ship from Leeds on Tuesdays' }
+			}),
+			unchanged: false
+		});
+	});
+
+	it('T30. survey-only: no_concerns is a 400 by name, writing nothing', () => {
+		const { decision, choice } = surveyed();
+		const { account } = withAccount(decision);
+
+		expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'no_concerns', answers: { [choice.id]: 1 } }))).toEqual({
+			status: 400,
+			message: 'kind no_concerns cannot be given: this decision puts no options to a vote, so answer its survey questions (kind answered), or abstain'
+		});
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T31. survey-only: a vote is a 400 by name, in single mode and in score mode with scores {} (F1), writing nothing', () => {
+		const single = surveyed();
+		const score = surveyed({ row: { voteMode: 'score' } });
+		const pat = withAccount(single.decision, 'consulted', 'pat');
+		const sam = withAccount(score.decision, 'consulted', 'sam');
+		const refused = { status: 400, message: 'kind vote cannot be given: this decision puts no options to a vote, so answer its survey questions (kind answered), or abstain' };
+
+		expect(outcome(() => respond(pat.account, single.decision, { versionNumber: 1, kind: 'vote', optionId: single.choice.id })), 'single').toEqual(refused);
+		expect(outcome(() => respond(sam.account, score.decision, { versionNumber: 1, kind: 'vote', scores: {} })), 'score').toEqual(refused);
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T31 (F1, behind it). a score-mode vote with scores {} on a decision with no live option and no survey question is refused by its scores, never stored as {}', () => {
+		// Not a state the writes leave; made so that the scores reader's own refusal is reached.
+		const decider = makeUser({ username: 'decider' });
+		addBoardMember(board, decider, 'editor');
+		const made = makeDecision({ board, author: decider, decider, status: 'open', closesAt: FUTURE, openedAt: '2026-11-01 09:00:00', voteMode: 'score' });
+		makeVersion(made, { situation: 'Nothing is put.' }, { number: 1 });
+		const { account } = withAccount(decisionRow(made.id));
+
+		expect(outcome(() => respond(account, decisionRow(made.id), { versionNumber: 1, kind: 'vote', scores: {} }))).toEqual({
+			status: 400,
+			message: 'scores cannot be given: this decision has no options to score'
+		});
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T32. answered on a decision with options is a 400, writing nothing', () => {
+		const { decision, choice } = surveyed({ options: true });
+		const { account } = withAccount(decision);
+
+		expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [choice.id]: 1 } }))).toEqual({
+			status: 400,
+			message: 'kind answered cannot be given: this decision puts options to a vote, so vote, abstain or say you have no concerns'
+		});
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T33. answered with no answer is a 400, sent without answers and sent with none, writing nothing', () => {
+		const { decision } = surveyed();
+		const { account } = withAccount(decision);
+		const refused = { status: 400, message: 'kind answered must hold an answer to at least one survey question' };
+
+		expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'answered' })), 'not sent').toEqual(refused);
+		expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'answered', answers: {} })), 'none').toEqual(refused);
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T34. a vote leaving a required question unanswered is a 400 naming it by number, writing nothing', () => {
+		const { decision, options, choice } = surveyed({ options: true, required: ['scale'] });
+		const { account } = withAccount(decision);
+
+		expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'vote', optionId: options[0].id, answers: { [choice.id]: 2 } }))).toEqual({
+			status: 400,
+			message: 'Survey question 2 must be answered: answer it, or abstain'
+		});
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T35. an abstention leaving a required question unanswered is accepted, with no answers', () => {
+		const { decision } = surveyed({ required: ['choice', 'scale'] });
+		const { account } = withAccount(decision);
+
+		const answer = respond(account, decision, { versionNumber: 1, kind: 'abstain' });
+
+		expect(storedAnswers(decision.id)).toEqual([{ id: expect.any(Number), kind: 'abstain', answers: null, replacesId: null }]);
+		expect(answer.response.answers).toEqual({});
+	});
+
+	it('T36. a choice index out of range is a 400 naming the question, writing nothing', () => {
+		const { decision, choice } = surveyed();
+		const { account } = withAccount(decision);
+
+		for (const index of [3, -1]) {
+			expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [choice.id]: index } })), `${index}`).toEqual({
+				status: 400,
+				message: 'Survey question 1 asks for the number of one of its choices, counted from 0, from 0 to 2'
+			});
+		}
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T37. a scale value outside 1 to its top is a 400 naming the question, writing nothing', () => {
+		const { decision, scale } = surveyed();
+		const { account } = withAccount(decision);
+
+		for (const value of [0, 6, 2.5]) {
+			expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [scale.id]: value } })), `${value}`).toEqual({
+				status: 400,
+				message: 'Survey question 2 asks for a whole number on its scale, from 1 to 5'
+			});
+		}
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T38. a written answer over 2,000 characters is a 400 naming the question and holding none of the text, writing nothing', () => {
+		const { decision, text } = surveyed();
+		const { account } = withAccount(decision);
+		const long = 'Confidential '.repeat(160);
+
+		const result = outcome(() => respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [text.id]: long } }));
+
+		expect(result).toEqual({ status: 400, message: "Survey question 3's answer must be at most 2000 characters" });
+		expect(JSON.stringify(result)).not.toContain('Confidential');
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T39. an answer keyed by a question retired in the current version is a 400, writing nothing', () => {
+		const { decision, choice, scale } = surveyed();
+		// Version 2 asks again, with the scale question retired in it.
+		sqlite.prepare('UPDATE decision_survey_questions SET retired_in_version = 2 WHERE id = ?').run(scale.id);
+		makeVersion(decision, { surveyQuestions: [{ ...SURVEY_WORDS[0], questionId: choice.id }] }, { number: 2, asksAgain: true });
+		const { account } = withAccount(decision);
+
+		expect(outcome(() => respond(account, decisionRow(decision.id), { versionNumber: 2, kind: 'answered', answers: { [choice.id]: 1, [scale.id]: 3 } }))).toEqual({
+			status: 400,
+			message: `answers.${scale.id} is not a field of this decision's current survey questions`
+		});
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T40. an answer of the wrong type (text for a choice, a number for a written answer) is a 400 naming the question and not what was sent, writing nothing', () => {
+		const { decision, choice, text } = surveyed();
+		const { account } = withAccount(decision);
+
+		expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [choice.id]: 'Leeds' } })), 'choice').toEqual({
+			status: 400,
+			message: 'Survey question 1 asks for the number of one of its choices, counted from 0, from 0 to 2'
+		});
+		expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [text.id]: 7 } })), 'text').toEqual({
+			status: 400,
+			message: 'Survey question 3 asks for a written answer'
+		});
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T41. the same answers again on the same version write nothing', () => {
+		const { decision, choice, text } = surveyed();
+		const { account } = withAccount(decision);
+		const body = { versionNumber: 1, kind: 'answered', answers: { [choice.id]: 2, [text.id]: 'Hull' } };
+		const first = respond(account, decision, body);
+
+		const again = respond(account, decision, { ...body, answers: { [text.id]: ' Hull ', [choice.id]: 2 } });
+
+		expect(again).toEqual({ response: first.response, unchanged: true });
+		expect(written()).toEqual({ responses: 1, events: 2 });
+	});
+
+	it('T41. changed answers are a new row replacing the last, and the answer gives the new ones', () => {
+		const { decision, choice, scale } = surveyed();
+		const { account } = withAccount(decision);
+		respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [choice.id]: 2 } });
+
+		const changed = respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [choice.id]: 2, [scale.id]: 1 } });
+
+		const rows = storedAnswers(decision.id);
+		expect(rows).toEqual([
+			{ id: expect.any(Number), kind: 'answered', answers: JSON.stringify({ [choice.id]: 2 }), replacesId: null },
+			{ id: expect.any(Number), kind: 'answered', answers: JSON.stringify({ [choice.id]: 2, [scale.id]: 1 }), replacesId: rows[0].id }
+		]);
+		expect(changed.response.answers).toEqual({ [choice.id]: 2, [scale.id]: 1 });
+		expect(changed.unchanged).toBe(false);
+	});
+
+	it('T42. by link: an answered response is recorded via the link, with its answers', () => {
+		const { decision, choice } = surveyed();
+		const { participant } = withLink(decision, 'token-survey');
+
+		const answer = respondWith(null, 'token-survey', { versionNumber: 1, kind: 'answered', answers: { [choice.id]: 1 } });
+
+		expect(responsesOf(decision.id).map((row) => [row.kind, row.via])).toEqual([['answered', 'link']]);
+		expect(storedAnswers(decision.id)[0].answers).toBe(JSON.stringify({ [choice.id]: 1 }));
+		expect(answer.response.answers).toEqual({ [choice.id]: 1 });
+		expect(ownEventsOf(decision.id)[0]).toMatchObject({ kind: 'responded', participantId: participant.id, source: 'link' });
+	});
+
+	it('T58. a written answer of spaces alone to a required question is unanswered: a 400 naming the question, writing nothing', () => {
+		const { decision, choice, text } = surveyed({ required: ['text'] });
+		const { account } = withAccount(decision);
+
+		const result = outcome(() => respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [choice.id]: 0, [text.id]: ' \n\t ' } }));
+
+		expect(result).toEqual({ status: 400, message: 'Survey question 3 must be answered: answer it, or abstain' });
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T58. a written answer of spaces alone to an optional question is left out of the stored answers', () => {
+		const { decision, choice, text } = surveyed();
+		const { account } = withAccount(decision);
+
+		const answer = respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [choice.id]: 0, [text.id]: '   ' } });
+
+		expect(storedAnswers(decision.id)[0].answers).toBe(JSON.stringify({ [choice.id]: 0 }));
+		expect(answer.response.answers).toEqual({ [choice.id]: 0 });
+	});
+
+	it('T61. an answer keyed by a question never published (added_in_version null) is a 400, writing nothing', () => {
+		const { decision, choice, draftOnly } = surveyed();
+		const { account } = withAccount(decision);
+
+		expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [choice.id]: 0, [draftOnly.id]: 'Draft' } }))).toEqual({
+			status: 400,
+			message: `answers.${draftOnly.id} is not a field of this decision's current survey questions`
+		});
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('T64. no_concerns on a decision with options leaving a required question unanswered is a 400 naming it, writing nothing', () => {
+		const { decision } = surveyed({ options: true, required: ['choice'] });
+		const { account } = withAccount(decision);
+
+		expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'no_concerns' }))).toEqual({
+			status: 400,
+			message: 'Survey question 1 must be answered: answer it, or abstain'
+		});
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('F9. an answers key of __proto__ or constructor, sent as raw JSON, is a 400 naming it, writing nothing', () => {
+		const { decision, choice } = surveyed();
+		const { account } = withAccount(decision);
+		const rows: [string, Record<string, unknown>, string][] = [
+			['(a) a __proto__ key', JSON.parse(`{"__proto__": 1, "${choice.id}": 0}`), 'answers.__proto__'],
+			['(b) a constructor key', JSON.parse(`{"constructor": "x", "${choice.id}": 0}`), 'answers.constructor']
+		];
+		for (const [name, answers, field] of rows) {
+			expect(outcome(() => respond(account, decision, { versionNumber: 1, kind: 'answered', answers })), name).toEqual({
+				status: 400,
+				message: `${field} is not a field of this decision's current survey questions`
+			});
+		}
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+
+	it('F2. a survey answered from a page of version 1, after a re-publish that puts options, is a 409 to reload, writing nothing', () => {
+		const { decision, choice, scale, text } = surveyed();
+		const { account } = withAccount(decision);
+		// Version 2 asks again, putting options A and B beside the same questions.
+		const [a, b] = [makeOption(decision, { label: 'A', position: 0, addedInVersion: 2 }), makeOption(decision, { label: 'B', position: 1, addedInVersion: 2 })];
+		makeVersion(
+			decision,
+			{
+				options: [a, b].map((o) => ({ optionId: o.id, label: o.label, title: o.label })),
+				surveyQuestions: SURVEY_WORDS.map((words, index) => ({ ...words, questionId: [choice, scale, text][index].id }))
+			},
+			{ number: 2, asksAgain: true }
+		);
+
+		expect(outcome(() => respond(account, decisionRow(decision.id), { versionNumber: 1, kind: 'answered', answers: { [choice.id]: 1 } }))).toEqual({
+			status: 409,
+			message: STALE_REVISION
+		});
+		expect(written()).toEqual({ responses: 0, events: 0 });
+	});
+});
+
+// ─── Survey questions on the page and in the preview (card 2683, slice S2b: T52, T53) ─
+
+describe('survey questions on the page and in the preview (card 2683)', () => {
+	/** `SURVEY_WORDS[index]` as the page gives it, with its row's id and its agent flag. */
+	const shown = (index: number, questionId: number, agentDrafted = false) => ({ ...SURVEY_WORDS[index], questionId, agentDrafted });
+
+	it('T52. the preview gives the working copy\'s live survey questions, as the next version would hold them, and never a response or an answer', () => {
+		const { decision, choice, scale, text, draftOnly } = surveyed();
+		const { account } = withAccount(decision, 'consulted', 'pat');
+		respond(account, decision, { versionNumber: 1, kind: 'answered', answers: { [choice.id]: 1, [text.id]: 'Only the decider reads this.' }, comment: 'A comment of mine.' });
+		// The working copy: the scale question left out (retired at the next publish), the draft-only question added last.
+		const working = {
+			situation: 'Stock is short.',
+			surveyQuestions: [
+				{ ...SURVEY_WORDS[0], questionId: choice.id },
+				{ ...SURVEY_WORDS[2], questionId: text.id, help: 'Say *where*.' },
+				{ kind: 'text', prompt: 'A new question?', help: '', required: true, questionId: draftOnly.id }
+			],
+			agentDrafted: { [`survey.${draftOnly.id}`]: true }
+		};
+		db.update(decisions).set({ workingContent: JSON.stringify(working) }).where(eq(decisions.id, decision.id)).run();
+
+		// An administrator may edit, and so preview, any decision.
+		const preview = readPreview(makeUser({ username: 'admin', role: 'admin' }), decision.id, new URLSearchParams());
+
+		expect(preview.surveyQuestions).toEqual([
+			shown(0, choice.id),
+			{ ...shown(2, text.id), help: 'Say *where*.' },
+			{ kind: 'text', prompt: 'A new question?', help: '', required: true, questionId: draftOnly.id, agentDrafted: true }
+		]);
+		expect(preview.surveyQuestions.map((question) => question.questionId)).not.toContain(scale.id);
+		const said = JSON.stringify(preview);
+		for (const absent of ['Only the decider reads this.', 'A comment of mine.', '"answers"', 'ownResponse']) expect(said, absent).not.toContain(absent);
+	});
+
+	it('T53. the page gives the current version\'s survey questions, each with its agent flag, to a consulted and an informed participant alike, and no question never published', () => {
+		const { decision, choice, scale, text } = surveyed();
+		sqlite.prepare("UPDATE decision_versions SET content = json_set(content, '$.agentDrafted', json(?)) WHERE decision_id = ?").run(JSON.stringify({ [`survey.${scale.id}`]: true }), decision.id);
+		const consulted = withAccount(decision, 'consulted', 'pat');
+		const informed = withAccount(decision, 'informed', 'ivy');
+		withLink(decision, 'survey-link', 'informed');
+		const expected = [shown(0, choice.id), shown(1, scale.id, true), shown(2, text.id)];
+
+		expect(readDecisionPage(consulted.account, decision.id).surveyQuestions, 'consulted').toEqual(expected);
+		expect(readDecisionPage(informed.account, decision.id).surveyQuestions, 'informed').toEqual(expected);
+		expect(readLinkPage('survey-link', null)?.surveyQuestions, 'informed, by link').toEqual(expected);
+		expect(readDecisionPage(informed.account, decision.id).mayRespond).toBe(false);
+	});
+});
+
 // ─── Being recorded as having seen (cases 12 and 13) ─────────────────────────
 
 describe('recordSeen and recordSeenByLink', () => {
@@ -678,6 +1069,8 @@ describe('readDecisionPage and readLinkPage', () => {
 			draft: false,
 			version: { number: 1, publishedAt: '2026-11-01 09:00:00', content: { ...contentOf(b), reviewed: { question: true } } },
 			options: optionsOf({ a, b, c }),
+			// Card 2683: a version that asks no survey question gives none.
+			surveyQuestions: [],
 			audiences: FINANCE_FIRST,
 			participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: expect.stringMatching(STAMPED), delivered: true, sentAs: 'consulted' } },
 			ownResponse: {
@@ -688,6 +1081,7 @@ describe('readDecisionPage and readLinkPage', () => {
 				scores: null,
 				comment: 'A is enough.',
 				optionComments: { [b.id]: 'Too dear.' },
+				answers: {},
 				createdAt: '2026-11-01 11:00:00'
 			},
 			earlierResponse: null,
@@ -795,6 +1189,7 @@ describe('readDecisionPage and readLinkPage', () => {
 			scores: null,
 			comment: null,
 			optionComments: {},
+			answers: {},
 			createdAt: '2026-11-01 10:00:00'
 		});
 	});
@@ -848,6 +1243,8 @@ describe('readDecisionPage and readLinkPage', () => {
 			draft: false,
 			version: { number: 1, publishedAt: '2026-11-01 09:00:00', content: contentOf(b) },
 			options: optionsOf({ a, b, c }),
+			// Card 2683: a version that asks no survey question gives none.
+			surveyQuestions: [],
 			audiences: FINANCE_FIRST,
 			participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: expect.stringMatching(STAMPED), delivered: true, sentAs: 'consulted' } },
 			ownResponse: null,

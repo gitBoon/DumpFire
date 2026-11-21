@@ -432,6 +432,7 @@ function content(more: Partial<WorkingContent> = {}): WorkingContent {
 		unknowns: '',
 		alreadyRuled: '',
 		technicalDetail: '',
+		surveyQuestions: [],
 		agentDrafted: {},
 		reviewed: {},
 		lastLabel: 'B',
@@ -521,16 +522,34 @@ describe('DecisionEditor (cases 26 to 29)', () => {
 			{ title: 'Crest', summary: '', pros: [], cons: [], commercial: '' },
 			{ optionId: 101, title: 'Acme', summary: 'Acme summary', pros: ['Cheap'], cons: ['Slow'], commercial: 'About 1,000 a year' }
 		]);
-		// No key the server keeps is sent (decision 8).
-		expect(Object.keys(body.content).sort()).toEqual(['alreadyRuled', 'ask', 'audiences', 'options', 'question', 'situation', 'stories', 'technicalDetail', 'unknowns']);
+		// No key the server keeps is sent (decision 8); card 2683: the survey questions always are, `[]` with none (R15).
+		expect(Object.keys(body.content).sort()).toEqual([
+			'alreadyRuled',
+			'ask',
+			'audiences',
+			'options',
+			'question',
+			'situation',
+			'stories',
+			'surveyQuestions',
+			'technicalDetail',
+			'unknowns'
+		]);
+		expect(body.content.surveyQuestions).toEqual([]);
 		expect(textOf(target.querySelector('[role="alert"]')!)).toBe(`${words} Reload`);
 		expect(optionTitles(target)).toEqual(['Crest', 'Acme']);
 		expect(target.querySelector('.unsaved')).not.toBeNull();
 	});
 
 	it('26: on an open decision the title, closing time and vote mode are read-only, and Save sends them unchanged with the content', async () => {
-		const target = drawEditor({ decision: decision({ status: 'open', shownStatus: 'open', voteMode: 'score', currentVersion: 1 }) });
+		// Card 2683 (R23): published options, so the vote mode is fixed; with none published it may still change.
+		const target = drawEditor({
+			decision: decision({ status: 'open', shownStatus: 'open', voteMode: 'score', currentVersion: 1 }),
+			options: OPTIONS.map((option) => ({ ...option, addedInVersion: 1 }))
+		});
 		expect(target.querySelector('.title-input')).toBeNull();
+		expect(target.querySelector('select[id$="-vote"]')).toBeNull();
+		expect(textOf(target.querySelector('p[id$="-vote"]')!)).toBe('A score for each option, 0 to 5');
 		expect(textOf(target.querySelector('.title-text')!)).toBe('Pick a supplier');
 		expect(target.querySelector('input[type="datetime-local"]')).toBeNull();
 		expect(textOf(target.querySelector('.side-column')!)).toContain('2099-12-01 12:00 UTC');
@@ -722,6 +741,145 @@ describe('DecisionEditor (cases 26 to 29)', () => {
 		expect(target.querySelector('.side-column select[id$="-decider"]')).toBeNull();
 		expect(button(target, 'Change decider')).toBeUndefined();
 		expect(textOf(target.querySelector('.decider-fixed')!)).toBe('bob');
+	});
+});
+
+// ─── The editor's survey questions (card 2683, slice S3a) ───────────────────
+
+describe("DecisionEditor's survey questions (card 2683, U4 and U5)", () => {
+	const entries = (target: HTMLElement) => [...target.querySelectorAll<HTMLElement>('[data-survey]')];
+	/** A field of one survey question, by its label, within that question alone (each question has the same labels). */
+	const fieldIn = (entry: HTMLElement, label: string) => {
+		const found = [...entry.querySelectorAll('label')].find((l) => textOf(l) === label)!;
+		return document.getElementById(found.getAttribute('for')!) as HTMLInputElement & HTMLTextAreaElement & HTMLSelectElement;
+	};
+	function choose(select: HTMLSelectElement, value: string) {
+		select.value = value;
+		select.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+	}
+	const SHIP = { questionId: 41, kind: 'choice' as const, prompt: 'Where do you ship from?', help: '', required: true, choices: ['Leeds', 'York'] };
+
+	it('U4: a choice and a scale question are added, a third removed, and Save sends surveyQuestions with only each kind’s keys; the saved answer is taken', async () => {
+		const target = drawEditor({ decision: decision({ content: content({ options: [] }) }), options: [] });
+		expect(entries(target)).toEqual([]);
+
+		for (let i = 0; i < 3; i++) {
+			button(target, '+ Add survey question').click();
+			flushSync();
+		}
+		const [first, second, third] = entries(target);
+		// A new question is a choice question until its kind is chosen.
+		expect(fieldIn(first, 'Kind').value).toBe('choice');
+		type(fieldIn(first, 'Prompt'), 'Where do you ship from?');
+		type(fieldIn(first, 'Choices, one a line (2 to 20)'), 'Leeds\n  York \n\n');
+		first.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
+		flushSync();
+
+		choose(fieldIn(second, 'Kind'), 'scale');
+		expect([...second.querySelectorAll('label')].map(textOf)).not.toContain('Choices, one a line (2 to 20)');
+		type(fieldIn(second, 'Prompt'), 'How often are you late?');
+		type(fieldIn(second, 'Top of the scale (2 to 10)'), '7');
+		type(fieldIn(second, 'Words at 1'), 'Never');
+		type(fieldIn(second, 'Words at the top'), 'Always');
+
+		choose(fieldIn(third, 'Kind'), 'text');
+		type(fieldIn(third, 'Prompt'), 'Anything else?');
+		button(target, 'Remove survey question 3').click();
+		flushSync();
+		expect(entries(target).map((entry) => fieldIn(entry, 'Prompt').value)).toEqual(['Where do you ship from?', 'How often are you late?']);
+		expect(target.querySelector('.unsaved')).not.toBeNull();
+
+		const asked = [
+			SHIP,
+			{ questionId: 42, kind: 'scale' as const, prompt: 'How often are you late?', help: '', required: false, scale: { max: 7, lowLabel: 'Never', highLabel: 'Always' } }
+		];
+		answer('PUT /api/decisions/5', {
+			decision: decision({ content: content({ options: [], surveyQuestions: asked }) }),
+			options: [],
+			surveyQuestions: [
+				{ id: 41, position: 0, addedInVersion: null, retiredInVersion: null },
+				{ id: 42, position: 1, addedInVersion: null, retiredInVersion: null }
+			],
+			revision: 'rev-2'
+		});
+		button(target, 'Save').click();
+		await settle();
+		const [body] = requests('PUT /api/decisions/5');
+		expect(body.content.surveyQuestions).toEqual([
+			{ kind: 'choice', prompt: 'Where do you ship from?', help: '', required: true, choices: ['Leeds', 'York'] },
+			{ kind: 'scale', prompt: 'How often are you late?', help: '', required: false, scale: { max: 7, lowLabel: 'Never', highLabel: 'Always' } }
+		]);
+		// The server's answer is what is now saved: nothing left unsaved, the choices one a line.
+		expect(target.querySelector('.unsaved')).toBeNull();
+		expect(fieldIn(entries(target)[0], 'Choices, one a line (2 to 20)').value).toBe('Leeds\nYork');
+	});
+
+	it('U5: on an opened survey a published question’s kind is fixed and it says a change but its help asks everyone again; a new one’s kind is chosen; the vote mode can still change (R23) until an option is published', async () => {
+		const opened = { status: 'open', shownStatus: 'open', currentVersion: 1, content: content({ options: [], surveyQuestions: [SHIP], agentDrafted: { 'survey.41': true } }) };
+		const target = drawEditor({
+			decision: decision(opened),
+			options: [],
+			surveyQuestions: [{ id: 41, position: 0, addedInVersion: 1, retiredInVersion: null }]
+		});
+		const [published] = entries(target);
+		expect(published.querySelector('select')).toBeNull();
+		expect(textOf(published.querySelector('[data-kind]')!)).toBe('Pick one of its choices');
+		// Code review F8: the fixed kind is named by text, and no <label for> points at what is not a field.
+		expect(textOf(published.querySelector('[data-name="kind"]')!)).toBe('Kind');
+		const labelled = (label: Element) => document.getElementById(label.getAttribute('for')!)?.tagName ?? 'none';
+		expect([...published.querySelectorAll('label[for]')].filter((label) => !['INPUT', 'TEXTAREA', 'SELECT'].includes(labelled(label))).map(textOf)).toEqual([]);
+		expect(textOf(published.querySelector('[data-note="published"]')!)).toBe(
+			'Published: its kind is fixed, so remove it and add a new question to ask another kind. A change to anything but its help asks everyone again when the decision is re-published.'
+		);
+		// An agent's question carries the label; its Mark reviewed waits while it has edits not yet saved (R16).
+		expect(published.querySelector('.agent-label[data-section="survey.41"]')).not.toBeNull();
+		type(fieldIn(published, 'Prompt'), 'Where do you ship from now?');
+		expect(button(published, 'Mark survey question 1 reviewed').getAttribute('aria-disabled')).toBe('true');
+
+		button(target, '+ Add survey question').click();
+		flushSync();
+		const added = entries(target)[1];
+		expect(fieldIn(added, 'Kind').tagName).toBe('SELECT');
+		expect(added.querySelector('[data-note="published"]')).toBeNull();
+		choose(fieldIn(added, 'Kind'), 'text');
+		type(fieldIn(added, 'Prompt'), 'Anything else?');
+
+		// R23: no option is published, so the vote mode is still offered, and sent as chosen.
+		expect(target.querySelector('[data-note="mode-free"]')).not.toBeNull();
+		choose(fieldLabelled(target, 'Vote mode') as unknown as HTMLSelectElement, 'score');
+		answer('PUT /api/decisions/5', { decision: decision(opened), options: [], surveyQuestions: [], revision: 'rev-2' });
+		button(target, 'Save').click();
+		await settle();
+		const [body] = requests('PUT /api/decisions/5');
+		expect(body.voteMode).toBe('score');
+		expect(body.content.surveyQuestions).toEqual([
+			{ ...SHIP, prompt: 'Where do you ship from now?' },
+			{ kind: 'text', prompt: 'Anything else?', help: '', required: false }
+		]);
+
+		// Once an option is published the vote mode is fixed, as before.
+		const voting = drawEditor({
+			decision: decision({ ...opened, content: content() }),
+			options: OPTIONS.map((option) => ({ ...option, addedInVersion: 1 }))
+		});
+		expect(voting.querySelector('select[id$="-vote"]')).toBeNull();
+		expect(voting.querySelector('[data-note="mode-free"]')).toBeNull();
+		expect(textOf(voting.querySelector('p[id$="-vote"]')!)).toBe('One choice');
+	});
+
+	it("F5: a vote mode a key chose on an opened survey carries the agent label and its own Mark reviewed, which waits while the mode has an unsaved change", () => {
+		const opened = { status: 'open', shownStatus: 'open', currentVersion: 1, content: content({ options: [], surveyQuestions: [SHIP], agentDrafted: { voteMode: true } }) };
+		const target = drawEditor({ decision: decision(opened), options: [], surveyQuestions: [{ id: 41, position: 0, addedInVersion: 1, retiredInVersion: null }] });
+		const label = target.querySelector('.agent-label[data-section="voteMode"]')!;
+		expect(label).not.toBeNull();
+		expect(textOf(label.parentElement!)).toContain('Vote mode');
+		const review = button(target, 'Mark Vote mode reviewed');
+		expect(review.getAttribute('aria-disabled')).toBeNull();
+
+		choose(fieldLabelled(target, 'Vote mode') as unknown as HTMLSelectElement, 'score');
+		expect(review.getAttribute('aria-disabled')).toBe('true');
+		expect(target.querySelector('[data-save-first="voteMode"]')).not.toBeNull();
 	});
 });
 

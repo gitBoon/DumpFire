@@ -1,5 +1,5 @@
 import { json } from '$lib/server/v1-json';
-import { keyDecisionAnswer, optionAnswers, readDecisionForKey, readinessOf, revisionFor } from '$lib/server/decision-authoring';
+import { keyDecisionAnswer, optionAnswers, readDecisionForKey, readinessOf, revisionFor, surveyQuestionAnswers } from '$lib/server/decision-authoring';
 import { updateDraft } from '$lib/server/decision-authoring-writes';
 import { deleteDecision } from '$lib/server/decision-lifecycle-writes';
 import { pathId, readBody } from '$lib/server/request-body';
@@ -43,8 +43,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 
 	// The decision, the caller's access to it, the revision and the save, in one transaction (card 2253).
 	const answer = writeAs(locals, (caller) => {
-		const { decision, options } = updateDraft(caller, { decisionId: id }, body, { source: 'api' });
-		return { decision: keyDecisionAnswer(decision), options: optionAnswers(options), revision: revisionFor(decision.id), readiness: readinessOf(decision) };
+		const { decision, options, surveyQuestions } = updateDraft(caller, { decisionId: id }, body, { source: 'api' });
+		return { decision: keyDecisionAnswer(decision), options: optionAnswers(options), surveyQuestions: surveyQuestionAnswers(surveyQuestions), revision: revisionFor(decision.id), readiness: readinessOf(decision) };
 	});
 	return json(answer);
 };

@@ -178,6 +178,7 @@
 		decision={data.decision}
 		version={data.version}
 		options={data.options}
+		surveyQuestions={data.surveyQuestions}
 		ownResponse={data.ownResponse}
 		earlierResponse={data.earlierResponse}
 		mayRespond={data.mayRespond}
@@ -264,6 +265,7 @@
 				decision={data.decision}
 				content={data.version.content}
 				options={data.options}
+				surveyQuestions={data.surveyQuestions}
 				audiences={data.audiences}
 				participant={data.participant === null ? null : { role: data.participant.role }}
 				mode="participant"

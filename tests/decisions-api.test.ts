@@ -30,7 +30,7 @@ import ts from 'typescript';
 import { isHttpError } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { apiKeys, decisions, people, settings, type Board, type Column, type Decision } from '$lib/server/db/schema';
+import { apiKeys, decisions, decisionSurveyQuestions, people, settings, type Board, type Column, type Decision } from '$lib/server/db/schema';
 import { STALE_REVISION } from '$lib/decision-words';
 import type { Credential, SessionUser } from '$lib/server/auth';
 import { decisionAnswer, readDecisionForKey, readinessOf, revisionFor, versionContentAnswer, workingViewContent } from '$lib/server/decision-authoring';
@@ -694,8 +694,12 @@ describe('readSummary (5)', () => {
 
 		const summary = readSummary(decider, decision.id, { source: 'api' });
 
+		// Card 2683: and the current version's survey questions.
 		expect(Object.keys(summary).sort()).toEqual(
-			['concerns', 'current', 'decision', 'earlierRounds', 'mostChosen', 'notResponded', 'openQuestions', 'options', 'released', 'removed', 'round', 'ruling', 'untrusted'].sort()
+			[
+				'concerns', 'current', 'decision', 'earlierRounds', 'mostChosen', 'notResponded', 'openQuestions', 'options', 'released', 'removed', 'round', 'ruling', 'surveyQuestions',
+				'untrusted'
+			].sort()
 		);
 		expect(summary.untrusted).toBe(true);
 		expect(summary.openQuestions).toEqual([{ question: 'What does A cost?', agentAnswered: true, untrusted: true }]);
@@ -1469,6 +1473,51 @@ describe('POST /api/v1/decisions/{decisionId}/questions/{questionId}/answer (23)
 });
 
 describe('GET /api/v1/decisions/{decisionId}/summary (24)', () => {
+	it("T49 (card 2683). gives the decider's key each row's answers, each tally's survey figures and the survey questions' words, on rows marked untrusted", async () => {
+		const decider = editor('decider');
+		const made = makeDecision({ board, author: decider, decider, title: 'Where from?', status: 'open', closesAt: FUTURE, openedAt: '2026-11-01 09:00:00' });
+		const [choice, words] = [0, 1].map((position) => db.insert(decisionSurveyQuestions).values({ decisionId: made.id, position, addedInVersion: 1 }).returning().get());
+		const asked = [
+			{ questionId: choice.id, kind: 'choice', prompt: 'Which depot ships it?', help: 'Where it *leaves* from.', required: true, choices: ['Leeds', 'York'] },
+			{ questionId: words.id, kind: 'text', prompt: 'Anything else?', help: '', required: false }
+		];
+		makeVersion(made, { question: 'Where from?', surveyQuestions: asked }, { number: 1 });
+		const pat = withAccount(made, 'pat');
+		const quin = withAccount(made, 'quin');
+		makeResponse(pat.participant, { kind: 'answered', answers: JSON.stringify({ [choice.id]: 1, [words.id]: 'York ships on Mondays.' }) });
+		makeResponse(quin.participant, { kind: 'abstain' });
+
+		const res = await withKey(decider, 'GET', `/api/v1/decisions/${made.id}/summary`);
+
+		expect(res.status).toBe(200);
+		expect(res.body.surveyQuestions).toEqual(asked);
+		expect(res.body.options).toEqual([]);
+		expect(res.body.current.rows.map((row: Row) => [row.kind, row.answers, row.untrusted])).toEqual([
+			['answered', { [choice.id]: 1, [words.id]: 'York ships on Mondays.' }, true],
+			['abstain', {}, true]
+		]);
+		expect(res.body.current.responded).toBe(2);
+		expect(res.body.current.survey).toEqual([
+			{
+				versionNumber: 1,
+				questions: [
+					{
+						questionId: choice.id,
+						kind: 'choice',
+						prompt: 'Which depot ships it?',
+						answered: 1,
+						choices: [
+							{ choice: 'Leeds', count: 0 },
+							{ choice: 'York', count: 1 }
+						],
+						scale: null
+					},
+					{ questionId: words.id, kind: 'text', prompt: 'Anything else?', answered: 1, choices: null, scale: null }
+				]
+			}
+		]);
+	});
+
 	it("gives the decider's key the agent-answered question with no names, and nothing to rule or release by", async () => {
 		const { decision, author, decider, question, pat } = asked();
 		await withKey(author, 'POST', `/api/v1/decisions/${decision.id}/questions/${question.id}/answer`, { answer: 'About 1,000 a year.' });

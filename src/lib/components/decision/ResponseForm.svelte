@@ -25,17 +25,32 @@
   `disabled` draws the form and sends nothing, for card 2697's preview, which
   has no version and nowhere to send: `versionNumber` and `url` are then not
   needed (code review C9).
+
+  Card 2683 (R2, R12, R14): with `surveyQuestions`, the version's survey
+  questions are drawn with their inputs (`SurveyQuestions`), under
+  `surveyWhoSees`' sentence, and `answers` is sent, keyed by question id,
+  built by walking the questions shown, never from the keys typed into; a
+  written answer of spaces alone is no answer. A round with no options (a
+  survey) offers "I answer the questions" (`answered`) and "I abstain"
+  alone; answering a question chooses the first where nothing is chosen yet.
+  Send is held until every required question is answered, but to abstain.
+  The response recorded is said back with its answers, by prompt.
 -->
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { failureMessage } from '$lib/api';
-	import type { OwnResponse, ViewOption } from '$lib/decision-view-types';
-	import { STALE_REVISION, WHO_SEES_STATEMENT_VERSION, givenOnWords, responseLines, shownMoment } from '$lib/decision-words';
+	import type { OwnResponse, ViewOption, ViewSurveyQuestion } from '$lib/decision-view-types';
+	import { STALE_REVISION, WHO_SEES_STATEMENT_VERSION, givenOnWords, responseLines, shownMoment, surveyAnswerLines, surveyWhoSees } from '$lib/decision-words';
+	import SurveyQuestions from './SurveyQuestions.svelte';
 
 	type Kind = OwnResponse['kind'];
 	type Common = {
 		voteMode: 'single' | 'score';
 		options: ViewOption[];
+		/** Card 2683: the version's survey questions, answered with the response; none by default. */
+		surveyQuestions?: ViewSurveyQuestion[];
+		/** Card 2683 (R10): the decider's name now, for `surveyWhoSees`; null for none yet. */
+		deciderName?: string | null;
 		/** Sent with the response, beside it: the personal link's token. */
 		extra?: Record<string, unknown>;
 		/** The participant's latest response in this round, which the form starts from. */
@@ -59,7 +74,18 @@
 					disabled: true;
 			  }
 		);
-	let { voteMode, options, versionNumber, url, extra = {}, disabled = false, initial = null, onReload = () => location.reload() }: Props = $props();
+	let {
+		voteMode,
+		options,
+		surveyQuestions = [],
+		deciderName = null,
+		versionNumber,
+		url,
+		extra = {},
+		disabled = false,
+		initial = null,
+		onReload = () => location.reload()
+	}: Props = $props();
 
 	const start = untrack(() => initial);
 	let kind = $state<Kind | null>(start?.kind ?? null);
@@ -67,16 +93,38 @@
 	let scores = $state<Record<string, number>>({ ...(start?.scores ?? {}) });
 	let comment = $state(start?.comment ?? '');
 	let optionComments = $state<Record<string, string>>({ ...(start?.optionComments ?? {}) });
+	// Card 2683: `initial` is this round's response, whose questions a re-publish that only told of a change cannot alter (R7, R8).
+	let answers = $state<Record<string, number | string>>({ ...(start?.answers ?? {}) });
 
 	let recorded = $state<OwnResponse | null>(start);
 	let sending = $state(false);
 	let error = $state('');
 	let stale = $state(false);
 
-	/** Whether the choice is whole: one option, a score for every option, or a choice that needs neither. */
-	const ready = $derived(
-		kind === null ? false : kind !== 'vote' ? true : voteMode === 'single' ? optionId !== null : options.every((option) => scores[String(option.optionId)] !== undefined)
-	);
+	/** Card 2683 (R4): a round that puts no options to a vote, and asks survey questions alone. */
+	const surveyOnly = $derived(options.length === 0 && surveyQuestions.length > 0);
+	/** Card 2683 (R13): whether a question is answered; a written answer of spaces alone is not. */
+	const answered = (question: ViewSurveyQuestion) => {
+		const value = answers[String(question.questionId)];
+		return typeof value === 'number' || (typeof value === 'string' && value.trim() !== '');
+	};
+	/** Card 2683 (R12): every required question answered, as a vote, no concerns and answers must have them; abstaining need not. */
+	const requiredAnswered = $derived(surveyQuestions.every((question) => !question.required || answered(question)));
+
+	/** Whether the choice is whole: one option, a score for every option, or a choice that needs neither; and, but to abstain, the required questions answered. */
+	const ready = $derived.by(() => {
+		if (kind === null) return false;
+		if (kind === 'abstain') return true;
+		if (!requiredAnswered) return false;
+		if (kind === 'answered') return surveyQuestions.some(answered);
+		if (kind !== 'vote') return true;
+		return voteMode === 'single' ? optionId !== null : options.every((option) => scores[String(option.optionId)] !== undefined);
+	});
+
+	function answer(questionId: number, value: number | string) {
+		answers = { ...answers, [String(questionId)]: value };
+		if (surveyOnly && kind === null) kind = 'answered';
+	}
 
 	function choose(next: Kind, option: number | null = null) {
 		kind = next;
@@ -98,6 +146,10 @@
 		body.optionComments = Object.fromEntries(
 			options.map((option) => [String(option.optionId), optionComments[String(option.optionId)] ?? '']).filter(([, text]) => text.trim() !== '')
 		);
+		// Card 2683 (R2): by walking the questions shown, never from the keys typed into; sent only where there are questions.
+		if (surveyQuestions.length > 0) {
+			body.answers = Object.fromEntries(surveyQuestions.filter(answered).map((question) => [String(question.questionId), answers[String(question.questionId)]]));
+		}
 
 		sending = true;
 		error = '';
@@ -132,7 +184,20 @@
 		send();
 	}}
 >
-	{#if voteMode === 'single'}
+	{#if surveyOnly}
+		<SurveyQuestions questions={surveyQuestions} {answers} onAnswer={answer} {disabled} whoSees={surveyWhoSees(deciderName ?? 'the decider')} />
+		<fieldset class="choices">
+			<legend>Your response</legend>
+			<label class="choice-card" class:chosen={kind === 'answered'}>
+				<input type="radio" name={name} value="answered" checked={kind === 'answered'} {disabled} onchange={() => choose('answered')} />
+				<span>I answer the questions</span>
+			</label>
+			<label class="choice-card" class:chosen={kind === 'abstain'}>
+				<input type="radio" name={name} value="abstain" checked={kind === 'abstain'} {disabled} onchange={() => choose('abstain')} />
+				<span>I abstain</span>
+			</label>
+		</fieldset>
+	{:else if voteMode === 'single'}
 		<fieldset class="choices">
 			<legend>Your choice</legend>
 			{#each options as option (option.optionId)}
@@ -174,20 +239,28 @@
 			{@render otherChoices()}
 		</fieldset>
 	{/if}
+	{#if !surveyOnly && surveyQuestions.length > 0}
+		<SurveyQuestions questions={surveyQuestions} {answers} onAnswer={answer} {disabled} whoSees={surveyWhoSees(deciderName ?? 'the decider')} />
+	{/if}
+	{#if kind !== null && kind !== 'abstain' && !requiredAnswered}
+		<p class="required-note" data-note="required">Answer every required question to send your response, or abstain.</p>
+	{/if}
 
 	<label class="comment">
 		<span>Your comment (optional)</span>
 		<textarea maxlength="4000" rows="4" bind:value={comment} {disabled}></textarea>
 	</label>
-	<details class="option-comments">
-		<summary>Comment on an option (optional)</summary>
-		{#each options as option (option.optionId)}
-			<label class="comment">
-				<span>Comment on option {option.label}</span>
-				<textarea maxlength="2000" rows="3" bind:value={optionComments[String(option.optionId)]} {disabled}></textarea>
-			</label>
-		{/each}
-	</details>
+	{#if options.length > 0}
+		<details class="option-comments">
+			<summary>Comment on an option (optional)</summary>
+			{#each options as option (option.optionId)}
+				<label class="comment">
+					<span>Comment on option {option.label}</span>
+					<textarea maxlength="2000" rows="3" bind:value={optionComments[String(option.optionId)]} {disabled}></textarea>
+				</label>
+			{/each}
+		</details>
+	{/if}
 
 	{#if error}
 		<p class="form-error" role="alert">{error}</p>
@@ -200,7 +273,7 @@
 		{@const givenOn = givenOnWords(recorded, versionNumber)}
 		<div class="recorded" role="status">
 			<p>Your response was recorded on {shownMoment(recorded.createdAt, '')}:</p>
-			{#each responseLines(recorded, options) as line, i (i)}<p class="response-line">{line}</p>{/each}
+			{#each [...responseLines(recorded, options), ...surveyAnswerLines(recorded.answers, surveyQuestions)] as line, i (i)}<p class="response-line">{line}</p>{/each}
 			{#if givenOn !== null}<p class="given-on">{givenOn} Send it again to give it on version {versionNumber}.</p>{/if}
 		</div>
 	{/if}
@@ -245,6 +318,7 @@
 	.option-comments .comment { margin-top: var(--space-sm); }
 	.send, .reload { min-height: 44px; font-size: 1rem; }
 	.form-error { color: var(--accent-rose); margin: 0; }
+	.required-note { margin: 0; font-size: 0.9rem; color: var(--text-secondary); }
 	.recorded { padding: var(--space-md); border-radius: var(--radius-md); background: rgba(16, 185, 129, 0.1); }
 	.recorded p { margin: 0 0 var(--space-xs); }
 	.given-on { font-weight: 600; }

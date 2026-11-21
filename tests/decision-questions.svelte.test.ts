@@ -215,7 +215,7 @@ describe('AgentLabel (26)', () => {
 // ─── ResultsView's open questions (case 27) ─────────────────────────────────
 
 function results(more: Partial<ResultsData> = {}): ResultsData {
-	const round = { round: 1, responded: 0, voted: 0, votes: [], scores: [], abstained: 0, noConcerns: 0, rows: [] };
+	const round = { round: 1, responded: 0, voted: 0, votes: [], scores: [], abstained: 0, noConcerns: 0, survey: [], rows: [] };
 	return {
 		decision: {
 			id: 7,
@@ -231,6 +231,7 @@ function results(more: Partial<ResultsData> = {}): ResultsData {
 		revision: 'rev-1',
 		round: 1,
 		options: [{ optionId: 11, label: 'A', title: 'Plan A' }],
+		surveyQuestions: [],
 		current: round,
 		earlierRounds: [],
 		notResponded: [],
@@ -309,6 +310,7 @@ function pageData(more: Partial<DecisionPageData> = {}): DecisionPageData & { us
 		draft: false,
 		version: { number: 2, publishedAt: '2026-11-01 09:00:00', content: { ...CONTENT, agentDrafted: {} } },
 		options: OPTIONS,
+		surveyQuestions: [],
 		audiences: [],
 		participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: null },
 		ownResponse: null,

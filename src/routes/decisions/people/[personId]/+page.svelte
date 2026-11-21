@@ -20,12 +20,17 @@
 	 *
 	 * 25 participations a page, newest first: Older carries `before`, and past
 	 * the first page, Back to newest.
+	 *
+	 * Card 2683 (R10, R14): each response's answers to survey questions, by the
+	 * prompt as the version answered under asked it, a written answer as
+	 * plain text; only the person, the decider and administrators read this
+	 * page. A survey answered is said as such, never as an option chosen.
 	 */
 	import type { PageData } from './$types';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import RecordEvents from '$lib/components/decision/RecordEvents.svelte';
-	import type { OwnRecordEvent, ParticipationDecision, RecordResponse } from '$lib/decision-register-types';
+	import type { OwnRecordEvent, ParticipationDecision, RecordAnswer, RecordResponse } from '$lib/decision-register-types';
 	import type { QuestionView } from '$lib/decision-view-types';
 	import { answeredByWords, eventWords, PARTICIPATION_ROLE_WORDS, STATUS_WORDS, shownMoment, unansweredWords } from '$lib/decision-words';
 	import { theme, themeIcon } from '$lib/stores/theme';
@@ -39,9 +44,14 @@
 	function choiceWords(response: RecordResponse): string {
 		if (response.kind === 'abstain') return 'Abstained';
 		if (response.kind === 'no_concerns') return 'No concerns';
+		if (response.kind === 'answered') return 'Answered the survey';
 		if (response.scores !== null) return `Scores: ${Object.entries(response.scores).map(([label, score]) => `${label} ${score}`).join(', ')}`;
 		return response.option === null ? 'Chose an option no longer offered' : `Chose option ${response.option}`;
 	}
+
+	/** Card 2683: an answer in words, the choice by its words, a number with its scale's top, a written answer as written. */
+	const recordAnswerWords = (answer: RecordAnswer) =>
+		answer.kind === 'choice' ? answer.choice : answer.kind === 'scale' ? `${answer.value} of ${answer.max}` : answer.text;
 
 	const decisionWords = (decision: ParticipationDecision) => STATUS_WORDS[decision.shownStatus] ?? decision.shownStatus;
 	const recordHref = (decisionId: number, participantId: number) => `/decisions/${decisionId}/record?participant=${participantId}`;
@@ -64,6 +74,7 @@
 					</p>
 					{#if response.comment}<p class="text">{response.comment}</p>{/if}
 					{#each Object.entries(response.optionComments) as [label, text] (label)}<p class="text">On option {label}: {text}</p>{/each}
+					{#each response.answers as answer, a (a)}<p class="text" data-answer>{answer.prompt}: {recordAnswerWords(answer)}</p>{/each}
 				</li>
 			{/each}
 		</ul>

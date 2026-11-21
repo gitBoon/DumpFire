@@ -27,6 +27,7 @@ import {
 	boards,
 	decisionOptions,
 	decisionParticipants,
+	decisionSurveyQuestions,
 	decisions,
 	people,
 	sessions,
@@ -48,6 +49,7 @@ import {
 	previewOf,
 	readResults,
 	releasedOf,
+	releaseRefusals,
 	releaseRowsOf,
 	resultsRevisionFor,
 	TOO_FEW_TO_RELEASE
@@ -61,8 +63,16 @@ import { rulesEarly } from '$lib/server/decision-status';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { purposeKey } from '$lib/server/request-tokens';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
-import { CONCERN_SUPERSEDED, CONCERN_WINDOW_ENDED, DEAD_DECISION_LINK, STALE_REVISION, tooManyWrongLinks, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
-import type { ReleasedResults } from '$lib/decision-view-types';
+import {
+	CONCERN_SUPERSEDED,
+	CONCERN_WINDOW_ENDED,
+	DEAD_DECISION_LINK,
+	NO_OPTIONS_TO_RELEASE,
+	STALE_REVISION,
+	tooManyWrongLinks,
+	WHO_SEES_STATEMENT_VERSION
+} from '$lib/decision-words';
+import type { ReleasedResults, RoundTally } from '$lib/decision-view-types';
 import { decisionAnswer, readBoardDecisions, readEditPage, revisionFor } from '$lib/server/decision-authoring';
 import { readDecisionPage, readLinkPage, refuseWrongLink } from '$lib/server/decision-view';
 import { parseStamp, stamp } from '$lib/timestamps';
@@ -1693,6 +1703,8 @@ describe('readResults', () => {
 			scores: null,
 			comment: null,
 			optionComments: {},
+			// Card 2683: no survey answer.
+			answers: {},
 			versionNumber: 2,
 			createdAt: '2026-11-01 10:00:00',
 			via: 'session',
@@ -1711,6 +1723,8 @@ describe('readResults', () => {
 			scores: [],
 			abstained: 1,
 			noConcerns: 0,
+			// Card 2683: no version asked a survey question.
+			survey: [],
 			rows: [
 				row(pat, { kind: 'vote', optionId: b.id, comment: 'B after all.', createdAt: '2026-11-01 11:00:00', changes: 1 }),
 				row(quin, { kind: 'abstain', comment: 'Not my area.' })
@@ -1830,6 +1844,7 @@ describe('supersedeDecision', () => {
 			unknowns: '',
 			alreadyRuled: '',
 			technicalDetail: '',
+			surveyQuestions: [],
 			agentDrafted: { situation: true, [`options.${options[1].id}`]: true },
 			reviewed: {},
 			lastLabel: null
@@ -1851,6 +1866,38 @@ describe('supersedeDecision', () => {
 
 		expect(second, '(b)').toMatchObject({ title: 'Older', authorUserId: productOwner.id, deciderUserId: productOwner.id, supersedesId: older.decision.id });
 		expect(eventsOf(second.id).map((event) => event.detail), '(b)').toEqual([{ decider: 'author', supersedes: older.decision.id }]);
+	});
+
+	it('T26 (card 2683, R9): copies the survey questions of the version ruled on as new rows in order, their ids mapped and their flags renamed', () => {
+		const old = opened({ title: 'Asked first' });
+		const [where, depot] = [0, 1].map((position) =>
+			db.insert(decisionSurveyQuestions).values({ decisionId: old.decision.id, position, addedInVersion: 1 }).returning().get()
+		);
+		const asked = [
+			{ questionId: where.id, kind: 'text', prompt: 'Where from?', help: 'Your site.', required: true },
+			{ questionId: depot.id, kind: 'choice', prompt: 'Which depot?', help: '', required: false, choices: ['Leeds', 'York'] }
+		];
+		sqlite.prepare('DELETE FROM decision_versions WHERE decision_id = ?').run(old.decision.id);
+		makeVersion(old.decision, { question: 'Which plan?', surveyQuestions: asked, agentDrafted: { [`survey.${depot.id}`]: true } }, { number: 1 });
+		makeRuling(old.decision);
+
+		const draft = supersede(old.decider, decisionRow(old.decision.id));
+
+		const rows = db.select().from(decisionSurveyQuestions).where(eq(decisionSurveyQuestions.decisionId, draft.id)).orderBy(decisionSurveyQuestions.id).all();
+		expect(rows.map((row) => [row.position, row.addedInVersion, row.retiredInVersion])).toEqual([
+			[0, null, null],
+			[1, null, null]
+		]);
+		expect(rows.map((row) => row.id)).not.toContain(where.id);
+		expect(rows.map((row) => row.id)).not.toContain(depot.id);
+		const working = JSON.parse(draft.workingContent);
+		expect(working.surveyQuestions).toEqual([
+			{ ...asked[0], questionId: rows[0].id },
+			{ ...asked[1], questionId: rows[1].id }
+		]);
+		expect(working.agentDrafted).toEqual({ [`survey.${rows[1].id}`]: true });
+		// The old decision's rows are as they were.
+		expect(db.select().from(decisionSurveyQuestions).where(eq(decisionSurveyQuestions.decisionId, old.decision.id)).all()).toEqual([where, depot]);
 	});
 
 	it('refuses, writing nothing, one row each (32)', () => {
@@ -2486,5 +2533,338 @@ describe('the decider-only details, the statement version and the API', () => {
 		expect(files.length).toBeGreaterThan(20);
 		const NAMES = /\b(ruleDecision|releaseResults|raiseConcern|raiseConcernByLink|decisionRuleGuard|resultsReleaseGuard)\b/;
 		expect(files.filter((file) => NAMES.test(readFileSync(file, 'utf8')))).toEqual([]);
+	});
+});
+
+// ─── Survey answers in the results, the ruling and the release (card 2683, slice S2b) ─
+
+/** The survey questions `surveyOn` asks, in order: a choice, a scale and a written answer. */
+const SURVEY = [
+	{ kind: 'choice', prompt: 'Which depot ships it?', help: '', required: false, choices: ['Leeds', 'York', 'Hull'] },
+	{ kind: 'scale', prompt: 'How urgent is it?', help: '', required: false, scale: { max: 5, lowLabel: 'Not at all', highLabel: 'Very' } },
+	{ kind: 'text', prompt: 'Anything else?', help: '', required: false }
+] as const;
+
+/** `SURVEY` as a version's content holds it, each under the id of its row, `choice`'s choices `choices` where given. */
+const surveyContent = (ids: { choice: { id: number }; scale: { id: number }; text: { id: number } }, more: { choices?: string[]; help?: string } = {}) => [
+	{ ...SURVEY[0], questionId: ids.choice.id, ...(more.choices === undefined ? {} : { choices: more.choices }), ...(more.help === undefined ? {} : { help: more.help }) },
+	{ ...SURVEY[1], questionId: ids.scale.id },
+	{ ...SURVEY[2], questionId: ids.text.id }
+];
+
+/**
+ * Card 2683: `SURVEY`'s questions on the decision's version 1, beside `options` (none: a survey), as `openDecision`
+ * leaves them: a row for each, added in version 1, and version 1 made again to hold them.
+ */
+function surveyOn(decision: Decision, options: { id: number; label: string }[] = []) {
+	const [choice, scale, text] = SURVEY.map((_words, position) =>
+		db.insert(decisionSurveyQuestions).values({ decisionId: decision.id, position, addedInVersion: 1 }).returning().get()
+	);
+	sqlite.prepare('DELETE FROM decision_versions WHERE decision_id = ?').run(decision.id);
+	makeVersion(
+		decision,
+		{ question: 'Which plan?', options: options.map((o) => ({ optionId: o.id, label: o.label, title: `Plan ${o.label}` })), surveyQuestions: surveyContent({ choice, scale, text }) },
+		{ number: 1 }
+	);
+	return { choice, scale, text };
+}
+
+/** Card 2683: a decision that is a survey, version 1 putting no options and asking `SURVEY`; closed and awaiting a ruling unless told otherwise. */
+function surveyed(opts: { status?: string; closesAt?: string } = {}) {
+	const decider = makeUser({ username: `decider${++seq}` });
+	addBoardMember(board, decider, 'editor');
+	const made = makeDecision({ board, author: decider, decider, title: 'Where from?', status: opts.status ?? 'closed', closesAt: opts.closesAt ?? PAST, openedAt: '2026-11-01 09:00:00' });
+	makeVersion(made, {}, { number: 1 });
+	return { decision: decisionRow(made.id), decider, ...surveyOn(decisionRow(made.id)) };
+}
+
+/** An `answered` response of the participant, its answers stored as `appendResponse` stores them, with its `responded` event. */
+const answered = (participant: DecisionParticipant, answers: Record<number, number | string>, opts: Parameters<typeof makeResponse>[1] = {}) =>
+	answer(participant, { kind: 'answered', optionId: null, answers: JSON.stringify(answers), ...opts });
+
+/** Version `number`'s new options A and B, live from it. */
+function optionsFrom(decision: Decision, number: number) {
+	const a = makeOption(decision, { label: 'A', position: 0, addedInVersion: number });
+	const b = makeOption(decision, { label: 'B', position: 1, addedInVersion: number });
+	return { a, b, content: [a, b].map((o) => ({ optionId: o.id, label: o.label, title: `Plan ${o.label}` })) };
+}
+
+describe('survey answers in the results, the ruling and the release (card 2683)', () => {
+	it("T44. gives the decider a round's survey figures, labelled with the version answered under, and each row's answers", () => {
+		const { decision, decider, choice, scale, text } = surveyed();
+		const pat = withAccount(decision, 'pat');
+		const quin = withAccount(decision, 'quin');
+		const ria = withAccount(decision, 'ria');
+		answered(pat.participant, { [choice.id]: 0, [scale.id]: 4, [text.id]: 'Leeds ships on Tuesdays.' });
+		answered(quin.participant, { [choice.id]: 0, [scale.id]: 2 });
+		answer(ria.participant, { kind: 'abstain', optionId: null });
+
+		const results = readResults(decider, decision.id, { source: 'ui' });
+
+		expect(readResults(makeUser({ role: 'admin' }), decision.id, { source: 'ui' }).current, 'an administrator').toEqual(results.current);
+		expect(results.surveyQuestions).toEqual(surveyContent({ choice, scale, text }));
+		expect(results.current).toMatchObject({ round: 1, responded: 3, voted: 0, votes: [], abstained: 1, noConcerns: 0 });
+		expect(results.current.survey).toEqual([
+			{
+				versionNumber: 1,
+				questions: [
+					{
+						questionId: choice.id,
+						kind: 'choice',
+						prompt: 'Which depot ships it?',
+						answered: 2,
+						choices: [
+							{ choice: 'Leeds', count: 2 },
+							{ choice: 'York', count: 0 },
+							{ choice: 'Hull', count: 0 }
+						],
+						scale: null
+					},
+					{
+						questionId: scale.id,
+						kind: 'scale',
+						prompt: 'How urgent is it?',
+						answered: 2,
+						choices: null,
+						scale: {
+							max: 5,
+							lowLabel: 'Not at all',
+							highLabel: 'Very',
+							counts: [1, 2, 3, 4, 5].map((value) => ({ value, count: value === 2 || value === 4 ? 1 : 0 })),
+							mean: 3
+						}
+					},
+					{ questionId: text.id, kind: 'text', prompt: 'Anything else?', answered: 1, choices: null, scale: null }
+				]
+			}
+		]);
+		expect(results.current.rows.map((row) => [row.name, row.kind, row.versionNumber, row.answers])).toEqual([
+			[pat.participant.name, 'answered', 1, { [choice.id]: 0, [scale.id]: 4, [text.id]: 'Leeds ships on Tuesdays.' }],
+			[quin.participant.name, 'answered', 1, { [choice.id]: 0, [scale.id]: 2 }],
+			[ria.participant.name, 'abstain', 1, {}]
+		]);
+	});
+
+	it('T45. keeps the survey round apart, as an earlier round, once the decision is asked again with options', () => {
+		const { decision, decider, choice, scale, text } = surveyed({ status: 'open', closesAt: FUTURE });
+		const pat = withAccount(decision, 'pat');
+		const quin = withAccount(decision, 'quin');
+		answered(pat.participant, { [choice.id]: 1 }, { comment: 'From York.' });
+		answered(quin.participant, { [choice.id]: 2 });
+		// Version 2 asks again with options A and B, keeping the questions: the decision is now a vote.
+		const { a, b, content } = optionsFrom(decision, 2);
+		makeVersion(decision, { options: content, surveyQuestions: surveyContent({ choice, scale, text }) }, { number: 2, asksAgain: true });
+		answer(pat.participant, { optionId: a.id, round: 2, versionNumber: 2 });
+
+		const results = readResults(decider, decision.id, { source: 'ui' });
+
+		expect(results.round).toBe(2);
+		expect(results.options.map((option) => option.label)).toEqual(['A', 'B']);
+		expect(results.current).toMatchObject({ round: 2, responded: 1, voted: 1, votes: [{ optionId: a.id, count: 1 }, { optionId: b.id, count: 0 }] });
+		expect(results.current.rows.map((row) => [row.kind, row.answers])).toEqual([['vote', {}]]);
+		expect(results.notResponded.map((row) => row.name)).toEqual([quin.participant.name]);
+		expect(results.earlierRounds).toHaveLength(1);
+		const [survey] = results.earlierRounds;
+		expect(survey).toMatchObject({ round: 1, responded: 2, voted: 0, votes: [] });
+		expect(survey.rows.map((row) => [row.kind, row.comment, row.answers])).toEqual([
+			['answered', 'From York.', { [choice.id]: 1 }],
+			['answered', null, { [choice.id]: 2 }]
+		]);
+		expect(survey.survey.map((tally) => [tally.versionNumber, tally.questions[0].choices])).toEqual([
+			[
+				1,
+				[
+					{ choice: 'Leeds', count: 0 },
+					{ choice: 'York', count: 1 },
+					{ choice: 'Hull', count: 1 }
+				]
+			]
+		]);
+	});
+
+	it('T46. rules a survey on no option: ruled, not against the responses, and the mail, the results and the page say no options were put to a vote', async () => {
+		const { decision, decider, choice } = surveyed();
+		const pat = withAccount(decision, 'pat');
+		answered(pat.participant, { [choice.id]: 0 });
+
+		rule(decider, decision, { optionId: null, reason: 'Leeds ships it.' });
+
+		expect(rulingOf(decision.id)).toMatchObject({ optionId: null, againstResponses: false, reason: 'Leeds ships it.' });
+		expect(decisionRow(decision.id).status).toBe('ruled');
+		await settled(decision.id);
+		expect(sent.emails.map((mail) => mail.to)).toEqual([pat.person.email]);
+		expect(sent.emails[0].html).toContain('No options were put to a vote');
+		expect(sent.emails[0].html).not.toContain('None of these');
+		expect(sent.emails[0].html).toContain('Leeds ships it.');
+		expect(readResults(decider, decision.id, { source: 'ui' }).ruling).toMatchObject({ optionId: null, againstResponses: false, noOptions: true });
+		expect(readDecisionPage(pat.account, decision.id).ruling).toEqual({
+			label: null,
+			title: null,
+			noneOfThese: true,
+			reason: 'Leeds ships it.',
+			conditions: null,
+			ruledByName: decider.username,
+			noOptions: true
+		});
+	});
+
+	it("T47. refuses a release of a survey's ruling in R11's words, writing nothing, and the results page says so", () => {
+		const { decision, decider, choice } = surveyed();
+		for (const name of ['pat', 'quin', 'ria']) answer(withAccount(decision, name).participant, { kind: 'abstain', optionId: null, comment: `${name} abstains.` });
+		answered(withAccount(decision, 'sam').participant, { [choice.id]: 0 });
+		makeRuling(decision, { ruledAt: stamp() });
+		const before = written();
+
+		expect(outcome(() => release(decider, decisionRow(decision.id)))).toEqual({ status: 409, message: NO_OPTIONS_TO_RELEASE });
+		expect(NO_OPTIONS_TO_RELEASE).toBe('This decision put no options to a vote: there are no totals to release, and survey answers are never released');
+		expect(written()).toEqual(before);
+		expect(decisionRow(decision.id).resultsReleasedAt).toBeNull();
+		expect(readResults(decider, decision.id, { source: 'ui' })).toMatchObject({ mayRelease: false, releaseRefusal: NO_OPTIONS_TO_RELEASE, releasePreview: null });
+	});
+
+	it('T48. holds no answer, no answer text and no survey figure in a release, or its preview, of a decision with options', () => {
+		const r = releasable();
+		const { choice, scale, text } = surveyOn(r.decision, [r.a, r.b, r.c]);
+		sqlite.prepare('UPDATE decision_responses SET answers = ? WHERE decision_id = ?').run(JSON.stringify({ [choice.id]: 1, [scale.id]: 5, [text.id]: 'A secret depot note.' }), r.decision.id);
+		// The results hold the answers, so it is the release that leaves them out.
+		expect(readResults(r.decider, r.decision.id, { source: 'ui' }).current.rows.map((row) => row.answers[`${text.id}`])).toEqual(Array(3).fill('A secret depot note.'));
+
+		const preview = previewOf(decisionRow(r.decision.id));
+		release(r.decider, r.decision);
+		const released = releasedOf(decisionRow(r.decision.id))!;
+
+		for (const [name, shown] of [['preview', preview], ['release', released]] as const) {
+			const said = JSON.stringify(shown);
+			for (const absent of ['A secret depot note.', 'York', 'Which depot', 'How urgent', 'Not at all', 'survey', 'answers']) expect(said, `${name}: ${absent}`).not.toContain(absent);
+			expect(Object.keys(shown).sort(), name).toEqual(['abstained', 'comments', 'noConcerns', 'options', 'responded', 'voteMode', 'voted']);
+		}
+		expect(released.comments).toEqual(['A, gladly.', 'Either is fine.', 'Plan A is enough.']);
+		for (const row of releaseRowsOf(decisionRow(r.decision.id), null)) expect(row).not.toHaveProperty('answers');
+	});
+
+	it('T56. tallies and labels answers by the version answered under, never adding a reordered question\'s answers together by position', () => {
+		const { decision, decider, choice, scale, text } = surveyed({ status: 'open', closesAt: FUTURE });
+		const pat = withAccount(decision, 'pat');
+		const quin = withAccount(decision, 'quin');
+		const ria = withAccount(decision, 'ria');
+		answered(pat.participant, { [choice.id]: 0 });
+		// Version 2 asks again with the choices reordered; version 3 tells only, the choice question's help corrected.
+		const reordered = ['Hull', 'Leeds', 'York'];
+		makeVersion(decision, { surveyQuestions: surveyContent({ choice, scale, text }, { choices: reordered }) }, { number: 2, asksAgain: true });
+		answered(quin.participant, { [choice.id]: 0 }, { round: 2, versionNumber: 2 });
+		makeVersion(decision, { surveyQuestions: surveyContent({ choice, scale, text }, { choices: reordered, help: 'Where it leaves from.' }) }, { number: 3, asksAgain: false });
+		answered(ria.participant, { [choice.id]: 1 }, { round: 2, versionNumber: 3 });
+
+		const results = readResults(decider, decision.id, { source: 'ui' });
+
+		const choicesOf = (tally: RoundTally) => tally.survey.map((group) => [group.versionNumber, group.questions[0].choices]);
+		expect(choicesOf(results.earlierRounds[0]), 'round 1').toEqual([
+			[
+				1,
+				[
+					{ choice: 'Leeds', count: 1 },
+					{ choice: 'York', count: 0 },
+					{ choice: 'Hull', count: 0 }
+				]
+			]
+		]);
+		expect(choicesOf(results.current), 'round 2').toEqual([
+			[
+				2,
+				[
+					{ choice: 'Hull', count: 1 },
+					{ choice: 'Leeds', count: 0 },
+					{ choice: 'York', count: 0 }
+				]
+			],
+			[
+				3,
+				[
+					{ choice: 'Hull', count: 0 },
+					{ choice: 'Leeds', count: 1 },
+					{ choice: 'York', count: 0 }
+				]
+			]
+		]);
+	});
+
+	it('T63. shows the answers given with a vote on a decision with options in its results row, and counts them', () => {
+		const { decision, decider, a, b, c } = opened();
+		const { choice, scale } = surveyOn(decision, [a, b, c]);
+		const pat = withAccount(decision, 'pat');
+		answer(pat.participant, { optionId: a.id, answers: JSON.stringify({ [choice.id]: 2, [scale.id]: 5 }) });
+
+		const results = readResults(decider, decision.id, { source: 'ui' });
+
+		expect(results.current.rows).toEqual([expect.objectContaining({ kind: 'vote', optionId: a.id, answers: { [choice.id]: 2, [scale.id]: 5 } })]);
+		expect(results.current.votes).toEqual([
+			{ optionId: a.id, count: 1 },
+			{ optionId: b.id, count: 0 },
+			{ optionId: c.id, count: 0 }
+		]);
+		expect(results.current.survey.map((group) => [group.versionNumber, group.questions.map((question) => question.answered)])).toEqual([[1, [1, 1, 0]]]);
+		expect(results.current.survey[0].questions[1].scale?.mean).toBe(5);
+	});
+
+	it('T67. never releases a comment given with a survey answer: not from the survey round once the decision is a vote, nor an answered row in the ruling round', () => {
+		const { decision, decider, choice, scale, text } = surveyed();
+		const [pat, quin, ria, sam] = ['pat', 'quin', 'ria', 'sam'].map((name) => withAccount(decision, name));
+		answered(pat.participant, { [choice.id]: 0 }, { comment: 'Said with a survey answer.' });
+		const { a, content } = optionsFrom(decision, 2);
+		makeVersion(decision, { options: content, surveyQuestions: surveyContent({ choice, scale, text }) }, { number: 2, asksAgain: true });
+		for (const [who, words] of [[pat, 'A for pat.'], [quin, 'A for quin.'], [ria, 'A for ria.']] as const) {
+			answer(who.participant, { optionId: a.id, round: 2, versionNumber: 2, comment: words });
+		}
+		// An answered row in the ruling round, which no write leaves beside options, as an unsealed restore could plant one.
+		answered(sam.participant, { [choice.id]: 1 }, { round: 2, versionNumber: 2, comment: 'Planted with an answer.' });
+		makeRuling(decision, { optionId: a.id, ruledAt: stamp() });
+
+		const preview = previewOf(decisionRow(decision.id));
+		release(decider, decisionRow(decision.id));
+		const released = releasedOf(decisionRow(decision.id))!;
+
+		for (const [name, shown] of [['preview', preview], ['release', released]] as const) {
+			const said = JSON.stringify(shown);
+			for (const absent of ['Said with a survey answer.', 'Planted with an answer.']) expect(said, `${name}: ${absent}`).not.toContain(absent);
+		}
+		expect(released.comments).toEqual(['A for pat.', 'A for quin.', 'A for ria.']);
+		expect(releaseRowsOf(decisionRow(decision.id), null).map((row) => row.kind)).toEqual(['vote', 'vote', 'vote']);
+	});
+
+	it('F1. a release reads no survey answer: its refusals, preview, write and released read never read the survey questions, though the votes carry answers', () => {
+		const { decision, decider, choice, scale, text } = surveyed();
+		const { a, content } = optionsFrom(decision, 2);
+		makeVersion(decision, { options: content, surveyQuestions: surveyContent({ choice, scale, text }) }, { number: 2, asksAgain: true });
+		for (const name of ['pat', 'quin', 'ria']) {
+			answer(withAccount(decision, name).participant, { optionId: a.id, round: 2, versionNumber: 2, comment: `A for ${name}.`, answers: JSON.stringify({ [choice.id]: 1, [text.id]: `Leeds, says ${name}.` }) });
+		}
+		answered(withAccount(decision, 'sam').participant, { [choice.id]: 2 }, { round: 2, versionNumber: 2, comment: 'Planted with an answer.' });
+		makeRuling(decision, { optionId: a.id, ruledAt: stamp() });
+
+		/** The statements `read` prepares that name the survey question table: how an answer is read against its version. */
+		const surveyReadsIn = <T>(read: () => T): { value: T; reads: number } => {
+			const prepare = vi.spyOn(sqlite, 'prepare');
+			try {
+				const value = read();
+				return { value, reads: prepare.mock.calls.filter(([source]) => String(source).includes('decision_survey_questions')).length };
+			} finally {
+				prepare.mockRestore();
+			}
+		};
+
+		// The probe sees the read where answers are read: the decider's results.
+		const results = surveyReadsIn(() => readResults(decider, decision.id, UI));
+		expect(results.reads).toBeGreaterThan(0);
+		expect(results.value.current.rows.map((row) => row.answers[`${choice.id}`])).toEqual([1, 1, 1, 2]);
+
+		expect(surveyReadsIn(() => releaseRefusals(decisionRow(decision.id)))).toEqual({ value: [], reads: 0 });
+		const preview = surveyReadsIn(() => previewOf(decisionRow(decision.id)));
+		expect(preview.reads).toBe(0);
+		expect(JSON.stringify(preview.value)).not.toContain('Leeds, says');
+		expect(surveyReadsIn(() => releaseRowsOf(decisionRow(decision.id), null)).reads).toBe(0);
+		expect(surveyReadsIn(() => release(decider, decisionRow(decision.id))).reads).toBe(0);
+		const released = surveyReadsIn(() => releasedOf(decisionRow(decision.id)));
+		expect(released.reads).toBe(0);
+		expect(released.value?.comments).toEqual(['A for pat.', 'A for quin.', 'A for ria.']);
 	});
 });

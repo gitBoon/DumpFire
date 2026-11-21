@@ -76,6 +76,7 @@ import { db, sqlite } from '$lib/server/db';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import {
 	decisionOptions as decisionOptionsTable,
+	decisionSurveyQuestions,
 	decisionParticipants,
 	decisions,
 	people,
@@ -91,12 +92,12 @@ import { PASSWORD_CHANGED_MEANWHILE, STEP_UP_MISSING, STEP_UP_WRONG } from '$lib
 import { decisionAnswer, LIFECYCLE_ACTIONS, participantAnswers, readEditPage, revisionFor } from '$lib/server/decision-authoring';
 import { decisionAccess, mayDo } from '$lib/server/decision-access';
 import { STORED_STATUSES, TRANSITIONS } from '$lib/server/decision-status';
-import { appendEvent, recordMailsSince, SYSTEM_ACTOR } from '$lib/server/decision-record';
+import { appendEvent, currentRound, liveOptionIds, recordMailsSince, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { resultsRevisionFor } from '$lib/server/decision-results';
 import { REVOKE_WORDS, SKIP_WORDS } from '$lib/server/decision-links';
 import { CALLER_MAIL_DAILY_CAP, DRY_RUN_DAILY_CAP, PUBLISH_DAILY_CAP, RECORD_MAIL_DAILY_CAP } from '$lib/server/decision-mail';
 import { dryRunDecision, markReviewed, setDecider, updateDraft } from '$lib/server/decision-authoring-writes';
-import { extendDecision, openDecision, republishDecision, withdrawDecision } from '$lib/server/decision-lifecycle-writes';
+import { deleteDecision, extendDecision, openDecision, republishDecision, withdrawDecision } from '$lib/server/decision-lifecycle-writes';
 import {
 	changeParticipantAddress,
 	participantAccountGuard,
@@ -109,7 +110,8 @@ import { ruleDecision } from '$lib/server/decision-ruling-writes';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS } from '$lib/server/email';
 import { resetAllRateLimits, takeAllowance } from '$lib/server/rate-limit';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
-import { CLOSES_TOO_FAR, CLOSES_TOO_FAR_TO_OPEN, CLOSES_TOO_FAR_TO_REPUBLISH } from '$lib/decision-readiness';
+import { CLOSES_TOO_FAR, CLOSES_TOO_FAR_TO_OPEN, CLOSES_TOO_FAR_TO_REPUBLISH, refusalsOf } from '$lib/decision-readiness';
+import { openFactsOf } from '$lib/server/decision-content';
 import { STALE_REVISION } from '$lib/decision-words';
 import { parseStamp, stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
@@ -1789,25 +1791,27 @@ describe("readEditPage's republishSummary against republishDecision telling only
 		status: 409,
 		message: 'Telling of a change cannot add or retire an option: publish a change to the options by asking everyone again'
 	};
+	/** Card 2683 (R7): what the summary says of a decision that asks no survey question. */
+	const NO_SURVEY_CHANGE = { changesSurvey: false, surveyAdding: [], surveyRetiring: [], surveyChanging: [] };
 
 	it('(a) an option added since the version: changesOptions, its label named, and the write refuses', () => {
 		const { author, decision } = opened(({ a, b, c }) => [a, b, c!], 'unpublished');
 
-		expect(readEditPage(author, decision.id).republishSummary).toEqual({ changesOptions: true, adding: ['C'], retiring: [] });
+		expect(readEditPage(author, decision.id).republishSummary).toEqual({ changesOptions: true, adding: ['C'], retiring: [], ...NO_SURVEY_CHANGE });
 		expect(tellOnly(author, decision.id)).toEqual(TELL_ONLY_REFUSED);
 	});
 
 	it('(b) a published option left out of the working copy: changesOptions, and the write refuses', () => {
 		const { author, decision } = opened(({ a, b }) => [a, b], 'published');
 
-		expect(readEditPage(author, decision.id).republishSummary).toEqual({ changesOptions: true, adding: [], retiring: ['C'] });
+		expect(readEditPage(author, decision.id).republishSummary).toEqual({ changesOptions: true, adding: [], retiring: ['C'], ...NO_SURVEY_CHANGE });
 		expect(tellOnly(author, decision.id)).toEqual(TELL_ONLY_REFUSED);
 	});
 
 	it('(c) the text alone changed: no change to the options, and the write tells of it', async () => {
 		const { author, decision } = opened(({ a, b }) => [a, b], null);
 
-		expect(readEditPage(author, decision.id).republishSummary).toEqual({ changesOptions: false, adding: [], retiring: [] });
+		expect(readEditPage(author, decision.id).republishSummary).toEqual({ changesOptions: false, adding: [], retiring: [], ...NO_SURVEY_CHANGE });
 		expect(tellOnly(author, decision.id)).toBe('passed');
 		expect(decisionRow(decision.id).currentVersion).toBe(2);
 		await sent.settle();
@@ -2058,5 +2062,256 @@ describe('deleting and withdrawing a decision that was ever opened ask for the p
 			expect(decisionRow(draft.id)).toMatchObject({ status: 'open', withdrawnAt: null });
 			expect(stub.compared).toBe(0);
 		});
+	});
+});
+
+// ─── Survey questions: opening, re-publishing and deleting (card 2683, slice S1) ─
+
+describe('a decision that asks survey questions, opened and re-published (card 2683)', () => {
+	/** The decision's survey question rows, in id order. */
+	const surveyRows = (id: number) =>
+		db.select().from(decisionSurveyQuestions).where(eq(decisionSurveyQuestions.decisionId, id)).orderBy(decisionSurveyQuestions.id).all();
+	/** Version `number` of the decision's content, read back. */
+	const versionOf = (id: number, number: number) =>
+		JSON.parse((sqlite.prepare('SELECT content FROM decision_versions WHERE decision_id = ? AND number = ?').pluck().get(id, number) as string | undefined) ?? '{}');
+	/** A survey question of the content: a text question with a prompt, and `more` over it. */
+	const questionOf = (more: Record<string, unknown> = {}) => ({ kind: 'text', prompt: 'Where do you ship from?', help: '', required: false, ...more });
+	const choiceOf = (choices: string[], more: Record<string, unknown> = {}) => questionOf({ kind: 'choice', prompt: 'Which depot?', choices, ...more });
+	const scaleOf = (max: number, more: Record<string, unknown> = {}) =>
+		questionOf({ kind: 'scale', prompt: 'How urgent?', scale: { max, lowLabel: 'Not at all', highLabel: 'Very' }, ...more });
+	const optionOf = (title: string, optionId?: number) => ({ ...(optionId === undefined ? {} : { optionId }), title, summary: '', pros: [], cons: [], commercial: '' });
+	/** The working copy's text, `more` over it. */
+	const textOf = (more: Record<string, unknown>) => ({ situation: 'Stock is short.', question: 'Where do we stand?', ask: 'Tell us.', ...more });
+
+	/** Save the working copy of `id` as `user`, with the current revision. */
+	const saveAs = (user: SessionUser, id: number, body: Record<string, unknown>) =>
+		as(user, (caller) => updateDraft(caller, { decisionId: id }, { revision: revisionNow(id), ...body }, UI));
+	/** Re-publish `id` as `user`, asking everyone again or telling only. */
+	const republish = (user: SessionUser, id: number, askAgain: boolean) =>
+		outcome(() => as(user, (caller) => republishDecision(caller, { decisionId: id }, { changeNote: 'Changed.', askAgain, revision: revisionNow(id) }, UI)));
+
+	/** A ready draft turned into a survey: its two options taken out, its working copy asking `questions`, and `options` new ones. */
+	function surveyDraft(questions: Record<string, unknown>[] = [questionOf()], options: string[] = []): Ready {
+		const r = readyDraft({ board });
+		saveAs(r.author, r.draft.id, { content: textOf({ options: options.map((title) => optionOf(title)), surveyQuestions: questions }) });
+		return { ...r, draft: decisionRow(r.draft.id) };
+	}
+
+	/** `surveyDraft` opened, its invitations sent and aged past the rest, so that it may be re-published. */
+	async function openSurvey(questions?: Record<string, unknown>[], options?: string[]): Promise<Ready> {
+		const r = surveyDraft(questions, options);
+		expect(outcome(() => open(r.author, r.draft.id))).toBe('passed');
+		await sent.settle();
+		ageRecordMail(r.draft.id);
+		sent.clear();
+		return { ...r, draft: decisionRow(r.draft.id) };
+	}
+
+	/** The working copy's survey questions as stored, each with its id. */
+	const storedSurvey = (id: number) => (JSON.parse(decisionRow(id).workingContent) as { surveyQuestions: Record<string, unknown>[] }).surveyQuestions;
+
+	it('T4: deleting a draft deletes its survey question rows with it', () => {
+		const r = surveyDraft([questionOf(), choiceOf(['Leeds', 'York'])]);
+		expect(surveyRows(r.draft.id)).toHaveLength(2);
+
+		as(r.author, (caller) => deleteDecision(caller, { decisionId: r.draft.id }, null, UI));
+
+		expect(db.select().from(decisions).where(eq(decisions.id, r.draft.id)).get()).toBeUndefined();
+		expect(surveyRows(r.draft.id)).toEqual([]);
+		expect(count('decision_survey_questions')).toBe(0);
+	});
+
+	it('T16: a draft with no option and a complete survey question opens: version 1 holds the questions with their ids, each row added in it', async () => {
+		const r = surveyDraft([questionOf({ required: true }), choiceOf(['Leeds', 'York'])]);
+		expect(refusalsOf(openFactsOf(decisionRow(r.draft.id), stamp()))).toEqual([]);
+
+		expect(outcome(() => open(r.author, r.draft.id))).toBe('passed');
+		await sent.settle();
+
+		const rows = surveyRows(r.draft.id);
+		expect(decisionRow(r.draft.id)).toMatchObject({ status: 'open', currentVersion: 1 });
+		expect(rows.map((row) => [row.addedInVersion, row.retiredInVersion])).toEqual([
+			[1, null],
+			[1, null]
+		]);
+		expect(versionOf(r.draft.id, 1)).toMatchObject({
+			options: [],
+			surveyQuestions: [
+				{ questionId: rows[0].id, kind: 'text', prompt: 'Where do you ship from?', help: '', required: true },
+				{ questionId: rows[1].id, kind: 'choice', prompt: 'Which depot?', help: '', required: false, choices: ['Leeds', 'York'] }
+			]
+		});
+		expect(liveOptionIds(r.draft.id, 1)).toEqual([]);
+	});
+
+	it('T17: a draft with no option and no survey question is refused too_few_options, in its own words, with nothing written', () => {
+		const r = surveyDraft([]);
+		const before = written();
+
+		expect(refusalsOf(openFactsOf(decisionRow(r.draft.id), stamp()))).toEqual([
+			{ code: 'too_few_options', words: 'This decision has no options and no survey questions: it cannot be opened' }
+		]);
+		expect(outcome(() => open(r.author, r.draft.id))).toEqual({ status: 409, message: 'This decision has no options and no survey questions: it cannot be opened' });
+		expect(written()).toEqual(before);
+	});
+
+	it('T18: a draft with one option and a survey question is refused too_few_options, as one with fewer than two options', () => {
+		const r = surveyDraft([questionOf()], ['Lean']);
+
+		expect(refusalsOf(openFactsOf(decisionRow(r.draft.id), stamp()))).toEqual([
+			{ code: 'too_few_options', words: 'This decision has fewer than two options: it cannot be opened' }
+		]);
+		expect(outcome(() => open(r.author, r.draft.id))).toEqual({ status: 409, message: 'This decision has fewer than two options: it cannot be opened' });
+		expect(decisionRow(r.draft.id).status).toBe('draft');
+	});
+
+	it('T19: a choice question with one choice is refused survey_incomplete, naming it by its number', () => {
+		const r = surveyDraft([questionOf(), choiceOf(['Leeds'])]);
+		const words = 'Survey question 2 offers fewer than two choices: this decision cannot be opened';
+
+		expect(refusalsOf(openFactsOf(decisionRow(r.draft.id), stamp()))).toEqual([{ code: 'survey_incomplete', words }]);
+		expect(outcome(() => open(r.author, r.draft.id))).toEqual({ status: 409, message: words });
+		expect(surveyRows(r.draft.id).map((row) => row.addedInVersion)).toEqual([null, null]);
+	});
+
+	it('T20: a survey question with no prompt is refused survey_incomplete, naming it by its number', () => {
+		const r = surveyDraft([questionOf({ prompt: '' })]);
+		const words = 'Survey question 1 has no prompt: this decision cannot be opened';
+
+		expect(refusalsOf(openFactsOf(decisionRow(r.draft.id), stamp()))).toEqual([{ code: 'survey_incomplete', words }]);
+		expect(outcome(() => open(r.author, r.draft.id))).toEqual({ status: 409, message: words });
+		expect(decisionRow(r.draft.id).status).toBe('draft');
+	});
+
+	it('T21: a survey re-published asking everyone again with two options added becomes a vote: version 2 puts them, in round 2', async () => {
+		const r = await openSurvey();
+		saveAs(r.author, r.draft.id, { content: textOf({ options: [optionOf('Lean'), optionOf('Full')], surveyQuestions: storedSurvey(r.draft.id) }) });
+
+		expect(republish(r.author, r.draft.id, true)).toBe('passed');
+		await sent.settle();
+
+		expect(decisionRow(r.draft.id).currentVersion).toBe(2);
+		expect(currentRound(r.draft.id)).toBe(2);
+		expect(liveOptionIds(r.draft.id, 1)).toEqual([]);
+		expect(liveOptionIds(r.draft.id, 2)).toHaveLength(2);
+		expect(versionOf(r.draft.id, 2).options.map((option: { title: string; label: string }) => [option.label, option.title])).toEqual([
+			['A', 'Lean'],
+			['B', 'Full']
+		]);
+		// The survey question is still asked beside the vote.
+		expect(versionOf(r.draft.id, 2).surveyQuestions).toEqual(versionOf(r.draft.id, 1).surveyQuestions);
+	});
+
+	it.each([
+		['added', (asked: Record<string, unknown>[]) => [...asked, questionOf({ prompt: 'And when?' })]],
+		['retired', (asked: Record<string, unknown>[]) => asked.slice(0, 1)]
+	])('T22: telling only with a survey question %s is refused, 409, with nothing written', async (_case, change) => {
+		const r = await openSurvey([questionOf(), questionOf({ prompt: 'How many?' })]);
+		saveAs(r.author, r.draft.id, { content: textOf({ surveyQuestions: change(storedSurvey(r.draft.id)) }) });
+		const before = written();
+
+		expect(republish(r.author, r.draft.id, false)).toEqual({
+			status: 409,
+			message: 'Telling of a change cannot add, retire or change a survey question, but for its help: publish a change to the survey questions by asking everyone again'
+		});
+		expect(written()).toEqual(before);
+	});
+
+	it('T23: a decision that has put options to a vote cannot be re-published with none, survey question or not', async () => {
+		const r = await openSurvey([questionOf()], ['Lean', 'Full']);
+		saveAs(r.author, r.draft.id, { content: textOf({ options: [], surveyQuestions: storedSurvey(r.draft.id) }) });
+		const before = written();
+
+		expect(republish(r.author, r.draft.id, true)).toEqual({
+			status: 409,
+			message: 'This decision has put options to a vote: it keeps at least two, and cannot be re-published with none'
+		});
+		expect(written()).toEqual(before);
+	});
+
+	it('T24: a survey re-published with one option added is refused, as one with fewer than two options', async () => {
+		const r = await openSurvey();
+		saveAs(r.author, r.draft.id, { content: textOf({ options: [optionOf('Lean')], surveyQuestions: storedSurvey(r.draft.id) }) });
+		const before = written();
+
+		expect(republish(r.author, r.draft.id, true)).toEqual({ status: 409, message: 'This decision would have fewer than two options: it cannot be re-published' });
+		expect(written()).toEqual(before);
+	});
+
+	it('T25: a published survey question left out of the working copy is retired in the new version, which no longer holds it', async () => {
+		const r = await openSurvey([questionOf(), questionOf({ prompt: 'How many?' })]);
+		const [kept, left] = surveyRows(r.draft.id);
+		saveAs(r.author, r.draft.id, { content: textOf({ surveyQuestions: storedSurvey(r.draft.id).slice(0, 1) }) });
+
+		expect(republish(r.author, r.draft.id, true)).toBe('passed');
+		await sent.settle();
+
+		expect(surveyRows(r.draft.id).map((row) => [row.id, row.addedInVersion, row.retiredInVersion])).toEqual([
+			[kept.id, 1, null],
+			[left.id, 1, 2]
+		]);
+		expect(versionOf(r.draft.id, 2).surveyQuestions.map((question: { questionId: number }) => question.questionId)).toEqual([kept.id]);
+	});
+
+	it.each([
+		['its prompt', (q: Record<string, unknown>[]) => [{ ...q[0], prompt: 'Which depot, now?' }, q[1]]],
+		['the words of a choice', (q: Record<string, unknown>[]) => [{ ...q[0], choices: ['Leeds North', 'York', 'Hull'] }, q[1]]],
+		['the order of its choices', (q: Record<string, unknown>[]) => [{ ...q[0], choices: ['York', 'Leeds', 'Hull'] }, q[1]]],
+		['how many choices it has', (q: Record<string, unknown>[]) => [{ ...q[0], choices: ['Leeds', 'York'] }, q[1]]],
+		["its scale's top", (q: Record<string, unknown>[]) => [q[0], { ...q[1], scale: { max: 7, lowLabel: 'Not at all', highLabel: 'Very' } }]],
+		["a scale's end label", (q: Record<string, unknown>[]) => [q[0], { ...q[1], scale: { max: 5, lowLabel: 'Hardly', highLabel: 'Very' } }]],
+		['whether it must be answered', (q: Record<string, unknown>[]) => [{ ...q[0], required: true }, q[1]]]
+	])('T54: telling only with a published survey question changed in %s is refused, 409, with nothing written', async (_case, change) => {
+		const r = await openSurvey([choiceOf(['Leeds', 'York', 'Hull']), scaleOf(5)]);
+		saveAs(r.author, r.draft.id, { content: textOf({ surveyQuestions: change(storedSurvey(r.draft.id)) }) });
+		const before = written();
+
+		expect(republish(r.author, r.draft.id, false)).toEqual({
+			status: 409,
+			message: 'Telling of a change cannot add, retire or change a survey question, but for its help: publish a change to the survey questions by asking everyone again'
+		});
+		expect(written()).toEqual(before);
+	});
+
+	it("T55: telling only with a published survey question's help alone changed is accepted, and the new version holds the new help", async () => {
+		const r = await openSurvey([choiceOf(['Leeds', 'York'], { help: 'Old help.' })]);
+		saveAs(r.author, r.draft.id, { content: textOf({ surveyQuestions: storedSurvey(r.draft.id).map((question) => ({ ...question, help: 'Better help.' })) }) });
+
+		expect(republish(r.author, r.draft.id, false)).toBe('passed');
+		await sent.settle();
+
+		expect(decisionRow(r.draft.id).currentVersion).toBe(2);
+		expect(currentRound(r.draft.id)).toBe(1);
+		expect(versionOf(r.draft.id, 2).surveyQuestions).toEqual([{ ...versionOf(r.draft.id, 1).surveyQuestions[0], help: 'Better help.' }]);
+	});
+
+	it('T59: a vote mode changed on an opened survey is the mode the re-publish adding the first options puts them in', async () => {
+		const r = await openSurvey();
+		expect(decisionRow(r.draft.id).voteMode).toBe('single');
+		saveAs(r.author, r.draft.id, { voteMode: 'score', content: textOf({ options: [optionOf('Lean'), optionOf('Full')], surveyQuestions: storedSurvey(r.draft.id) }) });
+
+		expect(republish(r.author, r.draft.id, true)).toBe('passed');
+		await sent.settle();
+
+		expect(decisionRow(r.draft.id)).toMatchObject({ voteMode: 'score', currentVersion: 2 });
+		expect(liveOptionIds(r.draft.id, 2)).toHaveLength(2);
+		// Now that options are put, the mode is fixed.
+		expect(outcome(() => saveAs(r.author, r.draft.id, { voteMode: 'single' }))).toEqual({
+			status: 409,
+			message: 'This decision has been opened: its vote mode cannot be changed'
+		});
+	});
+
+	it('T62: re-publishing with a choice question of one choice is refused survey_incomplete, naming it by its number', async () => {
+		const r = await openSurvey([questionOf(), choiceOf(['Leeds', 'York'])]);
+		const [first, second] = storedSurvey(r.draft.id);
+		saveAs(r.author, r.draft.id, { content: textOf({ surveyQuestions: [first, { ...second, choices: ['Leeds'] }] }) });
+		const before = written();
+
+		expect(republish(r.author, r.draft.id, true)).toEqual({
+			status: 409,
+			message: 'Survey question 2 offers fewer than two choices: this decision cannot be re-published'
+		});
+		expect(written()).toEqual(before);
 	});
 });

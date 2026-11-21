@@ -11,6 +11,8 @@
  * response's comments and keyed objects. Card 2679 adds the results revision
  * (`resultsRevisionOf`), which the ruling and the release ask, and a
  * superseding draft's content from the version ruled on (`workingFromVersion`).
+ * Card 2683 adds survey questions: read, kept as option rows are, compared for
+ * a re-publish (`surveyChanges`), and the facts opening asks of them.
  *
  * Plain functions with no caller, called by the decision services
  * (`decision-<area>-writes.ts`) inside their writes, and by the authoring
@@ -27,27 +29,39 @@
  */
 import { createHmac } from 'node:crypto';
 import { error } from '@sveltejs/kit';
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { db } from './db';
 import {
 	decisionOptions,
 	decisionParticipants,
+	decisionSurveyQuestions,
+	decisionVersions,
 	people,
 	peopleGroupMembers,
 	peopleGroups,
 	users,
 	type Decision,
 	type DecisionOption,
-	type DecisionParticipant
+	type DecisionParticipant,
+	type DecisionSurveyQuestion
 } from './db/schema';
 import { canEditBoard } from './board-access';
 import { labelsInVersions, peopleById, snapshotOf } from './decision-record';
 import { decisionLinkBase } from './decision-mail';
 import { isSmtpConfigured } from './email';
 import { UNPRINTABLE } from './logger';
-import { asObject, readId, readList, readObjects, readText, type RequestBody } from './request-body';
+import { asObject, readBoolean, readChoice, readId, readList, readNumber, readObjects, readText, type RequestBody } from './request-body';
 import { purposeKey } from './request-tokens';
-import { CHOSEN_KEYS, type AudienceFacts, type OpenFacts, type WorkingContent } from '$lib/decision-readiness';
+import {
+	CHOSEN_KEYS,
+	SURVEY_KINDS,
+	surveyFactsOf,
+	type AudienceFacts,
+	type OpenFacts,
+	type SurveyQuestion,
+	type SurveyScale,
+	type WorkingContent
+} from '$lib/decision-readiness';
 import { DECISION_TITLE_MAX } from '$lib/decision-rules';
 import type { Stamp } from '$lib/timestamps';
 
@@ -77,6 +91,16 @@ export const CONTENT_LIMITS = {
 	heading: 200,
 	/** An audience's and a story's `body`: markdown. */
 	body: 10_000,
+	/** Card 2683 (R3): the survey questions, a prompt (one line), a question's help (markdown), its choices and each choice (one line). */
+	surveyQuestions: 20,
+	surveyPrompt: 300,
+	surveyHelp: 2_000,
+	surveyChoices: 20,
+	surveyChoice: 200,
+	/** A scale's top, from `scaleMin` to `scaleMax`, and the words at each end (one line). */
+	scaleMin: 2,
+	scaleMax: 10,
+	scaleLabel: 100,
 	/** The whole, serialised. */
 	bytes: 256 * 1024
 } as const;
@@ -88,10 +112,20 @@ export const SERVER_KEYS = ['agentDrafted', 'reviewed', 'lastLabel'] as const;
 const TEXT_SECTIONS = ['situation', 'question', 'ask', 'unknowns', 'alreadyRuled', 'technicalDetail'] as const;
 
 /** The keys of the content, of an option, of an audience and of a story (design 4.4). */
-const CONTENT_KEYS = [...TEXT_SECTIONS, 'options', 'audiences', 'stories'];
+const CONTENT_KEYS = [...TEXT_SECTIONS, 'options', 'audiences', 'stories', 'surveyQuestions'];
 const OPTION_KEYS = ['optionId', 'title', 'summary', 'pros', 'cons', 'commercial'];
 const AUDIENCE_KEYS = ['groupId', 'heading', 'body'];
 const STORY_KEYS = ['title', 'body'];
+/** Card 2683 (R3): a survey question's keys by its kind, `choices` a choice question's alone and `scale` a scale question's. */
+const SURVEY_KEYS: Readonly<Record<SurveyQuestion['kind'], readonly string[]>> = {
+	choice: ['questionId', 'kind', 'prompt', 'help', 'required', 'choices'],
+	scale: ['questionId', 'kind', 'prompt', 'help', 'required', 'scale'],
+	text: ['questionId', 'kind', 'prompt', 'help', 'required']
+};
+const SCALE_KEYS = ['max', 'lowLabel', 'highLabel'];
+
+/** The key a survey question's agent flag is kept under (card 2683, R16), as `options.<id>` is an option's. */
+export const surveyKey = (questionId: number) => `survey.${questionId}`;
 
 /** What a markdown field may hold of `UNPRINTABLE`: tab, newline, carriage return and the zero-width joiner (D12). */
 const MARKDOWN_ALLOWED = /[\t\n\r‍]/g;
@@ -102,6 +136,40 @@ const unprintable = (path: string) => `${path} cannot hold control, direction or
 /** A JSON object: not null, and not a list. */
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A stored survey question, read tolerantly (card 2683, R3): its id where it
+ * holds one, a text field of the wrong type empty, `required` true only when
+ * it is true, the choices of a choice question and the scale of a scale
+ * question alone. Null, and so left out, for an entry that is not an object,
+ * whose kind is none of `SURVEY_KINDS`, or a scale question whose scale does
+ * not read: no top is made up for it.
+ */
+function storedSurveyQuestion(entry: unknown): SurveyQuestion | null {
+	if (!isRecord(entry) || typeof entry.kind !== 'string' || !(SURVEY_KINDS as readonly string[]).includes(entry.kind)) return null;
+	const kind = entry.kind as SurveyQuestion['kind'];
+	const text = (value: unknown) => (typeof value === 'string' ? value : '');
+	const question: SurveyQuestion = {
+		...(typeof entry.questionId === 'number' ? { questionId: entry.questionId } : {}),
+		kind,
+		prompt: text(entry.prompt),
+		help: text(entry.help),
+		required: entry.required === true
+	};
+	if (kind === 'choice') question.choices = Array.isArray(entry.choices) ? entry.choices.filter((item): item is string => typeof item === 'string') : [];
+	if (kind === 'scale') {
+		const scale = entry.scale;
+		const max = isRecord(scale) ? scale.max : undefined;
+		if (!isRecord(scale) || typeof max !== 'number' || !Number.isInteger(max) || max < CONTENT_LIMITS.scaleMin || max > CONTENT_LIMITS.scaleMax) return null;
+		question.scale = { max, lowLabel: text(scale.lowLabel), highLabel: text(scale.highLabel) };
+	}
+	return question;
+}
+
+/** Stored survey questions, each read by `storedSurveyQuestion`, those it cannot read left out. */
+function storedSurveyQuestions(value: unknown): SurveyQuestion[] {
+	return (Array.isArray(value) ? value : []).map(storedSurveyQuestion).filter((question): question is SurveyQuestion => question !== null);
 }
 
 /**
@@ -151,6 +219,7 @@ export function parseWorkingContent(json: string): WorkingContent {
 		unknowns: text(read.unknowns),
 		alreadyRuled: text(read.alreadyRuled),
 		technicalDetail: text(read.technicalDetail),
+		surveyQuestions: storedSurveyQuestions(read.surveyQuestions),
 		agentDrafted,
 		reviewed,
 		lastLabel: typeof read.lastLabel === 'string' ? read.lastLabel : null
@@ -175,6 +244,8 @@ export type VersionContent = {
 	options: { optionId: number; label: string; title: string; summary: string; pros: string[]; cons: string[]; commercial: string }[];
 	audiences: { groupId: number | null; heading: string; body: string }[];
 	stories: { title: string; body: string }[];
+	/** Card 2683: each survey question published, with the id of its row, as `storedSurveyQuestion` reads it. */
+	surveyQuestions: (SurveyQuestion & { questionId: number })[];
 	agentDrafted: Record<string, true>;
 	reviewed: Record<string, { byName: string; at: string }>;
 };
@@ -183,7 +254,8 @@ export type VersionContent = {
  * A version's content as it is stored, read tolerantly: a field missing or of
  * the wrong type is its empty value, an entry that is not an object is left
  * out, and so is an option with no id, and a key that is none of a version's
- * is dropped.
+ * is dropped. Card 2683: so is a survey question with no id, or one
+ * `storedSurveyQuestion` cannot read.
  */
 export function parseVersionContent(json: string): VersionContent {
 	let read: Record<string, unknown> = {};
@@ -228,6 +300,7 @@ export function parseVersionContent(json: string): VersionContent {
 			body: text(audience.body)
 		})),
 		stories: records(read.stories).map((story) => ({ title: text(story.title), body: text(story.body) })),
+		surveyQuestions: storedSurveyQuestions(read.surveyQuestions).filter((question): question is SurveyQuestion & { questionId: number } => question.questionId !== undefined),
 		agentDrafted,
 		reviewed
 	};
@@ -276,6 +349,68 @@ function itemList(value: unknown, path: string): string[] {
 }
 
 /**
+ * A survey question of the body's content, read strictly (card 2683, R3): its
+ * `kind` first, one of `SURVEY_KINDS` (400 otherwise, or when not sent), then
+ * only that kind's keys (`SURVEY_KEYS`, a 400 naming the path for any other:
+ * `scale` on a choice question, `choices` on a text one). `questionId` is
+ * named once at most; that it is a live survey question of this decision is
+ * the write's to ask. `prompt` one line up to 300, empty while drafting (R6
+ * asks at opening); `help` markdown up to 2,000; `required` true or false,
+ * false when not sent; `choices` up to 20 one-line items up to 200, the empty
+ * ones dropped (two are asked at opening); `scale` required, closed, its
+ * `max` a whole number from 2 to 10 and its labels one line up to 100.
+ */
+function readSurveyQuestion(entry: RequestBody, index: number, seen: Set<number>): SurveyQuestion {
+	const path = `surveyQuestions[${index}]`;
+	const field = (name: string, value: unknown) => ({ [`${path}.${name}`]: value });
+	const kind = readChoice(field('kind', entry.kind), `${path}.kind`, { required: true, from: SURVEY_KINDS });
+	requireClosed(entry, SURVEY_KEYS[kind], `content.${path}`, `a ${kind} question`);
+	const questionId = readId(field('questionId', entry.questionId), `${path}.questionId`, {});
+	if (questionId !== undefined) {
+		if (seen.has(questionId)) error(400, `${path}.questionId ${questionId} is named twice`);
+		seen.add(questionId);
+	}
+	const question: SurveyQuestion = {
+		...(questionId === undefined ? {} : { questionId }),
+		kind,
+		prompt: singleLine(entry.prompt, `${path}.prompt`, CONTENT_LIMITS.surveyPrompt),
+		help: readMultiline(entry.help, `${path}.help`, CONTENT_LIMITS.surveyHelp),
+		required: readBoolean(field('required', entry.required), `${path}.required`, {}) ?? false
+	};
+	if (kind === 'choice') {
+		const choices = readList(field('choices', entry.choices), `${path}.choices`, { max: CONTENT_LIMITS.surveyChoices }) ?? [];
+		question.choices = choices.map((choice, at) => singleLine(choice, `${path}.choices[${at}]`, CONTENT_LIMITS.surveyChoice)).filter((choice) => choice !== '');
+	}
+	if (kind === 'scale') {
+		const scale = asObject(entry.scale);
+		if (scale === undefined) error(400, entry.scale === undefined ? `${path}.scale is required` : `${path}.scale must be an object`);
+		requireClosed(scale, SCALE_KEYS, `content.${path}.scale`, 'a scale');
+		const read: SurveyScale = {
+			max: readNumber({ [`${path}.scale.max`]: scale.max }, `${path}.scale.max`, {
+				required: true,
+				whole: true,
+				min: CONTENT_LIMITS.scaleMin,
+				max: CONTENT_LIMITS.scaleMax
+			}),
+			lowLabel: singleLine(scale.lowLabel, `${path}.scale.lowLabel`, CONTENT_LIMITS.scaleLabel),
+			highLabel: singleLine(scale.highLabel, `${path}.scale.highLabel`, CONTENT_LIMITS.scaleLabel)
+		};
+		question.scale = read;
+	}
+	return question;
+}
+
+/**
+ * Whether the body's content sends `surveyQuestions` (card 2683, R15): a
+ * content that does not keeps the stored ones, so that a client that has never
+ * heard of them cannot empty them; `[]` clears them.
+ */
+export function sendsSurveyQuestions(body: RequestBody): boolean {
+	const content = asObject(body.content);
+	return content !== undefined && Object.hasOwn(content, 'surveyQuestions') && content.surveyQuestions !== undefined;
+}
+
+/**
  * The body's `content`, read strictly (decision 8, R5): an object holding
  * only design 4.4's keys, at every level, each field to its rule and limit,
  * and the whole up to 256 KB serialised. A field not sent is empty. Each
@@ -286,6 +421,9 @@ function itemList(value: unknown, path: string): string[] {
  * null, and a new one, not held by an audience of `stored`, must be a group
  * (decision 24): one kept from `stored` whose group has since been deleted
  * is kept, so that re-saving does not fail.
+ *
+ * Card 2683 (R3, R15): `surveyQuestions`, each read by `readSurveyQuestion`,
+ * up to 20; not sent, the stored ones are kept as they are, within the 256 KB.
  */
 export function readContent(body: RequestBody, stored: WorkingContent): ContentFields {
 	const content = asObject(body.content);
@@ -340,6 +478,13 @@ export function readContent(body: RequestBody, stored: WorkingContent): ContentF
 		return { title: singleLine(entry.title, `${path}.title`, CONTENT_LIMITS.heading), body: readMultiline(entry.body, `${path}.body`, CONTENT_LIMITS.body) };
 	});
 
+	const surveySeen = new Set<number>();
+	const sentSurvey = readObjects(content, 'surveyQuestions', { max: CONTENT_LIMITS.surveyQuestions });
+	const surveyQuestions =
+		sentSurvey === undefined
+			? stored.surveyQuestions.map((question) => structuredClone(question))
+			: (sentSurvey ?? []).map((entry, index) => readSurveyQuestion(entry, index, surveySeen));
+
 	const fields: ContentFields = {
 		situation: readMultiline(content.situation, 'situation', CONTENT_LIMITS.longText),
 		question: singleLine(content.question, 'question', CONTENT_LIMITS.question),
@@ -349,7 +494,8 @@ export function readContent(body: RequestBody, stored: WorkingContent): ContentF
 		stories,
 		unknowns: readMultiline(content.unknowns, 'unknowns', CONTENT_LIMITS.longText),
 		alreadyRuled: readMultiline(content.alreadyRuled, 'alreadyRuled', CONTENT_LIMITS.longText),
-		technicalDetail: readMultiline(content.technicalDetail, 'technicalDetail', CONTENT_LIMITS.longText)
+		technicalDetail: readMultiline(content.technicalDetail, 'technicalDetail', CONTENT_LIMITS.longText),
+		surveyQuestions
 	};
 	if (Buffer.byteLength(JSON.stringify(fields), 'utf8') > CONTENT_LIMITS.bytes) error(400, 'content must be at most 256 KB');
 	return fields;
@@ -372,11 +518,25 @@ export function readTitle(body: RequestBody, opts: { required: boolean } = { req
 const optionText = (option: WorkingContent['options'][number]) =>
 	JSON.stringify([option.title, option.summary, option.pros, option.cons, option.commercial]);
 
+/** A survey question's words, all of them, to compare: its kind, prompt, help, required flag, choices and scale. */
+const surveyText = (question: SurveyQuestion) =>
+	JSON.stringify([question.kind, question.prompt, question.help, question.required, question.choices ?? null, question.scale ?? null]);
+
+/**
+ * A survey question's words but its help (card 2683, R8): what people answer
+ * to, so that a change to any of it asks everyone again. Only help may be
+ * corrected by telling only.
+ */
+export const surveyAnsweredTo = (question: SurveyQuestion) =>
+	JSON.stringify([question.kind, question.prompt, question.required, question.choices ?? null, question.scale ?? null]);
+
 /**
  * The sections of `after` that differ from `before` (decision 9), by the
  * keys a flag names: each text section, `options.<optionId>` for each option
  * whose text changed or that is new, and `audiences` and `stories` for each
- * list as a whole. Every option of `after` carries its id by now.
+ * list as a whole. Every option of `after` carries its id by now. Card 2683
+ * (R16): `survey.<questionId>` for each survey question whose words changed
+ * or that is new, each carrying its id by now too.
  */
 export function changedSections(before: WorkingContent, after: ContentFields): string[] {
 	const changed: string[] = TEXT_SECTIONS.filter((key) => before[key] !== after[key]);
@@ -388,13 +548,19 @@ export function changedSections(before: WorkingContent, after: ContentFields): s
 	}
 	if (JSON.stringify(before.audiences) !== JSON.stringify(after.audiences)) changed.push('audiences');
 	if (JSON.stringify(before.stories) !== JSON.stringify(after.stories)) changed.push('stories');
+	const asked = new Map(before.surveyQuestions.filter((question) => question.questionId !== undefined).map((question) => [question.questionId!, question]));
+	for (const question of after.surveyQuestions) {
+		if (question.questionId === undefined) continue;
+		const earlier = asked.get(question.questionId);
+		if (earlier === undefined || surveyText(earlier) !== surveyText(question)) changed.push(surveyKey(question.questionId));
+	}
 	return changed;
 }
 
 /**
  * Every key a flag may name in this content: its text sections, each listed
- * option, the audiences and stories, and (card 2728) the title, participants
- * and decider.
+ * option, the audiences and stories, each listed survey question (card 2683),
+ * and (card 2728) the title, participants and decider.
  */
 export function sectionKeysOf(content: WorkingContent): string[] {
 	return [
@@ -402,6 +568,7 @@ export function sectionKeysOf(content: WorkingContent): string[] {
 		...content.options.filter((option) => option.optionId !== undefined).map((option) => `options.${option.optionId}`),
 		'audiences',
 		'stories',
+		...content.surveyQuestions.filter((question) => question.questionId !== undefined).map((question) => surveyKey(question.questionId!)),
 		...CHOSEN_KEYS
 	];
 }
@@ -546,13 +713,24 @@ export function resultsRevisionOf(of: {
  * `participants` or `decider` flag, as the new draft has no participants and
  * a decider the server chose; the `title` flag is carried, and
  * `supersedeDecision` drops or sets it by the title it gives. Pure.
+ *
+ * Card 2683 (R9): its survey questions too, each under the id of its new row
+ * (`questionIds`, old to new; one with no new row left out), and each
+ * `survey.<old>` flag renamed `survey.<new>`.
  */
-export function workingFromVersion(content: VersionContent, optionIds: ReadonlyMap<number, number>): WorkingContent {
+export function workingFromVersion(
+	content: VersionContent,
+	optionIds: ReadonlyMap<number, number>,
+	questionIds: ReadonlyMap<number, number> = new Map()
+): WorkingContent {
 	const agentDrafted: WorkingContent['agentDrafted'] = {};
 	for (const key of Object.keys(content.agentDrafted)) {
 		if (key === 'participants' || key === 'decider') continue;
 		const option = /^options\.(\d+)$/.exec(key);
-		if (option === null) agentDrafted[key] = true;
+		const question = /^survey\.(\d+)$/.exec(key);
+		if (question !== null) {
+			if (questionIds.has(Number(question[1]))) agentDrafted[surveyKey(questionIds.get(Number(question[1]))!)] = true;
+		} else if (option === null) agentDrafted[key] = true;
 		else if (optionIds.has(Number(option[1]))) agentDrafted[`options.${optionIds.get(Number(option[1]))}`] = true;
 	}
 	return {
@@ -574,6 +752,9 @@ export function workingFromVersion(content: VersionContent, optionIds: ReadonlyM
 		unknowns: content.unknowns,
 		alreadyRuled: content.alreadyRuled,
 		technicalDetail: content.technicalDetail,
+		surveyQuestions: content.surveyQuestions
+			.filter((question) => questionIds.has(question.questionId))
+			.map((question) => ({ ...structuredClone(question), questionId: questionIds.get(question.questionId)! })),
 		agentDrafted,
 		reviewed: {},
 		lastLabel: null
@@ -593,6 +774,37 @@ export function liveOptionsOf(decisionId: number): DecisionOption[] {
 		.where(and(eq(decisionOptions.decisionId, decisionId), isNull(decisionOptions.retiredInVersion)))
 		.orderBy(asc(decisionOptions.position), asc(decisionOptions.id))
 		.all();
+}
+
+/** Card 2683: every survey question row of the decision, retired ones included. */
+export function allSurveyQuestionsOf(decisionId: number): DecisionSurveyQuestion[] {
+	return db.select().from(decisionSurveyQuestions).where(eq(decisionSurveyQuestions.decisionId, decisionId)).all();
+}
+
+/** Card 2683: the decision's survey questions not retired, in their order, as `liveOptionsOf` reads options. */
+export function liveSurveyQuestionsOf(decisionId: number): DecisionSurveyQuestion[] {
+	return db
+		.select()
+		.from(decisionSurveyQuestions)
+		.where(and(eq(decisionSurveyQuestions.decisionId, decisionId), isNull(decisionSurveyQuestions.retiredInVersion)))
+		.orderBy(asc(decisionSurveyQuestions.position), asc(decisionSurveyQuestions.id))
+		.all();
+}
+
+/**
+ * Card 2683 (R7, "has put options"): whether any version of the decision has
+ * put options to a vote, read as any option row with `added_in_version` set.
+ * A decision that has may never be re-published with none.
+ */
+export function hasPutOptions(decisionId: number): boolean {
+	return (
+		db
+			.select({ id: decisionOptions.id })
+			.from(decisionOptions)
+			.where(and(eq(decisionOptions.decisionId, decisionId), isNotNull(decisionOptions.addedInVersion)))
+			.limit(1)
+			.get() !== undefined
+	);
 }
 
 /**
@@ -664,6 +876,96 @@ export function optionChanges(live: DecisionOption[], listed: Set<number> | null
 }
 
 /**
+ * The survey question ids the working content lists in its `surveyQuestions`,
+ * or null when it holds no such list, which retires none (card 2683, R5 and
+ * R7, as `listedOptionIds`).
+ */
+export function listedSurveyQuestionIds(workingContent: string): Set<number> | null {
+	try {
+		const read = JSON.parse(workingContent) as { surveyQuestions?: unknown } | null;
+		if (read === null || typeof read !== 'object' || !Array.isArray(read.surveyQuestions)) return null;
+		return new Set(
+			read.surveyQuestions
+				.map((entry: unknown) => (isRecord(entry) ? entry.questionId : undefined))
+				.filter((id): id is number => typeof id === 'number')
+		);
+	} catch {
+		return null;
+	}
+}
+
+/** A survey question named in a summary or a refusal (card 2683, R7): its number in its list, from 1, and its prompt. */
+export type SurveyNamed = { number: number; prompt: string };
+
+/**
+ * What publishing again does to the survey questions (card 2683, R5, R7, R8),
+ * worked out as `republishDecision` asks it and `republishSummaryOf` shows it:
+ * `adding`, each live question not yet published, by its number and prompt
+ * in the working copy; `retiring`, each published one the working copy no
+ * longer lists (none with no list), by its number and prompt as published in
+ * the current version; and `changing`, each published one still listed whose
+ * words but its help differ from the current version's, by its number and
+ * prompt in the working copy. `live` and `kept` (the live questions the new
+ * version holds, in the working copy's order, with its words) besides.
+ */
+export function surveyChanges(decision: Pick<Decision, 'id' | 'currentVersion' | 'workingContent'>): {
+	adding: SurveyNamed[];
+	retiring: SurveyNamed[];
+	changing: SurveyNamed[];
+	addingRows: DecisionSurveyQuestion[];
+	retiringRows: DecisionSurveyQuestion[];
+	kept: SurveyQuestion[];
+} {
+	const live = liveSurveyQuestionsOf(decision.id);
+	const listed = listedSurveyQuestionIds(decision.workingContent);
+	const working = parseWorkingContent(decision.workingContent).surveyQuestions;
+	const published = publishedSurveyOf(decision.id, decision.currentVersion);
+	const workingAt = (id: number) => working.findIndex((question) => question.questionId === id);
+	const named = (list: SurveyQuestion[], at: number): SurveyNamed => ({ number: at + 1, prompt: list[at]?.prompt ?? '' });
+	const addingRows = live.filter((row) => row.addedInVersion === null);
+	const retiringRows = live.filter((row) => row.addedInVersion !== null && listed !== null && !listed.has(row.id));
+	const retiringIds = new Set(retiringRows.map((row) => row.id));
+	const liveIds = new Set(live.map((row) => row.id));
+	const kept = working.filter((question) => question.questionId !== undefined && liveIds.has(question.questionId) && !retiringIds.has(question.questionId));
+	const changing = live
+		.filter((row) => row.addedInVersion !== null && !retiringIds.has(row.id))
+		.filter((row) => {
+			const was = published.find((question) => question.questionId === row.id);
+			const now = working[workingAt(row.id)];
+			return was !== undefined && now !== undefined && surveyAnsweredTo(was) !== surveyAnsweredTo(now);
+		});
+	return {
+		adding: addingRows.map((row) => named(working, workingAt(row.id))).sort((a, b) => a.number - b.number),
+		retiring: retiringRows
+			.map((row) => named(published, published.findIndex((question) => question.questionId === row.id)))
+			.sort((a, b) => a.number - b.number),
+		changing: changing.map((row) => named(working, workingAt(row.id))).sort((a, b) => a.number - b.number),
+		addingRows,
+		retiringRows,
+		kept
+	};
+}
+
+/** Card 2683: the survey questions version `number` of the decision published, as `parseVersionContent` reads them; none for no such version. */
+export function publishedSurveyOf(decisionId: number, number: number): VersionContent['surveyQuestions'] {
+	const version = db
+		.select({ content: decisionVersions.content })
+		.from(decisionVersions)
+		.where(and(eq(decisionVersions.decisionId, decisionId), eq(decisionVersions.number, number)))
+		.get();
+	return version === undefined ? [] : parseVersionContent(version.content).surveyQuestions;
+}
+
+/**
+ * Card 2683 (R6): the live survey questions of the working copy, in its order,
+ * each with its words: those it lists whose row is not retired.
+ */
+export function liveSurveyOf(decision: Pick<Decision, 'id' | 'workingContent'>): SurveyQuestion[] {
+	const liveIds = new Set(liveSurveyQuestionsOf(decision.id).map((row) => row.id));
+	return parseWorkingContent(decision.workingContent).surveyQuestions.filter((question) => question.questionId !== undefined && liveIds.has(question.questionId));
+}
+
+/**
  * What opening the decision at `now` asks about (decision 11), read on the
  * server: the board, the decider's access to it now, the live options, the
  * participants in id order with their persons, the snapshots taken again
@@ -706,6 +1008,7 @@ export function openFactsOf(decision: Decision, now: Stamp): OpenFacts {
 		deciderCanEdit: decider !== undefined && decision.boardId !== null && canEditBoard(decider, decision.boardId),
 		closesAt: decision.closesAt,
 		liveOptionCount,
+		surveyQuestions: liveSurveyOf(decision).map(surveyFactsOf),
 		consultedCount: rows.filter((row) => row.role === 'consulted').length,
 		participants: rows.map((row) => {
 			const person = row.personId === null ? undefined : persons.get(row.personId);

@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.105
+version: 1.106
 status: As-Built
 date: 2026-11-21
 tags:
+  - card-2683
   - card-3004
   - card-3031
   - card-3033
@@ -80,7 +81,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "outbound_changes, the append-only record of every change of where this server sends: its seven kinds, keyed digests, three indexes, writers and readers, migration 0081 (card 3004). access_changes' four decision kinds (decision, decision_decider, decision_participant, decision_account) and its index on changed_at, migration 0080 (card 3033). access_changes, the append-only record of every change of board, team and person access by identity, its kinds, words, indexes, writers, readers and once-only seed (migration 0079, card 3002); Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
+description: "decision_survey_questions and decision_responses.answers, a decision's survey questions kept as options are and the answers given with a response, read tolerantly and never released, migration 0082 (card 2683). outbound_changes, the append-only record of every change of where this server sends: its seven kinds, keyed digests, three indexes, writers and readers, migration 0081 (card 3004). access_changes' four decision kinds (decision, decision_decider, decision_participant, decision_account) and its index on changed_at, migration 0080 (card 3033). access_changes, the append-only record of every change of board, team and person access by identity, its kinds, words, indexes, writers, readers and once-only seed (migration 0079, card 3002); Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -511,7 +512,9 @@ erDiagram
 ### Decision records (migration 0061)
 
 The people directory, the decisions and their record, and a board's Product Owner (card 2673,
-milestone 35). Every key to `users` is SET NULL, with a name kept beside it; every table under
+milestone 35); since migration 0082 (card 2683) a decision's survey questions and the answers
+given with a response ([below](#survey-questions-and-their-answers-card-2683-migration-0082)).
+Every key to `users` is SET NULL, with a name kept beside it; every table under
 a decision cascades from it; the six references from the record to participants and options
 have no ON DELETE action (NO ACTION), so the database refuses to delete one the record
 mentions. Columns are listed in full under [Key Schema Notes](#key-schema-notes).
@@ -602,9 +605,17 @@ erDiagram
         int participant_id FK "NO ACTION"
         int option_id FK "NO ACTION"
         int replaces_id FK "self, SET NULL"
-        text kind
+        text kind "answered since 0082"
         text via
         text created_at
+        text answers "JSON by survey question id (0082)"
+    }
+    decision_survey_questions {
+        int id PK "AUTOINCREMENT, never reused (0082)"
+        int decision_id FK
+        real position
+        int added_in_version
+        int retired_in_version
     }
     decision_questions {
         int id PK
@@ -654,6 +665,8 @@ erDiagram
     boards |o--o{ decisions : "board_id (SET NULL)"
     decisions |o--o{ decisions : "supersedes_id (SET NULL)"
     decisions ||--o{ decision_options : "CASCADE"
+    decisions ||--o{ decision_survey_questions : "CASCADE (0082)"
+    decision_survey_questions |o..o{ decision_responses : "answers JSON keys (no key)"
     decisions ||--o{ decision_versions : "CASCADE"
     decisions ||--o{ decision_participants : "CASCADE"
     people |o--o{ decision_participants : "person_id (SET NULL)"
@@ -734,7 +747,9 @@ content with the live options' text, sets `current_version` to 1, and gives ever
 in the working content's `options` (each entry's `optionId`) is given `retired_in_version =
 N+1`. A working content with no `options` list retires none. Telling of a change without
 asking again is refused while either would happen. `liveOptionIds(decisionId, n)` reads the
-options added by version n and not retired by it.
+options added by version n and not retired by it. Since card 2683 `decision_survey_questions`
+rows are numbered and retired the same way, and a version may hold no live option where it
+holds a survey question ([below](#survey-questions-and-their-answers-card-2683-migration-0082)).
 
 **Participant rows.** The snapshot columns (`name`, `email` lower-case, `job_title`, `groups` as
 a JSON list of names in order, `user_id`) are copied from the person when they are added to a
@@ -856,7 +871,7 @@ holds every column a response needs, and an event's `kind` is free text checked 
 |---|---|
 | `version_number` | `current_version`, which the body's `versionNumber` must equal (`409` otherwise) |
 | `round` | `currentRound(decisionId)`: the number of the latest version that asked for views (`asks_again`), so a version that only tells keeps the round |
-| `kind` | `vote`, `abstain` or `no_concerns` (`RESPONSE_KINDS`); `concern` is card 2679's ([below](#the-ruling-the-release-concerns-and-supersede-card-2679)) |
+| `kind` | `vote`, `abstain`, `no_concerns` or (card 2683) `answered` (`RESPONSE_KINDS`); `concern` is card 2679's ([below](#the-ruling-the-release-concerns-and-supersede-card-2679)). In a survey-only round (no live option, at least one live survey question) only `answered` and `abstain`; with options, never `answered` |
 | `option_id` | a single-mode vote alone: an option live in the current version |
 | `scores` | a score-mode vote alone: JSON `{ "<optionId>": 0..5 }` over every live option, built from the live ids, never from the body's keys; stored in ascending option id order (a JavaScript object keeps integer keys in that order, whatever order they were added in) |
 | `comment` | trimmed, up to 4,000, the markdown field's character rule; NULL when empty |
@@ -864,10 +879,11 @@ holds every column a response needs, and an event's `kind` is free text checked 
 | `replaces_id` | the participant's latest response in the same round, NULL for the first of a round |
 | `via` | `session` or `link`, fixed by the write, never by the caller |
 | `created_at` | `stamp()` |
+| `answers` (migration 0082, card 2683) | JSON over the current version's live survey question ids (`liveSurveyQuestionIds`), built by walking those ids, never from the body's keys: a choice's 0-based index, a scale's whole number, a written answer trimmed (up to 2,000); a written answer empty once trimmed is left out as unanswered; NULL when none is left. A concern's is NULL |
 
 - **A change of answer is a new row**, `replaces_id` the one before it in the round; no row is
-  updated. An answer identical to the latest in the round (kind, option, scores and both
-  comments, as stored) **for the same version** writes nothing, and is answered with that row
+  updated. An answer identical to the latest in the round (kind, option, scores, both
+  comments and, since card 2683, `answers`, as stored) **for the same version** writes nothing, and is answered with that row
   and `unchanged: true`. The same answer confirmed on a newer version, after a re-publish that
   only tells, is a new row bound to that version, with its `responded` and, where there is
   none for the version, `seen` (code review C1); the page labels a response given on an older
@@ -892,10 +908,12 @@ holds every column a response needs, and an event's `kind` is free text checked 
   the current version is accepted (`400` for any other, an earlier one included). The page
   sends it after the person's first action, never on load: the `ruling` stage on a ruled or
   superseded decision, which the page shows since card 2679, to a participant alone.
-- **What a response is answered as** is `OwnResponse`, built by `ownResponseOf(row)`: `versionNumber`,
-  `round`, `kind`, `optionId`, `scores`, `comment`, `optionComments` and `createdAt`, and no row
+- **What a response is answered as** is `OwnResponse`, built by `ownResponseOf(row, asked?)`: `versionNumber`,
+  `round`, `kind`, `optionId`, `scores`, `comment`, `optionComments`, `answers` (card 2683,
+  `{}` for none) and `createdAt`, and no row
   id of its own, its decision, its participant or what it replaced. Stored JSON is read back
-  tolerantly: a key that is not an option id, or a value of the wrong type, is left out.
+  tolerantly: a key that is not an option id, or a value of the wrong type, is left out; the
+  answers through `answersOf` ([below](#survey-questions-and-their-answers-card-2683-migration-0082)).
 - **The actor.** Signed in, `actorFor(user, 'ui')`. By link, no account, the participant's
   snapshot name and source `link`; a browser signed in at the same time is noted in the detail
   as `signedIn`, never as the actor.
@@ -936,10 +954,13 @@ migration**: every field is a 0061 column, and the new event details are JSON.
 | `decision_responses` with `kind 'concern'` | `raiseConcern`, `raiseConcernByLink`, through `appendResponse` | `round` the current, `version_number` the current, `comment` 1 to 4,000, `option_id`, `scores`, `option_comments` and `replaces_id` NULL, `via` `session` or `link`. At most 5 per participant per decision, 10 minutes apart |
 | A new `decisions` row with `supersedes_id` | `supersedeDecision` | A draft on the same board, `closes_at` NULL, no participants, its options new rows labelled from A, its `working_content` the old decision's current version (`workingFromVersion`) |
 
-- **Concerns are never votes.** `RESPONSE_KINDS` (`vote`, `abstain`, `no_concerns`), exported
+- **Concerns are never votes.** `RESPONSE_KINDS` (`vote`, `abstain`, `no_concerns` and, since
+  card 2683, `answered`), exported
   by `decision-record.ts`, is the allow-list every read of a vote, a tally and a results
   revision asks: `latestResponse`, `responsesInRound`, `ownResponses` and `responsesOf`. A kind a
-  later card adds is left out of every tally until it is added there. `concernsOf` reads
+  later card adds is left out of every tally until it is added there. `tallyOf` counts `vote`,
+  `abstain` and `no_concerns` by name, so an `answered` response adds to `responded` alone, and
+  `releaseRowsOf` leaves `answered` rows out of every release by name. `concernsOf` reads
   `kind = 'concern'` alone.
 - **The results revision** (`resultsRevisionOf`, `decision-content.ts`): HMAC-SHA256 keyed with
   `purposeKey('decision-results-revision')` over what the editor revision covers (and each
@@ -1156,7 +1177,8 @@ classDiagram
         unknowns: markdown
         alreadyRuled: markdown
         technicalDetail: markdown
-        agentDrafted: key to true (server's; sections, title, participants, decider)
+        surveyQuestions: SurveyQuestion[] (up to 20, card 2683)
+        agentDrafted: key to true (server's; sections, title, participants, decider, voteMode)
         reviewed: key to byUserId, byName, at (server's)
         lastLabel: string or null (server's)
     }
@@ -1177,9 +1199,19 @@ classDiagram
         title: one line
         body: markdown
     }
+    class SurveyQuestion {
+        questionId?: decision_survey_questions.id
+        kind: choice, scale or text
+        prompt: one line
+        help: markdown
+        required: boolean
+        choices?: one line each, choice only
+        scale?: max, lowLabel, highLabel, scale only
+    }
     WorkingContent "1" --> "*" Option
     WorkingContent "1" --> "*" Audience
     WorkingContent "1" --> "*" Story
+    WorkingContent "1" --> "*" SurveyQuestion
 ```
 
 **Closed at every level.** A body's `content` holds design 4.4's keys and no others, at the top
@@ -1208,6 +1240,7 @@ with the old title alone, and never its `participants` or `decider` flag.
 | `options` | up to 20; `title` one line up to 200; `summary` and `commercial` markdown up to 4,000; `pros` and `cons` up to 20 items each, each one line up to 500, empty items dropped |
 | `audiences` | up to 30; `groupId` an id or null; `heading` one line up to 200; `body` markdown up to 10,000 |
 | `stories` | up to 30; `title` one line up to 200; `body` markdown up to 10,000 |
+| `surveyQuestions` (card 2683) | up to 20; `kind` required, `choice`, `scale` or `text`, and only that kind's keys (400 naming the path otherwise); `prompt` one line up to 300; `help` markdown up to 2,000; `required` boolean, false when not sent; `choices` (choice only) up to 20, each one line up to 200, empty ones dropped; `scale` (scale only, required) `{ max, lowLabel, highLabel }`, `max` a whole number 2 to 10, each label one line up to 100 |
 | the whole | up to 256 KB serialised |
 
 A one-line field (the title, `question`, an option's `title`, each `pros` and `cons` item, an
@@ -1235,13 +1268,16 @@ Z: no option can be added`.
 
 **Agent flags and review stamps.** The keys are `situation`, `question`, `ask`, `unknowns`,
 `alreadyRuled`, `technicalDetail`, `options.<optionId>`, `audiences` and `stories` (the last two
-for each list as a whole). A save through an API key flags each section it changed and removes
+for each list as a whole), and since card 2683 `survey.<questionId>` for each survey question, and `voteMode` where a key
+changed the vote mode of an opened survey (card 2683's code review F5, beside card 2728's `title`,
+`participants` and `decider`). A save through an API key flags each section it changed and removes
 that key's `reviewed` stamp; a save through the web application clears none. Only
 `markReviewed`, a person's act through the web application, clears a flag, writing
 `reviewed[key] = { byUserId, byName, at }`. A flag for an option left out of the content goes
 with it. No event is written for either: the next version carries both as they are then, each
 stamp as `{ byName, at }` (card 2676's C3). A version copies an allowlist of the content alone
-(its text sections, audiences, stories, live options, `agentDrafted` and `reviewed`), never
+(its text sections, audiences, stories, live options, since card 2683 its live survey questions
+where it has one, `agentDrafted` and `reviewed`), never
 `lastLabel`, and every answer gives the content the same way, `byUserId` to an administrator
 alone.
 
@@ -1291,6 +1327,126 @@ flowchart TD
     Rev -->|yes| Opts["decision_options in step:<br/>insert with nextLabel, reposition,<br/>delete unpublished left out"]
     Opts --> Flags["agentDrafted / reviewed<br/>(flagged only through an API key;<br/>a changed title as agentDrafted.title)"]
     Flags --> Write["decisions: working_content<br/>(with optionIds, lastLabel),<br/>title, closes_at, vote_mode on a draft,<br/>updated_at"]
+```
+
+#### Survey questions and their answers (card 2683, migration 0082)
+
+Card 2683 (plan `docs/planning/card-2683-decision-survey-questions.md`) lets an author add their
+own questions to a decision: pick one of its choices (`choice`), a whole number on a scale
+(`scale`), or a short written answer (`text`). Migration
+`0082_add_decision_survey_questions.sql` adds one table and one column, changes no row and
+declares nothing to the rehearsal:
+
+- **`decision_survey_questions`**: `id` (INTEGER PRIMARY KEY AUTOINCREMENT, never reused, so an
+  answer keyed by a question's id means one question for ever), `decision_id` (`NOT NULL`,
+  CASCADE, `idx_decision_survey_questions_decision_id`), `position` (REAL `NOT NULL`),
+  `added_in_version` and `retired_in_version`. The shape of `decision_options` without a label.
+  A question's words (kind, prompt, help, required, choices or scale) live in the working
+  content and in each version's content under `surveyQuestions`, keyed by `questionId`, as an
+  option's words do. Nothing refers to the table by a foreign key.
+- **`decision_responses.answers`** (TEXT, NULL for none), declared last in `schema.ts`, after
+  `created_at`, as `ALTER TABLE … ADD` appends it. JSON keyed by survey question id. The ids are
+  inside the JSON, so there is no foreign key.
+
+No `IF NOT EXISTS`: a same-named object not made by 0082 fails the start. Neither table is one the
+runner rebuilds from the model (`RECONCILED_TABLES`). A backup made before 0082 restores with no
+survey question and every response's `answers` NULL (the restore copies the columns both sides
+have); restore, backup and Reset find the new table for themselves (no list changed).
+
+**A survey is worked out, never stored.** A version with no live option and at least one live
+survey question is survey-only. No status, mode or column says so; `vote_mode` keeps its value and
+is unused while there is no live option.
+
+| Write | What it does to `decision_survey_questions` |
+|---|---|
+| `updateDraft` | Keeps the rows in step with `content.surveyQuestions`, as option rows: an entry with no `questionId` gets a new row; each entry's `position` is its index; a `questionId` named twice, or that is not a live (not retired) survey question of this decision, is 400; a row left out is deleted while `added_in_version` is NULL and otherwise stays live, to be retired at the next publish. Content that does not send `surveyQuestions` keeps the stored ones (any whose row is no longer live dropped); `[]` clears them. A published question's kind is fixed (400 "Survey question N has been published: its kind is fixed. Remove it and add a new question"), compared with the current version's question, or the stored one where that version has none |
+| `openDecision` | Sets `added_in_version = 1` on every row not retired; version 1 holds their words, each with its `questionId` |
+| `republishDecision` | A row with `added_in_version` NULL is given N+1; a published row the working content no longer lists (a content with no `surveyQuestions` list retires none) is given `retired_in_version = N+1` |
+| `supersedeDecision` | Copies the ruled version's questions to the new draft as new rows in order, the ids mapped and each `survey.<old>` flag renamed `survey.<new>` (`workingFromVersion`) |
+| the cascade | A draft or withdrawn decision deleted takes its rows |
+
+`liveSurveyQuestionIds(decisionId, n)` (`decision-record.ts`) reads the ids live in version n,
+as `liveOptionIds`: `added_in_version` set and at most n, not retired by n, in position order.
+A version's content holds `surveyQuestions` only where it has a live question, so every version
+without one reads exactly as before. A stored question is read tolerantly
+(`storedSurveyQuestion` in `decision-content.ts`): a field of the wrong type is empty, `required`
+is true only when it is `true`, and an entry of no known kind, or a scale question whose scale does
+not read as a whole top from 2 to 10, is left out rather than given a made-up top.
+
+**Not in the editor revision.** `revisionOf` does not cover the survey question rows: every write
+that changes them also changes `working_content` or `current_version`, which it covers. The results
+revision covers every response id but a concern, so an answer moves it with no change.
+
+**Answers are written once, with the response.** `appendResponse` is the only writer of
+`answers`, so `tests/decision-record.test.ts`'s insert-only scan of `decision_responses` holds it.
+A changed answer is a new response replacing the last (`replaces_id`), with the round, the cap of
+50 a round and the who-sees statement as before. `respondAs` builds the JSON by walking
+`liveSurveyQuestionIds(decisionId, current_version)` with the kind, choices, scale and required
+flag the current version published:
+
+| Value | Kind |
+|---|---|
+| a whole number from 0 to the number of choices less one | `choice` (the 0-based index) |
+| a whole number from 1 to the scale's `max` | `scale` |
+| trimmed text up to 2,000, of `UNPRINTABLE` only tab, newline, carriage return and U+200D | `text` |
+
+A key that is no live question id of the current version (a draft-only, retired or unknown one)
+is 400; a whole number written as text (`"2"`) is read as that number. A written answer empty once
+trimmed is left out as unanswered before the required check. Example:
+`{"41": 2, "42": 4, "43": "We ship from Leeds on Tuesdays"}`.
+
+**Answers are read tolerantly** (`answersOf(row, asked?)`, `decision-record.ts`), for every read:
+the results, the v1 summary, the person record and the participant's own response.
+`surveysAskedIn(decisionIds, versionNumbers?)` reads the questions each version of any number of
+decisions asked in two reads at most, 500 decisions at a time: the published survey question rows
+first, then the content of the versions only of decisions with such a row, and only of the
+versions named where the caller names them (a response's own read names its version), keeping
+a version's question only where its row is the same decision's and live in that version, of a known
+kind, a scale's top a whole number from 2 to 10. A stored answer is kept only where its key is a
+whole number with no leading zero naming a question the version the response was given under asked,
+and its value fits that version's question: a choice index in range, a scale value from 1 to the
+top, a written answer of at most 2,000 that is not blank and holds of `UNPRINTABLE` only what a
+markdown field may. Anything else is left out, and a row with nothing left shows no answers, so a
+row planted by an unsealed restore (card 3030) shows nothing a real answer could not.
+
+**Never released.** `ReleaseRow` names no answer, `releaseRowsOf` leaves `answered` rows out by
+name before reading them (and with them any comment given with a survey answer) and reads no
+other row's answers, and a decision ruled on a version
+that put no options is refused a release (409, `NO_OPTIONS_TO_RELEASE`). Answers are kept with the
+decision for good, as votes are (design D7, written answers included), and go only with a draft or
+withdrawn decision's cascade, a restore or Reset. Redacting one written answer is card 3047.
+
+```mermaid
+erDiagram
+    decisions ||--o{ decision_survey_questions : "CASCADE"
+    decisions ||--o{ decision_versions : "content.surveyQuestions (words, as published)"
+    decision_participants ||--o{ decision_responses : "gives"
+    decision_survey_questions |o..o{ decision_responses : "answers JSON keyed by id (no key)"
+    decision_survey_questions {
+        int id PK "AUTOINCREMENT, never reused"
+        int decision_id FK "CASCADE"
+        real position
+        int added_in_version "NULL until published"
+        int retired_in_version
+    }
+    decision_responses {
+        text kind "vote, abstain, no_concerns, answered, concern"
+        int version_number "the version answered under; labels the answers"
+        text scores "JSON by option id"
+        text option_comments "JSON by option id"
+        text answers "JSON by survey question id; NULL for none"
+    }
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Draft: updateDraft (new entry: row, added_in_version NULL)
+    Draft --> [*]: left out of the working copy (row deleted)
+    Draft --> Live: openDecision (added_in_version 1) or republishDecision (N+1)
+    Live --> Live: re-publish keeping it (help changed: may tell only; anything else asks everyone again)
+    Live --> Retired: re-publish with it left out (retired_in_version N+1, asks everyone again)
+    Retired --> [*]
+    note right of Live: answers keyed by its id are read against the version they were given under
 ```
 
 ### Two-step sign-in storage (migration 0065)
@@ -2271,7 +2427,7 @@ erDiagram
 | `users` | `boards.product_owner_user_id` (migration 0061, card 2673) | SET NULL: the board has no Product Owner until someone sets one |
 | `users` | every user key of the decision records: `people.user_id`, `people.created_by`, `decisions.author_user_id`, `decider_user_id`, `results_released_by`, `decision_versions.published_by`, `decision_participants.included_by`, `removed_by`, `user_id`, `decision_questions.answered_by`, `answer_reviewed_by`, `decision_rulings.ruled_by`, `decision_events.actor_user_id`, `decision_card_links.created_by` (migration 0061) | SET NULL. The name kept beside each (`author_name`, `ruled_by_name` and so on) stays. `decision_participants.user_id` is a snapshot of `people.user_id` taken at inclusion and never made to follow the person; its key only empties it when that account is deleted. Before the key empties `people.user_id`, `deleteUser()` marks that person left and ends their personal links (card 2675's S4) |
 | `boards` | `decisions.board_id` (migration 0061) | SET NULL: the decision outlives its board, and keeps its name in `board_name` |
-| `decisions` | `decision_options`, `decision_versions`, `decision_participants`, `decision_responses`, `decision_questions`, `decision_rulings`, `decision_events`, `decision_card_links` (migration 0061) | CASCADE |
+| `decisions` | `decision_options`, `decision_versions`, `decision_participants`, `decision_responses`, `decision_questions`, `decision_rulings`, `decision_events`, `decision_card_links` (migration 0061), `decision_survey_questions` (migration 0082, card 2683) | CASCADE |
 | `decisions` | `decisions.supersedes_id` (migration 0061) | SET NULL |
 | `decision_participants` | `decision_responses.participant_id`, `decision_questions.participant_id`, `decision_events.participant_id` (migration 0061) | **NO ACTION**: deleting a participant the record mentions is refused. Deleting the whole decision still cascades, as SQLite checks NO ACTION at the end of the statement |
 | `decision_options` | `decision_responses.option_id`, `decision_rulings.option_id` (migration 0061) | **NO ACTION**, as above |
@@ -3591,7 +3747,12 @@ erDiagram
     re-adding someone reuses the row.
   - `decision_responses`: `decision_id` (CASCADE), `participant_id` (`NOT NULL`, NO ACTION),
     `version_number`, `round`, `kind`, `option_id` (NO ACTION), `scores`, `comment`,
-    `option_comments`, `replaces_id` (self, SET NULL), `via`, `created_at`.
+    `option_comments`, `replaces_id` (self, SET NULL), `via`, `created_at`, and since migration
+    0082 (card 2683) `answers` (JSON, NULL for none), last.
+  - `decision_survey_questions` (migration 0082, card 2683): `decision_id` (CASCADE,
+    `idx_decision_survey_questions_decision_id`), `position` (REAL `NOT NULL`, no default),
+    `added_in_version`, `retired_in_version`; `id` AUTOINCREMENT
+    ([above](#survey-questions-and-their-answers-card-2683-migration-0082)).
   - `decision_questions`: `decision_id` (CASCADE), `participant_id` (NO ACTION), `asker_name`,
     `question`, `asked_in_version`, `via` and `asked_at` (all `NOT NULL`), `answer`,
     `answered_by` (SET NULL), `answered_by_name`, `answered_at`, `answer_agent_drafted`

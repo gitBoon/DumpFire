@@ -19,10 +19,35 @@
 import { parseStamp, stamp, type Stamp } from '$lib/timestamps';
 import { NO_LINK_ADDRESS } from '$lib/mail-words';
 
+/** The kinds of survey question (card 2683, R3): pick one of its choices, a whole number on its scale, or a short written answer. */
+export const SURVEY_KINDS = ['choice', 'scale', 'text'] as const;
+
+export type SurveyKind = (typeof SURVEY_KINDS)[number];
+
+/** A scale question's scale (card 2683, R3): a whole number from 1 to `max` (2 to 10), with words at each end. */
+export type SurveyScale = { max: number; lowLabel: string; highLabel: string };
+
+/**
+ * A survey question as the working copy holds it (card 2683, R3): its row's
+ * id once saved, its kind, a one-line prompt, markdown help, whether it must
+ * be answered, and its `choices` (a choice question alone) or its `scale` (a
+ * scale question alone). Its row (`decision_survey_questions`) holds its
+ * place and the versions that published and retired it.
+ */
+export type SurveyQuestion = {
+	questionId?: number;
+	kind: SurveyKind;
+	prompt: string;
+	help: string;
+	required: boolean;
+	choices?: string[];
+	scale?: SurveyScale;
+};
+
 /**
  * A decision's working copy, as the server stores it (design 4.4, card 2676
  * decision 8). `agentDrafted`, `reviewed` and `lastLabel` are the server's:
- * no body may send them.
+ * no body may send them. Card 2683 adds `surveyQuestions`.
  */
 export type WorkingContent = {
 	situation: string;
@@ -34,6 +59,8 @@ export type WorkingContent = {
 	unknowns: string;
 	alreadyRuled: string;
 	technicalDetail: string;
+	/** Card 2683: the author's own questions, in their order. */
+	surveyQuestions: SurveyQuestion[];
 	/**
 	 * The sections written through an API key and not yet marked reviewed by a
 	 * person (decision 9); and, since card 2728, `title`, `participants` and
@@ -66,6 +93,8 @@ export type OpenFacts = {
 	deciderCanEdit: boolean;
 	closesAt: Stamp | null;
 	liveOptionCount: number;
+	/** Card 2683: each live survey question, in the working copy's order, as `surveyRefusalsOf` reads it. */
+	surveyQuestions: SurveyFacts[];
 	consultedCount: number;
 	/** Every participant row, in id order: its name, and whether its person is still in the directory and active. */
 	participants: { rowName: string; personFound: boolean; personName: string | null; personActive: boolean }[];
@@ -129,6 +158,7 @@ export const REFUSAL_CODES = [
 	'no_closing_time',
 	'closes_too_far',
 	'too_few_options',
+	'survey_incomplete',
 	'no_consulted',
 	'participant_deleted',
 	'participant_left',
@@ -159,11 +189,38 @@ export type WarningCode = (typeof WARNING_CODES)[number];
 export type Refusal = { code: RefusalCode; words: string };
 export type Warning = { code: WarningCode; key?: string; words: string };
 
+/** What opening and re-publishing ask of a survey question (card 2683, R6): its prompt, its kind and how many choices it offers. */
+export type SurveyFacts = { prompt: string; kind: SurveyKind; choiceCount: number };
+
+/** A survey question's facts, from the working copy's entry. */
+export function surveyFactsOf(question: Pick<SurveyQuestion, 'prompt' | 'kind' | 'choices'>): SurveyFacts {
+	return { prompt: question.prompt, kind: question.kind, choiceCount: question.choices?.length ?? 0 };
+}
+
+/**
+ * What stops a survey being published (card 2683, R6, R7): for each question,
+ * by its number, an empty prompt, and a choice question with fewer than two
+ * choices. Opening refuses the first as `survey_incomplete`, and re-publishing
+ * with the same words, `cannot` saying which (`opened`, `re-published`).
+ */
+export function surveyRefusalsOf(questions: SurveyFacts[], cannot: 'opened' | 're-published'): string[] {
+	const words: string[] = [];
+	questions.forEach((question, index) => {
+		if (blank(question.prompt)) words.push(`Survey question ${index + 1} has no prompt: this decision cannot be ${cannot}`);
+		if (question.kind === 'choice' && question.choiceCount < 2) {
+			words.push(`Survey question ${index + 1} offers fewer than two choices: this decision cannot be ${cannot}`);
+		}
+	});
+	return words;
+}
+
 /**
  * Everything that stops the decision opening, in the order `openDecision`
  * meets it (decision 12): the decider, the board, the decider's access, the
  * closing time (none in the future, or one more than `CLOSES_WITHIN_DAYS`
- * ahead: the code review's part B, S3), the options, a consulted participant, then each participant
+ * ahead: the code review's part B, S3), the options (card 2683: one, or none
+ * with no survey question), each survey question with no prompt or a choice
+ * question with fewer than two choices, a consulted participant, then each participant
  * row in id order, deleted or left, then mail, the link address, and each
  * pair holding one account. `openDecision` answers the first. Empty: it can
  * be opened. The server alone calls this.
@@ -181,7 +238,13 @@ export function refusalsOf(facts: OpenFacts): Refusal[] {
 	}
 	if (facts.closesAt === null || facts.closesAt <= facts.now) add('no_closing_time', 'This decision has no closing time in the future: it cannot be opened');
 	else if (closesTooFar(facts.closesAt, facts.now)) add('closes_too_far', CLOSES_TOO_FAR_TO_OPEN);
-	if (facts.liveOptionCount < 2) add('too_few_options', 'This decision has fewer than two options: it cannot be opened');
+	// Card 2683 (R6): no option at all is a survey, which opens with a survey question; one option never opens.
+	if (facts.liveOptionCount === 0 && facts.surveyQuestions.length === 0) {
+		add('too_few_options', 'This decision has no options and no survey questions: it cannot be opened');
+	} else if (facts.liveOptionCount === 1) {
+		add('too_few_options', 'This decision has fewer than two options: it cannot be opened');
+	}
+	for (const words of surveyRefusalsOf(facts.surveyQuestions, 'opened')) add('survey_incomplete', words);
 	if (facts.consultedCount === 0) add('no_consulted', 'This decision has no consulted participant: it cannot be opened');
 	for (const row of facts.participants) {
 		if (!row.personFound) {
@@ -214,15 +277,19 @@ const SECTION_NAMES: Readonly<Record<string, string>> = {
  * What a key may choose outside the content (card 2728): the title, the
  * participant list and the decider. Each is flagged in `agentDrafted` under
  * its own key when a key's write changes it, warned of by `checkContent`, and
- * cleared by a person's Mark reviewed alone, as a section's flag is.
+ * cleared by a person's Mark reviewed alone, as a section's flag is. Card
+ * 2683 (code review F5): and the vote mode a key changed on an opened
+ * decision while it puts no option to a vote (R23), which the re-publish that
+ * adds the first options then publishes them in.
  */
-export const CHOSEN_KEYS = ['title', 'participants', 'decider'] as const;
+export const CHOSEN_KEYS = ['title', 'participants', 'decider', 'voteMode'] as const;
 
 /** Each of `CHOSEN_KEYS`, as its warning names it (card 2728, D8). */
 const CHOSEN_WORDS: Readonly<Record<(typeof CHOSEN_KEYS)[number], string>> = {
 	title: 'The title was',
 	participants: 'The participants were',
-	decider: 'The decider was'
+	decider: 'The decider was',
+	voteMode: 'The vote mode was'
 };
 
 /** Text with nothing in it but spaces. */
@@ -276,6 +343,15 @@ export function checkContent(content: ContentAnswer, audience: AudienceFacts, cl
 
 	for (const key of Object.keys(content.agentDrafted)) {
 		if ((CHOSEN_KEYS as readonly string[]).includes(key)) continue;
+		// Card 2683 (R16): a survey question by its number and prompt, never by its key.
+		const questionId = /^survey\.(\d+)$/.exec(key);
+		if (questionId !== null) {
+			const at = content.surveyQuestions.findIndex((question) => question.questionId === Number(questionId[1]));
+			const prompt = at === -1 ? '' : content.surveyQuestions[at].prompt.trim();
+			const named = at === -1 ? 'A survey question' : prompt === '' ? `Survey question ${at + 1}` : `Survey question ${at + 1}, '${prompt}',`;
+			warnings.push({ code: 'agent_drafted', key, words: `${named} was drafted by an agent and not yet reviewed by a person` });
+			continue;
+		}
 		const optionId = /^options\.(\d+)$/.exec(key);
 		const index = optionId === null ? -1 : content.options.findIndex((option) => option.optionId === Number(optionId[1]));
 		const section = optionId === null ? (SECTION_NAMES[key] ?? key) : index === -1 ? 'An option' : `Option ${index + 1}`;

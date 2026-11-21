@@ -55,7 +55,8 @@ import {
 	peopleGroups,
 	type Decision,
 	type DecisionOption,
-	type DecisionParticipant
+	type DecisionParticipant,
+	type DecisionSurveyQuestion
 } from './db/schema';
 import type { SessionUser } from './auth';
 import { editorsOf, isAdmin, roleOnBoard } from './board-access';
@@ -65,11 +66,14 @@ import {
 	audienceFactsOf,
 	listedOptionIds,
 	liveOptionsOf,
+	liveSurveyQuestionsOf,
 	openFactsOf,
 	optionChanges,
 	parseWorkingContent,
 	participantsOf,
 	revisionOf,
+	surveyChanges,
+	type SurveyNamed,
 	type VersionContent,
 	type WorkingContent
 } from './decision-content';
@@ -130,6 +134,9 @@ const isRuled = (decision: Pick<Decision, 'status'>) => decision.status === 'rul
 /** An option row as every answer gives it. Its text is in the content. */
 export type OptionAnswer = { id: number; label: string; position: number; addedInVersion: number | null; retiredInVersion: number | null };
 
+/** A survey question row as every answer gives it (card 2683, R15), as `OptionAnswer` with no label. Its words are in the content. */
+export type SurveyQuestionAnswer = { id: number; position: number; addedInVersion: number | null; retiredInVersion: number | null };
+
 /**
  * A participant as everyone who may edit the decision is given it: no
  * account, no address and no one's account id. `reach` is how they would be
@@ -187,6 +194,16 @@ export function contentAnswer(content: WorkingContent, admin: boolean): ContentA
 		unknowns: content.unknowns,
 		alreadyRuled: content.alreadyRuled,
 		technicalDetail: content.technicalDetail,
+		// Card 2683: each survey question field by field, `choices` and `scale` where its kind holds them.
+		surveyQuestions: content.surveyQuestions.map((question) => ({
+			...(question.questionId === undefined ? {} : { questionId: question.questionId }),
+			kind: question.kind,
+			prompt: question.prompt,
+			help: question.help,
+			required: question.required,
+			...(question.choices === undefined ? {} : { choices: [...question.choices] }),
+			...(question.scale === undefined ? {} : { scale: { max: question.scale.max, lowLabel: question.scale.lowLabel, highLabel: question.scale.highLabel } })
+		})),
 		agentDrafted: { ...content.agentDrafted },
 		reviewed
 	};
@@ -297,6 +314,16 @@ export function optionAnswers(options: DecisionOption[]): OptionAnswer[] {
 		position: option.position,
 		addedInVersion: option.addedInVersion,
 		retiredInVersion: option.retiredInVersion
+	}));
+}
+
+/** Survey question rows as every answer gives them (card 2683, R15). */
+export function surveyQuestionAnswers(questions: DecisionSurveyQuestion[]): SurveyQuestionAnswer[] {
+	return questions.map((question) => ({
+		id: question.id,
+		position: question.position,
+		addedInVersion: question.addedInVersion,
+		retiredInVersion: question.retiredInVersion
 	}));
 }
 
@@ -665,6 +692,8 @@ export type EditPage = {
 	decision: DecisionAnswer;
 	/** The live options, in their order. */
 	options: OptionAnswer[];
+	/** Card 2683: the live survey questions' rows, in their order. */
+	surveyQuestions: SurveyQuestionAnswer[];
 	/** Every participant row, removed ones included, in order. */
 	participants: (ParticipantAnswer | AdminParticipantAnswer)[];
 	revision: string;
@@ -738,8 +767,21 @@ export const LIFECYCLE_ACTIONS = [
 /** Each lifecycle control, and whether withdraw and delete ask for the password. */
 export type LifecycleActions = Record<(typeof LIFECYCLE_ACTIONS)[number], boolean> & { withdrawAsks: boolean; deleteAsks: boolean };
 
-/** What a re-publish would add and retire, by label (card 2697, decision 20). */
-export type RepublishSummary = { changesOptions: boolean; adding: string[]; retiring: string[] };
+/**
+ * What a re-publish would add and retire, by label (card 2697, decision 20).
+ * Card 2683 (R7): and what it would do to the survey questions, each by its
+ * number and prompt: `changesSurvey` where one would be added, retired or
+ * changed in anything but its help, which Tell them only refuses too.
+ */
+export type RepublishSummary = {
+	changesOptions: boolean;
+	adding: string[];
+	retiring: string[];
+	changesSurvey: boolean;
+	surveyAdding: SurveyNamed[];
+	surveyRetiring: SurveyNamed[];
+	surveyChanging: SurveyNamed[];
+};
 
 /** `actions` for a caller of `access` (Q14): `TRANSITIONS` and `mayDo`, as each write asks them. */
 function lifecycleActions(decision: Decision, access: DecisionAccess): LifecycleActions {
@@ -750,10 +792,19 @@ function lifecycleActions(decision: Decision, access: DecisionAccess): Lifecycle
 	return { ...flags, withdrawAsks: opened, deleteAsks: opened };
 }
 
-/** `republishSummary`: `optionChanges` on the working copy, as `republishDecision` works it out. */
+/** `republishSummary`: `optionChanges` and `surveyChanges` on the working copy, as `republishDecision` works them out. */
 function republishSummaryOf(decision: Decision): RepublishSummary {
 	const { adding, retiring } = optionChanges(liveOptionsOf(decision.id), listedOptionIds(decision.workingContent));
-	return { changesOptions: adding.length + retiring.length > 0, adding: adding.map((option) => option.label), retiring: retiring.map((option) => option.label) };
+	const survey = surveyChanges(decision);
+	return {
+		changesOptions: adding.length + retiring.length > 0,
+		adding: adding.map((option) => option.label),
+		retiring: retiring.map((option) => option.label),
+		changesSurvey: survey.adding.length + survey.retiring.length + survey.changing.length > 0,
+		surveyAdding: survey.adding,
+		surveyRetiring: survey.retiring,
+		surveyChanging: survey.changing
+	};
 }
 
 /**
@@ -835,6 +886,7 @@ export function readEditPage(user: SessionUser, decisionId: number): EditPage {
 	return {
 		decision: decisionAnswer(decision, admin, now),
 		options: optionAnswers(liveOptionsOf(decision.id)),
+		surveyQuestions: surveyQuestionAnswers(liveSurveyQuestionsOf(decision.id)),
 		participants: participantAnswers(participants, admin),
 		revision: revisionOf(decision, allOptionsOf(decision.id), participants),
 		readiness: readiness(decision, participants, now),
@@ -924,6 +976,8 @@ export type KeyDeciderCandidate = DeciderCandidate & { untrusted: true };
 export type KeyDecisionView = {
 	decision: KeyDecisionAnswer;
 	options: OptionAnswer[];
+	/** Card 2683: the live survey questions' rows, in their order. */
+	surveyQuestions: SurveyQuestionAnswer[];
 	participants: KeyParticipantAnswer[];
 	revision: string;
 	readiness: Readiness;
@@ -975,6 +1029,7 @@ export function readDecisionForKey(user: SessionUser, decisionId: number, opts: 
 	return {
 		decision: keyDecisionAnswer(decision, now),
 		options: optionAnswers(liveOptionsOf(decision.id)),
+		surveyQuestions: surveyQuestionAnswers(liveSurveyQuestionsOf(decision.id)),
 		participants: keyParticipantAnswers(participants),
 		revision: revisionOf(decision, allOptionsOf(decision.id), participants),
 		readiness: readiness(decision, participants, now),

@@ -52,6 +52,14 @@
  * built by the same `viewModelOf` and `groupsOf`, so that the preview cannot
  * differ from the participant page (Q4 to Q7).
  *
+ * Card 2683 adds the survey questions, built by `viewModelOf` beside the
+ * options: the current version's to everyone it gives the version to, a
+ * consulted and an informed participant alike, each with its agent flag; and
+ * in the preview the working copy's live questions, as the next version would
+ * hold them. Neither gives anyone's answer but the participant's own
+ * response, which already holds theirs; the preview gives none. A ruling on
+ * a version that put no options says so (`noOptions`, R18).
+ *
  * Plain reads that take the signed-in account, `user: SessionUser`, or a
  * token and a name, never `caller`, and write nothing, so that a page load may
  * call them (tests/check-at-the-write.test.ts, rule 4). `refuseWrongLink`
@@ -68,7 +76,7 @@ import { linkCountOf, linkedCardsFor, LINKS_PER_DECISION } from './decision-card
 import { mayDo, type DecisionAccess } from './decision-access';
 import { namedFor } from './decision-naming';
 import { participantAnswers, versionContentAnswer, workingViewContent } from './decision-authoring';
-import { listedOptionIds, liveOptionsOf, optionChanges, parseVersionContent, parseWorkingContent, participantsOf } from './decision-content';
+import { listedOptionIds, liveOptionsOf, liveSurveyOf, optionChanges, parseVersionContent, parseWorkingContent, participantsOf, surveyKey } from './decision-content';
 import { participantForLink } from './decision-links';
 import { mayAnswerOf, mayAskOf, questionsFor, reachedParticipantOf } from './decision-questions';
 import { concernsOf, currentRound, lastToldOf, ownResponses, rulingOf, seenStands, supersedingOf } from './decision-record';
@@ -78,7 +86,8 @@ import { createLogger } from './logger';
 import { checkRateLimit } from './rate-limit';
 import { readQueryId } from './request-body';
 import { requireDecision } from './route-guards';
-import type { DecisionPageData, ViewAudience, ViewContent, ViewDecision, ViewOption, ViewParticipant } from '$lib/decision-view-types';
+import type { SurveyQuestion } from '$lib/decision-readiness';
+import type { DecisionPageData, ViewAudience, ViewContent, ViewDecision, ViewOption, ViewParticipant, ViewSurveyQuestion } from '$lib/decision-view-types';
 import { CONCERNS_PER_PARTICIPANT } from '$lib/decision-rules';
 import { stamp } from '$lib/timestamps';
 
@@ -156,6 +165,8 @@ export type PreviewData = {
 	decision: ViewDecision & { id: number; boardId: number | null; boardName: string | null };
 	content: ViewContent;
 	options: ViewOption[];
+	/** Card 2683: the working copy's live survey questions, as the next version would hold them. No answer. */
+	surveyQuestions: ViewSurveyQuestion[];
 	audiences: ViewAudience[];
 	participant: ViewParticipant;
 	previewing: Previewing;
@@ -184,7 +195,9 @@ const PREVIEW_ROLES = ['consulted', 'informed'] as const;
  * `group` is 400: the preview shows one participant.
  *
  * The options are the next version's (Q6): the live options in position
- * order, less those publishing would retire, each with its label.
+ * order, less those publishing would retire, each with its label. Card 2683:
+ * so are the survey questions, those the working copy lists whose rows are
+ * not retired (`liveSurveyOf`), in its order.
  */
 export function readPreview(user: SessionUser, decisionId: number, query: URLSearchParams): PreviewData {
 	const { decision } = requireDecision(user, decisionId, 'edit');
@@ -220,7 +233,7 @@ export function readPreview(user: SessionUser, decisionId: number, query: URLSea
 	const liveOptions = liveOptionsOf(decision.id);
 	const retiring = new Set(optionChanges(liveOptions, listedOptionIds(decision.workingContent)).retiring.map((option) => option.id));
 	const model = viewModelOf(
-		content,
+		{ ...content, surveyQuestions: liveSurveyOf(decision) },
 		liveOptions.filter((option) => !retiring.has(option.id)).map((option) => ({ optionId: option.id, label: option.label })),
 		ownGroupIds
 	);
@@ -240,6 +253,7 @@ export function readPreview(user: SessionUser, decisionId: number, query: URLSea
 		},
 		content: workingViewContent(content),
 		options: model.options,
+		surveyQuestions: model.surveyQuestions,
 		audiences: model.audiences,
 		participant: { role: previewing.role },
 		previewing,
@@ -256,12 +270,16 @@ export function readPreview(user: SessionUser, decisionId: number, query: URLSea
  * Each audience whose group is one of `ownGroupIds` comes first, open, in its
  * stored order, and the rest follow, closed; with none of them the caller's,
  * every audience is open. No group id is given.
+ *
+ * Card 2683: and `content`'s survey questions, each with its id (one with
+ * none is left out), field by field, `choices` and `scale` where its kind
+ * holds them, and whether its `survey.<id>` flag stands.
  */
 export function viewModelOf(
-	content: { options: unknown[]; audiences: unknown[]; agentDrafted?: Record<string, true> },
+	content: { options: unknown[]; audiences: unknown[]; agentDrafted?: Record<string, true>; surveyQuestions?: SurveyQuestion[] },
 	options: { optionId: number; label: string }[],
 	ownGroupIds: ReadonlySet<number>
-): { options: ViewOption[]; audiences: ViewAudience[] } {
+): { options: ViewOption[]; surveyQuestions: ViewSurveyQuestion[]; audiences: ViewAudience[] } {
 	const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 	const text = (value: unknown) => (typeof value === 'string' ? value : '');
 	const texts = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []);
@@ -288,8 +306,25 @@ export function viewModelOf(
 	});
 	const anyOwn = audiences.some((audience) => audience.own);
 	const inOrder = [...audiences.filter((audience) => audience.own), ...audiences.filter((audience) => !audience.own)];
+	const surveyQuestions = (content.surveyQuestions ?? []).flatMap((question): ViewSurveyQuestion[] =>
+		question.questionId === undefined
+			? []
+			: [
+					{
+						questionId: question.questionId,
+						kind: question.kind,
+						prompt: question.prompt,
+						help: question.help,
+						required: question.required,
+						...(question.choices === undefined ? {} : { choices: [...question.choices] }),
+						...(question.scale === undefined ? {} : { scale: { max: question.scale.max, lowLabel: question.scale.lowLabel, highLabel: question.scale.highLabel } }),
+						agentDrafted: Object.hasOwn(flags, surveyKey(question.questionId))
+					}
+				]
+	);
 	return {
 		options: shownOptions,
+		surveyQuestions,
 		audiences: inOrder.map((audience) => ({ heading: audience.heading, body: audience.body, own: audience.own, open: !anyOwn || audience.own }))
 	};
 }
@@ -340,7 +375,9 @@ function rulingViewOf(decision: Decision): DecisionPageData['ruling'] {
 		noneOfThese: ruling.optionId === null,
 		reason: ruling.reason,
 		conditions: ruling.conditions,
-		ruledByName: ruling.ruledByName
+		ruledByName: ruling.ruledByName,
+		// Card 2683 (R18): the version ruled on put no options to a vote, said in place of "None of these".
+		...(versionOptionsOf(decision.id, ruling.versionNumber).length === 0 ? { noOptions: true as const } : {})
 	};
 }
 
@@ -429,6 +466,7 @@ function pageOf(
 		draft: decision.status === 'draft',
 		version: null,
 		options: [],
+		surveyQuestions: [],
 		audiences: [],
 		participant: null,
 		ownResponse: null,
@@ -472,6 +510,7 @@ function pageOf(
 	);
 	page.version = { number: version.number, publishedAt: version.publishedAt, content: versionContentAnswer(content, how.via) };
 	page.options = model.options;
+	page.surveyQuestions = model.surveyQuestions;
 	page.audiences = model.audiences;
 	if (participant === null) return page;
 

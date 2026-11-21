@@ -119,15 +119,31 @@ export type PersonHeader = { name: string; jobTitle: string; groups?: string[]; 
 export type RecordResponse = {
 	versionNumber: number;
 	round: number;
-	kind: 'vote' | 'abstain' | 'no_concerns';
+	/** Card 2683 (R12): `answered` too, a survey answered in a round with no options. */
+	kind: 'vote' | 'abstain' | 'no_concerns' | 'answered';
 	option: string | null;
 	scores: Record<string, number> | null;
 	optionComments: Record<string, string>;
 	comment: string | null;
+	/**
+	 * Card 2683 (R10, R17, R22): the survey questions answered, each by its prompt as the version answered under
+	 * published it, never by id, in that version's order. Only the person, the decider and administrators read a
+	 * person record. None for none.
+	 */
+	answers: RecordAnswer[];
 	via?: string;
 	createdAt: Stamp;
 	current: boolean;
 };
+
+/**
+ * An answer as a person record shows it (card 2683): the prompt, and the choice by its words, the number on the
+ * scale with its top, or the written answer, which is plain text, never markdown (R14).
+ */
+export type RecordAnswer =
+	| { prompt: string; kind: 'choice'; choice: string }
+	| { prompt: string; kind: 'scale'; value: number; max: number }
+	| { prompt: string; kind: 'text'; text: string };
 
 /** One of a person's own events on their own record (decision 13): its kind, moment and version, and `seen`'s stage. No actor. */
 export type OwnRecordEvent = { kind: string; at: Stamp; versionNumber: number | null; stage?: string };

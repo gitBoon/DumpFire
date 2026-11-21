@@ -25,10 +25,22 @@
   At phone width every table stacks each row as a card, each cell labelled
   by its column (`stacked`), so that nothing scrolls sideways (F5). Plain
   text throughout: nothing a participant wrote is read as markup.
+
+  Card 2683 (R10, R11, R17, R18): a round that put no options to a vote (a
+  survey) is counted as answered and abstained, with no option table. Each
+  round's survey figures follow its tally, one group for each version its
+  answers were given under, labelled with that version's words: each choice
+  question's count for each choice, each scale question's count for each
+  value and its mean; a written answer is in the responses alone, with its
+  name. Each response's answers are listed by prompt, as the version it was
+  given under asked them, and an `answered` response is said as answering the
+  survey, never as a vote. These figures are the decider's and the
+  administrators' alone: no release, or its preview, holds them. A ruling on
+  a version with no options says `NO_OPTIONS_PUT`.
 -->
 <script lang="ts">
-	import type { ResultRow, ResultsData, RoundTally } from '$lib/decision-view-types';
-	import { NOT_REACHED_WORDS, RESULTS_ANSWER_ELSEWHERE, resultsQuestionsClosedWords, shownMoment } from '$lib/decision-words';
+	import type { ResultRow, ResultsData, RoundTally, SurveyQuestionTally, SurveyTally } from '$lib/decision-view-types';
+	import { NOT_REACHED_WORDS, NO_OPTIONS_PUT, RESULTS_ANSWER_ELSEWHERE, resultsQuestionsClosedWords, shownMoment, surveyAnswerWords } from '$lib/decision-words';
 	import AgentLabel from './AgentLabel.svelte';
 
 	let { results }: { results: ResultsData } = $props();
@@ -48,6 +60,8 @@
 	function answerOf(row: ResultRow): string {
 		if (row.kind === 'abstain') return 'Abstained';
 		if (row.kind === 'no_concerns') return 'No concerns';
+		// Card 2683: never a vote, and never "None of these".
+		if (row.kind === 'answered') return 'Answered the survey';
 		if (row.scores !== null) return Object.entries(row.scores).map(([id, value]) => `${shortLabelOf(id)} ${value}`).join(', ');
 		return labelOf(row.optionId);
 	}
@@ -59,7 +73,100 @@
 
 	const figureOf = (tally: RoundTally, optionId: number) =>
 		score ? tally.scores.find((entry) => entry.optionId === optionId) : tally.votes.find((entry) => entry.optionId === optionId);
+
+	/**
+	 * Card 2683: whether a round put no options to a vote. Its tally counts each option of the version that opened it,
+	 * by votes in single mode or by scores in score mode (`tallyOf`), and a version that puts options puts at least two,
+	 * so a round with neither put none: the current round or an earlier one alike, whoever answered or abstained in it
+	 * (code review F7: an earlier survey round where everyone abstained is still a survey).
+	 */
+	const surveyRound = (tally: RoundTally) => tally.votes.length === 0 && tally.scores.length === 0;
+
+	/** Card 2683 (R17): a row's answers, each by its prompt, as the version it was given under asked it, in that version's order. */
+	function answersOf(row: ResultRow, survey: SurveyTally[]): { prompt: string; words: string }[] {
+		const asked = survey.find((group) => group.versionNumber === row.versionNumber)?.questions ?? [];
+		return asked.flatMap((question) => {
+			const words = surveyAnswerWords(questionOf(question), row.answers[String(question.questionId)]);
+			return words === null ? [] : [{ prompt: question.prompt, words }];
+		});
+	}
+
+	/** A question's figures as `surveyAnswerWords` reads its question: its kind, its choices' words and its top. */
+	const questionOf = (question: SurveyQuestionTally) => ({
+		questionId: question.questionId,
+		kind: question.kind,
+		prompt: question.prompt,
+		...(question.choices === null ? {} : { choices: question.choices.map((entry) => entry.choice) }),
+		...(question.scale === null ? {} : { scale: { max: question.scale.max } })
+	});
+
+	/** A scale value, with the words at its end where it is one. */
+	const scaleValueWords = (scale: NonNullable<SurveyQuestionTally['scale']>, value: number) =>
+		`${value}${value === 1 && scale.lowLabel ? ` (${scale.lowLabel})` : ''}${value === scale.max && scale.highLabel ? ` (${scale.highLabel})` : ''}`;
 </script>
+
+{#snippet surveyCounts(tally: RoundTally, caption: string)}
+	<!-- Card 2683: a survey round has no option to count, and no vote or "no concerns" (R12). -->
+	<table class="results-table stacked" data-table="survey-counts">
+		<caption>{caption}: {tally.responded} responded</caption>
+		<thead>
+			<tr>
+				<th scope="col">Answer</th>
+				<th scope="col">Count</th>
+			</tr>
+		</thead>
+		<tbody>
+			<tr><th scope="row">Answered the survey</th><td data-label="Count">{tally.responded - tally.abstained}</td></tr>
+			<tr><th scope="row">Abstained</th><td data-label="Count">{tally.abstained}</td></tr>
+		</tbody>
+	</table>
+{/snippet}
+
+{#snippet surveyFigures(tally: RoundTally)}
+	{#each tally.survey as group (group.versionNumber)}
+		<div class="survey-figures" data-survey-version={group.versionNumber}>
+			<h4>Survey questions, as version {group.versionNumber} asked them</h4>
+			{#each group.questions as question, index (question.questionId)}
+				{#if question.kind === 'choice' && question.choices !== null}
+					<table class="results-table stacked" data-table="survey" data-question={question.questionId}>
+						<caption>{index + 1}. {question.prompt}: {question.answered} answered</caption>
+						<thead>
+							<tr>
+								<th scope="col">Choice</th>
+								<th scope="col">Count</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each question.choices as entry, i (i)}
+								<tr><th scope="row">{entry.choice}</th><td data-label="Count">{entry.count}</td></tr>
+							{/each}
+						</tbody>
+					</table>
+				{:else if question.kind === 'scale' && question.scale !== null}
+					{@const scale = question.scale}
+					<table class="results-table stacked" data-table="survey" data-question={question.questionId}>
+						<caption>{index + 1}. {question.prompt}: {question.answered} answered, mean {scale.mean === null ? '–' : scale.mean.toFixed(1)} of {scale.max}</caption>
+						<thead>
+							<tr>
+								<th scope="col">Value</th>
+								<th scope="col">Count</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each scale.counts as entry (entry.value)}
+								<tr><th scope="row">{scaleValueWords(scale, entry.value)}</th><td data-label="Count">{entry.count}</td></tr>
+							{/each}
+						</tbody>
+					</table>
+				{:else}
+					<p class="survey-text" data-question={question.questionId}>
+						{index + 1}. {question.prompt}: {question.answered} answered. Each written answer is in the responses, with its name.
+					</p>
+				{/if}
+			{/each}
+		</div>
+	{/each}
+{/snippet}
 
 {#snippet tallyTable(tally: RoundTally, caption: string)}
 	<table class="results-table stacked" data-table="tally">
@@ -120,7 +227,7 @@
 	{/if}
 {/snippet}
 
-{#snippet responsesTable(rows: ResultRow[], caption: string)}
+{#snippet responsesTable(rows: ResultRow[], caption: string, survey: SurveyTally[])}
 	{#if rows.length > 0}
 		<table class="results-table stacked" data-table="responses">
 			<caption>{caption}</caption>
@@ -128,6 +235,7 @@
 				<tr>
 					<th scope="col">Who</th>
 					<th scope="col">Answer</th>
+					{#if survey.length > 0}<th scope="col">Survey answers</th>{/if}
 					<th scope="col">Comments</th>
 					<th scope="col">Given</th>
 				</tr>
@@ -137,6 +245,12 @@
 					<tr>
 						<th scope="row">{row.name}{row.groups.length > 0 ? ` (${row.groups.join(', ')})` : ''}</th>
 						<td data-label="Answer">{answerOf(row)}</td>
+						{#if survey.length > 0}
+							<!-- Card 2683 (R14): plain text, a written answer as written. -->
+							<td data-label="Survey answers">
+								{#each answersOf(row, survey) as entry, index (index)}<p class="comment" data-answer>{entry.prompt}: {entry.words}</p>{/each}
+							</td>
+						{/if}
 						<td data-label="Comments">
 							{#each commentsOf(row) as text, index (index)}<p class="comment">{text}</p>{/each}
 						</td>
@@ -154,8 +268,13 @@
 
 <section class="results" aria-label="Results">
 	<h2>Round {results.round}</h2>
-	{@render tallyTable(results.current, `Round ${results.round}`)}
-	{@render responsesTable(results.current.rows, 'Each response')}
+	{#if surveyRound(results.current)}
+		{@render surveyCounts(results.current, `Round ${results.round}`)}
+	{:else}
+		{@render tallyTable(results.current, `Round ${results.round}`)}
+	{/if}
+	{@render surveyFigures(results.current)}
+	{@render responsesTable(results.current.rows, 'Each response', results.current.survey)}
 
 	<h3>Not responded</h3>
 	{#if results.notResponded.length > 0}
@@ -217,7 +336,13 @@
 		<h3>The ruling</h3>
 		<dl class="ruling" data-block="ruling">
 			<dt>Ruled on</dt>
-			<dd>{results.ruling.optionId === null ? 'None of these' : `Option ${results.ruling.label ?? ''}${results.ruling.title ? `: ${results.ruling.title}` : ''}`}</dd>
+			<dd>
+				{results.ruling.noOptions
+					? NO_OPTIONS_PUT
+					: results.ruling.optionId === null
+						? 'None of these'
+						: `Option ${results.ruling.label ?? ''}${results.ruling.title ? `: ${results.ruling.title}` : ''}`}
+			</dd>
 			<dt>By</dt>
 			<dd>{results.ruling.byName}, {shownMoment(results.ruling.at, '')}</dd>
 			<dt>Why</dt>
@@ -242,8 +367,13 @@
 	{#each results.earlierRounds as tally (tally.round)}
 		<details class="earlier" data-round={tally.round}>
 			<summary>Round {tally.round}</summary>
-			{@render tallyTable(tally, `Round ${tally.round}`)}
-			{@render responsesTable(tally.rows, `Each response in round ${tally.round}`)}
+			{#if surveyRound(tally)}
+				{@render surveyCounts(tally, `Round ${tally.round}`)}
+			{:else}
+				{@render tallyTable(tally, `Round ${tally.round}`)}
+			{/if}
+			{@render surveyFigures(tally)}
+			{@render responsesTable(tally.rows, `Each response in round ${tally.round}`, tally.survey)}
 		</details>
 	{/each}
 </section>
@@ -270,6 +400,9 @@
 	.ruling dt { color: var(--text-secondary); }
 	.ruling dd { margin: 0; min-width: 0; }
 	.earlier summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; }
+	.survey-figures { display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; }
+	.survey-figures h4 { font-size: 0.9rem; margin: var(--space-sm) 0 0; }
+	.survey-text { margin: 0; font-size: 0.85rem; overflow-wrap: anywhere; }
 
 	/* Phone width: each row a labelled card, nothing scrolling sideways (F5). */
 	@media (max-width: 640px) {

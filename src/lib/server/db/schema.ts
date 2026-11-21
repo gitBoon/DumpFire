@@ -1326,6 +1326,11 @@ export type NewTokenUsage = typeof tokenUsage.$inferInsert;
 // code; no CHECK constraint and no trigger, which the start-up model check
 // cannot see. `decision_versions`, `decision_responses`, `decision_rulings`
 // and `decision_events` are insert-only in code alone.
+//
+// Card 2683 (migration 0082) adds `decision_survey_questions`, kept as
+// options are (added and retired by version), and `decision_responses.answers`;
+// a response's kind may be `answered`, a survey answered in a round with no
+// options.
 
 /** Who can be consulted or informed, with an account or without one. */
 export const people = sqliteTable('people', {
@@ -1456,6 +1461,25 @@ export const decisionOptions = sqliteTable('decision_options', {
 	index('idx_decision_options_decision_id').on(table.decisionId)
 ]);
 
+/**
+ * A decision's survey questions (card 2683, migration 0082): the shape of
+ * `decision_options` without a label. The words (kind, prompt, help, required,
+ * choices or scale) live in the working content and each version's content
+ * under `surveyQuestions`, keyed by `questionId`. Never reused: an answer keyed
+ * by a question's id means one question for ever.
+ */
+export const decisionSurveyQuestions = sqliteTable('decision_survey_questions', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	decisionId: integer('decision_id')
+		.notNull()
+		.references(() => decisions.id, { onDelete: 'cascade' }),
+	position: real('position').notNull(),
+	addedInVersion: integer('added_in_version'),
+	retiredInVersion: integer('retired_in_version')
+}, (table) => [
+	index('idx_decision_survey_questions_decision_id').on(table.decisionId)
+]);
+
 export const decisionVersions = sqliteTable('decision_versions', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	decisionId: integer('decision_id')
@@ -1519,7 +1543,7 @@ export const decisionResponses = sqliteTable('decision_responses', {
 		.references(() => decisionParticipants.id),
 	versionNumber: integer('version_number').notNull(),
 	round: integer('round').notNull(),
-	kind: text('kind').notNull(), // 'vote' | 'abstain' | 'no_concerns' | 'concern'
+	kind: text('kind').notNull(), // 'vote' | 'abstain' | 'no_concerns' | 'answered' | 'concern'
 	optionId: integer('option_id').references(() => decisionOptions.id),
 	scores: text('scores'),
 	comment: text('comment'),
@@ -1528,7 +1552,9 @@ export const decisionResponses = sqliteTable('decision_responses', {
 	via: text('via').notNull(), // 'session' | 'link'
 	createdAt: text('created_at')
 		.notNull()
-		.default(sql`(datetime('now'))`)
+		.default(sql`(datetime('now'))`),
+	/** Card 2683 (migration 0082): JSON, the answers given with this response keyed by survey question id; null for none. Last, as ALTER appended it. */
+	answers: text('answers')
 }, (table) => [
 	index('idx_decision_responses_decision_id').on(table.decisionId),
 	index('idx_decision_responses_participant_id').on(table.participantId),
@@ -1638,6 +1664,8 @@ export type Decision = typeof decisions.$inferSelect;
 export type NewDecision = typeof decisions.$inferInsert;
 export type DecisionOption = typeof decisionOptions.$inferSelect;
 export type NewDecisionOption = typeof decisionOptions.$inferInsert;
+export type DecisionSurveyQuestion = typeof decisionSurveyQuestions.$inferSelect;
+export type NewDecisionSurveyQuestion = typeof decisionSurveyQuestions.$inferInsert;
 export type DecisionVersion = typeof decisionVersions.$inferSelect;
 export type NewDecisionVersion = typeof decisionVersions.$inferInsert;
 export type DecisionParticipant = typeof decisionParticipants.$inferSelect;

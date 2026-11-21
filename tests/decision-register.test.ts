@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import type { SessionUser } from '$lib/server/auth';
-import { boards, decisions, people, type Board, type Decision, type DecisionParticipant, type Person } from '$lib/server/db/schema';
+import { boards, decisions, decisionSurveyQuestions, people, type Board, type Decision, type DecisionParticipant, type Person } from '$lib/server/db/schema';
 import { decisionAccess, mayDo } from '$lib/server/decision-access';
 import { readEditPage } from '$lib/server/decision-authoring';
 import { reachedParticipantOf } from '$lib/server/decision-questions';
@@ -41,6 +41,7 @@ import {
 	visibleDecisionIdsOf
 } from '$lib/server/decision-register';
 import { decisionStatus, listedStatusOf, shownStatusSql, STORED_STATUSES } from '$lib/server/decision-status';
+import { readResults } from '$lib/server/decision-results';
 import { readDecisionPage } from '$lib/server/decision-view';
 import { requireDecision } from '$lib/server/route-guards';
 import type { Participation, PersonRecord, RecordEntry, RegisterPage, RegisterRow } from '$lib/decision-register-types';
@@ -386,6 +387,19 @@ describe('the tabs', () => {
 			makeResponse(join(decision, person), { round: 1 });
 
 			expect(owedIds()).toEqual([]);
+		});
+
+		it('…not a survey answered in the current round: answered counts as responded (T51, card 2683)', () => {
+			const decision = decisionOn(board);
+			const question = db.insert(decisionSurveyQuestions).values({ decisionId: decision.id, position: 0, addedInVersion: 1 }).returning().get();
+			makeVersion(decision, { surveyQuestions: [{ questionId: question.id, kind: 'text', prompt: 'Where from?', help: '', required: true }] });
+			const participant = join(decision, person);
+			expect(owedIds(), 'before the answer').toEqual([decision.id]);
+
+			makeResponse(participant, { round: 1, kind: 'answered', answers: JSON.stringify({ [question.id]: 'Leeds.' }) });
+
+			expect(owedIds()).toEqual([]);
+			expect(register(pat, 'tab=waiting-response').counts.waitingResponse).toBe(0);
 		});
 
 		it('…one answered only in an earlier round after an asks-again re-publish (15)', () => {
@@ -851,6 +865,66 @@ describe('the person record', () => {
 		appendEvent({ decisionId: decision.id, kind: 'question_asked', participantId: participant.id, detail: { questionId: 1, notices: [] } }, SYSTEM_ACTOR);
 		return { decision, participant, option };
 	}
+
+	/**
+	 * Card 2683: a survey Dana decides, version 1 asking a choice, a scale and a written answer, and Pat's answers to
+	 * it; then version 2 asking again, the choice question reworded and its choices reordered, and Pat's answer to that.
+	 */
+	function surveyedParticipation(decision = decisionOn(board, { decider: dana })) {
+		const [choice, scale, text] = [0, 1, 2].map((position) => db.insert(decisionSurveyQuestions).values({ decisionId: decision.id, position, addedInVersion: 1 }).returning().get());
+		const asked = [
+			{ questionId: choice.id, kind: 'choice', prompt: 'Which depot?', help: '', required: false, choices: ['Leeds', 'York', 'Hull'] },
+			{ questionId: scale.id, kind: 'scale', prompt: 'How urgent?', help: '', required: false, scale: { max: 5, lowLabel: 'Low', highLabel: 'High' } },
+			{ questionId: text.id, kind: 'text', prompt: 'Anything else?', help: '', required: false }
+		];
+		makeVersion(decision, { surveyQuestions: asked }, { number: 1 });
+		const participant = join(decision, patPerson);
+		makeResponse(participant, { kind: 'answered', answers: JSON.stringify({ [text.id]: 'Tuesdays only.', [choice.id]: 0, [scale.id]: 4 }) });
+		makeVersion(decision, { surveyQuestions: [{ ...asked[0], prompt: 'Which depot ships it now?', choices: ['Hull', 'Leeds', 'York'] }] }, { number: 2, asksAgain: true });
+		makeResponse(participant, { kind: 'answered', round: 2, versionNumber: 2, answers: JSON.stringify({ [choice.id]: 0 }), createdAt: '2026-11-02 10:00:00' });
+		return { decision, participant };
+	}
+	/** What a person record shows of `surveyedParticipation`'s two responses: each answer by its prompt as that version asked it. */
+	const SURVEY_SHOWN = [
+		[
+			1,
+			[
+				{ prompt: 'Which depot?', kind: 'choice', choice: 'Leeds' },
+				{ prompt: 'How urgent?', kind: 'scale', value: 4, max: 5 },
+				{ prompt: 'Anything else?', kind: 'text', text: 'Tuesdays only.' }
+			]
+		],
+		[2, [{ prompt: 'Which depot ships it now?', kind: 'choice', choice: 'Hull' }]]
+	];
+
+	it('T50 (card 2683). gives the person their own answers, each by its prompt as published in the version they answered', () => {
+		surveyedParticipation();
+
+		const read = personRecord(pat, patPerson.id);
+
+		expect(read.audience).toBe('self');
+		expect(read.participations[0].responses.map((response) => [response.versionNumber, response.answers])).toEqual(SURVEY_SHOWN);
+	});
+
+	it('T66 (card 2683). gives the decider and an administrator the answers in the person record', () => {
+		surveyedParticipation();
+
+		for (const [who, reader] of [['the decider', dana], ['an administrator', admin]] as const) {
+			const [only] = privileged(personRecord(reader, patPerson.id));
+			expect(only.responses.map((response) => [response.versionNumber, response.answers]), who).toEqual(SURVEY_SHOWN);
+		}
+	});
+
+	it('T66 (card 2683). gives an author who is not the decider no answer: no person record, no results, and none on the page', () => {
+		const author = makeUser({ username: 'author' });
+		addBoardMember(board, author, 'editor');
+		const { decision } = surveyedParticipation(decisionOn(board, { author, decider: dana }));
+
+		expect(outcome(() => personRecord(author, patPerson.id))).toEqual({ status: 404, message: 'Person not found' });
+		expect(outcome(() => readResults(author, decision.id, UI))).toEqual({ status: 403, message: 'You cannot read the results of this decision' });
+		const page = JSON.stringify(readDecisionPage(author, decision.id));
+		for (const answer of ['Tuesdays only.', '"answers"']) expect(page, answer).not.toContain(answer);
+	});
 
 	it('gives an administrator every opened participation: every response with replaced ones, privileged questions with an agent’s draft, concerns, every event kind, and the address (44)', () => {
 		const { decision } = fullParticipation();

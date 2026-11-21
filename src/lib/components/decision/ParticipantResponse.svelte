@@ -21,17 +21,26 @@
   decision's id, or, on the link page, which is given no id (code review C5),
   the token. It is a key alone, never drawn or sent. Reload reads the page
   again (`invalidateAll`) and draws the form afresh from it.
+
+  Card 2683: the version's survey questions (`surveyQuestions`) go to the
+  form, which draws them with their inputs; where no form is drawn they are
+  drawn alone, with no input (`SurveyQuestions`). A response of this round
+  is said back with its answers, by prompt; one of an earlier round says how
+  many questions were answered, not what, as that round's questions may have
+  changed since (R8).
 -->
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import type { DecisionPageData, OwnResponse } from '$lib/decision-view-types';
-	import { givenOnWords, responseLines, shownMoment } from '$lib/decision-words';
+	import { earlierAnswersWords, givenOnWords, responseLines, shownMoment, surveyAnswerLines, surveyWhoSees } from '$lib/decision-words';
 	import ResponseForm from './ResponseForm.svelte';
+	import SurveyQuestions from './SurveyQuestions.svelte';
 
 	let {
 		decision,
 		version,
 		options,
+		surveyQuestions = [],
 		ownResponse,
 		earlierResponse,
 		mayRespond,
@@ -39,9 +48,11 @@
 		extra = {},
 		drawnFor
 	}: {
-		decision: Pick<DecisionPageData['decision'], 'voteMode' | 'shownStatus' | 'closesAt'>;
+		decision: Pick<DecisionPageData['decision'], 'voteMode' | 'shownStatus' | 'closesAt' | 'deciderName'>;
 		version: Pick<NonNullable<DecisionPageData['version']>, 'number' | 'publishedAt'> | null;
 		options: DecisionPageData['options'];
+		/** Card 2683: the version's survey questions. */
+		surveyQuestions?: DecisionPageData['surveyQuestions'];
 		ownResponse: DecisionPageData['ownResponse'];
 		earlierResponse: DecisionPageData['earlierResponse'];
 		mayRespond: boolean;
@@ -65,7 +76,7 @@
 {#snippet givenResponse(heading: string, response: OwnResponse)}
 	{@const givenOn = givenOnWords(response, version?.number)}
 	<p>{heading}</p>
-	{#each responseLines(response, options) as line, i (i)}<p class="response-line">{line}</p>{/each}
+	{#each [...responseLines(response, options), ...surveyAnswerLines(response.answers, surveyQuestions)] as line, i (i)}<p class="response-line">{line}</p>{/each}
 	{#if givenOn !== null}<p class="given-on">{givenOn}</p>{/if}
 {/snippet}
 
@@ -73,13 +84,27 @@
 	<div class="earlier">
 		<p>This decision changed on {shownMoment(version.publishedAt, '')}. Your earlier response was for version {earlierResponse.versionNumber}:</p>
 		{#each responseLines(earlierResponse, options) as line, i (i)}<p class="response-line">{line}</p>{/each}
+		{#if earlierAnswersWords(earlierResponse.answers) !== null}<p class="response-line">{earlierAnswersWords(earlierResponse.answers)}</p>{/if}
 	</div>
+{/if}
+{#if !(mayRespond && version !== null) && surveyQuestions.length > 0}
+	<SurveyQuestions questions={surveyQuestions} whoSees={surveyWhoSees(decision.deciderName ?? 'the decider')} />
 {/if}
 {#if mayRespond && version !== null}
 	<noscript><p class="noscript">Responding needs JavaScript, which is off in this browser.</p></noscript>
 	<!-- Drawn afresh for another decision or link, or version, as well as by Reload (code review C2). -->
 	{#key `${drawnFor}:${version?.number}:${drawing}`}
-		<ResponseForm voteMode={decision.voteMode} {options} versionNumber={version.number} {url} {extra} initial={ownResponse} onReload={reload} />
+		<ResponseForm
+			voteMode={decision.voteMode}
+			{options}
+			{surveyQuestions}
+			deciderName={decision.deciderName}
+			versionNumber={version.number}
+			{url}
+			{extra}
+			initial={ownResponse}
+			onReload={reload}
+		/>
 	{/key}
 {:else if decision.shownStatus === 'awaiting_ruling'}
 	<p>Responses closed on {shownMoment(decision.closesAt, 'its closing time')}.</p>

@@ -186,7 +186,7 @@ const fullParticipation = <E>(id: number | undefined, events: E[]): Participatio
 	jobTitle: 'Engineer',
 	groups: ['Team'],
 	responses: [
-		{ versionNumber: 1, round: 1, kind: 'vote', option: 'A', scores: null, optionComments: {}, comment: 'Cheaper.', createdAt: '2026-11-01 10:00:00', current: true }
+		{ versionNumber: 1, round: 1, kind: 'vote', option: 'A', scores: null, optionComments: {}, comment: 'Cheaper.', answers: [], createdAt: '2026-11-01 10:00:00', current: true }
 	],
 	questions: [],
 	concerns: [],
@@ -561,5 +561,44 @@ describe('connectLiveRefresh’s options', () => {
 		expect(files.filter((file) => /\bconnectLiveRefresh\b/.test(readFileSync(join(dir, file), 'utf8')))).toEqual([]);
 		// The scan reads what it should: the register's page does call it.
 		expect(readFileSync(join(process.cwd(), 'src/routes/decisions/+page.svelte'), 'utf8')).toMatch(/\bconnectLiveRefresh\(/);
+	});
+});
+
+// ─── Survey answers on a person's record (card 2683, slice S3b) ─────────────
+
+describe('survey answers on a person’s record (card 2683)', () => {
+	it('S3b: says a survey answered as such, never as an option, and each answer by its prompt, a written one as plain text', () => {
+		const answered = {
+			...fullParticipation<OwnRecordEvent>(undefined, []),
+			responses: [
+				{
+					versionNumber: 1,
+					round: 1,
+					kind: 'answered' as const,
+					option: null,
+					scores: null,
+					optionComments: {},
+					comment: null,
+					answers: [
+						{ prompt: 'Where do you ship from?', kind: 'choice' as const, choice: 'Leeds' },
+						{ prompt: 'How busy are you?', kind: 'scale' as const, value: 4, max: 5 },
+						{ prompt: 'Anything else?', kind: 'text' as const, text: '**Tuesdays** <i>only</i>' }
+					],
+					createdAt: '2026-11-01 10:00:00',
+					current: true
+				}
+			]
+		};
+		for (const audience of ['self', 'admin'] as const) {
+			const target = drawPerson({ audience, person: { name: 'Pat Doe', jobTitle: 'Engineer' }, participations: [answered], next: null } as PersonRecord);
+			const item = target.querySelector('[data-response="current"]')!;
+			expect(textOf(item.querySelector('strong')!), audience).toBe('Answered the survey');
+			expect([...item.querySelectorAll('[data-answer]')].map(textOf), audience).toEqual([
+				'Where do you ship from?: Leeds',
+				'How busy are you?: 4 of 5',
+				'Anything else?: **Tuesdays** <i>only</i>'
+			]);
+			expect(item.querySelector('[data-answer] strong, [data-answer] i'), audience).toBeNull();
+		}
 	});
 });

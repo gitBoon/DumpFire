@@ -77,11 +77,39 @@ export const tooManyWrongLinks = (retryAfterSecs: number) =>
  */
 export const WHO_SEES_STATEMENT_VERSION = 2;
 
-/** What the participant page tells a consulted participant of who sees their response, `decider` the decider's name. */
-export const whoSeesStatement = (decider: string) =>
+/**
+ * What the participant page tells a consulted participant of who sees their response, `decider` the decider's name.
+ *
+ * Card 2683 (R10): on a round that puts no options to a vote (a survey), the page shows it without its last
+ * sentence, the release one, as such a round releases nothing (`releases` false). The words of version 2 are not
+ * changed, so the version recorded stays 2: changing them would hold back every release of responses given under them.
+ */
+export const whoSeesStatement = (decider: string, releases = true) =>
 	`While this decision is open, only ${decider}, who decides, sees your response. DumpFire's administrators can also see it in the record. ` +
-	'No other participant sees it, or any totals. ' +
-	'After the ruling, the decider may show the totals and the comments, without names, to everyone who can see this decision.';
+	'No other participant sees it, or any totals.' +
+	(releases ? ' After the ruling, the decider may show the totals and the comments, without names, to everyone who can see this decision.' : '');
+
+/**
+ * What the page says beside a decision's survey questions (card 2683, R10), `decider` the decider's name now: the
+ * role first, as the decider can change. Its own fixed words, not the versioned who-sees statement.
+ *
+ * Binding on a later card: one that wants to release answers, as totals or otherwise, must give this sentence a
+ * version, record it with each response, and refuse to release answers given before it. A comment given with an
+ * `answered` response is never releasable.
+ */
+export const surveyWhoSees = (decider: string) =>
+	`Your answers to these questions are seen by whoever decides (now ${decider}) and DumpFire's administrators, with your name. ` +
+	'Nobody else sees them, and they are never shown as totals. A decision that asks only questions releases nothing.';
+
+/** What the page says under each box for a written answer (card 2683, R14): data minimisation. */
+export const SURVEY_TEXT_NOTE =
+	'Write only what the decider needs. Do not include personal details about yourself or anyone else that the question does not ask for.';
+
+/** What a ruling says in place of "None of these" where the version ruled on put no options to a vote (card 2683, R18). */
+export const NO_OPTIONS_PUT = 'No options were put to a vote';
+
+/** The 409 for a release of a decision ruled on a version that put no options to a vote (card 2683, R11). */
+export const NO_OPTIONS_TO_RELEASE = 'This decision put no options to a vote: there are no totals to release, and survey answers are never released';
 
 // ─── The ruling and its release (card 2679) ──────────────────────────────────
 
@@ -282,8 +310,12 @@ export function signedInNoteWords(
 	return `You are signed in as ${name}; this is recorded ${said}.`;
 }
 
-/** The ruled banner's first line (decision 9): who ruled, and on what. No moment. */
-export function rulingWords(ruling: { label: string | null; title: string | null; noneOfThese: boolean; ruledByName: string }): string {
+/**
+ * The ruled banner's first line (decision 9): who ruled, and on what. No moment. Card 2683 (R18): where the version
+ * ruled on put no options to a vote (`noOptions`), `NO_OPTIONS_PUT` in place of "None of these".
+ */
+export function rulingWords(ruling: { label: string | null; title: string | null; noneOfThese: boolean; ruledByName: string; noOptions?: true }): string {
+	if (ruling.noOptions) return `Ruled by ${ruling.ruledByName}: ${NO_OPTIONS_PUT}`;
 	if (ruling.noneOfThese || ruling.label === null) return `Ruled by ${ruling.ruledByName}: None of these`;
 	return `Ruled by ${ruling.ruledByName}: Option ${ruling.label}${ruling.title ? `: ${ruling.title}` : ''}`;
 }
@@ -381,6 +413,7 @@ export function responseLines(
 	const lines: string[] = [];
 	if (response.kind === 'abstain') lines.push('You abstained.');
 	else if (response.kind === 'no_concerns') lines.push('You have no concerns.');
+	else if (response.kind === 'answered') lines.push('You answered the survey questions.');
 	else if (response.scores !== null) {
 		const scored = Object.entries(response.scores).map(([id, score]) => `${labelOf(Number(id)) ?? 'an option no longer offered'} ${score}`);
 		lines.push(`Your scores: ${scored.join(', ')}.`);
@@ -392,6 +425,44 @@ export function responseLines(
 	for (const [id, text] of Object.entries(response.optionComments)) lines.push(`On option ${labelOf(Number(id)) ?? 'no longer offered'}: ${text}`);
 	return lines;
 }
+
+/** A survey question as the words below read it (card 2683): its kind, prompt, and its choices or scale. */
+type AskedQuestion = { questionId: number; kind: string; prompt: string; choices?: string[]; scale?: { max: number } };
+
+/**
+ * One answer to a survey question in words (card 2683, R14): a choice by its words, a number on a scale with its
+ * top, a written answer as written (plain text, never markdown). Null for a value the question could not have been
+ * given, which is then not shown.
+ */
+export function surveyAnswerWords(question: AskedQuestion, value: number | string | undefined): string | null {
+	if (question.kind === 'text') return typeof value === 'string' && value.trim() !== '' ? value : null;
+	if (typeof value !== 'number') return null;
+	if (question.kind === 'choice') return question.choices?.[value] ?? null;
+	if (question.kind === 'scale') return question.scale !== undefined && value >= 1 && value <= question.scale.max ? `${value} of ${question.scale.max}` : null;
+	return null;
+}
+
+/**
+ * Answers to survey questions as the page says them back (card 2683), one line each, "prompt: answer", in the
+ * questions' order. `questions` must be those the answers were given to: the current round's, which a re-publish
+ * that only told of a change cannot alter (R7, R8), never another round's. An answer to no question listed is left
+ * out.
+ */
+export function surveyAnswerLines(answers: Record<string, number | string>, questions: AskedQuestion[]): string[] {
+	return questions.flatMap((question) => {
+		const words = surveyAnswerWords(question, answers[String(question.questionId)]);
+		return words === null ? [] : [`${question.prompt}: ${words}`];
+	});
+}
+
+/**
+ * What the page says of answers given in an earlier round (card 2683): how many, not what, as that round's
+ * questions may have been changed since and the page holds only the current version's (R8). Null for none.
+ */
+export const earlierAnswersWords = (answers: Record<string, number | string>) => {
+	const count = Object.keys(answers).length;
+	return count === 0 ? null : `You also answered ${count === 1 ? '1 survey question' : `${count} survey questions`} as that version asked ${count === 1 ? 'it' : 'them'}.`;
+};
 
 /**
  * The mark beside a cut-off or non-responding participant whom the round's

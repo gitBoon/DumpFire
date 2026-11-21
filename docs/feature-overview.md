@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.92
+version: 1.93
 status: As-Built
-date: 2026-11-18
+date: 2026-11-21
 tags:
+  - card-2683
+  - survey-questions
   - card-2915
   - two-step-reset-ends-keys
   - card-2910
@@ -296,7 +298,7 @@ A page left open while DumpFire is updated to a new version says so within about
 
 ### Decisions
 
-A decision record puts a question to the people it affects: what the situation is, what is asked, the options with their pros, cons and commercial notes, and who is consulted and who is only told (card 2676, from 3 November 2026). There is drafting, previewing, a dry run, opening and the other lifecycle controls (card 2697, from 4 November 2026, [below](#opening-a-decision-and-what-follows)), the page each participant reads and answers a decision on (card 2677, [below](#reading-and-answering-a-decision)), and the results, the ruling, releasing the results, concerns and superseding (card 2679, [below](#results-the-ruling-and-what-follows)).
+A decision record puts a question to the people it affects: what the situation is, what is asked, the options with their pros, cons and commercial notes, and who is consulted and who is only told (card 2676, from 3 November 2026). There is drafting, previewing, a dry run, opening and the other lifecycle controls (card 2697, from 4 November 2026, [below](#opening-a-decision-and-what-follows)), the page each participant reads and answers a decision on (card 2677, [below](#reading-and-answering-a-decision)), and the results, the ruling, releasing the results, concerns and superseding (card 2679, [below](#results-the-ruling-and-what-follows)). Since card 2683 a decision can also ask its own survey questions, or be a survey alone ([below](#survey-questions)).
 
 - **Where they are** — on a board, **More → Go to → Decisions** lists the board's decisions, newest first, with each one's status, decider, closing time and last change, in UTC. Anyone who can open the board sees every decision that has been opened; a draft is seen only by its author, its decider, the board's owners and administrators. An opened decision's title opens its page, with **Edit** beside it where you may edit it; a draft's title opens its editor where you may edit it
 - **Making a draft** — **New decision**, for anyone who can edit the board, asks for a title and opens the editor. The decider starts as the board's Product Owner while they can edit the board, and as you otherwise
@@ -307,7 +309,7 @@ A decision record puts a question to the people it affects: what the situation i
 - **The decider** — chosen from the people who can edit the board, the Product Owner marked "(Product Owner)". The author, the board's owners and administrators can change it; a decider who is none of those sees it without a list
 - **The participants** — search the people directory by name, job title or group, tick a group to tick its active members as Consulted, and switch anyone to Informed. A group with some of its members ticked shows as mixed; one with no active members cannot be ticked. Nobody's email address is shown, except to an administrator. Once a decision is open, saving asks first ("3 people will be mailed now; 1 will be marked removed"), and only its author and decider can include people
 - **Someone who has left** — a participant who has left since they were added is flagged "has left: remove before saving", and Save is refused, naming them, until you untick them. Someone deleted from the directory is flagged "no longer in the people directory: saving takes them off". Nobody is ever taken off without being shown
-- **The readability check** — lists what stops the decision being opened (no decider, no closing time in the future, fewer than two options, nobody consulted, someone who has left, mail not set up, and the like), and warnings worth a look first (an empty question, an option with no cons or no commercial note, a section an agent drafted). The warnings follow your edits before you save them
+- **The readability check** — lists what stops the decision being opened (no decider, no closing time in the future, a single option, or no option and no survey question, a survey question with no prompt or a choice question with fewer than two choices, nobody consulted, someone who has left, mail not set up, and the like), and warnings worth a look first (an empty question, an option with no cons or no commercial note, a section an agent drafted). The warnings follow your edits before you save them
 - **Two people at once** — if someone else saved the decision after you opened it, your save is refused with "This decision was changed since you opened it", your edits kept, and **Reload** shows theirs. Any other refusal says why in its own words and keeps your edits, with no Reload to throw them away
 
 ```mermaid
@@ -477,13 +479,41 @@ flowchart LR
     Window -->|"a decision"| Page
 ```
 
+#### Survey questions
+
+A decision can ask the people consulted questions of its own, for when the decider needs facts
+from the people who hold them before choosing, or the options are not known yet (card 2683).
+
+- **Adding questions** — under **Survey questions** in the editor, **+ Add survey question**. Each question is one of three kinds: "Pick one of its choices" (2 to 20 choices, one a line), "A number on a scale" (from 1 to a top of 2 to 10, with words at each end) or "A short written answer". Each has a one-line prompt (up to 300 characters), optional help text, and can be marked as one that must be answered. Questions can be moved up and down and removed; up to 20 on a decision
+- **A survey** — a decision with questions and no options at all is a survey: people answer the questions and there is nothing to vote on. It opens like any decision; a question with no prompt, or a pick-one question with fewer than two choices, stops it opening, and so does a decision with one option, or with neither options nor questions
+- **Turning a survey into a vote** — when you know enough, add two or more options and **Re-publish** with **Ask everyone again**: everyone is asked again, now for a vote, and the survey's answers stay on the record as an earlier round. Choose whether people pick one option or score each while the survey is open; once a decision has put options to a vote it always keeps at least two
+- **Closing a survey** — the decider can instead rule on it, with no option, the reason recording what they concluded; the ruling then reads "No options were put to a vote" in place of "None of these". Or it can be withdrawn
+- **Changing a published question** — its kind cannot change (remove it and add a new one). Changing its prompt, its choices, its scale or whether it must be answered asks everyone again: **Tell them only** is off, naming the questions. Only its help text can be corrected by telling people only. Each answer is always shown with the question exactly as it was when that person answered
+- **Answering** — signed in or from your personal link, never through an API key. In a survey you choose "I answer the questions" or "I abstain"; on a decision with options you answer the questions with your vote, abstention or "I have no concerns". **Send my response** waits until every question that must be answered has an answer, unless you abstain. A written answer is up to 2,000 characters, shown exactly as typed, and under its box the page says: "Write only what the decider needs. Do not include personal details about yourself or anyone else that the question does not ask for." You can change your answers while the decision is open, as for a vote
+- **Who sees your answers** — beside the questions the page says: "Your answers to these questions are seen by whoever decides (now <the decider>) and DumpFire's administrators, with your name. Nobody else sees them, and they are never shown as totals. A decision that asks only questions releases nothing." On a survey the who-sees statement leaves out its sentence about releasing totals. Someone kept informed sees the questions with nothing to fill in
+- **For the decider** — the results page counts each pick-one and scale question per version it was asked in (a scale with its average), and lists each written answer with the person's name. Answers given to differently worded versions of a question are never added together. A person's record shows their own answers by the question as it was asked. A release of the results never includes survey answers, their totals or a comment given with them, and a survey's ruling cannot be released at all
+- **Kept with the decision** — answers are kept with the decision for good, as votes are, written answers included; they go only when a draft or withdrawn decision is deleted
+
+```mermaid
+stateDiagram-v2
+    [*] --> Draft
+    Draft --> Survey: Open (no options, one or more questions)
+    Survey --> Survey: Re-publish, tell only (help text alone changed)
+    Survey --> Survey: Re-publish, ask everyone again (questions changed: a new round)
+    Survey --> Vote: Re-publish, ask everyone again (two or more options added)
+    Survey --> Ruled: Rule with no option ("No options were put to a vote")
+    Survey --> Withdrawn: Withdraw
+    Vote --> Ruled: Rule
+    Vote --> Vote: Re-publish (never back to no options)
+```
+
 #### Decisions through the API
 
 Since 4 November 2026 (card 2682) an agent with an API key can prepare a decision, and a person
 decides what happens to people. Through the API, an agent can:
 
 - **Read the register** and make a draft on a board it can edit
-- **Read and edit a draft** as its editors do, and edit an open decision's text: each section it writes is labelled "Drafted by an agent and not yet reviewed by a person" until a person marks it reviewed
+- **Read and edit a draft** as its editors do, and edit an open decision's text: each section it writes is labelled "Drafted by an agent and not yet reviewed by a person" until a person marks it reviewed. Since card 2683 that includes survey questions: a question an agent writes carries the same label, a save that leaves the questions out keeps them, and an empty list removes them (reaching people only when a person re-publishes)
 - **Choose the participants and the decider** while the decision has never been opened
 - **Extend** a decision it decides, to a later closing time only
 - **Withdraw or delete a draft** that was never opened
@@ -494,7 +524,7 @@ decides what happens to people. Through the API, an agent can:
 
 What stays on the decision's page, a person's alone: **Open**, **Re-publish**, **Send me a dry
 run** and **Resend** (each mails people), **Close**, reopening a closed decision with
-**Extend**, ruling and releasing, publishing or replacing
+**Extend**, answering a decision or its survey questions, ruling and releasing, publishing or replacing
 an agent's answer, a participant's account and address, and, once a decision has been opened,
 its participants, its decider, Withdraw and Delete. An agent is never told anyone's email
 address or who asked a question, and everything people wrote is marked as data for it, not

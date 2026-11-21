@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { whilePasswordHolds } from '$lib/server/auth';
 import { isAdmin } from '$lib/server/board-access';
-import { decisionAnswer, optionAnswers, readinessOf, revisionFor } from '$lib/server/decision-authoring';
+import { decisionAnswer, optionAnswers, readinessOf, revisionFor, surveyQuestionAnswers } from '$lib/server/decision-authoring';
 import { updateDraft } from '$lib/server/decision-authoring-writes';
 import { decisionDeleteGuard, deleteDecision } from '$lib/server/decision-lifecycle-writes';
 import { pathId, readBody } from '$lib/server/request-body';
@@ -25,8 +25,8 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	// The decision, the caller's access to it, the revision and the save, in
 	// one transaction (card 2253); the answer is made from what it wrote.
 	const answer = writeAs(locals, (caller) => {
-		const { decision, options } = updateDraft(caller, { decisionId: id }, body, { source: 'ui' });
-		return { decision: decisionAnswer(decision, isAdmin(caller)), options: optionAnswers(options), revision: revisionFor(decision.id), readiness: readinessOf(decision) };
+		const { decision, options, surveyQuestions } = updateDraft(caller, { decisionId: id }, body, { source: 'ui' });
+		return { decision: decisionAnswer(decision, isAdmin(caller)), options: optionAnswers(options), surveyQuestions: surveyQuestionAnswers(surveyQuestions), revision: revisionFor(decision.id), readiness: readinessOf(decision) };
 	});
 	return json(answer);
 };

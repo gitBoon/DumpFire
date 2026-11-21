@@ -9,6 +9,7 @@
  * reviewer's name, and a response carries no row id of its own or of anything
  * else (decision 16, S4).
  */
+import type { SurveyKind, SurveyQuestion, SurveyScale } from '$lib/decision-readiness';
 import type { LinkedCardView } from '$lib/decision-register-types';
 import type { ToldMail } from '$lib/decision-words';
 import type { Stamp } from '$lib/timestamps';
@@ -23,11 +24,14 @@ export type ShownStatus = 'draft' | 'open' | 'awaiting_ruling' | 'ruled' | 'supe
 export type OwnResponse = {
 	versionNumber: number;
 	round: number;
-	kind: 'vote' | 'abstain' | 'no_concerns';
+	/** Card 2683 (R12): `answered`, survey questions answered in a round that puts no options to a vote. */
+	kind: 'vote' | 'abstain' | 'no_concerns' | 'answered';
 	optionId: number | null;
 	scores: Record<string, number> | null;
 	comment: string | null;
 	optionComments: Record<string, string>;
+	/** Card 2683 (R2): keyed by survey question id, a choice's 0-based index, a scale's number or a written answer; `{}` for none. */
+	answers: Record<string, number | string>;
 	createdAt: Stamp;
 };
 
@@ -56,6 +60,16 @@ export type ViewOption = {
 	agentDrafted: boolean;
 };
 
+/** A survey question as a version published it, with its row's id (card 2683): its words as people answered them. */
+export type PublishedSurveyQuestion = SurveyQuestion & { questionId: number };
+
+/**
+ * A survey question as the page shows it (card 2683): as the current version
+ * published it, or in the preview as the next would, and whether an agent
+ * drafted it and no person has reviewed it (`survey.<questionId>`).
+ */
+export type ViewSurveyQuestion = PublishedSurveyQuestion & { agentDrafted: boolean };
+
 /** An audience as the page shows it: the participant's own group first and open (decision 18), with no group id. */
 export type ViewAudience = { heading: string; body: string; own: boolean; open: boolean };
 
@@ -70,6 +84,8 @@ export type DecisionViewProps = {
 	decision: ViewDecision;
 	content: ViewContent;
 	options: ViewOption[];
+	/** Card 2683: the version's survey questions, or the preview's as the next version would hold them. */
+	surveyQuestions: ViewSurveyQuestion[];
 	audiences: ViewAudience[];
 	participant: ViewParticipant | null;
 	mode: 'participant' | 'preview';
@@ -123,16 +139,45 @@ export type ResultRow = {
 	name: string;
 	role: string;
 	groups: string[];
-	kind: 'vote' | 'abstain' | 'no_concerns';
+	kind: OwnResponse['kind'];
 	optionId: number | null;
 	scores: Record<string, number> | null;
 	comment: string | null;
 	optionComments: Record<string, string>;
+	/**
+	 * Card 2683 (R2, R22): the answers to survey questions, by question id, as `answersOf` reads them: labelled by the
+	 * questions of `versionNumber`, which the round's `survey` holds. `{}` for none.
+	 */
+	answers: Record<string, number | string>;
 	versionNumber: number;
 	createdAt: Stamp;
 	via: string;
 	changes: number;
 };
+
+/**
+ * One survey question's figures among the answers given under one version
+ * (card 2683, R17), labelled with that version's words: how many answered it;
+ * a choice question's count for each choice, in order (null for another
+ * kind); a scale question's scale, the count for each value from 1 to its top
+ * and the mean to one decimal, null with none (null for another kind). A
+ * written answer is in the rows alone, with its name.
+ */
+export type SurveyQuestionTally = {
+	questionId: number;
+	kind: SurveyKind;
+	prompt: string;
+	answered: number;
+	choices: { choice: string; count: number }[] | null;
+	scale: (SurveyScale & { counts: { value: number; count: number }[]; mean: number | null }) | null;
+};
+
+/**
+ * A round's survey figures for the answers given under one version (card
+ * 2683, R17): answers given under different versions are never added
+ * together, as a question changed between them is a question asked again.
+ */
+export type SurveyTally = { versionNumber: number; questions: SurveyQuestionTally[] };
 
 /**
  * A round's tally (decision 16): how many responded, each option's votes in
@@ -147,6 +192,8 @@ export type RoundTally = {
 	scores: { optionId: number; total: number; mean: number | null }[];
 	abstained: number;
 	noConcerns: number;
+	/** Card 2683 (R17): for each version the round's rows answered under, oldest first, its survey questions' figures; none with no question. */
+	survey: SurveyTally[];
 	rows: ResultRow[];
 };
 
@@ -174,6 +221,8 @@ export type RulingRecord = {
 	supersededOld: boolean | null;
 	byName: string;
 	at: Stamp;
+	/** Card 2683 (R18): the version ruled on put no options to a vote; said in place of "None of these". The results page's alone. */
+	noOptions?: true;
 };
 
 /** What the results page is given (decision 16): the decider's and administrators' alone. */
@@ -194,6 +243,8 @@ export type ResultsData = {
 	round: number;
 	/** The current version's live options. */
 	options: { optionId: number; label: string; title: string }[];
+	/** Card 2683: the current version's survey questions, as it published them. */
+	surveyQuestions: PublishedSurveyQuestion[];
 	current: RoundTally;
 	/** Newest first. */
 	earlierRounds: RoundTally[];
@@ -228,7 +279,16 @@ export type ResultsData = {
  * the conditions and who ruled. No moment, no "against" and no "early"
  * (decision 26).
  */
-export type RulingView = { label: string | null; title: string | null; noneOfThese: boolean; reason: string; conditions: string | null; ruledByName: string };
+export type RulingView = {
+	label: string | null;
+	title: string | null;
+	noneOfThese: boolean;
+	reason: string;
+	conditions: string | null;
+	ruledByName: string;
+	/** Card 2683 (R18): the version ruled on put no options to a vote, said in place of "None of these". */
+	noOptions?: true;
+};
 
 /** A participant's own concern about the ruling (card 2679, decision 4): its text and when, and no id. */
 export type OwnConcern = { comment: string; createdAt: Stamp };
@@ -303,6 +363,8 @@ export type DecisionPageData = {
 	draft: boolean;
 	version: { number: number; publishedAt: Stamp; content: ViewContent } | null;
 	options: ViewOption[];
+	/** Card 2683: the current version's survey questions, to every viewer the version is given to; none on a draft. */
+	surveyQuestions: ViewSurveyQuestion[];
 	audiences: ViewAudience[];
 	participant:
 		| (ViewParticipant & {

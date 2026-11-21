@@ -68,6 +68,8 @@ import {
 	recordEventsOf,
 	responsesOfParticipants,
 	roundsOf,
+	surveysAskedIn,
+	type AskedSurveys,
 	type DetailSpec,
 	type EventKind,
 	type RecordEventRow
@@ -87,6 +89,7 @@ import {
 	type ParticipationDecision,
 	type PersonHeader,
 	type PersonRecord,
+	type RecordAnswer,
 	type RecordEntry,
 	type RecordPage,
 	type RecordResponse,
@@ -653,9 +656,19 @@ function labelsOfDecisions(decisionIds: readonly number[]): Map<number, Map<numb
 /** The labels of one decision's options, by option id. */
 const labelsOf = (decisionId: number): Map<number, string> => labelsOfDecisions([decisionId]).get(decisionId) ?? new Map();
 
-/** A response as a person record shows it: by option label, never by id; `via` where `withVia`. */
-function recordResponseOf(row: DecisionResponse, all: readonly DecisionResponse[], labels: ReadonlyMap<number, string>, withVia: boolean): RecordResponse {
-	const own = ownResponseOf(row);
+/**
+ * A response as a person record shows it: by option label, never by id; `via` where `withVia`. Card 2683: its
+ * answers by prompt, as the version it was given under asked them (`asked`, read once for the page), in that
+ * version's order (`recordAnswersOf`).
+ */
+function recordResponseOf(
+	row: DecisionResponse,
+	all: readonly DecisionResponse[],
+	labels: ReadonlyMap<number, string>,
+	withVia: boolean,
+	asked: AskedSurveys
+): RecordResponse {
+	const own = ownResponseOf(row, asked);
 	const byLabel = <T>(keyed: Record<string, T>): Record<string, T> =>
 		Object.fromEntries(Object.entries(keyed).flatMap(([key, value]) => (labels.has(Number(key)) ? [[labels.get(Number(key))!, value] as const] : [])));
 	return {
@@ -666,10 +679,29 @@ function recordResponseOf(row: DecisionResponse, all: readonly DecisionResponse[
 		scores: own.scores === null ? null : byLabel(own.scores),
 		optionComments: byLabel(own.optionComments),
 		comment: own.comment,
+		answers: recordAnswersOf(row, own.answers, asked),
 		...(withVia ? { via: row.via } : {}),
 		createdAt: own.createdAt,
 		current: !all.some((other) => other.replacesId === row.id)
 	};
+}
+
+/**
+ * A response's answers by prompt (card 2683, R17): each question the version it was given under asked, in that
+ * version's order, that `answers` (already read by `answersOf`) answers: a choice by its words, a scale's number with
+ * its top, a written answer's text.
+ */
+function recordAnswersOf(row: DecisionResponse, answers: Record<string, number | string>, asked: AskedSurveys): RecordAnswer[] {
+	const questions = asked.get(row.decisionId)?.get(row.versionNumber);
+	if (questions === undefined) return [];
+	return [...questions.values()].flatMap((question): RecordAnswer[] => {
+		const value = answers[`${question.questionId}`];
+		if (value === undefined) return [];
+		if (question.kind === 'choice' && typeof value === 'number') return [{ prompt: question.prompt, kind: 'choice', choice: question.choices[value] ?? '' }];
+		if (question.kind === 'scale' && typeof value === 'number') return [{ prompt: question.prompt, kind: 'scale', value, max: question.scale?.max ?? value }];
+		if (question.kind === 'text' && typeof value === 'string') return [{ prompt: question.prompt, kind: 'text', text: value }];
+		return [];
+	});
 }
 
 /** One of the person's own events (decision 13): its kind, moment and version, and `seen`'s stage. */
@@ -764,6 +796,8 @@ export function readPersonRecord(user: SessionUser, personId: number, query: { b
 	const participantIds = page.map((row) => row.participant.id);
 	const labelsByDecision = labelsOfDecisions(page.map((row) => row.decision.id));
 	const responsesBy = responsesOfParticipants(participantIds);
+	// Card 2683 (R22): the survey questions each version of the page's decisions asked, read once, as the answers are read against them.
+	const asked = surveysAskedIn(page.map((row) => row.decision.id));
 	const concernsBy = concernsOfParticipants(participantIds);
 	const concernsFor = (participantId: number) =>
 		(concernsBy.get(participantId) ?? []).map((row) => ({ comment: row.comment ?? '', createdAt: row.createdAt }));
@@ -796,7 +830,7 @@ export function readPersonRecord(user: SessionUser, personId: number, query: { b
 		const participations = page.map(({ participant, decision, currentBoardName }): Participation<OwnRecordEvent> | RemovedParticipation => {
 			const labels = labelsByDecision.get(decision.id) ?? new Map<number, string>();
 			const all = responsesBy.get(participant.id) ?? [];
-			const responses = all.map((row) => recordResponseOf(row, all, labels, false));
+			const responses = all.map((row) => recordResponseOf(row, all, labels, false, asked));
 			const own = events.get(participant.id) ?? [];
 			if (!viewable.has(decision.id)) {
 				// S2: nothing of the decision as it is now; their own words, and answers given up to their removal. F4: a live
@@ -852,7 +886,7 @@ export function readPersonRecord(user: SessionUser, personId: number, query: { b
 			name: participant.name,
 			jobTitle: participant.jobTitle,
 			groups: groupsOf(participant),
-			responses: all.map((row) => recordResponseOf(row, all, labels, true)),
+			responses: all.map((row) => recordResponseOf(row, all, labels, true, asked)),
 			questions: questions.get(participant.id) ?? [],
 			concerns: concernsFor(participant.id),
 			events: named.slice(0, EVENTS_PER_PARTICIPATION).map((event) => recordEntryOf(event, ctx)),

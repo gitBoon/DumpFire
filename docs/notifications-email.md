@@ -1,10 +1,11 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.93
+version: 1.94
 status: As-Built
 date: 2026-11-21
 tags:
+  - card-2683
   - card-3004
   - card-3031
   - card-3020
@@ -45,7 +46,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Mail, the App URL and report schedules moved away from or switched off here held or paused by a restore, and mail settings that are not text read as none (card 3004, card 3031). The From handed over as a name and an address, and kept as this server's by an unsealed restore (card 3029), Complete guide to DumpFire's notification pipeline: requester mail held after an unsealed restore, progress mail to every unheld accepted request on a card, mailed false on a reply, and people marked left mailed nothing about decisions (card 3020), the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
+description: "The ruling mail of a survey says No options were put to a vote, and no mail carries a survey answer (card 2683). Mail, the App URL and report schedules moved away from or switched off here held or paused by a restore, and mail settings that are not text read as none (card 3004, card 3031). The From handed over as a name and an address, and kept as this server's by an unsealed restore (card 3029), Complete guide to DumpFire's notification pipeline: requester mail held after an unsealed restore, progress mail to every unheld accepted request on a card, mailed false on a reply, and people marked left mailed nothing about decisions (card 3020), the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -1140,13 +1141,31 @@ decision mail](#the-dry-run-and-the-limits-on-decision-mail-card-2697)). What ea
 | Asked again | `asked_again` | The change note; that an earlier response stays on the record for its version; by when; the link. Sent to consulted participants alone (card 2739) |
 | Told of a change | `told_of_change` | The change note; the link. Sent by a tell-only re-publish, and to informed participants by one that asks again (card 2739) |
 | Withdrawn | `told_withdrawn` | That it is withdrawn, the reason, that the link goes on working for 90 days; the link |
-| Ruled | `told_ruling` | The option chosen, or "None of these", the reason and the conditions; "You can raise a concern about this ruling from the page for 90 days." (card 2679); no count, no figure, no "against" and no cut-off (S4); the link |
+| Ruled | `told_ruling` | The option chosen, or "None of these" (since card 2683, "No options were put to a vote", `NO_OPTIONS_PUT`, where the version ruled on put no options: a survey ruled with no option), the reason and the conditions; "You can raise a concern about this ruling from the page for 90 days." (card 2679); no count, no figure, no "against" and no cut-off (S4); the link |
 
 The heading is `emailTemplate(escapeHtml(title), body)`: `emailTemplate`, exported from
 `notifications.ts` for this, puts its title in as given. A title cannot hold a control,
 direction, invisible or other format character (`\p{Cf}`; `createDecision` refuses it,
 `UNPRINTABLE` in `logger.ts`), and the subject is plain text that never holds a token. No mail
 names another participant.
+
+**Survey questions (card 2683).** A decision may ask survey questions, or be a survey alone. No
+mail is added or changed for them but the ruling's words: answering a survey is a response and
+mails nobody, and no mail carries a survey question's answer, a written answer or a survey figure
+(card 2689's webhooks are bound to the same). Where the version ruled on put no options to a vote,
+`ruleDecision` passes `ruling.noOptions` and the ruling mail says "Ruled: No options were put to a
+vote" in place of "None of these", followed by the reason recording the decider's conclusion and
+any conditions, as the banner and the results page say.
+
+```mermaid
+flowchart LR
+    R["ruleDecision"] --> Q{"the version ruled on<br/>holds a live option?"}
+    Q -->|"yes"| C{"an option chosen?"}
+    C -->|"yes"| L["Ruled: B: title"]
+    C -->|"no"| N["Ruled: None of these"]
+    Q -->|"no (a survey)"| S["Ruled: No options were put to a vote"]
+    L & N & S --> W["Why: the reason; Conditions; the 90-day concern line; the link"]
+```
 
 **Who is mailed** is one rule, `reachOf` in `src/lib/server/decision-links.ts`, asked for every
 participant who is not removed. A person who is gone or has left is never mailed, whatever their
