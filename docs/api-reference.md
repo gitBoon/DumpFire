@@ -1,10 +1,12 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.164
+version: 1.165
 status: As-Built
 date: 2026-11-21
 tags:
+  - card-3004
+  - card-3031
   - card-3033
   - card-3002
   - card-3020
@@ -72,7 +74,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "A restore keeps decision roles as recorded: the import's accessKept and accessAsHere fields, and point (12)'s 409 for a Product Owner or decider whose account time does not read (card 3033). The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "Point (13) of 1.15.0, webhooks a restore brings back switched off with three new pausedBecause sentences, and the import's outboundKept and recordsNotTaken.outboundChanges (card 3004). A restore keeps decision roles as recorded: the import's accessKept and accessAsHere fields, and point (12)'s 409 for a Product Owner or decider whose account time does not read (card 3033). The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -439,6 +441,79 @@ and its access; and at the write). Not marked Breaking. The admin page's load
 `null` when unreadable, `freeInodes` `null` where the volume counts none. The 507 is given too when
 fewer than 1,000 inodes are free, when the free space is not read within 2 seconds, and for 5
 minutes after a write found the disk full unless the free space has grown since.
+
+### Changes on 2026-11-21: a restore keeps where this server sends as it recorded it (card 3004)
+
+**Within 1.15.0 (point 13).** A webhook deleted, switched off with `PUT /api/v1/webhooks/{webhookId}`
+(`active: false`) or given another `url` on this server after a backup was made, or on a board deleted
+since, or deleted before this version, comes back from a restore of that backup switched off (`active`
+false). One switched off stays off, with `pausedBecause` null. One deleted, re-pointed or not in this
+server's record is switched off for good with its secret discarded, and `pausedBecause` gives, word for
+word, one of three new sentences: "This was switched off because it was deleted on this server after the
+backup it came back from was made. …", "This was switched off because it was pointed elsewhere on this
+server after the backup it came back from was made. …" or "This was switched off because it was not in
+this server's record of where it sends when a backup of it was restored. …", each going on as card 3012's
+does ("Delete it unless you recognise the address; to keep it, switch it on with your own key, …").
+Switching such a webhook on, by the board's owner or an administrator, gives it a new secret and refuses a
+secret sent with it (`400`), as for the other holds. A webhook held here stays held with this server's
+`pausedBecause` whatever address or setter the backup gives it; and an account a restore signs out
+because its password was replaced here has the webhooks it set, and those whose secret it could read,
+held as setter access ended. Every start, and every five minutes, puts a webhook that is not held back
+as this server's record says (an older image's import, a host edit): one recorded as deleted, or at
+another `url`, is switched off for good in the same way; one recorded as held is held again as setter
+access ended; one recorded as switched off is switched off. OpenAPI stays `1.15.0` (unreleased); its note
+gains point (13), "nothing else changed" is now (14), and `Webhook.pausedBecause` gives the three
+sentences. `POST /api/v1/boards/{boardId}/webhooks`, `PUT` and `DELETE /api/v1/webhooks/{webhookId}` and
+a board's delete write one more row in their transaction (`outbound_changes`, migration 0081), nothing a
+caller sees. With no MFA key loaded (a development server: production does not start without one), a
+create and a `PUT` that changes `url` answer `503`, documented on both, with nothing written: "No MFA key
+is loaded, so this server cannot record report addresses or webhook addresses right now. Nothing was
+saved. Ask an administrator to load the MFA key (MFA_KEY_FILE)." (they failed with a `500` before). A
+`PUT` that leaves the address as it is needs no key. `POST /api/report-schedules` with an address, and a
+`PUT /api/report-schedules/{id}` that adds or takes off one, answer the same `503` before the password is
+asked, nothing written and none of the day's report mail taken.
+
+Internal (`/api`):
+
+- `POST /api/admin/import` (additive): `outboundKept`, `{ webhooksDeletedHeld, webhooksNotRecordedHeld,
+  webhooksRepointedHeld, webhooksUncomparedHeld, webhooksOff, webhooksHeld, schedulesDeletedPaused,
+  schedulesNotRecordedPaused, schedulesOff, schedulesUncomparedPaused, recipientsLeftOff,
+  schedulesOverCap, recipientsOverCap, settingsRemovedHeld, settingsNotRecordedHeld, settingsHeld,
+  resetSettingsHeld, settingsNotText }` (the code review added `webhooksUncomparedHeld` and
+  `schedulesUncomparedPaused`, what could not be compared after an MFA key change, and
+  `schedulesOverCap` and `recipientsOverCap`, a schedule restored with more than 10 addresses, paused,
+  those beyond 10 left out, each with its own sentence and its own words in the CRITICAL line), what this server's record of where it sends kept, present only
+  where a count is above 0, on a restore that commits and then fails too; and `recordsNotTaken` gains
+  `outboundChanges`, the rows of an unsealed backup's record counted and not taken (present where any of
+  its four counts is). `accountsKeptLines` and the message gain, each only where its count is above 0:
+  "N webhook(s) deleted on this server after the backup was made came back switched off for good, their
+  secrets discarded: delete them again, or switch one on with your own key to give it a new secret.", "N
+  webhook(s) pointed elsewhere on this server since the backup was made came back switched off for good,
+  their secrets discarded.", "N webhook(s) whose address could not be compared with this server's
+  record (no MFA key is loaded, or it was replaced since the address was recorded) came back switched off
+  for good, their secrets discarded.", "N webhook(s) and N report schedule(s) not in this server's record
+  came back switched off or paused.", "N webhook(s) and N report schedule(s) switched off, paused or held on
+  this server since the backup was made stay off.", "N report schedule(s) deleted on this server since
+  the backup was made came back paused.", "N address(es) taken off report schedules on this server since
+  the backup was made were left off.", "N report schedule(s) came back paused: addresses taken off them on
+  this server were recorded under an MFA key since replaced, or none is loaded, so the addresses they came
+  back with could not be compared.", "N report schedule(s) came back with more than 10 addresses: each was
+  paused, and the N address(es) beyond the first 10 were left out.", "N setting(s) where this server sends
+  (backup destinations, the
+  mail settings or the App URL) removed, moved, held, or not in this server's record, are held for the
+  superadmin's review under Settings held for review.", "N setting(s) set by accounts this restore
+  signed out are held for the superadmin's review." and "N setting(s) where this server sends were not
+  text in the backup, and were left out or read as text."; card 3013's records sentence gains "… and of N
+  change(s) of where this server sends …", saying of that half alone that an unchecked file "decides
+  nothing of where this server sends". The `[CRITICAL] [IMPORT]` line gains "keeping N outbound change(s)
+  made on this server", "holding N setting(s) set by accounts it signed out" and "leaving out or reading
+  as text N outbound setting(s) that were not text", each only where above 0, its details `outboundKept`;
+  and, apart from the changes made here, "holding N webhook(s) and pausing N report schedule(s) whose
+  addresses could not be compared with this server's record" and "pausing N report schedule(s) over 10
+  addresses and leaving out N address(es)".
+  Counts only, naming no webhook, schedule, address, destination or account.
+- `POST /api/report-schedules` and `PUT /api/report-schedules/{id}`: with no MFA key loaded, a schedule
+  made with addresses, or a change that adds or takes off an address, is refused and writes nothing.
 
 ### Changes on 2026-11-21: a restore keeps decision roles as this server recorded them (card 3033)
 

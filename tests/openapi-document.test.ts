@@ -72,7 +72,7 @@ import {
 } from '$lib/server/db/schema';
 import { MAX_TOKENS_PER_ENTRY } from '$lib/server/tokens';
 import { SWITCHED_OFF_BECAUSE } from '$lib/server/webhooks';
-import { HELD_FROM_UNSEALED_BACKUP } from '$lib/settings-held';
+import { HELD_DELETED_HERE, HELD_FROM_UNSEALED_BACKUP, HELD_NOT_RECORDED, HELD_REPOINTED_HERE } from '$lib/settings-held';
 import { stamp } from '$lib/timestamps';
 import { api as call, routeMethods, routePatterns, type ApiOptions, type ApiResult } from './helpers/api';
 import {
@@ -2923,13 +2923,30 @@ describe('what a route answers, against the schema the document gives for it', (
 		// could read; card 2920's 507 on the image upload is (8), and card 2947's keys given a secret (9), before "nothing
 		// else changed", then (10); card 3012's webhooks from a backup whose seal did not verify are (10), and card 3020's
 		// people from such a backup marked left (11), and card 3033's 409 for a Product Owner or decider whose account's
-		// creation time cannot be read (12), so it is now (13).
-		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+		// creation time cannot be read (12), and card 3004's webhooks a restore brings back switched off (13), so it is now (14).
+		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
 		expect(held).toContain(
 			"(7) when a board owner's or an administrator's access ends with its keys (a password reset, a two-step reset, on the server's host too unless run with --keep-api-keys, an invite used, its own password change that ends keys, a disable, or a delete, unless the account's disable already covered it and it held no key), or an administrator is made an ordinary user, or an owner of a board is made an editor or a viewer or taken off it, "
 		);
 		expect(held).toContain('unless the account provably read nothing (never signed in, no API key, no invite used, made after two-step sign-in was released)');
-		expect(held).toContain('(13) nothing else changed: no operation, field or schema.');
+		// Card 3004 (plan 3.11, R9 L6): the webhooks a restore brings back switched off, those deleted before this version
+		// among them, the three reasons, the restore's reset branch and the start pass; then nothing else changed.
+		for (const words of [
+			'(13) a webhook deleted, switched off with PUT or given another url on this server after a backup was made, or on a board deleted since, or deleted before this version, comes back from a restore of that backup switched off (card 3004)',
+			"pausedBecause saying why (deleted here, pointed elsewhere here, or not in this server's record of where it sends)",
+			'a webhook held here stays held whatever address or setter the backup gives it',
+			'an account a restore signs out because its password was replaced here has the webhooks it set, and those whose secret it could read, held as setter access ended',
+			"and every start, and every five minutes, puts a webhook that is not held back as this server's record of where it sends says: one recorded as deleted, or at another url, is switched off for good in the same way; one recorded as held is held again as setter access ended; one recorded as switched off is switched off; ",
+			'and, on a server with no MFA key loaded (production does not start without one), POST /boards/{boardId}/webhooks and a PUT /webhooks/{webhookId} that changes url answer 503 with nothing written'
+		]) {
+			expect(held, words).toContain(words);
+		}
+		expect(held.indexOf('(13) a webhook deleted')).toBeGreaterThan(held.indexOf('(12) a board'));
+		// And pausedBecause gives each of the three sentences word for word.
+		for (const because of [HELD_DELETED_HERE, HELD_REPOINTED_HERE, HELD_NOT_RECORDED] as const) {
+			expect(spec.components.schemas.Webhook.properties.pausedBecause.description, because).toContain(`"${SWITCHED_OFF_BECAUSE[because]}"`);
+		}
+		expect(held).toContain('(14) nothing else changed: no operation, field or schema.');
 		// Card 2947: what an API key was given, held when it ends; the PUT's answer; no-store; the seed; the exposed secret.
 		for (const words of [
 			"(9) every answer that gives a webhook's secret records the API key it was given to (card 2947)",
@@ -2945,7 +2962,7 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(held.indexOf('(10) a webhook that comes in')).toBeGreaterThan(held.indexOf('(9) every answer'));
 		expect(held.indexOf('(11) a person whose address')).toBeGreaterThan(held.indexOf('(10) a webhook that comes in'));
 		expect(held.indexOf("(12) a board's Product Owner")).toBeGreaterThan(held.indexOf('(11) a person whose address'));
-		expect(held.indexOf('(13) nothing else changed')).toBeGreaterThan(held.indexOf("(12) a board's Product Owner"));
+		expect(held.indexOf('(14) nothing else changed')).toBeGreaterThan(held.indexOf('(13) a webhook deleted'));
 		// Card 3033 (R14): point (12), word for word.
 		expect(held).toContain(
 			"(12) a board's Product Owner named by PUT /boards/{boardId}, a decider named by PUT /decisions/{decisionId}/decider, and the decider a decision made by POST /boards/{boardId}/decisions or POST /decisions/{decisionId}/supersede would be given, are refused with 409 and nothing written where that account's creation time cannot be read on this server, as the record of access changes, which a restore reads, could not name it (card 3033); "
@@ -2989,7 +3006,7 @@ describe('what a route answers, against the schema the document gives for it', (
 			"(6) webhook urls are stored sealed too, bound to the webhook's id, board and receiver (card 2928)",
 			"a backup holds no url: a restore onto the server that made it puts each back, and any other gives url '' until it is entered",
 			'a PUT that switches such a webhook on must send url in the same request (400 otherwise)',
-			'(13) nothing else changed: no operation, field or schema.'
+			'(14) nothing else changed: no operation, field or schema.'
 		]) {
 			expect(held, words).toContain(words);
 		}

@@ -25,6 +25,8 @@ import { readBody, readBoolean, readEmail, readNumber, readText, readUrl } from 
 import { requireAdmin } from '$lib/server/route-guards';
 import { TYPED_SECRET_LOOKS_SEALED, looksSealed } from '$lib/server/stored-secrets';
 import { mailPlacesNow, recordMailSetters } from '$lib/server/setting-setters';
+import { recordPlacesMoved, settingPlacesIn } from '$lib/server/outbound-changes';
+import { sqlite } from '$lib/server/db';
 import { confirmStepUp } from '$lib/server/step-up';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
@@ -314,6 +316,8 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	// password was checked against.
 	const { wayOutChangedTo, setBy, setById, changes } = await whilePasswordHolds(userId, hash, () => writeAs(locals, (caller) => {
 		const { setBy, setById, setByRole, before, placesBefore, here, config, allowInsecure, pass, appUrl, appUrlChanges } = readSave(caller);
+		// Where mail and links go, read before the save, so that a place it moves is recorded (card 3004, O12).
+		const outboundBefore = settingPlacesIn(sqlite);
 
 		saveSmtpConfig(config);
 
@@ -326,6 +330,9 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 		// review), or is ignored as off the server's own address (card 2847).
 		// `readSave` has refused it to anyone but the superadmin.
 		if (appUrl !== undefined && appUrlChanges) setAppUrl(appUrl);
+		// The mail settings' and the App URL's places, each moved one recorded: the old `removed`, the new `set` (O12). A
+		// From address, a sender's name or a password typed again alone moves neither.
+		recordPlacesMoved(sqlite, outboundBefore, settingPlacesIn(sqlite), ['mail', 'app_url']);
 
 		// The saver is now who set where mail goes (card 2397, as its reviews
 		// ruled): the host, port, user or way out moved to a place nobody is

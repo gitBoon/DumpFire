@@ -28,19 +28,58 @@ export const HELD_FROM_UNSEALED_BACKUP = 'restored from a backup whose seal did 
 export const heldFromUnsealedBackup = (held: Pick<HeldSetting, 'heldBecause'>): boolean => held.heldBecause === HELD_FROM_UNSEALED_BACKUP;
 
 /**
+ * `held_because` of a setting a restore held because this server's record of where it sends has it removed or moved
+ * here since the backup was made (card 3004, plan 3.4 rule 2). Set by nobody.
+ */
+export const HELD_REMOVED_HERE = 'removed here';
+
+/**
+ * `held_because` of a setting a restore of a backup whose seal verified held because this server's record of where it
+ * sends does not name it, and this server did not hold it (card 3004, plan 3.4 rule 3, R1). Set by nobody.
+ */
+export const HELD_NOT_RECORDED = "not in this server's record";
+
+/**
+ * `held_because` of a webhook a restore switched off for good because this server's record of where it sends has it
+ * deleted here since the backup was made (card 3004, plan 3.4): its secret discarded. Set by nobody.
+ */
+export const HELD_DELETED_HERE = 'deleted here';
+
+/**
+ * `held_because` of a webhook a restore switched off for good because its address is not the one this server held or
+ * recorded for it: pointed elsewhere here since the backup was made, or not compared for want of an MFA key (card 3004,
+ * plan 3.4, R10): its secret discarded. Set by nobody.
+ */
+export const HELD_REPOINTED_HERE = 're-pointed here';
+
+/** Whether a hold is a restore's by this server's record of where it sends (card 3004): removed here, or not in the record. */
+export const heldByOutboundRecord = (held: Pick<HeldSetting, 'heldBecause'>): boolean =>
+	held.heldBecause === HELD_REMOVED_HERE || held.heldBecause === HELD_NOT_RECORDED;
+
+/**
  * What the review list says of why its settings are held (card 3009's code review, FP4), by the reasons it holds: an
- * ended setter's access, a backup whose seal did not verify, or both.
+ * ended setter's access, a backup whose seal did not verify, a restore of something removed here or not in this
+ * server's record (card 3004), or more than one.
  */
 export function heldListWhy(held: readonly Pick<HeldSetting, 'heldBecause'>[]): string {
 	const unsealed = held.filter(heldFromUnsealedBackup).length;
-	if (unsealed === 0) return 'Each of these was set by an account whose access was ended with its API keys.';
-	if (unsealed === held.length) return "Each of these came in with a backup whose seal did not verify, so where it sends is only the file's word.";
-	return "Each of these was set by an account whose access was ended with its API keys, or came in with a backup whose seal did not verify.";
+	const recorded = held.filter(heldByOutboundRecord).length;
+	if (recorded === 0) {
+		if (unsealed === 0) return 'Each of these was set by an account whose access was ended with its API keys.';
+		if (unsealed === held.length) return "Each of these came in with a backup whose seal did not verify, so where it sends is only the file's word.";
+		return "Each of these was set by an account whose access was ended with its API keys, or came in with a backup whose seal did not verify.";
+	}
+	if (recorded === held.length) return "Each of these came back with a restore, though it was removed on this server since the backup was made or is not in this server's record of where it sends.";
+	return "Each of these was set by an account whose access was ended with its API keys, came in with a backup whose seal did not verify, or came back with a restore though removed here or not in this server's record.";
 }
 
 /** Who a held setting is told as set by, by why it is held (FP4): a restore's hold names nobody. */
 export function heldSetByWords(held: Pick<HeldSetting, 'heldBecause' | 'setBy' | 'setByName'>): string {
 	if (heldFromUnsealedBackup(held)) return 'From a backup whose seal did not verify';
+	if (held.heldBecause === HELD_REMOVED_HERE) return 'From a backup made before it was removed on this server';
+	if (held.heldBecause === HELD_NOT_RECORDED) return "From a backup, and not in this server's record of where it sends";
+	// Card 3004 (R13): held by a restore because this server's record says an ending held it here, which names no setter.
+	if (held.setBy === null && held.setByName === null) return 'From a backup made before it was held on this server';
 	return `Set by ${held.setByName ?? `user ${held.setBy ?? 'unknown'}`}`;
 }
 

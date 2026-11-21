@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.69
+version: 1.70
 status: As-Built
 date: 2026-11-21
 tags:
+  - card-3004
+  - card-3031
   - card-3033
   - card-3002
   - card-3020
@@ -56,7 +58,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "What a restore brings in of decisions and its counts: places removed, made informed and accounts taken off, deciders cleared, decisions ended, and an unsealed backup's decisions kept as here or brought in inert (card 3033). A restore never brings back board, team or person access removed, lowered or made private here: access_changes carried from a sealed backup only, an unsealed backup's same-here accounts given exactly this server's access, the record's caps with the guess only where not held here, and the counts accessKept and accessAsHere (card 3002). An unsealed import restored as it is keeping this server's mail From (card 3029), Scheduled backup system with multi-destination support, an unsealed import holding the requester mail of requests it did not hold as they are and marking left the people it did not hold (holdUnsealedRequestMail, switchOffUnsealedPeople, card 3020, and its L9 cost), an unsealed import holding every webhook with an address, pausing schedules and keeping emails, choices and notifyEmail as here (unsealedReach, card 3012), the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "A restore never sends the next backup to a destination removed here: the record, the restore's outbound steps, a backup_config that is not text, and outboundKept (card 3004, card 3031). What a restore brings in of decisions and its counts: places removed, made informed and accounts taken off, deciders cleared, decisions ended, and an unsealed backup's decisions kept as here or brought in inert (card 3033). A restore never brings back board, team or person access removed, lowered or made private here: access_changes carried from a sealed backup only, an unsealed backup's same-here accounts given exactly this server's access, the record's caps with the guess only where not held here, and the counts accessKept and accessAsHere (card 3002). An unsealed import restored as it is keeping this server's mail From (card 3029), Scheduled backup system with multi-destination support, an unsealed import holding the requester mail of requests it did not hold as they are and marking left the people it did not hold (holdUnsealedRequestMail, switchOffUnsealedPeople, card 3020, and its L9 cost), an unsealed import holding every webhook with an address, pausing schedules and keeping emails, choices and notifyEmail as here (unsealedReach, card 3012), the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -309,6 +311,48 @@ flowchart LR
     Which8 -->|"no"| Keep8["keepDecisionRolesHere"]
     Apply8 & Keep8 --> Counter8["raiseUserCounterOverNamed"]
 ```
+
+A restore never brings back a destination removed here, nor anything else this server stopped sending
+to (card 3004). `outbound_changes` ([Data Model](data-model.md)) records every change of where the
+server sends; a destination is named by its place (`placeKey(destinationPlace(entry))`, its name left
+out), so a destination renamed is the same one. Before the clear, on every restore, the restore seeds the
+record where it is not yet seeded (with an MFA key loaded) and reads this server's webhooks, schedules
+and setting places (`outboundWebhooksHere`, `settingPlacesIn`) and its setter rows. A sealed backup's
+rows are carried as `backup` (`carryOutboundChanges`, through the shared `carryRecord`); an unsealed
+backup's are counted in `recordsNotTaken.outboundChanges` and not taken. After card 3002's block, under
+its own gate, `applyOutboundSchedules` pauses schedules and takes off addresses; after card 3009's step,
+`applyOutboundSettings` holds in `setting_holds` each destination, the mail and the App URL that the
+record has `removed` (`removed here`) or `held` (`setter access ended`), or, on a sealed restore, that it
+has never named and this server did not hold (`not in this server's record`); after the fill,
+`applyOutboundWebhooks` (ungated) holds or switches off the webhooks. **A held destination is never
+tried**: a backup run names it in Backup History ("it came back with a restore, though it was removed on
+this server since the backup was made or is not in this server's record of where it sends"), and Test
+and Connect are refused, until the superadmin keeps or removes it.
+
+**Settings that are not text** (card 3031). A backup whose `backup_config` is stored as raw bytes, or as
+anything but text, has it left out at the copy, with one line naming the key (a number is written as its
+text); `getBackupConfig` reads only a string, so neither a run nor a hold reads a destination from such a
+value, here either, and the failure mail goes only to a `notifyEmail` that is a string. The answer counts
+it in `outboundKept.settingsNotText`.
+
+```mermaid
+flowchart LR
+    Seed9["before the clear: seedOutbound where unseeded;<br/>outboundWebhooksHere, settingPlacesIn, setters"] --> Copy9["clear, copy: outbound settings<br/>not text left out (R15)"]
+    Copy9 --> Carry9["carryOutboundChanges<br/>sealed: union as backup; unsealed: counted"]
+    Carry9 --> Sched9["applyOutboundSchedules<br/>paused after a key change where uncompared;<br/>over 10 addresses: paused, the rest left out"]
+    Sched9 --> Set9["after card 3009: applyOutboundSettings<br/>destinations, mail, App URL held"]
+    Set9 --> Hook9["after the fill: applyOutboundWebhooks,<br/>holdResetSettersIn"]
+    Hook9 --> Count9["after the sweep: outboundKept"]
+```
+
+The answer, the panel and the `[CRITICAL] [IMPORT]` line add `outboundKept { webhooksDeletedHeld,
+webhooksNotRecordedHeld, webhooksRepointedHeld, webhooksUncomparedHeld, webhooksOff, webhooksHeld,
+schedulesDeletedPaused, schedulesNotRecordedPaused, schedulesOff, schedulesUncomparedPaused,
+recipientsLeftOff, schedulesOverCap, recipientsOverCap, settingsRemovedHeld, settingsNotRecordedHeld,
+settingsHeld, resetSettingsHeld, settingsNotText }`, only where any count is above 0, and a sentence for each kind there was any of, counts only, naming no webhook, schedule,
+address, destination or account (see the [Admin Guide](admin-guide.md#restoring-from-backup)). The
+backup schedule, Keep Last and the failure mail's address still come back as the backup has them (their
+own cards).
 
 A restore never brings back a password replaced on this server (card 2997). Every password change here
 (the holder's own, an administrator's reset, an invite used, Reset Everything) adds a `password` row

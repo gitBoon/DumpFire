@@ -542,6 +542,7 @@ describe('PUT /api/account/password', () => {
 			'delete from enrolment_links',
 			// The report schedules that are on (card 2894), always.
 			'update report_schedules set',
+			'insert into outbound_changes',
 			'insert into sessions'
 		]);
 		expect(run.effects).toEqual([]);
@@ -603,9 +604,11 @@ describe('PUT /api/account/password', () => {
 			// The webhooks the account set (card 2168): written whether or not one
 			// matches, and only when the keys end.
 			'update webhooks set',
+			'insert into outbound_changes',
 			// The links of the requests it made (card 2922), with its keys.
 			'delete from request_links',
 			'update report_schedules set',
+			'insert into outbound_changes',
 			'insert into sessions'
 		]);
 		// The one pin of the record's shape holds its statement whole, as a write is recorded, to its first 160
@@ -889,9 +892,11 @@ describe('PUT /api/users/:id/password', () => {
 			'delete from api_keys',
 			// What the account set going (card 2168), written whether or not a row matches.
 			'update webhooks set',
+			'insert into outbound_changes',
 			// The links of the requests it made (card 2922), written whether or not a row matches.
 			'delete from request_links',
-			'update report_schedules set'
+			'update report_schedules set',
+			'insert into outbound_changes'
 		]);
 		expect(run.effects).toEqual([]);
 		expectHashedOutsideTransaction();
@@ -1096,9 +1101,11 @@ describe('POST /api/users/:id/disable', () => {
 			'insert or ignore',
 			'delete from api_keys',
 			'update webhooks set',
+			'insert into outbound_changes',
 			// The links of the requests it made, by the ending itself since card 2922.
 			'delete from request_links',
 			'update report_schedules set',
+			'insert into outbound_changes',
 			// Card 2935 (P4): the start pass's moment moved past this disable.
 			'update settings set'
 		]);
@@ -1647,9 +1654,11 @@ describe('the invite page', () => {
 			'insert or ignore',
 			'delete from api_keys',
 			'update webhooks set',
+			'insert into outbound_changes',
 			// The links of the requests it made (card 2922).
 			'delete from request_links',
 			'update report_schedules set',
+			'insert into outbound_changes',
 			// The set-up challenge, in place of a session (card 2769): the expired
 			// ones swept, this browser's and the account's older ones, and the new one.
 			'delete from sign_in_challenges',
@@ -2022,9 +2031,11 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'insert or ignore',
 			'delete from api_keys',
 			'update webhooks set',
+			'insert into outbound_changes',
 			// The links of the requests it made (card 2922).
 			'delete from request_links',
-			'update report_schedules set'
+			'update report_schedules set',
+			'insert into outbound_changes'
 		]);
 		// Card 2923 (case 5): the successful run mailed the board's owner, the target, once, with both lists, and sent
 		// nothing else; every failed write sent nothing (`eachWriteInTurn`).
@@ -2077,9 +2088,11 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'insert or ignore',
 			'delete from api_keys',
 			'update webhooks set',
+			'insert into outbound_changes',
 			// The links of the requests it made (card 2922).
 			'delete from request_links',
 			'update report_schedules set',
+			'insert into outbound_changes',
 			// The link (issueEnrolmentLink), issued last.
 			'delete from enrolment_links',
 			'insert into enrolment_links'
@@ -2181,9 +2194,11 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'insert or ignore',
 			'delete from api_keys',
 			'update webhooks set',
+			'insert into outbound_changes',
 			// The links of the requests it made (card 2922).
 			'delete from request_links',
 			'update report_schedules set',
+			'insert into outbound_changes',
 			// The set-up challenge, in place of a session (card 2769).
 			'delete from sign_in_challenges',
 			'delete from sign_in_challenges',

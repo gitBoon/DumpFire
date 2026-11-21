@@ -24,14 +24,20 @@ import { CREDENTIALS_NOT_ENTERED, INSTALLATION_ID, backupSealKey, clearSecrets, 
 import { destinationHeldAt, destinationHeldWords, placeKey } from './setting-holds';
 import { openDestinationSecrets, sealDestinationSecrets, unopenableFields } from './stored-secrets';
 import { inTransaction } from './db/transaction';
+import { recordPlacesMoved, settingPlacesIn } from './outbound-changes';
 
 const log = createLogger('BACKUP');
 
 // ─── Settings Helpers ────────────────────────────────────────────────────────
 
+/**
+ * A setting's value, or null where there is none or it is not text (card 3004, R15; card 3031): a BLOB, a number or a
+ * NULL a restore or a host edit left is none to every sender, never a value read another way.
+ */
 function getSetting(key: string): string | null {
 	const row = db.select().from(settings).where(eq(settings.key, key)).get();
-	return row?.value ?? null;
+	const value = row?.value as unknown;
+	return typeof value === 'string' ? value : null;
 }
 
 function setSetting(key: string, value: string): void {
@@ -107,7 +113,12 @@ export function getBackupConfig(): BackupConfig {
  * in one transaction.
  */
 export function saveBackupConfig(config: BackupConfig): void {
-	inTransaction(() => setSetting('backup_config', JSON.stringify(sealDestinationSecrets(config))));
+	inTransaction(() => {
+		// Each destination's place the save removes, moves or adds recorded (card 3004, O11), in the save's transaction.
+		const before = settingPlacesIn(sqlite);
+		setSetting('backup_config', JSON.stringify(sealDestinationSecrets(config)));
+		recordPlacesMoved(sqlite, before, settingPlacesIn(sqlite), ['destination']);
+	});
 }
 
 /**
@@ -696,7 +707,8 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	 * (the fix pass's C13).
 	 */
 	const mailFailures = async () => {
-		if ((failures.length === 0 && retentionProblems.length === 0) || !(config.notifyOnFailure && config.notifyEmail && isSmtpConfigured())) return;
+		// Only to a failure address that is text (card 3004, R15): one a restore or a host edit left as another value is none.
+		if ((failures.length === 0 && retentionProblems.length === 0) || !(config.notifyOnFailure && typeof config.notifyEmail === 'string' && config.notifyEmail && isSmtpConfigured())) return;
 		const run = manual ? 'A backup made by ▶ Run Now to' : 'A scheduled backup to';
 		const RED = { box: 'background: #fef2f2; border: 1px solid #fecaca;', text: '#991b1b' };
 		const AMBER = { box: 'background: #fffbeb; border: 1px solid #fde68a;', text: '#92400e' };

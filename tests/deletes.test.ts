@@ -376,7 +376,19 @@ function expectLeft(w: World, tree: Tree): void {
 	expect(links.length).toBeGreaterThan(0);
 	expect(links.length).toBeLessThan(rowsOf(w.before, 'work_dependencies').length);
 
-	expect(diffSnapshots(withStepUp(withoutTree(w.before, tree), after), withoutActivity(after))).toEqual([]);
+	// Card 3004 (O6): each webhook and board schedule the delete took recorded `deleted` in this server's record of where it
+	// sends, webhooks first, each by id; and nothing else written to the record.
+	const recordedBefore = new Set(Object.keys(w.before.outbound_changes ?? {}));
+	const recorded = Object.entries(after.outbound_changes ?? {})
+		.filter(([key]) => !recordedBefore.has(key))
+		.map(([, row]) => ({ kind: row.kind, id: row.item_id, state: row.state, origin: row.origin }));
+	const deleted = (kind: string, rows: Row[]) => rows.map((row) => ({ kind, id: row.id, state: 'deleted', origin: 'here' })).sort((a, b) => Number(a.id) - Number(b.id));
+	expect(recorded).toEqual([
+		...deleted('webhook', rowsOf(w.before, 'webhooks').filter((row) => tree.boards.has(row.board_id))),
+		...deleted('schedule', rowsOf(w.before, 'report_schedules').filter((row) => row.scope === 'board' && tree.boards.has(row.scope_id)))
+	]);
+	const expected = withStepUp(withoutTree(w.before, tree), after);
+	expect(diffSnapshots({ ...expected, outbound_changes: after.outbound_changes ?? {} }, withoutActivity(after))).toEqual([]);
 	expectFiles(w.before, tree);
 }
 
@@ -546,6 +558,9 @@ describe.each([
 		expect(shape(run.writes)).toEqual([
 			'delete from work_dependencies',
 			'update cards set',
+			// Card 3004 (O6): the webhooks and board schedules going recorded `deleted` first, each in one statement that always runs.
+			'insert into outbound_changes',
+			'insert into outbound_changes',
 			'delete from report_schedules',
 			'delete from categories',
 			'delete from boards',
@@ -615,6 +630,9 @@ describe.each([
 		expect(ofTheDelete(run.writes)).toEqual([
 			'delete from work_dependencies',
 			'update cards set',
+			// Card 3004 (O6): the webhooks and board schedules going recorded `deleted` first, each in one statement that always runs.
+			'insert into outbound_changes',
+			'insert into outbound_changes',
 			'delete from report_schedules',
 			'delete from categories',
 			'delete from boards',

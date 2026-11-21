@@ -75,7 +75,13 @@ const spec = {
 			'(10) a webhook that comes in with a backup whose seal did not verify and has an address is switched off for good, whatever the file says of it, and its secret is discarded; pausedBecause says so, and switching it on gives it a new secret and refuses a secret sent with it (card 3012); ' +
 			'(11) a person whose address and account came in with a backup whose seal did not verify, and are not the ones this server held for them, or whose status in it was neither active nor left, is listed with status left and leftAt the restore\'s moment, and one this server has as left stays left (card 3020); ' +
 			'(12) a board\'s Product Owner named by PUT /boards/{boardId}, a decider named by PUT /decisions/{decisionId}/decider, and the decider a decision made by POST /boards/{boardId}/decisions or POST /decisions/{decisionId}/supersede would be given, are refused with 409 and nothing written where that account\'s creation time cannot be read on this server, as the record of access changes, which a restore reads, could not name it (card 3033); ' +
-			'(13) nothing else changed: no operation, field or schema.\n\n' +
+			'(13) a webhook deleted, switched off with PUT or given another url on this server after a backup was made, or on a board deleted since, or deleted before this version, comes back from a restore of that backup switched off (card 3004): ' +
+			'one switched off stays off; one deleted, re-pointed or not in this server\'s record is switched off for good with its secret discarded, pausedBecause saying why (deleted here, pointed elsewhere here, or not in this server\'s record of where it sends), and switching it on gives it a new secret and refuses a secret sent with it; ' +
+			'a webhook held here stays held whatever address or setter the backup gives it; ' +
+			'an account a restore signs out because its password was replaced here has the webhooks it set, and those whose secret it could read, held as setter access ended; ' +
+			'and every start, and every five minutes, puts a webhook that is not held back as this server\'s record of where it sends says: one recorded as deleted, or at another url, is switched off for good in the same way; one recorded as held is held again as setter access ended; one recorded as switched off is switched off; ' +
+			'and, on a server with no MFA key loaded (production does not start without one), POST /boards/{boardId}/webhooks and a PUT /webhooks/{webhookId} that changes url answer 503 with nothing written, where they failed with a 500 before; ' +
+			'(14) nothing else changed: no operation, field or schema.\n\n' +
 			'**Changed on 2026-11-18 (version 1.14.0), breaking.** A reset of an account\'s two-step sign-in, by an administrator or on the server\'s host, ends the account\'s API keys and switches off the webhooks it set (card 2915): ' +
 			'(1) its keys answer 401, as after a password reset; ' +
 			'(2) the webhooks it set are switched off, active false, recording setter access ended, so switching one on again is the board owner\'s or an administrator\'s and gives it a new secret; ' +
@@ -1108,6 +1114,9 @@ const spec = {
 							'Switched off because the API key that set it up ended (since 1.11.0, card 2893): "This was switched off because the API key that set it up ended: it expired, passed its deadline, was deleted or is not the setter\'s; or, for a webhook set up before keys were recorded, the account that set it up has no working key from then. To keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
 							'Switched off because nobody was recorded as its setter (since 1.15.0 it too is given a new secret): "This was switched off because nobody is recorded as having set it up. Delete it unless you recognise the address; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
 							'Switched off because it came in with a backup whose seal did not verify (since 1.15.0, card 3012): "This was switched off because it came in with a backup whose seal did not verify, so its address, its secret and who set it up are only the file\'s word, and its secret was discarded. Delete it unless you recognise the address; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
+							'Switched off by a restore, by this server\'s record of where it sends (since 1.15.0, card 3004), its secret discarded: deleted here, "This was switched off because it was deleted on this server after the backup it came back from was made. Delete it unless you recognise the address; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver."; ' +
+							'pointed elsewhere here, "This was switched off because it was pointed elsewhere on this server after the backup it came back from was made. Delete it unless you recognise the address; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver."; ' +
+							'and not in this server\'s record, "This was switched off because it was not in this server\'s record of where it sends when a backup of it was restored. Delete it unless you recognise the address; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and readable by the board\'s owner or an administrator, and update the receiver." ' +
 							'For one that is still on and held now, which only a change made outside DumpFire\'s own writes can leave until its next event, it begins "Nothing is sent: ". ' +
 							'null for one that is sent, and for one switched off without a hold (by PUT, or by a restore kept apart) whose setter\'s access has not ended since, or ended keeping their keys (their own password change without ending them, or a reset on the server\'s host run with --keep-api-keys). Worked out when the answer is made from what is stored, so it is there after a restart when lastDelivery is null.'
 					}
@@ -6921,7 +6930,21 @@ const spec = {
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },
-					'500': { $ref: '#/components/responses/InternalError' }
+					'500': { $ref: '#/components/responses/InternalError' },
+					'503': {
+						description:
+							'No MFA key is loaded on this server (a development server: production does not start without one), so the address cannot be sealed or recorded (since 1.15.0, card 3004). ' +
+							'Nothing was written. Answered by DumpFire itself, with this body.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: {
+									message:
+										'No MFA key is loaded, so this server cannot record report addresses or webhook addresses right now. Nothing was saved. Ask an administrator to load the MFA key (MFA_KEY_FILE).'
+								}
+							}
+						}
+					}
 				}
 			}
 		},
@@ -7042,7 +7065,21 @@ const spec = {
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },
-					'500': { $ref: '#/components/responses/InternalError' }
+					'500': { $ref: '#/components/responses/InternalError' },
+					'503': {
+						description:
+							'No MFA key is loaded on this server (a development server: production does not start without one), so the address cannot be sealed or recorded (since 1.15.0, card 3004). ' +
+							'Nothing was written. Answered by DumpFire itself, with this body.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: {
+									message:
+										'No MFA key is loaded, so this server cannot record report addresses or webhook addresses right now. Nothing was saved. Ask an administrator to load the MFA key (MFA_KEY_FILE).'
+								}
+							}
+						}
+					}
 				}
 			},
 			delete: {

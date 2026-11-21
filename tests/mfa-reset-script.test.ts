@@ -47,13 +47,19 @@ import {
 	// Card 2995: the record of an account's keys ended, and its word.
 	RECORD_ACCOUNT_KEYS_ENDED_SQL as scriptRecordAccountKeysEnded,
 	ACCESS_ENDED as scriptAccessEnded,
+	// Card 3004 (R8): the settings hold and the record of where the server sends.
+	HOLD_SETTINGS_SET_BY_SQL as scriptHoldSettingsSetBy,
+	RECORD_WEBHOOKS_HELD_SQL as scriptRecordWebhooksHeld,
+	RECORD_SCHEDULES_OFF_SQL as scriptRecordSchedulesOff,
+	RECORD_SETTINGS_HELD_SQL as scriptRecordSettingsHeld,
 	resetScope,
 	webhookLines
 } from '../scripts/mfa-reset.mjs';
 import { RECORD_ACCOUNT_KEYS_ENDED_SQL, REVOKED_BECAUSE } from '$lib/server/key-revocations';
 // Card 2922: the server's hold lines and places, which the script copies.
 import { heldLines as serverHeldLines } from '$lib/server/setting-setters';
-import { appUrlPlaceOf, mailPlaceOf } from '$lib/server/setting-holds';
+import { HOLD_SETTINGS_SET_BY_SQL, appUrlPlaceOf, mailPlaceOf } from '$lib/server/setting-holds';
+import { RECORD_SCHEDULES_OFF_SQL, RECORD_SETTINGS_HELD_SQL, RECORD_WEBHOOKS_HELD_SQL } from '$lib/server/outbound-changes';
 import { db, sqlite } from '$lib/server/db';
 import { enrolmentLinks, inviteTokens, reportSchedules, settingSetters, settings, signInChallenges, users } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -154,6 +160,14 @@ function dumpOf(database: Database.Database, { logs = false, paused = [] as numb
 			rows = rows.map((row) => {
 				expect(isStamp(row.revoked_at), `the record of key ${row.key_id}`).toBe(true);
 				return { ...row, revoked_at: '(masked)' };
+			});
+		}
+		// When each change of where the server sends was recorded (card 3004, O17): the moment of the reset, in the stored form.
+		if (table === 'outbound_changes') {
+			rows = rows.map((row) => {
+				expect(isStamp(row.changed_at), `the record's row ${row.seq}`).toBe(true);
+				expect(row.stated_changed, `the record's row ${row.seq}`).toBe(row.changed_at);
+				return { ...row, changed_at: '(masked)', stated_changed: '(masked)' };
 			});
 		}
 		// When each setting was held for review (card 2922): the moment of the reset, in the stored form.
@@ -916,6 +930,78 @@ describe('scripts/mfa-reset.mjs', () => {
 		expect(scriptAccessEnded).toBe(REVOKED_BECAUSE.accessEnded);
 	});
 
+	// ─── Card 3004: this server's record of where it sends ───
+
+	it('(ee2) card 3004, R8: the script holds settings, and records holds and pauses, by the server’s four statements word for word', () => {
+		expect(scriptHoldSettingsSetBy).toBe(HOLD_SETTINGS_SET_BY_SQL);
+		expect(scriptRecordWebhooksHeld).toBe(RECORD_WEBHOOKS_HELD_SQL);
+		expect(scriptRecordSchedulesOff).toBe(RECORD_SCHEDULES_OFF_SQL);
+		expect(scriptRecordSettingsHeld).toBe(RECORD_SETTINGS_HELD_SQL);
+	});
+
+	it('(ee) card 3004, O17: the script records the webhooks it holds, the schedules it pauses and the settings it holds where the record is there, and resets as before where it is not', () => {
+		const holder = seedAccount('holder');
+		const hook = makeWebhook(makeBoard({ owner: holder, name: 'Ops board' }).board, { url: 'https://hooks.example.test/in', setBy: holder });
+		const mail = mailPlaceOf({ host: 'smtp.example.test', port: 587, user: 'mailer', allowInsecure: false });
+		db.insert(settingSetters).values({ setting: 'mail', place: mail, userId: holder.id }).run();
+		const schedule = sqlite.prepare('SELECT id FROM report_schedules WHERE user_id = ?').pluck().get(holder.id) as number;
+		writeCopy();
+		const before = (fileDump().outbound_changes as Row[]).length;
+
+		const ran = run(['holder']);
+
+		expect(ran.status, ran.stderr).toBe(0);
+		const rows = (fileDump().outbound_changes as Row[]).slice(before).map(({ kind, item_id, place, state, origin }) => ({ kind, item_id, place, state, origin }));
+		expect(rows).toEqual([
+			{ kind: 'webhook', item_id: hook.id, place: '', state: 'held', origin: 'here' },
+			{ kind: 'mail', item_id: 0, place: mail, state: 'held', origin: 'here' },
+			{ kind: 'schedule', item_id: schedule, place: '', state: 'off', origin: 'here' }
+		]);
+
+		// A database from before migration 0081: reset as before, nothing recorded.
+		writeCopy();
+		const old = new Database(file);
+		old.exec('DROP TABLE outbound_changes');
+		old.close();
+		const again = run(['holder']);
+		expect(again.status, again.stderr).toBe(0);
+		const copied = new Database(file, { readonly: true, fileMustExist: true });
+		try {
+			expect(copied.prepare("SELECT 1 FROM sqlite_master WHERE name = 'outbound_changes'").get()).toBeUndefined();
+			expect(copied.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(hook.id)).toEqual({ active: 0, heldBecause: 'setter access ended' });
+			expect(copied.prepare('SELECT enabled FROM report_schedules WHERE id = ?').pluck().get(schedule)).toBe(0);
+		} finally {
+			copied.close();
+		}
+	});
+
+	it('(ee3) card 3004’s code review, F9: a record whose table lacks a column the server writes is left as it is, and the reset runs as before', () => {
+		const holder = seedAccount('holder');
+		const hook = makeWebhook(makeBoard({ owner: holder, name: 'Ops board' }).board, { url: 'https://hooks.example.test/in', setBy: holder });
+		const schedule = sqlite.prepare('SELECT id FROM report_schedules WHERE user_id = ?').pluck().get(holder.id) as number;
+		writeCopy();
+		// The table as 0081 makes it but for stated_changed, which every statement the script records by names.
+		const odd = new Database(file);
+		odd.exec(
+			'DROP TABLE outbound_changes; ' +
+				"CREATE TABLE outbound_changes (seq integer PRIMARY KEY NOT NULL, kind text NOT NULL, item_id integer DEFAULT 0 NOT NULL, item_created text DEFAULT '' NOT NULL, " +
+				"place text DEFAULT '' NOT NULL, address text DEFAULT '' NOT NULL, state text NOT NULL, changed_at text NOT NULL, origin text DEFAULT 'here' NOT NULL)"
+		);
+		odd.close();
+
+		const ran = run(['holder']);
+
+		expect(ran.status, ran.stderr).toBe(0);
+		const copied = new Database(file, { readonly: true, fileMustExist: true });
+		try {
+			expect(copied.prepare('SELECT count(*) FROM outbound_changes').pluck().get()).toBe(0);
+			expect(copied.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(hook.id)).toEqual({ active: 0, heldBecause: 'setter access ended' });
+			expect(copied.prepare('SELECT enabled FROM report_schedules WHERE id = ?').pluck().get(schedule)).toBe(0);
+		} finally {
+			copied.close();
+		}
+	});
+
 	it('T43 (card 2947’s code review, FP2): on a database no sweep has seeded, the host reset seeds first, as resetTwoStep does, and holds what the used key may have read', () => {
 		const holder = makeUser({ username: 'keyed' });
 		const { board } = makeBoard({ owner: holder, name: 'Own board' });
@@ -1055,8 +1141,12 @@ describe('scripts/mfa-reset.mjs', () => {
 
 		expect(ran.status, ran.stderr).toBe(0);
 		const after = fileDump({ held: [theirs.id] });
-		// Only the one webhook changed: the account's keys, sessions and everything else as they were.
-		expect({ ...after, webhooks: [] }).toEqual({ ...before, webhooks: [] });
+		// Only the one webhook changed: the account's keys, sessions and everything else as they were; and its hold recorded
+		// in this server's record of where it sends (card 3004, O17), with nothing else.
+		expect({ ...after, webhooks: [], outbound_changes: [] }).toEqual({ ...before, webhooks: [], outbound_changes: [] });
+		expect(after.outbound_changes.slice(before.outbound_changes.length).map(({ kind, item_id, state, origin }) => ({ kind, item_id, state, origin }))).toEqual([
+			{ kind: 'webhook', item_id: theirs.id, state: 'held', origin: 'here' }
+		]);
 		const copied = new Database(file, { readonly: true, fileMustExist: true });
 		try {
 			const row = (id: number) => copied.prepare('SELECT active, held_because AS heldBecause FROM webhooks WHERE id = ?').get(id);

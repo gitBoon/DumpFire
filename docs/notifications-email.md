@@ -1,10 +1,12 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.92
+version: 1.93
 status: As-Built
-date: 2026-11-20
+date: 2026-11-21
 tags:
+  - card-3004
+  - card-3031
   - card-3020
   - unsealed-request-addresses
   - card-2947
@@ -43,7 +45,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "The From handed over as a name and an address, and kept as this server's by an unsealed restore (card 3029), Complete guide to DumpFire's notification pipeline: requester mail held after an unsealed restore, progress mail to every unheld accepted request on a card, mailed false on a reply, and people marked left mailed nothing about decisions (card 3020), the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
+description: "Mail, the App URL and report schedules moved away from or switched off here held or paused by a restore, and mail settings that are not text read as none (card 3004, card 3031). The From handed over as a name and an address, and kept as this server's by an unsealed restore (card 3029), Complete guide to DumpFire's notification pipeline: requester mail held after an unsealed restore, progress mail to every unheld accepted request on a card, mailed false on a reply, and people marked left mailed nothing about decisions (card 3020), the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -342,6 +344,43 @@ flowchart LR
     Read --> Q{"place held?"}
     Q -->|yes| Held["sent: false, problem 'held'"]
     Q -->|no| Send["transport.sendMail"]
+```
+
+### When a Restore Brings Back Mail, an App URL or a Schedule Moved Away From (Card 3004)
+
+Every change of where the server sends is recorded by identity in `outbound_changes` (see [Data
+Model](data-model.md)): the mail settings and the App URL by their place (`mailPlaceOf`,
+`appUrlPlaceOf`, the same digests `setting_holds` uses), a report schedule by its id and creation time,
+and each address on it by a keyed digest. The writers: `saveSmtpConfig` and the SMTP route's App URL
+(`removed` for the place left, `set` for the one moved to; a From address or name alone records
+nothing), `removeSettingsSetBy`, `removeHeldSetting`, `keepHeldSetting` and `holdSettingsSetBy`, and the
+schedule writers (made, switched on or off, paused by an ending, deleted on its own, with its board or
+with its account, an address added or taken off).
+
+A restore of a backup made before the mail server or the App URL was moved or removed here holds the
+restored one for review (`removed here`), so no mail is handed over through it and no link begins with
+it ("the mail settings are held for the superadmin's review, as they came back with a restore though
+they were moved or removed on this server since the backup was made, or are not in this server's record
+of where it sends; …"). One held here by an ending comes back held as setter access ended; from this
+server's own backup, mail or an App URL the record has never named and this server did not hold is held
+as `not in this server's record`. A schedule deleted here comes back paused, one switched off or paused
+here stays off, and an address taken off a schedule here is left off (never on a guess); turning a
+schedule on, or adding an address, asks for the password and a code as before (card 2751). The start,
+and every five minutes, does the same to anything found above its recorded row.
+
+**Mail settings that are not text** (card 3031). `getSetting` in `email.ts` answers null for a value that
+is not a string, so a mail host, port, user or From stored as raw bytes (by a host edit, say) reads as
+none: no mail goes through it, the SMTP panel answers no From rather than a Buffer, and a mail goes out
+under none. A restore leaves such an `smtp_*` or `app_url` row out at the copy, or writes a number as its
+text, so the place a hold reads is the place the mailer uses (before, a BLOB `smtp_port` beside a planted
+host read as port 587 to the mailer and as none to the hold).
+
+```mermaid
+flowchart LR
+    Change["mail, App URL or schedule<br/>moved, removed or switched off here"] --> Rec["outbound_changes row<br/>by place or by id and created_at"]
+    Rec --> Restore["a restore of an older backup"]
+    Restore --> Hold["mail or App URL held 'removed here';<br/>schedule paused; address left off"]
+    Hold --> Review["Keep (recorded 'set') or Remove<br/>under Settings held for review"]
 ```
 
 ### Where the App URL Comes From

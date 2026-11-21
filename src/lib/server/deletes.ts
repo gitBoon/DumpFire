@@ -70,6 +70,7 @@ import { accountMayHaveRead, disableCovered, ENDING_IN_MAIL, holdWebhooksOfSette
 import { REVOKED_BECAUSE, endApiKeys } from './key-revocations';
 import { ACCOUNT_ENDING, recordAccountEnding } from './account-endings';
 import { stamp } from '$lib/timestamps';
+import { recordSchedulesAs, recordWebhooksAs } from './outbound-changes';
 
 const log = createLogger('DELETE');
 /** For the line a person marked left by an account's delete writes, as people.ts writes its own. */
@@ -291,6 +292,12 @@ function removeUnder(
 					AND id NOT IN (SELECT id FROM doomed_cards)`
 			)
 			.run(...params).changes;
+		// Card 3004 (O6): the webhooks the boards' delete takes with it (the key's cascade) and the schedules of those
+		// boards recorded `deleted` while they can be read, each in one statement that always runs: a restore of an older
+		// backup brings them back switched off for good and paused.
+		const ids = (sql: string) => sqlite.prepare(`${cte} ${sql}`).pluck().all(...params) as number[];
+		recordWebhooksAs(sqlite, ids('SELECT id FROM webhooks WHERE board_id IN (SELECT id FROM doomed_boards) ORDER BY id'), 'deleted');
+		recordSchedulesAs(sqlite, ids("SELECT id FROM report_schedules WHERE scope = 'board' AND scope_id IN (SELECT id FROM doomed_boards) ORDER BY id"), 'deleted');
 		reportSchedules = sqlite
 			.prepare(
 				`${write('delete from report_schedules')} DELETE FROM report_schedules
@@ -1017,6 +1024,9 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 		// Any key it still holds recorded as ended and deleted, before the user row goes (card 2995, decision 17): the
 		// cascade would delete it unrecorded, and a restore would bring it back.
 		endApiKeys(sqlite, { userId }, REVOKED_BECAUSE.accountDeleted);
+		// Card 3004 (O18, R4): every schedule of the account, which the key's cascade deletes with it, recorded `deleted`
+		// while it can be read, in one statement that always runs: a restore of an older backup brings each back paused.
+		recordSchedulesAs(sqlite, sqlite.prepare('SELECT id FROM report_schedules WHERE user_id = ? ORDER BY id').pluck().all(userId) as number[], 'deleted');
 		sqlite.prepare('DELETE FROM users WHERE id = ?').run(userId);
 
 		afterCommit(() =>

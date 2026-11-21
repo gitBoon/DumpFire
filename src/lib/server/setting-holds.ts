@@ -28,7 +28,7 @@ import { createHash } from 'node:crypto';
 import { and, asc, eq, like } from 'drizzle-orm';
 import { db } from './db';
 import { settingHolds } from './db/schema';
-import { HELD_FROM_UNSEALED_BACKUP } from '../settings-held';
+import { HELD_FROM_UNSEALED_BACKUP, HELD_NOT_RECORDED, HELD_REMOVED_HERE } from '../settings-held';
 
 /** The setter rows' and the holds' name for every smtp_* setting, as one. */
 export const MAIL_SETTING = 'mail';
@@ -38,6 +38,16 @@ export const APP_URL_SETTING = 'app_url';
 export const DESTINATION_SETTING = 'backup_destination:';
 /** Why a setting is held (`held_because`): the account that set it had its access ended. */
 export const SETTER_ACCESS_ENDED = 'setter access ended';
+/**
+ * The one statement that holds the settings an account set, from its setter rows (card 3004, R8), for `@id`, `@hold`,
+ * `@at` and `@name` (the account's username, or NULL where a restore cannot vouch for it): each row of `setting_setters`
+ * of the account held at its place, a place already held keeping its hold. Used by an ending of an account's access
+ * (`holdSettingsSetBy`) and a restore's password reset (`resetOne`), and copied word for word into
+ * scripts/mfa-reset.mjs, which tests compare.
+ */
+export const HOLD_SETTINGS_SET_BY_SQL =
+	'INSERT OR IGNORE INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) ' +
+	'SELECT setting, place, @hold, @at, user_id, @name FROM setting_setters WHERE user_id = @id ORDER BY rowid';
 /**
  * Or: it came in with a backup whose seal did not verify, at a place this server did not hold (card 3009, R4;
  * `holdUnsealedSettings` in restore.ts). Set by nobody. Held, kept and removed as any other; told in its own words
@@ -180,9 +190,19 @@ export const DESTINATION_HELD_UNSEALED =
 	"This backup destination is held for the superadmin's review: it came in with a backup whose seal did not verify, so where it " +
 	"sends is only the file's word. Nothing is sent to it until the superadmin keeps or removes it under Settings held for review on the admin page.";
 
+/**
+ * The same, of a destination a restore held by this server's record of where it sends (card 3004): removed here since
+ * the backup was made, or not in the record. Names no setter.
+ */
+export const DESTINATION_HELD_BY_RECORD =
+	"This backup destination is held for the superadmin's review: it came back with a restore, though it was removed on this server " +
+	"since the backup was made or is not in this server's record of where it sends. Nothing is sent to it until the superadmin keeps or " +
+	'removes it under Settings held for review on the admin page.';
+
 /** What a destination held at `place` is told, by why it is held (FP4); null where it is not held. */
 export function destinationHeldWords(place: string): string | null {
 	const because = destinationHeldBecause(place);
 	if (because === null) return null;
+	if (because === HELD_REMOVED_HERE || because === HELD_NOT_RECORDED) return DESTINATION_HELD_BY_RECORD;
 	return because === UNSEALED_RESTORE ? DESTINATION_HELD_UNSEALED : DESTINATION_HELD;
 }

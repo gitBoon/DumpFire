@@ -147,6 +147,24 @@ import {
 } from './webhooks';
 import { inTransaction } from './db/transaction';
 import { ACCESS_KIND, ACCESS_READS, ACCESS_WORDS, accessCeiling, accessRank, type AccessItem, type AccessKind } from './access-changes';
+import {
+	OUTBOUND_READS,
+	OUTBOUND_STATES,
+	keyedUnder,
+	outboundCeiling,
+	outboundRank,
+	outboundRecordedHere,
+	recipientsLeft,
+	seedOutbound,
+	settingPlacesIn,
+	webhookRepointed,
+	webhookVerdict,
+	type OutboundCeiling,
+	type OutboundItem
+} from './outbound-changes';
+import { APP_URL_SETTING, DESTINATION_SETTING, MAIL_SETTING, SETTER_ACCESS_ENDED } from './setting-holds';
+import { HELD_NOT_RECORDED, HELD_REMOVED_HERE } from '$lib/settings-held';
+import { reportRecipients } from '$lib/report-recipients';
 import { registerStampFunctions } from './db/timestamps';
 import { appendEvent, SYSTEM_ACTOR } from './decision-record';
 import { revokeLinks } from './decision-links';
@@ -188,13 +206,16 @@ import {
 	type SealedCounts,
 	type ServiceAccountNormalised,
 	type SigningKeyMade,
-	type StoredSecret
+	type StoredSecret,
+	addressToBind
 } from './stored-secrets';
 
 const log = createLogger('STARTUP');
 const authLog = createLogger('AUTH');
 const reportsLog = createLogger('REPORTS');
 const requestsLog = createLogger('REQUESTS');
+/** Card 3004 (plan 3.10): the start's outbound pass, for what it holds that is not a webhook. */
+const outboundLog = createLogger('BACKUP');
 
 /**
  * One CRITICAL line when there are user accounts and none of them is the
@@ -1231,12 +1252,20 @@ export function reportSettingsHeld(): number {
 		// Worded by why each is held (card 3009's code review, FP4): a setter whose access was ended is named; a setting
 		// that came in with a backup whose seal did not verify was set by nobody, and no setter is named for it.
 		const named = (rows: typeof held) => [...new Set(rows.map((row) => heldSettingWords(row.setting)))].join(', ');
-		const bySetter = held.filter((row) => row.heldBecause !== UNSEALED_RESTORE);
+		// Card 3004: a restore's hold by this server's record of where it sends names no setter either: removed here or not
+		// in the record, and a hold the record says an ending made, set by no account named (its S4 fault: "user unknown").
+		const byRecord = held.filter((row) => row.heldBecause === HELD_REMOVED_HERE || row.heldBecause === HELD_NOT_RECORDED);
+		const recordHeld = held.filter((row) => row.heldBecause === SETTER_ACCESS_ENDED && row.setBy === null && row.setByName === null);
+		const bySetter = held.filter((row) => row.heldBecause !== UNSEALED_RESTORE && !byRecord.includes(row) && !recordHeld.includes(row));
 		const fromUnsealed = held.filter((row) => row.heldBecause === UNSEALED_RESTORE);
 		const whose = [...new Set(bySetter.map((row) => (row.setByName === null ? `user ${row.setBy ?? 'unknown'}` : `"${printable(row.setByName)}"`)))].join(', ');
 		const parts = [
 			...(bySetter.length > 0 ? [`${named(bySetter)} (set by ${whose}, whose access was ended)`] : []),
-			...(fromUnsealed.length > 0 ? [`${named(fromUnsealed)} (restored from a backup whose seal did not verify, so where they send is only the file's word)`] : [])
+			...(fromUnsealed.length > 0 ? [`${named(fromUnsealed)} (restored from a backup whose seal did not verify, so where they send is only the file's word)`] : []),
+			...(byRecord.length > 0
+				? [`${named(byRecord)} (came back with a restore though removed on this server since the backup was made, or not in this server's record of where it sends)`]
+				: []),
+			...(recordHeld.length > 0 ? [`${named(recordHeld)} (held as this server's record of where it sends says, set by no account named)`] : [])
 		];
 		log.warn(
 			`Settings held for the superadmin's review: ${parts.join('; ')}. Nothing is sent to them ` +
@@ -1500,6 +1529,11 @@ export function sweepEndedKeyReveals(value: string | undefined = process.env.SCH
 	// Card 3002 (R3): board, team and person access above this server's record of access changes, on its own, after the
 	// password pass and before the key pass, so that what it holds is held before the keys' reveals are swept.
 	const accessAgain = capAccessAtStartPass(value, isDev);
+	// Card 3004 (plan 3.3, 3.10, R7): the record of where this server sends seeded once, in a transaction of its own, after
+	// the access pass and before the key pass.
+	const outboundSeed = seedOutboundAtStartPass();
+	// Then what is above this server's record of where it sends held again (card 3004, plan 3.10), on its own.
+	const outboundAgain = holdOutboundAtStartPass(value, isDev);
 	const endedAgain = endRecordedKeysAtStart(value, isDev);
 	let found: ReturnType<typeof holdRevealsOfEndedKeys>;
 	try {
@@ -1535,9 +1569,258 @@ export function sweepEndedKeyReveals(value: string | undefined = process.env.SCH
 			// The hold is committed; only its telling was lost.
 		}
 	}
-	return endedAgain === null || accountsAgain === null || passwordsAgain === null || accessAgain === null
+	return endedAgain === null || accountsAgain === null || passwordsAgain === null || accessAgain === null || outboundSeed === null || outboundAgain === null
 		? null
-		: switchedOff.length + held.length + endedAgain.count + accessAgain.lowered;
+		: switchedOff.length + held.length + endedAgain.count + accessAgain.lowered + outboundAgain.count;
+}
+
+/**
+ * What the start's outbound pass did (card 3004, plan 3.10): the webhooks it switched off and held (told) and those it
+ * switched off with no hold; the schedules it paused, the addresses it took off and the settings it held; its count;
+ * and the items a row of this server's dated after now was not let open.
+ */
+export type OutboundHeldAgain = {
+	switchedOff: SwitchedOff[];
+	held: SwitchedOff[];
+	webhooksOff: number;
+	schedules: number;
+	recipients: number;
+	settings: number;
+	future: number;
+	count: number;
+};
+
+/**
+ * Card 3004 (plan 3.10): the start's and every five-minute sweep's pass over this server's record of where it sends, in
+ * a transaction of its own, after the seed and before the key pass. What it holds and switches off is told once
+ * committed: the webhooks by `tellSwitchedOff`, mailed per `schedulerSetting`; the rest in one WARN under BACKUP,
+ * counts only; the rows dated after now in one WARN. A failure rolls back this pass alone, with its own WARN, and the
+ * sweep's answer is null; the key pass still runs. Returns what it did, or null where it could not. It never throws.
+ */
+function holdOutboundAtStartPass(value: string | undefined, isDev: boolean): OutboundHeldAgain | null {
+	let done: OutboundHeldAgain;
+	let telling: Telling;
+	try {
+		const setting = schedulerSetting(value, isDev);
+		telling = setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` };
+		done = inTransaction(() => holdOutboundAtStart(stamp()));
+	} catch (err) {
+		try {
+			outboundLog.warn(
+				`What is above this server's record of where it sends could not be held again: ${(err as Error)?.message ?? err}. ` +
+					'The next sweep, within five minutes, tries again.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+	if (done.switchedOff.length + done.held.length > 0) {
+		try {
+			const cause = "this server's record of where it sends says it was deleted, held or pointed elsewhere here (found at start-up or by the five-minute sweep)";
+			tellSwitchedOff(done.switchedOff, cause, telling, done.held, cause);
+		} catch {
+			// The holds are committed; only their telling was lost.
+		}
+	}
+	if (done.webhooksOff + done.schedules + done.recipients + done.settings > 0) {
+		try {
+			outboundLog.warn(
+				"Found above this server's record of where it sends (an older image's import or a host edit), and put back as the record says: " +
+					`${done.webhooksOff} webhook(s) switched off, ${done.schedules} report schedule(s) paused, ${done.recipients} address(es) taken off ` +
+					`report schedules, and ${done.settings} setting(s) where this server sends held for the superadmin's review under Settings held for review.`,
+				{ webhooksOff: done.webhooksOff, schedules: done.schedules, recipients: done.recipients, settings: done.settings }
+			);
+		} catch {
+			// The pass is committed; only its line was lost.
+		}
+	}
+	if (done.future > 0) {
+		try {
+			outboundLog.warn(`${done.future} row(s) of this server's record of where it sends are dated after now and were not let open anything.`, { future: done.future });
+		} catch {
+			// Nothing more to be done about it.
+		}
+	}
+	return done;
+}
+
+/**
+ * Card 3004 (plan 3.10, R10): every live webhook, report schedule, address on a schedule, destination, mail setting and
+ * App URL closed to this server's record of where it sends, only where the item has a row of this server's own
+ * (`outboundRecordedHere`): never a seed's row alone, a backup's alone, nor the guess. A row of this server's dated after
+ * `now` never opens a ceiling: where it would, the ceiling is taken without it, and the item counted in `future`.
+ *
+ * - A webhook with no hold: recorded `deleted`, held `deleted here`, its secret and its reveals discarded; its address,
+ *   opened with the MFA key, whose keyed digest differs from the deciding row's (a row under this key alone), held
+ *   `re-pointed here`, the same; recorded `held`, held `setter access ended`; recorded `off` and on, switched off.
+ * - A schedule on, recorded `off` or `deleted`: paused. An address on one recorded `removed`: taken off (with a key).
+ * - A destination, the mail settings or the App URL at a place recorded `removed` or `held` and not held there: held,
+ *   `removed here` or `setter access ended`, set by nobody.
+ *
+ * Writes nothing to the record: it closes to what the record already says. Inside the caller's transaction.
+ */
+function holdOutboundAtStart(now: string): OutboundHeldAgain {
+	const done: OutboundHeldAgain = { switchedOff: [], held: [], webhooksOff: 0, schedules: 0, recipients: 0, settings: 0, future: 0, count: 0 };
+	const key = currentMfaKey();
+	const future = sqlite.prepare(OUTBOUND_READS.futureHere).get({ asOf: now }) !== undefined;
+	// The items the pass may act on, in one read (card 3004's code review, F11): those with a row of this server's own,
+	// and either a row of any origin more closed than its kind's most open, or (a webhook, with a key loaded, whose
+	// address is compared) any. Every item the pass acts on is among them: an action needs a row of this server's own
+	// (`outboundRecordedHere`) and a ceiling above the most open, or a webhook's digest under this key.
+	const candidates = new Set<string>();
+	for (const row of sqlite.prepare(OUTBOUND_READS.candidates).all() as { kind: string; id: number; place: string; closing: number }[]) {
+		if (row.closing === 1 || (row.kind === 'webhook' && key !== null)) candidates.add(`${row.kind} ${row.id} ${row.place}`);
+	}
+	/** Whether `kind`'s item `id` (or its place) may be acted on: else no ceiling is read for it. */
+	const mayAct = (kind: OutboundItem['kind'], id: number, place = '') => candidates.has(`${kind} ${id} ${place}`);
+	/** The ceiling of `item`, whose rank now is `live`: none where no row of this server's names it; rows after now set aside where they would open it. */
+	const ceilingOf = (item: OutboundItem, live: number): OutboundCeiling | null => {
+		if (!outboundRecordedHere(sqlite, item)) return null;
+		const past = outboundCeiling(sqlite, item, { asOf: now });
+		if (future && past !== null) {
+			const all = outboundCeiling(sqlite, item);
+			if (all !== null && past.rank > all.rank && live >= all.rank && live < past.rank) done.future++;
+		}
+		return past;
+	};
+	registerStampFunctions(sqlite);
+
+	// The webhooks, each by a statement of its own, by id (card 2702's writers).
+	const hooks = sqlite
+		.prepare('SELECT id, board_id AS boardId, url, receiver, active, held_because AS heldBecause, created_at AS createdAt FROM webhooks ORDER BY id')
+		.all() as { id: number; boardId: number; url: unknown; receiver: string; active: number; heldBecause: string | null; createdAt: unknown }[];
+	const hold = sqlite.prepare(
+		'UPDATE webhooks SET active = 0, held_because = ?, held_at = ? WHERE id = ? AND held_because IS NULL ' +
+			'RETURNING id, board_id AS boardId, receiver, set_by AS setBy, set_by_key AS setByKey, set_with_key AS setWithKey'
+	);
+	const discard = sqlite.prepare("UPDATE webhooks SET active = 0, secret = '' WHERE id = ?");
+	const switchOff = sqlite.prepare('UPDATE webhooks SET active = 0 WHERE id = ? AND active <> 0');
+	const forgetReveals = sqlite.prepare('DELETE FROM webhook_reveals WHERE webhook_id = ?');
+	for (const hook of hooks) {
+		if (hook.heldBecause !== null || !mayAct('webhook', hook.id)) continue;
+		const live = hook.active !== 0 ? 0 : 1;
+		const ceiling = ceilingOf({ kind: 'webhook', id: hook.id, created: toStamp(hook.createdAt), place: '' }, live);
+		if (ceiling === null) continue;
+		// The same verdict as a restore's (F10), its address compared only under this server's key: the pass has no copy
+		// from before, and never fails closed (plan 3.10).
+		const has = typeof hook.url === 'string' && hook.url !== '';
+		const repointed = webhookRepointed({
+			address: {
+				has,
+				opened:
+					key !== null && has && keyedUnder(ceiling.address, key.id)
+						? addressToBind({ id: hook.id, boardId: hook.boardId, url: hook.url as string, receiver: hook.receiver }, [key])
+						: null
+			},
+			key,
+			ceilingAddress: ceiling.address,
+			here: null,
+			failClosed: false
+		});
+		const verdict = webhookVerdict({ ceiling, repointed, guess: false, here: null });
+		if (verdict.held !== null) {
+			const because = verdict.held.because;
+			if (verdict.held.discard) {
+				discard.run(hook.id);
+				forgetReveals.run(hook.id);
+			}
+			const row = hold.get(because, now, hook.id) as
+				| { id: number; boardId: number; receiver: string; setBy: number | null; setByKey: number | null; setWithKey: number | null }
+				| undefined;
+			if (row !== undefined) {
+				const told: SwitchedOff = { ...row, setWithKey: row.setWithKey === null ? null : row.setWithKey !== 0, hold: because as SwitchedOff['hold'] };
+				(live === 0 ? done.switchedOff : done.held).push(told);
+			}
+			continue;
+		}
+		if (verdict.off && live === 0) done.webhooksOff += switchOff.run(hook.id).changes;
+	}
+
+	// The schedules and the addresses on them.
+	const schedules = sqlite.prepare('SELECT id, enabled, recipients, created_at AS createdAt FROM report_schedules ORDER BY id').all() as {
+		id: number;
+		enabled: number;
+		recipients: unknown;
+		createdAt: unknown;
+	}[];
+	const pause = sqlite.prepare('UPDATE report_schedules SET enabled = 0, updated_at = ? WHERE id = ? AND enabled <> 0');
+	const rewrite = sqlite.prepare('UPDATE report_schedules SET recipients = ?, updated_at = ? WHERE id = ?');
+	for (const schedule of schedules) {
+		const created = toStamp(schedule.createdAt);
+		if (schedule.enabled !== 0 && mayAct('schedule', schedule.id)) {
+			const ceiling = ceilingOf({ kind: 'schedule', id: schedule.id, created, place: '' }, 0);
+			if (ceiling !== null && ceiling.rank > 0) done.schedules += pause.run(now, schedule.id).changes;
+		}
+		// An address is named by its keyed digest: none is taken off where no MFA key is loaded (`recipientsLeft`, F10).
+		if (key === null || typeof schedule.recipients !== 'string' || !mayAct('recipient', schedule.id)) continue;
+		const addresses = reportRecipients(schedule.recipients).addresses;
+		const left = recipientsLeft(addresses, {
+			key,
+			here: null,
+			removed: (place) => ceilingOf({ kind: 'recipient', id: schedule.id, created, place }, 0)?.state === 'removed'
+		});
+		if (left.length < addresses.length) {
+			rewrite.run(left.join(', '), now, schedule.id);
+			done.recipients += addresses.length - left.length;
+		}
+	}
+
+	// The destinations, the mail settings and the App URL, at the places a sender reads them.
+	const places = settingPlacesIn(sqlite);
+	const heldThere = sqlite.prepare('SELECT 1 FROM setting_holds WHERE setting = ? AND place = ? LIMIT 1');
+	const holdSetting = sqlite.prepare(
+		'INSERT OR IGNORE INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) VALUES (?, ?, ?, ?, NULL, NULL)'
+	);
+	const one = (kind: 'destination' | 'mail' | 'app_url', setting: string, place: string) => {
+		if (!mayAct(kind, 0, place)) return;
+		const live = heldThere.get(setting, place) !== undefined ? outboundRank(kind, 'held') : 0;
+		const ceiling = ceilingOf({ kind, id: 0, created: '', place }, live);
+		if (ceiling === null || ceiling.rank <= live) return;
+		const because = ceiling.state === OUTBOUND_STATES[kind][2] ? HELD_REMOVED_HERE : SETTER_ACCESS_ENDED;
+		done.settings += holdSetting.run(setting, place, because, now).changes;
+	};
+	for (const destination of places.destinations) one('destination', DESTINATION_SETTING + destination.name, destination.place);
+	if (places.mail !== null) one('mail', MAIL_SETTING, places.mail);
+	if (places.appUrl !== null) one('app_url', APP_URL_SETTING, places.appUrl);
+
+	done.count = done.switchedOff.length + done.held.length + done.webhooksOff + done.schedules + done.recipients + done.settings;
+	return done;
+}
+
+/**
+ * The seed of the record of where this server sends (card 3004, plan 3.3, R7), at the start and every sweep, in a
+ * transaction of its own: once per database, where the record is there and not seeded (`seedOutbound`), with one INFO
+ * line counting what it recorded and naming nothing. A failure (no MFA key loaded, whose subkey names the addresses, or
+ * a write refused) rolls back the seed alone, with its own WARN, and the sweep's answer is null: the next sweep tries
+ * again. Returns the rows it seeded (0 where it had nothing to do), or null where it could not. It never throws.
+ */
+function seedOutboundAtStartPass(): number | null {
+	let done: { seeded: boolean; rows: number };
+	try {
+		done = inTransaction(() => seedOutbound(sqlite));
+	} catch (err) {
+		try {
+			log.warn(
+				`The record of where this server sends could not be started: ${(err as Error)?.message ?? err}. The next sweep, within five minutes, tries again.`
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+	if (done.seeded) {
+		try {
+			log.info(
+				`The record of where this server sends was started (once, card 3004): ${done.rows} webhook(s), report schedule(s), schedule address(es), ` +
+					'backup destination(s), mail setting(s) and App URL(s) recorded as they are now.',
+				{ rows: done.rows }
+			);
+		} catch {
+			// The seed is committed; only its line was lost.
+		}
+	}
+	return done.rows;
 }
 
 /** What the start's access pass did (card 3002): items lowered, and items whose row of this server's dated after now it set aside. */

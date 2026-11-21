@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.149
+version: 1.150
 status: As-Built
 date: 2026-11-21
 tags:
+  - card-3004
+  - card-3031
   - card-3033
   - card-3002
   - card-3020
@@ -61,7 +63,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "The restore's outbound steps (seedOutbound, carryOutboundChanges, applyOutboundSchedules, applyOutboundSettings, applyOutboundWebhooks, holdResetSettersIn) and the sweep's outbound seed and pass (card 3004). The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -297,8 +299,15 @@ live decision place, place's account and decider, that has a recorded row and is
 Product Owner row means none"), a row of this server's dated after now never raising a ceiling; each
 change with the writers' own effects (`switchOffLostWebhooks` and, for an owner lowered,
 `holdNoLongerReadable` of that board), told as the sweep is (`schedulerSetting`); one `WARN` under
-AUTH of counts and another of the rows dated after now, no name. So the order is the account pass, the
-password pass, the access pass, the key pass, each rolled back alone on failure),
+AUTH of counts and another of the rows dated after now, no name. Since card 3004 the access pass is followed,
+before the key pass, by the record of where the server sends: its seed, once per database and only with an MFA
+key loaded (`seedOutboundAtStartPass`, one INFO line of counts), and then the outbound pass, each in a transaction
+of its own (`holdOutboundAtStartPass`): every live webhook, schedule, address on a schedule, destination, mail
+setting and App URL with a row of this server's own whose latest state closes more than it is now is closed to it,
+never a webhook already held, never by a seed's row alone, never the guess, a webhook's address compared only under
+the current key; the webhooks told as the sweep is, the rest in one `WARN` under BACKUP of counts. So the order is
+the account pass, the password pass, the access pass, the outbound seed, the outbound pass, the key pass, each rolled
+back alone on failure),
 `startEndedKeyRevealSweep()` (the same every five minutes, whatever `SCHEDULERS` says; a second
 call starts no second timer) and `startSchedulers()`, in that order for the last six.
 
@@ -315,7 +324,9 @@ flowchart LR
 flowchart LR
     Acc["endRecordedAccountsPresent<br/>(card 2996)"] --> Pw["endReplacedPasswordsAtStart<br/>(card 2997)"]
     Pw --> Access["capAccessAtStart (card 3002)<br/>recorded items above their row lowered"]
-    Access --> Keys["endRecordedKeysAtStart<br/>(card 2995)"]
+    Access --> OSeed["seedOutboundAtStartPass (card 3004)<br/>once, with an MFA key"]
+    OSeed --> Out["holdOutboundAtStartPass (card 3004)<br/>recorded items above their row closed"]
+    Out --> Keys["endRecordedKeysAtStart<br/>(card 2995)"]
     Keys --> Seed["the reveals' seed and sweep<br/>(card 2947)"]
 ```
 
@@ -3323,6 +3334,60 @@ sequenceDiagram
     end
     R->>L: raiseUserCounterOverNamed
     R->>L: readable pass, fill, sweep, COMMIT
+```
+
+### The restore keeps where the server sends as recorded (card 3004)
+
+Card 3004 adds `outbound_changes` (migration 0081, its own table; `outbound-changes.ts`) and these steps
+to `restoreInOneSnapshot`, in its one transaction (★ new):
+
+1. ★ Before the clear, every restore: `settingPlacesIn` (the places of the mail, the App URL and each
+   destination), `outboundSchedulesHere` (each schedule's id, `created_at`, state and addresses),
+   `outboundWebhooksHere` (each webhook's id, `created_at`, state, hold and opened address) and
+   `settingSettersHere` (this server's setter rows of accounts); then, beside card 3002's `accessHeldHere`,
+   `seedOutbound(live)` where the table is there, the marker missing and an MFA key loaded (inside the
+   restore's transaction, so a failure leaves the table empty).
+2. ★ `rowsToRestore`'s `settings` branch: an `smtp_*`, `backup_config` or `app_url` value that is a number
+   written as its text, one that is a BLOB or NULL left out, counted in one `errors` line naming the keys.
+3. Clear (`outbound_changes` kept, as `restorableTables` leaves it out), copy, every step to card 3002's
+   block, which keeps its gate.
+4. ★ Its own block, `if (hasOutboundRecord(live))`: `carryOutboundChanges` (sealed: the bounded union
+   through `carryRecord`, shared with card 3002's carry; unsealed: counted, none taken), then
+   `applyOutboundSchedules` (schedules paused, addresses taken off), before `applyPasswordRulings` and card
+   3012's pause, so neither counts what it paused.
+5. ★ `resetOne` holds the reset account's settings by `HOLD_SETTINGS_SET_BY_SQL`, from the restored setter
+   rows and this server's own, and notes the account for step 8.
+6. ★ `carryHolds` finds a webhook held here by id and creation time alone (card 2752's CS5 widened).
+7. ★ After card 3009's step and before the fill: `applyOutboundSettings`, each destination, the mail and
+   the App URL held in `setting_holds` as the record says (mail and destinations not on a working copy;
+   the App URL also on a sealed working copy).
+8. ★ After the fill and `carryRevealsHere`, before the key leave-out, **ungated**: `applyOutboundWebhooks`
+   (deleted here, not in this server's record, re-pointed here, held, off), then `holdResetSettersIn`.
+9. ★ The sweep's `holdUnheldOfGoneSetters` holds step 8's switch-offs too, as any webhook already off
+   (its code review, F3): one whose setter is disabled or not recorded, or every one where the restored
+   settings lack `webhooks_already_off_held`, is held setter access ended, so that switching it on needs
+   a new secret; it is told in that hold's list and not counted in `webhooksOff`.
+10. ★ After the sweep and the reveal and readable holds, `outboundKept.webhooksOff` counts only those of
+    step 8's ids still unheld: each webhook is in one place in the answer.
+
+Counts go to `outboundKept` and `recordsNotTaken.outboundChanges`, in the result and in the
+committed-then-failed `done`, then to the import's words.
+
+```mermaid
+sequenceDiagram
+    participant R as restoreInOneSnapshot
+    participant L as Live database (one transaction)
+    participant B as Backup snapshot
+    R->>L: places, schedules, webhooks and setters here, then seedOutbound where unseeded
+    R->>L: clear (outbound_changes kept)
+    R->>B: rowsToRestore: outbound settings as text or left out
+    R->>L: copy, then card 3002's block
+    R->>L: under hasOutboundRecord: carryOutboundChanges, applyOutboundSchedules
+    R->>L: passwords: resetOne holds the account's settings
+    R->>L: carryHolds by identity, card 3009's step and applyOutboundSettings
+    R->>L: fill and carryRevealsHere, then applyOutboundWebhooks and holdResetSettersIn
+    R->>L: key leave-out, sweep (except), reveals, readable
+    R->>L: outboundKept counted, then COMMIT
 ```
 
 ### Log lines written during a transaction

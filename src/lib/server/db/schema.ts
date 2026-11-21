@@ -1142,6 +1142,37 @@ export const accessChanges = sqliteTable('access_changes', {
 	index('access_changes_changed').on(table.changedAt)
 ]);
 
+// Every change of where this server sends (card 3004, migration 0081): one row per change of a webhook, a report
+// schedule or one of its addresses, a backup destination, the mail server or the App URL, by identity. An item with an
+// id is named by `itemId` and `itemCreated` (its `created_at` in the stored form, '' where that does not read); a place
+// by `place`, a digest of where it sends (SHA-256 for a destination, the mail and the App URL; keyed for a recipient's
+// address); a webhook's address by `address`, a keyed digest. `state` is the item's state after the change, `origin`
+// whether this server wrote it (`here`), its once-only seed did (`seed`, marked by one `seeded` row) or a restore
+// brought it (`backup`). `seq` is the order of writing, and this server's rows rank by it alone. Written in the
+// transaction of the change with a plain INSERT; never deleted, changed or replaced. No foreign key: a row outlives
+// what it names. A restore and Reset Everything keep it. The creation column is not an `*_at` column, so the timestamp
+// normaliser never rewrites it.
+export const outboundChanges = sqliteTable('outbound_changes', {
+	seq: integer('seq').primaryKey(),
+	kind: text('kind').notNull(),
+	itemId: integer('item_id').notNull().default(0),
+	itemCreated: text('item_created').notNull().default(''),
+	place: text('place').notNull().default(''),
+	address: text('address').notNull().default(''),
+	state: text('state').notNull(),
+	changedAt: text('changed_at').notNull(),
+	// The moment as the row's writer stated it, in the stored form, or a digest: with `state` and `address`, the union's key.
+	statedChanged: text('stated_changed').notNull().default(''),
+	origin: text('origin').notNull().default('here')
+}, (table) => [
+	// The latest row of an item by origin, in seq order (the rowid ends every index entry).
+	index('outbound_changes_item').on(table.kind, table.itemId, table.itemCreated, table.place, table.origin),
+	// The restore's union.
+	index('outbound_changes_union').on(table.kind, table.itemId, table.itemCreated, table.place, table.statedChanged, table.state, table.address),
+	// The start and five-minute pass's one read of whether any row is dated after now.
+	index('outbound_changes_changed').on(table.changedAt)
+]);
+
 // ─── System Logs (structured application logging) ───────────────────────────
 
 export const systemLogs = sqliteTable('system_logs', {

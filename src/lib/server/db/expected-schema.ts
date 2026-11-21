@@ -631,6 +631,23 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	"CREATE INDEX `idx_milestones_board_id` ON `milestones` (`board_id`);",
 	"CREATE INDEX `idx_milestones_created_by` ON `milestones` (`created_by`);",
 	[
+		"CREATE TABLE `outbound_changes` (",
+		"\t`seq` integer PRIMARY KEY NOT NULL,",
+		"\t`kind` text NOT NULL,",
+		"\t`item_id` integer DEFAULT 0 NOT NULL,",
+		"\t`item_created` text DEFAULT '' NOT NULL,",
+		"\t`place` text DEFAULT '' NOT NULL,",
+		"\t`address` text DEFAULT '' NOT NULL,",
+		"\t`state` text NOT NULL,",
+		"\t`changed_at` text NOT NULL,",
+		"\t`stated_changed` text DEFAULT '' NOT NULL,",
+		"\t`origin` text DEFAULT 'here' NOT NULL",
+		");"
+	].join('\n'),
+	"CREATE INDEX `outbound_changes_item` ON `outbound_changes` (`kind`,`item_id`,`item_created`,`place`,`origin`);",
+	"CREATE INDEX `outbound_changes_union` ON `outbound_changes` (`kind`,`item_id`,`item_created`,`place`,`stated_changed`,`state`,`address`);",
+	"CREATE INDEX `outbound_changes_changed` ON `outbound_changes` (`changed_at`);",
+	[
 		"CREATE TABLE `people` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
 		"\t`full_name` text NOT NULL,",

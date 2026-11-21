@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.104
+version: 1.105
 status: As-Built
 date: 2026-11-21
 tags:
+  - card-3004
+  - card-3031
   - card-3033
   - card-3002
   - card-3020
@@ -78,7 +80,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "access_changes' four decision kinds (decision, decision_decider, decision_participant, decision_account) and its index on changed_at, migration 0080 (card 3033). access_changes, the append-only record of every change of board, team and person access by identity, its kinds, words, indexes, writers, readers and once-only seed (migration 0079, card 3002); Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
+description: "outbound_changes, the append-only record of every change of where this server sends: its seven kinds, keyed digests, three indexes, writers and readers, migration 0081 (card 3004). access_changes' four decision kinds (decision, decision_decider, decision_participant, decision_account) and its index on changed_at, migration 0080 (card 3033). access_changes, the append-only record of every change of board, team and person access by identity, its kinds, words, indexes, writers, readers and once-only seed (migration 0079, card 3002); Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -1991,6 +1993,89 @@ pass `capAccessAtStart`, and the share and team writers. `restorableTables` leav
 Reset's `KEPT` names it. A backup carries it like any other table: it holds ids, creation times and
 access words, never a name. A backup made before 0079 has none, and the restore applies this server's
 record alone.
+
+### Every change of where this server sends (`outbound_changes`, migration 0081)
+
+Card 3004. An append-only record of every change of where this server sends: its webhooks, its report
+schedules and the addresses on them, its backup destinations, its mail server and its App URL, each by
+identity, never a name or an address in plain. A restore reads it so that nothing comes back more open
+than this server holds it or recorded it (see [Authentication and
+Security](authentication-security.md#where-the-server-sends-through-a-restore-card-3004)). Migration
+0081 is DDL only (a table and three indexes); the server seeds it once (`seedOutbound`), as a keyed
+digest needs the MFA key.
+
+```mermaid
+erDiagram
+    webhooks ||--o{ outbound_changes : "item (id, created) and keyed address digest; no foreign key"
+    report_schedules ||--o{ outbound_changes : "item (id, created) for schedule and recipient"
+    settings ||--o{ outbound_changes : "place digest: destination (backup_config), mail (smtp_*), app_url"
+    setting_holds }o--o{ outbound_changes : "same place digests; a restore writes a hold from a closing row"
+    outbound_changes {
+        integer seq PK "order of writing"
+        text kind "webhook, schedule, recipient, destination, mail, app_url, seeded"
+        integer item_id "webhook or schedule id; 0 for a place"
+        text item_created "created_at stored form; '' where it does not read"
+        text place "place digest, or a recipient's keyed digest"
+        text address "a webhook's keyed address digest"
+        text state "the state after the change"
+        text changed_at "when, stored form; a backup's clamped"
+        text stated_changed "the moment as stated, or a digest: the union's key"
+        text origin "here, seed or backup"
+    }
+```
+
+| `kind` | `item_id`, `item_created` | `place` | `address` | `state`, open to closed |
+|---|---|---|---|---|
+| `webhook` | webhook id, its `created_at` or `''` | `''` | `k<keyid>:<64 hex>`, HMAC of the opened address; `''` for none | `on` < `off` < `held` < `deleted` |
+| `schedule` | schedule id, its `created_at` or `''` | `''` | `''` | `on` < `off` < `deleted` |
+| `recipient` | its schedule's id and `created_at` | `k<keyid>:<64 hex>`, HMAC of the address as `reportRecipients` reads it | `''` | `added` < `removed` |
+| `destination` | 0, `''` | `placeKey(destinationPlace(entry))`, 64 hex | `''` | `set` < `held` < `removed` |
+| `mail` | 0, `''` | `mailPlaceOf(connection)` | `''` | `set` < `held` < `removed` |
+| `app_url` | 0, `''` | `appUrlPlaceOf(url)` | `''` | `set` < `held` < `removed` |
+| `seeded` | 0, `''` | `''` | `''` | `yes`: the seed's marker, one row, `origin` `here` |
+
+| Column | Type | Meaning |
+|---|---|---|
+| `seq` | integer, primary key (the rowid) | The order of writing: this server's rows rank by it alone |
+| `kind` | text | One of the seven kinds above |
+| `item_id` | integer, default 0 | The webhook's or schedule's id; 0 for a place |
+| `item_created` | text, default `''`, not an `*_at` column | The item's `created_at` in the stored form, `''` where it does not read; such a row matches by id alone and only closes |
+| `place` | text, default `''` | A place digest, or a recipient's keyed digest |
+| `address` | text, default `''` | A webhook's keyed address digest |
+| `state` | text | The state after the change, one of the kind's words |
+| `changed_at` | text, `*_at` | When, in the stored form; a backup's row clamped to no later than the restore. The seed's rows are dated at the seed's moment |
+| `stated_changed` | text, default `''`, not an `*_at` column | The moment as stated, or `digest:` and a SHA-256: with `state` and `address`, the union's key |
+| `origin` | text, default `'here'` | `here`, this server's writers; `seed`, the seed (ranked below every `here` row of its item, R7); `backup`, carried from a sealed backup |
+
+Three indexes: `outbound_changes_item (kind, item_id, item_created, place, origin)`, an item's latest row
+by origin in `seq` order with no sort; `outbound_changes_union (kind, item_id, item_created, place,
+stated_changed, state, address)`, the restore's union; and `outbound_changes_changed (changed_at)`, the
+start pass's one read of rows dated after now (the item reads write `+changed_at`, so they stay on
+their own index; tests/outbound-changes.test.ts, case (v)).
+
+**The keyed digests** are HMAC-SHA256 under `MfaKey.outboundKey`, an HKDF subkey of the MFA key
+(`'dumpfire outbound record v1'`), tagged with the key's id. A backup's row is carried only under this
+server's key id; a plain 64-hex address, or one under another key, is left out and counted.
+
+**Writers.** `seedOutbound` (once per database: the first start's sweep, or a restore before its clear
+where the marker is missing and an MFA key is loaded; every webhook and schedule whose creation time
+reads, each schedule's addresses, each destination's, the mail's and the App URL's place, `held` where
+`setting_holds` holds it, then the marker); `recordOutboundChange`, `recordOutboundState`,
+`recordScheduleWritten` and `recordPlacesMoved` from the webhook, schedule, backup and SMTP writers and
+`removeSettingsSetBy`, `removeHeldSetting` and `keepHeldSetting`; the batch statements
+`RECORD_WEBHOOKS_HELD_SQL`, `RECORD_WEBHOOKS_DELETED_SQL`, `RECORD_SCHEDULES_OFF_SQL`,
+`RECORD_SCHEDULES_DELETED_SQL` and `RECORD_SETTINGS_HELD_SQL` (each one `INSERT … SELECT … FROM
+json_each(@ids)` that always runs; the first, third and fifth copied word for word into
+`scripts/mfa-reset.mjs`); and the restore's carry (`carryRecord`, shared with `access_changes`), from a
+sealed backup only, bounded by `MOST_OTHER_ROWS` in all and 100 rows an item. Nothing deletes, updates or
+replaces a row; `tests/check-at-the-write.test.ts` (hh) holds src and scripts to it, and (gg) to the
+inventory of every outbound write (`OUTBOUND_WRITES`).
+
+**Readers.** `outboundCeiling` (the rule, card 3002's `deciding` made generic), `outboundRecordedHere`
+and `outboundSeeded`, read by the restore's `applyOutboundSchedules`, `applyOutboundSettings` and
+`applyOutboundWebhooks`, and by the start and five-minute pass `holdOutboundAtStart`. `restorableTables`
+leaves the table out and Reset's `KEPT` names it. A backup made before 0081 has none, and the restore
+applies this server's record alone.
 
 ### A request's requester mail held (migration 0078)
 

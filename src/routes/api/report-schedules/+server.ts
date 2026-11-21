@@ -6,7 +6,8 @@
  */
 
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
+import { recordScheduleWritten, requireOutboundKey } from '$lib/server/outbound-changes';
 import { reportSchedules, boards, boardCategories } from '$lib/server/db/schema';
 import { count, eq, desc } from 'drizzle-orm';
 import { afterCommit } from '$lib/server/db/transaction';
@@ -124,6 +125,8 @@ export const POST: RequestHandler = async ({ locals, request, cookies, getClient
 			takeReportMail(user, addressCount, 'new schedule');
 
 			const row = db.insert(reportSchedules).values({ userId: user.id, ...values }).returning().get();
+			// Recorded `on` or `off`, and each address on it `added` (card 3004, O7), in the transaction that made it.
+			recordScheduleWritten(sqlite, null, row);
 			afterCommit(() => reportScheduleSet(row, { made: true }, address));
 			return row;
 		}));
@@ -213,6 +216,10 @@ function readNewSchedule(user: SessionUser, body: RequestBody) {
 				: `You have ${held} report schedules, and the most one account may have is ${SCHEDULES_PER_ACCOUNT}. Delete ${held - SCHEDULES_PER_ACCOUNT + 1} first.`
 		);
 	}
+
+	// An address is recorded by a keyed digest (card 3004's code review, NF-S4d): with no MFA key loaded, 503, nothing
+	// saved and nothing taken from the day's report mail.
+	if (addressCount > 0) requireOutboundKey();
 
 	return {
 		addressCount,

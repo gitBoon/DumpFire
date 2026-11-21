@@ -70,7 +70,16 @@ import type { RecordActor } from './decision-record';
 import { writingWithKey } from './write-as';
 import { createLogger } from './logger';
 // The digest and the settings' names are the holds' too (card 2922): one rule, in the leaf, setting-holds.ts.
-import { APP_URL_SETTING as APP_URL, DESTINATION_SETTING as DESTINATION, MAIL_SETTING as MAIL, SETTER_ACCESS_ENDED, mailPlaceOf, placeKey } from './setting-holds';
+import {
+	APP_URL_SETTING as APP_URL,
+	DESTINATION_SETTING as DESTINATION,
+	HOLD_SETTINGS_SET_BY_SQL,
+	MAIL_SETTING as MAIL,
+	SETTER_ACCESS_ENDED,
+	mailPlaceOf,
+	placeKey
+} from './setting-holds';
+import { recordOutboundChange, recordPlacesMoved, recordSettingsHeldBy, settingPlacesIn } from './outbound-changes';
 import { stamp } from '$lib/timestamps';
 
 const smtpLog = createLogger('SMTP');
@@ -417,6 +426,8 @@ export function removeSettingsSetBy(
 	if (rows.length === 0) return removed;
 	const now = placesNow();
 	const setRows = setIn(rows, now);
+	// Where this server sends, read before the removal, so that each place it removes is recorded (card 3004, O13).
+	const outboundBefore = settingPlacesIn(sqlite);
 	/**
 	 * A setting removed is nobody's anywhere: every setter row of it goes. A hold of it stays (card 2922, R1): a
 	 * tombstone, so that the setting saved or restored at that place again is held again.
@@ -446,6 +457,8 @@ export function removeSettingsSetBy(
 	for (const name of removed.destinations) forget(DESTINATION + name);
 
 	db.delete(settingSetters).where(eq(settingSetters.userId, setter.id)).run();
+	// Each place removed recorded `removed` (card 3004, O13): a restore of an older backup holds it for review.
+	recordPlacesMoved(sqlite, outboundBefore, settingPlacesIn(sqlite), ['mail', 'app_url', 'destination']);
 
 	const by = actor === null ? 'someone' : quoted(actor.username);
 	const because = {
@@ -529,11 +542,10 @@ export function holdSettingsSetBy(setter: Named, cause: { log: string; unnamed?:
 	const now = placesNow();
 	const set = setIn(rows, now);
 	held.inForce = { mail: set.mail, appUrl: set.appUrl, destinations: [...new Set(set.destinations.map((d) => d.name))] };
-	const at = stamp();
-	const copy = sqlite.prepare(
-		'INSERT OR IGNORE INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) VALUES (?, ?, ?, ?, ?, ?)'
-	);
-	for (const row of rows) copy.run(row.setting, row.place, SETTER_ACCESS_ENDED, at, setter.id, setter.username);
+	// The one statement that holds what an account set (card 3004, R8), shared with a restore's password reset and held
+	// word for word by scripts/mfa-reset.mjs; then each place held recorded `held` (R13, O16).
+	sqlite.prepare(HOLD_SETTINGS_SET_BY_SQL).run({ id: setter.id, hold: SETTER_ACCESS_ENDED, at: stamp(), name: setter.username });
+	recordSettingsHeldBy(sqlite, setter.id);
 	held.rows = [...new Set(rows.map((row) => row.setting))].sort();
 	for (const [line, ofIt] of heldLines(setter, held.rows, cause.log, cause.unnamed)) afterCommit(() => line.warn(ofIt.message, ofIt.meta, ofIt.filedUnder));
 	return held;
@@ -689,6 +701,8 @@ const logOf = (held: Pick<HeldForReview, 'kind'>) => (held.kind === 'destination
  * it over. One WARN once committed, filed under `actor`.
  */
 export function keepHeldSetting(held: HeldForReview, actor: Named): void {
+	// The place kept recorded `set` (card 3004, O15): wanted again here, a restore does not hold it as removed.
+	recordOutboundChange(sqlite, { kind: held.kind, place: held.holdPlace, state: 'set' });
 	// A destination's hold is by its place under any name (C12): every hold of a destination at that place goes.
 	if (held.kind === 'destination') {
 		db.delete(settingHolds).where(and(like(settingHolds.setting, `${DESTINATION}%`), eq(settingHolds.place, held.holdPlace))).run();
@@ -744,6 +758,8 @@ function endMailedCredentials(actor: Named): MailCredentialsEnded {
  */
 export function removeHeldSetting(held: HeldForReview, actor: Named): { ended: MailCredentialsEnded | null } {
 	let ended: MailCredentialsEnded | null = null;
+	// Where this server sends, read before the removal (card 3004, O14).
+	const outboundBefore = settingPlacesIn(sqlite);
 	if (held.kind === 'mail') {
 		if (mailStored()) recordMailEverConfigured();
 		sqlite.prepare("DELETE FROM settings WHERE key LIKE 'smtp\\_%' ESCAPE '\\'").run();
@@ -764,6 +780,8 @@ export function removeHeldSetting(held: HeldForReview, actor: Named): { ended: M
 	if (held.kind === 'destination') {
 		db.delete(settingSetters).where(and(like(settingSetters.setting, `${DESTINATION}%`), eq(settingSetters.place, held.holdPlace))).run();
 	}
+	// The place removed recorded `removed` (card 3004, O14).
+	recordPlacesMoved(sqlite, outboundBefore, settingPlacesIn(sqlite), [held.kind]);
 	afterCommit(() =>
 		logOf(held).warn(
 			`Removed after the superadmin's review by ${quoted(actor.username)}: ${settingWords(held)}, set by ${heldFor(held)}, held since ${held.heldAt}. ` +

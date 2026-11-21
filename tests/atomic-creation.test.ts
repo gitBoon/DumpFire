@@ -788,6 +788,10 @@ describe('PUT /api/admin/smtp', () => {
 			// The record that mail is set up on this server, once (card 2922, R9), in the same transaction.
 			'insert into settings',
 			'update settings set',
+			// Card 3004 (O12): the App URL moved, recorded in this server's record of where it sends: the old place
+			// `removed`, the new one `set`; the mail settings did not move, and record nothing.
+			'insert into outbound_changes',
+			'insert into outbound_changes',
 			'insert into setting_setters',
 			'delete from setting_setters',
 			'insert into setting_setters'

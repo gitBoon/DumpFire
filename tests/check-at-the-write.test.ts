@@ -46,6 +46,7 @@ import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db, sqlite } from '$lib/server/db';
 import { restorableTables } from '$lib/server/db/restore';
+import { OUTBOUND_READS } from '$lib/server/outbound-changes';
 import {
 	boardCategories,
 	boardMembers,
@@ -4281,7 +4282,24 @@ const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
 		writes: 1,
 		why:
 			"A restore carries this server's hold onto the same webhook restored, so that no restore switches back on one held off here (card 2752's code review, CS5): active off, held_because and held_at. " +
+			"The same webhook by its id and creation time, or by its id alone where either time names no moment, whatever board, address or setter the backup's copy names (card 3004, plan 3.6, R16 Q2). " +
 			"A row card 3012 held for a backup whose seal did not verify takes this server's reason only where both addresses open and are equal, and keeps its own otherwise (R3): held either way."
+	},
+	// Card 3004 (plan 3.4, R10): a restore closing each restored webhook to this server's state and record.
+	'src/lib/server/db/restore.ts#applyOutboundWebhooks': {
+		does: 'switches off only',
+		writes: 3,
+		why:
+			"A restore closes each restored webhook to its state here and this server's record of where it sends: one deleted here, not in the record or re-pointed held for good, active off, held_because and held_at; " +
+			"its secret discarded, active off, in a second statement; and one switched off here, or recorded off, switched off with no hold in a third (card 3004)."
+	},
+	// Card 3004 (plan 3.10, R4): the start's and five-minute pass closing each live webhook to this server's record.
+	'src/lib/server/startup-checks.ts#holdOutboundAtStart': {
+		does: 'switches off only',
+		writes: 3,
+		why:
+			"The start's and five-minute pass closes each live webhook with no hold to this server's record of where it sends, only where a row of its own names it: one recorded deleted, re-pointed or held is held for good, active off, held_because and held_at; " +
+			"one recorded deleted or re-pointed has its secret discarded, active off, in a second statement; and one recorded off is switched off with no hold in a third (card 3004)."
 	},
 	// Card 3012 (R1, R2): a restore of a backup whose seal did not verify.
 	'src/lib/server/db/restore.ts#holdUnsealedWebhooks': {
@@ -4349,6 +4367,8 @@ const WEBHOOK_WRITER_CALLERS: Record<string, readonly string[]> = {
 	// Card 2996 (R7): what every account the record of account endings ended or lowered in a restore could read, held
 	// on the restore's own connection.
 	'src/lib/server/webhooks.ts#holdNoLongerReadableIn': ['src/lib/server/db/restore.ts#restoreInOneSnapshot'],
+	// Card 3004 (comment 3): what an account the restore's password reset ended set or could read, held on its own connection.
+	'src/lib/server/webhooks.ts#holdResetSettersIn': ['src/lib/server/db/restore.ts#restoreInOneSnapshot'],
 	// Card 2935 (P4, P12): the start pass and the restore.
 	'src/lib/server/webhooks.ts#coverReadable': ['src/lib/server/startup-checks.ts#holdReadableWebhooksAtStart', 'src/lib/server/db/restore.ts#holdRestoredReadable'],
 	// Card 2947 (R3): what an API key was given, held by its revoke and by the sweep of ended keys, which the start
@@ -8768,5 +8788,412 @@ describe('a body that cannot be read is 400, to a caller who would be refused', 
 		// The outsider cannot open the label's board: as a label that is not there (card 2719).
 		expect([res.status, res.body]).toEqual([404, { message: 'Label not found' }]);
 		expect(db.select({ name: labels.name }).from(labels).where(eq(labels.id, s.label.id)).get()).toEqual({ name: 'A label' });
+	});
+});
+
+// ─── Card 3004: every write of where the server sends, and the record of it ─────────────
+
+/**
+ * Card 3004 (section 5, R4, test gg): every write under src and scripts of where this server sends, by `file#function`
+ * (`writerNameOf`), with how many such statements and why. Each is a writer that records the change in this server's
+ * record of where it sends (O1 to O19), or one of section 5's "records nothing" table. Named explicitly (R4): the
+ * cascades a delete of `boards` (its webhooks) and of `users` (its report schedules) writes; `setSetting` with a key
+ * that is not written out, read as a write of any setting; and the field-by-field webhook PUT, whose `.set(updates)` is
+ * read as a write of `active` and `url`.
+ */
+const OUTBOUND_WRITES: Record<string, { count: number; why: string }> = {
+	// The writers that record (O1 to O18).
+	'src/routes/api/v1/boards/[boardId]/webhooks/+server.ts#POST': {
+		count: 2,
+		why: 'O1: the webhook made with no address, then given it sealed; recorded `on` with the keyed digest of its address after them.'
+	},
+	'src/routes/api/v1/webhooks/[webhookId]/+server.ts#PUT': {
+		count: 1,
+		why: 'O2, O3: `.set(updates)`, field by field (R4), read as a write of `active` and `url`; recorded on, off or held with the address it is left with where either changed, or the record says otherwise (3002-R12).'
+	},
+	'src/routes/api/v1/webhooks/[webhookId]/+server.ts#DELETE': { count: 1, why: 'O4: the webhook deleted; recorded `deleted` just before, while it can be read.' },
+	'src/lib/server/webhooks.ts#holdInScope': {
+		count: 1,
+		why: 'O5 through holdWebhooksOfSetter, which records each webhook it held `held`; its other callers (the reset branch, the passes over readable and revealed secrets) are holds derived from access, keys and accounts, re-derived at every restore and start: they record nothing.'
+	},
+	'src/lib/server/deletes.ts#removeUnder': {
+		count: 3,
+		why: "O6: a board's schedules deleted (the statement's leading comment names it too, so it counts twice) and the sub-boards deleted, their webhooks with them by the key's cascade; each webhook and board schedule recorded `deleted` before."
+	},
+	'src/lib/server/deletes.ts#deleteBoard': { count: 1, why: "O6: the board deleted, its webhooks with it by the key's cascade (R4); recorded `deleted` by removeUnder before." },
+	'src/routes/api/report-schedules/+server.ts#POST': { count: 1, why: 'O7: the schedule made; recorded `on` or `off`, and each address on it `added`, after it.' },
+	'src/routes/api/report-schedules/[id]/+server.ts#writeChange': {
+		count: 1,
+		why: 'O8: `.set(updates)`, the fields that change; recorded on or off (3002-R12), and each address added or taken off, after it.'
+	},
+	'src/routes/api/report-schedules/[id]/+server.ts#DELETE': { count: 1, why: 'O9: the schedule deleted; recorded `deleted` just before, while it can be read.' },
+	'src/lib/server/auth.ts#endAccountAccess': { count: 1, why: 'O10: the schedules of the account paused; each recorded `off` after, in one statement that always runs.' },
+	'src/lib/server/backup.ts#saveBackupConfig': { count: 1, why: "O11: setSetting('backup_config'); each destination's place it removes, moves or adds recorded before and after." },
+	'src/lib/server/backup.ts#setSetting': { count: 2, why: 'The definition: a setting by a key it is given (R4); its one caller, saveBackupConfig, records (O11).' },
+	'src/lib/server/email.ts#saveSmtpConfig': {
+		count: 7,
+		why: "O12: every smtp_ setting by setSetting; the mail settings' place it moves recorded by its one caller, PUT /api/admin/smtp, before and after."
+	},
+	'src/lib/server/email.ts#setAppUrl': { count: 1, why: "O12: setSetting('app_url'); the App URL's place it moves recorded by its one caller, PUT /api/admin/smtp." },
+	'src/lib/server/email.ts#setSetting': { count: 2, why: 'The definition: a setting by a key it is given (R4); its callers are listed with theirs.' },
+	'src/lib/server/setting-setters.ts#removeSettingsSetBy': { count: 3, why: 'O13: the mail settings, the App URL and destinations an account set removed; each place removed recorded `removed`.' },
+	'src/lib/server/setting-setters.ts#removeHeldSetting': { count: 3, why: 'O14: a setting held for review removed; its place recorded `removed`.' },
+	'src/lib/server/deletes.ts#deleteUser': {
+		count: 1,
+		why: "O18 (R4): the account deleted, its report schedules with it by the key's cascade; each recorded `deleted` before, in one statement that always runs."
+	},
+	'scripts/mfa-reset.mjs#holdReadable': { count: 1, why: 'O17: the webhooks whose secret the account can read held; each recorded `held` by RECORD_WEBHOOKS_HELD_SQL, word for word, where the record is there.' },
+	'scripts/mfa-reset.mjs#reset': {
+		count: 2,
+		why: 'O17: the webhooks held and the schedules paused, and the settings held; recorded `held`, `off` and `held` by the three statements, word for word, where the record is there (R8).'
+	},
+
+	// Records nothing (section 5).
+	'src/lib/server/db/restore.ts#carryHolds': { count: 1, why: "Records nothing: the restore's carry of this server's holds onto the same webhooks; it applies the record." },
+	'src/lib/server/db/restore.ts#holdUnsealedWebhooks': { count: 2, why: "Records nothing: the restore's hold of a backup whose seal did not verify (card 3012); it applies the record." },
+	'src/lib/server/db/restore.ts#pauseUnsealedSchedules': { count: 1, why: "Records nothing: the restore's pause of a backup whose seal did not verify (card 3012)." },
+	'src/lib/server/db/restore.ts#keepNotifyEmailHere': { count: 1, why: "Records nothing: `notifyEmail` alone of backup_config, not a destination (N3, its own card)." },
+	'src/lib/server/db/restore.ts#restoredAccessEnder': { count: 1, why: "Records nothing: the restore's ending of restored access, a step of the restore; it applies the record." },
+	'src/lib/server/db/restore.ts#applyPasswordRulings': { count: 1, why: "Records nothing: the restore's password rulings, a step of the restore." },
+	'src/lib/server/db/restore.ts#applyOutboundSchedules': { count: 2, why: "Records nothing: the restore's application of the record to the schedules (plan 3.4)." },
+	'src/lib/server/db/restore.ts#applyOutboundWebhooks': { count: 3, why: "Records nothing: the restore's application of the record to the webhooks (plan 3.4)." },
+	'src/lib/server/db/restore.ts#switchOffOutside': { count: 5, why: 'Records nothing: a working copy switches every webhook, schedule and setting that reaches outside off; the restore applies the record.' },
+	'src/lib/server/db/restore.ts#restoreInOneSnapshot': { count: 1, why: "Records nothing: whether mail was ever set up here, carried; it names no place." },
+	'src/lib/server/backup-secrets.ts#clearSecrets': { count: 5, why: "Records nothing: a backup's copy, written as it is made; this server's own rows are not changed." },
+	'src/lib/server/backup-secrets.ts#fillSecretGaps': { count: 5, why: "Records nothing: the restore's fill of the secrets a backup left out, a step of the restore." },
+	'src/lib/server/backup-secrets.ts#fillAddressGaps': { count: 1, why: "Records nothing: the restore's fill of the addresses a backup left out, a step of the restore." },
+	'src/lib/server/setting-setters.ts#removeFailureAddress': { count: 1, why: 'Records nothing: `notifyEmail` alone of backup_config, not a destination (N3, its own card).' },
+	'src/lib/server/stored-secrets.ts#sealPlainSecrets': {
+		count: 4,
+		why: "Records nothing: the start's sealing of the mail password, each destination's secrets (:945) and settings by key (R4: setSetting with a key not written out) and webhooks, at the same places, sealed."
+	},
+	'src/lib/server/stored-secrets.ts#resealStoredSecrets': { count: 1, why: 'Records nothing: the same addresses sealed again under another key.' },
+	'src/lib/server/stored-secrets.ts#forgetStoredSecrets': { count: 2, why: 'Records nothing: a webhook whose secret or address does not open switched off (N6, left).' },
+	'src/lib/server/stored-secrets.ts#forgetSecretsBesideNoAddress': { count: 1, why: 'Records nothing: a secret beside no address forgotten, its webhook switched off; it sends nowhere.' },
+	'src/lib/server/webhooks.ts#switchOffHeld': { count: 1, why: 'Records nothing: a hold derived from access, re-derived at every restore and start; a present hold is carried by identity.' },
+	'src/lib/server/webhooks.ts#holdUnheldOfGoneSetters': { count: 1, why: 'Records nothing: a hold derived from accounts, re-derived at every restore and start.' },
+	'src/lib/server/reports.ts#switchOffUndatable': { count: 1, why: "Records nothing: the scheduler's switch-off of a schedule it cannot date, re-derived before any send." },
+	'src/lib/server/reports.ts#switchOffOverCap': { count: 1, why: "Records nothing: the scheduler's switch-off of a schedule over the cap, re-derived before any send." },
+	'src/lib/server/reports.ts#pauseForDisabledOwner': { count: 1, why: "Records nothing: the scheduler's pause for a disabled owner, re-derived before any send." },
+	'src/lib/server/startup-checks.ts#holdOutboundAtStart': { count: 5, why: "Records nothing: the start's and five-minute pass closes to what the record already says (plan 3.10)." },
+	'src/lib/server/email.ts#recordMailEverConfigured': { count: 1, why: 'Records nothing: setSetting with a key not written out (R4), whether mail was ever set up; it names no place.' },
+	'src/lib/server/known-browsers.ts#knownBrowserSecret': { count: 2, why: "Records nothing: the known-browser key's own setting, by a key it is given; never where the server sends." }
+};
+
+/**
+ * Card 3004 (test gg): the functions that may call the record's writers, with how many calls: O1 to O18, and the
+ * record's own helpers. The seed (O19) writes its own statements; the start pass and the restore's steps call none.
+ */
+const RECORD_OUTBOUND_CALLERS: Record<string, number> = {
+	'src/routes/api/v1/boards/[boardId]/webhooks/+server.ts#POST': 1,
+	'src/routes/api/v1/webhooks/[webhookId]/+server.ts#PUT': 1,
+	'src/routes/api/v1/webhooks/[webhookId]/+server.ts#DELETE': 1,
+	'src/lib/server/webhooks.ts#holdWebhooksOfSetter': 1,
+	'src/lib/server/deletes.ts#removeUnder': 2,
+	'src/lib/server/deletes.ts#deleteUser': 1,
+	'src/routes/api/report-schedules/+server.ts#POST': 1,
+	'src/routes/api/report-schedules/[id]/+server.ts#writeChange': 1,
+	'src/routes/api/report-schedules/[id]/+server.ts#DELETE': 1,
+	'src/lib/server/auth.ts#endAccountAccess': 1,
+	'src/lib/server/backup.ts#saveBackupConfig': 1,
+	'src/routes/api/admin/smtp/+server.ts#PUT': 1,
+	'src/lib/server/setting-setters.ts#removeSettingsSetBy': 1,
+	'src/lib/server/setting-setters.ts#removeHeldSetting': 1,
+	'src/lib/server/setting-setters.ts#keepHeldSetting': 1,
+	'src/lib/server/setting-setters.ts#holdSettingsSetBy': 1,
+	// The record's own helpers, each in terms of recordOutboundChange.
+	'src/lib/server/outbound-changes.ts#recordOutboundState': 1,
+	'src/lib/server/outbound-changes.ts#recordPlacesMoved': 2,
+	'src/lib/server/outbound-changes.ts#recordScheduleWritten': 3
+};
+
+/** The record's writers, by name: each call of one is pinned on RECORD_OUTBOUND_CALLERS. */
+const OUTBOUND_RECORDERS = ['recordOutboundChange', 'recordOutboundState', 'recordWebhooksAs', 'recordSchedulesAs', 'recordSettingsHeldBy', 'recordPlacesMoved', 'recordScheduleWritten'];
+
+/**
+ * Card 3004 (test hh, R16 Q5): the only places that may INSERT INTO the record, a plain insert: outbound-changes.ts's
+ * statements (the writers', the batch writers' and the seed's, constants at its top level), `CARRY_OUTBOUND_CHANGE_SQL`,
+ * the union `carryRecord` runs for `carryOutboundChanges`, and the host's script's copies (O17, R8).
+ */
+const OUTBOUND_RECORD_INSERTERS = ['scripts/mfa-reset.mjs#(top level)', 'src/lib/server/db/restore.ts#(top level)', 'src/lib/server/outbound-changes.ts#(top level)'];
+
+/** The settings that say where the server sends, as SQL names them: the backup settings, the mail settings and the App URL. */
+const OUTBOUND_SETTING_KEY = /\b(?:backup_config|smtp_\w*|smtp\\*_|app_url)\b/;
+
+/** A delete, an insert or a replace of a webhook or a report schedule; a delete or a replace of a board or an account (the cascades). */
+const OUTBOUND_ROW_SQL_WRITE = new RegExp(
+	String.raw`\b(DELETE${SQL_GAP}+FROM|INSERT(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+INTO|REPLACE${SQL_GAP}+INTO)${SQL_GAP}+(${sqlName('(?:webhooks|report_schedules)')})` +
+		String.raw`|\b(DELETE${SQL_GAP}+FROM|REPLACE${SQL_GAP}+INTO|INSERT${SQL_GAP}+OR${SQL_GAP}+REPLACE${SQL_GAP}+INTO)${SQL_GAP}+(${sqlName('(?:boards|users)')})`,
+	'gi'
+);
+
+/** An update of webhooks or report schedules, with what it sets. */
+const OUTBOUND_SQL_UPDATE = new RegExp(
+	String.raw`\bUPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+(${sqlName('(?:webhooks|report_schedules)')})${SQL_GAP}+SET\b([\s\S]*?)(?=\bWHERE\b|\bRETURNING\b|\bFROM\b|;|$)`,
+	'gi'
+);
+
+/** The columns of each that say where it sends or whether it does, and their Drizzle fields. */
+const OUTBOUND_COLUMNS: Record<string, string[]> = { webhooks: ['active', 'url'], report_schedules: ['enabled', 'recipients'] };
+const OUTBOUND_FIELDS: Record<string, string[]> = { webhooks: ['active', 'url'], reportSchedules: ['enabled', 'recipients'] };
+
+/** Any write of `settings`. */
+const SETTINGS_SQL_WRITE = new RegExp(
+	String.raw`\b(DELETE${SQL_GAP}+FROM|INSERT(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+INTO|REPLACE${SQL_GAP}+INTO|UPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?)${SQL_GAP}+${sqlName('settings')}`,
+	'gi'
+);
+
+/** Anything written to the record but a plain INSERT (test hh): a delete, an update, a replace, an insert or ignore, a drop, an alter. */
+const OUTBOUND_RECORD_SQL_WRITE = new RegExp(
+	String.raw`\b(DELETE${SQL_GAP}+FROM|UPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?|REPLACE${SQL_GAP}+INTO|INSERT${SQL_GAP}+OR${SQL_GAP}+\w+${SQL_GAP}+INTO|DROP${SQL_GAP}+TABLE(?:${SQL_GAP}+IF${SQL_GAP}+EXISTS)?|ALTER${SQL_GAP}+TABLE)${SQL_GAP}+${sqlName('outbound_changes')}`,
+	'gi'
+);
+
+/** A plain INSERT INTO the record. */
+const OUTBOUND_RECORD_SQL_INSERT = new RegExp(String.raw`\bINSERT${SQL_GAP}+INTO${SQL_GAP}+${sqlName('outbound_changes')}`, 'gi');
+
+/** An upsert into the record: `INSERT … INTO outbound_changes … ON CONFLICT`. */
+const OUTBOUND_RECORD_SQL_UPSERT = new RegExp(
+	String.raw`\bINSERT(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+INTO${SQL_GAP}+${sqlName('outbound_changes')}[^;]*?\bON${SQL_GAP}+CONFLICT\b`,
+	'gi'
+);
+
+/** What the outbound inventory found in one file (card 3004). */
+type OutboundReading = { writes: string[]; recorders: string[]; inserts: string[]; seeded: string[]; texts: string[]; findings: string[] };
+
+/**
+ * Card 3004 (tests gg, hh) for one file under src or scripts, read as card 3002's rule reads (`scriptsOf`,
+ * `writerNameOf`, `SQL_GAP`, every string built from literals read as SQL, a substitution as `\u0000`). Counted under
+ * its `file#function`, and a finding where that is not on OUTBOUND_WRITES: every delete, insert or replace of
+ * `webhooks` or `report_schedules`; every update of either that sets `active` or `url`, `enabled` or `recipients`, or
+ * columns built at run time; every delete or replace of `boards` or `users` (the cascades); every write of `settings`
+ * whose text names `backup_config`, an `smtp_` setting or `app_url`. In Drizzle the same, `.update` read by its `.set`
+ * (one not written out here, as the webhook PUT's `updates`, is a write of every field), every `.insert`, `.update` or
+ * `.delete` of `settings` (a key it is given), and every call of a `setSetting` whose key is one of those settings or
+ * is not written out. Any write of `outbound_changes` but a plain INSERT, a plain INSERT outside
+ * OUTBOUND_RECORD_INSERTERS, or a Drizzle write of `outboundChanges`, is a finding outright. Each call of a recorder is
+ * listed by its `file#function`. Not seen: a setting's key bound as a parameter of SQL, a statement held in a variable
+ * built elsewhere.
+ */
+function judgeOutboundWrites(file: string, source: string): OutboundReading {
+	const kind = /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+	const tree = ts.createSourceFile(file, file.endsWith('.svelte') ? scriptsOf(source) : source, ts.ScriptTarget.Latest, true, kind);
+	const at = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const keyOf = (node: ts.Node) => `${file}#${writerNameOf(node)}`;
+	const reading: OutboundReading = { writes: [], recorders: [], inserts: [], seeded: [], texts: [], findings: [] };
+	const write = (node: ts.Node, what: string) => {
+		reading.writes.push(keyOf(node));
+		if (!(keyOf(node) in OUTBOUND_WRITES)) {
+			reading.findings.push(
+				`${file}:${at(node)} ${what} in ${writerNameOf(node)}, which is not on OUTBOUND_WRITES: a change of where the server sends unrecorded comes back with the next restore (card 3004)`
+			);
+		}
+	};
+	const textOf = (node: ts.Expression): string => {
+		const inner = bare(node);
+		if (ts.isStringLiteral(inner) || ts.isNoSubstitutionTemplateLiteral(inner)) return inner.text;
+		if (ts.isTemplateExpression(inner)) return inner.head.text + inner.templateSpans.map((span) => `\u0000${span.literal.text}`).join('');
+		if (ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.PlusToken) return textOf(inner.left) + textOf(inner.right);
+		return '\u0000';
+	};
+	const isText = (node: ts.Node): boolean =>
+		ts.isStringLiteral(node) ||
+		ts.isNoSubstitutionTemplateLiteral(node) ||
+		ts.isTemplateExpression(node) ||
+		(ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken);
+	const inChain = (node: ts.Node): boolean => {
+		let parent = node.parent;
+		while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+		return !!parent && ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.PlusToken;
+	};
+	const named = (found: string) => found.replace(/["'`[\]]/g, '').split('.').pop()!.toLowerCase();
+
+	const judgeSql = (node: ts.Node, text: string) => {
+		if (/outbound_changes/i.test(text)) reading.texts.push(text);
+		for (const found of text.matchAll(OUTBOUND_ROW_SQL_WRITE)) write(node, `${(found[1] ?? found[3]).replace(/\s+/g, ' ').toUpperCase()} ${named(found[2] ?? found[4])}`);
+		for (const found of text.matchAll(OUTBOUND_SQL_UPDATE)) {
+			const table = named(found[1]);
+			const columns = found[2].split(',').map((part) => part.trim().split(/\s*=/)[0].replace(/["`[\]]/g, '').toLowerCase());
+			const outbound = found[2].includes('\u0000') ? ['columns built at run time'] : columns.filter((column) => OUTBOUND_COLUMNS[table].includes(column));
+			if (outbound.length > 0) write(node, `UPDATE ${table} (${outbound.join(', ')})`);
+		}
+		if (OUTBOUND_SETTING_KEY.test(text)) for (const found of text.matchAll(SETTINGS_SQL_WRITE)) write(node, `${found[1].replace(/\s+/g, ' ').toUpperCase()} settings`);
+		for (const found of text.matchAll(OUTBOUND_RECORD_SQL_WRITE)) {
+			reading.findings.push(`${file}:${at(node)} ${found[1].replace(/\s+/g, ' ').toUpperCase()} outbound_changes in ${writerNameOf(node)}: the record is append-only, written by a plain INSERT (card 3004)`);
+		}
+		for (const _found of text.matchAll(OUTBOUND_RECORD_SQL_UPSERT)) {
+			reading.findings.push(`${file}:${at(node)} upserts into outbound_changes in ${writerNameOf(node)}: the record is append-only, written by a plain INSERT (card 3004)`);
+		}
+		for (const _found of text.matchAll(OUTBOUND_RECORD_SQL_INSERT)) {
+			reading.inserts.push(keyOf(node));
+			if (/'seeded'/.test(text)) reading.seeded.push(keyOf(node));
+			if (!OUTBOUND_RECORD_INSERTERS.includes(keyOf(node))) {
+				reading.findings.push(`${file}:${at(node)} INSERT INTO outbound_changes in ${writerNameOf(node)}: only the record's writers, its carry and the host's script write the record (card 3004)`);
+			}
+		}
+	};
+
+	const visit = (node: ts.Node): void => {
+		if (isText(node) && !inChain(node)) {
+			judgeSql(node, textOf(node as ts.Expression));
+			if (ts.isBinaryExpression(node)) return;
+		}
+		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+			const method = node.expression.name.text;
+			const [first] = node.arguments;
+			const table = first !== undefined && ts.isIdentifier(bare(first)) ? (bare(first) as ts.Identifier).text : null;
+			const writes = method === 'insert' || method === 'update' || method === 'delete';
+			if (writes && (table === 'webhooks' || table === 'reportSchedules') && method !== 'update') write(node, `.${method}(${table})`);
+			if (method === 'delete' && (table === 'boards' || table === 'users')) write(node, `.delete(${table})`);
+			if (writes && table === 'settings') write(node, `.${method}(settings), a key it is given`);
+			if (method === 'update' && (table === 'webhooks' || table === 'reportSchedules')) {
+				const set = node.parent;
+				const values = ts.isPropertyAccessExpression(set) && set.name.text === 'set' && ts.isCallExpression(set.parent) ? set.parent.arguments[0] : undefined;
+				const fields =
+					values !== undefined && ts.isObjectLiteralExpression(values)
+						? values.properties.map((property) =>
+								(ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) && ts.isIdentifier(property.name) ? property.name.text : null
+							)
+						: [null];
+				const outbound = fields.filter((field) => field === null || OUTBOUND_FIELDS[table].includes(field)).map((field) => field ?? 'fields not written out here');
+				if (outbound.length > 0) write(node, `.update(${table}) setting ${outbound.join(', ')}`);
+			}
+			if (writes && table === 'outboundChanges') {
+				reading.findings.push(`${file}:${at(node)} .${method}(outboundChanges) in ${writerNameOf(node)}: the record is written by its writers and its carry alone (card 3004)`);
+			}
+		}
+		if (ts.isCallExpression(node) && ts.isIdentifier(bare(node.expression))) {
+			const callee = (bare(node.expression) as ts.Identifier).text;
+			if (OUTBOUND_RECORDERS.includes(callee)) reading.recorders.push(keyOf(node));
+			if (callee === 'setSetting') {
+				const [first] = node.arguments;
+				const key = first !== undefined && (ts.isStringLiteral(bare(first)) || ts.isNoSubstitutionTemplateLiteral(bare(first))) ? (bare(first) as ts.StringLiteral).text : null;
+				if (key === null) write(node, 'setSetting with a key not written out');
+				else if (OUTBOUND_SETTING_KEY.test(key)) write(node, `setSetting('${key}')`);
+			}
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(tree);
+	return reading;
+}
+
+describe('every write of where the server sends, and the record of it (card 3004, tests gg and hh)', () => {
+	const walked = [...filesUnder('src', (path) => WEBHOOK_WALKED.test(path)), ...filesUnder('scripts', (path) => WEBHOOK_WALKED.test(path))].map((file) => ({
+		file,
+		source: readFileSync(join(ROOT, file), 'utf8')
+	}));
+	const readings = walked.map(({ file, source }) => judgeOutboundWrites(file, source));
+	const counted = (pick: (reading: OutboundReading) => string[]) => {
+		const counts: Record<string, number> = {};
+		for (const reading of readings) for (const key of pick(reading)) counts[key] = (counts[key] ?? 0) + 1;
+		return counts;
+	};
+
+	it('(gg) every write of a webhook, a report schedule, the backup, mail and App URL settings, and the named cascades, is on OUTBOUND_WRITES, each as many times as listed, with its reason', () => {
+		expect(readings.flatMap(({ findings }) => findings)).toEqual([]);
+		expect(walked.length).toBeGreaterThan(300);
+		expect(counted((reading) => reading.writes)).toEqual(Object.fromEntries(Object.entries(OUTBOUND_WRITES).map(([key, { count }]) => [key, count])));
+		for (const [key, { why }] of Object.entries(OUTBOUND_WRITES)) expect(why, key).not.toBe('');
+		// Named explicitly (R4): the cascades, the variable-key setSetting, the field-by-field PUT.
+		for (const key of [
+			'src/lib/server/deletes.ts#removeUnder',
+			'src/lib/server/deletes.ts#deleteUser',
+			'src/lib/server/stored-secrets.ts#forgetStoredSecrets',
+			'src/routes/api/v1/webhooks/[webhookId]/+server.ts#PUT'
+		]) {
+			expect(OUTBOUND_WRITES[key]?.why, key).toBeDefined();
+		}
+		// The "records nothing" table (section 5).
+		for (const key of [
+			'src/lib/server/db/restore.ts#applyOutboundWebhooks',
+			'src/lib/server/db/restore.ts#applyOutboundSchedules',
+			'src/lib/server/db/restore.ts#switchOffOutside',
+			'src/lib/server/db/restore.ts#keepNotifyEmailHere',
+			'src/lib/server/setting-setters.ts#removeFailureAddress',
+			'src/lib/server/stored-secrets.ts#forgetStoredSecrets',
+			'src/lib/server/startup-checks.ts#holdOutboundAtStart',
+			'src/lib/server/stored-secrets.ts#sealPlainSecrets'
+		]) {
+			expect(OUTBOUND_WRITES[key]?.why, key).toMatch(/^Records nothing/);
+		}
+	});
+
+	it('(gg) the record is written by exactly the writers O1 to O18, each as many times as listed; the start pass records nothing', () => {
+		expect(counted((reading) => reading.recorders)).toEqual(RECORD_OUTBOUND_CALLERS);
+	});
+
+	it('(hh) the record is append-only: no DELETE, UPDATE, REPLACE or upsert of it; a plain INSERT only in its writers, its carry and the script; one INSERT of the marker, read only as itself; Reset and the restore keep it; the carry is bounded by MOST_OTHER_ROWS', () => {
+		expect(readings.flatMap(({ findings }) => findings).filter((line) => line.includes('outbound_changes') || line.includes('outboundChanges'))).toEqual([]);
+		expect([...new Set(readings.flatMap(({ inserts }) => inserts))].sort()).toEqual([...OUTBOUND_RECORD_INSERTERS].sort());
+		expect(readings.flatMap(({ seeded }) => seeded)).toEqual(['src/lib/server/outbound-changes.ts#(top level)']);
+		// The marker read only as kind seeded and origin here; never one of the rows after now, nor carried.
+		const texts = readings.flatMap(({ texts }) => texts);
+		const readsMarker = texts.filter((text) => /kind = 'seeded'/.test(text));
+		expect(readsMarker.length).toBeGreaterThan(0);
+		for (const text of readsMarker) expect(text).toMatch(/origin = 'here'/);
+		expect(OUTBOUND_READS.futureHere).toMatch(/kind <> 'seeded'/);
+		expect(restorableTables(sqlite)).not.toContain('outbound_changes');
+		const reset = readFileSync(join(ROOT, 'src/routes/api/admin/reset/+server.ts'), 'utf8');
+		expect(/const KEPT = \[[^\]]*'outbound_changes'[^\]]*\]/.test(reset)).toBe(true);
+		const restore = readFileSync(join(ROOT, 'src/lib/server/db/restore.ts'), 'utf8');
+		const restoreTree = ts.createSourceFile('restore.ts', restore, ts.ScriptTarget.Latest, true);
+		const carry = restoreTree.statements.find(
+			(statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.name?.text === 'carryOutboundChanges'
+		);
+		expect(carry, 'carryOutboundChanges').toBeDefined();
+		const carried = carry!.getText(restoreTree);
+		expect(/\bMOST_OTHER_ROWS\b/.test(carried)).toBe(true);
+		expect(/\bCARRY_OUTBOUND_CHANGE_SQL\b/.test(carried)).toBe(true);
+		expect(carried).toContain("kind === 'seeded'");
+	});
+
+	describe('the rule itself', () => {
+		const EXAMPLE = 'tests/helpers/fixtures.ts';
+		/** `code` as line 4 of a made-up fixture, in `seed`. */
+		const inSeed = (code: string) =>
+			[
+				"import { db, sqlite } from '$lib/server/db'; import { eq } from 'drizzle-orm';",
+				"import { boards, outboundChanges, reportSchedules, settings, webhooks } from '$lib/server/db/schema';",
+				'export function seed(id: number, updates: object) {',
+				`\t${code}`,
+				'}'
+			].join('\n');
+		const findingsOf = (code: string) => judgeOutboundWrites(EXAMPLE, inSeed(code)).findings;
+
+		it.each([
+			{ form: 'a webhook switched on in SQL', code: "sqlite.prepare('UPDATE webhooks SET active = 1 WHERE id = ?').run(id);" },
+			{ form: 'a webhook re-pointed in Drizzle', code: "db.update(webhooks).set({ url: 'x' }).where(eq(webhooks.id, id)).run();" },
+			{ form: 'a webhook written field by field', code: 'db.update(webhooks).set(updates).where(eq(webhooks.id, id)).run();' },
+			{ form: 'a webhook deleted', code: 'db.delete(webhooks).where(eq(webhooks.id, id)).run();' },
+			{ form: 'a schedule switched on in SQL', code: "sqlite.prepare('UPDATE report_schedules SET enabled = 1 WHERE id = ?').run(id);" },
+			{ form: 'an address put on a schedule in Drizzle', code: "db.update(reportSchedules).set({ recipients: 'a@example.test' }).where(eq(reportSchedules.id, id)).run();" },
+			{ form: 'a board deleted, its webhooks with it', code: "sqlite.prepare('DELETE FROM boards WHERE id = ?').run(id);" },
+			{ form: 'an account deleted, its schedules with it', code: "sqlite.prepare('DELETE FROM users WHERE id = ?').run(id);" },
+			{ form: 'the backup settings written in SQL', code: "sqlite.prepare(\"UPDATE settings SET value = ? WHERE key = 'backup_config'\").run('{}');" },
+			{ form: 'the mail settings removed in SQL', code: "sqlite.prepare(\"DELETE FROM settings WHERE key LIKE 'smtp\\\\_%' ESCAPE '\\\\'\").run();" },
+			{ form: 'a setting written in Drizzle', code: "db.insert(settings).values({ key: 'app_url', value: 'x' }).run();" },
+			{ form: 'the App URL by setSetting', code: "setSetting('app_url', 'https://x.example.test');" },
+			{ form: 'a setSetting of a key not written out', code: 'setSetting(String(id), "x");' },
+			{ form: 'a DELETE FROM the record', code: "sqlite.prepare('DELETE FROM outbound_changes WHERE seq = ?').run(id);" },
+			{ form: 'an UPDATE of the record', code: "sqlite.prepare(\"UPDATE outbound_changes SET state = 'on'\").run();" },
+			{ form: 'a plain INSERT INTO the record outside its writers', code: "sqlite.prepare(\"INSERT INTO outbound_changes (kind) VALUES ('webhook')\").run();" },
+			{ form: 'a Drizzle insert into the record', code: "db.insert(outboundChanges).values({ kind: 'webhook' }).run();" }
+		])('(gg, hh) finds $form, on its line, in its function', ({ code }) => {
+			const found = findingsOf(code);
+			expect(found).toHaveLength(1);
+			expect(found[0]).toMatch(/^tests\/helpers\/fixtures\.ts:4 .* in seed[:,]/);
+		});
+
+		it.each([
+			{ form: 'a webhook renamed in its events', code: "sqlite.prepare('UPDATE webhooks SET events = ? WHERE id = ?').run('[]', id);" },
+			{ form: 'a schedule renamed', code: "db.update(reportSchedules).set({ name: 'x' }).where(eq(reportSchedules.id, id)).run();" },
+			{ form: 'a board renamed', code: "sqlite.prepare('UPDATE boards SET name = ? WHERE id = ?').run('x', id);" },
+			{ form: 'another setting written in SQL', code: "sqlite.prepare(\"INSERT INTO settings (key, value) VALUES ('webhook_reveals_seeded', ?)\").run('x');" },
+			{ form: 'another setting by setSetting', code: "setSetting('two_step_released_at', 'x');" },
+			{ form: 'a read of the record', code: "sqlite.prepare(\"SELECT state FROM outbound_changes WHERE kind = 'webhook'\").get();" }
+		])('(gg, hh) lets $form through', ({ code }) => {
+			expect(findingsOf(code)).toEqual([]);
+		});
 	});
 });

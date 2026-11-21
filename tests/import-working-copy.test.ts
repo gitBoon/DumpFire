@@ -49,6 +49,7 @@ import { readOpened, readOpenedUrl } from './helpers/reads';
 import { DUMMY_HASH } from '$lib/server/dummy-hash';
 import { UNSEALED_RESTORE } from '$lib/server/setting-holds';
 import { backupSealKey, sealCopy } from '$lib/server/backup-secrets';
+import { seedOutbound } from '$lib/server/outbound-changes';
 
 const REAL_MIGRATIONS = join(process.cwd(), 'drizzle');
 
@@ -152,11 +153,12 @@ const OUTSIDE_TABLES = ['report_schedules', 'webhooks', 'settings'];
  * The rows of every table a restore copies, apart from the three above. The
  * id counters and the migration record are not copied by a restore, nor is the
  * record of API keys ended here (card 2995), nor the record of accounts ended here (card 2996), nor the record of
- * changes of access here (card 3002): it keeps each and adds to them.
+ * changes of access here (card 3002): it keeps each and adds to them. Nor is the record of changes of where this server
+ * sends (card 3004), which it keeps.
  */
 function everythingElseIn(database: Database.Database): Record<string, string[]> {
 	const contents = contentsOf(database);
-	for (const table of [...OUTSIDE_TABLES, 'sqlite_sequence', '__drizzle_migrations', 'api_key_revocations', 'account_endings', 'access_changes']) {
+	for (const table of [...OUTSIDE_TABLES, 'sqlite_sequence', '__drizzle_migrations', 'api_key_revocations', 'account_endings', 'access_changes', 'outbound_changes']) {
 		delete contents[table];
 	}
 	return contents;
@@ -294,6 +296,9 @@ function seed(database: Database.Database): void {
 	set.run('theme', 'dark');
 	set.run('backup_config', JSON.stringify(BACKUP_CONFIG));
 	for (const [key, value] of Object.entries(MAIL_SETTINGS)) set.run(key, value);
+	// Card 3004 (R2): what is armed recorded, as the start of the server the backup was made on seeds it, so that a
+	// restore of it whose seal verifies finds every schedule, destination, mail host and App URL in the record.
+	seedOutbound(database);
 	// A backup of a server started since card 2923's release: its restore holds only the already-off webhooks of a
 	// disabled or missing setter, none here (its code review, S2).
 	startedSinceAlreadyOffHeld(database);
@@ -378,6 +383,15 @@ const ARMED_REACH_KEPT = ARMED_REACH.replace(
 	'; and the backup failure mail',
 	"; mail goes out under this server's From address and name, not the backup's, or under none where this server had none; and the backup failure mail"
 );
+
+/**
+ * Card 3004 (S4): the records sentence of the armed backup restored unsealed: its record of where it sends, seeded, is
+ * counted and not taken.
+ */
+const armedRecordsNotTaken = (backup: Database.Database) =>
+	`The backup's seal did not verify, so its record of ${backup.prepare('SELECT count(*) FROM outbound_changes').pluck().get()} change(s) of where ` +
+	"this server sends was not added to this server's: a file this server cannot check decides nothing of where this server sends here, and " +
+	"this server's own records are kept as they were.";
 
 /** The armed backup. */
 function armedBackup(): Database.Database {
@@ -653,6 +667,32 @@ describe('restoring as a working copy', () => {
 		expect(rowsOf(live, 'users').map((row) => row.username)).toEqual(['ann', 'bob']);
 		expect(contentsOf(backup)).toEqual(backupBefore);
 		expect(live.pragma('foreign_keys', { simple: true })).toBe(1);
+		expect(live.inTransaction).toBe(false);
+	});
+
+	it("(d) card 3004: keeps this server's record of changes of where it sends row for row, and that record is left out of what the restore copies", () => {
+		const live = armedLive();
+		const backup = armedBackup();
+		// Seeded, as a server started since 0081 is (card 3004, S2a: a restore seeds a record that is not).
+		seedOutbound(live);
+		// This server's record, which the backup has not got: a webhook deleted here and a destination removed here.
+		const insert = live.prepare(
+			'INSERT INTO outbound_changes (kind, item_id, item_created, place, address, state, changed_at, stated_changed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+		);
+		insert.run('webhook', 3, '2026-11-01 09:00:00', '', `k1:${'c'.repeat(64)}`, 'deleted', '2026-11-20 09:00:00', '2026-11-20 09:00:00');
+		insert.run('destination', 0, '', 'd'.repeat(64), '', 'removed', '2026-11-20 10:00:00', '2026-11-20 10:00:00');
+		const recordHere = rowsOf(live, 'outbound_changes', 'seq');
+		expect(recordHere.filter((row) => row.origin === 'here' && row.kind !== 'seeded')).toHaveLength(2);
+		// The backup's record holds only its own seed (R2), none of this server's changes.
+		expect(rowsOf(backup, 'outbound_changes', 'seq').filter((row) => row.origin === 'here' && row.kind !== 'seeded')).toEqual([]);
+
+		const result = restoreFromBackup(live, backup, { outside: 'off' });
+
+		expect(result.errors).toEqual([]);
+		expect(rowsOf(live, 'outbound_changes', 'seq')).toEqual(recordHere);
+		// Left out of the comparison: everything else is the backup's.
+		expect(everythingElseIn(live)).not.toHaveProperty('outbound_changes');
+		expect(everythingElseIn(live)).toEqual(passwordsNotTaken(everythingElseIn(backup)));
 		expect(live.inTransaction).toBe(false);
 	});
 
@@ -1206,7 +1246,8 @@ describe('through the route', () => {
 	it('restores a working copy for ?outside=off, and says what it switched off in its answer and in the log', async () => {
 		process.env.LOG_LEVEL = 'INFO';
 
-		const { response, logged, size } = await upload('?outside=off', armedBackup());
+		const backup = armedBackup();
+		const { response, logged, size } = await upload('?outside=off', backup);
 
 		expect(response.status).toBe(200);
 		expect(response.body.success).toBe(true);
@@ -1216,8 +1257,10 @@ describe('through the route', () => {
 		// signed out, which the answer says and the log line does not, and then
 		// the sentence.
 		expect(response.body.message).toMatch(new RegExp(`^Database restored \\(${size}\\)\\. .*\\bwebhooks: 3\\. Everybody`));
-		// Card 3009: the passwords the backup's accounts were not given said first.
-		expect(response.body.message.endsWith(`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann. ${PASSWORDS_NOT_TAKEN_WORKING} ${ARMED_HELD} ${ARMED_REACH} ${SENTENCE_UNSEALED}`)).toBe(true);
+		// Card 3009: the passwords the backup's accounts were not given said first; then (card 3004) its record not taken.
+		expect(response.body.message.slice(response.body.message.lastIndexOf('webhooks: 3.'))).toBe(
+			`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann. ${PASSWORDS_NOT_TAKEN_WORKING} ${armedRecordsNotTaken(backup)} ${ARMED_HELD} ${ARMED_REACH} ${SENTENCE_UNSEALED}`
+		);
 		expect(response.body.superadmins).toEqual(['ann']);
 		// Who imported which file first, at CRITICAL (card 2899), then the account of it, then the webhooks held (card 3012).
 		expect(logged).toHaveLength(3);
@@ -1260,7 +1303,7 @@ describe('through the route', () => {
 		expect(response.body.message).toMatch(new RegExp(`^Database restored \\(${size}\\)\\. .*\\bwebhooks: 3\\. Everybody`));
 		// Card 3009 (R4): then its mail, App URL and destination held for review, counted.
 		expect(response.body.message.slice(response.body.message.lastIndexOf('webhooks: 3.'))).toBe(
-			`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann. ${PASSWORDS_NOT_TAKEN} ${ARMED_HELD} ${HELD_UNSEALED_SENTENCE} ${ARMED_REACH_KEPT}`
+			`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann. ${PASSWORDS_NOT_TAKEN} ${armedRecordsNotTaken(backup)} ${ARMED_HELD} ${HELD_UNSEALED_SENTENCE} ${ARMED_REACH_KEPT}`
 		);
 		// With what it kept from reaching outside after it (card 3012).
 		expect(response.body.settingsHeld).toBe(`${HELD_UNSEALED_SENTENCE} ${ARMED_REACH_KEPT}`);
@@ -1268,9 +1311,15 @@ describe('through the route', () => {
 		expect(logged).toHaveLength(3);
 		expect(logged[2]).toBe(`[WARN] [IMPORT] ${ARMED_HELD}`);
 		expect(logged[0]).toMatch(
-			/^\[CRITICAL\] \[IMPORT\] The database was replaced from an uploaded backup by .*, restored as it is, keeping 1 of the backup's password\(s\) out of use, giving the backup's superadmin the importing account's password but no authenticator, holding 4 setting\(s\) of a backup whose seal did not verify for the superadmin's review, keeping what a backup whose seal did not verify would send outside: 3 webhook\(s\) held; 2 account\(s\)' notification mail switched off; the mail's From address and name kept as on this server; the backup failure mail's address kept as on this server\. /
+			/^\[CRITICAL\] \[IMPORT\] The database was replaced from an uploaded backup by .*, restored as it is, keeping 1 of the backup's password\(s\) out of use, giving the backup's superadmin the importing account's password but no authenticator, holding 4 setting\(s\) of a backup whose seal did not verify for the superadmin's review, keeping what a backup whose seal did not verify would send outside: 3 webhook\(s\) held; 2 account\(s\)' notification mail switched off; the mail's From address and name kept as on this server; the backup failure mail's address kept as on this server, adding none of the backup's \d+ change\(s\) of where this server sends to this server's records, as its seal did not verify\. /
 		);
-		expect(logged[1].endsWith(`Filled in: first_completed_at on 0 card(s). ${PASSWORDS_NOT_TAKEN} ${ARMED_HELD} ${HELD_UNSEALED_SENTENCE} ${ARMED_REACH_KEPT}`)).toBe(true);
+		// Card 3004 (S4): the backup's record of where it sends counted, and not taken.
+		expect(logged[0]).toContain(`adding none of the backup's ${backup.prepare('SELECT count(*) FROM outbound_changes').pluck().get()} change(s) of where this server sends`);
+		expect(
+			logged[1].endsWith(
+				`Filled in: first_completed_at on 0 card(s). ${PASSWORDS_NOT_TAKEN} ${armedRecordsNotTaken(backup)} ${ARMED_HELD} ${HELD_UNSEALED_SENTENCE} ${ARMED_REACH_KEPT}`
+			)
+		).toBe(true);
 		// But for the webhooks held, which are switched off for good, and the notification mail switched off (card 3012).
 		expect(`${response.body.message} ${logged[1]}`.replaceAll(ARMED_HELD, '').replaceAll(ARMED_REACH_KEPT, '')).not.toMatch(/working copy|switched off|removed/i);
 		expect(reachingOutside(sqlite)).toEqual(AS_THE_BACKUP_HAS_IT_IMPORTED);

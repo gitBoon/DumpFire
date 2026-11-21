@@ -41,15 +41,21 @@ import { MAIL_CONNECTION_SETTINGS, mailPasswordAad, openStored, sealStored } fro
 // The settings held for the superadmin's review (card 2922): a leaf, which this passes the values it reads.
 import { anyHeld, appUrlHeldAt, heldBecauseAt, mailHeldAt, mailPlaceOf, MAIL_SETTING, UNSEALED_RESTORE } from './setting-holds';
 import { stamp } from '$lib/timestamps';
+import { HELD_NOT_RECORDED, HELD_REMOVED_HERE } from '$lib/settings-held';
 import { EMAIL_ADDRESS } from './request-body';
 
 const log = createLogger('EMAIL');
 
 // ─── Settings Helpers ────────────────────────────────────────────────────────
 
+/**
+ * A setting's value, or null where there is none or it is not text (card 3004, R15; card 3031): a BLOB, a number or a
+ * NULL a restore or a host edit left is none to every sender, never a value read another way.
+ */
 function getSetting(key: string): string | null {
 	const row = db.select().from(settings).where(eq(settings.key, key)).get();
-	return row?.value ?? null;
+	const value = row?.value as unknown;
+	return typeof value === 'string' ? value : null;
 }
 
 function setSetting(key: string, value: string): void {
@@ -136,13 +142,14 @@ function smtpSettingsWith(host: string): SmtpConfig {
 /**
  * The From a mail is handed to nodemailer with (card 3029, its plan's R1), from the From Address and From Name as
  * stored: a name and an address apart, never joined as text, so that nodemailer quotes the name and no name can add
- * an address of its own, nor take the envelope's sender. Each is read as text: text as it is, a BLOB as UTF-8, and
- * anything else as ''; the name '' is 'DumpFire'. An address that is not one a save takes is ''. An address '' gives a
+ * an address of its own, nor take the envelope's sender. Each is read as text: text as it is, and anything else (a
+ * BLOB, a number) as '', as the mailer reads every setting (`getSetting`, card 3004 R15; card 3031); the name '' is
+ * 'DumpFire'. An address that is not one a save takes is ''. An address '' gives a
  * mail no From and the envelope `MAIL FROM:<>`.
  * A restore of a backup whose seal did not verify counts by it too (`keepMailFromHere`), so the two cannot differ.
  */
 export function mailFromAsRead(address: unknown, name: unknown): { name: string; address: string } {
-	const asText = (value: unknown) => (typeof value === 'string' ? value : Buffer.isBuffer(value) ? value.toString('utf8') : '');
+	const asText = (value: unknown) => (typeof value === 'string' ? value : '');
 	const text = asText(address);
 	// Fails closed: an address a save would refuse (`EMAIL_ADDRESS`, at most 254 characters) is no address, so no line
 	// break, comma or second address stored by any route reaches a header or the envelope.
@@ -238,6 +245,7 @@ export function appUrlHeld(): boolean {
  */
 export function mailHeldWords(connection: { host: string; port: number; user: string; allowInsecure: boolean } = mailConnectionAsRead()): string {
 	const because = connection.host === '' ? null : heldBecauseAt(MAIL_SETTING, mailPlaceOf(connection));
+	if (because === HELD_REMOVED_HERE || because === HELD_NOT_RECORDED) return MAIL_HELD_BY_RECORD;
 	return because === UNSEALED_RESTORE ? MAIL_HELD_UNSEALED : MAIL_PROBLEM_WORDS.held;
 }
 
@@ -695,6 +703,13 @@ export const MAIL_PROBLEM_WORDS: Record<MailProblem, string> = {
  */
 export const MAIL_HELD_UNSEALED =
 	"the mail settings are held for the superadmin's review, as they came in with a backup whose seal did not verify, so the mail host is only the file's word; the superadmin checks it and keeps or removes them under Settings held for review on the admin page";
+
+/**
+ * A held mail's words where a restore held the mail settings by this server's record of where it sends (card 3004):
+ * moved or removed here since the backup was made, or not in the record. Names no setter.
+ */
+export const MAIL_HELD_BY_RECORD =
+	"the mail settings are held for the superadmin's review, as they came back with a restore though they were moved or removed on this server since the backup was made, or are not in this server's record of where it sends; the superadmin checks them and keeps or removes them under Settings held for review on the admin page";
 
 /**
  * Whether a mail went: handed to the mail server and accepted by it. A bounce

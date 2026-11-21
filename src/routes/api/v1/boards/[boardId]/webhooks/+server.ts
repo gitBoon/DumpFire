@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
+import { recordOutboundChange, requireOutboundKey } from '$lib/server/outbound-changes';
 import { webhooks } from '$lib/server/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { pathId, readBody, readChoices, readText } from '$lib/server/request-body';
@@ -111,6 +112,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 				.get();
 			if (heldOff) throw error(409, HELD_OFF_RECEIVER);
 		}
+		// Its address is sealed, and recorded by a keyed digest (card 3004's code review, NF-S4d): with no MFA key loaded,
+		// 503 before anything is written.
+		requireOutboundKey();
 		// Made with no address, then given it sealed: never written in plain (card 2928).
 		const made = db.insert(webhooks)
 			.values({ boardId, url: '', receiver, secret: '', events: JSON.stringify(events ?? []), setBy: user.id, ...keyOfWrite(locals.credential) })
@@ -128,6 +132,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			.where(eq(webhooks.id, made.id))
 			.returning()
 			.get()!;
+		// Recorded `on` with the keyed digest of its address (card 3004, O1), in the transaction that made it.
+		recordOutboundChange(sqlite, { kind: 'webhook', id: hook.id, state: 'on', address: url });
 		// The board's owners are told of a webhook someone else made (card 2752, S3), once it is committed.
 		if (!owns) notifyWebhookCreated(boardId, user.username, { id: hook.id, host: hostOfHook(hook) });
 		// Made here, in the transaction that saved it: `pausedBecause` (card

@@ -399,7 +399,8 @@ describe('the From every mail is handed to nodemailer with (card 3029)', () => {
 		['text, as it is', 'board@example.test', 'The Board', { name: 'The Board', address: 'board@example.test' }],
 		["'', the name's default and no address", '', '', { name: 'DumpFire', address: '' }],
 		["none, not text, as ''", null, null, { name: 'DumpFire', address: '' }],
-		['a BLOB, as UTF-8', Buffer.from('zoë@example.test'), Buffer.from('Zoë Board'), { name: 'Zoë Board', address: 'zoë@example.test' }],
+		// Card 3004 (R15; card 3031): as the mailer reads every setting, a BLOB is none, never its bytes read as text.
+		['a BLOB, as none', Buffer.from('zoë@example.test'), Buffer.from('Zoë Board'), { name: 'DumpFire', address: '' }],
 		// An address a save would refuse is no address, so it reaches neither a header nor the envelope (fails closed).
 		['text with a line break and a Bcc header', 'a@here.test\r\nBcc: z@evil.test', 'The Board', { name: 'The Board', address: '' }],
 		['text naming two addresses', 'a@here.test, b@evil.test', 'The Board', { name: 'The Board', address: '' }],

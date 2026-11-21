@@ -170,11 +170,14 @@ describe('timestampColumns', () => {
 		// time is held in `account_created`, not an `*_at` column, so that a seed row's '' is never read as unreadable);
 		// and when a request's held mail was last released (migration 0078, card 3020); and when a change of access was
 		// made here (migration 0079, card 3002: its two creation times are held in `subject_created` and
-		// `holder_created`, not `*_at` columns, so that the normaliser never rewrites a row of the append-only record).
-		expect(found).toHaveLength(87);
+		// `holder_created`, not `*_at` columns, so that the normaliser never rewrites a row of the append-only record); and
+		// when a change of where this server sends was made here (migration 0081, card 3004: its item's creation time is
+		// held in `item_created`, not an `*_at` column, for the same reason).
+		expect(found).toHaveLength(88);
 		expect(found).not.toContain('account_endings.account_created');
 		expect(found).not.toContain('access_changes.subject_created');
 		expect(found).not.toContain('access_changes.holder_created');
+		expect(found).not.toContain('outbound_changes.item_created');
 		for (const column of [
 			'activity_log.created_at',
 			'api_keys.expires_at',
@@ -209,7 +212,9 @@ describe('timestampColumns', () => {
 			// Card 3020.
 			'task_requests.mail_released_at',
 			// Card 3002.
-			'access_changes.changed_at'
+			'access_changes.changed_at',
+			// Card 3004.
+			'outbound_changes.changed_at'
 		]) {
 			expect(found).toContain(column);
 		}

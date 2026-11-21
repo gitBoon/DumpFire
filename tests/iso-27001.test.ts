@@ -300,6 +300,51 @@ describe('the checklist source', () => {
 		expect(item.how.slice(item.how.indexOf('Still open:'))).not.toContain('3029');
 	});
 
+	it("(nn) card 3004: A.8.12 and A.8.13 say a restore brings nothing back more open than this server's record of where it sends, as rules before what is still open, and cite recordOutboundChange and applyOutboundWebhooks, each of which exists", () => {
+		const cited = {
+			'A.8.12': [
+				['src/lib/server/outbound-changes.ts', 'recordOutboundChange'],
+				['src/lib/server/db/restore.ts', 'applyOutboundWebhooks'],
+				['src/lib/server/db/restore.ts', 'applyOutboundSchedules'],
+				['src/lib/server/db/restore.ts', 'applyOutboundSettings']
+			],
+			'A.8.13': [
+				['src/lib/server/outbound-changes.ts', 'recordOutboundChange'],
+				['src/lib/server/db/restore.ts', 'applyOutboundSettings'],
+				['src/lib/server/db/restore.ts', 'applyOutboundWebhooks']
+			]
+		};
+		for (const [ref, symbols] of Object.entries(cited)) {
+			const item = CHECKLIST.find((entry) => entry.ref === ref)!;
+			for (const [path, symbol] of symbols) {
+				const evidence = item.evidence.find((e) => e.path === path && e.symbol === symbol);
+				expect(evidence, `${ref} ${path} ${symbol}`).toBeDefined();
+				expect(evidenceFault(evidence!), `${ref} ${path} ${symbol}`).toBeNull();
+			}
+		}
+		const leakage = CHECKLIST.find((entry) => entry.ref === 'A.8.12')!;
+		const said =
+			"On such a restore kept as it is, mail keeps this server's From address and name, or none where it had none (card 3029). " +
+			'Every change of where this server sends is recorded by identity in the transaction that makes it, naming no address in plain: ';
+		expect(leakage.how).toContain(said);
+		for (const words of [
+			'a webhook deleted or re-pointed here comes back switched off for good with its secret discarded',
+			'an address taken off a schedule stays off',
+			"and a destination, mail server or App URL removed or moved here is held for the superadmin's review; a restore of this server's own backup also holds what is not in that record",
+			'Mail settings, destinations and the App URL that are not text are left out or read as text at the restore, and no sender uses one (card 3004). '
+		]) {
+			expect(leakage.how, words).toContain(words);
+		}
+		expect(leakage.how.indexOf('(card 3004)')).toBeLessThan(leakage.how.indexOf('Still open:'));
+		expect(leakage.how.slice(leakage.how.indexOf('Still open:'))).not.toContain('3004');
+		const backup = CHECKLIST.find((entry) => entry.ref === 'A.8.13')!;
+		const rule =
+			"A restore keeps this server's record of where it sends, and never sends the next backup to a destination removed or moved here since the backup it restores was made: that destination is held for the superadmin's review, ";
+		expect(backup.how).toContain(rule);
+		expect(backup.how.indexOf(rule)).toBeLessThan(backup.how.indexOf('Still open:'));
+		expect(backup.how.slice(backup.how.indexOf('Still open:'))).not.toContain('3004');
+	});
+
 	it('names every gap: a card or an accepted risk for each item short of met, and neither for a met one', () => {
 		const faults: string[] = [];
 		for (const item of APPLICATION_SIDE) {

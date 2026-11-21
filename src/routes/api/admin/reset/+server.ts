@@ -19,11 +19,11 @@ const log = createLogger('ADMIN');
 
 /**
  * What a reset keeps: the record of what was done to this installation, the record of every API key ended here
- * (card 2995), the record of every account ended here (card 2996) and the record of every change of access here (card
- * 3002), which `restorableTables` leaves out already and which are named here so that no change to that list can make a
- * reset clear them.
+ * (card 2995), the record of every account ended here (card 2996), the record of every change of access here (card
+ * 3002) and the record of every change of where this server sends (card 3004), which `restorableTables` leaves out
+ * already and which are named here so that no change to that list can make a reset clear them.
  */
-const KEPT = ['system_logs', 'backup_log', 'api_key_revocations', 'account_endings', 'access_changes'];
+const KEPT = ['system_logs', 'backup_log', 'api_key_revocations', 'account_endings', 'access_changes', 'outbound_changes'];
 
 const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
 

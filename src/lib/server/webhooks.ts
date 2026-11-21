@@ -61,8 +61,9 @@ import { onTheWire } from './v1-json';
 import { addressRefusal, guardedLookup, hostOf, receiverOf } from './webhook-address';
 import { stamp, toStamp } from '$lib/timestamps';
 import { registerStampFunctions } from './db/timestamps';
+import { recordWebhooksAs } from './outbound-changes';
 import { openStored, openedUrl, webhookSecretAad, type Opened } from './stored-secrets';
-import { HELD_FROM_UNSEALED_BACKUP } from '$lib/settings-held';
+import { HELD_DELETED_HERE, HELD_FROM_UNSEALED_BACKUP, HELD_NOT_RECORDED, HELD_REPOINTED_HERE } from '$lib/settings-held';
 
 const log = createLogger('Webhooks');
 
@@ -369,14 +370,35 @@ export function keyOfWrite(credential: App.Locals['credential']): { setByKey: nu
  * setter is disabled or not recorded (`holdUnheldOfGoneSetters`). `'key
  * ended'` is card 2893's hold.
  */
-export type HeldBecause = Hold | 'setter access ended' | typeof HELD_FROM_UNSEALED_BACKUP;
+export type HeldBecause =
+	| Hold
+	| 'setter access ended'
+	| typeof HELD_FROM_UNSEALED_BACKUP
+	| typeof HELD_DELETED_HERE
+	| typeof HELD_NOT_RECORDED
+	| typeof HELD_REPOINTED_HERE;
 
 /**
  * The reasons whose switch-on gives the webhook a new secret: a known account held the old one (D3, S4; CS4).
  * Every reason since card 2923's code review (S1): one held for want of a setter may have had its secret set,
- * by a `PUT`, by an account whose access has ended since, which its hold does not record.
+ * by a `PUT`, by an account whose access has ended since, which its hold does not record. Card 3004: and the three a
+ * restore holds by this server's record of where it sends, whose secret it discarded.
  */
-export const NEW_SECRET_REASONS: readonly string[] = ['setter cannot open', 'no setter', 'setter access ended', 'key ended', HELD_FROM_UNSEALED_BACKUP];
+export const NEW_SECRET_REASONS: readonly string[] = [
+	'setter cannot open',
+	'no setter',
+	'setter access ended',
+	'key ended',
+	HELD_FROM_UNSEALED_BACKUP,
+	HELD_DELETED_HERE,
+	HELD_NOT_RECORDED,
+	HELD_REPOINTED_HERE
+];
+
+/** How the switch-off words of a webhook a restore held without trusting where it sends go on (card 3012; card 3004). */
+const KEEP_IT_WITH_YOUR_KEY =
+	'Delete it unless you recognise the address; to keep it, switch it on with your own key, which makes you its setter and gives it a new secret, ' +
+	"given in that answer and readable by the board's owner or an administrator, and update the receiver.";
 
 /**
  * What `pausedBecause` says of a webhook switched off for each reason, word
@@ -414,7 +436,12 @@ export const SWITCHED_OFF_BECAUSE: Record<HeldBecause, string> = {
 		'This was switched off because it came in with a backup whose seal did not verify, so its address, its secret and who ' +
 		"set it up are only the file's word, and its secret was discarded. Delete it unless you recognise the address; to keep " +
 		'it, switch it on with your own key, which makes you its setter and gives it a new secret, given in that answer and ' +
-		"readable by the board's owner or an administrator, and update the receiver."
+		"readable by the board's owner or an administrator, and update the receiver.",
+	// Card 3004 (plan 3.11): the three a restore holds by this server's record of where it sends, each secret discarded.
+	[HELD_DELETED_HERE]: `This was switched off because it was deleted on this server after the backup it came back from was made. ${KEEP_IT_WITH_YOUR_KEY}`,
+	[HELD_NOT_RECORDED]:
+		"This was switched off because it was not in this server's record of where it sends when a backup of it was restored. " + KEEP_IT_WITH_YOUR_KEY,
+	[HELD_REPOINTED_HERE]: `This was switched off because it was pointed elsewhere on this server after the backup it came back from was made. ${KEEP_IT_WITH_YOUR_KEY}`
 };
 
 /**
@@ -646,7 +673,11 @@ const HOLD_IN_WORDS: Record<HeldBecause, (hook: SwitchedOff) => string> = {
 			? `the account that set it up${userWord(hook, hook.setBy)} has no working API key from before keys were recorded`
 			: `the API key that set it up (${hook.setByKey === null ? 'no key recorded' : `key ${hook.setByKey}`}${hook.unnamed ? '' : `, user ${hook.setBy}`}) has ended`,
 	// Card 3012 (R16): the restore that holds it tells nobody of it, but the type asks for the words.
-	[HELD_FROM_UNSEALED_BACKUP]: () => 'it came in with a backup whose seal did not verify'
+	[HELD_FROM_UNSEALED_BACKUP]: () => 'it came in with a backup whose seal did not verify',
+	// Card 3004: the restore that holds these tells nobody of them, but the type asks for the words.
+	[HELD_DELETED_HERE]: () => 'it was deleted on this server after the backup it came back from was made',
+	[HELD_NOT_RECORDED]: () => "it was not in this server's record of where it sends",
+	[HELD_REPOINTED_HERE]: () => 'it was pointed elsewhere on this server after the backup it came back from was made'
 };
 
 /** Why, in the owners' mail: the hold in words, naming nobody. */
@@ -671,7 +702,10 @@ const HOLD_IN_MAIL: Record<HeldBecause, (hook: SwitchedOff) => string> = {
 		hook.setWithKey === null
 			? 'it was set up before keys were recorded, and the account that set it up has no working API key from then'
 			: 'the API key that set it up ended',
-	[HELD_FROM_UNSEALED_BACKUP]: () => 'it came in with a backup whose seal did not verify'
+	[HELD_FROM_UNSEALED_BACKUP]: () => 'it came in with a backup whose seal did not verify',
+	[HELD_DELETED_HERE]: () => 'it was deleted on this server after the backup it came back from was made',
+	[HELD_NOT_RECORDED]: () => "it was not in this server's record of where it sends",
+	[HELD_REPOINTED_HERE]: () => 'it was pointed elsewhere on this server after the backup it came back from was made'
 };
 
 /**
@@ -895,9 +929,12 @@ const ROLE_OF_ID = '(SELECT role FROM users WHERE id = @id)';
  * `@revealed`: what the account set, and, with `@readable` 1, every webhook with a secret it could read; and every
  * webhook with a secret its keys were given (card 2947, R10), `@revealed` a JSON list of ids read before the keys go.
  * scripts/mfa-reset.mjs builds the same text, which tests/mfa-reset-script.test.ts compares.
+ *
+ * `withSecret` (card 3004, R9 L3) is SQL that is true of a webhook with a secret, `secret <> ''` unless given: a
+ * restore's reset counts too each webhook a backup left without its secret (`holdResetSettersIn`).
  */
-export function endingScope(): string {
-	return `(set_by = @id OR (@readable = 1 AND secret <> '' AND ${readableBy('@id', ROLE_OF_ID)}) OR (secret <> '' AND id IN (SELECT value FROM json_each(@revealed))))`;
+export function endingScope(withSecret = "secret <> ''"): string {
+	return `(set_by = @id OR (@readable = 1 AND ${withSecret} AND ${readableBy('@id', ROLE_OF_ID)}) OR (${withSecret} AND id IN (SELECT value FROM json_each(@revealed))))`;
 }
 
 /**
@@ -1001,6 +1038,8 @@ export function holdWebhooksOfSetter(
 		...(hook.setBy === userId ? {} : { reader: userId }),
 		...(given.has(hook.id) ? { exposed: true } : {})
 	}));
+	// Each recorded `held` in this server's record of where it sends (card 3004, O5), in one statement that always runs.
+	recordWebhooksAs(sqlite, [...switchedOff, ...held].map((hook) => hook.id), 'held');
 	if (switchedOff.length + held.length > 0) {
 		const [toldOff, toldHeld] = [unnamedWhere(switchedOff, cause.unnamed), unnamedWhere(held, cause.unnamed)];
 		afterCommit(() => tellSwitchedOff(toldOff, cause.log, cause.telling ?? { mail: true }, toldHeld, cause.mail, userId));
@@ -1081,6 +1120,36 @@ export function holdNoLongerReadableIn(
 		// Each told with no account named (card 2996, FP16): the restore's lines count, and name nobody the record ended.
 		const found = holdInScope(live, scopeOf(byBoard), params, () => ({
 			reader: account.id,
+			unnamed: true
+		}));
+		switchedOff.push(...found.switchedOff);
+		held.push(...found.held);
+	}
+	return { switchedOff, held };
+}
+
+/**
+ * Card 3004 (comment 3, R9 L3): what a restore's password reset holds, as a real reset does (`holdWebhooksOfSetter`
+ * with `readable`), for every account it reset (`resetOne` in restore.ts): through the ending's own scope
+ * (`endingScope`, `@readable` 1, nothing revealed, as the restore holds what keys were given apart), every webhook the
+ * account set, with or without a key, and every one with a secret it could read as an owner of the board or an
+ * administrator, whoever set it. `listed`, the webhooks the backup left without their secret, count as having one, as
+ * `holdNoLongerReadableIn` counts them. Each `setter access ended`, marked `reader` where the account did not set it,
+ * and told with no account named. Run after the fill and before the sweep, so that the reason is the account's ending
+ * and not a key ended. Opens no transaction; throws outside one; tells nobody: the restore tells them with its sweep.
+ */
+export function holdResetSettersIn(
+	live: typeof sqlite,
+	accounts: readonly number[],
+	listed: readonly number[] = []
+): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
+	if (!live.inTransaction) throw new Error("holdResetSettersIn holds inside the restore's transaction, and none is open");
+	const scope = endingScope("(secret <> '' OR id IN (SELECT value FROM json_each(@listed)))");
+	const switchedOff: SwitchedOff[] = [];
+	const held: SwitchedOff[] = [];
+	for (const id of [...new Set(accounts)]) {
+		const found = holdInScope(live, scope, { id, readable: 1, revealed: '[]', listed: JSON.stringify(listed) }, (hook) => ({
+			...(hook.setBy === id ? {} : { reader: id }),
 			unnamed: true
 		}));
 		switchedOff.push(...found.switchedOff);

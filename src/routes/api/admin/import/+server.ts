@@ -124,6 +124,7 @@ import {
 	type OutsideSwitchedOff,
 	type AccessAsHere,
 	type AccessKept,
+	type OutboundKept,
 	type AccountsKept,
 	type ApiKeysLeftOut,
 	type PasswordsKept,
@@ -165,6 +166,7 @@ import {
 } from '$lib/server/backup-secrets';
 import { mfaWithoutFactorSentence } from '$lib/server/mfa-backup';
 import { toStamp } from '$lib/timestamps';
+import { MAX_REPORT_RECIPIENTS } from '$lib/report-recipients';
 
 const log = createLogger('IMPORT');
 
@@ -582,12 +584,15 @@ function accountsKeptLines(
 	outside: Outside = 'keep',
 	notTaken?: RecordsNotTaken,
 	stateAsHere = 0,
-	access: { kept?: AccessKept; asHere?: AccessAsHere } = {}
+	access: { kept?: AccessKept; asHere?: AccessAsHere } = {},
+	outbound?: OutboundKept
 ): string[] {
 	return [
 		...endedLines(kept),
 		...passwordLines(passwords, outside),
 		...accessKeptLines(access.kept),
+		// Card 3004 (plan 3.11): what this server's record of where it sends kept, counts only.
+		...outboundKeptLines(outbound),
 		...(accessAsHereCount(access.asHere) > 0 ? [accessAsHereLine(access.asHere!)] : []),
 		...(stateAsHere > 0 ? [stateAsHereLine(stateAsHere)] : []),
 		...(anyRecordsNotTaken(notTaken) ? [recordsNotTakenLine(notTaken)] : [])
@@ -615,6 +620,111 @@ const decisionRolesKeptCount = (kept: AccessKept) =>
  */
 const accessAsHereCount = (asHere: AccessAsHere | undefined) =>
 	asHere === undefined ? 0 : asHere.boards + asHere.teams + asHere.people + asHere.decisions + asHere.decisionsNotHere;
+
+/** Whether a restore kept anything of where this server sends (card 3004): the answer and the line's details carry the counts only then. */
+const anyOutboundKept = (kept: OutboundKept | undefined): kept is OutboundKept =>
+	kept !== undefined && Object.values(kept).some((count) => count > 0);
+
+/**
+ * How many changes of where this server sends made here the record kept (card 3004), for the CRITICAL line: every count
+ * but `resetSettingsHeld`, `settingsNotText`, those that could not be compared and those over the cap (its code review,
+ * F1, F2, F7), which are no change made here and are said apart.
+ */
+const outboundKeptCount = (kept: OutboundKept | undefined) =>
+	kept === undefined
+		? 0
+		: kept.webhooksDeletedHeld +
+			kept.webhooksNotRecordedHeld +
+			kept.webhooksRepointedHeld +
+			kept.webhooksOff +
+			kept.webhooksHeld +
+			kept.schedulesDeletedPaused +
+			kept.schedulesNotRecordedPaused +
+			kept.schedulesOff +
+			kept.recipientsLeftOff +
+			kept.settingsRemovedHeld +
+			kept.settingsNotRecordedHeld +
+			kept.settingsHeld;
+
+/**
+ * Card 3004's sentences of `accountsKeptLines` (plan 3.11): what this server's record of where it sends kept of the
+ * backup's webhooks, report schedules, their addresses, destinations, mail settings and App URL, one sentence for each
+ * kind there was any of, counts only, naming no webhook, schedule, address, destination or account. A guess is worded
+ * "not in this server's record" (R1).
+ */
+function outboundKeptLines(kept: OutboundKept | undefined): string[] {
+	if (kept === undefined) return [];
+	const both = (webhooks: number, schedules: number) =>
+		inWords([...(webhooks > 0 ? [`${webhooks} webhook(s)`] : []), ...(schedules > 0 ? [`${schedules} report schedule(s)`] : [])]);
+	const stayOffHooks = kept.webhooksOff + kept.webhooksHeld;
+	const settings = kept.settingsRemovedHeld + kept.settingsNotRecordedHeld + kept.settingsHeld;
+	return [
+		kept.webhooksDeletedHeld > 0
+			? `${kept.webhooksDeletedHeld} webhook(s) deleted on this server after the backup was made came back switched off for good, their secrets ` +
+				'discarded: delete them again, or switch one on with your own key to give it a new secret.'
+			: null,
+		kept.webhooksRepointedHeld > 0
+			? `${kept.webhooksRepointedHeld} webhook(s) pointed elsewhere on this server since the backup was made came back switched off for good, ` +
+				'their secrets discarded.'
+			: null,
+		kept.webhooksUncomparedHeld > 0
+			? `${kept.webhooksUncomparedHeld} webhook(s) whose address could not be compared with this server's record (no MFA key is loaded, or it ` +
+				'was replaced since the address was recorded) came back switched off for good, their secrets discarded.'
+			: null,
+		kept.webhooksNotRecordedHeld + kept.schedulesNotRecordedPaused > 0
+			? `${both(kept.webhooksNotRecordedHeld, kept.schedulesNotRecordedPaused)} not in this server's record came back switched off or paused.`
+			: null,
+		stayOffHooks + kept.schedulesOff > 0
+			? `${both(stayOffHooks, kept.schedulesOff)} switched off, paused or held on this server since the backup was made stay off.`
+			: null,
+		kept.schedulesDeletedPaused > 0
+			? `${kept.schedulesDeletedPaused} report schedule(s) deleted on this server since the backup was made came back paused.`
+			: null,
+		kept.recipientsLeftOff > 0
+			? `${kept.recipientsLeftOff} address(es) taken off report schedules on this server since the backup was made were left off.`
+			: null,
+		kept.schedulesUncomparedPaused > 0
+			? `${kept.schedulesUncomparedPaused} report schedule(s) came back paused: addresses taken off them on this server were recorded under an ` +
+				'MFA key since replaced, or none is loaded, so the addresses they came back with could not be compared.'
+			: null,
+		kept.schedulesOverCap > 0
+			? `${kept.schedulesOverCap} report schedule(s) came back with more than ${MAX_REPORT_RECIPIENTS} addresses: each was paused, and the ` +
+				`${kept.recipientsOverCap} address(es) beyond the first ${MAX_REPORT_RECIPIENTS} were left out.`
+			: null,
+		settings > 0
+			? `${settings} setting(s) where this server sends (backup destinations, the mail settings or the App URL) removed, moved, held, or not in ` +
+				"this server's record, are held for the superadmin's review under Settings held for review."
+			: null,
+		kept.resetSettingsHeld > 0
+			? `${kept.resetSettingsHeld} setting(s) set by accounts this restore signed out are held for the superadmin's review.`
+			: null,
+		kept.settingsNotText > 0
+			? `${kept.settingsNotText} setting(s) where this server sends were not text in the backup, and were left out or read as text.`
+			: null
+	].filter((line): line is string => line !== null);
+}
+
+/**
+ * The CRITICAL line's words for card 3004 (plan 3.11): the changes of where this server sends kept, and, apart, the
+ * settings of accounts the restore signed out held and the outbound settings that were not text; each only where above
+ * 0, counts only; '' where none.
+ */
+function outboundWords(kept: OutboundKept | undefined): string {
+	if (kept === undefined) return '';
+	const keeping = outboundKeptCount(kept);
+	return (
+		(keeping > 0 ? `, keeping ${keeping} outbound change(s) made on this server` : '') +
+		(kept.webhooksUncomparedHeld + kept.schedulesUncomparedPaused > 0
+			? `, holding ${kept.webhooksUncomparedHeld} webhook(s) and pausing ${kept.schedulesUncomparedPaused} report schedule(s) whose addresses ` +
+				"could not be compared with this server's record"
+			: '') +
+		(kept.schedulesOverCap > 0
+			? `, pausing ${kept.schedulesOverCap} report schedule(s) over ${MAX_REPORT_RECIPIENTS} addresses and leaving out ${kept.recipientsOverCap} address(es)`
+			: '') +
+		(kept.resetSettingsHeld > 0 ? `, holding ${kept.resetSettingsHeld} setting(s) set by accounts it signed out` : '') +
+		(kept.settingsNotText > 0 ? `, leaving out or reading as text ${kept.settingsNotText} outbound setting(s) that were not text` : '')
+	);
+}
 
 /** `parts` as one list in words: `a`, `a and b`, `a, b and c`; each after the first opened by `opening`. */
 function inWords(parts: string[], opening = ''): string {
@@ -700,7 +810,7 @@ function accessAsHereLine(asHere: AccessAsHere): string {
 
 /** Whether a restore of a backup whose seal did not verify left any row of its three records untaken (cards 3013, R5, and 3002). */
 const anyRecordsNotTaken = (notTaken: RecordsNotTaken | undefined): notTaken is RecordsNotTaken =>
-	notTaken !== undefined && (notTaken.accountEndings > 0 || notTaken.keyRevocations > 0 || notTaken.accessChanges > 0);
+	notTaken !== undefined && (notTaken.accountEndings > 0 || notTaken.keyRevocations > 0 || notTaken.accessChanges > 0 || notTaken.outboundChanges > 0);
 
 /**
  * Card 3013's sentence of `accountsKeptLines` for D6 (R22): the accounts of a backup whose seal did not verify given the
@@ -720,7 +830,9 @@ const recordHalves = (notTaken: RecordsNotTaken): string[] => [
 	...(notTaken.accountEndings > 0 ? [`${notTaken.accountEndings} account ending(s)`] : []),
 	...(notTaken.keyRevocations > 0 ? [`${notTaken.keyRevocations} ended API key(s)`] : []),
 	// Card 3033 (plan 3.12): the record holds decision access too.
-	...(notTaken.accessChanges > 0 ? [`${notTaken.accessChanges} change(s) of board, team and decision access and person links`] : [])
+	...(notTaken.accessChanges > 0 ? [`${notTaken.accessChanges} change(s) of board, team and decision access and person links`] : []),
+	// Card 3004 (plan 3.11): and the record of where this server sends.
+	...(notTaken.outboundChanges > 0 ? [`${notTaken.outboundChanges} change(s) of where this server sends`] : [])
 ];
 
 /**
@@ -731,7 +843,11 @@ const recordHalves = (notTaken: RecordsNotTaken): string[] => [
  */
 function recordsNotTakenLine(notTaken: RecordsNotTaken): string {
 	const ends = [...(notTaken.accountEndings > 0 ? ['no account'] : []), ...(notTaken.keyRevocations > 0 ? ['no key'] : [])];
-	const does = [...(ends.length > 0 ? [`ends ${inWords(ends)}`] : []), ...(notTaken.accessChanges > 0 ? ['gives no access'] : [])];
+	const does = [
+		...(ends.length > 0 ? [`ends ${inWords(ends)}`] : []),
+		...(notTaken.accessChanges > 0 ? ['gives no access'] : []),
+		...(notTaken.outboundChanges > 0 ? ['decides nothing of where this server sends'] : [])
+	];
 	return (
 		`The backup's seal did not verify, so its record of ${inWords(recordHalves(notTaken), 'of ')} was not added to this server's: a file this server ` +
 		`cannot check ${inWords(does)} here, and this server's own records are kept as they were.`
@@ -895,7 +1011,8 @@ function restoredWords(
 	reach?: UnsealedReach,
 	notTaken?: RecordsNotTaken,
 	stateAsHere = 0,
-	access: { kept?: AccessKept; asHere?: AccessAsHere } = {}
+	access: { kept?: AccessKept; asHere?: AccessAsHere } = {},
+	outbound?: OutboundKept
 ): string {
 	const how = outside === 'off' ? 'as a working copy' : 'as it is';
 	const accounts = accountsKeptCount(kept);
@@ -909,6 +1026,8 @@ function restoredWords(
 		// Card 3002: the board, team and person access the record of access changes kept, and an unsealed backup's given
 		// this server's, counted only.
 		accessWords(access.kept, access.asHere) +
+		// Card 3004: what this server's record of where it sends kept, counted only.
+		outboundWords(outbound) +
 		(keptOut > 0 ? `, keeping ${keptOut} of the backup's password(s) out of use` : '') +
 		(supers > 0 ? `, leaving ${supers} superadmin account(s) with a password to change at once` : '') +
 		(givenYours
@@ -991,6 +1110,7 @@ function importedLine(
 		accountStateAsHere?: number;
 		accessKept?: AccessKept;
 		accessAsHere?: AccessAsHere;
+		outboundKept?: OutboundKept;
 		installation?: Installation;
 	}
 ): { message: string; meta: Record<string, unknown> } {
@@ -1013,7 +1133,9 @@ function importedLine(
 		// The board, team and person access the record of access changes kept, and an unsealed backup's given this
 		// server's, counted, never named (card 3002): each only where any.
 		...(accessKeptCount(done.accessKept) > 0 ? { accessKept: done.accessKept } : {}),
-		...(accessAsHereCount(done.accessAsHere) > 0 ? { accessAsHere: done.accessAsHere } : {})
+		...(accessAsHereCount(done.accessAsHere) > 0 ? { accessAsHere: done.accessAsHere } : {}),
+		// What this server's record of where it sends kept, counted, never named (card 3004): only where any.
+		...(anyOutboundKept(done.outboundKept) ? { outboundKept: done.outboundKept } : {})
 	};
 	const logLeft = done.systemLogLeftOut;
 	const logPart =
@@ -1028,7 +1150,7 @@ function importedLine(
 		message:
 			`The database was replaced from an uploaded backup by ${caller.username} (user ${caller.id} before the import): ` +
 			`${file.size}, SHA-256 ${file.sha256}, ${sealWords(done.unsealed, done.sealKeyHere)}, ` +
-			`restored ${restoredWords(outside, left, done.accountsKept, done.accountRecordLeftOut, done.passwordsKept, done.unsealedHeld, done.unsealedReach, done.recordsNotTaken, done.accountStateAsHere, { kept: done.accessKept, asHere: done.accessAsHere })}. The system log was kept as it was; ${logPart}`,
+			`restored ${restoredWords(outside, left, done.accountsKept, done.accountRecordLeftOut, done.passwordsKept, done.unsealedHeld, done.unsealedReach, done.recordsNotTaken, done.accountStateAsHere, { kept: done.accessKept, asHere: done.accessAsHere }, done.outboundKept)}. The system log was kept as it was; ${logPart}`,
 		meta: {
 			by: { id: caller.id, username: caller.username },
 			ip: caller.ip,
@@ -1339,10 +1461,15 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 			// And the accounts the record of account endings kept ended or lowered (card 2996), and the restored passwords
 			// kept out of use (card 2997), counted, naming nobody. And, where the seal did not verify, the accounts given this
 			// server's state and the rows of the backup's records not taken (card 3013).
-			const accountsKept = accountsKeptLines(result.accountsKept, result.passwordsKept, outside, result.recordsNotTaken, result.accountStateAsHere, {
-				kept: result.accessKept,
-				asHere: result.accessAsHere
-			});
+			const accountsKept = accountsKeptLines(
+				result.accountsKept,
+				result.passwordsKept,
+				outside,
+				result.recordsNotTaken,
+				result.accountStateAsHere,
+				{ kept: result.accessKept, asHere: result.accessAsHere },
+				result.outboundKept
+			);
 			const accountsKeptSaid = accountsKept.length > 0 ? accountsKept.join(' ') : null;
 			// And the personal decision links it cancelled (card 2697, Q15).
 			const decisionLinks = result.decisionLinksCleared > 0 ? decisionLinksSentence(result.decisionLinksCleared) : null;
@@ -1416,6 +1543,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				// server's, counted (card 3002): absent where none.
 				accessKept: accessKeptCount(result.accessKept) > 0 ? result.accessKept : undefined,
 				accessAsHere: accessAsHereCount(result.accessAsHere) > 0 ? result.accessAsHere : undefined,
+				// What this server's record of where it sends kept, counted (card 3004): absent where none.
+				outboundKept: anyOutboundKept(result.outboundKept) ? result.outboundKept : undefined,
 				systemLog: systemLog ?? undefined,
 				superadmins
 			};
@@ -1536,7 +1665,15 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 				// The accounts the record of account endings kept ended or lowered (card 2996), and the restored passwords kept
 				// out of use (card 2997), as a restore that succeeded says them.
 				const accountsKept = done
-					? accountsKeptLines(done.accountsKept, done.passwordsKept, outside, done.recordsNotTaken, done.accountStateAsHere, { kept: done.accessKept, asHere: done.accessAsHere })
+					? accountsKeptLines(
+							done.accountsKept,
+							done.passwordsKept,
+							outside,
+							done.recordsNotTaken,
+							done.accountStateAsHere,
+							{ kept: done.accessKept, asHere: done.accessAsHere },
+							done.outboundKept
+						)
 					: [];
 				const accountsKeptSaid = accountsKept.length > 0 ? accountsKept.join(' ') : null;
 				// The personal decision links it cancelled, as a restore that succeeded says them (card 2697, Q15).
@@ -1589,6 +1726,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies, getC
 						accountStateAsHere: done && done.accountStateAsHere > 0 ? done.accountStateAsHere : undefined,
 						accessKept: done && accessKeptCount(done.accessKept) > 0 ? done.accessKept : undefined,
 						accessAsHere: done && accessAsHereCount(done.accessAsHere) > 0 ? done.accessAsHere : undefined,
+						outboundKept: done && anyOutboundKept(done.outboundKept) ? done.outboundKept : undefined,
 						systemLog: systemLog ?? undefined
 					},
 					{ status: 500 }

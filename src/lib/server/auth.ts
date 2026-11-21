@@ -28,6 +28,7 @@ import { raiseSignal } from './sign-in-challenges';
 // A cycle of functions only (webhooks.ts imports `keyEnded`): neither uses the other at module load (card 2923, decision 13).
 import { accountMayHaveRead, holdWebhooksOfSetter, revealedToAccount, type EndingCause } from './webhooks';
 import { holdSettingsSetBy, type SettingsRemoved } from './setting-setters';
+import { recordSchedulesAs } from './outbound-changes';
 import { REVOKED_BECAUSE, endApiKeys, keyRecorded } from './key-revocations';
 import { deletedHere, passwordReplacedHere } from './account-endings';
 import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
@@ -1108,6 +1109,8 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause
 			.returning({ id: reportSchedules.id })
 			.all()
 	);
+	// Each recorded `off` in this server's record of where it sends (card 3004, O10), in one statement that always runs.
+	recordSchedulesAs(sqlite, reportScheduleIds, 'off');
 	return {
 		sessions: sessionsEnded,
 		invites: invitesEnded,

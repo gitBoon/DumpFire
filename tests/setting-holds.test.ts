@@ -70,6 +70,7 @@ import {
 import {
 	appUrlPlaceOf,
 	DESTINATION_HELD,
+	DESTINATION_HELD_BY_RECORD,
 	DESTINATION_HELD_UNSEALED,
 	destinationHeldWords,
 	mailPlaceOf,
@@ -77,7 +78,8 @@ import {
 	SETTER_ACCESS_ENDED,
 	UNSEALED_RESTORE
 } from '$lib/server/setting-holds';
-import { MAIL_HELD_UNSEALED, mailProblemWords } from '$lib/server/email';
+import { MAIL_HELD_BY_RECORD, MAIL_HELD_UNSEALED, appUrlAsRead, appUrlHeld, mailProblemWords } from '$lib/server/email';
+import { HELD_FROM_UNSEALED_BACKUP, HELD_NOT_RECORDED, HELD_REMOVED_HERE, heldListWhy, heldSetByWords } from '$lib/settings-held';
 import { cannotMailWhy } from '$lib/server/request-tokens';
 import { reportSettingsHeld } from '$lib/server/startup-checks';
 import { stamp } from '$lib/timestamps';
@@ -1214,5 +1216,74 @@ describe('a hold is told by why it was held (card 3009’s code review, FP4)', (
 			['backup_destination:A', SETTER_ACCESS_ENDED, 7],
 			['mail', UNSEALED_RESTORE, null]
 		]);
+	});
+});
+
+describe("a hold by this server's record of where it sends is told in its own words (card 3004, (pp))", () => {
+	/** Hold `setting` at `place` as a restore does by the record: set by nobody, `because`. */
+	const holdByRecord = (setting: string, place: string, because: string) =>
+		sqlite
+			.prepare('INSERT INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) VALUES (?, ?, ?, ?, NULL, NULL)')
+			.run(setting, place, because, stamp());
+
+	it("(pp) heldListWhy for the four reasons, heldSetByWords, and the destination's, the mail's, the App URL's and the start's words for 'removed here' and 'not in this server's record', none naming a setter", async () => {
+		// The list's sentence, by the reasons it holds.
+		const removed = { heldBecause: HELD_REMOVED_HERE };
+		const unrecorded = { heldBecause: HELD_NOT_RECORDED };
+		const ended = { heldBecause: SETTER_ACCESS_ENDED };
+		const unsealed = { heldBecause: HELD_FROM_UNSEALED_BACKUP };
+		const RECORD_ONLY =
+			"Each of these came back with a restore, though it was removed on this server since the backup was made or is not in this server's record of where it sends.";
+		expect(heldListWhy([removed])).toBe(RECORD_ONLY);
+		expect(heldListWhy([removed, unrecorded])).toBe(RECORD_ONLY);
+		expect(heldListWhy([removed, ended, unsealed])).toBe(
+			"Each of these was set by an account whose access was ended with its API keys, came in with a backup whose seal did not verify, or came back with a restore though removed here or not in this server's record."
+		);
+		expect(heldListWhy([ended])).toBe('Each of these was set by an account whose access was ended with its API keys.');
+		// Who it is told as set by: never a setter for a restore's hold by the record.
+		expect(heldSetByWords({ ...removed, setBy: null, setByName: null })).toBe('From a backup made before it was removed on this server');
+		expect(heldSetByWords({ ...unrecorded, setBy: null, setByName: null })).toBe("From a backup, and not in this server's record of where it sends");
+		expect(heldSetByWords({ ...ended, setBy: null, setByName: null })).toBe('From a backup made before it was held on this server');
+		expect(heldSetByWords({ ...ended, setBy: 7, setByName: 'ann' })).toBe('Set by ann');
+
+		// The destination's words, for a run, a Test and a Connect.
+		saveDestinations([A, B]);
+		holdByRecord('backup_destination:A', placeOf('A'), HELD_REMOVED_HERE);
+		holdByRecord('backup_destination:B', placeOf('B'), HELD_NOT_RECORDED);
+		expect(destinationHeldWords(placeOf('A'))).toBe(DESTINATION_HELD_BY_RECORD);
+		expect(destinationHeldWords(placeOf('B'))).toBe(DESTINATION_HELD_BY_RECORD);
+		const results = await runBackup();
+		expect(results.filter((row) => row.status === 'failed').map((row) => [row.destination, row.message])).toEqual([
+			['A', DESTINATION_HELD_BY_RECORD],
+			['B', DESTINATION_HELD_BY_RECORD]
+		]);
+
+		// The mail's: nothing handed over, in the record's words.
+		makeSmtp();
+		holdByRecord('mail', SMTP_PLACE, HELD_NOT_RECORDED);
+		expect(mailProblemWords('held')).toBe(MAIL_HELD_BY_RECORD);
+		expect(await trySendEmail('a@example.test', 'Held', '<p>x</p>')).toEqual({ sent: false, problem: 'held', detail: MAIL_HELD_BY_RECORD });
+		expect(MAIL_HELD_BY_RECORD).not.toMatch(/access was ended|account that set/);
+
+		// The App URL's: held, so no link begins with it.
+		sqlite.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://old.example.test')").run();
+		holdByRecord('app_url', appUrlPlaceOf(appUrlAsRead('https://old.example.test')) as string, HELD_REMOVED_HERE);
+		expect(appUrlHeld()).toBe(true);
+		expect(getAppUrl()).not.toBe('https://old.example.test');
+
+		// The start's WARN: the record's holds in their own words, and one the record held set by nobody named, never "user unknown".
+		expect(reportSettingsHeld()).toBe(4);
+		const said = lines('STARTUP').at(-1)!.message;
+		expect(said).toBe(
+			"Settings held for the superadmin's review: the App URL, backup destination \"A\", backup destination \"B\", the mail settings (came back with a " +
+				"restore though removed on this server since the backup was made, or not in this server's record of where it sends). Nothing is sent " +
+				'to them until the superadmin keeps or removes each under Settings held for review on the admin page; an older image would use them again.'
+		);
+		sqlite.exec("DELETE FROM setting_holds WHERE setting = 'mail'");
+		holdByRecord('mail', SMTP_PLACE, SETTER_ACCESS_ENDED);
+		expect(reportSettingsHeld()).toBe(4);
+		const both = lines('STARTUP').at(-1)!.message;
+		expect(both).toContain("the mail settings (held as this server's record of where it sends says, set by no account named)");
+		expect(both).not.toMatch(/user unknown|set by user/);
 	});
 });

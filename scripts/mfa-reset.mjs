@@ -155,6 +155,53 @@ export const RECORD_ACCOUNT_KEYS_ENDED_SQL =
 const SETTER_ACCESS_ENDED = 'setter access ended';
 
 /**
+ * The one statement that holds the settings an account set, from its setter rows: `HOLD_SETTINGS_SET_BY_SQL` in
+ * src/lib/server/setting-holds.ts word for word (card 3004, R8; tests/mfa-reset-script.test.ts compares them), for
+ * `@id`, `@hold`, `@at` and `@name`.
+ */
+export const HOLD_SETTINGS_SET_BY_SQL =
+	'INSERT OR IGNORE INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) ' +
+	'SELECT setting, place, @hold, @at, user_id, @name FROM setting_setters WHERE user_id = @id ORDER BY rowid';
+
+/**
+ * This server's record of where it sends (card 3004, O17, R8): the three statements src/lib/server/outbound-changes.ts
+ * records an ending's holds and pauses by, word for word (tests/mfa-reset-script.test.ts compares them). Each webhook
+ * of `@ids` recorded `held`, with the keyed digest of its address carried from the record's latest row of it, so that
+ * no key is needed; each schedule of `@ids` recorded `off`; each place account `@id`'s setter rows name recorded
+ * `held`. Run only where the database has the record (migration 0081). Need `stamp_of`, which `openDatabase` gives.
+ */
+export const RECORD_WEBHOOKS_HELD_SQL =
+	'INSERT INTO outbound_changes (kind, item_id, item_created, place, address, state, changed_at, stated_changed) ' +
+	"SELECT 'webhook', w.id, coalesce(stamp_of(w.created_at), ''), '', " +
+	"coalesce((SELECT o.address FROM outbound_changes AS o WHERE o.kind = 'webhook' AND o.item_id = w.id " +
+	"AND o.item_created = coalesce(stamp_of(w.created_at), '') AND o.place = '' AND o.origin IN ('here', 'seed') " +
+	"ORDER BY o.origin = 'here' DESC, o.seq DESC LIMIT 1), ''), " +
+	"'held', @at, @at FROM webhooks AS w WHERE w.id IN (SELECT value FROM json_each(@ids)) ORDER BY w.id";
+export const RECORD_SCHEDULES_OFF_SQL =
+	'INSERT INTO outbound_changes (kind, item_id, item_created, place, address, state, changed_at, stated_changed) ' +
+	"SELECT 'schedule', s.id, coalesce(stamp_of(s.created_at), ''), '', '', 'off', @at, @at " +
+	'FROM report_schedules AS s WHERE s.id IN (SELECT value FROM json_each(@ids)) ORDER BY s.id';
+export const RECORD_SETTINGS_HELD_SQL =
+	'INSERT INTO outbound_changes (kind, item_id, item_created, place, address, state, changed_at, stated_changed) ' +
+	"SELECT DISTINCT CASE WHEN setting = 'mail' THEN 'mail' WHEN setting = 'app_url' THEN 'app_url' ELSE 'destination' END AS kind, " +
+	"0, '', place, '', 'held', @at, @at FROM setting_setters " +
+	"WHERE user_id = @id AND (setting IN ('mail', 'app_url') OR substr(setting, 1, 19) = 'backup_destination:') ORDER BY kind, place";
+
+/** The columns of the record the server reads and writes (outbound-changes.ts's `OUTBOUND_COLUMNS`): all are asked for. */
+const OUTBOUND_COLUMNS = ['seq', 'kind', 'item_id', 'item_created', 'place', 'address', 'state', 'changed_at', 'stated_changed', 'origin'];
+
+/**
+ * Whether `database` has this server's record of where it sends (migration 0081), with every column the server reads
+ * and writes, as `hasOutboundRecord` in outbound-changes.ts asks (card 3004's code review, F9): a database from before
+ * it, or one whose table lacks a column, is reset as it was, recording nothing.
+ * @param {import('better-sqlite3').Database} database
+ */
+function hasOutboundRecord(database) {
+	const columns = database.prepare('SELECT name FROM pragma_table_info(?)').pluck().all('outbound_changes');
+	return OUTBOUND_COLUMNS.every((column) => columns.includes(column));
+}
+
+/**
  * `readableBy` in src/lib/server/webhooks.ts, word for word (card 2935; tests/mfa-reset-script.test.ts compares
  * them): SQL true where the account `id`, of role `role`, can be given the secret of a webhook on board `board`.
  * @param {string} id @param {string} role @param {string} [board]
@@ -668,6 +715,8 @@ function holdReadable(database, username) {
 			)
 				.map((row) => ({ ...row, reader: id }))
 				.sort((a, b) => a.id - b.id);
+			// Each recorded `held` in this server's record of where it sends, where it has one (card 3004, O17).
+			if (hasOutboundRecord(database)) database.prepare(RECORD_WEBHOOKS_HELD_SQL).run({ ids: JSON.stringify(rows.map((row) => row.id)), at: now });
 			const name = printable(account.username);
 			const insert = database.prepare('INSERT INTO system_logs (timestamp, level, context, message, meta, user_id, ip) VALUES (?, ?, ?, ?, ?, ?, ?)');
 			for (const line of webhookLines(
@@ -722,6 +771,8 @@ function reset(database, username, keep) {
 			const id = account.id;
 			const now = new Date();
 			const nowStamp = stamp(now);
+			// Whether the database has this server's record of where it sends (card 3004, O17).
+			const outbound = hasOutboundRecord(database);
 			// Whether the webhooks whose secret it could read go too (card 2935, `endAccountAccess`): unless kept, and
 			// unless it provably read nothing (P1), asked before its keys are deleted.
 			const readable =
@@ -811,6 +862,8 @@ function reset(database, username, keep) {
 				)
 					.map((row) => (row.set_by === id ? row : { ...row, reader: id }))
 					.sort((a, b) => a.id - b.id);
+				// Each recorded `held` in this server's record of where it sends, where it has one (card 3004, O17).
+				if (outbound) database.prepare(RECORD_WEBHOOKS_HELD_SQL).run({ ids: JSON.stringify(rows.map((row) => row.id)), at: stamp(now) });
 				switchedOffRows = rows.filter((row) => !alreadyOff.has(row.id));
 				heldRows = rows.filter((row) => alreadyOff.has(row.id));
 				// Those it set (P9): the meta and the line, as the route's.
@@ -819,12 +872,9 @@ function reset(database, username, keep) {
 				// setting-setters.ts): every setter row of the account copied as it is, whatever is at that place now,
 				// which the server decides when it reads the setting. Then every link of the requests it made ended,
 				// as the server's `endAccountAccess` ends them.
-				database
-					.prepare(
-						'INSERT OR IGNORE INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) ' +
-							'SELECT setting, place, @hold, @at, user_id, @name FROM setting_setters WHERE user_id = @id ORDER BY rowid'
-					)
-					.run({ id, hold: SETTER_ACCESS_ENDED, at: stamp(now), name: account.username });
+				database.prepare(HOLD_SETTINGS_SET_BY_SQL).run({ id, hold: SETTER_ACCESS_ENDED, at: stamp(now), name: account.username });
+				// Each place held recorded `held` (card 3004, R13, O17), where the database has the record.
+				if (outbound) database.prepare(RECORD_SETTINGS_HELD_SQL).run({ id, at: stamp(now) });
 				database.prepare('DELETE FROM request_links WHERE request_id IN (SELECT id FROM task_requests WHERE requester_user_id = ?)').run(id);
 			}
 			const heldIds = heldRows.filter((row) => row.reader === undefined).map((row) => row.id);
@@ -852,6 +902,8 @@ function reset(database, username, keep) {
 			)
 				.map((row) => row.id)
 				.sort((a, b) => a - b);
+			// Each recorded `off` (card 3004, O17), where the database has the record.
+			if (outbound) database.prepare(RECORD_SCHEDULES_OFF_SQL).run({ ids: JSON.stringify(reportScheduleIds), at: stamp(now) });
 
 			// issueEnrolmentLink(id, 'host-reset'): the account's one link, its token kept only as its hash.
 			database.prepare('DELETE FROM enrolment_links WHERE user_id = ?').run(id);

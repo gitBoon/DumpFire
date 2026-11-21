@@ -205,6 +205,8 @@ const TEST_FILES = [
 	// Card 2941: a OneDrive destination's Graph addresses, listing and Test, Graph mocked.
 	'onedrive-destination.test.ts',
 	'openapi-document.test.ts',
+	// Card 3004: the record of every change of where this server sends, its keyed digests, the seed and the rule.
+	'outbound-changes.test.ts',
 	// Milestone 22, slice S1b: the Options column's rules and its strip.
 	'options-column.test.ts',
 	// Card 2527: every delivery board has its Options column, made with it and by the start-up step.

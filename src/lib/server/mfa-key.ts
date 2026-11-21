@@ -3,14 +3,15 @@
  * on it at start (card 2768).
  *
  * The key is 32 bytes kept in a file outside the database and outside every
- * backup, named by `MFA_KEY_FILE`, as 64 hexadecimal characters. Four keys
+ * backup, named by `MFA_KEY_FILE`, as 64 hexadecimal characters. Five keys
  * are derived from it, so the file's bytes are never used under two
  * primitives: the AES-256-GCM key that seals authenticator secrets
  * (HKDF-SHA256), the AES-256-GCM key that seals the other secrets the server
  * keeps in its database (HKDF-SHA256 with an info of its own, card 2898,
  * stored-secrets.ts), the key check stored in `settings.mfa_key_check`
- * (HMAC-SHA256), and the key id each sealed secret names (the first 16 hex of
- * another HMAC-SHA256). Nothing else
+ * (HMAC-SHA256), the key id each sealed secret names (the first 16 hex of
+ * another HMAC-SHA256), and the HMAC-SHA256 key of the record of where this
+ * server sends (HKDF-SHA256, card 3004). Nothing else
  * of the key is kept, and none of it is ever written to a log, a message, a
  * row or a backup.
  *
@@ -49,9 +50,12 @@ export const MFA_KEY_FILE_MAX_BYTES = 4096;
  * What the rest of the code holds: never the file's bytes themselves.
  * `secretsKey` seals the secrets the server keeps in its database (card 2898,
  * stored-secrets.ts): a key of its own, so that no ciphertext of one kind is
- * made under the key of the other.
+ * made under the key of the other. `outboundKey` keys the digests of the
+ * record of where this server sends (card 3004, R10, R11; outbound-changes.ts):
+ * an HMAC-SHA256 key of its own, never stored, and never the webhook address
+ * key a Reset clears.
  */
-export type MfaKey = { id: string; check: string; encryptionKey: Buffer; secretsKey: Buffer };
+export type MfaKey = { id: string; check: string; encryptionKey: Buffer; secretsKey: Buffer; outboundKey: Buffer };
 
 export type KeyLoad =
 	| { ok: true; key: MfaKey; path: string | null; made: boolean; insideDatabaseDir: boolean; warnings: string[] }
@@ -62,15 +66,18 @@ const KEY_TEXT = /^[0-9a-f]{64}$/i;
 
 /**
  * The keys derived from the file's 32 bytes: the key id, the key check, the
- * AES key of the factors, and the AES key of the stored secrets (card 2898),
- * each HKDF-SHA256 with an info of its own.
+ * AES key of the factors, the AES key of the stored secrets (card 2898) and
+ * the HMAC key of the record of where this server sends (card 3004), each
+ * HKDF-SHA256 with an info of its own.
  */
 export function keyFromBytes(raw: Buffer): MfaKey {
 	return {
 		id: createHmac('sha256', raw).update('dumpfire-mfa-key-id').digest('hex').slice(0, 16),
 		check: createHmac('sha256', raw).update('dumpfire-mfa-check').digest('hex'),
 		encryptionKey: Buffer.from(hkdfSync('sha256', raw, Buffer.alloc(0), 'dumpfire mfa aes-256-gcm v1', 32)),
-		secretsKey: Buffer.from(hkdfSync('sha256', raw, Buffer.alloc(0), 'dumpfire stored secrets aes-256-gcm v1', 32))
+		secretsKey: Buffer.from(hkdfSync('sha256', raw, Buffer.alloc(0), 'dumpfire stored secrets aes-256-gcm v1', 32)),
+		// Card 3004 (R10, R11): the key of the record of where this server sends' digests of addresses.
+		outboundKey: Buffer.from(hkdfSync('sha256', raw, Buffer.alloc(0), 'dumpfire outbound record v1', 32))
 	};
 }
 

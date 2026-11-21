@@ -12,7 +12,8 @@
  */
 
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
+import { recordScheduleWritten, recordSchedulesAs, requireOutboundKey } from '$lib/server/outbound-changes';
 import { reportSchedules } from '$lib/server/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { afterCommit } from '$lib/server/db/transaction';
@@ -113,7 +114,7 @@ export const PUT: RequestHandler = async ({ locals, params, request, cookies, ge
 		if (asks(change)) return { asks: true as const };
 		// Last, with nothing awaited before the write.
 		if (change.take) takeReportMail(user, change.take.n, change.take.spend);
-		const row = writeChange(scheduleId, change.updates);
+		const row = writeChange(scheduleId, change.schedule, change.updates);
 		// Said once committed, when something changed (card 2895, D3).
 		const said: UnaskedScheduleChange = {};
 		if (change.renamed) said.renamedFrom = change.schedule.name;
@@ -141,7 +142,7 @@ export const PUT: RequestHandler = async ({ locals, params, request, cookies, ge
 			const change = readScheduleChange(user, scheduleId, body);
 			// Last, with nothing awaited before the write.
 			if (change.take) takeReportMail(user, change.take.n, change.take.spend);
-			const row = writeChange(scheduleId, change.updates);
+			const row = writeChange(scheduleId, change.schedule, change.updates);
 			if (asks(change)) {
 				const said: ScheduleChange = {};
 				if (change.added.length > 0) said.added = change.added;
@@ -158,13 +159,19 @@ export const PUT: RequestHandler = async ({ locals, params, request, cookies, ge
 /** Whether a change asks for the password and a code (card 2751, D2): it adds an address, turns the schedule on, or widens its filter. */
 const asks = (change: ScheduleChangeRead) => change.added.length > 0 || change.turnedOn || change.widened;
 
-/** Write a change read by `readScheduleChange`, and answer the row as written. */
-function writeChange(scheduleId: number, updates: Partial<typeof reportSchedules.$inferInsert>) {
-	return db.update(reportSchedules)
+/**
+ * Write a change read by `readScheduleChange` to `before`, the row as it read it, and answer the row as written.
+ * Switched on or off, and each address added or removed, recorded in this server's record of where it sends (card
+ * 3004, O8; 3002-R12): a rename or a re-timing records nothing.
+ */
+function writeChange(scheduleId: number, before: typeof reportSchedules.$inferSelect, updates: Partial<typeof reportSchedules.$inferInsert>) {
+	const row = db.update(reportSchedules)
 		.set(updates)
 		.where(eq(reportSchedules.id, scheduleId))
 		.returning()
 		.get();
+	if (row !== undefined) recordScheduleWritten(sqlite, before, row);
+	return row;
 }
 
 /** A change of a schedule as `readScheduleChange` reads it. */
@@ -293,6 +300,11 @@ function readScheduleChange(user: SessionUser, scheduleId: number, body: Request
 				? { n: added.length, spend: 'new recipients' }
 				: null;
 
+	// An address added or taken off is recorded by a keyed digest (card 3004's code review, NF-S4d): with no MFA key
+	// loaded, 503, nothing saved and nothing taken from the day's report mail, a removal alone too, so that the record
+	// misses no change.
+	if (added.length + removed.length > 0) requireOutboundKey();
+
 	return { schedule, updates, added, turnedOn, widened, take, renamed, retimed, turnedOff, narrowed, removed };
 }
 
@@ -315,6 +327,8 @@ export const DELETE: RequestHandler = async ({ locals, params }) => {
 
 		if (!schedule) throw error(404, 'Schedule not found');
 
+		// Recorded `deleted` while it can be read (card 3004, O9): a restore of an older backup brings it back paused.
+		recordSchedulesAs(sqlite, [scheduleId], 'deleted');
 		db.delete(reportSchedules).where(eq(reportSchedules.id, scheduleId)).run();
 		afterCommit(() => reportScheduleDeleted(schedule));
 	});

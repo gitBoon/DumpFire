@@ -95,9 +95,9 @@ afterEach(() => {
 
 /**
  * What a reset keeps: with the record of every API key ended here (card 2995), of every account ended here (card 2996),
- * and of every change of access here (card 3002).
+ * of every change of access here (card 3002), and of every change of where this server sends (card 3004).
  */
-const KEPT = ['system_logs', 'backup_log', 'api_key_revocations', 'account_endings', 'access_changes'];
+const KEPT = ['system_logs', 'backup_log', 'api_key_revocations', 'account_endings', 'access_changes', 'outbound_changes'];
 /** The migration runner's record of the files it has applied. */
 const MIGRATION_RECORD = '__drizzle_migrations';
 
@@ -267,6 +267,12 @@ function everything(): Everything {
 			"INSERT INTO access_changes (kind, subject_id, subject_created, holder_id, holder_created, access, changed_at, stated_changed) VALUES ('board_member', ?, '2026-11-01 09:00:00', ?, '2026-11-01 09:00:00', 'none', '2026-11-20 09:00:00', '2026-11-20 09:00:00')"
 		)
 		.run(A.board.id, member.id);
+	// And of every change of where this server sends (card 3004, migration 0081): a webhook deleted here.
+	sqlite
+		.prepare(
+			"INSERT INTO outbound_changes (kind, item_id, item_created, address, state, changed_at, stated_changed) VALUES ('webhook', 900, '2026-11-01 09:00:00', ?, 'deleted', '2026-11-20 09:00:00', '2026-11-20 09:00:00')"
+		)
+		.run(`k1:${'b'.repeat(64)}`);
 	db.insert(backupLog)
 		.values({ destinationType: 'sftp', destinationName: 'Offsite', filename: 'backup-1.db', status: 'success' })
 		.run();
@@ -394,6 +400,25 @@ describe('POST /api/admin/reset', () => {
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(count('board_members')).toBe(0);
+		expect(record()).toEqual(before);
+	});
+
+	it('(c) card 3004: leaves the record of changes of where this server sends out of the tables a restore clears, and a reset keeps every row of it and writes none', async () => {
+		expect(restorableTables(sqlite)).not.toContain('outbound_changes');
+		expect(restorableTables(sqlite)).toContain('webhooks');
+		expect(restorableTables(sqlite)).toContain('report_schedules');
+		expect(restorableTables(sqlite)).toContain('settings');
+		const e = everything();
+		const record = () => sqlite.prepare('SELECT * FROM outbound_changes ORDER BY seq').all();
+		const before = record();
+		expect(before).toHaveLength(1);
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+
+		const res = await reset(e);
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(count('webhooks')).toBe(0);
+		expect(count('report_schedules')).toBe(0);
 		expect(record()).toEqual(before);
 	});
 

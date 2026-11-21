@@ -271,28 +271,50 @@ function backupLatest(reads: Reads, key: Key): AccessRow | undefined {
 }
 
 /**
+ * The three reads the rule ranks an item's rows by (card 3004, R5): its latest `here` row (with `asOf`, the latest dated
+ * no later than it), its `backup` rows dated after a moment, and its latest `backup` row by `(changed_at, seq)`. The
+ * record of access changes and the record of where this server sends (outbound-changes.ts) each give their own.
+ */
+export type DecidingReads<K, R extends { seq: number; changedAt: string }> = {
+	hereLatest: (key: K, asOf?: string) => R | undefined;
+	backupAfter: (key: K, after: string) => R[];
+	backupLatest: (key: K) => R | undefined;
+};
+
+/**
  * The rows that decide among `keys`, ranked by R1: the latest `here` row among them by `seq` and every `backup` row of
  * any of them dated after it; or, where none has a `here` row, the latest `backup` row by `(changed_at, seq)`. Each row
- * with the index of its key.
+ * with the index of its key. Generic over the record (card 3004, R5): `reads` are its three reads.
  */
-function deciding(reads: Reads, keys: readonly Key[], asOf?: string): { here?: [AccessRow, number]; later: [AccessRow, number][]; backup?: [AccessRow, number] } {
-	let here: [AccessRow, number] | undefined;
+export function deciding<K, R extends { seq: number; changedAt: string }>(
+	reads: DecidingReads<K, R>,
+	keys: readonly K[],
+	asOf?: string
+): { here?: [R, number]; later: [R, number][]; backup?: [R, number] } {
+	let here: [R, number] | undefined;
 	keys.forEach((key, i) => {
-		const row = hereLatest(reads, key, asOf);
+		const row = reads.hereLatest(key, asOf);
 		if (row !== undefined && (here === undefined || row.seq > here[0].seq)) here = [row, i];
 	});
 	if (here !== undefined) {
 		const after = here[0].changedAt;
-		return { here, later: keys.flatMap((key, i) => backupAfter(reads, key, after).map((row) => [row, i] as [AccessRow, number])) };
+		return { here, later: keys.flatMap((key, i) => reads.backupAfter(key, after).map((row) => [row, i] as [R, number])) };
 	}
-	let backup: [AccessRow, number] | undefined;
+	let backup: [R, number] | undefined;
 	keys.forEach((key, i) => {
-		const row = backupLatest(reads, key);
+		const row = reads.backupLatest(key);
 		if (row === undefined) return;
 		if (backup === undefined || row.changedAt > backup[0].changedAt || (row.changedAt === backup[0].changedAt && row.seq > backup[0].seq)) backup = [row, i];
 	});
 	return { later: [], backup };
 }
+
+/** The record of access changes' three reads, for `deciding`. */
+const accessDeciding = (reads: Reads): DecidingReads<Key, AccessRow> => ({
+	hereLatest: (key, asOf) => hereLatest(reads, key, asOf),
+	backupAfter: (key, after) => backupAfter(reads, key, after),
+	backupLatest: (key) => backupLatest(reads, key)
+});
 
 /**
  * Whether a subject is tracked: its marker row is held, by id and creation time, or by id alone where its time names no
@@ -329,7 +351,7 @@ function pairCeiling(
 		if (ENDED_BY_DECISION_DELETION.includes(kind)) keys.push({ kind: 'decision', subject: marker.id, subjectCreated: marker.created, deleted: true });
 	}
 	const rank = ([row, i]: [AccessRow, number]) => (i === 0 ? accessRank(kind, row.access) : 0);
-	const found = deciding(reads, keys, start.asOf);
+	const found = deciding(accessDeciding(reads), keys, start.asOf);
 	if (found.here !== undefined) return Math.min(rank(found.here), ...found.later.map(rank));
 	return found.backup === undefined ? null : rank(found.backup);
 }
@@ -344,7 +366,7 @@ function pairCeiling(
 function namedHolder(reads: Reads, kind: AccessKind, subject: { id: number; created: string }, start: StartOptions = {}): { id: number; created: string } | 'none' | null {
 	const keys: Key[] = [{ kind, subject: subject.id, subjectCreated: subject.created }];
 	if (kind === ACCESS_KIND.decisionDecider && start.deletions !== false) keys.push({ kind: 'decision', subject: subject.id, subjectCreated: subject.created, deleted: true });
-	const found = deciding(reads, keys, start.asOf);
+	const found = deciding(accessDeciding(reads), keys, start.asOf);
 	const holderOf = (row: AccessRow) => (row.holderId === 0 || row.access === 'none' ? ('none' as const) : { id: row.holderId, created: row.holderCreated });
 	if (found.here !== undefined) {
 		const named = holderOf(found.here[0]);
@@ -444,7 +466,7 @@ export function accessCeiling(database: Database.Database, item: AccessItem, opt
  */
 export function accessTeamDeleted(database: Database.Database, team: AccessSide, asOf?: string): boolean {
 	if (team.created === null) return false;
-	const found = deciding(readsOf(database), [{ kind: 'team', subject: team.id, subjectCreated: team.created }], asOf);
+	const found = deciding(accessDeciding(readsOf(database)), [{ kind: 'team', subject: team.id, subjectCreated: team.created }], asOf);
 	const row = found.here?.[0] ?? found.backup?.[0];
 	return row?.access === 'deleted' || found.later.some(([later]) => later.access === 'deleted');
 }

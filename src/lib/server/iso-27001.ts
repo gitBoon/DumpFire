@@ -697,6 +697,10 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'There is a Content-Security-Policy and a Referrer-Policy. Backups hold no secret and no requester link. ' +
 			'A restore of a backup whose seal did not verify sends nothing outside as the file has it: every webhook with an address is held with its secret discarded, every report schedule is paused, the accounts that are the same here keep this server\'s email address and notification choices, every other account has its notification mail switched off, and the backup failure mail keeps this server\'s address (card 3012); requests whose requester or card this server did not hold as they are have their mail held until an administrator releases each, as reviewed, with a password and a code, and people whose address and account it did not hold are marked left, so no decision mail goes to them (card 3020). ' +
 			"On such a restore kept as it is, mail keeps this server's From address and name, or none where it had none (card 3029). " +
+			'Every change of where this server sends is recorded by identity in the transaction that makes it, naming no address in plain: webhooks and report schedules by id and creation time, a webhook\'s address and a schedule\'s addresses as keyed digests, and backup destinations, the mail server and the App URL by place. ' +
+			'A restore, sealed or not, brings none of them back more open than this server holds it or recorded it: a webhook deleted or re-pointed here comes back switched off for good with its secret discarded, one switched off stays off, a schedule deleted or switched off here comes back paused, an address taken off a schedule stays off, ' +
+			"and a destination, mail server or App URL removed or moved here is held for the superadmin's review; a restore of this server's own backup also holds what is not in that record, and an account it signs out has its webhooks and settings held as a real reset holds them. " +
+			'Mail settings, destinations and the App URL that are not text are left out or read as text at the restore, and no sender uses one (card 3004). ' +
 			'Still open: a schedule covers boards added to its grouping later. ' +
 			'Any administrator can still add a backup destination of their own and Run Now, which sends it a full copy of the database, and whoever sets the mail server reads every mail (card 2906, to be ruled).',
 		evidence: [
@@ -715,6 +719,11 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: 'src/lib/server/db/restore.ts', symbol: 'keepMailFromHere' },
 			{ path: 'src/lib/server/email.ts', symbol: 'mailFromAsRead' },
 			{ path: 'src/routes/api/reports/email/+server.ts', symbol: 'confirmStepUp' },
+			// Card 3004: the record of where this server sends, its writer, and the restore's three steps that apply it.
+			{ path: 'src/lib/server/outbound-changes.ts', symbol: 'recordOutboundChange' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyOutboundWebhooks' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyOutboundSchedules' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyOutboundSettings' },
 			{ path: 'svelte.config.js', symbol: 'csp' },
 			{ path: 'src/lib/server/gate-answers.ts', symbol: 'Referrer-Policy' },
 			{ path: AUTH_DOC, anchor: 'the-content-security-policy' },
@@ -733,12 +742,18 @@ export const CHECKLIST: readonly IsoItem[] = [
 		how:
 			'Scheduled backups to SFTP, S3, Google Drive and OneDrive, with Keep Last, a history and failure mail. Each backup is sealed with an HMAC, and a restore checks it. ' +
 			'Attachment files are kept out of the backup by design; the organisation backs up the uploads folder. ' +
+			"A restore keeps this server's record of where it sends, and never sends the next backup to a destination removed or moved here since the backup it restores was made: that destination is held for the superadmin's review, " +
+			'as are webhooks, report schedules, the mail server and the App URL removed, moved or switched off here (card 3004). ' +
 			'Still open: the backup file is not encrypted, yet it holds every password hash, address and card.',
 		evidence: [
 			{ path: 'src/lib/server/backup.ts' },
 			{ path: 'src/lib/server/backup-destinations.ts' },
 			{ path: 'src/lib/server/backup-secrets.ts', symbol: 'sealOf' },
 			{ path: 'src/lib/server/db/restore.ts' },
+			// Card 3004: the record's writer, and the restore's steps that hold a destination removed here and the webhooks.
+			{ path: 'src/lib/server/outbound-changes.ts', symbol: 'recordOutboundChange' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyOutboundSettings' },
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'applyOutboundWebhooks' },
 			{ path: 'tests/backups.test.ts' },
 			{ path: BACKUP_DOC, anchor: 'failure-notifications' }
 		],

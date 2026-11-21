@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
+import { recordOutboundState, recordWebhooksAs, requireOutboundKey, webhookStateOf } from '$lib/server/outbound-changes';
 import { webhooks } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireBoard, requireUser, type Need } from '$lib/server/route-guards';
@@ -177,6 +178,9 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		// written back as stored, byte for byte: never sealed again (R3).
 		if (url !== undefined) {
 			if (urlChanged) {
+				// A new address is sealed, and recorded by a keyed digest (card 3004's code review, NF-S4d): with no MFA key
+				// loaded, 503 before anything is written.
+				requireOutboundKey();
 				updates.receiver = receiverOf(url) ?? '';
 				updates.url = sealStored(url, webhookUrlAad(hook.id, hook.boardId, updates.receiver));
 			} else {
@@ -234,6 +238,13 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			.where(eq(webhooks.id, webhookId))
 			.returning()
 			.get();
+		// Card 3004 (O2, O3; 3002-R12): switched on or off, or given another address, recorded with the keyed digest of
+		// the address it is left with; a change of events alone, to a webhook as the record says it is, records nothing.
+		recordOutboundState(
+			sqlite,
+			{ kind: 'webhook', id: webhookId, state: webhookStateOf(row), address: urlChanged && url !== undefined ? url : usable ? address.value : '' },
+			{ state: webhookStateOf(hook), address: usable ? address.value : '' }
+		);
 		// The secret only where this request set or replaced it, recorded as given to the caller's key (R9).
 		return answerWebhook(row, reveal, locals.credential, { secret: secretChanged });
 	});
@@ -265,6 +276,8 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 		// editor's delete would clear the hold off the board, and with it the
 		// refusal of a new webhook to its receiver.
 		if (!reveal && !hook.active && hook.heldBecause !== null) throw error(403, HELD_OFF_DELETE);
+		// Recorded `deleted` while it can be read (card 3004, O4): a restore of an older backup brings it back held.
+		recordWebhooksAs(sqlite, [webhookId], 'deleted');
 		db.delete(webhooks).where(eq(webhooks.id, webhookId)).run();
 	});
 	forgetDelivery(webhookId);
