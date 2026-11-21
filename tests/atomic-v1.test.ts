@@ -481,6 +481,10 @@ describe('POST /api/v1/boards', () => {
 			'insert into boards',
 			'insert into columns',
 			'insert into board_members',
+			// Card 3002 (W1): the record of access changes, the board, its visibility and its owner.
+			'insert into access_changes',
+			'insert into access_changes',
+			'insert into access_changes',
 			'insert into activity_log'
 		]);
 		// A sub-board: the pages open on its card's board are told, once it is

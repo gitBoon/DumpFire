@@ -1,6 +1,7 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
 import { boards, boardMembers, boardTeams, users, teams, teamMembers } from '$lib/server/db/schema';
+import { ACCESS_KIND, accessAsRecorded, recordAccessChange, type AccessChange } from '$lib/server/access-changes';
 import { eq, and } from 'drizzle-orm';
 import { editorsOf, getBoardRole } from '$lib/server/board-access';
 import { notifyBoardShared } from '$lib/server/notifications';
@@ -98,6 +99,15 @@ const SHARE_ROLES = ['viewer', 'editor'] as const;
 /** A member role's rank, for whether a change raises it (card 2671): viewer, then editor, then owner; anything else the least. */
 const shareRank = (role: string): number => ['viewer', 'editor', 'owner'].indexOf(role);
 
+/**
+ * Record a share's role in the record of access changes (card 3002, W3, W4; R12), in the share's transaction, after its
+ * write: where it differs from the role stored before, or from what the record says, so that a role an older image or a
+ * host edit gave, sent again unchanged, is recorded too.
+ */
+function recordShare(change: AccessChange, before: string | undefined): void {
+	if (before !== change.access || !accessAsRecorded(sqlite, change)) recordAccessChange(sqlite, change);
+}
+
 /** POST — Share board with a user or team. */
 export const POST: RequestHandler = async ({ params, request, locals, url }) => {
 	requireUser(locals.user);
@@ -161,6 +171,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 					notifyBoardShared(boardId, board.name, target.email, target.username, user.username, shareRole, baseUrl);
 				}
 			}
+			recordShare({ kind: ACCESS_KIND.boardMember, subject: boardId, holder: targetId, access: shareRole }, stored?.role);
 		} else {
 			// Check team exists
 			const team = db.select().from(teams).where(eq(teams.id, targetId)).get();
@@ -196,6 +207,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 					}
 				}
 			}
+			recordShare({ kind: ACCESS_KIND.boardTeam, subject: boardId, holder: targetId, access: shareRole }, stored?.role);
 		}
 	});
 
@@ -216,6 +228,10 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 		// `true` or `false`, and it must be sent: `{}` made the board private, and
 		// `"false"` made it public.
 		const isPublic = readBoolean(body, 'isPublic', { required: true, keep: board.isPublic });
+		// The record of access changes (card 3002, W5; R12), asked before the write, which runs whatever was sent: a value
+		// other than the board's as read, or than the record's, is recorded after it.
+		const visibility: AccessChange = { kind: ACCESS_KIND.boardPublic, subject: boardId, access: isPublic ? 'public' : 'private' };
+		const record = isPublic !== board.isPublic || !accessAsRecorded(sqlite, visibility);
 		db.update(boards)
 			.set({ isPublic })
 			.where(eq(boards.id, boardId))
@@ -225,6 +241,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 		if (board.isPublic && !isPublic) {
 			switchOffLostWebhooks({ boardIds: [boardId] }, `the board was made private by ${requireUser(caller).username}`);
 		}
+		if (record) recordAccessChange(sqlite, visibility);
 		return isPublic;
 	});
 
@@ -270,6 +287,8 @@ export const DELETE: RequestHandler = async ({ params, request, locals }) => {
 		if (removed.changes === 0) {
 			throw error(404, type === 'user' ? 'This board is not shared with that user' : 'This board is not shared with that team');
 		}
+		// The record of access changes (card 3002, W6): only where a row went.
+		recordAccessChange(sqlite, { kind: type === 'user' ? ACCESS_KIND.boardMember : ACCESS_KIND.boardTeam, subject: boardId, holder: targetId, access: 'none' });
 		// Each webhook whose setter can no longer open the board is switched
 		// off for good, in this write (card 2752, D2): giving the share back
 		// does not switch it on again.

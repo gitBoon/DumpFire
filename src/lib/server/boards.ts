@@ -49,6 +49,7 @@ import { COLUMN_ORDER } from './card-order';
 import { stamp } from '$lib/timestamps';
 import { switchOffLostWebhooks } from './webhooks';
 import { inWrite, type ServiceOptions } from './write-as';
+import { ACCESS_KIND, recordAccessChange } from './access-changes';
 import { BOARD_KINDS, OPTIONS_COLOUR, OPTIONS_TITLE, columnRole, isOptionsColumn, isUpstreamColumn, type BoardKind, type StoredColumnRole } from '$lib/column-role';
 
 /** The functions here that only read. Every other export is a write, and starts with `inWrite()`. */
@@ -255,6 +256,10 @@ export function createBoard(caller: SessionUser | null, at: Record<string, never
 
 	// Auto-add the creator as board owner
 	db.insert(boardMembers).values({ boardId: board.id, userId: user.id, role: 'owner' }).run();
+	// The record of access changes (card 3002, W1): the board tracked with its creator, its visibility and its owner.
+	recordAccessChange(sqlite, { kind: ACCESS_KIND.board, subject: board.id, holder: user.id, access: 'tracked' });
+	recordAccessChange(sqlite, { kind: ACCESS_KIND.boardPublic, subject: board.id, access: board.isPublic ? 'public' : 'private' });
+	recordAccessChange(sqlite, { kind: ACCESS_KIND.boardMember, subject: board.id, holder: user.id, access: 'owner' });
 
 	logActivity({
 		boardId: board.id,
@@ -462,6 +467,9 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
 	if ('isPublic' in changed && !row.isPublic) {
 		switchOffLostWebhooks({ boardIds: [boardId] }, `the board was made private by ${user.username}`);
 	}
+	// The record of access changes (card 3002, W2): the visibility and the Product Owner, each only where it changed.
+	if ('isPublic' in changed) recordAccessChange(sqlite, { kind: ACCESS_KIND.boardPublic, subject: boardId, access: row.isPublic ? 'public' : 'private' });
+	if ('productOwnerUserId' in changed) recordAccessChange(sqlite, { kind: ACCESS_KIND.productOwner, subject: boardId, holder: row.productOwnerUserId, access: 'yes' });
 	// An empty board switched to the other kind is given that kind's columns
 	// in place of its own (ruling j, decision M22-18): a delivery board's
 	// Complete column has no place on an ideas board, and an ideas board's

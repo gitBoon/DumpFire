@@ -1106,6 +1106,40 @@ export const accountEndings = sqliteTable('account_endings', {
 	index('account_endings_watermark').on(table.userId).where(sql`ending = 'watermark'`)
 ]);
 
+// Every change of who may open a board, who is in a team and which account a
+// person is linked to (card 3002, migration 0079): one row per change, by the
+// identity of what is opened (`subjectId` and `subjectCreated`: a board, team
+// or person and its `created_at` in the stored form) and of who gets it
+// (`holderId` and `holderCreated`: an account, or a team for a share; 0 and ''
+// for none), its `kind`, the `access` after the change, when, and whether this
+// server wrote it (`here`) or a restore brought it (`backup`). `seq` is the
+// order of writing, and this server's rows rank by it alone. Grants and
+// narrowings alike. Written in the transaction of the change with a plain
+// INSERT; never deleted, changed or replaced. No foreign key: a row outlives
+// what it names. A restore and Reset Everything keep it; a restore adds the
+// backup's rows. The creation columns are not `*_at` columns, so the timestamp
+// normaliser never rewrites them.
+export const accessChanges = sqliteTable('access_changes', {
+	seq: integer('seq').primaryKey(),
+	kind: text('kind').notNull(),
+	subjectId: integer('subject_id').notNull(),
+	subjectCreated: text('subject_created').notNull(),
+	holderId: integer('holder_id').notNull().default(0),
+	holderCreated: text('holder_created').notNull().default(''),
+	access: text('access').notNull(),
+	changedAt: text('changed_at').notNull(),
+	// The moment as the row's writer stated it, in the stored form, or a digest: with `access`, the union's key.
+	statedChanged: text('stated_changed').notNull().default(''),
+	origin: text('origin').notNull().default('here')
+}, (table) => [
+	// The latest row of a pair by origin, in seq order (the rowid ends every index entry).
+	index('access_changes_pair').on(table.subjectId, table.kind, table.subjectCreated, table.holderId, table.holderCreated, table.origin),
+	// The latest row of a subject by origin, any holder.
+	index('access_changes_subject').on(table.subjectId, table.kind, table.subjectCreated, table.origin),
+	// The restore's union.
+	index('access_changes_union').on(table.subjectId, table.kind, table.subjectCreated, table.holderId, table.holderCreated, table.statedChanged, table.access)
+]);
+
 // ─── System Logs (structured application logging) ───────────────────────────
 
 export const systemLogs = sqliteTable('system_logs', {

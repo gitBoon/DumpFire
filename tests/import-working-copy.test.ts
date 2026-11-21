@@ -151,12 +151,14 @@ const OUTSIDE_TABLES = ['report_schedules', 'webhooks', 'settings'];
 /**
  * The rows of every table a restore copies, apart from the three above. The
  * id counters and the migration record are not copied by a restore, nor is the
- * record of API keys ended here (card 2995), nor the record of accounts ended here (card 2996): it keeps both and adds
- * to them.
+ * record of API keys ended here (card 2995), nor the record of accounts ended here (card 2996), nor the record of
+ * changes of access here (card 3002): it keeps each and adds to them.
  */
 function everythingElseIn(database: Database.Database): Record<string, string[]> {
 	const contents = contentsOf(database);
-	for (const table of [...OUTSIDE_TABLES, 'sqlite_sequence', '__drizzle_migrations', 'api_key_revocations', 'account_endings']) delete contents[table];
+	for (const table of [...OUTSIDE_TABLES, 'sqlite_sequence', '__drizzle_migrations', 'api_key_revocations', 'account_endings', 'access_changes']) {
+		delete contents[table];
+	}
 	return contents;
 }
 
@@ -570,6 +572,15 @@ describe('restoring as a working copy', () => {
 	it('switches off every report schedule and webhook, the backup schedule and its destinations, and the mail settings', () => {
 		const live = armedLive();
 		const backup = armedBackup();
+		// Card 3002 (e): this server's record of access changes, which the backup has not got, kept by the restore and left
+		// out of the comparison below.
+		live
+			.prepare(
+				"INSERT INTO access_changes (kind, subject_id, subject_created, holder_id, holder_created, access, changed_at, stated_changed) VALUES ('board_member', 7, '2026-11-01 09:00:00', 9, '2026-11-01 09:00:00', 'none', '2026-11-20 09:00:00', '2026-11-20 09:00:00')"
+			)
+			.run();
+		const accessRecordHere = rowsOf(live, 'access_changes', 'seq');
+		expect(rowsOf(backup, 'access_changes', 'seq')).toEqual([]);
 		const backupBefore = contentsOf(backup);
 
 		const result = restoreFromBackup(live, backup, { outside: 'off' });
@@ -638,6 +649,7 @@ describe('restoring as a working copy', () => {
 
 		// Everything else is the backup's, but for its accounts' passwords (card 3009), and the backup was only read.
 		expect(everythingElseIn(live)).toEqual(passwordsNotTaken(everythingElseIn(backup)));
+		expect(rowsOf(live, 'access_changes', 'seq')).toEqual(accessRecordHere);
 		expect(rowsOf(live, 'users').map((row) => row.username)).toEqual(['ann', 'bob']);
 		expect(contentsOf(backup)).toEqual(backupBefore);
 		expect(live.pragma('foreign_keys', { simple: true })).toBe(1);

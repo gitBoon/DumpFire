@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.155
+version: 1.156
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3002
   - card-3020
   - unsealed-request-addresses
   - card-3012
@@ -104,7 +105,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Card 3029 in the same release: an unsealed import keeps this server's mail From, and a move to a new host sets it before inviting anyone, Docker deployment, the release that holds an unsealed backup's requester and people mail with migration 0078, its cost and its rollback by exact image tag (card 3020), moving to a new host, a volume clone's seal key and installation id changed, the release that keeps an unsealed backup from reaching outside with its cost and rollback (card 3012), and the release that takes nothing that signs in from an unsealed backup with its rollback (card 3009), a host file rollback after which every password changed since the copy needs 🔑 or 📧 and the superadmin is warned until it changes its own, and superadmin recovery promoting an account whose password works (card 2997), the release that brings every stored service account JSON to the one rule at start and tests only saved destinations (card 2939: the start's WARN line, its checks, GOOGLE_CLOUD_UNIVERSE_DOMAIN), the release that seals the stored secrets under the MFA key (card 2898: the read-only queries before, the first start's line, the scrub and Admin › Vacuum, copies made before, a value that does not open, and going back), the release that holds already-off webhooks when an account's access ends and mails the boards' owners (card 2923: OpenAPI 1.15.0, breaking, a one-time start-up hold, the host's command printing what it held), the release that ends API keys at a two-step reset (card 2915: always from the admin page, on the host unless --keep-api-keys, a read-only check of what will end, going back, OpenAPI 1.14.0 breaking), the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Card 3002 in the same release: migration 0079 records every change of board, team and person access by identity, a restore keeps access removed, lowered or made private here, an unsealed one gives same-here accounts exactly this server's access, the seed's read-only preview, boards and teams deleted before 0079 and those whose creator's or linked account's creation time does not read left untracked (R16, R21), its cost, and the rollback dump, read-only compare and put-back of access_changes (R1); Card 3029 in the same release: an unsealed import keeps this server's mail From, and a move to a new host sets it before inviting anyone, Docker deployment, the release that holds an unsealed backup's requester and people mail with migration 0078, its cost and its rollback by exact image tag (card 3020), moving to a new host, a volume clone's seal key and installation id changed, the release that keeps an unsealed backup from reaching outside with its cost and rollback (card 3012), and the release that takes nothing that signs in from an unsealed backup with its rollback (card 3009), a host file rollback after which every password changed since the copy needs 🔑 or 📧 and the superadmin is warned until it changes its own, and superadmin recovery promoting an account whose password works (card 2997), the release that brings every stored service account JSON to the one rule at start and tests only saved destinations (card 2939: the start's WARN line, its checks, GOOGLE_CLOUD_UNIVERSE_DOMAIN), the release that seals the stored secrets under the MFA key (card 2898: the read-only queries before, the first start's line, the scrub and Admin › Vacuum, copies made before, a value that does not open, and going back), the release that holds already-off webhooks when an account's access ends and mails the boards' owners (card 2923: OpenAPI 1.15.0, breaking, a one-time start-up hold, the host's command printing what it held), the release that ends API keys at a two-step reset (card 2915: always from the admin page, on the host unless --keep-api-keys, a read-only check of what will end, going back, OpenAPI 1.14.0 breaking), the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -8973,6 +8974,136 @@ stays disabled with a password nothing matches, and nothing re-asserts it. And (
 disabled here is disabled again even where a file not of this server restores it, under that number
 and creation time, as a superadmin; where that is every superadmin of the file, the import is left
 with none enabled.
+
+### The Release That Keeps Board, Team and Person Access Removals Across a Restore (Card 3002)
+
+**Ships in the release since `332634f`** (production), with cards 2995, 2996, 2997, 3009, 3012, 3013,
+3020 and 3029, and with card 3033 (decision roles an unchecked backup can give), together.
+**Migration 0079** adds `access_changes`, its three indexes and a once-only seed; it changes no existing
+row. Migrations 0074 to 0079 apply in one start. No change to the v1 API or its OpenAPI document
+(it stays `1.15.0`); the internal import answer gains three additive fields, `accessKept`,
+`accessAsHere` and `recordsNotTaken.accessChanges`. Nothing to set.
+
+```mermaid
+flowchart LR
+    Start["first start of this release"] --> M79["0079: table, indexes,<br/>seed of today's access"]
+    M79 --> Live["every share, team, visibility,<br/>Product Owner and person link change recorded"]
+    Live --> Imp{"An import"}
+    Imp -->|"seal verified"| Cap["access capped at the record;<br/>none guessed away that is held here"]
+    Imp -->|"seal not verified"| Here["same-here accounts get exactly<br/>this server's access; none on boards<br/>and teams not here; record untouched"]
+    Cap & Here --> Sweep["start and five-minute pass:<br/>recorded items above their row lowered"]
+```
+
+**What changes.** Every change of who may open a board (its members, its shares with teams, whether it
+is public, its creator), who is in a team, a board's Product Owner and which account a person in the
+People directory is linked to is recorded by identity (id and creation time), never by name, in the
+transaction that makes it. A restore of this server's own backup brings that access back no higher
+than recorded, and never takes away on a guess access the server holds when the restore runs: a
+removed member or share stays removed, a role lowered stays lower, a private board stays private, a
+Product Owner or creator replaced here is cleared (never replaced), a person unlinked here stays
+unlinked, and a team deleted here comes back without the members and boards it had then. A backup
+whose seal does not verify adds nothing to the record and gives every account that is the same here
+exactly its access here, and none on the boards and teams this server does not hold, which come back
+private. The answer, the panel and the `[CRITICAL] [IMPORT]` line count what was kept and name nobody.
+The next start, and every five minutes, lowers again anything above its recorded row, with one
+`[WARN] [AUTH]` line of counts, mailing the owners of held webhooks only where the schedulers run.
+
+**The first start.** 0079 records today's access: each board's creator and visibility, its Product
+Owner, its members and shares, each team and its members, and each person's link, every row dated at
+the earliest stamp so that any later change outranks it. Preview, read-only, from a container of this
+release's image on the same volume (an upper bound: values whose creation time does not read as a
+moment are skipped):
+
+```bash
+docker run --rm --network none -v dumpfire-data:/app/data dumpfire:3002 node -e "const d=require('better-sqlite3')('/app/data/dumpfire.db',{readonly:true,fileMustExist:true});console.log(d.prepare('SELECT (SELECT count(*) FROM boards) * 2 + (SELECT count(*) FROM boards WHERE product_owner_user_id IS NOT NULL) + (SELECT count(*) FROM board_members) + (SELECT count(*) FROM board_teams) + (SELECT count(*) FROM teams) + (SELECT count(*) FROM team_members) + (SELECT count(*) FROM people) AS seed_rows').get())"
+```
+
+**Untracked boards, teams and people.** A board, team or person deleted before 0079 is not in the
+record: a backup that holds it brings it back whole, with the access it had (R16). So does one whose
+creation time does not read as a moment, until a restore brings it: every restore gives each restored
+board, team and person whose creation time does not read (and, from a file whose seal does not verify,
+each account not the same here that the record of account endings did not rule) the restore's moment,
+with one line counting them and naming none, so that every change of its access is recorded from then
+on (code review, FP2). And where a board's creator, or a person's linked account,
+has a creation time that does not read as a moment, 0079 writes no row for it (R21): that board or
+person is untracked, so neither a start nor a restore clears the creator or the link on a guess. A
+member, share or Product Owner whose account's or team's creation time does not read is not written.
+
+**Access granted on an older image.** A member row or share made while an image older than this
+release ran (or by a host edit) has no row of its own. The start pass leaves it; a restore caps it at
+the access the server holds when the restore runs, never higher, on any board or team, recorded or not
+(R20; code review, FP3), and guesses it away only where the backup holds it and this server did not.
+Sending such a grant again from the Share window, or the team's page, records it (code review, FP1). A
+row of this server's dated after the moment a restore or a start runs is not read by either (R1, FP12).
+
+**The cost.** After an unchecked import of an older backup of this server (one made before card 2943,
+or after Reset Everything), boards this server no longer holds come back private and open to
+administrators only, until they are shared again. A person whose account link such a backup changed
+stays marked left until an administrator marks them active, with a password and a code.
+
+**Reset Everything** keeps the record and records nothing: an import after a reset is capped by it as
+any other.
+
+**Before going back to an older image.** No image older than this release knows `access_changes`.
+`332634f` writes nothing to it and its Reset empties it; worse, **its import clears the record and
+copies the backup's rows in, each with the `origin` the backup gives it, so the backup's own rows
+arrive as `here` rows** and would rank as this server's (R1). So, as card 2995's dump and put-back
+([above](#the-release-that-keeps-ended-api-keys-ended-across-a-restore-card-2995)) and card 2996's
+([above](#the-release-that-keeps-ended-accounts-ended-across-a-restore-card-2996)):
+
+```bash
+NEW=dumpfire:3002   # the tag made as soon as the release was built
+# Before going back, with the container stopped: the record dumped beside the other two, in seq order.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true});require('fs').writeFileSync('/cold/access-changes.json',JSON.stringify(d.prepare('SELECT * FROM access_changes ORDER BY seq').all()))"
+```
+
+On return, with the server stopped:
+
+1. **Compare, read-only.** The rows in the table and not in the dump, and in the dump and not in the
+   table, by kind, subject, holder, `access` and `stated_changed`:
+
+   ```bash
+   docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+     "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true,fileMustExist:true});const key=(r)=>[r.kind,r.subject_id,r.subject_created,r.holder_id,r.holder_created,r.access,r.stated_changed].join('|');const dump=JSON.parse(require('fs').readFileSync('/cold/access-changes.json','utf8')).map(key);const live=d.prepare('SELECT * FROM access_changes').all().map(key);const a=new Set(dump),b=new Set(live);console.log({onlyInTable:live.filter((k)=>!a.has(k)).length,onlyInDump:dump.filter((k)=>!b.has(k)).length})"
+   ```
+
+   Rows only in the table are what the older image's import copied in; rows only in the dump are what
+   it cleared. Both are expected after an import there; neither is expected where none was made.
+2. **Put the dump back whole**, a host step outside the application (the application never deletes
+   from the record): the table emptied and the dump inserted with its own `seq`, in one transaction.
+   Where the returned copy predates 0079 (it has no table), first start this release on it with no
+   network and stop it once migrated, as card 2995's step 1.
+
+   ```bash
+   docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+     "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{fileMustExist:true});const rows=JSON.parse(require('fs').readFileSync('/cold/access-changes.json','utf8'));const put=d.prepare('INSERT INTO access_changes (seq, kind, subject_id, subject_created, holder_id, holder_created, access, changed_at, stated_changed, origin) VALUES (@seq, @kind, @subject_id, @subject_created, @holder_id, @holder_created, @access, @changed_at, @stated_changed, @origin)');d.transaction(()=>{d.prepare('DELETE FROM access_changes').run();for(const r of rows)put.run(r)})()"
+   ```
+
+3. **Start as usual.** The start pass lowers what an import on the older image raised above a recorded
+   row. Access granted on the older image to a tracked board has no row: the start pass keeps it, and
+   only a later restore of a backup that holds it where this server does not guesses it away. A removal
+   made while the older image ran (a member, share or team member taken off, a role lowered, a board
+   made private, a Product Owner or a person's link cleared) was not recorded either: a later restore of
+   a backup made before it brings that access back. Make each such removal again on this release once
+   returned, so that it is recorded.
+
+The dump holds ids, creation times and access words, never a name, and is safe to keep beside the cold
+copy. Put it back in the same stopped window as `api_key_revocations`' and `account_endings`'; the
+order among the three does not matter.
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| H1 | Export a backup; take Bob off board B on its Share window | Bob gone | |
+| H2 | Import the file as it is | "1 board or team membership(s) and share(s) in the backup were removed on this server after it was made, and are left out."; the `[CRITICAL] [IMPORT]` line "…keeping 1 access change(s) made on this server…", its details counting, naming nobody | Bob a member again, or a name in the line |
+| H3 | Make B public, export, make it private; import the file | B private; "1 board(s) made private on this server after the backup stay private." | B public |
+| H4 | Edit a copy of an export (its seal then fails) to make an account owner of B; import it | B's members exactly as here; "The backup's seal did not verify, so who may open what is not taken from it: 1 board(s) …" | The account an owner |
+| H5 | Restart | No `[WARN] [AUTH]` line of lowered access | A line, with no host edit made |
+
+**Release note.** "A restore never brings back board, team or person access removed, lowered or made
+private on this server since the backup was made, and a backup whose seal does not verify gives no
+account access this server did not give it. Boards and teams deleted before this release are not
+recorded and come back whole from an older backup."
 
 ## Changing the Schema
 

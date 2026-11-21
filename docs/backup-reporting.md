@@ -1,10 +1,11 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.67
+version: 1.68
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3002
   - card-3020
   - unsealed-request-addresses
   - card-3012
@@ -54,7 +55,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "An unsealed import restored as it is keeping this server's mail From (card 3029), Scheduled backup system with multi-destination support, an unsealed import holding the requester mail of requests it did not hold as they are and marking left the people it did not hold (holdUnsealedRequestMail, switchOffUnsealedPeople, card 3020, and its L9 cost), an unsealed import holding every webhook with an address, pausing schedules and keeping emails, choices and notifyEmail as here (unsealedReach, card 3012), the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "A restore never brings back board, team or person access removed, lowered or made private here: access_changes carried from a sealed backup only, an unsealed backup's same-here accounts given exactly this server's access, the record's caps with the guess only where not held here, and the counts accessKept and accessAsHere (card 3002). An unsealed import restored as it is keeping this server's mail From (card 3029), Scheduled backup system with multi-destination support, an unsealed import holding the requester mail of requests it did not hold as they are and marking left the people it did not hold (holdUnsealedRequestMail, switchOffUnsealedPeople, card 3020, and its L9 cost), an unsealed import holding every webhook with an address, pausing schedules and keeping emails, choices and notifyEmail as here (unsealedReach, card 3012), the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -245,6 +246,38 @@ of this server's id and creation time its role and disabled state exactly as her
 included (`accountStateAsHere`, counting a change of role or of whether it is disabled). The answer, the panel and the `[CRITICAL] [IMPORT]` line count
 both, naming nobody, and no `errors` line is written: this server's own backup imported after Reset
 Everything reads as a clean restore.
+
+A restore never brings back board, team or person access removed, lowered or made private on this
+server (card 3002). Every change of a board's members, shares, visibility, creator and Product Owner,
+of a team's members, of a team's deletion and of a person's account link is recorded in
+`access_changes` by identity, and a backup carries that record too, but a restore never clears this
+server's. Before the clear, on every restore, `accessHeldHere` reads the access this server holds by
+identity. After the copy, `carryAccessChanges` adds a sealed backup's rows (from a backup whose seal
+does not verify it counts them, `recordsNotTaken.accessChanges`, and takes none): each only well formed
+for its kind, with creation times no later than the restore, bounded by `MOST_OTHER_ROWS` in all and
+100 rows a pair (a pair over it is left out alone), a future `changed_at` clamped, and added only where
+no row held before has the same kind, subject, holder, stated moment and access, so a re-import adds
+nothing. Unsealed, `keepAccessHere` then gives every account that is the same here exactly this
+server's access on the boards and teams the same here, and none on those not here, which are made
+private. `applyAccessRecord` caps every other restored item at the record: an ordinal item is lowered
+to its ceiling or deleted at `none`, a Product Owner, creator or (sealed) person link the record does
+not name is cleared, a team deleted here takes its earlier members and shares, and an item with no row
+on a tracked subject is guessed `none` only where this server did not hold it before the clear, never
+taking live access on a guess. Unsealed, after card 3020's people step, `keepPersonLinksHere` keeps a
+person's link only where this server held it for an account the same here. The owners it lowered are
+held, board by board, after the fill. The answer, the panel and the `[CRITICAL] [IMPORT]` line count
+`accessKept { removed, lowered, madePrivate, productOwners, creators, teamsEnded, unlinked }` and
+`accessAsHere { boards, teams, people }`, each only where above 0, naming nobody.
+
+```mermaid
+flowchart LR
+    Held7["before the clear:<br/>accessHeldHere (every restore)"] --> Copy7["clear, copy"]
+    Copy7 --> Carry7["carryAccessChanges<br/>sealed: bounded union, origin backup<br/>unsealed: counted, none taken"]
+    Carry7 --> Keep7["unsealed: keepAccessHere<br/>same-here accounts exactly as here"]
+    Keep7 --> Apply7["applyAccessRecord<br/>caps; the guess only where not held here"]
+    Apply7 --> Link7["unsealed, after card 3020's people step:<br/>keepPersonLinksHere"]
+    Link7 --> Hold7["after the fill: holdNoLongerReadableIn,<br/>the capped owners board by board"]
+```
 
 A restore never brings back a password replaced on this server (card 2997). Every password change here
 (the holder's own, an administrator's reset, an invite used, Reset Everything) adds a `password` row

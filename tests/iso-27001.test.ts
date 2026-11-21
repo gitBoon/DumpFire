@@ -222,6 +222,43 @@ describe('the checklist source', () => {
 		expect(item.how).not.toContain('are still mailed as it has them');
 	});
 
+	it("(jj) card 3002: A.5.15 and A.8.3 say a restore brings no board, team or person access back above this server's record, and an unsealed backup gives same-here accounts exactly this server's access, A.8.3 saying \"recorded\" and naming what is not (FP9), before what is still open, and cite the record's writer and the restore's steps, each of which exists", () => {
+		const cited = {
+			'A.5.15': [
+				['src/lib/server/access-changes.ts', 'recordAccessChange'],
+				['src/lib/server/db/restore.ts', 'applyAccessRecord']
+			],
+			'A.8.3': [
+				['src/lib/server/access-changes.ts', 'recordAccessChange'],
+				['src/lib/server/db/restore.ts', 'applyAccessRecord'],
+				['src/lib/server/db/restore.ts', 'keepAccessHere']
+			]
+		};
+		for (const [ref, symbols] of Object.entries(cited)) {
+			const item = CHECKLIST.find((entry) => entry.ref === ref)!;
+			for (const [path, symbol] of symbols) {
+				const evidence = item.evidence.find((e) => e.path === path && e.symbol === symbol);
+				expect(evidence, `${ref} ${path} ${symbol}`).toBeDefined();
+				expect(evidenceFault(evidence!), `${ref} ${path} ${symbol}`).toBeNull();
+			}
+		}
+		const control = CHECKLIST.find((entry) => entry.ref === 'A.5.15')!;
+		expect(control.how).toContain(
+			'Every change of who may open a board, who is in a team and which account a person is linked to is recorded by identity in the transaction that makes it, ' +
+				'and a restore brings that access back no higher than recorded, never taking on a guess access this server holds when it runs (card 3002). '
+		);
+		expect(control.evidence.find((e) => e.path === 'tests/access-changes.test.ts')).toBeDefined();
+		const restriction = CHECKLIST.find((entry) => entry.ref === 'A.8.3')!;
+		const said =
+			'A restore never brings back board, team or person access whose removal, lowering or making private here since the backup was made is recorded, and a backup whose seal does not verify ' +
+			'gives every account that is the same here exactly the access it has here, and none on the boards and teams this server does not hold (card 3002). ' +
+			'Not recorded, so not kept by a restore: a change made by a host edit or while an older image ran, and the boards and teams deleted before the record began, which come back whole. ';
+		expect(restriction.how).toContain(said);
+		// A rule, not a gap: before what is still open.
+		expect(restriction.how.indexOf(said)).toBeLessThan(restriction.how.indexOf('Still open:'));
+		expect(restriction.how.slice(restriction.how.indexOf('Still open:'))).not.toContain('3002');
+	});
+
 	it("(g) card 3029: A.8.12 says, right after card 3020's rule, that an unsealed restore kept as it is keeps this server's From, not as open, and cites both symbols, each of which exists", () => {
 		const item = CHECKLIST.find((entry) => entry.ref === 'A.8.12')!;
 		for (const [path, symbol] of [

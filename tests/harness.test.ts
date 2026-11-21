@@ -50,6 +50,8 @@ describe('database fixture', () => {
  * merge or by `git add` not being told of it, ran the others and passed.
  */
 const TEST_FILES = [
+	// Card 3002: the record of every change of board, team and person access, and the rule that reads it.
+	'access-changes.test.ts',
 	'access-control.test.ts',
 	// Card 2671: an account disabled and enabled again, and every gate that refuses a disabled one.
 	'account-disable.test.ts',

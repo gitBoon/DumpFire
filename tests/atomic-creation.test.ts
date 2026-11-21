@@ -186,6 +186,10 @@ describe('POST /api/boards', () => {
 			'insert into boards',
 			'insert into columns',
 			'insert into board_members',
+			// Card 3002 (W1): the record of access changes, the board, its visibility and its owner.
+			'insert into access_changes',
+			'insert into access_changes',
+			'insert into access_changes',
 			'insert into activity_log'
 		]);
 		// A top-level board: no page but its maker's has anything to show.
@@ -546,7 +550,8 @@ describe('POST /api/teams', () => {
 
 		// A failure at the second used to leave a team with nobody to manage it
 		// but an administrator.
-		expect(shape(run.writes)).toEqual(['insert into teams', 'insert into team_members']);
+		// Card 3002 (W7): the record of access changes, the team and its owner.
+		expect(shape(run.writes)).toEqual(['insert into teams', 'insert into team_members', 'insert into access_changes', 'insert into access_changes']);
 		expect(run.effects).toEqual([]);
 	});
 

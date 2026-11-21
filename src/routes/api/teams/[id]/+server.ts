@@ -1,5 +1,6 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
+import { ACCESS_KIND, recordAccessChange } from '$lib/server/access-changes';
 import { teamMembers, teams } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { pathId, readBody, readText } from '$lib/server/request-body';
@@ -51,6 +52,9 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 		// them set whose board they can no longer open is switched off for
 		// good, in this write (card 2752, D2).
 		const members = db.select({ userId: teamMembers.userId }).from(teamMembers).where(eq(teamMembers.teamId, teamId)).all();
+		// The record of access changes (card 3002, W10): the team deleted, as `none` for each of its members and shares
+		// from here (R2). Written just before the delete, in its transaction, while the team's creation time can be read.
+		recordAccessChange(sqlite, { kind: ACCESS_KIND.team, subject: teamId, access: 'deleted' });
 		db.delete(teams).where(eq(teams.id, teamId)).run();
 		if (members.length > 0) {
 			switchOffLostWebhooks(

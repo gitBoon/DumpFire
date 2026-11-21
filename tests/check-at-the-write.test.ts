@@ -4339,7 +4339,13 @@ const WEBHOOK_WRITER_CALLERS: Record<string, readonly string[]> = {
 	'src/lib/server/webhooks.ts#holdWebhooksOfSetter': ['src/lib/server/auth.ts#endAccountAccess', 'src/lib/server/deletes.ts#deleteUser'],
 	// Card 2935 (P2): the two writes that lower an owner's or an administrator's role.
 	// Card 2996 (R5): the role change's body, shared by PUT /api/users/{id} and the start's pass, in account-ending-bodies.ts.
-	'src/lib/server/webhooks.ts#holdNoLongerReadable': ['src/lib/server/account-ending-bodies.ts#changeAccountRole', 'src/routes/api/boards/[id]/share/+server.ts#POST', 'src/routes/api/boards/[id]/share/+server.ts#DELETE'],
+	// Card 3002 (R3, R6): and the start's access pass, for an owner row it lowered or removed, or a creator it cleared.
+	'src/lib/server/webhooks.ts#holdNoLongerReadable': [
+		'src/lib/server/account-ending-bodies.ts#changeAccountRole',
+		'src/routes/api/boards/[id]/share/+server.ts#POST',
+		'src/routes/api/boards/[id]/share/+server.ts#DELETE',
+		'src/lib/server/startup-checks.ts#capAccessAtStart'
+	],
 	// Card 2996 (R7): what every account the record of account endings ended or lowered in a restore could read, held
 	// on the restore's own connection.
 	'src/lib/server/webhooks.ts#holdNoLongerReadableIn': ['src/lib/server/db/restore.ts#restoreInOneSnapshot'],
@@ -6459,6 +6465,323 @@ describe('every delete of an API key or an account, and the record of ended keys
 			{ form: 'a read of the record', code: "sqlite.prepare('SELECT 1 FROM api_key_revocations WHERE key_hash = ?').get('x');" },
 			{ form: 'an update of users', code: "sqlite.prepare('UPDATE users SET email = ? WHERE id = ?').run('x', id);" }
 		])('lets $form through', ({ code }) => {
+			expect(findingsOf(code)).toEqual([]);
+		});
+	});
+});
+
+// ─── Card 3002: every write of board, team and person access, and the record of access changes ─────────────
+
+/**
+ * Card 3002 (section 5, test ee): every write under src and scripts of who may open a board, who is in a team and which
+ * account a person is linked to, by `file#function` (`writerNameOf`), with how many such statements and why. Each is a
+ * writer that records the change (`recordAccessChange`, W1 to W13), or one of the "record nothing" table's: content
+ * deleted, the restore's own steps, which apply the record, and the start's pass, which lowers to it (R15).
+ */
+const ACCESS_WRITES: Record<string, { count: number; why: string }> = {
+	'src/lib/server/boards.ts#createBoard': { count: 2, why: 'W1: the board, with its creator, and its owner row; recorded `board`, `board_public` and `board_member owner` after them.' },
+	'src/lib/server/boards.ts#updateBoard': {
+		count: 1,
+		why: 'W2: `.set({ ...changed })`, only the fields that change; `board_public` where isPublic changed and `product_owner` where productOwnerUserId did.'
+	},
+	'src/routes/api/boards/[id]/share/+server.ts#POST': {
+		count: 4,
+		why: 'W3 and W4: a person’s or a team’s role, changed or given; recorded by recordShare where it differs from the role stored or from the record (R12).'
+	},
+	'src/routes/api/boards/[id]/share/+server.ts#PATCH': {
+		count: 1,
+		why: 'W5: the visibility, written whatever was sent (N8); recorded where it differs from the board as read or from the record, compared before the write (R12).'
+	},
+	'src/routes/api/boards/[id]/share/+server.ts#DELETE': { count: 2, why: 'W6: a person’s or a team’s share removed; `none` recorded only where a row went.' },
+	'src/routes/api/teams/+server.ts#POST': { count: 1, why: 'W7: the team’s owner; recorded `team tracked` and `team_member owner` after it.' },
+	'src/routes/api/teams/[id]/+server.ts#DELETE': { count: 1, why: 'W10: the team deleted, its members and shares with it; `team deleted` recorded just before, while its creation time can be read.' },
+	'src/routes/api/teams/[id]/members/[userId]/+server.ts#POST': {
+		count: 2,
+		why: 'W8: a member added, or its role changed; recorded where it differs from the role stored or from the record (R12).'
+	},
+	'src/routes/api/teams/[id]/members/[userId]/+server.ts#DELETE': { count: 1, why: 'W9: a member removed; `none` recorded only where a member was there (N3).' },
+	'src/lib/server/people.ts#createPerson': { count: 1, why: 'W11: a person, linked or not; `person_link` recorded after it.' },
+	'src/lib/server/people.ts#updatePerson': { count: 1, why: 'W12: `.set(updates)`, the fields that change; `person_link` recorded where the link changed.' },
+	'src/lib/server/people.ts#addFromAccounts': { count: 1, why: 'W13: a person made from an account; `person_link linked` recorded after it.' },
+	'src/lib/server/people.ts#deletePerson': { count: 1, why: 'Records nothing: content; a person restored is capped at its last row.' },
+	'src/lib/server/deletes.ts#removeUnder': { count: 1, why: 'Records nothing: a board and its sub-boards deleted, content; a board restored is capped at its last recorded state.' },
+	'src/lib/server/deletes.ts#deleteBoard': { count: 1, why: 'Records nothing: content; a board restored is capped at its last recorded state.' },
+	'src/lib/server/db/restore.ts#keepAccessHere': {
+		count: 10,
+		why: "Records nothing: an unsealed restore's same-here accounts given exactly this server's access (plan 3.6); it puts back what the record already says."
+	},
+	'src/lib/server/db/restore.ts#applyAccessRecord': { count: 10, why: "Records nothing: the restore's application of the record (plan 3.3), which lowers to what it says." },
+	'src/lib/server/db/restore.ts#keepPersonLinksHere': { count: 1, why: "Records nothing: an unsealed restore's links put back as this server held them (plan 3.6)." },
+	'src/lib/server/startup-checks.ts#capAccessAtStart': {
+		count: 10,
+		why: "Records nothing: the start's and five-minute pass lowers what is above the record to what it already says (R15)."
+	}
+};
+
+/** Card 3002 (test ee): the functions that may call `recordAccessChange`, with how many calls: W1 to W13. */
+const RECORD_ACCESS_CHANGE_CALLERS: Record<string, number> = {
+	'src/lib/server/boards.ts#createBoard': 3,
+	'src/lib/server/boards.ts#updateBoard': 2,
+	'src/routes/api/boards/[id]/share/+server.ts#recordShare': 1,
+	'src/routes/api/boards/[id]/share/+server.ts#PATCH': 1,
+	'src/routes/api/boards/[id]/share/+server.ts#DELETE': 1,
+	'src/routes/api/teams/+server.ts#POST': 2,
+	'src/routes/api/teams/[id]/+server.ts#DELETE': 1,
+	'src/routes/api/teams/[id]/members/[userId]/+server.ts#POST': 2,
+	'src/routes/api/teams/[id]/members/[userId]/+server.ts#DELETE': 1,
+	'src/lib/server/people.ts#createPerson': 1,
+	'src/lib/server/people.ts#updatePerson': 1,
+	'src/lib/server/people.ts#addFromAccounts': 1
+};
+
+/**
+ * Card 3002 (test ff): the only places that may INSERT INTO the record, a plain insert: `accessRecordSql`, the statement
+ * `recordAccessChange` alone runs, and `CARRY_ACCESS_CHANGE_SQL`, the union `carryAccessChanges` runs, a constant at
+ * restore.ts's top level.
+ */
+const ACCESS_RECORD_INSERTERS = ['src/lib/server/access-changes.ts#accessRecordSql', 'src/lib/server/db/restore.ts#(top level)'];
+
+/** The tables whose every row is access: a member, a share, a team member. */
+const ACCESS_ROW_TABLES = ['board_members', 'team_members', 'board_teams'];
+const ACCESS_ROW_SCHEMA = ['boardMembers', 'teamMembers', 'boardTeams'];
+
+/** The access columns of `boards` and `people`, and their Drizzle fields. */
+const ACCESS_COLUMNS: Record<string, string[]> = { boards: ['is_public', 'created_by', 'product_owner_user_id'], people: ['user_id'] };
+const ACCESS_FIELDS: Record<string, string[]> = { boards: ['isPublic', 'createdBy', 'productOwnerUserId'], people: ['userId'] };
+
+/** Any write of a member, a share or a team member. */
+const ACCESS_ROW_SQL_WRITE = new RegExp(
+	String.raw`\b(DELETE${SQL_GAP}+FROM|INSERT(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+INTO|REPLACE${SQL_GAP}+INTO|UPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?)${SQL_GAP}+(${sqlName('(?:board_members|team_members|board_teams)')})`,
+	'gi'
+);
+
+/** A delete or replace of a team, a board or a person; a board or a person made. */
+const ACCESS_SUBJECT_SQL_WRITE = new RegExp(
+	String.raw`\b(DELETE${SQL_GAP}+FROM|REPLACE${SQL_GAP}+INTO|INSERT${SQL_GAP}+OR${SQL_GAP}+REPLACE${SQL_GAP}+INTO)${SQL_GAP}+(${sqlName('(?:teams|boards|people)')})|\b(INSERT(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+INTO)${SQL_GAP}+(${sqlName('(?:boards|people)')})`,
+	'gi'
+);
+
+/** An update of boards or people, with what it sets. */
+const ACCESS_SUBJECT_SQL_UPDATE = new RegExp(
+	String.raw`\bUPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+(${sqlName('(?:boards|people)')})${SQL_GAP}+SET\b([\s\S]*?)(?=\bWHERE\b|\bRETURNING\b|\bFROM\b|;|$)`,
+	'gi'
+);
+
+/** Anything written to the record of access changes but a plain INSERT (test ff): a delete, an update, a replace, an insert or ignore, a drop. */
+const ACCESS_RECORD_SQL_WRITE = new RegExp(
+	String.raw`\b(DELETE${SQL_GAP}+FROM|UPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?|REPLACE${SQL_GAP}+INTO|INSERT${SQL_GAP}+OR${SQL_GAP}+\w+${SQL_GAP}+INTO|DROP${SQL_GAP}+TABLE(?:${SQL_GAP}+IF${SQL_GAP}+EXISTS)?|ALTER${SQL_GAP}+TABLE)${SQL_GAP}+${sqlName('access_changes')}`,
+	'gi'
+);
+
+/** A plain INSERT INTO the record. */
+const ACCESS_RECORD_SQL_INSERT = new RegExp(String.raw`\bINSERT${SQL_GAP}+INTO${SQL_GAP}+${sqlName('access_changes')}`, 'gi');
+
+/** An upsert into the record that updates: `INSERT … INTO access_changes … ON CONFLICT … DO UPDATE`. */
+const ACCESS_RECORD_SQL_UPSERT = new RegExp(
+	String.raw`\bINSERT(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+INTO${SQL_GAP}+${sqlName('access_changes')}[^;]*?\bON${SQL_GAP}+CONFLICT\b`,
+	'gi'
+);
+
+/** What the access inventory found in one file (card 3002). */
+type AccessReading = { writes: string[]; recorders: string[]; inserts: string[]; findings: string[] };
+
+/**
+ * Card 3002 (tests ee, ff) for one file under src or scripts, read as card 2995's rule reads (`scriptsOf`,
+ * `writerNameOf`, `SQL_GAP`, every string built from literals read as SQL, a substitution as `\u0000`). Counted under
+ * its `file#function`, and a finding where that is not on ACCESS_WRITES: every write of `board_members`,
+ * `team_members` or `board_teams`; every delete or replace of `teams`, `boards` or `people`, and every insert of
+ * `boards` or `people`; every update of `boards` or `people` that sets an access column, or columns built at run time.
+ * In Drizzle the same: `.insert`, `.update` or `.delete` of `boardMembers`, `teamMembers` or `boardTeams`;
+ * `.delete(teams)`; `.delete` or `.insert` of `boards` or `people`; `.update(boards)` or `.update(people)` whose `.set`
+ * names an access field, or is not an object literal written out, or spreads one. Any write of `access_changes` but a
+ * plain INSERT, or a plain INSERT outside ACCESS_RECORD_INSERTERS, or any Drizzle write of `accessChanges`, is a finding
+ * outright. Each call of `recordAccessChange` is listed by its `file#function`. Not seen: a table named at run time
+ * (card 2995's KEY_DYNAMIC_CLEARS pins every delete of one), a statement held in a variable built elsewhere.
+ */
+function judgeAccessWrites(file: string, source: string): AccessReading {
+	const kind = /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+	const tree = ts.createSourceFile(file, file.endsWith('.svelte') ? scriptsOf(source) : source, ts.ScriptTarget.Latest, true, kind);
+	const at = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const keyOf = (node: ts.Node) => `${file}#${writerNameOf(node)}`;
+	const reading: AccessReading = { writes: [], recorders: [], inserts: [], findings: [] };
+	const write = (node: ts.Node, what: string) => {
+		reading.writes.push(keyOf(node));
+		if (!(keyOf(node) in ACCESS_WRITES)) {
+			reading.findings.push(`${file}:${at(node)} ${what} in ${writerNameOf(node)}, which is not on ACCESS_WRITES: access changed unrecorded comes back with the next restore (card 3002)`);
+		}
+	};
+	const textOf = (node: ts.Expression): string => {
+		const inner = bare(node);
+		if (ts.isStringLiteral(inner) || ts.isNoSubstitutionTemplateLiteral(inner)) return inner.text;
+		if (ts.isTemplateExpression(inner)) return inner.head.text + inner.templateSpans.map((span) => `\u0000${span.literal.text}`).join('');
+		if (ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.PlusToken) return textOf(inner.left) + textOf(inner.right);
+		return '\u0000';
+	};
+	const isText = (node: ts.Node): boolean =>
+		ts.isStringLiteral(node) ||
+		ts.isNoSubstitutionTemplateLiteral(node) ||
+		ts.isTemplateExpression(node) ||
+		(ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken);
+	const inChain = (node: ts.Node): boolean => {
+		let parent = node.parent;
+		while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+		return !!parent && ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.PlusToken;
+	};
+	const named = (found: string) => found.replace(/["'`[\]]/g, '').split('.').pop()!.toLowerCase();
+
+	const judgeSql = (node: ts.Node, text: string) => {
+		for (const found of text.matchAll(ACCESS_ROW_SQL_WRITE)) write(node, `${found[1].replace(/\s+/g, ' ').toUpperCase()} ${named(found[2])}`);
+		for (const found of text.matchAll(ACCESS_SUBJECT_SQL_WRITE)) write(node, `${(found[1] ?? found[3]).replace(/\s+/g, ' ').toUpperCase()} ${named(found[2] ?? found[4])}`);
+		for (const found of text.matchAll(ACCESS_SUBJECT_SQL_UPDATE)) {
+			const table = named(found[1]);
+			const columns = found[2].split(',').map((part) => part.trim().split(/\s*=/)[0].replace(/["`[\]]/g, '').toLowerCase());
+			const access = found[2].includes('\u0000') ? ['columns built at run time'] : columns.filter((column) => ACCESS_COLUMNS[table].includes(column));
+			if (access.length > 0) write(node, `UPDATE ${table} (${access.join(', ')})`);
+		}
+		for (const found of text.matchAll(ACCESS_RECORD_SQL_WRITE)) {
+			reading.findings.push(`${file}:${at(node)} ${found[1].replace(/\s+/g, ' ').toUpperCase()} access_changes in ${writerNameOf(node)}: the record is append-only, written by a plain INSERT (card 3002)`);
+		}
+		for (const _found of text.matchAll(ACCESS_RECORD_SQL_UPSERT)) {
+			reading.findings.push(`${file}:${at(node)} upserts into access_changes in ${writerNameOf(node)}: the record is append-only, written by a plain INSERT (card 3002)`);
+		}
+		for (const _found of text.matchAll(ACCESS_RECORD_SQL_INSERT)) {
+			reading.inserts.push(keyOf(node));
+			if (!ACCESS_RECORD_INSERTERS.includes(keyOf(node))) {
+				reading.findings.push(`${file}:${at(node)} INSERT INTO access_changes in ${writerNameOf(node)}: only recordAccessChange and carryAccessChanges write the record (card 3002)`);
+			}
+		}
+	};
+
+	const visit = (node: ts.Node): void => {
+		if (isText(node) && !inChain(node)) {
+			judgeSql(node, textOf(node as ts.Expression));
+			if (ts.isBinaryExpression(node)) return;
+		}
+		if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+			const method = node.expression.name.text;
+			const [first] = node.arguments;
+			const table = first !== undefined && ts.isIdentifier(bare(first)) ? (bare(first) as ts.Identifier).text : null;
+			const writes = method === 'insert' || method === 'update' || method === 'delete';
+			if (writes && table !== null && ACCESS_ROW_SCHEMA.includes(table)) write(node, `.${method}(${table})`);
+			if (method === 'delete' && (table === 'teams' || table === 'boards' || table === 'people')) write(node, `.delete(${table})`);
+			if (method === 'insert' && (table === 'boards' || table === 'people')) write(node, `.insert(${table})`);
+			if (method === 'update' && (table === 'boards' || table === 'people')) {
+				const set = node.parent;
+				const values = ts.isPropertyAccessExpression(set) && set.name.text === 'set' && ts.isCallExpression(set.parent) ? set.parent.arguments[0] : undefined;
+				const fields =
+					values !== undefined && ts.isObjectLiteralExpression(values)
+						? values.properties.map((property) =>
+								(ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) && ts.isIdentifier(property.name) ? property.name.text : null
+							)
+						: [null];
+				const access = fields.filter((field) => field === null || ACCESS_FIELDS[table].includes(field)).map((field) => field ?? 'fields not written out here');
+				if (access.length > 0) write(node, `.update(${table}) setting ${access.join(', ')}`);
+			}
+			if (writes && table === 'accessChanges') {
+				reading.findings.push(`${file}:${at(node)} .${method}(accessChanges) in ${writerNameOf(node)}: the record is written by recordAccessChange and carryAccessChanges alone (card 3002)`);
+			}
+		}
+		if (ts.isCallExpression(node) && ts.isIdentifier(bare(node.expression)) && (bare(node.expression) as ts.Identifier).text === 'recordAccessChange') {
+			reading.recorders.push(keyOf(node));
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(tree);
+	return reading;
+}
+
+describe('every write of board, team and person access, and the record of access changes (card 3002, tests ee and ff)', () => {
+	const walked = [...filesUnder('src', (path) => WEBHOOK_WALKED.test(path)), ...filesUnder('scripts', (path) => WEBHOOK_WALKED.test(path))].map((file) => ({
+		file,
+		source: readFileSync(join(ROOT, file), 'utf8')
+	}));
+	const readings = walked.map(({ file, source }) => judgeAccessWrites(file, source));
+	const counted = (pick: (reading: AccessReading) => string[]) => {
+		const counts: Record<string, number> = {};
+		for (const reading of readings) for (const key of pick(reading)) counts[key] = (counts[key] ?? 0) + 1;
+		return counts;
+	};
+
+	it('(ee) every write of a member, a share, a team member, a team’s delete, a board’s or a person’s access is on ACCESS_WRITES, each as many times as listed, with its reason', () => {
+		expect(readings.flatMap(({ findings }) => findings)).toEqual([]);
+		expect(walked.length).toBeGreaterThan(300);
+		expect(counted((reading) => reading.writes)).toEqual(Object.fromEntries(Object.entries(ACCESS_WRITES).map(([key, { count }]) => [key, count])));
+		for (const [key, { why }] of Object.entries(ACCESS_WRITES)) expect(why, key).not.toBe('');
+		// The "record nothing" table: the restore's steps and the start's pass among them (R15).
+		for (const key of ['src/lib/server/db/restore.ts#applyAccessRecord', 'src/lib/server/db/restore.ts#keepAccessHere', 'src/lib/server/startup-checks.ts#capAccessAtStart']) {
+			expect(ACCESS_WRITES[key]?.why, key).toMatch(/^Records nothing/);
+		}
+	});
+
+	it('(ee) recordAccessChange is called by exactly the writers W1 to W13, each as many times as listed; no host script records or writes access', () => {
+		expect(counted((reading) => reading.recorders)).toEqual(RECORD_ACCESS_CHANGE_CALLERS);
+		expect(readings.flatMap(({ writes }) => writes).filter((key) => key.startsWith('scripts/'))).toEqual([]);
+	});
+
+	it('(ff) the record is append-only: no DELETE, UPDATE, REPLACE or upsert of it; a plain INSERT only in accessRecordSql and the carry; Reset keeps it; the carry is bounded by MOST_OTHER_ROWS', () => {
+		expect(readings.flatMap(({ findings }) => findings).filter((line) => line.includes('access_changes') || line.includes('accessChanges'))).toEqual([]);
+		expect([...new Set(readings.flatMap(({ inserts }) => inserts))].sort()).toEqual([...ACCESS_RECORD_INSERTERS].sort());
+		expect(restorableTables(sqlite)).not.toContain('access_changes');
+		const reset = readFileSync(join(ROOT, 'src/routes/api/admin/reset/+server.ts'), 'utf8');
+		expect(/const KEPT = \[[^\]]*'access_changes'[^\]]*\]/.test(reset)).toBe(true);
+		// R17 Q6: the carry names the shared bound, argued from it rather than built.
+		const restore = readFileSync(join(ROOT, 'src/lib/server/db/restore.ts'), 'utf8');
+		const tree = ts.createSourceFile('restore.ts', restore, ts.ScriptTarget.Latest, true);
+		const carry = tree.statements.find((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.name?.text === 'carryAccessChanges');
+		expect(carry, 'carryAccessChanges').toBeDefined();
+		expect(/\bMOST_OTHER_ROWS\b/.test(carry!.getText(tree))).toBe(true);
+		// The carry's one statement is the union constant, run in carryAccessChanges alone.
+		expect(/\bCARRY_ACCESS_CHANGE_SQL\b/.test(carry!.getText(tree))).toBe(true);
+		const uses: ts.Identifier[] = [];
+		const find = (node: ts.Node): void => {
+			if (ts.isIdentifier(node) && node.text === 'CARRY_ACCESS_CHANGE_SQL') uses.push(node);
+			ts.forEachChild(node, find);
+		};
+		find(tree);
+		expect(uses.map((use) => writerNameOf(use))).toEqual(['(top level)', 'carryAccessChanges']);
+	});
+
+	describe('the rule itself', () => {
+		const EXAMPLE = 'tests/helpers/fixtures.ts';
+		/** `code` as line 4 of a made-up fixture, in `seed`. */
+		const inSeed = (code: string) =>
+			[
+				"import { db, sqlite } from '$lib/server/db'; import { eq } from 'drizzle-orm';",
+				"import { accessChanges, boardMembers, boards, people, teams } from '$lib/server/db/schema';",
+				'export function seed(id: number, fields: object) {',
+				`\t${code}`,
+				'}'
+			].join('\n');
+		const findingsOf = (code: string) => judgeAccessWrites(EXAMPLE, inSeed(code)).findings;
+
+		it.each([
+			{ form: 'a fixture adding a member in Drizzle', code: "db.insert(boardMembers).values({ boardId: id, userId: 2, role: 'owner' }).run();" },
+			{ form: 'a fixture raising a role in SQL', code: "sqlite.prepare(\"UPDATE board_members SET role = 'owner' WHERE user_id = ?\").run(id);" },
+			{ form: 'an INSERT OR IGNORE of a share', code: "sqlite.prepare('INSERT OR IGNORE INTO main.\"board_teams\" (board_id, team_id, role) VALUES (?, 1, ?)').run(id, 'editor');" },
+			{ form: 'a team member removed across lines', code: 'sqlite.prepare(`DELETE\n\t\tFROM team_members WHERE user_id = ?`).run(id);' },
+			{ form: 'a board made public in SQL', code: "sqlite.prepare('UPDATE boards SET name = ?, is_public = 1 WHERE id = ?').run('x', id);" },
+			{ form: 'a Drizzle link of a person', code: 'db.update(people).set({ userId: 2 }).where(eq(people.id, id)).run();' },
+			{ form: 'a Drizzle update of a board with fields built elsewhere', code: 'db.update(boards).set(fields).where(eq(boards.id, id)).run();' },
+			{ form: 'a Drizzle delete of a team', code: 'db.delete(teams).where(eq(teams.id, id)).run();' },
+			{ form: 'an UPDATE people SET built at run time', code: 'sqlite.prepare(`UPDATE people SET ${String(fields)} = ? WHERE id = ?`).run(2, id);' },
+			{ form: 'a DELETE FROM the record', code: "sqlite.prepare('DELETE FROM access_changes WHERE seq = ?').run(id);" },
+			{ form: 'an UPDATE of the record', code: "sqlite.prepare('UPDATE access_changes SET access = ?').run('owner');" },
+			{ form: 'a REPLACE INTO the record', code: "sqlite.prepare('REPLACE INTO access_changes (seq) VALUES (?)').run(id);" },
+			{ form: 'a plain INSERT INTO the record outside its writers', code: "sqlite.prepare('INSERT INTO access_changes (kind) VALUES (?)').run('board');" },
+			{ form: 'a Drizzle insert into the record', code: "db.insert(accessChanges).values({ kind: 'board' }).run();" }
+		])('(ee, ff) finds $form, on its line, in its function', ({ code }) => {
+			const found = findingsOf(code);
+			expect(found).toHaveLength(1);
+			expect(found[0]).toMatch(/^tests\/helpers\/fixtures\.ts:4 .* in seed[:,]/);
+		});
+
+		it.each([
+			{ form: 'a board renamed', code: "sqlite.prepare('UPDATE boards SET name = ? WHERE id = ?').run('x', id);" },
+			{ form: 'a Drizzle update of a board’s grouping', code: 'db.update(boards).set({ categoryId: null }).where(eq(boards.id, id)).run();' },
+			{ form: 'a person marked left', code: "sqlite.prepare(\"UPDATE people SET status = 'left' WHERE id = ?\").run(id);" },
+			{ form: 'a read of the members', code: 'sqlite.prepare("SELECT role FROM board_members WHERE user_id = ?").get(id);' },
+			{ form: 'a read of the record', code: "sqlite.prepare('SELECT access FROM access_changes WHERE subject_id = ?').get(id);" }
+		])('(ee, ff) lets $form through', ({ code }) => {
 			expect(findingsOf(code)).toEqual([]);
 		});
 	});

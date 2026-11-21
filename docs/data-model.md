@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.102
+version: 1.103
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3002
   - card-3020
   - unsealed-request-addresses
   - card-3012
@@ -76,7 +77,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
+description: "access_changes, the append-only record of every change of board, team and person access by identity, its kinds, words, indexes, writers, readers and once-only seed (migration 0079, card 3002); Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -1879,6 +1880,88 @@ rule's load of an account's rows, leaves out `watermark` and `password` rows: th
 `password` row, so it never loads one. `restorableTables` leaves the table out and
 Reset's `KEPT` names it. A backup carries it like any other table: it holds ids, creation times and
 fingerprints, never a hash. A backup made before 0077 has none, and the restore applies this server's
+record alone.
+
+### Every change of board, team and person access on this server (`access_changes`, migration 0079)
+
+Card 3002. One row for each change of who may open a board, who is in a team, a board's Product Owner
+and which account a person is linked to, grants and narrowings alike, so that no restore brings back
+access removed, lowered or made private here. A row says that, after the change, the item of its
+`kind` gives its `access`. What is opened, the *subject* (a board, a team or a person), and who gets it,
+the *holder* (an account, or a team for a share, or 0 for none), are each named by row id and creation
+time in the stored form. No foreign key: a row outlives its board, team, person and account. No unique
+index: every write here is one plain `INSERT`, and the restore's union asks `NOT EXISTS`.
+
+```mermaid
+erDiagram
+    boards ||--o{ access_changes : "subject (id, created) for board, board_public, product_owner, board_member, board_team; no foreign key"
+    teams ||--o{ access_changes : "subject for team, team_member; holder for board_team"
+    people ||--o{ access_changes : "subject for person_link"
+    users ||--o{ access_changes : "holder (id, created) for board, product_owner, board_member, team_member, person_link"
+    access_changes {
+        integer seq PK "order of writing; this server's rows rank by it alone"
+        text kind "board, board_public, product_owner, board_member, board_team, team, team_member, person_link"
+        integer subject_id "board, team or person id"
+        text subject_created "its created_at, stored form"
+        integer holder_id "account or team id; 0 for none"
+        text holder_created "its created_at, stored form; empty only with holder 0"
+        text access "the access after the change"
+        text changed_at "when, stored form; a backup's clamped"
+        text stated_changed "the moment as stated, stored form, or a digest: the union's key with access"
+        text origin "here or backup"
+    }
+```
+
+| `kind` | Subject | Holder | `access` (low to high) |
+|---|---|---|---|
+| `board` | board | its creator (id > 0, stored time), or 0 with `''` for none | `tracked` |
+| `board_public` | board | always 0, `''` | `private` < `public` |
+| `product_owner` | board | `yes`: the account; `none`: 0, `''` | `none`, `yes` |
+| `board_member` | board | account | `none` < `viewer` < `editor` < `owner` |
+| `board_team` | board | team | `none` < `viewer` < `editor` |
+| `team` | team | always 0, `''` | `tracked`, `deleted` |
+| `team_member` | team | account | `none` < `member` < `owner` |
+| `person_link` | person | `linked`: the account; `none`: 0, `''` | `none`, `linked` |
+
+A subject is *tracked* while the record holds its marker: a `board` row, a `team` row, or any
+`person_link` row. A role a member row holds that is not one of the kind's words ranks as the role it
+reads as (a member's as `viewer`, a share's as `viewer`, a team member's as `member`).
+
+| Column | Type | Meaning |
+|---|---|---|
+| `seq` | integer, primary key (the rowid) | The order of writing. This server's rows rank by it alone, never by `changed_at`, so a clock stepped back never reorders them |
+| `kind` | text | One of the eight kinds above |
+| `subject_id` | integer | The board, team or person id |
+| `subject_created` | text, not an `*_at` column | Its `created_at` in the stored form. Not `*_at`, so the timestamp normaliser never rewrites a row of an append-only table |
+| `holder_id` | integer, default 0 | The account or team id, or 0 for none |
+| `holder_created` | text, default `''`, not an `*_at` column | Its `created_at` in the stored form; `''` only with holder 0 |
+| `access` | text | The access after the change, one of the kind's words |
+| `changed_at` | text, `*_at` | When, in the stored form; a backup's row clamped to the backup's latest readable moment no later than the restore. The seed's rows are dated `0001-01-01 00:00:00` |
+| `stated_changed` | text, default `''`, not an `*_at` column | The moment as stated, in the stored form, or `digest:` and the SHA-256 of a text that names none: with `access`, the union's key |
+| `origin` | text, default `'here'` | `here`, written by this server; `backup`, brought by a restore of a backup this server sealed (never from one whose seal does not verify) |
+
+Three indexes: `access_changes_pair (subject_id, kind, subject_created, holder_id, holder_created,
+origin)` and `access_changes_subject (subject_id, kind, subject_created, origin)`, each read for an
+item's latest row by `seq` with no sort (the rowid ends every index entry), and `access_changes_union
+(subject_id, kind, subject_created, holder_id, holder_created, stated_changed, access)`, the union's key
+(tests/access-changes.test.ts, case (v)).
+
+**Writers.** Migration 0079 (the seed: every board, team and person whose creation time reads as a
+moment, with each board's creator, visibility, Product Owner, members and shares, each team's members
+and each person's link; a creator or link whose account's creation time does not read is not written,
+so that board or person is not tracked, R21); `recordAccessChange` in `src/lib/server/access-changes.ts`,
+in the transaction of each change and after it, from `createBoard`, `updateBoard`, the share route's
+POST, PATCH and DELETE, team create, team member add, change and remove, team delete,
+`createPerson`, `updatePerson` and `addFromAccounts` (W1 to W13); and the restore's `carryAccessChanges`,
+from a sealed backup only, bounded by `MOST_OTHER_ROWS` in all and 100 rows a pair. Nothing deletes,
+updates or replaces a row; `tests/check-at-the-write.test.ts` holds src and scripts to it, and to the
+inventory of every write of the access tables (`ACCESS_WRITES`).
+
+**Readers.** `accessCeiling` (the rule), `accessTracked`, `accessTeamDeleted` and `accessAsRecorded`
+(the writers' R12 comparison), read by the restore's `applyAccessRecord`, the start and five-minute
+pass `capAccessAtStart`, and the share and team writers. `restorableTables` leaves the table out and
+Reset's `KEPT` names it. A backup carries it like any other table: it holds ids, creation times and
+access words, never a name. A backup made before 0079 has none, and the restore applies this server's
 record alone.
 
 ### A request's requester mail held (migration 0078)

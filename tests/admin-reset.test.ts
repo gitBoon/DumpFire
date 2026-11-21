@@ -93,8 +93,11 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-/** What a reset keeps: with the record of every API key ended here (card 2995), and of every account ended here (card 2996). */
-const KEPT = ['system_logs', 'backup_log', 'api_key_revocations', 'account_endings'];
+/**
+ * What a reset keeps: with the record of every API key ended here (card 2995), of every account ended here (card 2996),
+ * and of every change of access here (card 3002).
+ */
+const KEPT = ['system_logs', 'backup_log', 'api_key_revocations', 'account_endings', 'access_changes'];
 /** The migration runner's record of the files it has applied. */
 const MIGRATION_RECORD = '__drizzle_migrations';
 
@@ -258,6 +261,12 @@ function everything(): Everything {
 	sqlite
 		.prepare("INSERT INTO account_endings (user_id, account_created, ending, ended_at) VALUES (900, '2026-01-01 09:00:00', 'deleted', '2026-11-20 09:00:00')")
 		.run();
+	// And of every change of access here (card 3002, migration 0079): a member taken off board A.
+	sqlite
+		.prepare(
+			"INSERT INTO access_changes (kind, subject_id, subject_created, holder_id, holder_created, access, changed_at, stated_changed) VALUES ('board_member', ?, '2026-11-01 09:00:00', ?, '2026-11-01 09:00:00', 'none', '2026-11-20 09:00:00', '2026-11-20 09:00:00')"
+		)
+		.run(A.board.id, member.id);
 	db.insert(backupLog)
 		.values({ destinationType: 'sftp', destinationName: 'Offsite', filename: 'backup-1.db', status: 'success' })
 		.run();
@@ -370,6 +379,22 @@ describe('POST /api/admin/reset', () => {
 		expect(restorableTables(sqlite)).not.toContain('account_endings');
 		expect(restorableTables(sqlite)).toContain('users');
 		expect(appTables()).toContain('account_endings');
+	});
+
+	it('(d) card 3002: leaves the record of access changes out of the tables a restore clears, and a reset keeps every row of it and writes none', async () => {
+		expect(restorableTables(sqlite)).not.toContain('access_changes');
+		expect(restorableTables(sqlite)).toContain('board_members');
+		const e = everything();
+		const record = () => sqlite.prepare('SELECT * FROM access_changes ORDER BY seq').all();
+		const before = record();
+		expect(before).toHaveLength(1);
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+
+		const res = await reset(e);
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(count('board_members')).toBe(0);
+		expect(record()).toEqual(before);
 	});
 
 	it('clears every table but the system log and the backup history, or clears nothing', async () => {

@@ -55,7 +55,7 @@ import Database from 'better-sqlite3';
 import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { google } from 'googleapis';
 import nodemailer from 'nodemailer';
 import { generateBackupData, getBackupConfig, runBackup, saveBackupConfig, withoutSecrets } from '$lib/server/backup';
@@ -128,7 +128,7 @@ import {
 import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
 import { AccountDisabled, SESSION_COOKIE_NAME, createSession, generateApiKey, type Credential, type SessionUser } from '$lib/server/auth';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
-import { stamp } from '$lib/timestamps';
+import { stamp, toStamp } from '$lib/timestamps';
 import { db, sqlite } from '$lib/server/db';
 // For the database file's path the import route asks for, stood in for in one case (card 2925).
 import * as connection from '$lib/server/db';
@@ -147,6 +147,11 @@ import { queueRecordMails } from '$lib/server/decision-mail';
 import { SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { resendInvitation } from '$lib/server/decision-participant-writes';
 import { writeAs } from '$lib/server/write-as';
+import { eq } from 'drizzle-orm';
+import { canViewBoard } from '$lib/server/board-access';
+import { canHandleRequest } from '$lib/server/request-access';
+import { readPersonRecord } from '$lib/server/decision-register';
+import { createDecision } from '$lib/server/decision-authoring-writes';
 import { NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import {
 	MOST_OTHER_ROWS,
@@ -196,6 +201,9 @@ import {
 	makeSmtp,
 	makeUser,
 	makeWebhook,
+	makePerson,
+	makeTeam,
+	shareBoardWithTeam,
 	startedSinceAlreadyOffHeld,
 	resetDb,
 	stepUp,
@@ -11374,7 +11382,8 @@ describe('an unsealed backup marks left each person this server did not hold as 
 		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
 
 		expect(result.errors).toEqual([]);
-		expect(personOf(3)).toMatchObject({ email: 'ann@x.test', userId: member.id, status: 'left', leftAt: expect.stringMatching(STAMP) });
+		// Card 3002 (plan 3.6): the file's link is not this server's, so it is not taken; this server held none to put back.
+		expect(personOf(3)).toMatchObject({ email: 'ann@x.test', userId: null, status: 'left', leftAt: expect.stringMatching(STAMP) });
 		expect(result.unsealedReach).toMatchObject({ peopleMailOff: 1 });
 	});
 
@@ -11385,7 +11394,8 @@ describe('an unsealed backup marks left each person this server did not hold as 
 		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
 
 		expect(result.errors).toEqual([]);
-		expect(personOf(3)).toMatchObject({ email: 'ann@x.test', userId: member.id, status: 'left', leftAt: expect.stringMatching(STAMP) });
+		// Card 3002 (plan 3.6): the account is not the same here, so neither the file's link nor this server's is kept.
+		expect(personOf(3)).toMatchObject({ email: 'ann@x.test', userId: null, status: 'left', leftAt: expect.stringMatching(STAMP) });
 		expect(result.unsealedReach).toMatchObject({ peopleMailOff: 1 });
 	});
 
@@ -11975,7 +11985,7 @@ describe("an unchecked backup adds nothing to this server's records and changes 
 		expect(result.sealVerified).toBe(false);
 		expect(result.errors).toEqual([]);
 		expect(notTaken).toBeGreaterThan(2 * keysBefore.length);
-		expect(result.recordsNotTaken).toEqual({ accountEndings: accountRows, keyRevocations: notTaken });
+		expect(result.recordsNotTaken).toEqual({ accountEndings: accountRows, keyRevocations: notTaken, accessChanges: 0 });
 		expect(revocationsOf()).toEqual(before);
 		// Every key of an account that is the same here is kept; Bob's, whose creation time the file changed, is not, and is
 		// not recorded either.
@@ -12079,7 +12089,7 @@ describe("an unchecked backup adds nothing to this server's records and changes 
 			expect(result.errors).toEqual([
 				`The backup's record of ended API keys holds more than 1,000,000 rows naming keys by number alone, more than any server writes, and none of its ${rows} row(s) was added to this server's.`
 			]);
-			expect(result.recordsNotTaken).toEqual({ accountEndings: 0, keyRevocations: 0 });
+			expect(result.recordsNotTaken).toEqual({ accountEndings: 0, keyRevocations: 0, accessChanges: 0 });
 			expect(revocationsOf()).toEqual(before);
 		},
 		180_000
@@ -12164,7 +12174,7 @@ describe("an unchecked backup adds nothing to this server's records and changes 
 
 		expect(result.sealVerified).toBe(true);
 		expect(result.errors).toEqual([]);
-		expect(result.recordsNotTaken).toEqual({ accountEndings: 0, keyRevocations: 0 });
+		expect(result.recordsNotTaken).toEqual({ accountEndings: 0, keyRevocations: 0, accessChanges: 0 });
 		expect(
 			recordOf()
 				.slice(before.length)
@@ -12203,7 +12213,7 @@ describe("an unchecked backup adds nothing to this server's records and changes 
 
 		expect(result.sealVerified).toBe(false);
 		expect(result.errors.filter((line) => /record/.test(line))).toEqual([]);
-		expect(result.recordsNotTaken).toEqual({ accountEndings: accountRows, keyRevocations: keyRows });
+		expect(result.recordsNotTaken).toEqual({ accountEndings: accountRows, keyRevocations: keyRows, accessChanges: 0 });
 		expect(recordOf()).toEqual(before);
 		expect(revocationsOf()).toEqual(keysBefore);
 	});
@@ -12354,7 +12364,7 @@ describe("an unchecked backup adds nothing to this server's records and changes 
 		{ how: 'a restore that commits and then fails', failsAfter: true }
 	])("(p) R5, R22, through the route, $how: the answer, the panel's lines, the message and the CRITICAL words and details count the accounts given this server's state and the records not taken, naming nobody and saying no problem", async ({ failsAfter }) => {
 		const copy = hostile(ownCopy());
-		const notTaken = { accountEndings: accountRowsIn(copy), keyRevocations: keyRowsIn(copy) };
+		const notTaken = { accountEndings: accountRowsIn(copy), keyRevocations: keyRowsIn(copy), accessChanges: 0 };
 		expect(notTaken.accountEndings).toBeGreaterThan(0);
 		expect(notTaken.keyRevocations).toBeGreaterThan(0);
 		const from = sqlite.prepare('SELECT COALESCE(MAX(id), 0) FROM system_logs').pluck().get() as number;
@@ -12697,5 +12707,853 @@ describe("an unchecked backup adds nothing to this server's records and changes 
 			},
 			180_000
 		);
+	});
+});
+
+// ─── Card 3002: board, team and person access through a restore ─────────────
+
+describe('a restore keeps board, team and person access as this server recorded it (card 3002, slice 2)', () => {
+	type Side = ['boards' | 'users' | 'teams' | 'people', number];
+	const createdOf = ([table, id]: Side) => sqlite.prepare(`SELECT created_at FROM ${table} WHERE id = ?`).pluck().get(id) as string;
+	/** A row of this server's record, as a writer would have put it (S3 adds the writers): `here`, dated now unless said. */
+	const note = (kind: string, subject: Side, holder: Side | null, access: string, at = stamp()) =>
+		sqlite
+			.prepare(
+				'INSERT INTO access_changes (kind, subject_id, subject_created, holder_id, holder_created, access, changed_at, stated_changed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+			)
+			.run(kind, subject[1], createdOf(subject), holder?.[1] ?? 0, holder === null ? '' : createdOf(holder), access, at, at);
+	/** A board made by `owner`, tracked: its marker row, its visibility and, where it has one, its Product Owner. */
+	const trackedBoard = (owner: SessionUser, opts: { isPublic?: boolean } = {}) => {
+		const { board } = makeBoard({ owner, isPublic: opts.isPublic });
+		note('board', ['boards', board.id], ['users', owner.id], 'tracked');
+		note('board_public', ['boards', board.id], null, opts.isPublic ? 'public' : 'private');
+		return board;
+	};
+	const join = (boardId: number, user: SessionUser, role: string) => {
+		sqlite.prepare('INSERT INTO board_members (board_id, user_id, role) VALUES (?, ?, ?)').run(boardId, user.id, role);
+		note('board_member', ['boards', boardId], ['users', user.id], role);
+	};
+	const leave = (boardId: number, user: SessionUser) => {
+		sqlite.prepare('DELETE FROM board_members WHERE board_id = ? AND user_id = ?').run(boardId, user.id);
+		note('board_member', ['boards', boardId], ['users', user.id], 'none');
+	};
+	const membersOf = (boardId: number) => sqlite.prepare('SELECT user_id, role FROM board_members WHERE board_id = ? ORDER BY user_id').raw().all(boardId);
+	const sharesOf = (boardId: number) => sqlite.prepare('SELECT team_id, role FROM board_teams WHERE board_id = ? ORDER BY team_id').raw().all(boardId);
+	const teamOf = (teamId: number) => sqlite.prepare('SELECT user_id, role FROM team_members WHERE team_id = ? ORDER BY user_id').raw().all(teamId);
+	const boardRow = (id: number) => sqlite.prepare('SELECT is_public AS isPublic, created_by AS createdBy, product_owner_user_id AS productOwner FROM boards WHERE id = ?').get(id);
+	const recordNow = () => sqlite.prepare('SELECT * FROM access_changes ORDER BY seq').all();
+	const backupRows = () => sqlite.prepare("SELECT kind, subject_id, holder_id, access, changed_at, stated_changed FROM access_changes WHERE origin = 'backup' ORDER BY seq").all() as Record<string, unknown>[];
+	/** This server's backup now, its seal verifying. */
+	const backupNow = () => opening(generateBackupData());
+	const NO_KEPT = { removed: 0, lowered: 0, madePrivate: 0, productOwners: 0, creators: 0, teamsEnded: 0, unlinked: 0 };
+	const AS_RESTORED = [
+		['as it is', {}],
+		['as a working copy', { outside: 'off' as const }]
+	] as const;
+	/** A row the backup's record holds, as another server of this key wrote it. */
+	const planted = (backup: Database.Database, row: Record<string, unknown>) =>
+		backup
+			.prepare(
+				'INSERT INTO access_changes (kind, subject_id, subject_created, holder_id, holder_created, access, changed_at, stated_changed, origin) ' +
+					"VALUES (@kind, @subject, @subjectCreated, @holder, @holderCreated, @access, @changedAt, @stated, 'here')"
+			)
+			.run({ subject: 900, subjectCreated: '2026-01-01 09:00:00', holder: 901, holderCreated: '2026-01-02 09:00:00', access: 'viewer', changedAt: '2026-05-01 09:00:00', stated: '2026-05-01 09:00:00', kind: 'board_member', ...row });
+	let bob: SessionUser;
+	let carol: SessionUser;
+	beforeEach(() => {
+		bob = makeUser({ username: 'bob' });
+		carol = makeUser({ username: 'carol' });
+	});
+
+	it.each(AS_RESTORED)("(g) the card's case, %s: Bob an editor in this server's backup, taken off since: left out, cannot open the board, counted", (_, opts) => {
+		const board = trackedBoard(chief);
+		join(board.id, bob, 'editor');
+		const backup = backupNow();
+		leave(board.id, bob);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id, ...opts });
+
+		expect(result.sealVerified).toBe(true);
+		expect(result.errors).toEqual([]);
+		expect(membersOf(board.id)).toEqual([]);
+		expect(canViewBoard(bob, board.id)).toBe(false);
+		expect(result.accessKept).toEqual({ ...NO_KEPT, removed: 1 });
+		expect(result.accessAsHere).toEqual({ boards: 0, teams: 0, people: 0 });
+	});
+
+	it('(h) an owner lowered here: the lower role, and a webhook with a secret on the board the owner did not set held, unnamed', () => {
+		const board = trackedBoard(chief);
+		join(board.id, bob, 'owner');
+		sqlite.prepare("UPDATE users SET last_sign_in_at = '2026-11-01 09:00:00' WHERE id = ?").run(bob.id);
+		const hook = makeWebhook(board, { setBy: chief, secret: 'whsec-3002-h' });
+		const backup = backupNow();
+		sqlite.prepare("UPDATE board_members SET role = 'viewer' WHERE board_id = ? AND user_id = ?").run(board.id, bob.id);
+		note('board_member', ['boards', board.id], ['users', bob.id], 'viewer');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(membersOf(board.id)).toEqual([[bob.id, 'viewer']]);
+		expect(result.accessKept).toEqual({ ...NO_KEPT, lowered: 1 });
+		expect(sqlite.prepare('SELECT active, held_because IS NOT NULL AS held FROM webhooks WHERE id = ?').get(hook.id)).toEqual({ active: 0, held: 1 });
+		const said = sqlite.prepare("SELECT message FROM system_logs WHERE message LIKE '%' || ? || '%'").pluck().all('bob') as string[];
+		expect(said).toEqual([]);
+	});
+
+	it("(i) made private here: private, and Carol's webhook on it, who opened it only as public, switched off by the sweep", () => {
+		const board = trackedBoard(chief, { isPublic: true });
+		const hook = makeWebhook(board, { setBy: carol, secret: 'whsec-3002-i' });
+		const backup = backupNow();
+		sqlite.prepare('UPDATE boards SET is_public = 0 WHERE id = ?').run(board.id);
+		note('board_public', ['boards', board.id], null, 'private');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(boardRow(board.id)).toMatchObject({ isPublic: 0 });
+		expect(result.accessKept).toEqual({ ...NO_KEPT, madePrivate: 1 });
+		expect(sqlite.prepare('SELECT active FROM webhooks WHERE id = ?').pluck().get(hook.id)).toBe(0);
+	});
+
+	it('(j) a share and a team membership removed here: left out; Bob cannot open the board through the team, nor handle a request to it', () => {
+		const board = trackedBoard(chief);
+		const team = makeTeam([bob]);
+		note('team', ['teams', team.id], null, 'tracked');
+		note('team_member', ['teams', team.id], ['users', bob.id], 'member');
+		shareBoardWithTeam(board, team, 'editor');
+		note('board_team', ['boards', board.id], ['teams', team.id], 'editor');
+		const request = db.insert(taskRequests).values({ targetType: 'team', targetId: team.id, title: 'To the team', requesterName: 'Rita', requesterEmail: 'rita@example.test', status: 'pending' }).returning().get();
+		expect(canHandleRequest(bob, request)).toBe(true);
+		const backup = backupNow();
+		sqlite.prepare('DELETE FROM board_teams WHERE board_id = ?').run(board.id);
+		note('board_team', ['boards', board.id], ['teams', team.id], 'none');
+		sqlite.prepare('DELETE FROM team_members WHERE team_id = ?').run(team.id);
+		note('team_member', ['teams', team.id], ['users', bob.id], 'none');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(sharesOf(board.id)).toEqual([]);
+		expect(teamOf(team.id)).toEqual([]);
+		expect(canViewBoard(bob, board.id)).toBe(false);
+		expect(canHandleRequest(bob, db.select().from(taskRequests).where(eq(taskRequests.id, request.id)).get()!)).toBe(false);
+		expect(result.accessKept).toEqual({ ...NO_KEPT, removed: 2 });
+	});
+
+	it('(k) R2: a team deleted here and brought back, a member added after: its earlier member and share left out, the later member kept, counted', () => {
+		const board = trackedBoard(chief);
+		const team = makeTeam([bob]);
+		note('team', ['teams', team.id], null, 'tracked');
+		note('team_member', ['teams', team.id], ['users', bob.id], 'member');
+		shareBoardWithTeam(board, team, 'viewer');
+		note('board_team', ['boards', board.id], ['teams', team.id], 'viewer');
+		// Deleted here, then brought back as it was by an import on an older image, which records nothing.
+		const created = createdOf(['teams', team.id]);
+		note('team', ['teams', team.id], null, 'deleted');
+		sqlite.prepare('DELETE FROM teams WHERE id = ?').run(team.id);
+		sqlite.prepare("INSERT INTO teams (id, name, created_at) VALUES (?, 'Back', ?)").run(team.id, created);
+		sqlite.prepare("INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, 'member')").run(team.id, bob.id);
+		sqlite.prepare("INSERT INTO board_teams (board_id, team_id, role) VALUES (?, ?, 'viewer')").run(board.id, team.id);
+		// Carol added here after the deletion.
+		sqlite.prepare("INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, 'member')").run(team.id, carol.id);
+		note('team_member', ['teams', team.id], ['users', carol.id], 'member');
+		const backup = backupNow();
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(teamOf(team.id)).toEqual([[carol.id, 'member']]);
+		expect(sharesOf(board.id)).toEqual([]);
+		expect(result.accessKept).toEqual({ ...NO_KEPT, removed: 2, teamsEnded: 1 });
+	});
+
+	it('(l) a Product Owner replaced here: cleared, never replaced; a new decision on the board takes its author as decider', () => {
+		const board = trackedBoard(chief);
+		join(board.id, bob, 'editor');
+		join(board.id, carol, 'editor');
+		sqlite.prepare('UPDATE boards SET product_owner_user_id = ? WHERE id = ?').run(bob.id, board.id);
+		note('product_owner', ['boards', board.id], ['users', bob.id], 'yes');
+		const backup = backupNow();
+		sqlite.prepare('UPDATE boards SET product_owner_user_id = ? WHERE id = ?').run(carol.id, board.id);
+		note('product_owner', ['boards', board.id], ['users', carol.id], 'yes');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(boardRow(board.id)).toMatchObject({ productOwner: null });
+		expect(result.accessKept).toEqual({ ...NO_KEPT, productOwners: 1 });
+		const decision = writeAs({ user: chief } as App.Locals, (caller) => createDecision(caller, { boardId: board.id }, { title: 'After the restore' }, { source: 'ui' })) as { deciderUserId: number };
+		expect(decision.deciderUserId).toBe(chief.id);
+	});
+
+	it("(m)[1] control: taken off, then a viewer again here, an editor in the backup: a viewer", () => {
+		const board = trackedBoard(chief);
+		join(board.id, bob, 'editor');
+		const backup = backupNow();
+		leave(board.id, bob);
+		join(board.id, bob, 'viewer');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(membersOf(board.id)).toEqual([[bob.id, 'viewer']]);
+		expect(result.accessKept).toEqual({ ...NO_KEPT, lowered: 1 });
+	});
+
+	it('(m)[2] control: a board the record does not track comes back as the backup has it', () => {
+		const { board } = makeBoard({ owner: chief });
+		sqlite.prepare("INSERT INTO board_members (board_id, user_id, role) VALUES (?, ?, 'editor')").run(board.id, bob.id);
+		const backup = backupNow();
+		sqlite.prepare('DELETE FROM board_members WHERE board_id = ?').run(board.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(membersOf(board.id)).toEqual([[bob.id, 'editor']]);
+		expect(result.accessKept).toEqual(NO_KEPT);
+	});
+
+	it('(m)[3] R4: a member row on a tracked board with no row of the record, held here before the clear and in the backup: kept, not guessed', () => {
+		const board = trackedBoard(chief);
+		// An older image's grant: no row of the record.
+		sqlite.prepare("INSERT INTO board_members (board_id, user_id, role) VALUES (?, ?, 'editor')").run(board.id, bob.id);
+		const backup = backupNow();
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(membersOf(board.id)).toEqual([[bob.id, 'editor']]);
+		expect(result.accessKept).toEqual(NO_KEPT);
+	});
+
+	it('(m)[4] R20: a viewer here with no row of the record (a host edit), an owner in the backup: stays a viewer, counted lowered', () => {
+		const board = trackedBoard(chief);
+		// An older image's grant, with no row of the record, in the backup as an owner.
+		sqlite.prepare("INSERT INTO board_members (board_id, user_id, role) VALUES (?, ?, 'owner')").run(board.id, bob.id);
+		const backup = backupNow();
+		// Lowered here by a host edit, again with no row.
+		sqlite.prepare("UPDATE board_members SET role = 'viewer' WHERE board_id = ? AND user_id = ?").run(board.id, bob.id);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(membersOf(board.id)).toEqual([[bob.id, 'viewer']]);
+		expect(result.accessKept).toEqual({ ...NO_KEPT, lowered: 1 });
+	});
+
+	it("(n) sealed: a person unlinked here stays unlinked, and that account reads no record of the person as its own", () => {
+		const person = makePerson({ user: bob });
+		note('person_link', ['people', person.id], ['users', bob.id], 'linked');
+		const backup = backupNow();
+		sqlite.prepare('UPDATE people SET user_id = NULL WHERE id = ?').run(person.id);
+		note('person_link', ['people', person.id], null, 'none');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(sqlite.prepare('SELECT user_id FROM people WHERE id = ?').pluck().get(person.id)).toBeNull();
+		expect(result.accessKept).toEqual({ ...NO_KEPT, unlinked: 1 });
+		let audience: string | undefined;
+		try {
+			audience = (readPersonRecord(bob, person.id, { before: null }, { source: 'ui' }) as { audience?: string }).audience;
+		} catch {
+			audience = undefined;
+		}
+		expect(audience).not.toBe('self');
+	});
+
+	it("(o) the union: the backup's rows this server lacks added as backup; again, none; a row differing from one held only in its word added; a stated moment that is none kept as a digest", () => {
+		const backup = backupNow();
+		planted(backup, {});
+		planted(backup, { holder: 902, stated: 'not a moment' });
+		sealedFor(sqlite, backup);
+		const row = (holder: number, access: string, stated: unknown = '2026-05-01 09:00:00') => ({
+			kind: 'board_member',
+			subject_id: 900,
+			holder_id: holder,
+			access,
+			changed_at: '2026-05-01 09:00:00',
+			stated_changed: stated
+		});
+
+		const first = restoreFromBackup(sqlite, backup, { importer: chief.id });
+		const carried = backupRows();
+		const second = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(first.errors).toEqual([]);
+		expect(second.errors).toEqual([]);
+		expect(carried).toEqual([row(901, 'viewer'), row(902, 'viewer', expect.stringMatching(/^digest:[0-9a-f]{64}$/))]);
+		expect(backupRows()).toEqual(carried);
+
+		// A later backup holding those rows, and one differing from the first only in its word (R10): that one alone added.
+		const later = backupNow();
+		planted(later, { access: 'editor' });
+		sealedFor(sqlite, later);
+		const third = restoreFromBackup(sqlite, later, { importer: chief.id });
+
+		expect(third.errors).toEqual([]);
+		expect(backupRows()).toEqual([...carried, row(901, 'editor')]);
+	});
+
+	it("(o2) the backup's malformed rows left out, one line naming no backup text; a changed_at after the restore clamped", () => {
+		const backup = backupNow();
+		planted(backup, { kind: 'mystery-kind' });
+		planted(backup, { access: 'superuser' });
+		planted(backup, { subject: 2 ** 53 + 2 });
+		planted(backup, { subjectCreated: 'yesterday-ish' });
+		planted(backup, { subjectCreated: '2999-01-01 00:00:00' });
+		planted(backup, { holderCreated: '' });
+		planted(backup, { holder: 903, changedAt: '2999-01-01 00:00:00', stated: '2999-01-01 00:00:00' });
+		sealedFor(sqlite, backup);
+		const before = stamp();
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		const lines = result.errors.filter((line) => line.includes('record of access changes'));
+		expect(lines).toEqual([expect.stringMatching(/^6 row\(s\) of the backup's record of access changes were left out/)]);
+		for (const text of ['mystery-kind', 'superuser', 'yesterday-ish', '2999']) expect(lines[0]).not.toContain(text);
+		const carried = backupRows();
+		expect(carried).toHaveLength(1);
+		expect(carried[0].holder_id).toBe(903);
+		expect(carried[0].changed_at as string <= stamp()).toBe(true);
+		expect(carried[0].changed_at as string >= before || carried[0].changed_at === '2026-05-01 09:00:00').toBe(true);
+	});
+
+	it("(o3) R11: 101 rows of one board's visibility in the backup: those left out and counted; another item's rows carried", () => {
+		const backup = backupNow();
+		for (let i = 0; i < 101; i++) {
+			planted(backup, { kind: 'board_public', holder: 0, holderCreated: '', access: i % 2 ? 'public' : 'private', changedAt: '2026-05-01 09:00:00', stated: `2026-05-01 09:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}` });
+		}
+		planted(backup, {});
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors.filter((line) => line.includes('record of access changes'))).toEqual([
+			expect.stringMatching(/^101 row\(s\) .* 101 with more than 100 rows for one board, team or person and holder\./)
+		]);
+		expect(backupRows().map((row) => row.kind)).toEqual(['board_member']);
+	});
+
+	it("(o4) R9: the backup's record lacks holder_created: one line, none of it carried, and the restore commits capped by this server's record", () => {
+		const board = trackedBoard(chief);
+		join(board.id, bob, 'editor');
+		const backup = backupNow();
+		leave(board.id, bob);
+		planted(backup, {});
+		backup.exec('DROP INDEX access_changes_pair; DROP INDEX access_changes_union; ALTER TABLE access_changes DROP COLUMN holder_created;');
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual(["The backup's record of access changes has not the columns this build reads, and was not added to this server's."]);
+		expect(backupRows()).toEqual([]);
+		expect(membersOf(board.id)).toEqual([]);
+		expect(result.accessKept).toEqual({ ...NO_KEPT, removed: 1 });
+	});
+
+	describe('an unsealed backup', () => {
+		let mallory: SessionUser;
+		beforeEach(() => {
+			mallory = makeUser({ username: 'mallory' });
+		});
+
+		it.each(AS_RESTORED)("(p) card 3012's case, %s: the file's grants to a same-here account undone, the board and team exactly as here, the record as it was, its rows counted", (_, opts) => {
+			const board = trackedBoard(chief);
+			join(board.id, bob, 'editor');
+			const team = makeTeam([bob]);
+			note('team', ['teams', team.id], null, 'tracked');
+			const record = recordNow();
+			const backup = ownBackup({ edited: true });
+			backup.exec(`
+				INSERT INTO board_members (board_id, user_id, role) VALUES (${board.id}, ${mallory.id}, 'owner');
+				DELETE FROM board_members WHERE board_id = ${board.id} AND user_id = ${bob.id};
+				UPDATE boards SET is_public = 1, created_by = ${mallory.id}, product_owner_user_id = ${mallory.id} WHERE id = ${board.id};
+				INSERT INTO teams (id, name, created_at) VALUES (777, 'Elsewhere', '2026-01-01 09:00:00');
+				INSERT INTO board_teams (board_id, team_id, role) VALUES (${board.id}, 777, 'editor');
+				INSERT INTO team_members (team_id, user_id, role) VALUES (${team.id}, ${mallory.id}, 'owner');
+			`);
+			const inFile = backup.prepare('SELECT count(*) FROM access_changes').pluck().get() as number;
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id, ...opts });
+
+			expect(result.sealVerified).toBe(false);
+			expect(membersOf(board.id)).toEqual([[bob.id, 'editor']]);
+			expect(sharesOf(board.id)).toEqual([]);
+			expect(boardRow(board.id)).toEqual({ isPublic: 0, createdBy: chief.id, productOwner: null });
+			expect(teamOf(team.id)).toEqual([[bob.id, 'member']]);
+			expect(result.accessAsHere).toEqual({ boards: 1, teams: 1, people: 0 });
+			// R4: what keepAccessHere set is not counted again.
+			expect(result.accessKept).toEqual(NO_KEPT);
+			expect(recordNow()).toEqual(record);
+			expect(inFile).toBeGreaterThan(0);
+			expect(result.recordsNotTaken.accessChanges).toBe(inFile);
+		});
+
+		it("(q) failing closed: this server's member row not put back where the restored account of that id is another's, nor its share where the restored team has another creation time", () => {
+			// Untracked, so that the record's guess cannot be what takes them.
+			const { board } = makeBoard({ owner: chief });
+			sqlite.prepare("INSERT INTO board_members (board_id, user_id, role) VALUES (?, ?, 'editor')").run(board.id, bob.id);
+			const team = makeTeam([]);
+			shareBoardWithTeam(board, team, 'viewer');
+			const backup = ownBackup({ edited: true });
+			backup.prepare("UPDATE users SET created_at = '2020-01-01 09:00:00' WHERE id = ?").run(bob.id);
+			backup.prepare("UPDATE teams SET created_at = '2020-01-01 09:00:00' WHERE id = ?").run(team.id);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(membersOf(board.id)).toEqual([]);
+			expect(sharesOf(board.id)).toEqual([]);
+		});
+
+		it("(r) a board not here: a same-here account's row, creator and Product Owner, and a share to a team here, dropped; private; another account's row kept; a board deleted here capped by this server's record", () => {
+			const team = makeTeam([]);
+			// Board D: tracked, Yan taken off it, then Yan and D deleted here.
+			const yan = makeUser({ username: 'yan' });
+			const gone = trackedBoard(chief);
+			join(gone.id, yan, 'editor');
+			const older = ownBackup({ edited: true });
+			leave(gone.id, yan);
+			sqlite.prepare('DELETE FROM boards WHERE id = ?').run(gone.id);
+			sqlite.prepare('DELETE FROM users WHERE id = ?').run(yan.id);
+			older.exec(`
+				INSERT INTO users (id, username, email, password_hash, role, created_at) VALUES (950, 'zed', 'zed@file.test', 'x', 'user', '2026-01-01 09:00:00');
+				INSERT INTO boards (id, name, is_public, created_by, product_owner_user_id) VALUES (880, 'Planted', 1, ${mallory.id}, ${mallory.id});
+				INSERT INTO board_members (board_id, user_id, role) VALUES (880, ${mallory.id}, 'owner'), (880, 950, 'editor');
+				INSERT INTO board_teams (board_id, team_id, role) VALUES (880, ${team.id}, 'editor');
+			`);
+
+			const result = restoreFromBackup(sqlite, older, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(false);
+			expect(membersOf(880)).toEqual([[950, 'editor']]);
+			expect(sharesOf(880)).toEqual([]);
+			expect(boardRow(880)).toEqual({ isPublic: 0, createdBy: null, productOwner: null });
+			expect(membersOf(gone.id)).toEqual([]);
+			expect(result.accessKept).toMatchObject({ removed: 1 });
+		});
+
+		it("(s) card 3020's register side: a planted person linked to Mallory unlinked; a same-here person whose link the file changed given this server's back, still left; one row each, no account id", () => {
+			const ann = makeUser({ username: 'ann' });
+			const person = makePerson({ user: ann, email: 'ann@x.test' });
+			const backup = ownBackup({ edited: true });
+			backup.prepare('UPDATE people SET user_id = ? WHERE id = ?').run(carol.id, person.id);
+			backup.prepare("INSERT INTO people (id, full_name, email, user_id) VALUES (950, 'Planted', 'planted@file.test', ?)").run(mallory.id);
+			const from = sqlite.prepare('SELECT coalesce(max(id), 0) FROM people_changes').pluck().get() as number;
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			const personRow = (id: number) => sqlite.prepare('SELECT user_id AS userId, status FROM people WHERE id = ?').get(id);
+			expect(personRow(950)).toEqual({ userId: null, status: 'left' });
+			expect(personRow(person.id)).toEqual({ userId: ann.id, status: 'left' });
+			expect(result.accessAsHere).toEqual({ boards: 0, teams: 0, people: 2 });
+			const links = sqlite
+				.prepare("SELECT subject_id AS id, before, after FROM people_changes WHERE id > ? AND source = 'restore' AND before LIKE '%account%' ORDER BY subject_id")
+				.all(from);
+			expect(links).toEqual([
+				{ id: person.id, before: '{"account":"linked"}', after: '{"account":"linked"}' },
+				{ id: 950, before: '{"account":"linked"}', after: '{"account":"unlinked"}' }
+			]);
+			let audience: string | undefined;
+			try {
+				audience = (readPersonRecord(mallory, 950, { before: null }, { source: 'ui' }) as { audience?: string }).audience;
+			} catch {
+				audience = undefined;
+			}
+			expect(audience).not.toBe('self');
+		});
+	});
+
+	describe('rolled back whole (R5)', () => {
+		const triggered = (sql: string, run: () => unknown) => {
+			sqlite.exec(sql);
+			try {
+				let thrown: unknown;
+				try {
+					run();
+				} catch (e) {
+					thrown = e;
+				}
+				return thrown;
+			} finally {
+				sqlite.exec('DROP TRIGGER IF EXISTS temp.card_3002_t');
+			}
+		};
+
+		it("(t)[1] applyAccessRecord's removal refused: not committed, the trigger's message in the cause, the database as before", () => {
+			const board = trackedBoard(chief);
+			join(board.id, bob, 'editor');
+			const backup = backupNow();
+			leave(board.id, bob);
+			const before = snapshotDb();
+
+			const thrown = triggered(
+				`CREATE TEMP TRIGGER card_3002_t BEFORE DELETE ON board_members WHEN old.board_id = ${board.id} AND old.user_id = ${bob.id} BEGIN SELECT RAISE(ABORT, 'card 3002 t1 refused'); END;`,
+				() => restoreFromBackup(sqlite, backup, { importer: chief.id })
+			);
+
+			expect(thrown).toBeInstanceOf(RestoreError);
+			expect((thrown as RestoreError).committed).toBe(false);
+			expect(String(((thrown as RestoreError).cause as Error).message)).toContain('card 3002 t1 refused');
+			expectUnchanged(before);
+		});
+
+		it("(t)[2] the carry's insert refused: not committed, the trigger's message in the cause, the database as before", () => {
+			const backup = backupNow();
+			planted(backup, {});
+			sealedFor(sqlite, backup);
+			const before = snapshotDb();
+
+			const thrown = triggered(
+				"CREATE TEMP TRIGGER card_3002_t BEFORE INSERT ON access_changes WHEN new.origin = 'backup' BEGIN SELECT RAISE(ABORT, 'card 3002 t2 refused'); END;",
+				() => restoreFromBackup(sqlite, backup, { importer: chief.id })
+			);
+
+			expect(thrown).toBeInstanceOf(RestoreError);
+			expect((thrown as RestoreError).committed).toBe(false);
+			expect(String(((thrown as RestoreError).cause as Error).message)).toContain('card 3002 t2 refused');
+			expectUnchanged(before);
+		});
+	});
+
+	it('(u) no lock-out: every member row of an administrator and the superadmin capped away: both still open the board, the import commits, and an administrator can share it', async () => {
+		const board = trackedBoard(chief);
+		join(board.id, admin, 'owner');
+		join(board.id, chief, 'owner');
+		const backup = backupNow();
+		leave(board.id, admin);
+		leave(board.id, chief);
+		sqlite.prepare('UPDATE boards SET created_by = NULL WHERE id = ?').run(board.id);
+		note('board', ['boards', board.id], null, 'tracked');
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(membersOf(board.id)).toEqual([]);
+		expect(boardRow(board.id)).toMatchObject({ createdBy: null });
+		expect(result.accessKept).toEqual({ ...NO_KEPT, removed: 2, creators: 1 });
+		expect(canViewBoard(admin, board.id)).toBe(true);
+		expect(canViewBoard(chief, board.id)).toBe(true);
+		const shared = await api('POST', `/api/boards/${board.id}/share`, { user: admin, body: { type: 'user', targetId: bob.id, role: 'editor' } });
+		expect(shared.status).toBe(200);
+		expect(membersOf(board.id)).toEqual([[bob.id, 'editor']]);
+	});
+
+	it('(w) sealed control: nothing narrowed here: nothing changed, every count 0, no line', () => {
+		const board = trackedBoard(chief, { isPublic: true });
+		join(board.id, bob, 'editor');
+		const team = makeTeam([bob]);
+		note('team', ['teams', team.id], null, 'tracked');
+		note('team_member', ['teams', team.id], ['users', bob.id], 'member');
+		const backup = backupNow();
+		const before = { members: membersOf(board.id), team: teamOf(team.id), board: boardRow(board.id), record: recordNow() };
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect({ members: membersOf(board.id), team: teamOf(team.id), board: boardRow(board.id), record: recordNow() }).toEqual(before);
+		expect(result.accessKept).toEqual(NO_KEPT);
+		expect(result.accessAsHere).toEqual({ boards: 0, teams: 0, people: 0 });
+		expect(result.recordsNotTaken.accessChanges).toBe(0);
+	});
+
+	it('(w2) R7: a sealed backup made before 0079 has no record: this server\'s caps apply, no line, nothing counted as not taken', () => {
+		const board = trackedBoard(chief);
+		join(board.id, bob, 'editor');
+		const backup = backupNow();
+		leave(board.id, bob);
+		backup.exec('DROP TABLE access_changes');
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.errors).toEqual([]);
+		expect(membersOf(board.id)).toEqual([]);
+		expect(result.accessKept).toEqual({ ...NO_KEPT, removed: 1 });
+		expect(result.recordsNotTaken.accessChanges).toBe(0);
+	});
+
+	// The code review's fix pass (2026-11-21): FP2, FP3, FP5 and FP12, each through a restore.
+	describe("the code review's fixes (FP2, FP3, FP5, FP12)", () => {
+		const STAMPED = (n: number) =>
+			`${n} restored board(s), team(s), person(s) or account(s) had a creation time that is not a moment and were given the restore's, so that the record of access changes can name them from here on.`;
+		const createdAt = (table: string, id: number) => sqlite.prepare(`SELECT created_at FROM ${table} WHERE id = ?`).pluck().get(id);
+		const second = (n: number) => `2026-05-01 09:${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+
+		it("(FP2)[A] a board an unsealed backup plants with a creation time that is not a moment is given the restore's; shared, backed up, taken off and restored sealed: the removal stays", async () => {
+			allowOtherTimestampForms();
+			const forged = opening(Buffer.from(sqlite.serialize()));
+			forged.prepare("INSERT INTO boards (id, name, created_by, created_at, updated_at) VALUES (50, 'Planted', ?, 'not a time', '2026-01-01 00:00:00')").run(bob.id);
+			const first = restoreFromBackup(sqlite, forged, { importer: chief.id });
+			expect(first.sealVerified).toBe(false);
+			expect(first.errors).toContain(STAMPED(1));
+			const created = createdAt('boards', 50);
+			expect(toStamp(created)).toBe(created);
+
+			expect((await api('POST', '/api/boards/50/share', { user: chief, body: { type: 'user', targetId: carol.id, role: 'editor' } })).status).toBe(200);
+			const backup = backupNow();
+			expect((await api('DELETE', '/api/boards/50/share', { user: chief, body: { type: 'user', targetId: carol.id } })).status).toBe(200);
+			const restored = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(restored.sealVerified).toBe(true);
+			expect(restored.errors).not.toContain(STAMPED(1));
+			expect(membersOf(50)).toEqual([]);
+			expect(canViewBoard(carol, 50)).toBe(false);
+			expect(restored.accessKept).toEqual({ ...NO_KEPT, removed: 1 });
+		});
+
+		it("(FP2)[C] a team an unsealed backup plants with a creation time that is not a moment is given the restore's; a member added, backed up, removed and restored sealed: the removal stays", async () => {
+			allowOtherTimestampForms();
+			const forged = opening(Buffer.from(sqlite.serialize()));
+			forged.prepare("INSERT INTO teams (id, name, created_at) VALUES (40, 'Planted team', 'never')").run();
+			const first = restoreFromBackup(sqlite, forged, { importer: chief.id });
+			expect(first.errors).toContain(STAMPED(1));
+			const created = createdAt('teams', 40);
+			expect(toStamp(created)).toBe(created);
+
+			expect((await api('POST', `/api/teams/40/members/${bob.id}`, { user: chief, body: { role: 'member' } })).status).toBe(201);
+			const backup = backupNow();
+			expect((await api('DELETE', `/api/teams/40/members/${bob.id}`, { user: chief })).status).toBe(200);
+			const restored = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(restored.sealVerified).toBe(true);
+			expect(teamOf(40)).toEqual([]);
+			expect(restored.accessKept).toEqual({ ...NO_KEPT, removed: 1 });
+		});
+
+		it("(FP2) unsealed: an account not the same here whose creation time is not a moment is given the restore's; one the same here is left as it is", () => {
+			allowOtherTimestampForms();
+			const forged = opening(Buffer.from(sqlite.serialize()));
+			forged.prepare("UPDATE users SET created_at = 'never' WHERE id = ?").run(carol.id);
+			const bobs = createdAt('users', bob.id);
+			const result = restoreFromBackup(sqlite, forged, { importer: chief.id });
+
+			expect(result.errors).toContain(STAMPED(1));
+			const carols = createdAt('users', carol.id);
+			expect(carols).not.toBe('never');
+			expect(toStamp(carols)).toBe(carols);
+			expect(createdAt('users', bob.id)).toBe(bobs);
+		});
+
+		it('(FP3) R20 on an untracked board: an owner in the backup, lowered here with no row of the record, stays a viewer, counted lowered', () => {
+			const { board } = makeBoard({ owner: chief });
+			sqlite.prepare("INSERT INTO board_members (board_id, user_id, role) VALUES (?, ?, 'owner')").run(board.id, bob.id);
+			const backup = backupNow();
+			sqlite.prepare("UPDATE board_members SET role = 'viewer' WHERE board_id = ? AND user_id = ?").run(board.id, bob.id);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.errors).toEqual([]);
+			expect(membersOf(board.id)).toEqual([[bob.id, 'viewer']]);
+			expect(result.accessKept).toEqual({ ...NO_KEPT, lowered: 1 });
+		});
+
+		it("(FP5)[1] 101 rows of one board's visibility this server's record holds already: its own backup is not crowded by them, no line, nothing added", () => {
+			const board = trackedBoard(chief);
+			for (let i = 0; i < 101; i++) note('board_public', ['boards', board.id], null, i % 2 ? 'public' : 'private', second(i));
+			const backup = backupNow();
+			const before = recordNow();
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.errors).toEqual([]);
+			expect(recordNow()).toEqual(before);
+		});
+
+		it("(FP5)[2] a pair's ids read as whole numbers: 60 rows naming its board as a number and 50 as text are one item of 110, all left out, counted by reason; another item's row carried", () => {
+			const backup = backupNow();
+			backup.exec(
+				'DROP TABLE access_changes; CREATE TABLE access_changes (seq INTEGER PRIMARY KEY, kind, subject_id, subject_created, holder_id, holder_created, access, changed_at, stated_changed, origin)'
+			);
+			for (let i = 0; i < 60; i++) planted(backup, { stated: second(i) });
+			for (let i = 60; i < 110; i++) planted(backup, { subject: '900', stated: second(i) });
+			planted(backup, { subject: 902 });
+			sealedFor(sqlite, backup);
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.errors).toEqual([
+				"110 row(s) of the backup's record of access changes were left out, by reason: 110 with more than 100 rows for one board, team or person and holder. The rest of the record was added to this server's."
+			]);
+			expect(backupRows().map((row) => row.subject_id)).toEqual([902]);
+		});
+
+		it('(FP12) a row of this server dated after the restore naming owner over a recorded viewer raises nothing: the owner in the backup lowered to viewer', () => {
+			const board = trackedBoard(chief);
+			join(board.id, bob, 'viewer');
+			note('board_member', ['boards', board.id], ['users', bob.id], 'owner', '2099-01-01 00:00:00');
+			sqlite.prepare("UPDATE board_members SET role = 'owner' WHERE board_id = ? AND user_id = ?").run(board.id, bob.id);
+			const backup = backupNow();
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(membersOf(board.id)).toEqual([[bob.id, 'viewer']]);
+			expect(result.accessKept).toEqual({ ...NO_KEPT, lowered: 1 });
+		});
+	});
+
+	// Slice 4 (plan 3.8, case (ii)): the import's answer, the panel's lines, the message and the CRITICAL line's words and
+	// details count the access kept and given this server's, each only where above 0, naming no board, team, person or
+	// account.
+	describe('the words, through the route (slice 4)', () => {
+		/** `backup` sent to the import route as it is; `failsAfter`, committed and then failed (as card 2697's case 46). */
+		const importThrough = async (backup: Database.Database, failsAfter: boolean) => {
+			await routeMethods('/api/admin/import');
+			// `join` in this describe is its member helper, so the folder is named without path's.
+			const dir = mkdtempSync(`${tmpdir()}${sep}dumpfire-import-`);
+			tempDirs.push(dir);
+			vi.spyOn(process, 'cwd').mockReturnValue(dir);
+			vi.spyOn(console, 'error').mockImplementation(() => {});
+			if (failsAfter) {
+				const real = sqlite.pragma.bind(sqlite) as Database.Database['pragma'];
+				vi.spyOn(sqlite, 'pragma').mockImplementation(((source: string, options?: Database.PragmaOptions) =>
+					/^foreign_keys\s*=\s*ON$/i.test(source) ? [] : real(source, options)) as typeof sqlite.pragma);
+			}
+			try {
+				return await api('POST', '/api/admin/import?outside=keep', { user: chief, headers: confirmedImport(), body: backup.serialize() });
+			} finally {
+				if (failsAfter) vi.mocked(sqlite.pragma).mockRestore();
+			}
+		};
+		const newest = () => sqlite.prepare('SELECT COALESCE(MAX(id), 0) FROM system_logs').pluck().get() as number;
+		/** The import's CRITICAL line of who imported which file, the first written after `from`. */
+		const importedSince = (from: number) =>
+			sqlite.prepare("SELECT message, meta FROM system_logs WHERE context = 'IMPORT' AND level = 'CRITICAL' AND id > ? ORDER BY id").get(from) as {
+				message: string;
+				meta: string;
+			};
+		const BOTH = [
+			{ how: 'a restore that commits', failsAfter: false },
+			{ how: 'a restore that commits and then fails', failsAfter: true }
+		];
+
+		it.each(BOTH)("(ii)[1] sealed, $how: each kind kept by the record has its sentence and count, and the CRITICAL line's words and details count them all, naming nothing", async ({ failsAfter }) => {
+			const board = trackedBoard(chief, { isPublic: true });
+			join(board.id, bob, 'editor');
+			join(board.id, carol, 'owner');
+			sqlite.prepare('UPDATE boards SET product_owner_user_id = ? WHERE id = ?').run(bob.id, board.id);
+			note('product_owner', ['boards', board.id], ['users', bob.id], 'yes');
+			const team = makeTeam([bob], 'Words team');
+			note('team', ['teams', team.id], null, 'tracked');
+			note('team_member', ['teams', team.id], ['users', bob.id], 'member');
+			shareBoardWithTeam(board, team, 'viewer');
+			note('board_team', ['boards', board.id], ['teams', team.id], 'viewer');
+			const person = makePerson({ user: bob, fullName: 'Words person' });
+			note('person_link', ['people', person.id], ['users', bob.id], 'linked');
+			const backup = backupNow();
+			// Since the backup, here: Bob taken off, Carol lowered, the board made private, its Product Owner replaced and its
+			// creator cleared, the team deleted, and the person unlinked.
+			leave(board.id, bob);
+			sqlite.prepare("UPDATE board_members SET role = 'viewer' WHERE board_id = ? AND user_id = ?").run(board.id, carol.id);
+			note('board_member', ['boards', board.id], ['users', carol.id], 'viewer');
+			sqlite.prepare('UPDATE boards SET is_public = 0, product_owner_user_id = ?, created_by = NULL WHERE id = ?').run(carol.id, board.id);
+			note('board_public', ['boards', board.id], null, 'private');
+			note('product_owner', ['boards', board.id], ['users', carol.id], 'yes');
+			note('board', ['boards', board.id], null, 'tracked');
+			note('team', ['teams', team.id], null, 'deleted');
+			sqlite.prepare('DELETE FROM teams WHERE id = ?').run(team.id);
+			sqlite.prepare('UPDATE people SET user_id = NULL WHERE id = ?').run(person.id);
+			note('person_link', ['people', person.id], null, 'none');
+			const from = newest();
+
+			const res = await importThrough(backup, failsAfter);
+
+			const kept = { removed: 3, lowered: 1, madePrivate: 1, productOwners: 1, creators: 1, teamsEnded: 1, unlinked: 1 };
+			const LINES = [
+				'3 board or team membership(s) and share(s) in the backup were removed on this server after it was made, and are left out.',
+				'1 role(s) on boards and teams were given back the lower role they have on this server.',
+				'1 board(s) made private on this server after the backup stay private.',
+				"1 board(s) keep no Product Owner, and 1 no recorded creator, as this server's record of access says: set the Product Owner again on the " +
+					"board's Share window if needed.",
+				'1 team(s) deleted on this server came back without the members and boards they had then: delete them again on the Teams page if they are ' +
+					'not wanted.',
+				'1 person(s) unlinked from an account on this server since the backup stay unlinked.'
+			];
+			const message = res.body.message as string;
+			expect(res.status, message).toBe(failsAfter ? 500 : 200);
+			expect(res.body.committed).toBe(failsAfter ? true : undefined);
+			// The answer's figures: counts only.
+			expect(res.body.accessKept).toEqual(kept);
+			expect(res.body.accessAsHere).toBeUndefined();
+			expect(res.body.recordsNotTaken).toBeUndefined();
+			// The panel's lines, whole, and the message that holds them.
+			expect(res.body.accountsKeptLines).toEqual(LINES);
+			expect(message).toContain(LINES.join(' '));
+			// The CRITICAL line, written at the commit: one count of them all, and the counts in its details. The team ended is
+			// not counted again: its removed share is among the 3 removed (code review, FP7).
+			const line = importedSince(from);
+			expect(line.message).toContain('restored as it is, keeping 8 access change(s) made on this server. The system log was kept as it was;');
+			const meta = JSON.parse(line.meta);
+			expect(meta.accessKept).toEqual(kept);
+			expect(meta).not.toHaveProperty('accessAsHere');
+			// Naming nobody and nothing: the lines are whole above, so they hold no id, and the CRITICAL line names none of
+			// them. (The message's card 2768 sentence names the accounts left with no second factor, as it always has.)
+			const said = `${res.body.accountsKeptLines.join(' ')} ${line.message} ${line.meta}`;
+			expect(said).not.toMatch(/\b(bob|carol)\b|Words team|Words person/i);
+		});
+
+		it.each(BOTH)("(ii)[2] unsealed, $how: the boards, teams and people given this server's access and the record's rows not taken have their sentences and counts, naming nothing", async ({ failsAfter }) => {
+			const mallory = makeUser({ username: 'mallory' });
+			const board = trackedBoard(chief);
+			join(board.id, bob, 'editor');
+			const team = makeTeam([bob], 'Words team');
+			note('team', ['teams', team.id], null, 'tracked');
+			const backup = ownBackup({ edited: true });
+			backup.exec(`
+				INSERT INTO board_members (board_id, user_id, role) VALUES (${board.id}, ${mallory.id}, 'owner');
+				INSERT INTO team_members (team_id, user_id, role) VALUES (${team.id}, ${mallory.id}, 'owner');
+				INSERT INTO people (id, full_name, email, user_id) VALUES (950, 'Planted person', 'planted@file.test', ${mallory.id});
+			`);
+			const inFile = backup.prepare('SELECT count(*) FROM access_changes').pluck().get() as number;
+			expect(inFile).toBeGreaterThan(0);
+			const from = newest();
+
+			const res = await importThrough(backup, failsAfter);
+
+			const AS_HERE =
+				"The backup's seal did not verify, so who may open what is not taken from it: 1 board(s), 1 team(s) and 1 person(s) in it were given " +
+				'the access they have on this server, and accounts on this server were given none on the boards and teams it does not hold. A person ' +
+				'whose account link the backup changed stays marked as left until an administrator marks them active.';
+			const RECORDS =
+				`The backup's seal did not verify, so its record of ${inFile} change(s) of board and team access and person links was not added to this server's: a file ` +
+				"this server cannot check gives no access here, and this server's own records are kept as they were.";
+			const message = res.body.message as string;
+			expect(res.status, message).toBe(failsAfter ? 500 : 200);
+			expect(res.body.accessAsHere).toEqual({ boards: 1, teams: 1, people: 1 });
+			expect(res.body.accessKept).toBeUndefined();
+			expect(res.body.recordsNotTaken).toEqual({ accountEndings: 0, keyRevocations: 0, accessChanges: inFile });
+			expect(res.body.accountsKeptLines).toEqual([AS_HERE, RECORDS]);
+			expect(message).toContain(`${AS_HERE} ${RECORDS}`);
+			const line = importedSince(from);
+			// Card 3012's clause (the person marked left) sits between the two.
+			expect(line.message).toContain(", restored as it is, giving 3 board(s), team(s) and person(s) this server's access, keeping what");
+			expect(line.message).toContain(`, adding none of the backup's ${inFile} change(s) of board and team access and person links to this server's records, as its seal did not verify.`);
+			const meta = JSON.parse(line.meta);
+			expect(meta.accessAsHere).toEqual({ boards: 1, teams: 1, people: 1 });
+			expect(meta.recordsNotTaken).toEqual({ accountEndings: 0, keyRevocations: 0, accessChanges: inFile });
+			expect(meta).not.toHaveProperty('accessKept');
+			const said = `${res.body.accountsKeptLines.join(' ')} ${line.message} ${line.meta}`;
+			expect(said).not.toMatch(/\b(bob|mallory)\b|Words team|Planted person|planted@file/i);
+		});
+
+		it("(ii)[3] nothing narrowed and the seal verified: no sentence, no figure, and the CRITICAL line's words and details as before", async () => {
+			const board = trackedBoard(chief);
+			join(board.id, bob, 'editor');
+			const backup = backupNow();
+			const from = newest();
+
+			const res = await importThrough(backup, false);
+
+			const message = res.body.message as string;
+			expect(res.status, message).toBe(200);
+			expect(res.body.accessKept).toBeUndefined();
+			expect(res.body.accessAsHere).toBeUndefined();
+			expect(res.body.recordsNotTaken).toBeUndefined();
+			expect(res.body.accountsKeptLines).toBeUndefined();
+			expect(message).not.toMatch(/board or team membership|lower role they have|stay private|Product Owner|team\(s\) deleted|unlinked|who may open what/);
+			const line = importedSince(from);
+			expect(line.message).toContain('restored as it is. The system log was kept as it was;');
+			const meta = JSON.parse(line.meta);
+			expect(meta).not.toHaveProperty('accessKept');
+			expect(meta).not.toHaveProperty('accessAsHere');
+			expect(meta).not.toHaveProperty('recordsNotTaken');
+		});
 	});
 });

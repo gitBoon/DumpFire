@@ -126,7 +126,9 @@ import {
 	activeWebhooksRefused,
 	boardsOverWebhookCap,
 	coverReadable,
+	ENDING_IN_MAIL,
 	endedKeysCause,
+	holdNoLongerReadable,
 	holdOf,
 	holdRevealsOfEndedKeys,
 	markReadablePassDone,
@@ -144,6 +146,7 @@ import {
 	type Telling
 } from './webhooks';
 import { inTransaction } from './db/transaction';
+import { ACCESS_KIND, ACCESS_WORDS, accessCeiling, accessRank, type AccessItem, type AccessKind } from './access-changes';
 import { raiseKeyCounterOverRecord } from './key-revocations';
 import { endRecordedKeysPresent } from './api-key-revoke';
 import { endRecordedAccountsPresent, endReplacedPasswordsPresent, type AccountsEndedAgain, type PasswordsEndedAgain } from './account-ending-bodies';
@@ -1480,8 +1483,10 @@ export const REVEAL_SWEEP_EVERY_MS = 5 * 60 * 1000;
  * seed (`endRecordedAccountsAtStart`); one WARN under AUTH counts them and names nobody. Then, in a transaction of its
  * own too (card 2997, R3): every account present but the superadmin holding a password the record says was replaced
  * here is given one nothing matches and signed out, its keys ended (`endReplacedPasswordsAtStart`); one WARN under AUTH
- * counts them and names nobody, and a superadmin holding one is left with a WARN of its own. A failure of any of the
- * passes rolls back that pass alone, with its own WARN; the others still commit, and the answer is null.
+ * counts them and names nobody, and a superadmin holding one is left with a WARN of its own. Then, on its own too (card
+ * 3002, R3): every board, team and person access present above this server's record of access changes lowered as the
+ * record says (`capAccessAtStartPass`), its count joining the answer. A failure of any of the passes rolls back that
+ * pass alone, with its own WARN; the others still commit, and the answer is null.
  */
 export function sweepEndedKeyReveals(value: string | undefined = process.env.SCHEDULERS, isDev: boolean = dev): number | null {
 	// The record of account endings first, in a transaction of its own (card 2996, decision 14), so that the keys it
@@ -1489,6 +1494,9 @@ export function sweepEndedKeyReveals(value: string | undefined = process.env.SCH
 	// before the key pass for the same reason.
 	const accountsAgain = endRecordedAccountsAtStart(value, isDev);
 	const passwordsAgain = endReplacedPasswordsAtStart(value, isDev);
+	// Card 3002 (R3): board, team and person access above this server's record of access changes, on its own, after the
+	// password pass and before the key pass, so that what it holds is held before the keys' reveals are swept.
+	const accessAgain = capAccessAtStartPass(value, isDev);
 	const endedAgain = endRecordedKeysAtStart(value, isDev);
 	let found: ReturnType<typeof holdRevealsOfEndedKeys>;
 	try {
@@ -1524,7 +1532,213 @@ export function sweepEndedKeyReveals(value: string | undefined = process.env.SCH
 			// The hold is committed; only its telling was lost.
 		}
 	}
-	return endedAgain === null || accountsAgain === null || passwordsAgain === null ? null : switchedOff.length + held.length + endedAgain.count;
+	return endedAgain === null || accountsAgain === null || passwordsAgain === null || accessAgain === null
+		? null
+		: switchedOff.length + held.length + endedAgain.count + accessAgain.lowered;
+}
+
+/** What the start's access pass did (card 3002): items lowered, and items whose row of this server's dated after now it set aside. */
+export type AccessCappedAgain = { lowered: number; future: number };
+
+/**
+ * The access pass of `sweepEndedKeyReveals` (card 3002, plan 3.7; R1 to R3), in a transaction of its own, after card
+ * 2997's password pass and before the key pass: `capAccessAtStart`, told as the account pass tells (the boards' owners
+ * mailed only where the schedulers run). One WARN under AUTH with counts and no name for what it lowered, and one for
+ * rows of the record dated after now that it did not let raise any access. A failure rolls back this pass alone, with
+ * its own WARN; the passes around it still commit, and the sweep's answer is null (R3). Returns the counts, or null
+ * where it could not. It never throws.
+ */
+function capAccessAtStartPass(value: string | undefined, isDev: boolean): AccessCappedAgain | null {
+	let done: AccessCappedAgain;
+	try {
+		const setting = schedulerSetting(value, isDev);
+		const telling: Telling = setting.run ? { mail: true } : { mail: false, because: `the schedulers are off (${setting.reason})` };
+		done = inTransaction(() => capAccessAtStart(telling, stamp()));
+	} catch (err) {
+		try {
+			authLog.warn(
+				`The board, team and person access above this server's record of access changes could not be lowered: ${(err as Error)?.message ?? err}. ` +
+					'The next sweep, within five minutes, tries again.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+	if (done.lowered > 0) {
+		try {
+			authLog.warn(
+				`${done.lowered} board, team or person access(es) above this server's record of access changes were found (an older image’s import or a host edit) ` +
+					'and lowered as the record says.',
+				{ lowered: done.lowered }
+			);
+		} catch {
+			// The lowering is committed; only its line was lost.
+		}
+	}
+	if (done.future > 0) {
+		try {
+			authLog.warn(`${done.future} row(s) of this server's record of access changes are dated after now and were not let raise any access.`, { future: done.future });
+		} catch {
+			// Nothing more to be done about it.
+		}
+	}
+	return done;
+}
+
+/**
+ * Card 3002 (plan 3.7; R1, R2): every member row, share, team member, public board, Product Owner, creator and person
+ * link present lowered to this server's record of access changes, rules 1 and 3 of the rule (`accessCeiling`), only
+ * where the item has a recorded row: never the guess, never a team's deletion, never "no Product Owner row means none".
+ * A member made on an older image, with no row, is left. A row of this server's dated after `now` never raises a
+ * ceiling: where it would, the ceiling is taken without it, and the item counted in `future` where that lowered it.
+ *
+ * Each change with the writers' own effects: the webhooks on each board changed, and those set by each team member
+ * removed or lowered, swept (`switchOffLostWebhooks`); an owner row lowered or removed, or a creator cleared, holds what
+ * that account could read as owner of those boards (`holdNoLongerReadable`). Told with `telling`, naming no account.
+ * Writes nothing to the record: it lowers to what the record already says (R15). Inside the caller's transaction.
+ */
+function capAccessAtStart(telling: Telling, now: string): AccessCappedAgain {
+	const done: AccessCappedAgain = { lowered: 0, future: 0 };
+	const side = (id: number, created: unknown) => ({ id, created: toStamp(created) });
+	/** The ceiling of `item`, whose rank now is `live`: this server's rows dated after now set aside where they would raise it (R1). */
+	const ceilingOf = (item: AccessItem, live: number): number | null => {
+		const all = accessCeiling(sqlite, item, { teamDeletions: false });
+		const past = accessCeiling(sqlite, item, { teamDeletions: false, asOf: now });
+		if (all === null || past === null || all <= past) return all;
+		if (live > past) done.future++;
+		return past;
+	};
+	/** Lower one ordinal row: deleted at 0, else given the ceiling's word; returns whether it changed. */
+	const lower = (kind: AccessKind, role: unknown, item: AccessItem, remove: () => void, set: (word: string) => void): boolean => {
+		const live = accessRank(kind, role);
+		const ceiling = ceilingOf(item, live);
+		if (ceiling === null || ceiling >= live) return false;
+		if (ceiling === 0) remove();
+		else set(ACCESS_WORDS[kind][ceiling]);
+		done.lowered++;
+		return true;
+	};
+	const boardIds = new Set<number>();
+	const setters = new Set<number>();
+	const ownersLost = new Map<number, Set<number>>();
+	const lostOwner = (userId: number, boardId: number) => ownersLost.set(userId, (ownersLost.get(userId) ?? new Set()).add(boardId));
+
+	const members = sqlite
+		.prepare(
+			'SELECT m.board_id AS boardId, b.created_at AS boardCreated, m.user_id AS userId, u.created_at AS userCreated, m.role FROM board_members AS m ' +
+				'JOIN boards AS b ON b.id = m.board_id JOIN users AS u ON u.id = m.user_id ORDER BY m.board_id, m.user_id'
+		)
+		.all() as { boardId: number; boardCreated: unknown; userId: number; userCreated: unknown; role: unknown }[];
+	for (const row of members) {
+		const item: AccessItem = { kind: ACCESS_KIND.boardMember, subject: side(row.boardId, row.boardCreated), holder: side(row.userId, row.userCreated) };
+		const changed = lower(
+			ACCESS_KIND.boardMember,
+			row.role,
+			item,
+			() => sqlite.prepare('DELETE FROM board_members WHERE board_id = ? AND user_id = ?').run(row.boardId, row.userId),
+			(word) => sqlite.prepare('UPDATE board_members SET role = ? WHERE board_id = ? AND user_id = ?').run(word, row.boardId, row.userId)
+		);
+		if (!changed) continue;
+		boardIds.add(row.boardId);
+		if (row.role === 'owner') lostOwner(row.userId, row.boardId);
+	}
+
+	const shares = sqlite
+		.prepare(
+			'SELECT s.board_id AS boardId, b.created_at AS boardCreated, s.team_id AS teamId, t.created_at AS teamCreated, s.role FROM board_teams AS s ' +
+				'JOIN boards AS b ON b.id = s.board_id JOIN teams AS t ON t.id = s.team_id ORDER BY s.board_id, s.team_id'
+		)
+		.all() as { boardId: number; boardCreated: unknown; teamId: number; teamCreated: unknown; role: unknown }[];
+	for (const row of shares) {
+		const item: AccessItem = { kind: ACCESS_KIND.boardTeam, subject: side(row.boardId, row.boardCreated), holder: side(row.teamId, row.teamCreated) };
+		const changed = lower(
+			ACCESS_KIND.boardTeam,
+			row.role,
+			item,
+			() => sqlite.prepare('DELETE FROM board_teams WHERE board_id = ? AND team_id = ?').run(row.boardId, row.teamId),
+			(word) => sqlite.prepare('UPDATE board_teams SET role = ? WHERE board_id = ? AND team_id = ?').run(word, row.boardId, row.teamId)
+		);
+		if (changed) boardIds.add(row.boardId);
+	}
+
+	const teamMembers = sqlite
+		.prepare(
+			'SELECT m.team_id AS teamId, t.created_at AS teamCreated, m.user_id AS userId, u.created_at AS userCreated, m.role FROM team_members AS m ' +
+				'JOIN teams AS t ON t.id = m.team_id JOIN users AS u ON u.id = m.user_id ORDER BY m.team_id, m.user_id'
+		)
+		.all() as { teamId: number; teamCreated: unknown; userId: number; userCreated: unknown; role: unknown }[];
+	for (const row of teamMembers) {
+		const item: AccessItem = { kind: ACCESS_KIND.teamMember, subject: side(row.teamId, row.teamCreated), holder: side(row.userId, row.userCreated) };
+		const changed = lower(
+			ACCESS_KIND.teamMember,
+			row.role,
+			item,
+			() => sqlite.prepare('DELETE FROM team_members WHERE team_id = ? AND user_id = ?').run(row.teamId, row.userId),
+			(word) => sqlite.prepare('UPDATE team_members SET role = ? WHERE team_id = ? AND user_id = ?').run(word, row.teamId, row.userId)
+		);
+		if (changed) setters.add(row.userId);
+	}
+
+	// Each board's visibility, Product Owner and creator: rules 1 and 3, each only where the record holds a row.
+	const none = { id: 0, created: '' };
+	const boards = sqlite
+		.prepare(
+			'SELECT b.id, b.created_at AS createdAt, b.is_public AS isPublic, b.product_owner_user_id AS productOwner, p.created_at AS productOwnerCreated, ' +
+				'b.created_by AS createdBy, c.created_at AS creatorCreated FROM boards AS b LEFT JOIN users AS p ON p.id = b.product_owner_user_id ' +
+				'LEFT JOIN users AS c ON c.id = b.created_by ORDER BY b.id'
+		)
+		.all() as {
+		id: number;
+		createdAt: unknown;
+		isPublic: unknown;
+		productOwner: number | null;
+		productOwnerCreated: unknown;
+		createdBy: number | null;
+		creatorCreated: unknown;
+	}[];
+	for (const board of boards) {
+		const subject = side(board.id, board.createdAt);
+		if (board.isPublic === 1 && ceilingOf({ kind: ACCESS_KIND.boardPublic, subject, holder: none }, 1) === 0) {
+			sqlite.prepare('UPDATE boards SET is_public = 0 WHERE id = ?').run(board.id);
+			done.lowered++;
+			boardIds.add(board.id);
+		}
+		if (board.productOwner !== null && ceilingOf({ kind: ACCESS_KIND.productOwner, subject, holder: side(board.productOwner, board.productOwnerCreated) }, 1) === 0) {
+			sqlite.prepare('UPDATE boards SET product_owner_user_id = NULL WHERE id = ?').run(board.id);
+			done.lowered++;
+		}
+		if (board.createdBy !== null && ceilingOf({ kind: ACCESS_KIND.board, subject, holder: side(board.createdBy, board.creatorCreated) }, 1) === 0) {
+			sqlite.prepare('UPDATE boards SET created_by = NULL WHERE id = ?').run(board.id);
+			done.lowered++;
+			boardIds.add(board.id);
+			// The creator is an owner (A2): what it could read as one is held, board by board.
+			lostOwner(board.createdBy, board.id);
+		}
+	}
+
+	// Each person's account link: rule 3, only where the record holds a row.
+	const people = sqlite
+		.prepare(
+			'SELECT p.id, p.created_at AS createdAt, p.user_id AS userId, u.created_at AS userCreated FROM people AS p LEFT JOIN users AS u ON u.id = p.user_id ' +
+				'WHERE p.user_id IS NOT NULL ORDER BY p.id'
+		)
+		.all() as { id: number; createdAt: unknown; userId: number; userCreated: unknown }[];
+	for (const person of people) {
+		if (ceilingOf({ kind: ACCESS_KIND.personLink, subject: side(person.id, person.createdAt), holder: side(person.userId, person.userCreated) }, 1) === 0) {
+			sqlite.prepare('UPDATE people SET user_id = NULL WHERE id = ?').run(person.id);
+			done.lowered++;
+		}
+	}
+
+	// The writers' own effects, naming no account (R3).
+	const cause = "access found above this server's record of access changes was lowered as the record says (found when the server started)";
+	if (boardIds.size > 0) switchOffLostWebhooks({ boardIds: [...boardIds].sort((a, b) => a - b) }, cause, { telling, unnamed: true });
+	if (setters.size > 0) switchOffLostWebhooks({ setters: [...setters].sort((a, b) => a - b) }, cause, { telling, unnamed: true });
+	for (const [userId, lost] of ownersLost) {
+		holdNoLongerReadable(userId, [...lost].sort((a, b) => a - b), { log: cause, mail: ENDING_IN_MAIL.ownerLowered, telling, unnamed: true });
+	}
+	return done;
 }
 
 /**

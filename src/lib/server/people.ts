@@ -63,7 +63,8 @@
  */
 import { error } from '@sveltejs/kit';
 import { and, eq, inArray, ne } from 'drizzle-orm';
-import { db } from './db';
+import { db, sqlite } from './db';
+import { ACCESS_KIND, recordAccessChange } from './access-changes';
 import { foldEquals } from './db/fold-case';
 import { people, peopleChanges, peopleGroupMembers, peopleGroups, users, type PeopleGroup, type Person } from './db/schema';
 import type { SessionUser } from './auth';
@@ -147,6 +148,8 @@ export function createPerson(caller: SessionUser | null, at: Record<string, neve
 		.values({ fullName, email, jobTitle, userId, createdBy: actor.id })
 		.returning()
 		.get();
+	// The record of access changes (card 3002, W11): the person tracked, with its account or none.
+	recordAccessChange(sqlite, { kind: ACCESS_KIND.personLink, subject: person.id, holder: person.userId, access: 'linked' });
 	if (groupIds.length > 0) {
 		db.insert(peopleGroupMembers)
 			.values(groupIds.map((groupId) => ({ groupId, personId: person.id })))
@@ -244,6 +247,8 @@ export function updatePerson(
 
 	updates.updatedAt = stamp();
 	const row = db.update(people).set(updates).where(eq(people.id, person.id)).returning().get();
+	// The record of access changes (card 3002, W12): a change of the account the person is linked to.
+	if (linkChange) recordAccessChange(sqlite, { kind: ACCESS_KIND.personLink, subject: person.id, holder: row.userId, access: 'linked' });
 	if (groupsChange) {
 		db.delete(peopleGroupMembers).where(eq(peopleGroupMembers.personId, person.id)).run();
 		if (groupIds.length > 0) {
@@ -479,6 +484,8 @@ export function addFromAccounts(caller: SessionUser | null, at: Record<string, n
 			continue;
 		}
 		const person = db.insert(people).values({ fullName: account.username, email, userId, createdBy: actor.id }).returning().get();
+		// The record of access changes (card 3002, W13): the person tracked, linked to the account.
+		recordAccessChange(sqlite, { kind: ACCESS_KIND.personLink, subject: person.id, holder: userId, access: 'linked' });
 		// One change a person made, each its own subject (S1 of the code review).
 		recordChange(actor, opts, 'person', person.id, 'created', null, personFacts(person, []));
 		created++;

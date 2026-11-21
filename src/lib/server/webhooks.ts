@@ -1042,8 +1042,12 @@ function noLongerReadableScope(withSecret: string, boardFilter: string, stillRea
 	return `set_by IS NOT @id AND ${withSecret} AND ${boardFilter} AND NOT (${stillReadable})`;
 }
 
-/** An account a restore ended or lowered by the record of account endings (card 2996, R7), for `holdNoLongerReadableIn`. */
-export type RuledReader = { id: number; was: string; ended: boolean };
+/**
+ * An account a restore ended or lowered by the record of account endings (card 2996, R7), for `holdNoLongerReadableIn`;
+ * or an owner the record of access changes lowered or removed, or a creator it cleared, with `boards`, those boards
+ * (card 3002, decision 10).
+ */
+export type RuledReader = { id: number; was: string; ended: boolean; boards?: readonly number[] };
 
 /**
  * `holdNoLongerReadable` on the restore's connection, for every account the record of account endings ruled on in it
@@ -1053,6 +1057,9 @@ export type RuledReader = { id: number; was: string; ended: boolean };
  * backup left without their secret, count as having one, as the restore's readable pass counts them. Each marked
  * `reader`, the account's id. Run after the fill, beside `holdRevealedIn`. Opens no transaction; throws outside one;
  * tells nobody: the restore tells them with its sweep.
+ *
+ * An account with `boards` (card 3002, decision 10: an owner the record of access changes lowered or removed) is held
+ * on those boards alone, in place of those it could read with `was`; what it can still read now is left.
  */
 export function holdNoLongerReadableIn(
 	live: typeof sqlite,
@@ -1060,16 +1067,19 @@ export function holdNoLongerReadableIn(
 	listed: readonly number[] = []
 ): { switchedOff: SwitchedOff[]; held: SwitchedOff[] } {
 	if (!live.inTransaction) throw new Error("holdNoLongerReadableIn holds inside the restore's transaction, and none is open");
-	const scope = noLongerReadableScope(
-		"(secret <> '' OR id IN (SELECT value FROM json_each(@listed)))",
-		readableBy('@id', '@was'),
-		`@ended = 0 AND ${readableBy('@id', ROLE_OF_ID)}`
-	);
+	const scopeOf = (boards: boolean) =>
+		noLongerReadableScope(
+			"(secret <> '' OR id IN (SELECT value FROM json_each(@listed)))",
+			boards ? 'board_id IN (SELECT value FROM json_each(@boards))' : readableBy('@id', '@was'),
+			`@ended = 0 AND ${readableBy('@id', ROLE_OF_ID)}`
+		);
 	const switchedOff: SwitchedOff[] = [];
 	const held: SwitchedOff[] = [];
 	for (const account of accounts) {
+		const byBoard = account.boards !== undefined;
+		const params = { id: account.id, was: account.was, ended: account.ended ? 1 : 0, listed: JSON.stringify(listed), ...(byBoard ? { boards: JSON.stringify(account.boards) } : {}) };
 		// Each told with no account named (card 2996, FP16): the restore's lines count, and name nobody the record ended.
-		const found = holdInScope(live, scope, { id: account.id, was: account.was, ended: account.ended ? 1 : 0, listed: JSON.stringify(listed) }, () => ({
+		const found = holdInScope(live, scopeOf(byBoard), params, () => ({
 			reader: account.id,
 			unnamed: true
 		}));

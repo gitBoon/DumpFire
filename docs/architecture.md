@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.147
+version: 1.148
 status: As-Built
 date: 2026-11-20
 tags:
+  - card-3002
   - card-3020
   - unsealed-request-addresses
   - card-3012
@@ -59,7 +60,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -288,8 +289,15 @@ disable's and the role change's own bodies (`endRecordedAccountsPresent`, accoun
 a transaction of its own (`endReplacedPasswordsAtStart`), by the password pass: every account present but
 a superadmin holding a password the record says was replaced here is given `DUMMY_HASH` and signed out,
 its keys ended (`endReplacedPasswordsPresent`), with one `WARN` under AUTH of counts; a superadmin holding
-one is left, with a `WARN` of its own at every run. So the order is the account pass, the password pass,
-the key pass, each rolled back alone on failure),
+one is left, with a `WARN` of its own at every run. Since card 3002 the password pass is followed, before the
+key pass and in a transaction of its own (`capAccessAtStart`), by the access pass: every board member,
+share, team member, board visibility, creator, Product Owner and person link that has a recorded row
+and is above it is lowered to it (never the restore's guess, never a team's deletion, never "no
+Product Owner row means none"), a row of this server's dated after now never raising a ceiling; each
+change with the writers' own effects (`switchOffLostWebhooks` and, for an owner lowered,
+`holdNoLongerReadable` of that board), told as the sweep is (`schedulerSetting`); one `WARN` under
+AUTH of counts and another of the rows dated after now, no name. So the order is the account pass, the
+password pass, the access pass, the key pass, each rolled back alone on failure),
 `startEndedKeyRevealSweep()` (the same every five minutes, whatever `SCHEDULERS` says; a second
 call starts no second timer) and `startSchedulers()`, in that order for the last six.
 
@@ -300,6 +308,14 @@ flowchart LR
     Readable --> Reveals["sweepEndedKeyReveals()<br/>the seed once; what ended keys were given"]
     Reveals --> Timer["startEndedKeyRevealSweep()<br/>the same every five minutes"]
     Timer --> Sched["startSchedulers()"]
+```
+
+```mermaid
+flowchart LR
+    Acc["endRecordedAccountsPresent<br/>(card 2996)"] --> Pw["endReplacedPasswordsAtStart<br/>(card 2997)"]
+    Pw --> Access["capAccessAtStart (card 3002)<br/>recorded items above their row lowered"]
+    Access --> Keys["endRecordedKeysAtStart<br/>(card 2995)"]
+    Keys --> Seed["the reveals' seed and sweep<br/>(card 2947)"]
 ```
 
 ```mermaid
@@ -3207,6 +3223,59 @@ outside printable ASCII as `\u{…}`, FP3) and the username through `printable`,
 webhook through `PUT /api/v1/webhooks/{id}` gives it a new secret, whatever the reason, one this build
 does not name included (FP2). `secretsToEnterSentence` names at most ten webhooks, then "and N more",
 each board name quoted as JSON and cut to 60 characters (FP4).
+
+### The restore keeps board, team and person access as recorded (card 3002)
+
+Card 3002 adds five steps to `restoreInOneSnapshot`, inside its one transaction, and a board scope to
+the existing hold. The record they read is `access_changes` ([Data Model](data-model.md)), written by
+`recordAccessChange` (`src/lib/server/access-changes.ts`) in the transaction of every change of
+access here.
+
+1. `accessHeldHere`, before the clear, on **every** restore: every board (id, `created_at`,
+   `created_by`, `is_public`, `product_owner_user_id`), member row, share, team, team member and person
+   (id, `created_at`, `user_id`), with the accounts' and teams' `created_at`, keyed by identity.
+2. `carryAccessChanges`, after card 3013's steps up to `keepAccountsHere`, where the live database has
+   the record: sealed, the backup's well-formed rows added as `backup`, bounded (`MOST_OTHER_ROWS` in
+   all, 100 rows a pair), a union on kind, subject, holder, stated moment and access; unsealed, the
+   file's rows counted (`recordsNotTaken.accessChanges`) and none added.
+3. `keepAccessHere`, unsealed only: every account that is the same here (`restoredSameHere`, shared
+   with card 3020's step) given exactly this server's member rows, shares, visibility, creator and
+   Product Owner on boards and teams the same here (id and `created_at`); on boards and teams not here,
+   its rows dropped and the board made private. Counts `accessAsHere.boards` and `.teams` and returns
+   the boards and teams it set, which the next step skips.
+4. `applyAccessRecord`, every restore: each restored item capped by `accessCeiling` with the guess
+   (`none` for an item with no row on a tracked subject, only where step 1 did not hold it), reading
+   the record as of the restore's moment (`asOf`, FP12). An ordinal item this server held with no row of
+   its own, on any subject, is capped at the access it held (R20, FP3). Counts `accessKept` and returns
+   the owners lowered or removed, with their boards.
+5. `keepPersonLinksHere`, unsealed only, after `switchOffUnsealedPeople`: a person's link kept only
+   where this server held the person with that link and the account is the same here, this server's
+   link put back otherwise where it can be, one `people_changes` row each. Counts
+   `accessAsHere.people`.
+6. After the fill, `holdNoLongerReadableIn` takes the capped owners with `RuledReader.boards`: the
+   webhooks with a secret on those boards that the account can no longer read are held, unnamed.
+
+None of the steps writes to `access_changes`; a failure in any rolls the whole restore back. A working
+copy runs them the same way.
+
+```mermaid
+sequenceDiagram
+    participant I as Import route
+    participant R as restoreInOneSnapshot
+    participant L as Live database (one transaction)
+    I->>R: restoreFromBackup(live, backup, outside)
+    R->>L: accessHeldHere before the clear (every restore)
+    R->>L: clear (access_changes kept), copy, card 2996 to 3013 steps to keepAccountsHere
+    R->>L: carryAccessChanges (sealed: bounded union, unsealed: counted only)
+    R->>L: keepAccessHere (unsealed: same-here accounts exactly as here)
+    R->>L: applyAccessRecord (caps, the guess only where not held here)
+    R->>L: passwords, superadmin check, switchOffUnsealedPeople
+    R->>L: keepPersonLinksHere (unsealed)
+    R->>L: readable pass, fill, sweep, holdNoLongerReadableIn with the capped owners by board
+    R->>L: COMMIT
+    R-->>I: accessKept, accessAsHere, recordsNotTaken.accessChanges
+    I->>I: sentences, CRITICAL words and details, counts only
+```
 
 ### Log lines written during a transaction
 

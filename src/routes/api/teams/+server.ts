@@ -1,5 +1,6 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
+import { ACCESS_KIND, recordAccessChange } from '$lib/server/access-changes';
 import { teams, teamMembers } from '$lib/server/db/schema';
 import { listTeamsFor } from '$lib/server/list-access';
 import { readBody, readText } from '$lib/server/request-body';
@@ -49,6 +50,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		db.insert(teamMembers)
 			.values({ teamId: team.id, userId, role: 'owner' })
 			.run();
+		// The record of access changes (card 3002, W7): the team tracked, and its owner.
+		recordAccessChange(sqlite, { kind: ACCESS_KIND.team, subject: team.id, access: 'tracked' });
+		recordAccessChange(sqlite, { kind: ACCESS_KIND.teamMember, subject: team.id, holder: userId, access: 'owner' });
 
 		return team;
 	});

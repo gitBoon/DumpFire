@@ -1,5 +1,6 @@
 import { json, error } from '@sveltejs/kit';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
+import { ACCESS_KIND, accessAsRecorded, recordAccessChange } from '$lib/server/access-changes';
 import { teamMembers, users } from '$lib/server/db/schema';
 import { eq, and, ne } from 'drizzle-orm';
 import { pathId, readBody, readChoice, readId } from '$lib/server/request-body';
@@ -77,6 +78,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		}
 		keepAnOwner(teamId, existing, role);
 
+		// The record of access changes (card 3002, W8; R12): a role other than the one stored, or than the record's, is
+		// recorded after the write, so that a membership an older image or a host edit gave, sent again, is recorded too.
+		const change = { kind: ACCESS_KIND.teamMember, subject: teamId, holder: userId, access: role };
 		if (existing) {
 			// Card 2183's rule: the role they hold, sent again or left out,
 			// writes nothing, and is answered as a change is (the pages read
@@ -87,10 +91,12 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 					.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))
 					.run();
 			}
+			if (existing.role !== role || !accessAsRecorded(sqlite, change)) recordAccessChange(sqlite, change);
 			return 'updated' as const;
 		}
 
 		db.insert(teamMembers).values({ teamId, userId, role }).run();
+		recordAccessChange(sqlite, change);
 		return 'added' as const;
 	});
 	return action === 'updated'
@@ -120,6 +126,8 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 		db.delete(teamMembers)
 			.where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))
 			.run();
+		// The record of access changes (card 3002, W9): only where a member was there.
+		if (existing) recordAccessChange(sqlite, { kind: ACCESS_KIND.teamMember, subject: teamId, holder: userId, access: 'none' });
 		// Each webhook they set on a board they can no longer open is switched
 		// off for good, in this write (card 2752, D2). A team manager who is no
 		// owner of the board can do this, and its owners are told who did.

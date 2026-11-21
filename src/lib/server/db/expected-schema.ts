@@ -27,6 +27,23 @@
  */
 export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	[
+		"CREATE TABLE `access_changes` (",
+		"\t`seq` integer PRIMARY KEY NOT NULL,",
+		"\t`kind` text NOT NULL,",
+		"\t`subject_id` integer NOT NULL,",
+		"\t`subject_created` text NOT NULL,",
+		"\t`holder_id` integer DEFAULT 0 NOT NULL,",
+		"\t`holder_created` text DEFAULT '' NOT NULL,",
+		"\t`access` text NOT NULL,",
+		"\t`changed_at` text NOT NULL,",
+		"\t`stated_changed` text DEFAULT '' NOT NULL,",
+		"\t`origin` text DEFAULT 'here' NOT NULL",
+		");"
+	].join('\n'),
+	"CREATE INDEX `access_changes_pair` ON `access_changes` (`subject_id`,`kind`,`subject_created`,`holder_id`,`holder_created`,`origin`);",
+	"CREATE INDEX `access_changes_subject` ON `access_changes` (`subject_id`,`kind`,`subject_created`,`origin`);",
+	"CREATE INDEX `access_changes_union` ON `access_changes` (`subject_id`,`kind`,`subject_created`,`holder_id`,`holder_created`,`stated_changed`,`access`);",
+	[
 		"CREATE TABLE `account_endings` (",
 		"\t`seq` integer PRIMARY KEY NOT NULL,",
 		"\t`user_id` integer NOT NULL,",
