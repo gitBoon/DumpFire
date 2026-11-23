@@ -1,10 +1,14 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.161
+version: 1.162
 status: As-Built
 date: 2026-11-23
 tags:
+  - card-3046
+  - release-runbook
+  - rollback-runbook
+  - card-3063
   - card-2687
   - card-2684
   - migration-0083
@@ -113,7 +117,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "The release that lets a card wait on a decision in the plan: no migration, no rollback step of its own (an older image reads waits as relates), and OpenAPI 1.15.0 points (15) and (16) for API key holders (card 2687). The release that adds objections and requests to talk to decisions: migration 0083 joins the batch 0074 to 0083, nothing to set, and before rolling back to 332634f count open decisions with an objection unanswered and have the decider answer each, never dropping the table (card 2684). The release that adds survey questions to decisions: migration 0082 joins the batch 0074 to 0082, nothing to set, and before rolling back to 332634f count and settle open survey-only decisions, never dropping the table (card 2683). The release that keeps where the server sends across a restore: migration 0081, the seed at first start, the MFA key and replacing it, the start pass's cost, and the rollback dump, compare and put-back of outbound_changes beside access_changes (card 3004, card 3031). The release that keeps decision role removals across a restore: migration 0080 (a seed and one index), its preview, the rollback with card 3002's dump, the decision matched by id alone, and removals made on an older image (card 3033). Card 3002 in the same release: migration 0079 records every change of board, team and person access by identity, a restore keeps access removed, lowered or made private here, an unsealed one gives same-here accounts exactly this server's access, the seed's read-only preview, boards and teams deleted before 0079 and those whose creator's or linked account's creation time does not read left untracked (R16, R21), its cost, and the rollback dump, read-only compare and put-back of access_changes (R1); Card 3029 in the same release: an unsealed import keeps this server's mail From, and a move to a new host sets it before inviting anyone, Docker deployment, the release that holds an unsealed backup's requester and people mail with migration 0078, its cost and its rollback by exact image tag (card 3020), moving to a new host, a volume clone's seal key and installation id changed, the release that keeps an unsealed backup from reaching outside with its cost and rollback (card 3012), and the release that takes nothing that signs in from an unsealed backup with its rollback (card 3009), a host file rollback after which every password changed since the copy needs 🔑 or 📧 and the superadmin is warned until it changes its own, and superadmin recovery promoting an account whose password works (card 2997), the release that brings every stored service account JSON to the one rule at start and tests only saved destinations (card 2939: the start's WARN line, its checks, GOOGLE_CLOUD_UNIVERSE_DOMAIN), the release that seals the stored secrets under the MFA key (card 2898: the read-only queries before, the first start's line, the scrub and Admin › Vacuum, copies made before, a value that does not open, and going back), the release that holds already-off webhooks when an account's access ends and mails the boards' owners (card 2923: OpenAPI 1.15.0, breaking, a one-time start-up hold, the host's command printing what it held), the release that ends API keys at a two-step reset (card 2915: always from the admin page, on the host unless --keep-api-keys, a read-only check of what will end, going back, OpenAPI 1.14.0 breaking), the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
+description: "Releasing everything since 332634f in one ordered runbook (card 3046): production at 332634f applies migrations 0066 to 0083 in its first start, the read-only checks before it with the queries adapted to 0065, the steps on the day with --init and the old container kept, the first-start lines as rehearsed, the live checks, cleanup and notices, one rollback procedure by Path A or Path B with every dump, compare, put-back and ownership check, the --keep-api-keys lockout order, and the go/no-go list, rehearsed on 2026-11-23; the account_endings put-back by key set, missing rows only; the /enrol/ set-up link masked in the nginx access log. The release that lets a card wait on a decision in the plan: no migration, no rollback step of its own (an older image reads waits as relates), and OpenAPI 1.15.0 points (15) and (16) for API key holders (card 2687). The release that adds objections and requests to talk to decisions: migration 0083 joins the batch 0074 to 0083 on a database at 0073 (0066 to 0083 on production), nothing to set, and before rolling back to 332634f count open decisions with an objection unanswered and have the decider answer each, never dropping the table (card 2684). The release that adds survey questions to decisions: migration 0082 joins the batch 0074 to 0082 on a database at 0073, nothing to set, and before rolling back to 332634f count and settle open survey-only decisions, never dropping the table (card 2683). The release that keeps where the server sends across a restore: migration 0081, the seed at first start, the MFA key and replacing it, the start pass's cost, and the rollback dump, compare and put-back of outbound_changes beside access_changes (card 3004, card 3031). The release that keeps decision role removals across a restore: migration 0080 (a seed and one index), its preview, the rollback with card 3002's dump, the decision matched by id alone, and removals made on an older image (card 3033). Card 3002 in the same release: migration 0079 records every change of board, team and person access by identity, a restore keeps access removed, lowered or made private here, an unsealed one gives same-here accounts exactly this server's access, the seed's read-only preview, boards and teams deleted before 0079 and those whose creator's or linked account's creation time does not read left untracked (R16, R21), its cost, and the rollback dump, read-only compare and put-back of access_changes (R1); Card 3029 in the same release: an unsealed import keeps this server's mail From, and a move to a new host sets it before inviting anyone, Docker deployment, the release that holds an unsealed backup's requester and people mail with migration 0078, its cost and its rollback by exact image tag (card 3020), moving to a new host, a volume clone's seal key and installation id changed, the release that keeps an unsealed backup from reaching outside with its cost and rollback (card 3012), and the release that takes nothing that signs in from an unsealed backup with its rollback (card 3009), a host file rollback after which every password changed since the copy needs 🔑 or 📧 and the superadmin is warned until it changes its own, and superadmin recovery promoting an account whose password works (card 2997), the release that brings every stored service account JSON to the one rule at start and tests only saved destinations (card 2939: the start's WARN line, its checks, GOOGLE_CLOUD_UNIVERSE_DOMAIN), the release that seals the stored secrets under the MFA key (card 2898: the read-only queries before, the first start's line, the scrub and Admin › Vacuum, copies made before, a value that does not open, and going back), the release that holds already-off webhooks when an account's access ends and mails the boards' owners (card 2923: OpenAPI 1.15.0, breaking, a one-time start-up hold, the host's command printing what it held), the release that ends API keys at a two-step reset (card 2915: always from the admin page, on the host unless --keep-api-keys, a read-only check of what will end, going back, OpenAPI 1.14.0 breaking), the release that counts every upload (card 2910: 30 files an hour and 100 MB a day whatever the file, 3 at once for an account and 6 for the server, 20 other files a card, names cleaned, Connection: close on a refusal before the body, nothing to migrate, OpenAPI 1.13.1, hands-on H1 to H8), the release that disables accounts and deletes only a disabled one, breaking for keys and for the internal delete (card 2671: migration 0072, a restore keeping this server's disabled accounts disabled, the host's superadmin command enabling the account it names, the read-only list and the command that makes disabled accounts' passwords unusable before going back, and hands-on checks D1 to D12), the release that keeps the system log through an import and names who imported which file at CRITICAL, with hands-on checks H1 to H3 (card 2899), the release that answers a task request a signed-in caller cannot read 404 Request not found, with hands-on checks H1 to H7 (card 2914), the release that answers a milestone the caller cannot see 404 Milestone not found, breaking for keys, with the one notice for cards 2719, 2762 and 2911 and hands-on checks H1 to H8 (card 2911), the host's two-step reset command pausing report schedules and refusing a database without them (card 2894), the release that switches off for good a webhook whose API key ends (card 2893: the one-time announcement of webhooks made before the release with the earliest date each will stop, re-saving with a key, the read-only pre-upgrade query, key rotation and going back), the release that switches off for good a webhook whose setter loses the board (card 2752: migration 0071, the switch-off and the owners' mails at the first start, the read-only queries before it, card 2893's keys to come, a restore's sweep, going back, and its hands-on checks), the release that answers what a caller cannot open as not there, breaking for API keys, with the notice for key holders (card 2719), the release that checks the card window's images and checks the images already stored once at the first start (card 2761), the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), the release that keeps requester links only as hashes and ends every link mailed before it, with going back and coming forward (card 2870, migration 0070), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -1487,6 +1491,8 @@ It holds no double quote inside its own, so it runs as written in bash and in Po
 
 An update replaces the container with one started from a newer image. The database stays where it is, and the new image brings it up to date in the [start-up sequence](#start-up-sequence).
 
+> **Production at `332634f`**: the next release brings migrations 0066 to 0083 and every one-off of the release sections below at once. Follow [Releasing Everything Since 332634f](#releasing-everything-since-332634f-card-3046), the one ordered runbook for it, rather than the outline here.
+
 > ⚠️ **The database stays where it is only if it is on the mounted volume.** Check before anything else, with the container running:
 >
 > ```bash
@@ -1787,6 +1793,8 @@ What to do:
 3. Either fix the cause and start again, or go back to the previous image. A failed file was rolled back and is not recorded, so the next start runs it again from its first statement. The files applied before it are recorded and are not run again.
 
 ### Going Back to the Previous Image
+
+> **Going back from the release since `332634f` (migrations 0066 to 0083)** is one ordered procedure, Path A or Path B, with the records dumped and put back and an ownership check before every start: follow [Releasing Everything Since 332634f](#releasing-everything-since-332634f-card-3046). The table below is the general rule it builds on.
 
 > **An image from before card 2776 runs as root.** Back on one, it writes root's files to the volume. Before coming forward again to an image that runs as `node`, give the volume to uid 1000 once more: check U1 of [The Update That Runs the Server as a User Who Is Not Root](#the-update-that-runs-the-server-as-a-user-who-is-not-root).
 
@@ -6191,6 +6199,482 @@ which `node` can read, with the warning
 readonly database`, `unable to open database file` or `EACCES`, U1 was not made, or an image from
 before card 2776 has run on the volume since: make it, and start the container again. Nothing in the data was changed by the failed start.
 
+### Releasing Everything Since 332634f (Card 3046)
+
+**Production is at `332634f`** (13 November 2026, migration `0065_add_mfa_storage.sql`), and none of
+the release sections below it on this page has been released on its own. The release commit is
+`b47056c` (card 2687), 69 commits on. **Its first start on production applies eighteen migrations,
+0066 to 0083, in one start**, and with them every one-off of those sections at once: everybody
+signed out and asked to set up an authenticator, every unused invite and requester link ended, every
+API key given a 60-day deadline, some webhooks held, every stored secret sealed under the MFA key and
+the signing keys made anew. Where a section below says "migrations 0074 to 0083 apply in one start",
+that is a database already at 0073 (the development server); on production it is 0066 to 0083.
+
+This section is the one ordered runbook for that release: the checks before it, the steps on the
+day, the checks after, the one rollback procedure and the go/no-go list. The per-card sections stay
+as the history and detail of each change; where this section and one of them differ on the order of
+steps for production, this section holds. It was rehearsed on 2026-11-23 on a fabricated database
+built by `332634f` itself (images of `332634f` and `b47056c`, 182 checks passed, none failed), and
+the corrections that rehearsal found are written in. The owner rehearses the upgrade and the image
+rollback once more on a private copy of production (R-prod, [Rehearsing an Update Against a
+Copy](#rehearsing-an-update-against-a-copy)), which gives the real first-start duration. The plan
+behind it, with the rehearsal's evidence and the eighteen decisions, is
+`docs/planning/card-3046-release-to-live.md` (git-ignored: a clone does not hold it).
+
+Names follow this page: container `dumpfire`, volume `dumpfire-data`, database
+`/app/data/dumpfire.db`, key file `/srv/dumpfire-secrets/dumpfire_mfa_key`. Replace them with the
+live ones. The image of the release is tagged `dumpfire:candidate` and, the same image, under every
+name the sections below use (`2683`, `2684`, `2995`, `3002`, `3004`, `3009`, `3012`, `3013`, `3020`,
+`3033`); the running image is tagged `dumpfire:rollback` and `dumpfire:332634f`. **Never `latest`** in
+any of these steps: after a rollback it may name either image (card 3020's code review, FP7).
+
+```mermaid
+flowchart TD
+    Pre["Before: P1 to P19 read-only,<br/>notices sent, R-prod passed"] --> Go{"Go/no-go list<br/>all go?"}
+    Go -->|"no"| Hold["Do not release"]
+    Go -->|"yes"| L0["L0 /enrol/ masked in the proxy logs"]
+    L0 --> L1["L1 Build on the host from a fresh clone,<br/>tag the aliases and the running image"]
+    L1 --> L2["L2 Release-morning re-checks:<br/>P3, P3a, P4, P9, P10, P11c, P11f"]
+    L2 --> L3["L3 docker stop -t 30 (a kill at 30 s, expected),<br/>rename to dumpfire-332634f and keep it"]
+    L3 --> L4["L4 Cold copy, uploads copy,<br/>key file checked, ownership checked"]
+    L4 --> L5["L5 Start the candidate with --init,<br/>the old container's exact options"]
+    L5 --> Up{"'Listening on'?"}
+    Up -->|"no"| Fix{"Fixable in the window?<br/>(a wrong key mount)"}
+    Fix -->|"yes"| L5
+    Fix -->|"no"| PB["Rollback Path B"]
+    Up -->|"yes"| L6{"L6 First-start lines<br/>as expected?"}
+    L6 -->|"a stop line"| RB["Rollback: choose Path A or B"]
+    L6 -->|"yes"| L7["L7 Run Now: the first backup<br/>sealed with the new key"]
+    L7 --> After["L8 Reload every tab.<br/>Live checks, cleanup, notices"]
+```
+
+#### Before the Release (Owner, Read-Only)
+
+Every query is read-only, through the running container's own reader:
+
+```bash
+c=dumpfire
+q() { docker exec "$c" node -e "const D=require('better-sqlite3');const d=new D(process.env.DB_PATH||'/app/data/dumpfire.db',{readonly:true,fileMustExist:true});console.log(JSON.stringify(d.prepare(process.argv[1]).all()))" "$1"; }
+```
+
+Run P1 to P19 two to three working days before (to word the notices), and P3, P3a, P4, P9, P10,
+P11c and P11f again on release morning (L2). **Two of the queries are adapted to production's
+schema**: the 2893 and 2947 queries of their sections name `api_keys.deadline_at` and
+`users.disabled_at`, which a database at 0065 does not have (they fail there with `no such column`);
+P11c and P11f below run on it.
+
+| # | Do | Expect / act | Stop if |
+|---|---|---|---|
+| P1 | `q "SELECT hash FROM __drizzle_migrations ORDER BY id DESC LIMIT 1"`; `docker exec $c id`; `docker exec $c printenv MFA_KEY_FILE DB_PATH ORIGIN APP_URL`; on the host `wc -c` and `ls -l` of the key file; `docker inspect $c > ~/dumpfire-inspect-332634f.json` (keep it: the exact run options) | `0065_add_mfa_storage.sql`; `uid=1000(node)`; `MFA_KEY_FILE` set; the key file 65 bytes, `-rw-------`, owner 1000 (a key file another user or group can write is refused at start); `ORIGIN` the real public address | Any other migration; uid 0; no key file; no off-host copy of the key (password manager) |
+| P2 | `docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}'` | One DumpFire container on this volume | A second instance on the volume |
+| P3 | `q "SELECT timestamp, message FROM system_logs WHERE level = 'CRITICAL' AND context = 'IMPORT' ORDER BY id"` and `q "SELECT id, username, email, role, created_at FROM users WHERE role IN ('superadmin','admin') ORDER BY role, id"` | Every import line one you made; every administrator one you know, each `email` a mailbox that person reads (P8 mails each) | Anything unknown: treat the server as compromised, change every secret at its service, do not deploy ([2943](#the-release-that-makes-the-signing-keys-anew-card-2943)) |
+| P3a | `q "SELECT key, value FROM settings WHERE key IN ('two_step_released_at', 'api_key_deadline', 'webhook_keys_recorded_at', 'mail_ever_configured_at')"` | No rows | **Any row: no-go** until understood. 0071 inserts `webhook_keys_recorded_at` with no `ON CONFLICT` (an existing row fails the start at 0071); 0066 and 0069 keep an existing row silently (a stale 14-day start or key deadline); `mail_ever_configured_at` (card 2922) would close password set-up on a stale word |
+| P4 | `q "SELECT u.username, u.email, k.name, k.key_prefix, k.created_at, k.last_used_at, k.expires_at FROM api_keys k JOIN users u ON u.id = k.user_id ORDER BY u.username, k.created_at"` | Every key nobody recognises is revoked by its holder **before** the release, and every webhook its account could read the secret of is given a new `secret` (`PUT /api/v1/webhooks/{id}`): a revoke at `332634f` leaves no reveal record. Every key with no expiry, or one later than release + 60 days, gets the deadline: its holder is in the notice. The DumpFire tracking key every project's wrapper uses is among them | |
+| P5 | `q "SELECT username, role FROM users WHERE NOT EXISTS (SELECT 1 FROM mfa_factors f WHERE f.user_id = users.id) AND NOT EXISTS (SELECT 1 FROM enrolment_links l WHERE l.user_id = users.id)"` | Every account (nothing is enrolled at 0065) | |
+| P6 | `q "SELECT u.username, u.email, i.created_at, i.expires_at FROM invite_tokens i JOIN users u ON u.id = i.user_id WHERE i.used = 0 ORDER BY i.created_at"` | **Save the output**: after 0068 nothing can list them. Re-send the still-wanted ones (📧) after the release | |
+| P7 | `docker exec $c printenv APP_URL ORIGIN` and `q "SELECT value FROM settings WHERE key='app_url'"` | The App URL, or else `APP_URL`, or else `ORIGIN`, is the real address, not empty and not `http://localhost:3000` | |
+| P8 | Admin → 📧 Email / SMTP: a test mail **to the superadmin's own address and to each administrator's address from P3**; the password entered on this server; From set | Each arrives: these are where the release's set-up links go | **No-go** without working mail |
+| P9 | `q "SELECT u.username, u.email, s.id, s.name, s.scope, s.scope_id, s.recipients FROM report_schedules s JOIN users u ON u.id = s.user_id WHERE s.enabled = 1 ORDER BY u.username, s.id"` | Each owner is mailed at first start (card 2751), one `[WARN] [REPORTS]` line each | |
+| P10 | `q "SELECT status, COUNT(*) AS n FROM task_requests WHERE access_token IS NOT NULL GROUP BY status"` | Links that stop working once (statuses `unverified`, `pending`, `accepted`, `rejected`) | |
+| P11a | `q "SELECT w.id, w.board_id FROM webhooks w WHERE w.active = 1 AND (w.set_by IS NULL OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = w.set_by)) ORDER BY w.id"` | Switched off at first start (2752) | |
+| P11b | The second query of [2752](#the-release-that-switches-off-a-webhook-whose-setter-loses-the-board-card-2752) | Switched off at first start (2752) | |
+| P11c | **Adapted for 0065**: `q "SELECT w.id, w.board_id, w.set_by, (SELECT COUNT(*) FROM api_keys k WHERE k.user_id = w.set_by AND (k.expires_at IS NULL OR datetime(k.expires_at) > datetime('now'))) AS working_keys FROM webhooks w WHERE w.active = 1 ORDER BY w.id"` | `working_keys` 0: switched off at first start. Above 0: announced, and sends until its setter's last pre-release key ends, at the latest release + 60 days unless kept (2893) | |
+| P11d | `q "SELECT id, board_id FROM webhooks WHERE active = 0 ORDER BY id"` | Already off: held at first start whoever set them; nobody is mailed (2923) | |
+| P11e | `q "SELECT created_at FROM __drizzle_migrations WHERE hash = '0056_add_webhook_set_by.sql'"`, then `q "SELECT id, board_id, created_at FROM webhooks WHERE secret <> '' ORDER BY created_at"`, compared by eye | Made before 0056 with a secret: held once at first start (2935) | |
+| P11f | **Adapted for 0065**: `q "SELECT u.username, u.role, k.id, k.name, k.last_used_at, k.expires_at FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.last_used_at IS NOT NULL AND k.expires_at IS NOT NULL AND (datetime(k.expires_at) IS NULL OR datetime(k.expires_at) <= datetime('now')) ORDER BY u.username, k.id"` | For each row, the webhooks that account could read the secret of (an editor's own, not every webhook on the board) with a secret made before its `last_used_at` are held at first start (2947) | |
+| P11g | `q "SELECT id, board_id, active, CASE WHEN url LIKE 'https://hooks.slack.com/%' THEN 'slack' WHEN url LIKE '%.webhook.office.com/%' OR url LIKE '%.logic.azure.com%' THEN 'teams' WHEN url LIKE 'https://discord%.com/api/webhooks/%' THEN 'discord' ELSE 'other' END AS kind FROM webhooks ORDER BY id"` and `q "SELECT COUNT(*) AS plain_addresses FROM webhooks WHERE url <> '' AND substr(url, 1, 9) <> 'dfsealed:'"` | Token-bearing addresses, printing none (2928); the second count is A in the Sealed line | |
+| P12 | `q "SELECT key, CASE WHEN value LIKE 'dfsealed:1:%' THEN 'sealed' WHEN value = '' THEN 'empty' ELSE 'plain' END AS form FROM settings WHERE key IN ('smtp_pass', 'known_browser_secret', 'request_form_secret', 'backup_seal_key')"`; `q "SELECT COUNT(*) AS signed_webhooks FROM webhooks WHERE secret <> ''"`; `q "SELECT json_array_length(value, '$.destinations') AS destinations FROM settings WHERE key = 'backup_config'"`; `q "SELECT COUNT(*) AS key_check FROM settings WHERE key = 'mfa_key_check'"` | The counts the first start's Sealed line must match; whether `request_form_secret` and `backup_seal_key` exist (the key-change line names each that does, the seal key always); `key_check` 0 | |
+| P13 | `q "SELECT status, substr(error, 1, 120) AS error, created_at FROM backup_log WHERE destination_type = 'onedrive' ORDER BY id DESC LIMIT 10"` | Only `failed` rows, or none, before the note may say no OneDrive backup ever succeeded; any OneDrive destination pauses until "whose OneDrive" and its client secret are entered again (2941) | |
+| P14 | In the S3 console, count the objects directly under each S3 destination's prefix | Above 1,000: copy the older ones aside first; the first run removes older copies down to Keep Last (2941, 2991) | |
+| P15 | Any Google Drive destination with a service account | Its JSON is rewritten at first start (2939); `GOOGLE_CLOUD_UNIVERSE_DOMAIN` unset | |
+| P16 | `docker exec $c df -h /app/data`; `docker exec $c ls -l /app/data/dumpfire.db /app/data/dumpfire.db-wal` | Free space above 1 GB + 2 × the database + 25 MB, or uploads are refused from first start (2920) | |
+| P17 | `q "SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name='api_keys'),0), coalesce((SELECT max(id) FROM api_keys),0)) - (SELECT COUNT(*) FROM api_keys) AS key_seed_rows"`; the same with `users`; the previews of [3002](#the-release-that-keeps-board-team-and-person-access-removals-across-a-restore-card-3002), [3033](#the-release-that-keeps-decision-role-removals-across-a-restore-card-3033) and [3004](#the-release-that-keeps-where-the-server-sends-across-a-restore-card-3004) | Both seed counts far under 1,000,000, or the start halts at 0076 or 0077; note the others to compare with the first start | |
+| P18 | `q "SELECT COUNT(*) AS images FROM card_attachments WHERE mime_type LIKE 'image/%'"` | Checked once at first start (2761), metadata stripped in place: the uploads copy is the only copy of the originals | |
+| P19 | The owners and administrators whose password was reset by someone else since `332634f`, or who may have been taken | `mfa-reset.mjs --hold-readable` for each after the release (2935) | |
+
+**Never import a backup you did not make onto `332634f`** between now and the release (3009:
+`332634f` restores a planted unused invite and takes the file's passwords and keys).
+
+**Notices** (two working days before; a quiet weekday morning, not a Friday):
+
+1. **API key holders** (everyone P4 lists), one notice for OpenAPI 1.8.0 to 1.15.0: the date (release
+   day + 60 days) after which a key made before the release stops unless **Keep this key** is pressed;
+   `403` for "no access" is now `404` ([2911](#the-release-that-answers-a-milestone-the-caller-cannot-see-as-not-there-card-2911));
+   a webhook switched off for lost access or an ended key gets a new secret when switched on; revoking
+   or expiring a key that read webhook secrets holds those webhooks; `PUT` on a webhook returns
+   `secret` only where it set it; the upload limits and `507`; disabled accounts' keys `401`; a
+   two-step reset ends keys; the survey fields on decisions; and point (15) of card 2687 (the link
+   `PUT`'s body and `nextActionable` made for the key's user).
+2. **Everyone with an account**: everyone is signed out once at the release and sets up an
+   authenticator app (with mail set up, from a mailed link), keeping ten recovery codes; sessions are
+   shorter (administrators 12 h idle / 24 h, others 3 days / 7 days); every confirm asks for the
+   password and a code; reload every open tab after the release; unused invites are sent again.
+3. **Board owners** with webhooks P11 lists, and **report schedule owners** (P9): what they will be
+   mailed and why.
+
+**The proxy.** Mask `/enrol/` in nginx's access log before the release, with the third line of each
+map in [Keeping Link Tokens Out of the Access Log](#keeping-link-tokens-out-of-the-access-log), and in
+any CDN, load balancer or WAF log in front of it. The set-up link, with the account's password, sets
+up that account's second factor.
+
+**The day before**: Admin → Scheduled Backups → ▶ **Run Now**. That backup restores as another
+server's once the release has started, so it is useful on `332634f` only; it also means `332634f` has
+made its backup seal key, which the first start's key-change line then names as "the one stored was in
+plain".
+
+**Tag the running image** before anything else, by its ID, never `latest`:
+
+```bash
+docker tag "$(docker inspect -f '{{.Image}}' dumpfire)" dumpfire:rollback
+docker tag dumpfire:rollback dumpfire:332634f
+```
+
+#### Release Steps on Live
+
+| # | Step | Detail |
+|---|---|---|
+| L0 | Proxy log masking | The `/enrol/` lines in both nginx maps (and any CDN or WAF log masked); `nginx -t` passes; reloaded |
+| L1 | Build on the host | From a **fresh clone** of `b47056c` on the Linux host: `docker build -t dumpfire:candidate .` (the suite runs inside; a failure leaves no image). Never a tree archived on a Windows workstation whose repository has `core.autocrlf=true`: `git archive` applies that conversion and every file, the migrations included, gets CRLF. Then `for t in 2683 2684 2995 3002 3004 3009 3012 3013 3020 3033; do docker tag dumpfire:candidate dumpfire:$t; done`. Record the image ID |
+| L2 | Release-morning re-checks | P3, P3a, P4 (a key made since the notice: tell its holder), P9, P10, P11c, P11f |
+| L3 | Stop, keep, confirm | `docker stop -t 30 dumpfire && docker rename dumpfire dumpfire-332634f`. **The stop runs to its timeout and ends in a kill** (below): expect 30 s. The old container is kept with every option it was created with, for the rollback to start again. `docker ps --filter volume=dumpfire-data` lists nothing running. Never two images side by side across this release. **Under Compose** the renamed container keeps the service's labels, and the next `docker compose up -d` may remove it: keep P1's `docker inspect` and the compose file, and for the rollback set the service's image back to `dumpfire:rollback` instead |
+| L4 | Copies | The cold copy ([Taking and Returning the Cold Copy](#taking-and-returning-the-cold-copy), its `docker stop dumpfire` left out: L3 stopped and renamed it) and the uploads copy ([Backing up and restoring the files](#backing-up-and-restoring-the-files), with `dumpfire:rollback` in place of `latest`); `ls -ld` both folders `drwx------`; the key file's `sha256sum` equal to the password manager's copy; then the ownership check (below): every file owned by `node` (1000) |
+| L5 | Start the candidate | A new container named `dumpfire` with **exactly** the options of P1's `docker inspect`, the image `dumpfire:candidate`, **plus `--init`**: the same volume at `/app/data`, `DB_PATH`, `ORIGIN`, `APP_URL`, key mount and `MFA_KEY_FILE`, network, ports, restart policy. Under Compose: the image set, `init: true` on the service, `docker compose up -d` |
+| L6 | Read the log | The two reads below, compared with the first-start lines. The first start can be long (VACUUM, the image re-check): wait for `Listening on` as long as R-prod took, plus half |
+| L7 | First backup | Admin → Scheduled Backups → ▶ Run Now: a backup sealed with the new key exists at once. ✅ for each destination; OneDrive ⚠️/paused until edited |
+| L8 | Reload | Tell everyone to reload every open tab (the update bar shows within a minute on pages from `332634f`) |
+| L9 | User | `docker exec dumpfire id` gives `uid=1000(node)` (card 2776 is live: no chown) |
+
+```bash
+# L5, as a docker run: every option P1's inspect shows, plus --init.
+docker run -d --name dumpfire --init \
+  <--restart, --network, -p, -v dumpfire-data:/app/data, the key file mount, -e DB_PATH, ORIGIN, APP_URL, MFA_KEY_FILE, ... as P1> \
+  dumpfire:candidate
+
+# L6: what the start said, by context, and whether it came up.
+docker logs dumpfire 2>&1 | grep -E '\] \[(DB|STARTUP|AUTH|Webhooks|REPORTS|UPLOADS|BACKUP|REQUESTS)\] |Listening on'
+# L6: every ERROR or CRITICAL line. Only the 2943 'Key change recorded' CRITICAL is expected.
+docker logs dumpfire 2>&1 | grep -E '\[(ERROR|CRITICAL)\]'
+```
+
+**`docker stop` ends either image with a kill.** Measured on both images, with `SCHEDULERS` off and on,
+`docker stop -t 30` takes 30.2 s and the container exits `137` (SIGKILL); with the default `-t 10`,
+every stop in this runbook kills the server after 10 s. The image runs `node build` as PID 1 with no
+init. Until card 3063 ("The container ignores SIGTERM, so every docker stop kills it after 30
+seconds") changes that:
+
+- **Stopping the old `332634f` container** (L3, FW1) is done in the quiet window, nobody using the
+  server, where a kill after 30 s is harmless: SQLite's write-ahead log survives a kill (a committed
+  transaction is in the `-wal` file, one in flight is rolled back at the next open), and the cold copy
+  takes `dumpfire.db*`, the `-wal` among them. Use `-t 30`, so that requests in flight when the signal
+  arrives can finish, and never take a copy until `docker stop` has returned.
+- **The new container is started with `--init`** (`init: true` under Compose), so that Docker's init is
+  PID 1 and passes the signal on to node. On its own that may not shorten the wait: the server's
+  SIGTERM handler (`@sveltejs/adapter-node`'s) closes the HTTP server and does not exit, and a timer
+  that is not `unref`'d (the log maintenance's, started in every server) keeps node running after it.
+  So plan on 30 s for RB3, PB1 and every other stop of the candidate too, until card 3063 lands.
+
+**If it does not start** (no `Listening on`, or the container restarting): stop it at once and read
+the `CRITICAL` line ([A Failed Start](#a-failed-start)).
+
+- **A failure after the migrations that can be put right in the window**, such as `[CRITICAL] [AUTH]`
+  naming the key file as unreadable or not the key (a wrong mount, a wrong `MFA_KEY_FILE`, a file uid
+  1000 cannot read): the migrations applied are recorded and are not run again. `docker rm dumpfire`,
+  the L5 `docker run` with the right option, and read the log again. Never start with
+  `FORGET_UNOPENABLE_SECRETS` to get past a key refusal: the key is mis-mounted, not lost.
+- **A guard of 0076 or 0077** (`CHECK constraint failed: migration 0076 would record more than
+  1,000,000 …`): P17 was missed. Do not lower the counter in a hurry: go back.
+- **Anything that cannot be fixed in the window**: Path B below (the cold copy is returned; nothing
+  was served).
+
+**If the superadmin cannot sign in** (no set-up mail arrives, the authenticator was lost, a set-up went
+wrong), in this order:
+
+1. **The host's reset, keeping the keys**, never the plain form:
+
+   ```bash
+   docker exec -u node dumpfire node scripts/mfa-reset.mjs --keep-api-keys <superadmin username>
+   ```
+
+   It refuses to run as root. It ends the superadmin's sessions, pending sign-ins and unused invites,
+   deletes its authenticators and recovery codes, pauses its report schedules that are on, and prints
+   one set-up link (seven days) to stdout alone: open it in your own browser, set up a new
+   authenticator, then turn the schedules back on on the Reports page. **Without `--keep-api-keys`** the
+   same command also deletes every API key of the superadmin (the DumpFire tracking key among them),
+   switches off the webhooks it set, holds every webhook with a secret on every board it could read, and
+   holds the mail settings, the App URL and the backup destinations for review: most of the server's
+   integrations stopped at once.
+2. **Path B**, if that fails and nobody but the owner has signed in since the release.
+3. **Otherwise Path A**, skipping RB2a and RB2b (they need a signed-in decider) and RB2c (it needs the
+   superadmin), and recording, before RB3, the exposure accepted: open survey-only decisions shown wrongly
+   on the old image, unanswered objections a ruling can pass, held settings in force there.
+
+**The first-start lines**, in roughly this order (each `[WARN]` unless said; the counts from P11, P12,
+P17 and P18):
+
+| Line | Card | Stop if |
+|---|---|---|
+| `Applied migration: 0066_add_mfa_password_enrol.sql` … `0083_add_decision_flags.sql`, 18 lines in order | all | Fewer, another order, any `[ERROR] [DB]` or `[CRITICAL] [DB]` |
+| No `Ended … session(s) held in plain`, no invite line, no `Ended the links of` line: 0067, 0068 and 0070 emptied them first | 2775, 2849, 2870 | Any of them at this start |
+| `Sealed N stored secret(s) held in plain (the mail password, D destination field(s), W webhook secret(s), A webhook address(es), 0 signing key(s); 0 backup configuration(s) unreadable): they are now encrypted under the MFA key. …`, N = 1 + D + W + A | 2898, 2928 | N not matching P12 and P11g, an unreadable configuration, or any secret text |
+| `Rewrote the service account JSON of N backup destination(s) …` (only with a Drive service account) | 2939 | Key text in it |
+| `[CRITICAL] [STARTUP] Key change recorded: made at this start, each stored encrypted under the MFA key: the request-form key (the one stored was in plain); the backup seal key (the one stored was in plain). …`. **Two keys, not three**: 0067 deleted the remembered-browser key before this start. The request-form key is named where P12 found one; the seal key always, "(none was stored)" where `332634f` never made a backup copy | 2943 | Missing, twice, a remembered-browser key named, or a value in it |
+| `[REPORTS] Report schedule … is on at this release …`, one per schedule P9 listed; each owner mailed "Your DumpFire report schedules" | 2751 | No mail, with mail set up |
+| `[Webhooks]`: set up before API keys were recorded, with the earliest date each stops (P11c above 0); switched off (P11a, P11b, P11c at 0), owners mailed; already off with no hold now held (P11d), ending "Their boards' owners were not mailed."; pre-0056 held (P11e) | 2752, 2893, 2923, 2935 | An address in any line |
+| `[INFO] [STARTUP] The record of where this server sends was started (once, card 3004): N …` | 3004 | `could not be started` (no key loaded) |
+| `[INFO] [Webhooks] N webhook secret(s) recorded as given to API keys used before such reads were recorded (once, card 2947) …`; a `Webhook … switched off: an API key that may have been given its secret …` line only where P11f found keys | 2947 | Webhooks held that P11f did not predict |
+| The scrub done before `Listening on`, or one `[ERROR] [STARTUP]` naming Admin › Vacuum | 2898 | Repeated failures after an hour |
+| `Listening on` | | Missing |
+| `[UPLOADS] Checked the n images stored before card 2761: …` (after `Listening on`) | 2761 | A failure count that stays after a restart |
+
+Never expected: `[CRITICAL] [AUTH]` (key unreadable or wrong), `No database was at`, `in the container's
+own file system`, `none of them is an enabled superadmin`.
+
+#### After the Release
+
+**Live checks** (the superadmin with a phone, one administrator, one ordinary test account, one kept
+API key, a test board with a test webhook to a receiver you control, your mailbox). **No check that
+imports a backup is run on live**: every restore check belongs to a rehearsal or a staging copy.
+
+| Area | Checks (each card's numbering) |
+|---|---|
+| Start-up and storage | U3 (`id`); W6 (0066, 0067 recorded, `sessions` 0 straight after, `two_step_released_at` written); W16 (0068, no unused invite, every token a 32-byte BLOB); `q "SELECT value FROM settings WHERE key='api_key_deadline'"` (2772: the date in the notice); 2870's two counts 0; 2898 H2 (every secret sealed, `key_check` 1, no `secrets_scrub_pending`) and H3 (a restart writes no sealing line); 2943 K3 (no key-change line at restart) and K8; 2928 H18 (plain addresses 0, `receiver` filled); 2920 H1 |
+| Sign-in | W8 (your own authenticator: QR, first code, ten recovery codes); W9 (Audit lines, no secret); W10 (`sessions` with `two_step <> 1`: 0); W11; W13 (`/login/verify` headers, `__Host-dumpfire_challenge`); W14 (with mail set: no password-leave line); W19; W20 (`__Host-dumpfire_session`, Secure, HttpOnly, Lax, no Domain, 24 h for an administrator); W22; the administrator and the test account each set up |
+| Step-up | R1 on a harmless confirm (make and revoke a test key: password and code asked, a code spent once); R3 (a wrong code: one undistinguished refusal); R6 (a tab from before: `400 Enter your password and a code…`) |
+| Keys | W12 (`curl -H "Authorization: Bearer <key>" https://<host>/api/v1/boards` → `200`); K1 (**Keep this key** on the tracking key and every key your tooling uses); `GET /api/v1/openapi.json` → `1.15.0`; 2719 H3 (`404 Card not found` on a board the key cannot open) |
+| Webhooks | Each webhook P11 predicted is off with its `pausedBecause`; switch on each wanted one (`PUT {"active": true}`), put the new secret at its receiver, move a card, the receiver verifies the signature (2898 H6, 2928 H19); 2947 H1 (`Cache-Control: no-store` on a list) |
+| Mail and reports | M1 (one "Your DumpFire report schedules" mail per owner; a restart sends nothing); a team reply on a test request mails a new link that opens the thread |
+| Uploads | 2761 U2 (a PNG screenshot attaches); 2910 H1 (a PDF attaches); 2910 H8 (with the test account's hour spent, a 20 MB file refused promptly through the proxy, `429` with `Connection: close`) |
+| Backups | L7's Run Now ✅; 2941 H3 for each destination type; each OneDrive destination edited ("whose OneDrive", client secret) then Test ✅; S3 Keep Last as P14 decided |
+| Admin | Settings held for review empty; the Users list offers ⛔ on enabled rows and no 🗑️ (2671); the ISO 27001 checklist page opens (2670) |
+| Decisions | 2683 H15 (a survey-only draft opens); 2684 H19 (an objection blocks the ruling until answered); the group breakdown on a decision with groups (2686); 2687's checks |
+| Proxy | Open your own set-up link once (W8); `grep -c` of its token over the access log: `0` |
+
+**Cleanup**
+
+| When | Do | Card |
+|---|---|---|
+| Straight after | Re-send the invites P6 listed that are still wanted (📧) | 2849 |
+| Straight after | `docker exec dumpfire rm -f /app/data/.pre-restore-safety.json` if one exists (it holds the old keys and secrets in plain) | 2943, 2898 |
+| Straight after | `docker exec -u node dumpfire node scripts/mfa-reset.mjs --hold-readable <username>` for each account P19 listed (resets nothing; prints the webhooks held; tell their owners) | 2935 |
+| Within a day | Regenerate each token-bearing webhook address P11g found (Slack, Teams, Discord) and set it with `PUT /api/v1/webhooks/{id}` | 2928 |
+| Within a day | Where any copy made before the release may be out of hand: change the mail password, the destinations' credentials and the webhooks' secrets | 2898, 2928 |
+| First scheduled backup after the release succeeded, and 48 hours with no rollback trigger | `rm -rf "$HOME/dumpfire-cold" "$HOME/dumpfire-uploads"`; delete any volume snapshot; keep `dumpfire:rollback` until the next release; then `docker rm dumpfire-332634f` | 2943 |
+| Release + 46 days | The "fortnight before" query of [2772](#the-release-that-gives-older-api-keys-a-deadline-card-2772): remind holders. Then the original 2947 preview of [2947](#the-release-that-holds-what-an-ended-api-key-was-given-card-2947) (its columns now exist), with `datetime('now')` read as the deadline's day: keep or deliberately rotate any administrator's or owner's key among them | 2772, 2947 |
+| Release + 14 days | Where no mail host is set, the password leave ends: give 🛡️ links to anyone not yet set up | 2769 |
+
+**Notices after**: "Released" to everyone, with the reload instruction and where to get help with an
+authenticator; the release notes of 3002, 3033, 3004, 2683, 2684 and 3013 as their sections word them;
+the 2941 OneDrive sentence worded by P13's result.
+
+#### Rolling Back to 332634f
+
+One procedure, two paths. **Path A** (the old image on the database as it is) once the new image has
+served anyone. **Path B** (the cold copy returned) where it never printed `Listening on`, or where
+nobody but the owner has signed in since and losing everything since the release is chosen. Going back
+is a security incident in itself: `332634f` signs people in on a password alone, and it cannot read the
+sealed secrets, so the mail password, the destinations' credentials and the webhooks' addresses are
+entered again by hand.
+
+**Roll back for**: a start that does not reach `Listening on` and cannot be fixed in the window; a
+`[CRITICAL]` start line other than the key-change line that cannot be fixed; the superadmin unable to
+sign in after the `--keep-api-keys` reset above; data visibly wrong (counts lost against R-prod); mail or
+backups failing because of the release and not fixable within the day. **Not on their own**: webhooks
+held as predicted, people unable to set up an authenticator (help them; 🛡️ links), one image refused by
+the 2761 check.
+
+```mermaid
+flowchart TD
+    T["Rollback trigger"] --> L{"Did the new image<br/>print 'Listening on'?"}
+    L -->|"no"| PB["Path B"]
+    L -->|"yes"| C{"Keep the data since,<br/>or lose it (decision 4)?"}
+    C -->|"lose it"| PB
+    C -->|"keep it"| A2["RB2 in the app, in order:<br/>mail password if an import emptied it,<br/>RB2c held settings, RB2a surveys,<br/>RB2b objections, RB2d keys, RB2e list"]
+    A2 --> A3["RB3 docker stop -t 30, rename<br/>RB4 snapshot the volume"]
+    A3 --> A5["RB5 dump the four records"]
+    A5 --> A6["RB6a to e stopped edits"]
+    A6 --> A6g["RB6g ownership check"]
+    A6g --> A7["RB7 docker start dumpfire-332634f<br/>RB8 two ERROR DB lines, then Listening on"]
+    A7 --> A9["RB9 mail password, destinations,<br/>webhook addresses, then Run Now"]
+    A9 --> A10["RB10 tell everyone, RB11 rules"]
+    A10 --> FW["Forward again: FW1 compare and put back,<br/>FW2 sessions, FW3 installation id,<br/>FW4 start the candidate, FW5, FW6"]
+    PB --> P2["PB1 stop, keep. PB2 dumps,<br/>unless nothing was served"]
+    P2 --> P3["PB3 return the cold copy,<br/>ownership check"]
+    P3 --> P4["PB4 docker start dumpfire-332634f"]
+    P4 --> P5["Forward later: PB5 start with no network,<br/>put the dumps back, usual start. PB6 new dates"]
+```
+
+**Path A, in order**
+
+| # | Step | Command / where | Card |
+|---|---|---|---|
+| RB1 | Save the new image's log | `docker logs dumpfire > ~/dumpfire-candidate-$(date +%F-%H%M).log 2>&1` | |
+| RB2 | **In the app, in this order: RB2c, RB2a, RB2b.** After an unsealed import on the new image no mail password is kept (2943, 3009), and a decider who has not set up an authenticator does it from a mailed link: so enter the mail password again first (Admin → Email) if it is empty | | 2943, 3009 |
+| RB2c | **Held settings**: the superadmin keeps or removes each under Settings held for review (the old image puts every held mail host, App URL and destination in force) | Admin page | 2922, 3009 |
+| RB2a | **Survey-only decisions**: count, then rule on or withdraw each; count again until none | `q "SELECT id FROM decisions WHERE status IN ('open','closed') AND NOT EXISTS (SELECT 1 FROM decision_options o WHERE o.decision_id = decisions.id AND o.added_in_version IS NOT NULL)"` | 2683 |
+| RB2b | **Unanswered objections**: count, the decider answers each; count again until none | `q "SELECT DISTINCT f.decision_id FROM decision_flags f JOIN decisions d ON d.id = f.decision_id WHERE d.status IN ('open','closed') AND f.kind = 'objection' AND f.reply IS NULL"` | 2684 |
+| RB2d | **Deciders' and administrators' keys**: list; each holder stops every script using them while the old image runs (for a rollback expected to last under a day), or revokes and remakes later; record the acceptance | The list query of [2684 step 4](#the-release-that-adds-objections-and-requests-to-talk-to-decisions-card-2684), with `q` | 2684 |
+| RB2e | **Disabled accounts**: list | `q "SELECT id, username, role, disabled_at FROM users WHERE disabled_at IS NOT NULL ORDER BY id"` | 2671 |
+| RB3 | Stop; nothing else on the volume | `docker stop -t 30 dumpfire && docker rename dumpfire dumpfire-candidate` (a kill at 30 s: harmless, the server's last transaction is in the `-wal` or rolled back) | |
+| RB4 | Snapshot the migrated volume, so that forward again can start from exactly here | `mkdir -p -m 700 "$HOME/dumpfire-rollback-point"`, then the cold copy's "take it" `docker run` with that folder in place of `$HOME/dumpfire-cold` | |
+| RB5 | **Dump the four records** into `$HOME/dumpfire-cold`, then the ownership check | The four commands below; each file non-empty JSON | 2995, 2996, 2997, 3002, 3033, 3004 |
+| RB6a | **Webhooks held from an unsealed backup**: preview, then delete with their reveal rows. A preview of 0 is normal: a backup made by the release holds no webhook address, so only an unsealed import of a pre-release backup (one of `332634f`'s own) holds any | [3012 "Before rolling back"](#the-release-that-keeps-an-unsealed-backup-from-reaching-outside-card-3012) | 3012 |
+| RB6b | **Held requests**: preview the count, then take the address off each | [3020 "Before rolling back"](#the-release-that-holds-an-unsealed-backups-requester-and-people-mail-card-3020) | 3020 |
+| RB6c | **Disabled accounts' passwords made unusable** (the old image does not read `disabled_at`) | `w "UPDATE users SET password_hash = 'disabled-before-going-back' WHERE disabled_at IS NOT NULL"` | 2671 |
+| RB6d | **`webhooks_already_off_held` deleted**, so that the next forward start holds again what the old image switched off | `w "DELETE FROM settings WHERE key = 'webhooks_already_off_held'"` | 2923 |
+| RB6e | Optional: end unused invites | `w "DELETE FROM invite_tokens WHERE used = 0"` | 2849 |
+| RB6f | **Never** drop or empty `request_links`, `decision_survey_questions`, `decision_responses.answers`, `decision_flags`, any record table, any `__drizzle_migrations` row | | 2870, 2683, 2684 |
+| RB6g | **The ownership check** before any start | Below | 2776 |
+| RB7 | Start the kept old container: every option it was created with, the same key file among them | `docker start dumpfire-332634f`. Under Compose: the service's image set to `dumpfire:rollback`, `docker compose up -d`. On a **copy** of the volume (a rehearsal) the kept container cannot be used, as it is bound to its own volume: make a new container of `dumpfire:rollback` with the same options | |
+| RB8 | Read the log | Two `[ERROR] [DB]` lines, expected for as long as it runs ("18 migration(s) are recorded as applied but have no file in /app/drizzle: …" and "The database differs from the model in N place(s): …"), then `Listening on`; `docker exec dumpfire-332634f id` uid 1000 | 2776 |
+| RB9 | **The secrets the old image cannot read, in this order**: the mail password (Admin → Email); **each destination's credentials, before the Run Now**; each webhook's address and a new secret with its receiver (or leave the webhooks off); then ▶ Run Now. The old image makes its plain seal key only when a backup copy is made, and skips the copy while no destination has credentials it can use: a Run Now first makes no key | Admin page, `PUT /api/v1/webhooks/{id}` | 2898, 2928, 2943 |
+| RB10 | **Tell everyone**: going back is a security incident; everyone signs in again on a password alone; review the Audit page and the keys afterwards. Requester links the new image mailed do not open there; held requests lost their requester's address (RB6b); accounts disabled on the new image cannot sign in, and once enabled forward need 🔑; keys made on the old image will carry no deadline | | 2769, 2775, 2870, 3020, 2671, 2772 |
+| RB11 | **While the old image runs**: no Import Backup, no Reset Everything (each clears the records; if one must be done, follow 3020's quiet-network steps and put the dumps back on return); do not edit a decision with survey questions; removals made there are not recorded (redo them forward) | | 2995, 2996, 3002, 3004, 3020, 2683 |
+
+`q` is the reader above, on the running new container. `w`, and the dumps, compares and put-backs below,
+run with the server stopped, from the release's image:
+
+```bash
+# One statement, with the server stopped, as the image's own user (uid 1000).
+w() { docker run --rm --network none -v dumpfire-data:/app/data dumpfire:candidate node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{fileMustExist:true});console.log(d.prepare(process.argv[1]).run().changes+' row(s) changed')" "$1"; }
+
+# RB5 (and PB2): the four records, server stopped. In PB2 a command whose table is not there fails
+# with "no such table" and writes nothing: skip it.
+NEW=dumpfire:candidate
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true});require('fs').writeFileSync('/cold/revocations.json',JSON.stringify(d.prepare('SELECT * FROM api_key_revocations').all()))"
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true});require('fs').writeFileSync('/cold/account-endings.json',JSON.stringify(d.prepare('SELECT * FROM account_endings ORDER BY seq').all()))"
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true});require('fs').writeFileSync('/cold/access-changes.json',JSON.stringify(d.prepare('SELECT * FROM access_changes ORDER BY seq').all()))"
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true});require('fs').writeFileSync('/cold/outbound-changes.json',JSON.stringify(d.prepare('SELECT * FROM outbound_changes ORDER BY seq').all()))"
+ls -l "$HOME/dumpfire-cold"/*.json
+```
+
+**The ownership check** (RB6g; also after RB5's dumps, after the compares and put-backs of FW1 and PB5,
+after L4's cold copy and PB3's return, and before any start that follows a `--user root` step). The
+image runs as uid 1000; a root-owned `dumpfire.db-wal` or `-shm` makes the next start fail with `attempt
+to write a readonly database` or `EACCES`:
+
+```bash
+docker run --rm --network none --user root -v dumpfire-data:/app/data dumpfire:rollback \
+  sh -c 'ls -l /app/data && chown 1000:1000 /app/data/dumpfire.db* && ls -l /app/data'
+```
+
+Expect every `dumpfire.db*` file owned by `node` (1000) on the second listing.
+
+**Forward again after Path A**
+
+| # | Step | Card |
+|---|---|---|
+| FW1 | `docker stop -t 30 dumpfire-332634f` (a kill at 30 s, harmless). **Compare the records with the dumps**, then put back: `api_key_revocations` always (`INSERT OR IGNORE`); `access_changes` and `outbound_changes` whole, only where their compare shows a difference; `account_endings` only the dumped rows the table lacks. Then the ownership check | 2995, 2996, 3002, 3004 |
+| FW2 | `w "DELETE FROM sessions"` (W23: the new image's sessions would work again inside their idle window) | 2775 |
+| FW3 | Only if an import was made on the old image: `w "DELETE FROM settings WHERE key = 'installation_id'"` ([3009](#the-release-that-takes-nothing-that-signs-in-from-an-unsealed-backup-card-3009)) | 3009 |
+| FW4 | `docker rename dumpfire-candidate dumpfire && docker start dumpfire` (the kept container, `--init` and every L5 option with it). Expect: `Ended N session(s) held in plain` (none after FW2); `Ended N invite(s) held in plain` if the old image sent invites; `Ended the links of N request(s) held in plain by an older image`; `Key change recorded: … the backup seal key (the one stored was in plain)`, the key RB9's Run Now made; `Sealed …` counting what RB9 entered (the mail password and the destination fields, naming the import's safety copy where one is left); the 2923 line holding again every webhook the old image switched off | 2775, 2849, 2870, 2943, 2898, 2923 |
+| FW5 | Redo on the new image every removal made on the old one (shares, team members, roles, webhooks deleted, schedule addresses); review every key made while the old image ran (made on a password alone, and with no deadline: 0069 is recorded and does not run again), revoking any not recognised; read the Audit page for that period; 🔑 for each disabled account enabled again | 3002, 3004, 2769, 2772, 2671 |
+| FW6 | The start-up and sign-in rows of the live checks again | |
+
+**Path B, in order (the cold copy returned)**
+
+| # | Step |
+|---|---|
+| PB1 | `docker stop -t 30 dumpfire && docker rename dumpfire dumpfire-candidate` (a kill at the timeout, harmless) |
+| PB2 | Dump whichever of the four records exist (the RB5 commands; a failed start may have applied some migrations, each recorded with its table). **Skip it where the new image never served anyone** (never printed `Listening on`, or nobody but the owner's checks used it): the records then hold only the migrations' own seeds, which the forward start writes again |
+| PB3 | Return the cold copy: the "Return it" command of [Taking and Returning the Cold Copy](#taking-and-returning-the-cold-copy) (it deletes `-wal` and `-shm` first and gives the files to uid 1000); then the ownership check |
+| PB4 | `docker start dumpfire-332634f`. Everything is as before the release: sessions, invites (the ones P6 listed work again), requester links, plain secrets; nothing to enter again. Tell everyone what is lost: authenticators and recovery codes set up since the release, Keep this key presses, new secrets given to webhook receivers. The security posture is `332634f`'s again (password-only sign-in) |
+| PB5 | Forward again later: (1) `docker stop -t 30 dumpfire-332634f`; the first start of the candidate with no network, stopped once it listens (below); (2) with the server stopped, the compares, then the put-backs as FW1 (nothing where PB2 was skipped), then the ownership check; (3) `docker rename dumpfire-candidate dumpfire && docker start dumpfire` |
+| PB6 | That forward start makes `two_step_released_at` (the 14-day leave), `api_key_deadline` (a new 60-day date), `webhook_keys_recorded_at` and the signing keys again at that moment: **send key holders the new date** |
+
+```bash
+# PB5 (1): the first start with no network, as the usual run but --network none; stopped once migrated.
+docker run -d --name dumpfire-migrate --init --network none -v dumpfire-data:/app/data <the usual -e and key-file options> dumpfire:candidate
+docker logs -f dumpfire-migrate   # until "Listening on"; then Ctrl+C
+docker stop -t 30 dumpfire-migrate && docker rm dumpfire-migrate
+```
+
+**Comparing the records, and putting them back** (FW1, PB5), with the server stopped. Each compare is
+read-only and prints `onlyInTable` and `onlyInDump`; both 0 means nothing to put back. An import on the
+old image of a backup older than the dump only removes rows (`onlyInDump` above 0, `onlyInTable` 0);
+rows only in the table appear only when an imported file carries rows this server never had, or (Path
+B) as the re-migration's own seeds.
+
+```bash
+NEW=dumpfire:candidate
+# Compare account_endings, on every column but seq.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true,fileMustExist:true});const key=(r)=>[r.user_id,r.account_created,r.ending,r.role,r.credential,r.ended_at,r.stated_ended,r.origin].join('|');const dump=JSON.parse(require('fs').readFileSync('/cold/account-endings.json','utf8')).map(key);const live=d.prepare('SELECT * FROM account_endings').all().map(key);const a=new Set(dump),b=new Set(live);console.log({onlyInTable:live.filter((k)=>!a.has(k)).length,onlyInDump:dump.filter((k)=>!b.has(k)).length})"
+# Compare access_changes.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true,fileMustExist:true});const key=(r)=>[r.kind,r.subject_id,r.subject_created,r.holder_id,r.holder_created,r.access,r.stated_changed].join('|');const dump=JSON.parse(require('fs').readFileSync('/cold/access-changes.json','utf8')).map(key);const live=d.prepare('SELECT * FROM access_changes').all().map(key);const a=new Set(dump),b=new Set(live);console.log({onlyInTable:live.filter((k)=>!a.has(k)).length,onlyInDump:dump.filter((k)=>!b.has(k)).length})"
+# Compare outbound_changes.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true,fileMustExist:true});const key=(r)=>[r.kind,r.item_id,r.item_created,r.place,r.address,r.state,r.stated_changed].join('|');const dump=JSON.parse(require('fs').readFileSync('/cold/outbound-changes.json','utf8')).map(key);const live=d.prepare('SELECT * FROM outbound_changes').all().map(key);const a=new Set(dump),b=new Set(live);console.log({onlyInTable:live.filter((k)=>!a.has(k)).length,onlyInDump:dump.filter((k)=>!b.has(k)).length})"
+
+# Put back api_key_revocations: always, INSERT OR IGNORE.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db');const rows=JSON.parse(require('fs').readFileSync('/cold/revocations.json','utf8'));const put=d.prepare('INSERT OR IGNORE INTO api_key_revocations (key_id, key_hash, revoked_at, revoked_because) VALUES (@key_id, @key_hash, @revoked_at, @revoked_because)');d.transaction(()=>rows.forEach((row)=>put.run(row)))()"
+# Put back account_endings: only where onlyInDump > 0, only the dumped rows the table lacks, in the dump's order.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{fileMustExist:true});const key=(r)=>[r.user_id,r.account_created,r.ending,r.role,r.credential,r.ended_at,r.stated_ended,r.origin].join('|');const have=new Set(d.prepare('SELECT * FROM account_endings').all().map(key));const rows=JSON.parse(require('fs').readFileSync('/cold/account-endings.json','utf8')).filter((r)=>!have.has(key(r)));const put=d.prepare('INSERT INTO account_endings (user_id, account_created, ending, role, credential, ended_at, stated_ended, origin) VALUES (@user_id, @account_created, @ending, @role, @credential, @ended_at, @stated_ended, @origin)');d.transaction(()=>{for(const r of rows)put.run(r)})();console.log(rows.length+' row(s) put back')"
+# Put back access_changes whole: only where its compare shows a difference.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{fileMustExist:true});const rows=JSON.parse(require('fs').readFileSync('/cold/access-changes.json','utf8'));const put=d.prepare('INSERT INTO access_changes (seq, kind, subject_id, subject_created, holder_id, holder_created, access, changed_at, stated_changed, origin) VALUES (@seq, @kind, @subject_id, @subject_created, @holder_id, @holder_created, @access, @changed_at, @stated_changed, @origin)');d.transaction(()=>{d.prepare('DELETE FROM access_changes').run();for(const r of rows)put.run(r)})()"
+# Put back outbound_changes whole: only where its compare shows a difference.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  "$NEW" node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{fileMustExist:true});const rows=JSON.parse(require('fs').readFileSync('/cold/outbound-changes.json','utf8'));const put=d.prepare('INSERT INTO outbound_changes (seq, kind, item_id, item_created, place, address, state, changed_at, stated_changed, origin) VALUES (@seq, @kind, @item_id, @item_created, @place, @address, @state, @changed_at, @stated_changed, @origin)');d.transaction(()=>{d.prepare('DELETE FROM outbound_changes').run();for(const r of rows)put.run(r)})()"
+# Then the ownership check, and the compares again: each 0 and 0.
+```
+
+`account_endings` is never emptied and refilled: the application never deletes from it, and its
+documented plain put-back, built for a copy migrated afresh, would duplicate every row of a table that
+still holds them. Rows only in the table are left in place. The rows put back follow those already
+there, which is the order card 2996 relies on.
+
+**What cannot be undone**
+
+| What | After Path A | After Path B |
+|---|---|---|
+| Sessions and remembered browsers from before the release (0067) | Gone | Back |
+| Invites unused at the release (0068) | Gone (P6's list to re-send) | Back |
+| Requester links mailed before the release (0070) | Gone | Back |
+| Image metadata stripped by 2761 | Only the uploads copy has the originals | The same (return the uploads copy too, if wanted) |
+| Stored secrets sealed, signing keys made anew | The old image cannot read them: entered again (RB9) | Plain again (the cold copy) |
+| Keys revoked, accounts disabled or deleted, webhooks held during the release | Stay ended or held | Come back with the cold copy; the dumps re-assert them going forward |
+| Authenticators, recovery codes and Keep this key presses made during the release | Kept, unread by the old image, used again forward | **Gone**: everyone sets up again going forward |
+| New webhook secrets given to receivers during the release | Kept (unread by the old image) | **Gone**: set each receiver back, or set them again |
+| Requester links the new image mailed | Dead on the old image | Dead |
+| Held requests' requester address (RB6b) | Taken off for good | Not applicable |
+| Keys made while the old image runs | No deadline coming forward: reviewed at FW5 | Not applicable |
+| S3 copies removed by the first retention run; mail already sent | Gone; sent | Gone; sent |
+| Exposure while the old image runs | Password-only sign-in; deciders' and administrators' v1 keys can read flag events with names; held settings in force unless RB2c | Password-only sign-in |
+
+#### Go/No-Go
+
+Every line must be "go" before L3:
+
+1. The gates pass on `b47056c` and the image builds on the host, its suite passing inside.
+2. The local rehearsal passed (2026-11-23: 182 PASS, 0 FAIL); R-prod passed, with its first-start
+   duration recorded.
+3. P1: production at 0065, uid 1000, the MFA key file present with the right size, mode and owner, its
+   off-host copy confirmed.
+4. P2: no second instance on the volume.
+5. P3: every import line and every administrator known.
+6. P3a: none of `two_step_released_at`, `api_key_deadline`, `webhook_keys_recorded_at`,
+   `mail_ever_configured_at` in `settings`.
+7. P7 and P8: a real App URL or `ORIGIN`; a test mail reached the superadmin's own address and every
+   administrator's.
+8. P17: both seed counts under 1,000,000.
+9. P16: enough free space, or uploads refused until it is freed accepted.
+10. P14 reviewed.
+11. The notices sent at least two working days before; the tracking key's holder ready to Keep it.
+12. `/enrol/` masked in both nginx maps, and in any CDN, load balancer or WAF log in front, before the
+    new image starts (L0).
+13. The cold copy, the uploads copy and the `dumpfire:rollback` tag in place and checked before the new
+    image starts.
+14. The `--keep-api-keys` command written down beside the host's terminal.
+15. The owner available for two hours after the start and the next morning, with a phone for the
+    authenticator, and the rollback exposures above accepted in advance.
+
 ### The Release That Turns On Two-Step Sign-In (Card 2769)
 
 **Card 2769 (build card B2 of card 2669), with card 2849.** Migrations
@@ -7911,8 +8395,9 @@ SELECT COUNT(*) AS key_check FROM settings WHERE key = 'mfa_key_check';
 
 **The first start** writes one `[WARN] [STARTUP]` line, on the console whatever `LOG_LEVEL` is:
 `Sealed N stored secret(s) held in plain (the mail password, D destination field(s), W webhook
-secret(s), K signing key(s); U backup configuration(s) unreadable): they are now encrypted under
-the MFA key.`, naming the import's safety copy (`.pre-restore-safety.json`) where there is one,
+secret(s), A webhook address(es), K signing key(s); U backup configuration(s) unreadable): they are now
+encrypted under the MFA key.` ("the mail password, " only where one is stored; the webhook addresses,
+card 2928's, come before the signing keys), naming the import's safety copy (`.pre-restore-safety.json`) where there is one,
 which holds them in plain as they were: delete it once it is not needed. It records the key
 check before it seals anything. This first sealing start alone (it writes
 `stored_secrets_first_sealed`) deletes the stale `.backup-temp` copies a stopped backup can leave
@@ -8033,7 +8518,14 @@ stored was in plain); the request-form key (the one stored was in plain). Backup
 now are taken as another server's: …`
 
 The reason is "the one stored was of an older form" where card 2898 has already sealed a key in
-place, and "none was stored" for a seal key no backup ever made. Card 2898's own "Sealed N stored
+place, and "none was stored" for a seal key no backup ever made. The line names only the keys stored
+when the start runs, but the seal key always, in the order remembered-browser key, request-form key,
+seal key. **From production at `332634f` (0065) it names two, not three**: migration 0067 deletes
+`known_browser_secret` earlier in the same start, so the line reads `Key change recorded: made at this
+start, each stored encrypted under the MFA key: the request-form key (the one stored was in plain); the
+backup seal key (the one stored was in plain). …` (the request-form key only where one was stored; the
+seal key "(none was stored)" where `332634f` never made a backup copy), as rehearsed on 2026-11-23
+([Releasing Everything Since 332634f](#releasing-everything-since-332634f-card-3046)). Card 2898's own "Sealed N stored
 secret(s)" line, written at the same start, counts **0 signing key(s)**: the three are made
 anew, never sealed in place. A restart writes neither line. Read it back (read-only):
 
@@ -8103,7 +8595,7 @@ and K8 run on production too.
 | # | Do | Expect | Fault if |
 |---|---|---|---|
 | K1 | On the older image: ▶ Run Now once, then Export Backup, kept as file A | A file | |
-| K2 | Stop it; start the new image on the same volume | One `[CRITICAL] [STARTUP] Key change recorded` line naming the three keys, with no hex in it | No line, two, or a value |
+| K2 | Stop it; start the new image on the same volume | One `[CRITICAL] [STARTUP] Key change recorded` line naming the three keys (two from a database at 0065, which 0067 leaves with no remembered-browser key: above), with no hex in it | No line, two, or a value |
 | K3 | Restart | No such line | The line again |
 | K4 | Export Backup as file B; Import Backup of B as it is | Nothing to enter: "Kept from this server…" | The mail password listed |
 | K5 | Import Backup of A as it is | "To enter again" names the mail password and ends "None was kept from this server, because this backup was not made by this server, or was changed since." | "Kept from this server" |
@@ -8353,7 +8845,10 @@ command (`scripts/mfa-reset.mjs`) of this release refuses a database without the
 ### The Release That Keeps Ended API Keys Ended Across a Restore (Card 2995)
 
 **Ships with card 2947**: migrations 0074, 0075 and 0076 are applied in one start, with OpenAPI
-`1.15.0`. **Migration 0076** adds `api_key_revocations` and changes no existing row.
+`1.15.0`, on a database already at 0073 (the development server). **Production at `332634f` applies
+0066 to 0083 in its first start**: follow [Releasing Everything Since 332634f](#releasing-everything-since-332634f-card-3046),
+which this section's dump and put-back are part of. **Migration 0076** adds `api_key_revocations` and
+changes no existing row.
 
 **What changes.** A restore never brings back an API key that was revoked here, ended with its
 account's access (a password set by an administrator, an invite used, the holder's own change that
@@ -8460,7 +8955,9 @@ first start also ends any present key the record still names, as a revoke does. 
 ### The Release That Keeps Ended Accounts Ended Across a Restore (Card 2996)
 
 **Ships with cards 2947, 2995 and 2997**, before the release is pushed: migrations 0074 to 0077 are
-applied in one start, with OpenAPI `1.15.0` (neither this card nor card 2997 changes OpenAPI). It never
+applied in one start on a database already at 0073, with OpenAPI `1.15.0` (neither this card nor card
+2997 changes OpenAPI); production at `332634f` applies 0066 to 0083 in its first start (see
+[Releasing Everything Since 332634f](#releasing-everything-since-332634f-card-3046)). It never
 ships without card 2997, so no database runs this card's build without card 2997's reading of
 `password` rows. **Migration 0077** adds `account_endings` and changes no existing row. Any image of
 this release can run the commands below (the image tagged for card 2995, `dumpfire:2995`, once rebuilt
@@ -8548,11 +9045,28 @@ with no network, the dump put back with the server stopped, the usual start):
 docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
   dumpfire:2995 node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true});require('fs').writeFileSync('/cold/account-endings.json',JSON.stringify(d.prepare('SELECT * FROM account_endings ORDER BY seq').all()))"
 # 1. This release's first start on the returned copy, with no network, stopped once migrated (card 2995's step 1).
-# 2. With the server stopped, the dump put back, in its order, after the rows the migration wrote:
+# 2a. With the server stopped, compare, read-only: by every column but seq.
 docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
-  dumpfire:2995 node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db');const rows=JSON.parse(require('fs').readFileSync('/cold/account-endings.json','utf8'));const put=d.prepare('INSERT INTO account_endings (user_id, account_created, ending, role, credential, ended_at, stated_ended, origin) VALUES (@user_id, @account_created, @ending, @role, @credential, @ended_at, @stated_ended, @origin)');d.transaction(()=>{for(const r of rows)put.run(r)})()"
+  dumpfire:2995 node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true,fileMustExist:true});const key=(r)=>[r.user_id,r.account_created,r.ending,r.role,r.credential,r.ended_at,r.stated_ended,r.origin].join('|');const dump=JSON.parse(require('fs').readFileSync('/cold/account-endings.json','utf8')).map(key);const live=d.prepare('SELECT * FROM account_endings').all().map(key);const a=new Set(dump),b=new Set(live);console.log({onlyInTable:live.filter((k)=>!a.has(k)).length,onlyInDump:dump.filter((k)=>!b.has(k)).length})"
+# 2b. Only where onlyInDump > 0: the dumped rows the table lacks, in the dump's order, after the rows already there, in one transaction.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  dumpfire:2995 node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{fileMustExist:true});const key=(r)=>[r.user_id,r.account_created,r.ending,r.role,r.credential,r.ended_at,r.stated_ended,r.origin].join('|');const have=new Set(d.prepare('SELECT * FROM account_endings').all().map(key));const rows=JSON.parse(require('fs').readFileSync('/cold/account-endings.json','utf8')).filter((r)=>!have.has(key(r)));const put=d.prepare('INSERT INTO account_endings (user_id, account_created, ending, role, credential, ended_at, stated_ended, origin) VALUES (@user_id, @account_created, @ending, @role, @credential, @ended_at, @stated_ended, @origin)');d.transaction(()=>{for(const r of rows)put.run(r)})();console.log(rows.length+' row(s) put back')"
+# 2c. The ownership check of the release since 332634f (the two commands above run as root).
 # 3. The usual start.
 ```
+
+**Compare first, and put back only the missing rows** (card 3046's decision 16). The record has no
+unique key but `seq`, and the dump's rows carry their own `seq`, so a plain `INSERT` of the whole dump
+duplicates every row the table still holds: on a re-migrated copy, the seed rows 0077 wrote again; on a
+database the older image never cleared (a rollback to the image alone, with no import or reset there),
+every row. Compare by every column but `seq`, as card 3002's compare does: `onlyInDump` 0 means the
+table holds every dumped row, and nothing is put back. Above 0, the second command appends exactly
+those rows, after the rows already there, which is the order this release relies on. `onlyInTable`
+above 0 is what an import on the older image brought, or the re-migration's own seeds: left in place,
+as the application never deletes from the record. Both commands run as root: run the ownership check of
+[Releasing Everything Since 332634f](#releasing-everything-since-332634f-card-3046) before the start.
+Rehearsed on 2026-11-23: on an untouched table the compare said 0 and nothing was put back; on a copy
+with the table emptied by hand, every dumped row was put back once.
 
 Put the dump back after `api_key_revocations`' in the same stopped window: the two are independent,
 and the order between them does not matter. The re-migrated copy's own rows never outrank the dump's
@@ -8988,7 +9502,9 @@ with none enabled.
 **Ships in the release since `332634f`** (production), with cards 2995, 2996, 2997, 3009, 3012, 3013,
 3020 and 3029, and with card 3033 (decision roles an unchecked backup can give), together.
 **Migration 0079** adds `access_changes`, its three indexes and a once-only seed; it changes no existing
-row. Migrations 0074 to 0079 apply in one start. No change to the v1 API or its OpenAPI document
+row. Migrations 0074 to 0079 apply in one start on a database already at 0073; production at
+`332634f` applies 0066 to 0083 in its first start ([Releasing Everything Since
+332634f](#releasing-everything-since-332634f-card-3046)). No change to the v1 API or its OpenAPI document
 (it stays `1.15.0`); the internal import answer gains three additive fields, `accessKept`,
 `accessAsHere` and `recordsNotTaken.accessChanges`. Nothing to set.
 
@@ -9118,7 +9634,9 @@ recorded and come back whole from an older backup."
 **Ships in the same release as card 3002**, since `332634f` (production). **Migration 0080** seeds four
 decision kinds into card 3002's `access_changes` and adds one index, `access_changes_changed
 (changed_at)`, for the start pass's one read of a row dated after now; no new table or column, and it
-changes no existing row. Migrations 0074 to 0080 apply in one start. The v1 OpenAPI document stays
+changes no existing row. Migrations 0074 to 0080 apply in one start on a database already at 0073;
+production at `332634f` applies 0066 to 0083 in its first start ([Releasing Everything Since
+332634f](#releasing-everything-since-332634f-card-3046)). The v1 OpenAPI document stays
 `1.15.0` (unreleased), its note gaining point (12), R14's 409; the internal import answer's
 `accessKept` and `accessAsHere` gain fields. Nothing to set.
 
@@ -9189,7 +9707,9 @@ release whose creation time cannot be read, and roles changed on an older versio
 
 **Ships in the same release as cards 3002 and 3033**, since `332634f` (production), and closes card 3031
 (outbound settings that are not text). **Migration 0081** adds `outbound_changes` and its three indexes,
-DDL only: no seed in SQL, and it changes no existing row. Migrations 0074 to 0081 apply in one start.
+DDL only: no seed in SQL, and it changes no existing row. Migrations 0074 to 0081 apply in one start
+on a database already at 0073; production at `332634f` applies 0066 to 0083 in its first start
+([Releasing Everything Since 332634f](#releasing-everything-since-332634f-card-3046)).
 The v1 OpenAPI document stays `1.15.0` (unreleased), its note gaining point (13), the webhooks a
 restore brings back switched off, and "nothing else changed" becoming (14); the internal import answer
 gains `outboundKept` and `recordsNotTaken.outboundChanges`, additive. Nothing to set, but the MFA key
@@ -9342,7 +9862,9 @@ text are no longer used by any sender (card 3031)."
 **Migration 0082** (`0082_add_decision_survey_questions.sql`) adds the table
 `decision_survey_questions` with its index `idx_decision_survey_questions_decision_id`, and the
 nullable column `decision_responses.answers`: DDL only, it changes no existing row and declares nothing
-to the rehearsal. Migration 0082 joins the batch: **migrations 0074 to 0082 apply in one start.** The
+to the rehearsal. Migration 0082 joins the batch: **migrations 0074 to 0082 apply in one start** on a
+database already at 0073; **production at `332634f` applies 0066 to 0083 in its first start**
+([Releasing Everything Since 332634f](#releasing-everything-since-332634f-card-3046)). The
 v1 OpenAPI document stays `1.15.0` (unreleased), its note gaining the breaking point (14), decisions
 that ask survey questions, and "nothing else changed" becoming (15) ([API
 reference](api-reference.md#changes-on-2026-11-21-decisions-may-ask-survey-questions-card-2683)).
@@ -9396,7 +9918,7 @@ theirs). So, before going back:
 
 | # | Do | Expect | Fault if |
 |---|---|---|---|
-| H14 | First start of this release | `0082_add_decision_survey_questions.sql` applied with 0074 to 0081; no model-check line for `decision_survey_questions` or `answers` | A start failure, or a model-check line |
+| H14 | First start of this release | `0082_add_decision_survey_questions.sql` applied with 0074 to 0081 (on production, with 0066 to 0081); no model-check line for `decision_survey_questions` or `answers` | A start failure, or a model-check line |
 | H15 | Draft a decision with no options and one complete survey question; open it | Opened; the participant page offers "I answer the questions" and "I abstain" | `too_few_options` |
 | H16 | Answer it by personal link; the decider opens the results | The answer under the participant's name; no release offered ("This decision put no options to a vote: …" once ruled) | An answer anywhere else |
 | H17 | Re-publish it with two options, telling only | `409` "Telling of a change cannot add or retire an option: …"; asking everyone again opens round 2 as a vote, the survey round kept as an earlier round | Telling only accepted |
@@ -9417,7 +9939,9 @@ column, no existing row changed. Before any rollback to `332634f`, settle open s
 **Migration 0083** (`0083_add_decision_flags.sql`) adds the table `decision_flags` with its three
 indexes (`idx_decision_flags_decision_id`, `idx_decision_flags_participant_id`,
 `idx_decision_flags_replied_by`): DDL only, it changes no existing row and declares nothing to the
-rehearsal. Migration 0083 joins the batch: **migrations 0074 to 0083 apply in one start.** The v1
+rehearsal. Migration 0083 joins the batch: **migrations 0074 to 0083 apply in one start** on a
+database already at 0073; **production at `332634f` applies 0066 to 0083 in its first start**
+([Releasing Everything Since 332634f](#releasing-everything-since-332634f-card-3046)). The v1
 OpenAPI document stays `1.15.0` with no new point ("(15) nothing else changed" still holds): only the
 record operation's description and `DecisionRecordEntry.kind`'s name the four flag events among those
 never given to a key. Nothing to set.
@@ -9490,7 +10014,7 @@ talk; and its record route gives their four events to an API key (step 4). So, b
 
 | # | Do | Expect | Fault if |
 |---|---|---|---|
-| H18 | First start of this release | `0083_add_decision_flags.sql` applied with 0074 to 0082; no model-check line for `decision_flags` | A start failure, or a model-check line |
+| H18 | First start of this release | `0083_add_decision_flags.sql` applied with 0074 to 0082 (on production, with 0066 to 0082); no model-check line for `decision_flags` | A start failure, or a model-check line |
 | H19 | As a participant, object to an open decision; as its decider, try to Rule | Rule off with "1 objection has no answer: answer it before ruling" and **Go to the objections**; after **Send answer**, Rule on | A ruling with the objection unanswered |
 | H20 | By personal link, Ask to talk with no note; as the decider, Rule | A box "1 request to talk has no outcome recorded: I rule with it open" must be ticked; the outcome can still be recorded after the ruling | Refused for no note, or ruled with no tick |
 | H21 | As the author (not the decider), open the editor of a decision with an objection | "Any objections or requests to talk already raised, with names, become visible to the new decider." above **Change decider**, no number; no objection on any page the author sees | A count, or the objection shown |
@@ -9651,20 +10175,22 @@ Leave `proxy_request_buffering` as it is, which is on. nginx then reads the whol
 
 ### Keeping Link Tokens Out of the Access Log
 
-Two pages hold a secret in their address: a decision's personal link, `/decision-link/[token]` (card 2677), and an invite, `/invite/[token]`. DumpFire masks both in its own log (`SECRET_IN_PATH` in `src/lib/server/secret-paths.ts`), but nginx's access log is written before DumpFire sees the request, and its default `combined` format keeps the whole request line. A personal link's two writes, `POST /api/decision-by-link/responses` and `…/seen`, carry the token in the body, so only the page's own address (and its data, `/decision-link/<token>/__data.json`) needs masking, in the request line and in the `Referer` of any request made from such a page. Add this to the `http` block (`map` and `log_format` cannot sit inside `server`), and name the format on the `access_log` in the `server` block above:
+Three pages hold a secret in their address: a decision's personal link, `/decision-link/[token]` (card 2677), an invite, `/invite/[token]`, and, since two-step sign-in (cards 2769 and 2773), a set-up link, `/enrol/[token]`, which with the account's password sets up that account's second factor. DumpFire masks all three in its own log (`SECRET_IN_PATH` in `src/lib/server/secret-paths.ts`), but nginx's access log is written before DumpFire sees the request, and its default `combined` format keeps the whole request line. A personal link's two writes, `POST /api/decision-by-link/responses` and `…/seen`, carry the token in the body, so only the page's own address (and its data, `/decision-link/<token>/__data.json`) needs masking, in the request line and in the `Referer` of any request made from such a page. Add this to the `http` block (`map` and `log_format` cannot sit inside `server`), and name the format on the `access_log` in the `server` block above:
 
 ```nginx
-# In http { }: the request's path, decoded and normalised by nginx, with a link's or an invite's token masked.
+# In http { }: the request's path, decoded and normalised by nginx, with a link's, an invite's or a set-up link's token masked.
 map $uri $masked_uri {
     "~*^/decision-link/[^/]+(?<uri_after>.*)$"  "/decision-link/[token]$uri_after";
     "~*^/invite/[^/]+(?<uri_after>.*)$"         "/invite/[token]$uri_after";
+    "~*^/enrol/[^/]+(?<uri_after>.*)$"          "/enrol/[token]$uri_after";
     default                                     $uri;
 }
 
-# The same two masks over the Referer, a whole address as the browser sent it.
+# The same three masks over the Referer, a whole address as the browser sent it.
 map $http_referer $masked_referer {
     "~*^(?<ref_before>[^?#]*?)/decision-link/[^/?#]+(?<ref_after>.*)$"  "${ref_before}/decision-link/[token]${ref_after}";
     "~*^(?<ref_before>[^?#]*?)/invite/[^/?#]+(?<ref_after>.*)$"         "${ref_before}/invite/[token]${ref_after}";
+    "~*^(?<ref_before>[^?#]*?)/enrol/[^/?#]+(?<ref_after>.*)$"          "${ref_before}/enrol/[token]${ref_after}";
     default                                                             $http_referer;
 }
 
@@ -9700,7 +10226,9 @@ flowchart LR
     D -->|"SECRET_IN_PATH"| SL[("system_logs:<br/>GET /decision-link/[token] → 200")]
 ```
 
-To check it, open a personal link once and read the last line of the access log: it shows `/decision-link/[token]`, and `grep -c` of the token over the log is `0`. Open it again as `/%64ecision-link/<token>`: the line still shows `/decision-link/[token]`.
+To check it, open a personal link once and read the last line of the access log: it shows `/decision-link/[token]`, and `grep -c` of the token over the log is `0`. Open it again as `/%64ecision-link/<token>`: the line still shows `/decision-link/[token]`. Do the same with your own set-up link once two-step sign-in is released: the line shows `/enrol/[token]`, and `grep -c` of its token is `0`.
+
+**Add the `/enrol/` lines before the release that turns on two-step sign-in** (for production, the release since `332634f`: [Releasing Everything Since 332634f](#releasing-everything-since-332634f-card-3046), step L0), and mask or exclude `/enrol/` in any CDN, load balancer or WAF log in front as well. The set-up page answers `Referrer-Policy: no-referrer` like the personal link's, so the Referer mask is again for a browser that ignores it. The error log note above applies to the set-up link too.
 
 ### The Caller's Address Behind a Proxy
 
