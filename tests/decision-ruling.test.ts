@@ -74,7 +74,7 @@ import {
 	tooManyWrongLinks,
 	WHO_SEES_STATEMENT_VERSION
 } from '$lib/decision-words';
-import type { ReleasedResults, RoundTally } from '$lib/decision-view-types';
+import type { GroupTally, ReleasedResults, RoundTally } from '$lib/decision-view-types';
 import { decisionAnswer, readBoardDecisions, readEditPage, revisionFor } from '$lib/server/decision-authoring';
 import { readDecisionPage, readLinkPage, refuseWrongLink } from '$lib/server/decision-view';
 import { parseStamp, stamp } from '$lib/timestamps';
@@ -3142,5 +3142,118 @@ describe('objections and requests to talk at the ruling and in the results (card
 		expect(released).not.toBeNull();
 		expect(JSON.stringify(released)).not.toContain('SECRET');
 		expect(JSON.stringify(readDecisionPage(boardReader(), made.decision.id))).not.toContain('SECRET');
+	});
+});
+
+// ─── The group breakdown in the results (card 2686, cases G1 to G6) ─────────
+
+describe('group breakdown (card 2686)', () => {
+	/** A participant whose group snapshot is `groups`, stored as given (JSON text, or not). */
+	const member = (decision: Decision, name: string, groups: string, role: 'consulted' | 'informed' = 'consulted') =>
+		makeParticipant(decision, { person: makePerson({ fullName: `${name} Person` }), role, groups });
+	/** A group's figures: none unless given. */
+	const group = (name: string | null, more: Partial<GroupTally> = {}): GroupTally => ({
+		name,
+		consulted: 0,
+		responded: 0,
+		voted: 0,
+		votes: [],
+		scores: [],
+		abstained: 0,
+		noConcerns: 0,
+		mostChosen: [],
+		...more
+	});
+	/** Each option's votes, in order. */
+	const votesOf = (options: { id: number }[], counts: number[]) => options.map((option, index) => ({ optionId: option.id, count: counts[index] }));
+	const FINANCE = JSON.stringify(['Finance']);
+
+	it('G1. gives the current round per group, by name and No group last, a person in two groups counted in both, the same to the decider and an administrator', () => {
+		const { decision, a, b, c, decider } = opened();
+		answer(member(decision, 'fay', FINANCE), { optionId: a.id });
+		answer(member(decision, 'fin', JSON.stringify(['Finance', 'Development'])), { optionId: a.id });
+		answer(member(decision, 'dev', JSON.stringify(['Development'])), { optionId: b.id });
+		answer(member(decision, 'dan', JSON.stringify(['Development'])), { kind: 'abstain', optionId: null });
+		answer(member(decision, 'nan', '[]'), { kind: 'no_concerns', optionId: null });
+		answer(member(decision, 'noe', '[]'), { optionId: c.id });
+		const votes = (counts: number[]) => votesOf([a, b, c], counts);
+
+		const results = readResults(decider, decision.id, { source: 'ui' });
+
+		expect(results.groupBreakdown).toEqual([
+			group('Development', { consulted: 3, responded: 3, voted: 2, votes: votes([1, 1, 0]), abstained: 1, mostChosen: [a.id, b.id] }),
+			group('Finance', { consulted: 2, responded: 2, voted: 2, votes: votes([2, 0, 0]), mostChosen: [a.id] }),
+			group(null, { consulted: 2, responded: 2, voted: 1, votes: votes([0, 0, 1]), noConcerns: 1, mostChosen: [c.id] })
+		]);
+		expect(readResults(makeUser({ role: 'admin' }), decision.id, { source: 'ui' }).groupBreakdown, 'an administrator').toEqual(results.groupBreakdown);
+	});
+
+	it('G2. counts in consulted a group’s live consulted people who have not responded, and no informed or removed participant anywhere', () => {
+		const { decision, a, b, c, decider } = opened();
+		answer(member(decision, 'fay', FINANCE), { optionId: a.id });
+		member(decision, 'fin', FINANCE);
+		member(decision, 'oli', JSON.stringify(['Ops']));
+		makeResponse(member(decision, 'ivy', JSON.stringify(['Finance', 'Legal']), 'informed'), { kind: 'vote', optionId: b.id });
+		const gone = member(decision, 'rem', JSON.stringify(['Finance', 'Legal']));
+		answer(gone, { optionId: b.id });
+		db.update(decisionParticipants).set({ removedAt: PAST }).where(eq(decisionParticipants.id, gone.id)).run();
+		const votes = (counts: number[]) => votesOf([a, b, c], counts);
+
+		expect(readResults(decider, decision.id, { source: 'ui' }).groupBreakdown).toEqual([
+			group('Finance', { consulted: 2, responded: 1, voted: 1, votes: votes([1, 0, 0]), mostChosen: [a.id] }),
+			group('Ops', { consulted: 1, votes: votes([0, 0, 0]) })
+		]);
+	});
+
+	it('G3. gives no breakdown where no live consulted participant names a group', () => {
+		const { decision, a, decider } = opened();
+		answer(member(decision, 'pat', '[]'), { optionId: a.id });
+		member(decision, 'quin', '[]');
+		member(decision, 'ivy', FINANCE, 'informed');
+
+		expect(readResults(decider, decision.id, { source: 'ui' }).groupBreakdown).toEqual([]);
+	});
+
+	it('G4. counts a person whose snapshot names a group twice once, and one whose snapshot cannot be read under No group', () => {
+		const { decision, a, b, c, decider } = opened();
+		answer(member(decision, 'fay', JSON.stringify(['Finance', 'Finance'])), { optionId: a.id });
+		answer(member(decision, 'bad', 'not json'), { optionId: b.id });
+		const votes = (counts: number[]) => votesOf([a, b, c], counts);
+
+		expect(readResults(decider, decision.id, { source: 'ui' }).groupBreakdown).toEqual([
+			group('Finance', { consulted: 1, responded: 1, voted: 1, votes: votes([1, 0, 0]), mostChosen: [a.id] }),
+			group(null, { consulted: 1, responded: 1, voted: 1, votes: votes([0, 1, 0]), mostChosen: [b.id] })
+		]);
+	});
+
+	it('G5. counts a survey answer as responded and not voted, in its group, with no survey question figure per group', () => {
+		const { decision, decider, choice, scale, text } = surveyed();
+		answered(member(decision, 'fay', FINANCE), { [choice.id]: 0, [scale.id]: 4, [text.id]: 'SECRET-ANSWER' });
+		answer(member(decision, 'fin', FINANCE), { kind: 'abstain', optionId: null });
+		answered(member(decision, 'noe', '[]'), { [choice.id]: 1 });
+
+		const breakdown = readResults(decider, decision.id, { source: 'ui' }).groupBreakdown;
+
+		expect(breakdown).toEqual([group('Finance', { consulted: 2, responded: 2, abstained: 1 }), group(null, { consulted: 1, responded: 1 })]);
+		expect(JSON.stringify(breakdown)).not.toMatch(/SECRET|Which depot|How urgent|Leeds|"survey"|"answers"/);
+	});
+
+	it('G6. counts no objection or request to talk: planted flags of group members change no figure', () => {
+		const { decision, a, b, c, decider } = opened();
+		const fay = member(decision, 'fay', FINANCE);
+		const fin = member(decision, 'fin', FINANCE);
+		answer(fay, { optionId: a.id });
+		const before = readResults(decider, decision.id, { source: 'ui' });
+		plantFlag(decision.id, fay.id, { kind: 'objection', reason: 'Too dear.' });
+		plantFlag(decision.id, fin.id, { kind: 'talk', reason: 'Call me.' });
+		plantFlag(decision.id, fin.id, { kind: 'objection', reason: 'Too slow.', reply: 'Heard.', repliedAt: '2026-11-03 10:00:00' });
+
+		const after = readResults(decider, decision.id, { source: 'ui' });
+
+		expect(after.flags, 'the reader has the flags').toHaveLength(3);
+		expect(after.groupBreakdown).toEqual(before.groupBreakdown);
+		expect(after.groupBreakdown).toEqual([
+			group('Finance', { consulted: 2, responded: 1, voted: 1, votes: votesOf([a, b, c], [1, 0, 0]), mostChosen: [a.id] })
+		]);
 	});
 });

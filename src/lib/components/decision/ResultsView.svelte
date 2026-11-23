@@ -37,11 +37,16 @@
   survey, never as a vote. These figures are the decider's and the
   administrators' alone: no release, or its preview, holds them. A ruling on
   a version with no options says `NO_OPTIONS_PUT`.
+
+  Card 2686 (R9, R11): the current round per group (`GroupBreakdown`), after
+  its tally and survey figures and before each response, only where some
+  group is named (`groupBreakdown` not empty). Never in a release.
 -->
 <script lang="ts">
 	import type { ResultRow, ResultsData, RoundTally, SurveyQuestionTally, SurveyTally } from '$lib/decision-view-types';
 	import { NOT_REACHED_WORDS, NO_OPTIONS_PUT, RESULTS_ANSWER_ELSEWHERE, resultsQuestionsClosedWords, shownMoment, surveyAnswerWords } from '$lib/decision-words';
 	import AgentLabel from './AgentLabel.svelte';
+	import GroupBreakdown from './GroupBreakdown.svelte';
 
 	let { results }: { results: ResultsData } = $props();
 
@@ -274,6 +279,7 @@
 		{@render tallyTable(results.current, `Round ${results.round}`)}
 	{/if}
 	{@render surveyFigures(results.current)}
+	{#if results.groupBreakdown.length > 0}<GroupBreakdown groups={results.groupBreakdown} options={results.options} round={results.round} {score} survey={surveyRound(results.current)} />{/if}
 	{@render responsesTable(results.current.rows, 'Each response', results.current.survey)}
 
 	<h3>Not responded</h3>

@@ -28,6 +28,8 @@
  *     words in the status region.
  *   - `ResultsView`: a header for each column and row of the tally, earlier
  *     rounds closed, and the tables that stack at phone width.
+ *   - `GroupBreakdown` (card 2686, U1 to U4): the current round per group in
+ *     single and score mode and in a survey round, and no panel without one.
  *
  * What the server answers, and to whom, is in `tests/decision-ruling.test.ts`.
  * The plan is `docs/planning/card-2679-results-ruling.md`.
@@ -36,7 +38,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Svelte from 'svelte';
-import type { DecisionPageData, ReleasedResults as Released, ResultFlag, ResultRow, ResultsData, RoundTally, RulingRecord, RulingView, SurveyTally } from '$lib/decision-view-types';
+import type { DecisionPageData, GroupTally, ReleasedResults as Released, ResultFlag, ResultRow, ResultsData, RoundTally, RulingRecord, RulingView, SurveyTally } from '$lib/decision-view-types';
 
 const navigation = vi.hoisted(() => ({ invalidateAll: vi.fn(async () => {}), goto: vi.fn(async (_to: string) => {}) }));
 vi.mock('$app/navigation', () => ({
@@ -485,6 +487,8 @@ function results(more: Partial<ResultsData> = {}): ResultsData {
 		current: tally(2),
 		earlierRounds: [tally(1, { responded: 1 })],
 		notResponded: [{ participantId: 4, name: 'Sil Ent', groups: [], reached: true }],
+		// Card 2686: no breakdown, so no panel.
+		groupBreakdown: [],
 		removed: [],
 		openQuestions: [],
 		mayAnswerQuestions: false,
@@ -1605,5 +1609,107 @@ describe('objections and requests to talk on the results page (card 2684)', () =
 		flushSync();
 		expect([questions().checked, talks().checked], 'the same numbers').toEqual([true, true]);
 		expect(rule.disabled).toBe(false);
+	});
+});
+
+// ─── The group breakdown (card 2686, cases U1 to U4) ────────────────────────
+
+describe('GroupBreakdown (card 2686)', () => {
+	const NOTE =
+		'Each person is counted in every group they were in when they were included; people in no group are under No group, so the groups do not add up to the total. ' +
+		"Only the decider and DumpFire's administrators see this, and it is never released.";
+	/** A group's figures: none unless given. */
+	const group = (name: string | null, more: Partial<GroupTally> = {}): GroupTally => ({
+		name,
+		consulted: 0,
+		responded: 0,
+		voted: 0,
+		votes: [],
+		scores: [],
+		abstained: 0,
+		noConcerns: 0,
+		mostChosen: [],
+		...more
+	});
+	const table = (target: HTMLElement) => target.querySelector<HTMLTableElement>('[data-table="groups"]')!;
+	const headersOf = (groups: HTMLTableElement) => [...groups.querySelectorAll('thead th')].map(textOf);
+	const rowsOf = (groups: HTMLTableElement) => [...groups.querySelectorAll('tbody tr')].map((tr) => [...tr.children].map(textOf));
+
+	it('U1: a table under the round’s tally and before each response: a row per group and No group, each option’s votes, abstained, no concerns, most chosen with "tied", each cell labelled, and the note', () => {
+		const target = draw(ResultsView, {
+			results: results({
+				groupBreakdown: [
+					group('Development', { consulted: 3, responded: 3, voted: 2, votes: [{ optionId: 11, count: 1 }, { optionId: 12, count: 1 }], abstained: 1, mostChosen: [11, 12] }),
+					group('<b>Finance</b>', { consulted: 2, responded: 1, voted: 1, votes: [{ optionId: 11, count: 1 }, { optionId: 12, count: 0 }], mostChosen: [11] }),
+					group(null, { consulted: 2, responded: 1, votes: [{ optionId: 11, count: 0 }, { optionId: 12, count: 0 }], noConcerns: 1 })
+				]
+			})
+		});
+		const groups = table(target);
+		expect(textOf(groups.querySelector('caption')!)).toBe('Round 2 by group');
+		expect(headersOf(groups)).toEqual(['Group', 'Consulted', 'Responded', 'Votes for A', 'Votes for B', 'Abstained', 'No concerns', 'Most chosen']);
+		expect([...groups.querySelectorAll('tbody th')].map((th) => th.getAttribute('scope'))).toEqual(['row', 'row', 'row']);
+		expect(rowsOf(groups)).toEqual([
+			['Development', '3', '3', '1', '1', '1', '0', 'A, B (tied)'],
+			['<b>Finance</b>', '2', '1', '1', '0', '0', '0', 'A'],
+			['No group', '2', '1', '0', '0', '0', '1', '–']
+		]);
+		// A group name is plain text, never markup.
+		expect(groups.querySelector('tbody b')).toBeNull();
+		// Stacked at phone width: every cell labelled by its own column.
+		expect(groups.classList.contains('stacked')).toBe(true);
+		for (const row of groups.querySelectorAll('tbody tr')) {
+			expect([...row.querySelectorAll('td')].map((td) => td.getAttribute('data-label'))).toEqual(headersOf(groups).slice(1));
+		}
+		expect(textOf(target.querySelector('[data-note="group-breakdown"]')!)).toBe(NOTE);
+		// After the round's tally, before each response.
+		const tables = [...target.querySelectorAll('table')].map((each) => each.getAttribute('data-table'));
+		expect(tables.slice(0, 3)).toEqual(['tally', 'groups', 'responses']);
+	});
+
+	it('U2: score mode gives each option’s total and mean per group', () => {
+		const target = draw(ResultsView, {
+			results: results({
+				decision: { ...results().decision, voteMode: 'score' },
+				current: tally(2, { votes: [], scores: [{ optionId: 11, total: 9, mean: 4.5 }, { optionId: 12, total: 3, mean: 1.5 }], rows: [] }),
+				earlierRounds: [],
+				groupBreakdown: [
+					group('Finance', { consulted: 2, responded: 2, voted: 2, scores: [{ optionId: 11, total: 9, mean: 4.5 }, { optionId: 12, total: 3, mean: 1.5 }], mostChosen: [11] }),
+					group(null, { consulted: 1, scores: [{ optionId: 11, total: 0, mean: null }, { optionId: 12, total: 0, mean: null }] })
+				]
+			})
+		});
+		const groups = table(target);
+		expect(headersOf(groups)).toEqual(['Group', 'Consulted', 'Responded', 'Total for A', 'Mean for A', 'Total for B', 'Mean for B', 'Abstained', 'No concerns', 'Most chosen']);
+		expect(rowsOf(groups)).toEqual([
+			['Finance', '2', '2', '9', '4.5', '3', '1.5', '0', '0', 'A'],
+			['No group', '1', '0', '0', '–', '0', '–', '0', '0', '–']
+		]);
+	});
+
+	it('U3: a survey round gives answered the survey and abstained per group, with no option column', () => {
+		const target = draw(ResultsView, {
+			results: results({
+				options: [],
+				current: tally(2, { voted: 0, votes: [], rows: [] }),
+				earlierRounds: [],
+				releasePreview: null,
+				mostChosen: [],
+				groupBreakdown: [group('Finance', { consulted: 3, responded: 2, abstained: 1 }), group(null, { consulted: 1, responded: 1 })]
+			})
+		});
+		const groups = table(target);
+		expect(headersOf(groups)).toEqual(['Group', 'Consulted', 'Responded', 'Answered the survey', 'Abstained']);
+		expect(rowsOf(groups)).toEqual([
+			['Finance', '3', '2', '1', '1'],
+			['No group', '1', '1', '1', '0']
+		]);
+	});
+
+	it('U4: an empty breakdown draws no panel', () => {
+		const target = draw(ResultsView, { results: results({ groupBreakdown: [] }) });
+		expect(target.querySelector('[data-table="groups"]')).toBeNull();
+		expect(target.querySelector('[data-block="group-breakdown"]')).toBeNull();
+		expect(target.querySelector('[data-note="group-breakdown"]')).toBeNull();
 	});
 });

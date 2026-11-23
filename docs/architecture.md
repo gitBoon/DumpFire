@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.152
+version: 1.153
 status: As-Built
 date: 2026-11-23
 tags:
+  - card-2686
+  - group-breakdown
   - card-2684
   - objections
   - need-to-talk
@@ -67,7 +69,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "Objections and requests to talk (card 2684): decision-flag-writes.ts (raise signed in or by link, the decider's reply), the ruling's two new refusals, the results revision over flags, who sees them (a change of decider included), the pages, the shared notice, cap and rest helpers, and the one list of tables that name a decision place. Decision survey questions (card 2683): rows plus words, survey-only decisions, any change but help asks everyone again, the answered kind, the tolerant answers reader, results per version and never released. The restore's outbound steps (seedOutbound, carryOutboundChanges, applyOutboundSchedules, applyOutboundSettings, applyOutboundWebhooks, holdResetSettersIn) and the sweep's outbound seed and pass (card 3004). The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "The group breakdown (card 2686): groupBreakdownOf in decision-results.ts, the current round per group from each participant's snapshot names, on readResults alone, never in the summary or a release, drawn by GroupBreakdown.svelte. Objections and requests to talk (card 2684): decision-flag-writes.ts (raise signed in or by link, the decider's reply), the ruling's two new refusals, the results revision over flags, who sees them (a change of decider included), the pages, the shared notice, cap and rest helpers, and the one list of tables that name a decision place. Decision survey questions (card 2683): rows plus words, survey-only decisions, any change but help asks everyone again, the answered kind, the tolerant answers reader, results per version and never released. The restore's outbound steps (seedOutbound, carryOutboundChanges, applyOutboundSchedules, applyOutboundSettings, applyOutboundWebhooks, holdResetSettersIn) and the sweep's outbound seed and pass (card 3004). The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -2196,6 +2198,63 @@ stateDiagram-v2
   `closesAt` only to an administrator, and `readBoardDecisions` gives none. "Against" can still
   be worked out from a release beside the public ruling, which the release dialog says
   (`RELEASE_INFERENCE`), and "early" by anyone who remembers the closing time.
+- **The group breakdown** (card 2686, plan `docs/planning/card-2686-decision-group-breakdown.md`).
+  `readResults` gives `groupBreakdown: GroupTally[]`, the current round per group, worked out on
+  read by `groupBreakdownOf(rows, waiting, optionIds, voteMode)` in `decision-results.ts` from
+  `current.rows` (the live consulted participants' latest responses in the round) and the
+  not-responded list, each with the group names of its participant's snapshot
+  (`decision_participants.groups`, taken at inclusion and again at opening, read by the
+  tolerant `groupNamesOf`). So the groups are those each person was in when included, the same
+  names the page prints beside each response, and a later change to a group rewrites nothing.
+  A person is counted once in every group their snapshot names (a name given twice counts
+  once); one who names none, or whose snapshot cannot be read, is under No group (`name:
+  null`). Each group's figures are `tallyOf`'s over its rows, over the option ids the round's
+  tally counts, with `mostChosenOf`; `consulted` adds its members with no response. Ordered by
+  name in plain string order, No group last; `[]` where no live consulted participant names a
+  group. An `answered` response counts as responded and never as a vote; no survey question
+  figure is given per group, no informed or removed participant is counted, and no objection or
+  request to talk is read (`GroupTally` has no field that could hold one). It is computed under
+  every source, but `readSummary` copies fields one by one and leaves it out, so no API key is
+  given it; no release reads it, as `releaseRowsOf` still holds no group (case 18). No cell is
+  withheld for a small group: the only two roles who see it already see each response by name.
+  `ResultsView` draws it through `GroupBreakdown.svelte` after the round's tally and survey
+  figures and before "Each response", only when the list is not empty.
+
+```mermaid
+flowchart LR
+    P["decision_participants.groups<br/>(snapshot at inclusion / opening)"] --> RR["resultRowOf / notResponded<br/>groups: string[]"]
+    R["decision_responses<br/>(latest in current round,<br/>live consulted)"] --> RR
+    RR --> T["roundTally → current.rows"]
+    RR --> W["notResponded"]
+    T --> G["groupBreakdownOf<br/>tallyOf + mostChosenOf per group"]
+    W --> G
+    G --> RD["readResults → ResultsData.groupBreakdown"]
+    RD --> PG["/decisions/{id}/results<br/>ResultsView → GroupBreakdown<br/>(decider, administrators)"]
+    RD -. "not copied (allow-list)" .-> S["readSummary (API key)"]
+    R --> RL["releaseRowsOf (no groups)"] --> REL["releasedOf / previewOf<br/>(everyone with access)"]
+    F["decision_flags (card 2684)"] -. "never read" .-> G
+```
+
+```mermaid
+classDiagram
+    class ResultsData {
+        current: RoundTally
+        notResponded: NotResponded[]
+        groupBreakdown: GroupTally[]
+    }
+    class GroupTally {
+        name: string | null
+        consulted: number
+        responded: number
+        voted: number
+        votes: optionId, count[]
+        scores: optionId, total, mean[]
+        abstained: number
+        noConcerns: number
+        mostChosen: number[]
+    }
+    ResultsData "1" --> "*" GroupTally
+```
 
 **The page reads** (`pageOf`). Every viewer of a ruled decision is given `ruling` (label,
 title, `noneOfThese`, reason, conditions, `ruledByName`; no moment), `released` once released
@@ -2756,7 +2815,10 @@ table per choice and scale question per version, and a "Survey answers" column; 
 lists each answer by prompt (`RecordAnswer`).
 
 **Binding notes for later cards** (in `decision-results.ts` and `decision-words.ts`): card 2686
-shows survey figures to the decider alone and never per group in a release; card 2688's PDF holds
+shows survey figures to the decider alone and never per group in a release (built: its group
+breakdown gives no survey question figure per group, counts an `answered` response as responded
+and not as a vote, and is never released, [Results, the ruling and the
+release](#results-the-ruling-and-the-release)); card 2688's PDF holds
 answers only in the decider's and administrators' export; card 2689's webhooks never carry answers
 or survey figures; a card that wants to release answers must give `surveyWhoSees` a version,
 record it per response and refuse answers given before it, and a comment given with an `answered`
@@ -3019,7 +3081,8 @@ flowchart LR
 ```
 
 **Binding notes for later cards** (in `decision-results.ts` and the design's 5.2): card 2686
-shows no flag figure outside the decider's and administrators' views; card 2688's PDF puts flags
+shows no flag figure outside the decider's and administrators' views (built: its group breakdown
+reads no flag at all); card 2688's PDF puts flags
 in their export alone; card 2689's webhooks never carry a flag event or figure; card 3030 covers
 `decision_flags` as decision content from unsealed restores; card 3047 redacts a reason or reply.
 

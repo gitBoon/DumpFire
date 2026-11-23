@@ -235,6 +235,7 @@ function results(more: Partial<ResultsData> = {}): ResultsData {
 		current: round,
 		earlierRounds: [],
 		notResponded: [],
+		groupBreakdown: [],
 		removed: [],
 		openQuestions: [
 			{ askerName: 'Ann Asker', question: 'What does B cost?\n  Per year, please.', askedAt: '2026-11-03 10:00:00', agentAnswered: false },

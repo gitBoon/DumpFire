@@ -60,6 +60,13 @@
  * on later cards (R21): 2686 shows no flag figure outside the decider's and
  * administrators' views; 2688 puts flags in their export alone; 2689 never
  * carries a flag event or figure.
+ *
+ * Card 2686 adds the current round per group (`groupBreakdownOf`), on
+ * `readResults` alone: the rows the decider and administrators already see by
+ * name, grouped by the group names each participant's snapshot holds (as they
+ * were when included), each tallied by `tallyOf` and read by `mostChosenOf`.
+ * It reads no flag and no survey answer, `readSummary` does not copy it, and
+ * no release reads it: `releaseRowsOf` still holds no group.
  */
 import { createHmac } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
@@ -89,6 +96,7 @@ import { requireDecision } from './route-guards';
 import { mostChosenOf } from '$lib/decision-rules';
 import { NO_OPTIONS_TO_RELEASE, objectionsUnansweredWords, STALE_REVISION, talksOpenWords, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
 import type {
+	GroupTally,
 	OpenQuestion,
 	PreviewComment,
 	ResultFlag,
@@ -287,6 +295,44 @@ export function currentResultsOf(decision: Decision): { tally: RoundTally; notRe
 	const answered = new Set(tally.rows.map((row) => row.participantId));
 	const notResponded = liveConsulted(participants).filter((row) => !answered.has(row.id));
 	return { tally, notResponded, reached: reachedInRound(decision.id, round, notResponded) };
+}
+
+// ─── The group breakdown (card 2686) ─────────────────────────────────────────
+
+/**
+ * The current round per group (card 2686, R1 to R6, R9), for the decider and
+ * administrators alone: `rows` are the round's counted responses
+ * (`roundTally`'s, live consulted participants only) and `waiting` the live
+ * consulted participants with none, each with the group names their snapshot
+ * holds. Each person is counted once in every group they name (a name given
+ * twice counts once), and one who names none under No group (`name: null`).
+ * Each group's figures are `tallyOf`'s over its rows, with `mostChosenOf`, and
+ * `consulted` adds its waiting members. Ordered by name, No group last; empty
+ * where nobody names a group, as one No group row would only repeat the total.
+ * It is handed rows and group names alone: never a flag or a survey answer.
+ */
+export function groupBreakdownOf(
+	rows: readonly ResultRow[],
+	waiting: readonly { groups: readonly string[] }[],
+	optionIds: readonly number[],
+	voteMode: VoteMode
+): GroupTally[] {
+	/** The groups a person is counted in: each name once, or No group. */
+	const groupsOf = (groups: readonly string[]): (string | null)[] => (groups.length === 0 ? [null] : [...new Set(groups)]);
+	const everyone = [...rows, ...waiting];
+	if (everyone.every((person) => person.groups.length === 0)) return [];
+	const names = [...new Set(everyone.flatMap((person) => person.groups))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+	const keys: (string | null)[] = everyone.some((person) => person.groups.length === 0) ? [...names, null] : names;
+	return keys.map((name) => {
+		const counted = rows.filter((row) => groupsOf(row.groups).includes(name));
+		const tally = tallyOf(counted, optionIds, voteMode);
+		return {
+			name,
+			consulted: counted.length + waiting.filter((person) => groupsOf(person.groups).includes(name)).length,
+			...tally,
+			mostChosen: mostChosenOf(tally, voteMode)
+		};
+	});
 }
 
 // ─── The open questions and the results revision (decisions 8 and 13) ───────
@@ -775,6 +821,10 @@ function surveyQuestionsOf(decision: Decision): PublishedSurveyQuestion[] {
  * whether the caller may reply now (`reply`: the current decider, with board
  * edit, on a decision `TRANSITIONS.reply` allows); an administrator reads
  * them and replies to none.
+ *
+ * Card 2686: `groupBreakdown`, the current round per group
+ * (`groupBreakdownOf`), under every source, over the same rows and
+ * non-responders this gives by name; `readSummary` leaves it out.
  */
 export function readResults(user: SessionUser, decisionId: number, opts: { source: ServiceOptions['source'] }): ResultsData {
 	const { decision, access } = requireDecision(user, decisionId, 'results');
@@ -789,6 +839,7 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 	const notResponded = liveConsulted(participants).filter((row) => !answered.has(row.id));
 	// Card 2738: the same read the ruling writes on each cut_off, so the page marks whom a ruling now would record as never reached.
 	const reached = reachedInRound(decision.id, round, notResponded);
+	const waiting = notResponded.map((row) => ({ participantId: row.id, name: row.name, groups: groupNamesOf(row.groups), reached: reached.has(row.id) }));
 	const latest = latestInRound(responses, round);
 	const earlier = [...new Set(responses.map((row) => row.round))].filter((r) => r < round).sort((a, b) => b - a);
 
@@ -846,7 +897,9 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 		surveyQuestions: surveyQuestionsOf(decision),
 		current,
 		earlierRounds: earlier.map((r) => roundTally(decision, participants, responses, r, asked)),
-		notResponded: notResponded.map((row) => ({ participantId: row.id, name: row.name, groups: groupNamesOf(row.groups), reached: reached.has(row.id) })),
+		notResponded: waiting,
+		// Card 2686 (R1): over the options the round's tally counts, so each group's figures agree with its totals.
+		groupBreakdown: groupBreakdownOf(current.rows, waiting, (voteMode === 'single' ? current.votes : current.scores).map((figure) => figure.optionId), voteMode),
 		removed: participants
 			.filter((row) => row.removedAt !== null)
 			.map((row) => {

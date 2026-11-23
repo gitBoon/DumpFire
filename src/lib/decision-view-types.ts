@@ -198,6 +198,26 @@ export type RoundTally = {
 	rows: ResultRow[];
 };
 
+/**
+ * The current round's figures for one group (card 2686, R2 to R6), the
+ * decider's and administrators' alone and never released: `name` a group name
+ * as the participants' snapshots hold it, as they were when included, or null
+ * for those in no group; how many live consulted participants are in it,
+ * responded or not; then `tallyOf`'s figures over its responses and the option
+ * or options it chose most. No name, comment, moment, survey answer or flag.
+ */
+export type GroupTally = {
+	name: string | null;
+	consulted: number;
+	responded: number;
+	voted: number;
+	votes: { optionId: number; count: number }[];
+	scores: { optionId: number; total: number; mean: number | null }[];
+	abstained: number;
+	noConcerns: number;
+	mostChosen: number[];
+};
+
 /** The ruling as the results give it to the decider and administrators: "against", "early" and the cut-off names among it. */
 export type RulingRecord = {
 	optionId: number | null;
@@ -254,6 +274,11 @@ export type ResultsData = {
 	 * whether the round's request has reached them, as an early ruling now would record it.
 	 */
 	notResponded: { participantId: number; name: string; groups: string[]; reached: boolean }[];
+	/**
+	 * Card 2686 (R1, R3, R9): the current round per group, by name, No group last; each live consulted participant
+	 * counted in every group their snapshot names. Empty where none names a group. Never in an API key's summary.
+	 */
+	groupBreakdown: GroupTally[];
 	/** Removed participants, each with their latest row in the current round, or null. */
 	removed: { participantId: number; name: string; role: string; latest: ResultRow | null }[];
 	/** Card 2678 (decision 9): a question no person's answer stands behind, an agent's unpublished draft among them (`agentAnswered`). */
