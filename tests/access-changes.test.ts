@@ -1108,6 +1108,33 @@ describe('every change of a decision role here is recorded, and the start lowers
 		expect(read).toEqual([r.holder.id]);
 	});
 
+	it("(T53) card 2684, R18: the start lowers two of a draft's places to removed; the one a planted flag names is marked removed, not deleted, the other deleted, and the pass commits", () => {
+		const draft = draftByOlga();
+		const flagged = makePerson({ user: bob });
+		const plain = makePerson({ user: carol });
+		save(olga, draft.id, [
+			[flagged.id, 'consulted'],
+			[plain.id, 'consulted']
+		]);
+		const kept = placeOf(draft.id, flagged.id);
+		const gone = placeOf(draft.id, plain.id);
+		inTransaction(() => {
+			recordAccessChange(sqlite, { kind: 'decision_participant', subject: draft.id, holder: kept, access: 'removed' });
+			recordAccessChange(sqlite, { kind: 'decision_participant', subject: draft.id, holder: gone, access: 'removed' });
+		});
+		sqlite
+			.prepare("INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at) VALUES (?, ?, 'objection', 'Planted.', 1, 'session', '2026-11-02 09:00:00')")
+			.run(draft.id, kept);
+
+		expect(sweepEndedKeyReveals('off', false)).toBe(2);
+
+		expect(placeRow(kept)).toMatchObject({ removedAt: expect.any(String) });
+		expect(placeRow(gone)).toBeUndefined();
+		expect(systemEvents(kept)).toEqual([]);
+		// The pass's own line for what it lowered, and none saying it could not be written.
+		expect(accessWarnings()).toEqual([expect.stringMatching(/^2 board, team, person or decision access\(es\) above this server's record/)]);
+	});
+
 	it("(ee6) the start: a decision deleted here and back by an older image's import keeps its places (no deletion counts at the start)", async () => {
 		const r = await openedReady();
 		save(r.author, r.draft.id, [

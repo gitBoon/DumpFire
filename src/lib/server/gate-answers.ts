@@ -294,11 +294,11 @@ const UNPUBLISHED_HEADERS: readonly [name: string, value: string][] = [
  * which `setHeaders` in a load would not reach.
  *
  * `/decision-link/[token]`'s address holds the token, so nothing it answers
- * names its address to another site, is indexed or is cached; its four routes
- * likewise. `/decisions/[id]` and its participant's four routes show or answer
- * the caller's own response, concern or question, and, once released, others'
- * comments, and are cached and indexed nowhere (card 2679, decision 6; card
- * 2678, decision 12). An answer to a question, a replacement and a publish
+ * names its address to another site, is indexed or is cached; its five routes
+ * likewise. `/decisions/[id]` and its participant's five routes show or answer
+ * the caller's own response, concern, question, objection or request to talk,
+ * and, once released, others' comments, and are cached and indexed nowhere
+ * (card 2679, decision 6; card 2678, decision 12; card 2684, R3). An answer to a question, a replacement and a publish
  * answer the question with its asker's name, and are cached and indexed
  * nowhere either (card 2678). The decision authoring
  * pages, the preview, the editor and a board's list of decisions, show what
@@ -337,6 +337,8 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	['/api/decision-by-link/concerns', PERSONAL_LINK_HEADERS],
 	// Card 2678 (decision 12): a link holder's clarification question.
 	['/api/decision-by-link/questions', PERSONAL_LINK_HEADERS],
+	// Card 2684 (R3): a link holder's objection or request to talk.
+	['/api/decision-by-link/flags', PERSONAL_LINK_HEADERS],
 	['/invite/[token]', FORM_LINK_HEADERS],
 	// Card 2769 (decision 5): the second step of signing in.
 	['/login/verify', FORM_LINK_HEADERS],
@@ -356,6 +358,8 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	['/api/decisions/[id]/concerns', OWN_RESPONSE_HEADERS],
 	// Card 2678 (decision 12): a participant's own clarification question.
 	['/api/decisions/[id]/questions', OWN_RESPONSE_HEADERS],
+	// Card 2684 (R3): a participant's own objection or request to talk.
+	['/api/decisions/[id]/flags', OWN_RESPONSE_HEADERS],
 	['/decisions/[id]/preview', UNPUBLISHED_HEADERS],
 	['/decisions/[id]/edit', UNPUBLISHED_HEADERS],
 	['/board/[id]/decisions', UNPUBLISHED_HEADERS],
@@ -368,6 +372,8 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	// Card 2678 (decision 12): an answer, a replacement and a publish each answer the question with the asker's name.
 	['/api/decisions/[id]/questions/[questionId]/answer', UNPUBLISHED_HEADERS],
 	['/api/decisions/[id]/questions/[questionId]/publish', UNPUBLISHED_HEADERS],
+	// Card 2684 (R7, code review C-S-M1): the decider's reply answers the flag with its raiser's name, as an answer does.
+	['/api/decisions/[id]/flags/[flagId]/reply', UNPUBLISHED_HEADERS],
 	// Card 2680 (decision 24): a card's linked decisions, and a link's answer, the cards linked as the caller may see them.
 	['/api/cards/[id]/decisions', UNPUBLISHED_HEADERS],
 	['/api/decisions/[id]/cards/[cardId]', UNPUBLISHED_HEADERS],

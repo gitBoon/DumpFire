@@ -190,6 +190,7 @@ const fullParticipation = <E>(id: number | undefined, events: E[]): Participatio
 	],
 	questions: [],
 	concerns: [],
+	flags: [],
 	events,
 	moreEvents: false
 });
@@ -384,6 +385,7 @@ describe('a person’s record', () => {
 						responses: [],
 						questions: [],
 						concerns: [{ comment: 'I was not asked.', createdAt: '2026-11-01 12:00:00' }],
+						flags: [],
 						events: [{ kind: 'removed', at: '2026-11-02 09:00:00', versionNumber: null }]
 					}
 				],
@@ -402,7 +404,7 @@ describe('a person’s record', () => {
 		const target = drawPerson({
 			audience: 'self',
 			person: { name: 'Pat', jobTitle: '' },
-			participations: [{ kind: 'removed', includedAt: '2026-11-01 09:00:00', removedAt: null, responses: [], questions: [], concerns: [], events: [] }],
+			participations: [{ kind: 'removed', includedAt: '2026-11-01 09:00:00', removedAt: null, responses: [], questions: [], concerns: [], flags: [], events: [] }],
 			next: null
 		});
 		expect(target.querySelector('article[data-participation="removed"]')).toBeNull();
@@ -410,6 +412,55 @@ describe('a person’s record', () => {
 		expect(textOf(article.querySelector('h2')!)).toBe('A decision you can no longer open');
 		expect(textOf(article)).not.toContain('removed');
 		expect(article.querySelectorAll('a')).toHaveLength(0);
+	});
+
+	it('U6 (card 2684): shows each objection and request to talk with its reply, as plain text; the replier named to an administrator alone; their events in the record’s words', () => {
+		const raised = [
+			{ kind: 'objection' as const, reason: 'Too **dear** <i>now</i>.', raisedAt: '2026-11-02 09:00:00', versionNumber: 1, reply: 'We have budget.', repliedAt: '2026-11-02 11:00:00' },
+			{ kind: 'talk' as const, reason: '', raisedAt: '2026-11-03 09:00:00', versionNumber: 2, reply: null, repliedAt: null }
+		];
+		const flagsIn = (target: HTMLElement) => [...target.querySelectorAll<HTMLElement>('[data-list="flags"] li')];
+
+		const self = drawPerson({ audience: 'self', person: { name: 'Pat Doe', jobTitle: '' }, participations: [{ ...fullParticipation<OwnRecordEvent>(undefined, []), flags: raised }], next: null });
+		expect(textOf(self.querySelector('[data-list="flags"]')!.previousElementSibling!)).toBe('Your objections and requests to talk');
+		const [objection, talk] = flagsIn(self);
+		expect(textOf(objection.querySelector('.line')!)).toBe('Objection version 1, 2026-11-02 09:00 UTC');
+		expect(textOf(objection.querySelector('[data-text="reason"]')!)).toBe('Too **dear** <i>now</i>.');
+		expect(objection.querySelector('[data-text="reason"] i'), 'plain text').toBeNull();
+		expect(textOf(objection.querySelector('[data-text="reply"]')!)).toBe('We have budget.');
+		expect(textOf(objection.querySelector('[data-note="replied"]')!)).toBe('Answered by the decider, 2026-11-02 11:00 UTC');
+		expect(textOf(talk.querySelector('.line')!)).toBe('Request to talk version 2, 2026-11-03 09:00 UTC');
+		expect(textOf(talk.querySelector('[data-note="no-reply"]')!)).toBe('No outcome recorded yet');
+
+		// A removed participation: the replies the server gave, up to the removal.
+		const removed = drawPerson({
+			audience: 'self',
+			person: { name: 'Sam', jobTitle: '' },
+			participations: [{ kind: 'removed', includedAt: '2026-11-01 09:00:00', removedAt: '2026-11-02 10:00:00', responses: [], questions: [], concerns: [], flags: [{ ...raised[0], reply: null, repliedAt: null }], events: [] }],
+			next: null
+		});
+		expect(flagsIn(removed).map((item) => textOf(item.querySelector('[data-note="no-reply"]')!))).toEqual(['Not answered yet']);
+
+		const admin = drawPerson({
+			audience: 'admin',
+			person: { name: 'Pat Doe', jobTitle: '' },
+			participations: [
+				{
+					...fullParticipation(11, [entry('objection_raised', { detail: { notice: 'asked' } }), entry('objection_answered', { participant: null, detail: { notice: 'asked' } })]),
+					flags: [
+						{ ...raised[0], via: 'link', repliedByName: 'Dana' },
+						{ ...raised[1], via: 'session', repliedByName: null }
+					]
+				}
+			],
+			next: null
+		});
+		const [byLink, bySession] = flagsIn(admin);
+		expect(textOf(admin.querySelector('[data-list="flags"]')!.previousElementSibling!)).toBe('Objections and requests to talk');
+		expect(textOf(byLink.querySelector('.line')!)).toBe('Objection version 1, 2026-11-02 09:00 UTC, by link');
+		expect(textOf(byLink.querySelector('[data-note="replied"]')!)).toBe('Answered by Dana, 2026-11-02 11:00 UTC');
+		expect(textOf(bySession.querySelector('.line')!)).toBe('Request to talk version 2, 2026-11-03 09:00 UTC');
+		expect([...admin.querySelectorAll('.record-event')].map((li) => textOf(li.querySelector('.event-kind')!))).toEqual(['Objection raised', 'Objection answered']);
 	});
 });
 

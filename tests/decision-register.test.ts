@@ -23,8 +23,11 @@ import { readEditPage } from '$lib/server/decision-authoring';
 import { reachedParticipantOf } from '$lib/server/decision-questions';
 import {
 	appendEvent,
+	countedInRound,
 	DECIDER_ONLY_EVENTS,
 	EVENT_KINDS,
+	FLAG_EVENTS,
+	KEY_HIDDEN_EVENTS,
 	OWN_RECORD_EVENTS,
 	RECORD_DETAIL,
 	recordEventsOf,
@@ -142,6 +145,19 @@ const record = (user: SessionUser, id: number, q: { participant?: number; after?
 function privileged(read: PersonRecord): Participation<RecordEntry>[] {
 	if (read.audience === 'self') throw new Error('an administrator’s or a decider’s record was expected');
 	return read.participations;
+}
+
+/** Card 2684: an objection or a request to talk, well formed, as the writes leave one, replied to where `reply` is given. */
+function plantFlag(
+	participant: DecisionParticipant,
+	row: { kind: 'objection' | 'talk'; reason: string; via?: string; reply?: string; repliedByName?: string; repliedAt?: string }
+): void {
+	sqlite
+		.prepare(
+			'INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at, reply, replied_by_name, replied_at) ' +
+				"VALUES (?, ?, ?, ?, 1, ?, '2026-11-02 09:00:00', ?, ?, ?)"
+		)
+		.run(participant.decisionId, participant.id, row.kind, row.reason, row.via ?? 'session', row.reply ?? null, row.reply === undefined ? null : (row.repliedByName ?? 'dana'), row.repliedAt ?? null);
 }
 
 /** Every key at every depth of a value. */
@@ -400,6 +416,19 @@ describe('the tabs', () => {
 
 			expect(owedIds()).toEqual([]);
 			expect(register(pat, 'tab=waiting-response').counts.waitingResponse).toBe(0);
+		});
+
+		it('…one whose participant only objected and asked to talk, which is no response: nor does the reminder count it one (T48, card 2684)', () => {
+			const decision = decisionOn(board);
+			makeVersion(decision);
+			const participant = join(decision, person);
+			plantFlag(participant, { kind: 'objection', reason: 'I cannot live with this.' });
+			plantFlag(participant, { kind: 'talk', reason: '' });
+
+			expect(owedIds()).toEqual([decision.id]);
+			expect(register(pat, 'tab=waiting-response').counts.waitingResponse).toBe(1);
+			// R20: the closing-date reminder passes over only those `countedInRound` counts (card 2685), and it counts no flag.
+			expect(countedInRound([{ participantId: participant.id, round: 1 }]).has(participant.id)).toBe(false);
 		});
 
 		it('…one answered only in an earlier round after an asks-again re-publish (15)', () => {
@@ -926,6 +955,64 @@ describe('the person record', () => {
 		for (const answer of ['Tuesdays only.', '"answers"']) expect(page, answer).not.toContain(answer);
 	});
 
+	it('T47 (card 2684). shows the flags with their replies to the person, the decider of that decision and an administrator, not to a decider of another, and of a removed participation only the replies given up to the removal', () => {
+		const decision = decisionOn(board, { decider: dana });
+		makeVersion(decision);
+		const participant = join(decision, patPerson);
+		plantFlag(participant, { kind: 'objection', reason: 'Too dear.', via: 'link', reply: 'Covered.', repliedAt: '2026-11-02 11:00:00' });
+		plantFlag(participant, { kind: 'talk', reason: '' });
+		const own = [
+			{ kind: 'objection', reason: 'Too dear.', raisedAt: '2026-11-02 09:00:00', versionNumber: 1, reply: 'Covered.', repliedAt: '2026-11-02 11:00:00' },
+			{ kind: 'talk', reason: '', raisedAt: '2026-11-02 09:00:00', versionNumber: 1, reply: null, repliedAt: null }
+		];
+
+		// The person: their own, with the replies, and no replier.
+		const [mine] = personRecord(pat, patPerson.id).participations;
+		expect(mine.flags).toEqual(own);
+		// The decider of the decision and an administrator: how each was raised, and who replied by name alone.
+		for (const [who, reader] of [
+			['the decider', dana],
+			['an administrator', admin]
+		] as const) {
+			const [only] = privileged(personRecord(reader, patPerson.id));
+			expect(only.flags, who).toEqual([
+				{ ...own[0], via: 'link', repliedByName: 'dana' },
+				{ ...own[1], via: 'session', repliedByName: null }
+			]);
+		}
+		// A decider of another decision of the person's: that one alone, and none of these flags.
+		const other = makeUser({ username: 'other' });
+		addBoardMember(board, other, 'editor');
+		const theirs = decisionOn(board, { decider: other });
+		join(theirs, patPerson);
+		const read = privileged(personRecord(other, patPerson.id));
+		expect(read.map((p) => p.decision.id)).toEqual([theirs.id]);
+		expect(read[0].flags).toEqual([]);
+		expect(JSON.stringify(read)).not.toContain('Too dear.');
+
+		// Removed from a decision they may no longer view: a reply given before the removal, and not one given after (S-M2).
+		const sam = makeUser({ username: 'sam' });
+		const samPerson = personOf(sam, 'Sam Same');
+		const B = makeBoard({ owner: makeUser(), name: 'Board B' }).board;
+		// Published, as a decision that takes flags is: the reader keeps only a flag on a version the decision has (C-S-L3).
+		const goneDecision = decisionOn(B, { decider: dana });
+		makeVersion(goneDecision);
+		const gone = join(goneDecision, samPerson, { removedAt: '2026-11-02 10:30:00' });
+		plantFlag(gone, { kind: 'objection', reason: 'Before?', reply: 'In time.', repliedAt: '2026-11-02 10:15:00' });
+		plantFlag(gone, { kind: 'talk', reason: 'After?', reply: 'Too late.', repliedAt: '2026-11-02 11:00:00' });
+		const [removed] = personRecord(sam, samPerson.id).participations;
+		expect(removed.kind).toBe('removed');
+		expect(removed.flags.map((flag) => [flag.reason, flag.reply, flag.repliedAt])).toEqual([
+			['Before?', 'In time.', '2026-11-02 10:15:00'],
+			['After?', null, null]
+		]);
+		expect(JSON.stringify(removed)).not.toContain('Too late.');
+		// Removed from one they may still view, as a board reader: the same rule (R11).
+		sqlite.prepare("UPDATE decision_participants SET removed_at = '2026-11-02 10:30:00' WHERE id = ?").run(participant.id);
+		const still = personRecord(pat, patPerson.id).participations.find((p) => p.kind === 'full' && p.decision.id === decision.id)!;
+		expect(still.flags.map((flag) => flag.reply)).toEqual([null, null]);
+	});
+
 	it('gives an administrator every opened participation: every response with replaced ones, privileged questions with an agent’s draft, concerns, every event kind, and the address (44)', () => {
 		const { decision } = fullParticipation();
 		const other = decisionOn(makeBoard({ owner: makeUser() }).board);
@@ -1056,7 +1143,8 @@ describe('the person record', () => {
 			expect(read.participations).toHaveLength(1);
 			const [removed] = read.participations;
 			expect(removed.kind).toBe('removed');
-			expect(Object.keys(removed).sort()).toEqual(['concerns', 'events', 'includedAt', 'kind', 'questions', 'removedAt', 'responses']);
+			// Card 2684 (R11): and their own flags.
+			expect(Object.keys(removed).sort()).toEqual(['concerns', 'events', 'flags', 'includedAt', 'kind', 'questions', 'removedAt', 'responses']);
 			expect(removed.events.map((e) => e.kind)).toEqual(['included', 'removed']);
 			expect(removed.responses.map((r) => r.comment)).toEqual(['My own words.']);
 			expect(removed.questions.map((q) => [q.question, q.answer?.text ?? null, q.closedUnanswered])).toEqual([
@@ -1077,7 +1165,7 @@ describe('the person record', () => {
 
 			const [limited] = personRecord(pat, patPerson.id).participations;
 			expect(limited).toMatchObject({ kind: 'removed', removedAt: null });
-			expect(Object.keys(limited).sort()).toEqual(['concerns', 'events', 'includedAt', 'kind', 'questions', 'removedAt', 'responses']);
+			expect(Object.keys(limited).sort()).toEqual(['concerns', 'events', 'flags', 'includedAt', 'kind', 'questions', 'removedAt', 'responses']);
 			expect(limited.responses.map((r) => r.comment)).toEqual(['Said before.']);
 			const text = JSON.stringify(limited);
 			for (const word of ['Two rows on one account', 'Board B']) expect(text).not.toContain(word);
@@ -1332,7 +1420,12 @@ describe('the record view', () => {
 				answer_published: { questionId: 1, notice: 'asked' },
 				answer_replaced: { questionId: 1, role: 'author', discarded: { text: 'The draft', byName: 'Agent', at: PAST, userId: 6 }, notice: 'asked' },
 				// Card 2685: no detail is written.
-				reminded: null
+				reminded: null,
+				// Card 2684 (R6, R7): a raise names its flag and the notice's outcome, a link holder's signed-in browser too; a reply its flag and notice.
+				objection_raised: { flagId: 1, notice: 'asked', signedIn },
+				talk_requested: { flagId: 2, notice: 'held', signedIn },
+				objection_answered: { flagId: 1, notice: 'sent' },
+				talk_outcome: { flagId: 2, notice: 'not_reached' }
 			};
 		}
 
@@ -1370,6 +1463,9 @@ describe('the record view', () => {
 			expect(shown('account_attached')).toEqual({});
 			expect(shown('created')).toEqual({ decider: 'Dana', supersedes: { id: other.id, title: other.title } });
 			expect(shown('superseded')).toEqual({ by: { id: other.id, title: other.title } });
+			// Card 2684 (R16): a flag's id is never shown.
+			expect(shown('objection_raised')).toEqual({ notice: 'asked', signedIn: { name: 'Pat' } });
+			expect(shown('talk_outcome')).toEqual({ notice: 'not_reached' });
 		});
 
 		it('gives cut_off’s reached to the decider and the administrator alike, and nothing for one recorded before card 2738 (card 2738)', () => {
@@ -1419,6 +1515,20 @@ describe('the record view', () => {
 			}
 			expect(OWN_RECORD_EVENTS.filter((kind) => DECIDER_ONLY_EVENTS.includes(kind))).toEqual([]);
 			expect(OWN_RECORD_EVENTS.every((kind) => (EVENT_KINDS as readonly string[]).includes(kind))).toBe(true);
+			// Card 2684 (T27, R16): the four flag events are the decider's and administrators' alone, never on a person's own record.
+			expect(FLAG_EVENTS).toEqual(['objection_raised', 'talk_requested', 'objection_answered', 'talk_outcome']);
+			expect(FLAG_EVENTS.filter((kind) => !DECIDER_ONLY_EVENTS.includes(kind))).toEqual([]);
+			expect(FLAG_EVENTS.filter((kind) => OWN_RECORD_EVENTS.includes(kind))).toEqual([]);
+		});
+
+		// Card 2684 (T51, R13; its plan review's E-M2): one list of the events never given to an API key, the question
+		// events and the flag events, and recordEntryOf throws for each handed to it under any source but the page's.
+		it.each([...KEY_HIDDEN_EVENTS])('throws in recordEntryOf for %s under source api, and shows it on the page (T51)', (kind) => {
+			expect(KEY_HIDDEN_EVENTS).toEqual(['question_asked', 'question_answered', 'answer_published', 'answer_replaced', ...FLAG_EVENTS]);
+			const row = { id: 1, kind, participantId: null, versionNumber: 1, detail: {}, actorName: 'Someone', source: 'link', at: '2026-11-01 09:00:00' };
+			const ctx = { user: admin, labels: new Map<number, string>(), participants: new Map<number, string>() };
+			expect(() => recordEntryOf(row, { ...ctx, source: 'api' })).toThrow(/never given to an API key/);
+			expect(recordEntryOf(row, { ...ctx, source: 'ui' })).toMatchObject({ kind, actor: { name: 'Someone', source: 'link' } });
 		});
 
 		it('has words in DETAIL_WORDS for every key and field RECORD_DETAIL shows, and the other decision’s id and title; no key is shown in camelCase (code review F8)', () => {

@@ -563,6 +563,23 @@ describe('every mail in notifications.ts', () => {
 			}
 		},
 		{
+			// Card 2684 (R15): the decider's notice of an objection, and of a request to talk, its link made on the App URL setting alone.
+			name: 'notifyDecisionFlag (objection)',
+			link: 'setting',
+			send: () => {
+				db.insert(settings).values({ key: 'app_url', value: BASE }).run();
+				notifications.notifyDecisionFlag(recipient.id, 1, MARKER, 'objection', 2);
+			}
+		},
+		{
+			name: 'notifyDecisionFlag (talk)',
+			link: 'setting',
+			send: () => {
+				db.insert(settings).values({ key: 'app_url', value: BASE }).run();
+				notifications.notifyDecisionFlag(recipient.id, 1, MARKER, 'talk', 2);
+			}
+		},
+		{
 			// Card 2678 (decision 5): the author's or decider's notice of a question, its link made on the App URL setting alone.
 			name: 'notifyDecisionQuestion',
 			link: 'setting',
@@ -591,6 +608,29 @@ describe('every mail in notifications.ts', () => {
 			name: 'notifyQuestionAnswered (link, no live link)',
 			link: false,
 			send: () => notifications.notifyQuestionAnswered({ address: REQUESTER, latestLink: false }, 1, MARKER)
+		},
+		{
+			// Card 2684 (R15): the notice of a reply to an objection or a request to talk, to the account, linking to the page.
+			name: 'notifyFlagReplied (account, objection)',
+			link: 'setting',
+			send: () => {
+				db.insert(settings).values({ key: 'app_url', value: BASE }).run();
+				notifications.notifyFlagReplied({ userId: recipient.id }, 1, MARKER, 'objection');
+			}
+		},
+		{
+			name: 'notifyFlagReplied (account, talk)',
+			link: 'setting',
+			send: () => {
+				db.insert(settings).values({ key: 'app_url', value: BASE }).run();
+				notifications.notifyFlagReplied({ userId: recipient.id }, 1, MARKER, 'talk');
+			}
+		},
+		{
+			// A link holder's: to their snapshot address, with no link at all.
+			name: 'notifyFlagReplied (link)',
+			link: false,
+			send: () => notifications.notifyFlagReplied({ address: REQUESTER, latestLink: true }, 1, MARKER, 'objection')
 		}
 	];
 

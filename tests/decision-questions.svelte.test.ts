@@ -242,6 +242,9 @@ function results(more: Partial<ResultsData> = {}): ResultsData {
 		],
 		mayAnswerQuestions: true,
 		concerns: [],
+		// Card 2684 (R23): nothing raised; the decider may reply.
+		flags: [],
+		mayReply: true,
 		ruling: null,
 		released: null,
 		releasePreview: null,
@@ -329,6 +332,10 @@ function pageData(more: Partial<DecisionPageData> = {}): DecisionPageData & { us
 		questions: [],
 		mayAsk: true,
 		mayAnswer: false,
+		// Card 2684 (R22): nothing raised, and neither form offered.
+		flags: [],
+		mayObject: false,
+		mayAskToTalk: false,
 		user: null,
 		...more
 	};

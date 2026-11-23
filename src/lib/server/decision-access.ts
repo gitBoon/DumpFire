@@ -36,6 +36,9 @@
  * administrator; with no board, an administrator alone. The author and the
  * decider are not listed: a link is board work, not the decision's.
  *
+ * Card 2684 adds a participant's objection or request to talk (`flag`), and
+ * the current decider's reply to either (`reply`, with the board-edit rule).
+ *
  * `requireDecision` in route-guards.ts asks both, and answers 404 for a
  * decision the caller may not view, as for one that is not there (decision
  * 4). This module is not the service and does not import it: the service
@@ -99,7 +102,11 @@ export const DECISION_RULES: Readonly<Record<DecisionAction, readonly DecisionRo
 	// Card 2680 (decision 17): edit access to the decision's home board; with no board, an administrator alone (design 6.1 E3).
 	// The write also asks edit access to the card's board (`requireCard(…, 'edit')`).
 	linkCard: ['admin', 'boardOwner', 'boardEditor'],
-	unlinkCard: ['admin', 'boardOwner', 'boardEditor']
+	unlinkCard: ['admin', 'boardOwner', 'boardEditor'],
+	// Card 2684 (R3, R7): a live participant raises an objection or asks to talk; the current decider alone replies, with
+	// the board-edit rule, never the author, a board owner or an administrator (row 8).
+	flag: ['participant'],
+	reply: ['decider']
 };
 
 /** Who may view a draft (decision 5). */

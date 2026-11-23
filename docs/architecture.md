@@ -1,10 +1,13 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.151
+version: 1.152
 status: As-Built
-date: 2026-11-21
+date: 2026-11-23
 tags:
+  - card-2684
+  - objections
+  - need-to-talk
   - card-2683
   - card-3004
   - card-3031
@@ -64,7 +67,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "Decision survey questions (card 2683): rows plus words, survey-only decisions, any change but help asks everyone again, the answered kind, the tolerant answers reader, results per version and never released. The restore's outbound steps (seedOutbound, carryOutboundChanges, applyOutboundSchedules, applyOutboundSettings, applyOutboundWebhooks, holdResetSettersIn) and the sweep's outbound seed and pass (card 3004). The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "Objections and requests to talk (card 2684): decision-flag-writes.ts (raise signed in or by link, the decider's reply), the ruling's two new refusals, the results revision over flags, who sees them (a change of decider included), the pages, the shared notice, cap and rest helpers, and the one list of tables that name a decision place. Decision survey questions (card 2683): rows plus words, survey-only decisions, any change but help asks everyone again, the answered kind, the tolerant answers reader, results per version and never released. The restore's outbound steps (seedOutbound, carryOutboundChanges, applyOutboundSchedules, applyOutboundSettings, applyOutboundWebhooks, holdResetSettersIn) and the sweep's outbound seed and pass (card 3004). The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -2068,7 +2071,7 @@ flowchart LR
 
 | Function | Who (`DECISION_RULES`) | From (`TRANSITIONS`) | Writes |
 |---|---|---|---|
-| `decisionRuleGuard` (read) | `rule`: the decider, with board edit while the board exists | `open`, `closed` | nothing: 401, 404, 403 (an API key too), 400 for the body, 409 status, then `rulingRefusals`' 409s (a stale results revision, questions open unconfirmed) |
+| `decisionRuleGuard` (read) | `rule`: the decider, with board edit while the board exists | `open`, `closed` | nothing: 401, 404, 403 (an API key too), 400 for the body, 409 status, then the first of `rulingRefusals`' 409s (a stale results revision; since card 2684 an objection with no answer; questions open unconfirmed; since card 2684 requests to talk with no outcome unconfirmed, [Objections and requests to talk](#objections-and-requests-to-talk-card-2684)) |
 | `ruleDecision` | as its guard, asked first | as its guard | `appendRuling`; `ruled`, `ruled_at`; `ruled { optionId, early, againstResponses, productOwnerUserId, supersededOld? }`, `productOwnerUserId` the board's Product Owner now, or null (code review S1); `cut_off { reached }` per live consulted non-responder when early (shown open, or closed before its closing time: `rulesEarly`, card 2727; `reached` whether the round's request ever reached them, `reachedInRound`, card 2738); the ruling mail; `decision_ruled` and the live event; the old decision `superseded` when the ruler may supersede it |
 | `resultsReleaseGuard` (read) | `release`: the decider alone | `ruled` | nothing: 401, 404, 403, 400, 409 status, `releaseRefusals`' 409s, 409 stale revision, 400 an unknown `omit` key |
 | `releaseResults` | as its guard | as its guard | `results_released_at`, `_by`; `results_released { upToResponseId, omitted }`; `decision_results_released` and the live event; no mail |
@@ -2102,7 +2105,10 @@ flowchart LR
   (code review F1). The tallies keep `RESPONSE_KINDS`, an allow-list. Card 2683's `answered`
   is on it and counts as responded; `tallyOf` counts votes, abstentions and no concerns by name,
   so it is never a vote, and each round's tally gains `survey`
-  ([Survey questions](#survey-questions-card-2683)).
+  ([Survey questions](#survey-questions-card-2683)). Since card 2684 it also covers every
+  objection and request to talk the tolerant reader keeps, with when each was replied to
+  (`flags: { id, repliedAt }[]`), so a flag raised or replied to after the page loaded makes a
+  ruling or a release stale.
 - **Against and early.** `mostChosenOf(tally, voteMode)` and `againstOf(optionId, voted,
   mostChosen)`, in `$lib/decision-rules.ts` beside `DECISION_TITLE_MAX`, `DECISION_TEXT_MAX`
   and `CONCERNS_PER_PARTICIPANT` (code review F8), are the one rule for the form's warning and
@@ -2218,9 +2224,9 @@ sequenceDiagram
     participant W as ruleDecision
     participant M as mail (after commit)
     D->>P: readResults: tally, revision, mostChosen
-    P->>R: { optionId, reason, conditions, revision, openQuestionsConfirmed, currentPassword }
+    P->>R: { optionId, reason, conditions, revision, openQuestionsConfirmed, openTalksConfirmed, currentPassword }
     R->>S: the guard first, then the password
-    S->>G: 401, 404, 403, 400, 409 status, 409 revision, 409 questions
+    S->>G: 401, 404, 403, 400, 409 status, 409 revision, 409 objections, 409 questions, 409 talks
     S-->>R: checked hash (400 missing, 403 wrong, counted)
     R->>W: whilePasswordHolds(writeAs(ruleDecision))
     W->>G: the same guard, in the transaction
@@ -2297,7 +2303,9 @@ flowchart LR
 
 **The service.** Four writes, in `decision-question-writes.ts` since card 2713, each `(caller, at, body, opts)` starting with
 `inWrite()`; none has a step-up guard, so `READS` is unchanged. They share a private
-`questionAs`, `questionNoticesOf` and `answerNoticeOf`.
+`questionAs` and `questionNoticesOf`; the answer's notice rule, once the private
+`answerNoticeOf`, is `participantNoticeOf` in `decision-write-shared.ts` since card 2684, shared
+with the reply to an objection or a request to talk.
 
 | Function | Who (`DECISION_RULES`) | From (`TRANSITIONS`) | Writes |
 |---|---|---|---|
@@ -2753,6 +2761,267 @@ answers only in the decider's and administrators' export; card 2689's webhooks n
 or survey figures; a card that wants to release answers must give `surveyWhoSees` a version,
 record it per response and refuse answers given before it, and a comment given with an `answered`
 response is never releasable.
+
+### Objections and requests to talk (card 2684)
+
+Card 2684 (plan `docs/planning/card-2684-decision-objections-and-need-to-talk.md`, migration
+0083) lets anyone included in a decision, consulted or informed, say one of two things to the
+decider while it is open or awaiting its ruling, signed in or by personal link, never through an
+API key: **an objection** ("I cannot live with this", a reason required, 1 to 4,000) or **a
+request to talk** (a note optional, up to 2,000). The current decider answers each objection
+and records the outcome of each conversation, once, on the record. **Neither is a veto**: the
+ruling is refused only while an objection has no answer (an answer need not agree), and an open
+request to talk needs a confirmation, as an open question does. Each row is a "flag" in code
+(`decision_flags`, [Data Model](data-model.md#objections-and-requests-to-talk-settled-once-card-2684-migration-0083));
+the pages never say the word. A flag is not a response (`RESPONSE_KINDS` is unchanged): a
+participant who only objected is still waiting to respond, still reminded and still cut off by an
+early ruling.
+
+```mermaid
+flowchart LR
+    subgraph Pages
+        DP["/decisions/[id] and /decision-link/[token]<br/>DecisionView flags section: FlagForm"]
+        RP["/decisions/[id]/results<br/>FlagReplies (#flags), RulingForm"]
+        ED["/decisions/[id]/edit<br/>DecisionEditor: FLAGS_HANDED_OVER"]
+        PR["/decisions/people/[personId]<br/>flags after concerns"]
+    end
+    subgraph Routes
+        RF["POST /api/decisions/[id]/flags"]
+        RL["POST /api/decision-by-link/flags<br/>public, token in body"]
+        RY["POST /api/decisions/[id]/flags/[flagId]/reply"]
+        RR["POST /api/decisions/[id]/rule"]
+    end
+    SVC["decision-flag-writes.ts<br/>raiseFlag, raiseFlagByLink, replyToFlag"]
+    SH["decision-write-shared.ts<br/>requireUnderCap, requireRested,<br/>deciderNoticeOf, participantNoticeOf"]
+    REC["decision-record.ts<br/>appendFlag, recordFlagReply, flagsCounted,<br/>flagTextProblem, FLAG_EVENTS, KEY_HIDDEN_EVENTS"]
+    RD["decision-flags.ts (a read module)<br/>flagsOf, flagsOfParticipants: tolerant, one WARN line"]
+    RES["decision-results.ts<br/>rulingRefusals, resultsRevisionFor,<br/>readResults flags (ui only), mayReply"]
+    NOTE["notifications.ts<br/>notifyDecisionFlag, notifyFlagReplied"]
+    RF --> SVC
+    RL --> SVC
+    RY --> SVC
+    SVC --> SH
+    SVC --> REC
+    SVC --> RD
+    SVC --> NOTE
+    RR --> RES
+    RES --> RD
+    RD --> REC
+    DP -->|load: pageOf| RD
+    RP -->|load: readResults| RES
+    PR -->|load: readPersonRecord| RD
+```
+
+**The rules** (`$lib/decision-rules.ts`, `decision-access.ts`, `decision-status.ts`):
+
+| Action | Who (`DECISION_RULES`) | From (`TRANSITIONS`) | Notes |
+|---|---|---|---|
+| `flag` | `['participant']`: a live participant, consulted or informed | `open`, `closed` | A ruled decision is 409 `FLAGS_CLOSED` ("This decision has been ruled: objections and requests to talk are closed. You can raise a concern about the ruling instead"); superseded and withdrawn in `requireTransition`'s words |
+| `reply` | `['decider']`, with board edit (`NEED_BOARD_EDIT`) | `open`, `closed`, `ruled`, `superseded` | An objection only while `open` or `closed` (409 after); a request to talk's outcome also after the ruling and once superseded. Not the author, a board owner, an administrator or a former decider |
+
+| Limit | Value | Counted over |
+|---|---|---|
+| `FLAG_TEXT_RULES.objection` | required, 1 to 4,000 (`FLAG_REASON_MAX`) | the trimmed reason |
+| `FLAG_TEXT_RULES.talk` | optional, 0 to 2,000 (`FLAG_NOTE_MAX`), `''` when not sent | the trimmed note |
+| `REPLY_TEXT_RULE` | required, 1 to 4,000 (`FLAG_REASON_MAX`) | the trimmed reply |
+| `FLAGS_PER_PARTICIPANT_VERSION` | 3 objections and 3 requests to talk per participant per version | stored rows (`flagsCounted`), never the reader's output |
+| `TALK_OPEN` | no second request to talk while one has no outcome | the reader's output (`flagsOfParticipants`), so a planted malformed request that could never be replied to blocks nobody |
+| `FLAGS_PER_DECISION` | 200, any version | stored rows |
+| The rest | 10 minutes between any two of a participant's flags (`RECORD_MAIL_MIN_MINUTES`), 429 naming the UTC moment | stored rows |
+
+`FLAG_REASON_MAX` and `FLAG_NOTE_MAX` are the flags' own constants, equal today to
+`DECISION_TEXT_MAX` and `QUESTION_TEXT_MAX` but not tied to them, and so are
+`FLAG_TEXT_UNPRINTABLE` and `FLAG_TEXT_ALLOWED` (`decision-record.ts`), today `UNPRINTABLE` and
+`MARKDOWN_ALLOWED` character for character (code review C-S-L2): the tolerant reader leaves out a
+stored flag its text check refuses, so tightening another field's rule must never change what it
+keeps (an unanswered objection left out would no longer hold a ruling back). Changing any of them
+needs a review of the stored flags; `tests/decision-flags.test.ts` pins them. A required text made
+only of white space and the allowed invisible characters (a lone zero-width joiner, U+200D) is
+`empty` (C-E-L3).
+
+**The service** (`decision-flag-writes.ts`). Three writes, each `(caller, at, body, opts)`
+starting with `inWrite()`; `READS` is empty. Each refuses `keyed(opts)` with 403 ("… is a
+person's act: it cannot be done with an API key"), and no file under `src/routes/api/v1/` reaches
+them.
+
+| Function | Check order | Writes |
+|---|---|---|
+| `raiseFlag` | 401; `requireDecision(user, id, 'flag')` (404 for a decision the caller may not view, a draft among them); 403 a key; 403 no live participant; 403 not reached through the account (`requireReachedByAccount`, card 3020's left people among them); then `flagAs` | via `flagAs`: `via: 'session'` |
+| `raiseFlagByLink` | `requireLinkHolder(token)` (any link that opens nothing, a removed or left person's among them, is the one 404); 403 a key; then `flagAs` | via `flagAs`: `via: 'link'`, actor source `link`, a signed-in browser's account noted as `signedIn` |
+| `flagAs` (private) | 400 `kind` (`objection` or `talk`); 400 the text (`flagTextProblem`, words that never repeat it); 409 ruled; 409 status; 409 per-version cap (`flagsLimitWords`); 409 a talk while one the reader keeps is open (`TALK_OPEN`); 409 per-decision cap (`flagsFullWords`); 429 rest (`flagRestWords`) | `appendFlag`; `objection_raised` or `talk_requested { flagId, notice, signedIn? }` naming the participant; after the commit `notifyDecisionFlag` where `notice` is `asked`. Answers `{ flag: OwnFlag }`, no id |
+| `replyToFlag` | 401; `requireDecision(user, id, 'reply')`; 403 a key; 404 a flag not on this decision or one the tolerant reader leaves out ("Objection or request to talk not found"); 400 the reply; 409 status (`TRANSITIONS.reply`); 409 an objection once ruled or superseded; 409 already replied ("This objection has already been answered", "The outcome of this request to talk has already been recorded"), and again if the guarded update changes nothing | `recordFlagReply`; `objection_answered` or `talk_outcome { flagId, notice }`, naming no participant; after the commit `notifyFlagReplied` where `notice` is `asked`. Answers `{ flag: ResultFlag }` |
+
+No activity entry, live event or webhook for any of them (design S3: nothing may tell a watcher
+that someone objected). `replied_by` is written for the record alone: nothing reads it for access,
+links or mail, and pages and answers show `replied_by_name` alone.
+
+**Shared with concerns and questions** (`decision-write-shared.ts`, moved there by this card so
+one rule serves every kind). `requireUnderCap(count, cap, words)` (409) and
+`requireRested(lastAt, now, words)` (429) hold the per-participant caps and the 10-minute rest of
+concerns, questions and flags, each kind keeping its own words and statuses.
+`deciderNoticeOf(decision, earlier, now, raisedBy)` is the decider's notice of a concern or a flag
+(`no_decider`, `own`, then `recipientNoticeOf`'s `no_link_address`, `prefs_off`,
+`no_mail_host`, `held`, `asked`, over only the notices after the decision's last
+`decider_changed` event, so a new decider is told of the first raise after the change), and `participantNoticeOf(decision, participantId)` the notice
+to the person whose question or flag was answered
+([Notifications](notifications-email.md#the-objection-and-request-to-talk-notices-card-2684)).
+
+**The ruling's refusals** (`rulingRefusals`, `decision-results.ts`), in order, the first answered
+by `decisionRuleGuard`, asked again inside the ruling's transaction so nothing slips in between
+the check and the ruling:
+
+1. A stale results revision (`STALE_REVISION`).
+2. **Objections with no answer**, which no confirmation gets past: "1 objection has no answer:
+   answer it before ruling" / "N objections have no answer: answer each before ruling"
+   (`objectionsUnansweredWords`). Every objection counts, of any version and a removed
+   participant's too.
+3. Open questions not confirmed (`openQuestionsConfirmed`).
+4. **Requests to talk with no outcome** not confirmed: "1 request to talk has no outcome
+   recorded: confirm that you rule with it open" / plural (`talksOpenWords`), unless the body sends
+   `openTalksConfirmed: true` (a boolean, false when absent: fails closed).
+
+Every count is over the rows the tolerant reader keeps, so a planted row it leaves out refuses
+nothing. The `ruled` event records nothing new: whether a ruling came with a request to talk
+open is worked out from the record.
+
+**The results revision** gains `flags: { id, repliedAt }[]` (`resultsRevisionFor`), so a flag
+raised or replied to after the results page loaded makes a ruling or a release a stale 409 and
+the page reads itself again (card 2734). A talk outcome recorded after the ruling makes an open
+release preview stale too; harmless, as a release holds no flag.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Raised: raiseFlag or raiseFlagByLink (open or awaiting a ruling, never by API key)
+    Raised --> Replied: replyToFlag by the current decider (objection while open or awaiting a ruling, talk also once ruled or superseded)
+    Replied --> [*]: settled once, kept with the decision
+    note right of Raised
+      objection: the ruling is refused (409) until replied
+      talk: the ruling needs openTalksConfirmed
+    end note
+```
+
+```mermaid
+sequenceDiagram
+    actor P as Participant (signed in or by link)
+    participant W as decision-flag-writes.ts
+    participant Rec as decision-record.ts
+    actor D as Decider
+    participant G as decisionRuleGuard / rulingRefusals
+    P->>W: POST /api/decisions/{id}/flags or /api/decision-by-link/flags { kind: objection, reason }
+    W->>W: same origin, no API key, live participant, open or closed, flagTextProblem, caps per version (raw rows), 10-minute rest
+    W->>Rec: appendFlag, then objection_raised { flagId, notice }
+    W-->>D: notice after the commit (names nobody, quotes nothing), if asked
+    D->>G: Rule (results page)
+    G-->>D: 409 "1 objection has no answer: answer it before ruling"
+    D->>W: POST /api/decisions/{id}/flags/{flagId}/reply { reply }
+    W->>Rec: recordFlagReply (WHERE reply IS NULL), then objection_answered { flagId, notice }
+    W-->>P: notice after the commit (account by preference, link holder by snapshot address, no link)
+    D->>G: Rule again (page read again: the revision moved)
+    G-->>D: ruled, the objection and its answer stay on the record
+```
+
+**Who sees a flag.**
+
+- **The person who raised it**: their own flags and replies, oldest first, on both participant
+  pages (`DecisionPageData.flags: OwnFlag[]`, no id, no replier: "Answered by the decider") and on
+  their own person record. A removed participant's own record shows only replies given up to their
+  removal (`upTo` the removal moment, compared with `replied_at`), whether or not they can still
+  view the decision.
+- **The decider and administrators**: every flag with the participant's name, reason, how it was
+  raised, version, reply, the replier's name and moments, on the results page (`readResults`
+  gains `flags: ResultFlag[]` under source `ui` alone; under any other source there is no `flags`
+  key, fail closed), on the record view (the four events) and on the person record for decisions
+  they decide now.
+- **A change of decider**: the new decider sees every flag raised before they were named and may
+  reply to every open one (they must answer objections to rule); the former decider loses every
+  view and every reply the moment the change is written. Whoever changes the decider sees, above
+  **Change decider** in `DecisionEditor`, the fixed `FLAGS_HANDED_OVER` ("Any objections or
+  requests to talk already raised, with names, become visible to the new decider."), with no
+  number, shown whether or not anything was raised; the editor's model holds no flag figure.
+- **Nobody else**: not an author who is not the decider, board readers, other participants, the
+  preview, the register or an API key (`readSummary` is unchanged; `GET
+  /api/v1/decisions/{id}/record` leaves the four events out through `KEY_HIDDEN_EVENTS`, filtered
+  or not, and `recordEntryOf` throws for one handed to it under any source but the page's).
+  **Never released**: `ReleaseRow`, `releaseRowsOf` and `releasedOf` read no flag; the ruling's
+  banner and mail say nothing of flags.
+
+**The pages.**
+
+- `pageOf` (`decision-view.ts`) gives a participant `flags`, `mayObject` and `mayAskToTalk`
+  (`mayFlag`: live, `TRANSITIONS.flag`, under the per-decision and per-version caps over stored
+  rows, and for a talk none of their own the reader keeps open; the 10-minute rest stays the
+  write's). The preview and a viewer
+  who is no participant get `[]` and false.
+- `FlagForm.svelte` (both participant pages, a section "Objections and requests to talk" after
+  "Your response", drawn for a participant with a flag raised or a form on offer):
+  `flagWhoSees(decider)` above ("What you raise here is seen by whoever decides (now {decider})
+  and DumpFire's administrators, with your name. Nobody else sees it, and it is never released.
+  An objection must be answered before the decision is ruled on; it does not stop the decider
+  ruling as they see fit."); "What you have raised", each with "Not answered yet" / "No outcome
+  recorded yet" or "Answered by the decider" / "Outcome recorded by the decider"; the forms "I
+  object" (Send my objection) and "I need to talk to the decider" (Ask to talk), each box with its
+  count and `FLAG_TEXT_NOTE` ("Write only what the decider needs. Do not include personal details
+  about yourself or anyone else."); where a form is not offered, why (`flagsClosedWords`). It
+  posts `{ ...extra, kind, reason }` to the signed-in route, or the link route with the token in
+  the body (so on `page-failures`' `UNREAD_SENDS`). What was done or refused is said in a status
+  region that stays drawn; once a flag is recorded that region takes the focus, as the form used
+  may then be gone (code review C-E-L4).
+- `FlagReplies.svelte` (the results page's panel `id="flags"`, between the results and the Rule
+  panel, drawn where any flag exists): unanswered objections first, each with the name, moment,
+  ", by link" where so, and version; for the decider (`mayReply`) a reply box per open flag that
+  can still take one, with `flagReplyWhoSees(name)` above it ("{name} reads this, and so does
+  anyone holding their personal link."), Send answer or Record outcome; for an administrator no
+  box and `FLAG_REPLY_ELSEWHERE` ("Only whoever decides replies to objections and requests to
+  talk."). On a withdrawn decision with any flag unreplied, everyone, the decider among them, is
+  told `FLAG_REPLIES_CLOSED` ("This decision is withdrawn: objections and requests to talk can no
+  longer be replied to.") in its place (code review C-E-L1). A reply recorded moves the focus to
+  the panel's status region, as the box used is gone; on a refusal the focus goes back to the box,
+  what was typed kept, or to the region where the page read again has no box for that flag
+  (C-E-L5).
+- `RulingForm.svelte`: while an objection has no answer, Rule is off with the server's
+  `objectionsUnansweredWords` and **Go to the objections** (`#flags`); no box gets past it. With
+  requests to talk open, a confirmation box (`talksConfirmWords`: "1 request to talk has no
+  outcome recorded: I rule with it open") sent as `openTalksConfirmed`. Each confirmation box,
+  the open questions' and the open talks', is unticked whenever the number it speaks of changes,
+  as the tick was given for the number shown (code review C-E-L6).
+- The person record lists flags after concerns; the record view says "Objection raised", "Asked to
+  talk", "Objection answered", "Talk outcome recorded" (`decision-words.ts`).
+- On the personal-link page in a signed-in browser, `signedInNoteWords` names objections and
+  requests to talk among what is recorded beside the account, as a raise records `signedIn`.
+
+Every text a participant or the decider writes is shown as plain text, never markdown.
+
+**The headers and the gate.** `/api/decisions/[id]/flags` carries `OWN_RESPONSE_HEADERS`;
+`/api/decisions/[id]/flags/[flagId]/reply` carries `UNPUBLISHED_HEADERS`, as its answer names the
+participant, as a question's answer route does; `/api/decision-by-link/flags` carries
+`PERSONAL_LINK_HEADERS` and joins `PUBLIC_ROUTES`, and
+`secret-paths.ts` names it among the routes whose token is in the body. Every route starts with
+`requireSameOriginJson`; the link route reads the token from the body (`''` when it is not text),
+counts only a 404 against the caller's address (`refuseWrongLink`) and past the limit answers 429
+with `Retry-After` in `tooManyWrongLinks`' words, as the question link route.
+
+**The one list of tables that name a decision place** (`db/decision-place-namers.ts`,
+`DECISION_PLACE_NAMERS`), read by the restore's draft-place delete, the start-up pass and the draft
+participant write, so a place a flag names is kept and marked removed, never deleted
+([Data Model](data-model.md#the-tables-that-name-a-decision-place-card-2684-r18)):
+
+```mermaid
+flowchart LR
+    L["decision-place-namers.ts<br/>DECISION_PLACE_NAMERS<br/>responses, questions, events, flags"]
+    L --> R["restore.ts DELETE_DRAFT_PLACE<br/>(foreign keys off)"]
+    L --> S["startup-checks.ts capDecisionRolesAtStart<br/>(foreign keys on)"]
+    L --> P["decision-participant-writes.ts setParticipants<br/>(draft)"]
+    R --> Q{"place named?"}
+    S --> Q
+    P --> Q
+    Q -- no --> X["place deleted"]
+    Q -- yes --> M["place kept, marked removed"]
+```
+
+**Binding notes for later cards** (in `decision-results.ts` and the design's 5.2): card 2686
+shows no flag figure outside the decider's and administrators' views; card 2688's PDF puts flags
+in their export alone; card 2689's webhooks never carry a flag event or figure; card 3030 covers
+`decision_flags` as decision content from unsealed restores; card 3047 redacts a reason or reply.
 
 ### Decisions through API v1 (card 2682)
 

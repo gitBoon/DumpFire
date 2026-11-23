@@ -25,6 +25,10 @@
   options to a vote, who sees a response is said without its last sentence,
   the release one, as such a round releases nothing (R10).
 
+  Card 2684 (R22): the `flags` snippet follows the response: a participant's
+  objections and requests to talk, and the forms to raise them (`FlagForm`),
+  drawn only when given.
+
   Its props are `DecisionViewProps` (src/lib/decision-view-types.ts): no
   version number, publication or inclusion moment, so that a preview builds
   them from the working content. The pages draw the banner and the form, which
@@ -53,8 +57,17 @@
 		results,
 		concern,
 		questions,
-		linkedCards
-	}: DecisionViewProps & { banner?: Snippet; response?: Snippet; results?: Snippet; concern?: Snippet; questions?: Snippet; linkedCards?: Snippet } = $props();
+		linkedCards,
+		flags
+	}: DecisionViewProps & {
+		banner?: Snippet;
+		response?: Snippet;
+		results?: Snippet;
+		concern?: Snippet;
+		questions?: Snippet;
+		linkedCards?: Snippet;
+		flags?: Snippet;
+	} = $props();
 
 	/** Whether the version flags this section as drafted by an agent and not yet reviewed. */
 	const flagged = (key: string) => Object.hasOwn(content.agentDrafted, key);
@@ -200,6 +213,13 @@
 		<section data-section="response">
 			<h2>Your response</h2>
 			{@render response()}
+		</section>
+	{/if}
+
+	{#if flags}
+		<section data-section="flags" aria-labelledby="flags-heading">
+			<h2 id="flags-heading">Objections and requests to talk</h2>
+			{@render flags()}
 		</section>
 	{/if}
 

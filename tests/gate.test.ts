@@ -2709,6 +2709,8 @@ describe('the security headers', () => {
 			'/api/decision-by-link/concerns',
 			// Card 2678 (decision 12): its holder's clarification question.
 			'/api/decision-by-link/questions',
+			// Card 2684 (R3): its holder's objection or request to talk.
+			'/api/decision-by-link/flags',
 			// Card 2698: an invite, and the request form's links and the two reads their pages make.
 			'/invite/[token]',
 			'/request/[id]/confirm',
@@ -2732,8 +2734,16 @@ describe('the security headers', () => {
 			);
 			expect(theseOf(cached), `${routeId}, cached`).toEqual(linked);
 		}
-		// Card 2678 (decision 12): a participant's own clarification question too.
-		for (const routeId of ['/decisions/[id]', '/api/decisions/[id]/responses', '/api/decisions/[id]/seen', '/api/decisions/[id]/concerns', '/api/decisions/[id]/questions']) {
+		// Card 2678 (decision 12): a participant's own clarification question too. Card 2684 (R3): and their own objection or
+		// request to talk.
+		for (const routeId of [
+			'/decisions/[id]',
+			'/api/decisions/[id]/responses',
+			'/api/decisions/[id]/seen',
+			'/api/decisions/[id]/concerns',
+			'/api/decisions/[id]/questions',
+			'/api/decisions/[id]/flags'
+		]) {
 			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(OWN);
 			expect(theseOf(secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60', 'X-Robots-Tag': 'all' } }), routeId)), `${routeId}, cached`).toEqual(OWN);
 		}
@@ -2751,6 +2761,8 @@ describe('the security headers', () => {
 			// Card 2678 (decision 12): an answer, a replacement and a publish answer the question with its asker's name.
 			'/api/decisions/[id]/questions/[questionId]/answer',
 			'/api/decisions/[id]/questions/[questionId]/publish',
+			// Card 2684 (R7, code review C-S-M1): the decider's reply answers the flag with its raiser's name.
+			'/api/decisions/[id]/flags/[flagId]/reply',
 			// Card 2680 (decision 24): a card's linked decisions, and a link's answer.
 			'/api/cards/[id]/decisions',
 			'/api/decisions/[id]/cards/[cardId]',
@@ -2910,6 +2922,8 @@ describe('the routes a caller who is not signed in is let through to', () => {
 		'/api/decision-by-link/concerns',
 		// Card 2678 (decision 12): its holder's clarification question.
 		'/api/decision-by-link/questions',
+		// Card 2684 (R3): its holder's objection or request to talk.
+		'/api/decision-by-link/flags',
 		'/api/v1/openapi.json'
 	];
 
@@ -3484,6 +3498,8 @@ describe('what the gate writes to the system log', () => {
 		);
 		// The link's routes are named so that the masking, which looks anywhere in a line, leaves them as they are (F2).
 		expect(maskSecretPaths('POST /api/decision-by-link/responses → 200')).toBe('POST /api/decision-by-link/responses → 200');
+		// Card 2684 (R3): and so is its holder's objection or request to talk, whose token is in the body too.
+		expect(maskSecretPaths('POST /api/decision-by-link/flags → 200')).toBe('POST /api/decision-by-link/flags → 200');
 	});
 
 	it('T17: is an enrolment link with its token masked, plain and percent-encoded, and in a line that quotes it (card 2773, F1)', async () => {

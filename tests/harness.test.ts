@@ -118,6 +118,8 @@ const TEST_FILES = [
 	'decision-authoring.test.ts',
 	// Card 2676, slice A2: the picker, the editor and the board's decision list, in the page.
 	'decision-authoring.svelte.test.ts',
+	// Card 2684: a participant's objection or request to talk to the decider, its limits, its notice and its routes.
+	'decision-flags.test.ts',
 	// Card 2697: the dry run, opening and the lifecycle routes, their limits, and delivery.
 	'decision-lifecycle.test.ts',
 	// Card 2697, slices B2a and B2b: the delivery panel, Resend and the administrator's actions, in the page.

@@ -82,6 +82,15 @@
  * (`surveysAskedIn`), and a response's answers read against them
  * (`answersOf`, R22), which every read of a response asks.
  *
+ * Card 2684 adds `decision_flags`, a participant's objections and requests to
+ * talk, settled once as the questions are: inserted once (`appendFlag`) and
+ * replied to once by one guarded update (`recordFlagReply`), the only writes
+ * of the table in `src` but the restore and the cascade, pinned by the same
+ * scan. Its four events are the decider's and administrators' alone, and
+ * never given to an API key (`KEY_HIDDEN_EVENTS`). Stored flags are read
+ * tolerantly by decision-flags.ts, through the one text predicate the write
+ * asks (`flagTextProblem`), which is here.
+ *
  * Plain functions with no caller, called inside a service write's
  * transaction, or by the mail effect in a transaction of its own.
  */
@@ -89,6 +98,7 @@ import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, gt, lt, lte
 import { db } from './db';
 import {
 	decisionEvents,
+	decisionFlags,
 	decisionOptions,
 	decisionQuestions,
 	decisionResponses,
@@ -100,6 +110,7 @@ import {
 	peopleGroupMembers,
 	peopleGroups,
 	type Decision,
+	type DecisionFlag,
 	type DecisionQuestion,
 	type DecisionResponse,
 	type DecisionRuling,
@@ -110,9 +121,10 @@ import type { SessionUser } from './auth';
 import { decisionStatus } from './decision-status';
 import type { ActivitySource } from './logActivity';
 import { SURVEY_KINDS, type SurveyKind, type SurveyScale } from '$lib/decision-readiness';
+import type { FlagKind, FlagTextRule } from '$lib/decision-rules';
 import type { OwnResponse } from '$lib/decision-view-types';
 import type { ToldMail } from '$lib/decision-words';
-import { UNPRINTABLE } from '$lib/printable';
+import { MARKDOWN_ALLOWED, UNPRINTABLE } from '$lib/printable';
 import { stamp, type Stamp } from '$lib/timestamps';
 
 /** Who an entry on the record is by: an account (its id while it lasts, and its name kept), a link holder, or DumpFire. */
@@ -172,7 +184,13 @@ export const EVENT_KINDS = [
 	// Card 2685 (decision 11): the one closing-date reminder of a round, naming the participant, `version_number` the round,
 	// `detail` null, by DumpFire; its `mail_outcome { of, mail: 'reminder', delivered, problem? }` follows. Held to one per
 	// participant per round by migration 0063's partial unique index.
-	'reminded'
+	'reminded',
+	// Card 2684 (R6, R7, R16): an objection raised or a request to talk `{ flagId, notice, signedIn? }`, naming the participant;
+	// and the decider's reply to either `{ flagId, notice }`, naming no participant.
+	'objection_raised',
+	'talk_requested',
+	'objection_answered',
+	'talk_outcome'
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
@@ -199,7 +217,9 @@ export const RESPONSE_KINDS = ['vote', 'abstain', 'no_concerns', 'answered'] as 
  * rule on the cards that read the record: card 2680's record shows them
  * behind `record` (`['admin', 'decider']`) alone, and card 2689's webhooks
  * never carry them. A participant's own questions are shown them from the
- * question rows, never from these events.
+ * question rows, never from these events. Card 2684 (R16) adds its four flag
+ * events (`FLAG_EVENTS`): a participant's own flags are shown them from the
+ * flag rows, never from these.
  */
 export const DECIDER_ONLY_EVENTS: readonly EventKind[] = [
 	'ruled',
@@ -208,16 +228,30 @@ export const DECIDER_ONLY_EVENTS: readonly EventKind[] = [
 	'question_asked',
 	'question_answered',
 	'answer_published',
-	'answer_replaced'
+	'answer_replaced',
+	'objection_raised',
+	'talk_requested',
+	'objection_answered',
+	'talk_outcome'
 ];
 
 /**
- * Card 2678's four question events (card 2682, D31): an API key reading the
- * record is given each with no participant, no actor's name and no moment,
- * which together could name who asked; and a key's page filtered by a
- * participant leaves them out, as `question_asked` names its asker.
+ * Card 2678's four question events (card 2682, D31): each could name who
+ * asked (`question_asked` names its asker), so none is given to an API key
+ * (`KEY_HIDDEN_EVENTS`).
  */
 export const QUESTION_EVENTS: readonly EventKind[] = ['question_asked', 'question_answered', 'answer_published', 'answer_replaced'];
+
+/** Card 2684's four flag events (R13, R16): a raise names the participant who objected or asked to talk. */
+export const FLAG_EVENTS: readonly EventKind[] = ['objection_raised', 'talk_requested', 'objection_answered', 'talk_outcome'];
+
+/**
+ * The events never given to an API key (card 2684, R13; its plan review's E-M2 and S-L2): the question events and the
+ * flag events, one list read by both record filters in decision-register.ts. `readRecord` leaves them out of a key's
+ * page in the query, filtered by a participant or not, and `recordEntryOf` throws for one handed to it under any source
+ * but the page's.
+ */
+export const KEY_HIDDEN_EVENTS: readonly EventKind[] = [...QUESTION_EVENTS, ...FLAG_EVENTS];
 
 /**
  * The events a person is shown of their own participation on their own
@@ -326,7 +360,12 @@ export const RECORD_DETAIL: Readonly<Record<EventKind, DetailSpec>> = {
 	answer_published: {},
 	answer_replaced: { role: 'value', discarded: { fields: ['text', 'byName', 'at'] } },
 	// Card 2685: no detail is written; the round is the event's version.
-	reminded: {}
+	reminded: {},
+	// Card 2684 (R16): the flag's id is dropped, as every id is.
+	objection_raised: { notice: 'value', signedIn: SIGNED_IN },
+	talk_requested: { notice: 'value', signedIn: SIGNED_IN },
+	objection_answered: { notice: 'value' },
+	talk_outcome: { notice: 'value' }
 };
 
 /**
@@ -579,12 +618,19 @@ export function statementsOf(decisionId: number): Map<number, number | null> {
 	return statements;
 }
 
-/** The decision's events of `kind`, in order, each with its participant, its detail read and its actor's name (card 2679). */
-export function eventsOfKind(decisionId: number, kind: EventKind): { participantId: number | null; detail: Record<string, unknown>; actorName: string; at: Stamp }[] {
+/**
+ * The decision's events of `kind`, in order, each with its id, its participant, its detail read and its actor's name
+ * (card 2679). Card 2684: `kind` may be a list, its events read together in the one order (a flag's notice reads both
+ * raises); the id places each against the last change of decider (`deciderNoticeOf`, code review C-S-L4).
+ */
+export function eventsOfKind(
+	decisionId: number,
+	kind: EventKind | readonly EventKind[]
+): { id: number; participantId: number | null; detail: Record<string, unknown>; actorName: string; at: Stamp }[] {
 	return db
-		.select({ participantId: decisionEvents.participantId, detail: decisionEvents.detail, actorName: decisionEvents.actorName, at: decisionEvents.createdAt })
+		.select({ id: decisionEvents.id, participantId: decisionEvents.participantId, detail: decisionEvents.detail, actorName: decisionEvents.actorName, at: decisionEvents.createdAt })
 		.from(decisionEvents)
-		.where(and(eq(decisionEvents.decisionId, decisionId), eq(decisionEvents.kind, kind)))
+		.where(and(eq(decisionEvents.decisionId, decisionId), typeof kind === 'string' ? eq(decisionEvents.kind, kind) : inArray(decisionEvents.kind, [...kind])))
 		.orderBy(asc(decisionEvents.id))
 		.all()
 		.map((event) => ({ ...event, detail: detailOf(event.detail) }));
@@ -711,6 +757,93 @@ export function questionsBy(participantId: number): DecisionQuestion[] {
 	return db.select().from(decisionQuestions).where(eq(decisionQuestions.participantId, participantId)).orderBy(asc(decisionQuestions.id)).all();
 }
 
+// ─── Objections and requests to talk, settled once (card 2684, R2) ──────────
+
+/** What is wrong with a flag's text or a reply against its rule (card 2684, R4), or null for nothing. */
+export type FlagTextProblem = 'empty' | 'too_long' | 'unprintable';
+
+/**
+ * What a flag's text may not hold (card 2684, R4; code review C-S-L2): today `UNPRINTABLE`, character for character,
+ * but the flags' own, used by `flagTextProblem` alone, so that tightening another field's rule never changes what the
+ * tolerant reader keeps. A character added here would leave out every stored flag that holds it, everywhere, the
+ * ruling's gate among them, so an unanswered objection would no longer hold a ruling back: changing it needs a
+ * migration-style review of the stored flags, and tests/decision-flags.test.ts pins it.
+ */
+export const FLAG_TEXT_UNPRINTABLE = /[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff\p{Cf}]/u;
+
+/** What a flag's text may hold of `FLAG_TEXT_UNPRINTABLE` (code review C-S-L2): today `MARKDOWN_ALLOWED`'s tab, newline, carriage return and zero-width joiner; pinned as it is. */
+export const FLAG_TEXT_ALLOWED = /[\t\n\r\u200d]/g;
+
+/**
+ * What is wrong with `text` against `rule` (card 2684, R4; its plan review's S-H1), or null: `empty` where the rule
+ * requires text and it holds only white space and the characters of `FLAG_TEXT_ALLOWED` (code review C-E-L3: a lone
+ * zero-width joiner is no reason), `too_long` past `rule.max` counted as `String.length` counts (UTF-16 code units, as
+ * `readText`), `unprintable` where it holds a character of `FLAG_TEXT_UNPRINTABLE` other than `FLAG_TEXT_ALLOWED`'s.
+ * The one predicate the write asks of what it is sent, after trimming it, and the tolerant reader asks of what is
+ * stored, so that every text the write accepts, the reader keeps.
+ */
+export function flagTextProblem(text: string, rule: FlagTextRule): FlagTextProblem | null {
+	if (rule.required && text.replace(FLAG_TEXT_ALLOWED, '').trim() === '') return 'empty';
+	if (text.length > rule.max) return 'too_long';
+	if (FLAG_TEXT_UNPRINTABLE.test(text.replace(FLAG_TEXT_ALLOWED, ''))) return 'unprintable';
+	return null;
+}
+
+/**
+ * Append one flag (card 2684, R2, R6), `raised_at` stamped, with no reply: the one insert into the flags. `reason` is
+ * the trimmed text the write accepted (`''` for a request to talk with no note); `versionNumber` the decision's current
+ * version, which the per-version caps count by.
+ */
+export function appendFlag(f: { decisionId: number; participantId: number; kind: FlagKind; reason: string; versionNumber: number; via: 'session' | 'link' }): DecisionFlag {
+	return db
+		.insert(decisionFlags)
+		.values({
+			decisionId: f.decisionId,
+			participantId: f.participantId,
+			kind: f.kind,
+			reason: f.reason,
+			versionNumber: f.versionNumber,
+			via: f.via,
+			raisedAt: stamp()
+		})
+		.returning()
+		.get();
+}
+
+/**
+ * What the caps and the rest on raising a flag count (card 2684, R5; its plan review's E-L1): every stored row of the
+ * decision and of the participant, as it is, never the tolerant reader's output, so that a row a restore planted, which
+ * the reader leaves out, still counts and cannot be used to get past a cap. The decision's count, and the participant's
+ * rows oldest first, with what the caps read of them.
+ */
+export function flagsCounted(
+	decisionId: number,
+	participantId: number
+): { onDecision: number; theirs: { kind: string; versionNumber: number; reply: string | null; raisedAt: Stamp }[] } {
+	const onDecision = db.select({ n: count() }).from(decisionFlags).where(eq(decisionFlags.decisionId, decisionId)).get()?.n ?? 0;
+	const theirs = db
+		.select({ kind: decisionFlags.kind, versionNumber: decisionFlags.versionNumber, reply: decisionFlags.reply, raisedAt: decisionFlags.raisedAt })
+		.from(decisionFlags)
+		.where(eq(decisionFlags.participantId, participantId))
+		.orderBy(asc(decisionFlags.id))
+		.all();
+	return { onDecision, theirs };
+}
+
+/**
+ * Reply to a flag not yet replied to, by `by`, `replied_at` stamped (card 2684, R2, R7): whether it changed the row. A
+ * flag replied to already is left as it is. `replied_by` is kept for the record alone (S-L4).
+ */
+export function recordFlagReply(flagId: number, reply: string, by: RecordActor): boolean {
+	return (
+		db
+			.update(decisionFlags)
+			.set({ reply, repliedBy: by.userId, repliedByName: by.name, repliedAt: stamp() })
+			.where(and(eq(decisionFlags.id, flagId), isNull(decisionFlags.reply)))
+			.run().changes === 1
+	);
+}
+
 /**
  * The one projection of a response (card 2677, D3), field by field: what the
  * page shows and every write that answers a response answers. No row id of
@@ -747,9 +880,6 @@ export type AskedSurveys = Map<number, Map<number, Map<number, AskedQuestion>>>;
 
 /** The longest written answer (card 2683, R13), as a response's option comment. */
 export const ANSWER_TEXT_MAX = 2_000;
-
-/** What a written answer may hold of `UNPRINTABLE`, as a markdown field may (`readMultiline`): tab, newline, carriage return and the zero-width joiner. */
-const ANSWER_TEXT_ALLOWED = /[\t\n\r‍]/g;
 
 /**
  * The survey questions every version of `decisionIds` asked (card 2683, R22),
@@ -849,7 +979,7 @@ function answerFits(question: AskedQuestion, value: unknown): value is number | 
 				typeof value === 'string' &&
 				value.trim() !== '' &&
 				value.length <= ANSWER_TEXT_MAX &&
-				!UNPRINTABLE.test(value.replace(ANSWER_TEXT_ALLOWED, ''))
+				!UNPRINTABLE.test(value.replace(MARKDOWN_ALLOWED, ''))
 			);
 	}
 }

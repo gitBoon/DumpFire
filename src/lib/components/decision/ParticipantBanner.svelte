@@ -13,7 +13,8 @@
   2736, D5); then, on a personal link alone, that the address is personal
   (R4) and, in a browser that is signed in, that the account is recorded
   beside what the link does (R8), in `signedInNoteWords`'s words for the
-  stage and the page's own `mayRespond`, `mayAsk` and `mayRaiseConcern`, so
+  stage and the page's own `mayRespond`, `mayAsk`, `mayObject`,
+  `mayAskToTalk` (card 2684) and `mayRaiseConcern`, so
   that it claims nothing the link cannot record then (card 2735), and with no
   seen where `seenRecorded` says the participant's seen already exists and
   would not be recorded again (card 2736).
@@ -39,6 +40,8 @@
 		stage,
 		mayRespond,
 		mayAsk,
+		mayObject,
+		mayAskToTalk,
 		mayRaiseConcern,
 		seenRecorded,
 		personalLink
@@ -52,6 +55,9 @@
 		/** The page's own flags for each write, which the signed-in note claims only where set (card 2735). */
 		mayRespond: DecisionPageData['mayRespond'];
 		mayAsk: DecisionPageData['mayAsk'];
+		/** Card 2684 (code review F5): an objection and a request to talk by link record the signed-in account too. */
+		mayObject: DecisionPageData['mayObject'];
+		mayAskToTalk: DecisionPageData['mayAskToTalk'];
 		mayRaiseConcern: DecisionPageData['mayRaiseConcern'];
 		/** Whether the participant's seen of this version and stage already exists, so neither note claims one (card 2736). */
 		seenRecorded: DecisionPageData['seenRecorded'];
@@ -80,7 +86,7 @@
 {#if personalLink !== null}
 	<p class="banner-note personal">This address is personal to you: do not share it.</p>
 	{#if personalLink.signedInAs !== null}
-		<p class="banner-note signed-in">{signedInNoteWords(personalLink.signedInAs, participant !== null, stage, { mayRespond, mayAsk, mayRaiseConcern, seenRecorded })}</p>
+		<p class="banner-note signed-in">{signedInNoteWords(personalLink.signedInAs, participant !== null, stage, { mayRespond, mayAsk, mayObject, mayAskToTalk, mayRaiseConcern, seenRecorded })}</p>
 	{/if}
 {/if}
 

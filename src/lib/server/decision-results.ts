@@ -28,7 +28,7 @@
  * `user: SessionUser`, never `caller`, and writes nothing, so that a page load
  * may call it (tests/check-at-the-write.test.ts, rule 4). The service in
  * decision-ruling-writes.ts asks its refusals (`rulingRefusals`,
- * `releaseRefusals`) inside its writes; card 2684 adds to `rulingRefusals`.
+ * `releaseRefusals`) inside its writes.
  *
  * Card 2682 (D14) adds `readSummary`, what an API key is given of the
  * results: `readResults` under the key's source, allowed field by field, with
@@ -47,14 +47,28 @@
  * group in a release; 2688's PDF holds answers only in the decider's and
  * administrators' export; 2689's webhooks never carry answers or survey
  * figures.
+ *
+ * Card 2684 adds a participant's objections and requests to talk, which are
+ * not responses and are read from their own table, tolerantly (`flagsOf` in
+ * decision-flags.ts), never through `RESPONSE_KINDS`: `readResults` gives
+ * them, with names, on the page alone (`flags`, none under any other source),
+ * and whether the caller may reply now (`mayReply`); the results revision
+ * covers them (R10); and `rulingRefusals` refuses a ruling while an objection
+ * has no reply, and while a request to talk has none unless the decider
+ * confirms ruling with it open (R8). A release reads none of them: neither
+ * `ReleaseRow`, `releaseRowsOf` nor `releasedOf` reads a flag (R11). Binding
+ * on later cards (R21): 2686 shows no flag figure outside the decider's and
+ * administrators' views; 2688 puts flags in their export alone; 2689 never
+ * carries a flag event or figure.
  */
 import { createHmac } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from './db';
-import { decisionQuestions, decisionVersions, decisions, type Decision, type DecisionParticipant, type DecisionResponse } from './db/schema';
+import { decisionQuestions, decisionVersions, decisions, type Decision, type DecisionFlag, type DecisionParticipant, type DecisionResponse } from './db/schema';
 import type { SessionUser } from './auth';
 import { mayDo } from './decision-access';
 import { allOptionsOf, parseVersionContent, participantsOf, publishedSurveyOf, resultsRevisionOf } from './decision-content';
+import { flagsOf } from './decision-flags';
 import { mayAnswerOf, openQuestionWhere } from './decision-questions';
 import {
 	concernsOf,
@@ -73,10 +87,11 @@ import { decisionStatus, rulesEarly, TRANSITIONS } from './decision-status';
 import { purposeKey } from './request-tokens';
 import { requireDecision } from './route-guards';
 import { mostChosenOf } from '$lib/decision-rules';
-import { NO_OPTIONS_TO_RELEASE, STALE_REVISION, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
+import { NO_OPTIONS_TO_RELEASE, objectionsUnansweredWords, STALE_REVISION, talksOpenWords, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
 import type {
 	OpenQuestion,
 	PreviewComment,
+	ResultFlag,
 	PublishedSurveyQuestion,
 	ReleasedFigure,
 	ReleasedResults,
@@ -314,7 +329,8 @@ export function openQuestionsOf(decisionId: number, opts: { source: ServiceOptio
  * The decision's results revision as it is now (decision 8); '' for a
  * decision not there. It covers every response but a concern
  * (`revisionResponseIdsOf`), a kind no tally counts yet among them, so that it
- * fails closed (code review F1).
+ * fails closed (code review F1). Card 2684 (R10): and every objection and
+ * request to talk the tolerant reader keeps, with when it was replied to.
  */
 export function resultsRevisionFor(decisionId: number): string {
 	const decision = db.select().from(decisions).where(eq(decisions.id, decisionId)).get();
@@ -333,24 +349,59 @@ export function resultsRevisionFor(decisionId: number): string {
 			})
 			.from(decisionQuestions)
 			.where(eq(decisionQuestions.decisionId, decisionId))
-			.all()
+			.all(),
+		flags: flagsOf(decisionId).map((flag) => ({ id: flag.id, repliedAt: flag.repliedAt }))
 	});
 }
 
 /**
  * The 409s a ruling meets after its status, in order, each in its words
- * (decision 13): a results revision that is not the decision's as it is now,
- * and questions still open that the decider has not confirmed ruling with.
- * The first is answered. Card 2684 adds an unanswered objection here.
+ * (decision 13; card 2684, R8): a results revision that is not the
+ * decision's as it is now; objections with no reply, which no confirmation
+ * gets past (neither is a veto: a reply need not agree); questions still
+ * open that the decider has not confirmed ruling with; and requests to talk
+ * with no outcome recorded that the decider has not confirmed ruling with
+ * (`openTalksConfirmed`, false when not sent). Every objection on the
+ * decision counts, of any version and a removed participant's among them,
+ * as the tolerant reader keeps them, so a planted row the reader leaves out
+ * refuses nothing (R19). The first is answered.
  */
-export function rulingRefusals(decision: Decision, input: { revision: string; openQuestionsConfirmed: boolean }): string[] {
+export function rulingRefusals(decision: Decision, input: { revision: string; openQuestionsConfirmed: boolean; openTalksConfirmed?: boolean }): string[] {
 	const refusals: string[] = [];
 	if (resultsRevisionFor(decision.id) !== input.revision) refusals.push(STALE_REVISION);
+	const flags = flagsOf(decision.id);
+	const unanswered = flags.filter((flag) => flag.kind === 'objection' && flag.reply === null).length;
+	// The words are the ruling form's too (S3), written once in decision-words.ts.
+	if (unanswered > 0) refusals.push(objectionsUnansweredWords(unanswered));
 	const open = openRowsOf(decision.id).length;
 	if (open > 0 && !input.openQuestionsConfirmed) {
 		refusals.push(open === 1 ? '1 question is still open: confirm that you rule with it open' : `${open} questions are still open: confirm that you rule with them open`);
 	}
+	const talks = flags.filter((flag) => flag.kind === 'talk' && flag.reply === null).length;
+	if (talks > 0 && input.openTalksConfirmed !== true) refusals.push(talksOpenWords(talks));
 	return refusals;
+}
+
+/**
+ * One objection or request to talk as the results page gives it (card 2684,
+ * R23): who raised it by the name they were included under, what they said,
+ * when, by which way in and about which version, and the reply by the name
+ * of whoever gave it, never their account (S-L4). `name` is the participant
+ * row's snapshot name.
+ */
+export function resultFlagOf(flag: DecisionFlag, name: string): ResultFlag {
+	return {
+		flagId: flag.id,
+		kind: flag.kind === 'talk' ? 'talk' : 'objection',
+		name,
+		reason: flag.reason,
+		raisedAt: flag.raisedAt,
+		via: flag.via,
+		versionNumber: flag.versionNumber,
+		reply: flag.reply,
+		repliedByName: flag.reply === null ? null : flag.repliedByName,
+		repliedAt: flag.repliedAt
+	};
 }
 
 // ─── What a release shows (decision 10) ──────────────────────────────────────
@@ -716,6 +767,14 @@ function surveyQuestionsOf(decision: Decision): PublishedSurveyQuestion[] {
  * review S1): who asked and when on the page alone (`'ui'`); through any other
  * source, card 2682's summary among them, neither, and each marked
  * `untrusted` (`openQuestionsOf`).
+ *
+ * Card 2684 (R11, R23): the objections and requests to talk, oldest first,
+ * each with the participant's name and its reply (`resultFlagOf`), on the
+ * page alone: under any other source there is no `flags` key at all, for the
+ * decider and an administrator alike (fail closed, E-L2). And `mayReply`,
+ * whether the caller may reply now (`reply`: the current decider, with board
+ * edit, on a decision `TRANSITIONS.reply` allows); an administrator reads
+ * them and replies to none.
  */
 export function readResults(user: SessionUser, decisionId: number, opts: { source: ServiceOptions['source'] }): ResultsData {
 	const { decision, access } = requireDecision(user, decisionId, 'results');
@@ -803,6 +862,9 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 			createdAt: row.createdAt,
 			via: row.via
 		})),
+		// Card 2684 (R11, R23; E-L2): the page's alone, so a source this does not know is given none.
+		...(opts.source === 'ui' ? { flags: flagsOf(decision.id).map((flag) => resultFlagOf(flag, nameOfParticipant.get(flag.participantId) ?? '')) } : {}),
+		mayReply: (TRANSITIONS.reply as readonly string[]).includes(decision.status) && mayDo(access, 'reply', decision),
 		ruling,
 		released:
 			decision.resultsReleasedAt === null ? null : { at: decision.resultsReleasedAt, byName: released?.byName ?? '', omitted: released?.omitted.length ?? 0 },

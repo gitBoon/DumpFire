@@ -2954,6 +2954,15 @@ describe('what a route answers, against the schema the document gives for it', (
 			expect(spec.components.schemas.Webhook.properties.pausedBecause.description, because).toContain(`"${SWITCHED_OFF_BECAUSE[because]}"`);
 		}
 		expect(held).toContain('(15) nothing else changed: no other operation, field or schema.');
+		// Card 2684 (R14, T49): the record route and its entry name the four events of objections and requests to talk
+		// among those a key is never given, with no point added to the note: (15) stays the last, and it names none.
+		const FLAG_KINDS_NAMED = 'objection_raised, talk_requested, objection_answered, talk_outcome';
+		expect(res.body.paths['/api/v1/decisions/{decisionId}/record'].get.description).toContain(
+			"So are the four events of a participant's objections and requests to talk to the decider (objection_raised, talk_requested, objection_answered, talk_outcome), which no key raises, answers or reads."
+		);
+		expect(res.body.components.schemas.DecisionRecordEntry.description).toContain(`nor one of the four events of objections and requests to talk (${FLAG_KINDS_NAMED})`);
+		expect(res.body.components.schemas.DecisionRecordEntry.properties.kind.description).toContain('nor objection_raised, talk_requested, objection_answered or talk_outcome');
+		for (const kind of ['objection_raised', 'talk_requested', 'objection_answered', 'talk_outcome']) expect(held, kind).not.toContain(kind);
 		// Card 2947: what an API key was given, held when it ends; the PUT's answer; no-store; the seed; the exposed secret.
 		for (const words of [
 			"(9) every answer that gives a webhook's secret records the API key it was given to (card 2947)",

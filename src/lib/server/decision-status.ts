@@ -126,7 +126,10 @@ export type DecisionAction =
 	| 'askers'
 	// Card 2680: a card linked to a decision, and unlinked from it.
 	| 'linkCard'
-	| 'unlinkCard';
+	| 'unlinkCard'
+	// Card 2684: a participant's objection or request to talk (`flag`), and the decider's reply to either (`reply`).
+	| 'flag'
+	| 'reply';
 
 /** The actions that only read, allowed from every stored status: no transition is asked of them. */
 export type ReadAction = 'view' | 'record' | 'results' | 'questions' | 'askers';
@@ -164,7 +167,9 @@ export const DECISION_ACTION_WORDS: Readonly<Record<DecisionAction, { verb: stri
 	questions: { verb: 'read the questions on', done: 'its questions cannot be read' },
 	askers: { verb: 'see who asked questions on', done: 'who asked cannot be seen' },
 	linkCard: { verb: 'link a card to', done: 'a card cannot be linked to it' },
-	unlinkCard: { verb: 'unlink a card from', done: 'a card cannot be unlinked from it' }
+	unlinkCard: { verb: 'unlink a card from', done: 'a card cannot be unlinked from it' },
+	flag: { verb: 'raise an objection or ask to talk on', done: 'objections and requests to talk are closed' },
+	reply: { verb: 'reply to objections and requests to talk on', done: 'objections and requests to talk on it cannot be replied to' }
 };
 
 /** Each shown status in words, for `This decision is <status>`. */
@@ -208,7 +213,11 @@ export const TRANSITIONS: Readonly<Record<Exclude<DecisionAction, ReadAction>, r
 	// Card 2680 (decision 17): never on a draft, which is nobody's business but its viewers', nor linked once withdrawn; a wrong
 	// link may be taken off from any status but a draft, which holds none.
 	linkCard: ['open', 'closed', 'ruled', 'superseded'],
-	unlinkCard: ['open', 'closed', 'ruled', 'superseded', 'withdrawn']
+	unlinkCard: ['open', 'closed', 'ruled', 'superseded', 'withdrawn'],
+	// Card 2684 (R3, R7): an objection or a request to talk raised while open or awaiting a ruling alone; a reply also after
+	// the ruling and once superseded, which the write narrows to a request to talk's outcome (row 11).
+	flag: ['open', 'closed'],
+	reply: ['open', 'closed', 'ruled', 'superseded']
 };
 
 /**

@@ -29,6 +29,10 @@
 	 * question form as the signed-in page, the panel with no answer, publish
 	 * or replace control, as a link answers nothing.
 	 *
+	 * Card 2684 (R3, R22): the same objection and request-to-talk forms and
+	 * list as the signed-in page (`FlagForm`), posting to
+	 * `/api/decision-by-link/flags` with the token in the body.
+	 *
 	 * Card 2707: the banner and the response section are components shared
 	 * with the signed-in page, `ParticipantBanner` (given the personal link,
 	 * which adds its two lines and keeps the other decisions unnamed and
@@ -40,6 +44,7 @@
 	import { page } from '$app/state';
 	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
+	import FlagForm from '$lib/components/decision/FlagForm.svelte';
 	import ParticipantBanner from '$lib/components/decision/ParticipantBanner.svelte';
 	import ParticipantResponse from '$lib/components/decision/ParticipantResponse.svelte';
 	import QuestionForm from '$lib/components/decision/QuestionForm.svelte';
@@ -79,6 +84,8 @@
 		stage={data.stage}
 		mayRespond={data.mayRespond}
 		mayAsk={data.mayAsk}
+		mayObject={data.mayObject}
+		mayAskToTalk={data.mayAskToTalk}
 		mayRaiseConcern={data.mayRaiseConcern}
 		seenRecorded={data.seenRecorded}
 		personalLink={{ signedInAs: data.signedInAs }}
@@ -109,6 +116,22 @@
 				shownStatus={data.decision.shownStatus}
 			/>
 		{/if}
+	{/key}
+{/snippet}
+
+{#snippet flagsSection()}
+	<!-- Drawn afresh for another link, the token in place of the decision id the page is not given. -->
+	{#key page.params.token}
+		<FlagForm
+			url="/api/decision-by-link/flags"
+			extra={{ token: page.params.token }}
+			flags={data.flags}
+			mayObject={data.mayObject}
+			mayAskToTalk={data.mayAskToTalk}
+			decider={data.decision.deciderName ?? 'the decider'}
+			shownStatus={data.decision.shownStatus}
+			versionNumber={data.version?.number ?? 0}
+		/>
 	{/key}
 {/snippet}
 
@@ -153,6 +176,7 @@
 				results={data.released !== null ? releasedResults : undefined}
 				concern={data.participant !== null && (data.mayRaiseConcern || data.concerns.length > 0) ? concern : undefined}
 				questions={data.questions.length > 0 || data.mayAsk ? questions : undefined}
+				flags={data.participant !== null && (data.flags.length > 0 || data.mayObject || data.mayAskToTalk) ? flagsSection : undefined}
 			/>
 		{/if}
 	</main>

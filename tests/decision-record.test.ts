@@ -17,6 +17,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, sqlite } from '$lib/server/db';
 import { decisions, decisionSurveyQuestions, type Decision } from '$lib/server/db/schema';
 import { appendEvent, appendVersion, currentRound, surveysAskedIn, SYSTEM_ACTOR } from '$lib/server/decision-record';
+import { flagsOf, flagsOfParticipants } from '$lib/server/decision-flags';
+import { DECISION_PLACE_NAMERS } from '$lib/server/db/decision-place-namers';
 import { issueLink, mayHoldLink, participantForLink } from '$lib/server/decision-links';
 import { readPersonRecord } from '$lib/server/decision-register';
 import { readResults, readSummary } from '$lib/server/decision-results';
@@ -54,7 +56,9 @@ const PEOPLE_RECORD = 'people_changes';
  * but by the cascade, the restore and the generic writers, as the four are.
  */
 const SETTLED_TABLES: Readonly<Record<string, string>> = {
-	decisionQuestions: 'decision_questions'
+	decisionQuestions: 'decision_questions',
+	// Card 2684 (R2, T5): a participant's objections and requests to talk, settled once by the decider's reply.
+	decisionFlags: 'decision_flags'
 };
 
 /** Each record table, the settled-once table and `decisions` by its SQL name, as the schema exports it: what `sql.identifier('decision_events')` names. */
@@ -86,6 +90,11 @@ const SETTLED_UPDATES: Readonly<Record<string, { set: string[]; where: string }>
 	recordDraftReplaced: {
 		set: ['answer', 'answerAgentDrafted:false', 'answeredAt', 'answeredBy', 'answeredByName'],
 		where: 'and(eq(decisionQuestions.id,questionId),eq(decisionQuestions.answerAgentDrafted,true),isNull(decisionQuestions.answerReviewedAt))'
+	},
+	// Card 2684 (R2, T5): the decider's reply, to a flag not yet replied to.
+	recordFlagReply: {
+		set: ['repliedAt', 'repliedBy', 'repliedByName', 'reply'],
+		where: 'and(eq(decisionFlags.id,flagId),isNull(decisionFlags.reply))'
 	}
 };
 
@@ -94,7 +103,9 @@ const NAMES_ALLOWED = [
 	'src/lib/server/db/schema.ts',
 	'src/lib/server/db/expected-schema.ts',
 	'src/lib/server/decision-record.ts',
-	'src/lib/server/db/restore.ts'
+	'src/lib/server/db/restore.ts',
+	// Card 2684 (R18): the one list of the tables that name a decision place, which only reads them.
+	'src/lib/server/db/decision-place-namers.ts'
 ];
 
 /**
@@ -120,10 +131,10 @@ const insertsAllowedFor = (sqlName: string) => (sqlName === PEOPLE_RECORD ? PEOP
 const DECISION_DELETES_ALLOWED = 'src/lib/server/decision-lifecycle-writes.ts';
 
 /** A record table's name, or the settled-once table's, as text. `idx_decision_events_…` and `idx_people_changes_…` are indexes' names, not the tables'. */
-const NAMES_A_TABLE = /\b(decision_(?:versions|responses|rulings|events|questions)|people_changes)\b/g;
+const NAMES_A_TABLE = /\b(decision_(?:versions|responses|rulings|events|questions|flags)|people_changes)\b/g;
 
 /** A record table's name, or the settled-once table's, in SQL, quoted or not: SQL may not update either (card 2678, S4). */
-const TABLE = '[`"\\[]?(decision_(?:versions|responses|rulings|events|questions)|people_changes)[`"\\]]?(?![\\w])';
+const TABLE = '[`"\\[]?(decision_(?:versions|responses|rulings|events|questions|flags)|people_changes)[`"\\]]?(?![\\w])';
 
 /** What SQL may not do to a record table anywhere, by what the finding calls it. */
 const SQL_WRITES: readonly [string, RegExp][] = [
@@ -419,8 +430,9 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 
 		expect(findings).toEqual([]);
 		// Card 2678 (decision 7, S4): the question's one insert, and its three guarded updates, each to its pin, in the record module.
-		expect(settledInserts).toEqual(['src/lib/server/decision-record.ts']);
-		expect(settledUpdates).toEqual(['recordAnswer', 'recordDraftPublished', 'recordDraftReplaced']);
+		// Card 2684 (R2, T5): the flag's one insert, and its one guarded update, to its pin, in the record module too.
+		expect(settledInserts).toEqual(['src/lib/server/decision-record.ts', 'src/lib/server/decision-record.ts']);
+		expect(settledUpdates).toEqual(['recordAnswer', 'recordDraftPublished', 'recordDraftReplaced', 'recordFlagReply']);
 		// Every writer of a table named at run time is named with why, and every one named is still one (S5).
 		expect(generic).toEqual(Object.keys(GENERIC_WRITERS).sort());
 		// The scan saw the tree, and the record's own inserts in it.
@@ -675,7 +687,10 @@ describe('the shown status (E10)', () => {
 			answer: ['open', 'closed'],
 			// Card 2680 (decision 17): never a draft, nor linked once withdrawn.
 			linkCard: ['open', 'closed', 'ruled', 'superseded'],
-			unlinkCard: ['open', 'closed', 'ruled', 'superseded', 'withdrawn']
+			unlinkCard: ['open', 'closed', 'ruled', 'superseded', 'withdrawn'],
+			// Card 2684 (R3, R7): raised while open or awaiting a ruling; replied to also once ruled or superseded.
+			flag: ['open', 'closed'],
+			reply: ['open', 'closed', 'ruled', 'superseded']
 		});
 
 		const pastItsDeadline = { status: 'open', closesAt: '2026-11-01 00:00:00' };
@@ -910,5 +925,122 @@ describe('answersOf (card 2683, R22)', () => {
 			[silent.id, []]
 		]);
 		expect(shape(surveysAskedIn([asking.id], [2]))).toEqual([[asking.id, [[2, [question.id]]]]]);
+	});
+});
+
+// ─── Objections and requests to talk, read tolerantly (card 2684, S1a) ───────
+
+describe('the flags, read tolerantly (card 2684, R18, R19)', () => {
+	/** A decision open for input at version 2, its decider the board's owner, with two participants; and another decision with one. */
+	function scene() {
+		const owner = makeUser({ username: 'owner' });
+		const { board } = makeBoard({ owner });
+		const opened = { board, author: owner, decider: owner, status: 'open', closesAt: '2099-01-01 12:00:00', openedAt: '2026-11-01 09:00:00', currentVersion: 2 };
+		const decision = makeDecision(opened);
+		const other = makeDecision(opened);
+		const pat = makeParticipant(decision, { name: 'Pat Planted' });
+		const lin = makeParticipant(decision, { name: 'Lin Linked' });
+		const elsewhere = makeParticipant(other, { name: 'Ellis Elsewhere' });
+		return { decision, other, pat, lin, elsewhere };
+	}
+
+	/** A flag written as a restore could leave one, every column given; answers its id. */
+	const plant = (row: {
+		decisionId: number;
+		participantId: number;
+		kind: unknown;
+		reason: unknown;
+		reply?: unknown;
+		repliedAt?: string | null;
+		repliedByName?: string | null;
+		via?: unknown;
+		versionNumber?: unknown;
+	}): number =>
+		Number(
+			sqlite
+				.prepare(
+					'INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at, reply, replied_by_name, replied_at) ' +
+						"VALUES (@decisionId, @participantId, @kind, @reason, @versionNumber, @via, '2026-11-02 09:00:00', @reply, @repliedByName, @repliedAt)"
+				)
+				.run({ reply: null, repliedAt: null, via: 'session', versionNumber: 1, repliedByName: row.reply == null ? null : 'Owner Name', ...row }).lastInsertRowid
+		);
+
+	it('keeps beside one valid flag of each kind only what the write could have made, in flagsOf and flagsOfParticipants alike (T24)', () => {
+		const { decision, other, pat, lin, elsewhere } = scene();
+		const objection = plant({ decisionId: decision.id, participantId: pat.id, kind: 'objection', reason: 'I cannot live with this.' });
+		// A request to talk with no note, by link on the current version, its outcome recorded: as the write makes it.
+		const talk = plant({ decisionId: decision.id, participantId: lin.id, kind: 'talk', reason: '', reply: 'We spoke on Monday.', repliedAt: '2026-11-03 09:00:00', via: 'link', versionNumber: 2 });
+		const onOther = plant({ decisionId: other.id, participantId: elsewhere.id, kind: 'talk', reason: 'A word, please.' });
+		// Each planted row the reader leaves out.
+		plant({ decisionId: decision.id, participantId: pat.id, kind: 'veto', reason: 'An unknown kind.' });
+		plant({ decisionId: decision.id, participantId: elsewhere.id, kind: 'objection', reason: 'A participant of another decision.' });
+		plant({ decisionId: decision.id, participantId: pat.id, kind: 'objection', reason: '   ' });
+		plant({ decisionId: decision.id, participantId: pat.id, kind: 'objection', reason: 'x'.repeat(4001) });
+		plant({ decisionId: decision.id, participantId: lin.id, kind: 'talk', reason: 'y'.repeat(2001) });
+		plant({ decisionId: decision.id, participantId: lin.id, kind: 'talk', reason: 'Turned \u202e round.' });
+		plant({ decisionId: decision.id, participantId: pat.id, kind: 'objection', reason: Buffer.from('Not text.') });
+		plant({ decisionId: decision.id, participantId: pat.id, kind: 'objection', reason: 'Answered with no moment.', reply: 'An answer.', repliedAt: null });
+		plant({ decisionId: decision.id, participantId: lin.id, kind: 'talk', reason: '', reply: '  ', repliedAt: '2026-11-03 09:00:00' });
+		// Code review C-S-L3: a way in the write never records, a version the decision never had, and a reply with no replier.
+		for (const via of ['email', 'api', '', 'Session']) plant({ decisionId: decision.id, participantId: pat.id, kind: 'objection', reason: `By ${String(via)}.`, via });
+		for (const versionNumber of [0, -1, 3, 1.5]) plant({ decisionId: decision.id, participantId: lin.id, kind: 'talk', reason: `On version ${versionNumber}.`, versionNumber });
+		for (const repliedByName of [null, '']) {
+			plant({ decisionId: decision.id, participantId: pat.id, kind: 'objection', reason: 'Answered by nobody.', reply: 'An answer.', repliedAt: '2026-11-03 09:00:00', repliedByName });
+		}
+		const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			expect(flagsOf(decision.id).map((flag) => flag.id)).toEqual([objection, talk]);
+			expect(flagsOf(other.id).map((flag) => flag.id)).toEqual([onOther]);
+			const byParticipant = flagsOfParticipants([pat.id, lin.id, elsewhere.id]);
+			expect([...byParticipant].map(([id, flags]) => [id, flags.map((flag) => flag.id)])).toEqual([
+				[pat.id, [objection]],
+				[lin.id, [talk]],
+				[elsewhere.id, [onOther]]
+			]);
+			// The kept rows as stored, the reply's moment and the replier's name among them.
+			expect(flagsOf(decision.id)[1]).toMatchObject({ kind: 'talk', reason: '', reply: 'We spoke on Monday.', repliedByName: 'Owner Name', repliedAt: '2026-11-03 09:00:00' });
+		} finally {
+			quiet.mockRestore();
+		}
+	});
+
+	it('logs one WARN line for a read that drops rows, naming the decision and the count and none of the text; a read that drops none logs nothing (T56)', () => {
+		const { decision, other, pat, elsewhere } = scene();
+		plant({ decisionId: decision.id, participantId: pat.id, kind: 'objection', reason: 'Kept and fine.' });
+		plant({ decisionId: decision.id, participantId: pat.id, kind: 'objection', reason: 'SECRET-REASON \u202e', reply: 'SECRET-REPLY', repliedAt: '2026-11-03 09:00:00' });
+		plant({ decisionId: decision.id, participantId: pat.id, kind: 'objection', reason: 'SECRET-OTHER', reply: 'SECRET-UNDATED', repliedAt: null });
+		plant({ decisionId: other.id, participantId: elsewhere.id, kind: 'talk', reason: 'Fine.' });
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'INFO';
+		const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			flagsOf(other.id);
+			flagsOfParticipants([elsewhere.id]);
+			expect(warned).not.toHaveBeenCalled();
+
+			flagsOf(decision.id);
+			expect(warned).toHaveBeenCalledTimes(1);
+			const line = String(warned.mock.calls[0][0]);
+			expect(line).toContain('DECISIONS');
+			expect(line).toContain(`[DECISIONS] 2 stored objection or request-to-talk row(s) of decision(s) ${decision.id} could not have been written here`);
+			for (const secret of ['SECRET', 'Pat Planted', 'Owner Name', 'Kept and fine']) expect(line).not.toContain(secret);
+
+			flagsOfParticipants([pat.id, elsewhere.id]);
+			expect(warned).toHaveBeenCalledTimes(2);
+			expect(String(warned.mock.calls[1][0])).toContain(`[DECISIONS] 2 stored objection or request-to-talk row(s) of decision(s) ${decision.id} could not`);
+		} finally {
+			warned.mockRestore();
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+	});
+
+	it('names on DECISION_PLACE_NAMERS every table with a foreign key to decision_participants in the migrated schema, and only those (T52)', () => {
+		const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").pluck().all() as string[];
+		const naming = tables.filter((table) =>
+			(sqlite.prepare('SELECT "table" FROM pragma_foreign_key_list(?)').pluck().all(table) as string[]).some((target) => target === 'decision_participants')
+		);
+		expect(naming).toContain('decision_flags');
+		expect([...naming].sort()).toEqual([...DECISION_PLACE_NAMERS].sort());
 	});
 });

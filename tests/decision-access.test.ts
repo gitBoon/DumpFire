@@ -199,7 +199,10 @@ describe('DECISION_RULES', () => {
 			askers: ['admin', 'author', 'decider'],
 			// Card 2680 (decision 17): edit access to the decision's home board.
 			linkCard: ['admin', 'boardOwner', 'boardEditor'],
-			unlinkCard: ['admin', 'boardOwner', 'boardEditor']
+			unlinkCard: ['admin', 'boardOwner', 'boardEditor'],
+			// Card 2684 (R3, R7): a live participant raises; the current decider alone replies.
+			flag: ['participant'],
+			reply: ['decider']
 		});
 		expect(DRAFT_VIEWERS).toEqual(['admin', 'author', 'decider', 'boardOwner']);
 	});

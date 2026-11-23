@@ -13,9 +13,12 @@ import type { RequestHandler } from './$types';
 /**
  * POST /api/decisions/:id/rule — the decider rules on an open or closed
  * decision: `{ optionId, reason, conditions, revision, openQuestionsConfirmed,
- * currentPassword }`, `optionId` null for none of these and `revision` the
- * results revision the results page was given (card 2679, decisions 2, 8 and
- * 13). `ruleDecision` in `$lib/server/decision-ruling-writes`; the answer is
+ * openTalksConfirmed, currentPassword }`, `optionId` null for none of these
+ * and `revision` the results revision the results page was given (card 2679,
+ * decisions 2, 8 and 13). Card 2684 (R8): refused while an objection has no
+ * answer, and while a request to talk has no outcome recorded unless
+ * `openTalksConfirmed` is true. `ruleDecision` in
+ * `$lib/server/decision-ruling-writes`; the answer is
  * `{ decision, revision }`, the decision through the one projection and the
  * results revision as it now is.
  *

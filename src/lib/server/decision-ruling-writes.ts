@@ -44,12 +44,11 @@ import {
 	type RecordActor
 } from './decision-record';
 import { commentKeysOf, currentResultsOf, releaseRefusals, resultsRevisionFor, rulingRefusals, versionOptionsOf } from './decision-results';
-import { DAY_MS, decisionLinkBase, later, queueRecordMails, RECORD_MAIL_MIN_MINUTES } from './decision-mail';
+import { queueRecordMails, RECORD_MAIL_MIN_MINUTES } from './decision-mail';
 import { DECISION_ACTION_WORDS, decisionStatus, linkUsable, requireTransition, rulesEarly } from './decision-status';
-import { isSmtpConfigured } from './email';
 import { emit } from './events';
 import { ACTIONS, logActivity } from './logActivity';
-import { notifyDecisionConcern, shouldNotifyUser } from './notifications';
+import { notifyDecisionConcern } from './notifications';
 import { readBoolean, readId, readList, readText, type RequestBody } from './request-body';
 import { againstOf, CONCERNS_PER_PARTICIPANT, DECISION_TEXT_MAX, mostChosenOf } from '$lib/decision-rules';
 import type { OwnConcern } from '$lib/decision-view-types';
@@ -60,13 +59,17 @@ import { inWrite, type ServiceOptions } from './write-as';
 import {
 	COMMENT_MAX,
 	decisionEntry,
+	deciderNoticeOf,
 	keyed,
 	MOST_PARTICIPANTS,
 	participantOn,
 	requireLinkHolder,
 	requireDeciderRecordable,
 	requireReachedByAccount,
-	sourceOf
+	requireRested,
+	requireUnderCap,
+	sourceOf,
+	type DeciderNotice
 } from './decision-write-shared';
 import { ACCESS_KIND, recordAccessChange } from './access-changes';
 
@@ -91,10 +94,12 @@ const MOST_OMITTED = MOST_PARTICIPANTS * (CONTENT_LIMITS.options + 1);
  * (`rule`: its decider, who can edit its board while it exists; 401, 404,
  * 403), 403 through an API key, the body (400): `optionId`, one of the
  * current version's options or null for none of these, `reason`, 1 to 4,000
- * characters, `conditions`, up to 4,000, `revision`, and
- * `openQuestionsConfirmed`; the status (409: open or closed); and then
- * `rulingRefusals`' 409s, a results revision that is not the decision's as it
- * is now and questions still open unconfirmed. The rule route will ask it
+ * characters, `conditions`, up to 4,000, `revision`, `openQuestionsConfirmed`
+ * and `openTalksConfirmed` (card 2684, R8; each false when not sent); the
+ * status (409: open or closed); and then `rulingRefusals`' 409s, a results
+ * revision that is not the decision's as it is now, an objection with no
+ * reply, questions still open unconfirmed and requests to talk with no
+ * outcome unconfirmed. The rule route will ask it
  * before the caller's password, so that none of these costs a check; the
  * write asks it first, so the rules are one.
  */
@@ -117,9 +122,10 @@ export function decisionRuleGuard(
 	const conditions = readMultiline(body.conditions, 'conditions', RULING_TEXT_MAX, { trim: true });
 	const revision = readText(body, 'revision', { required: true });
 	const openQuestionsConfirmed = readBoolean(body, 'openQuestionsConfirmed', {}) ?? false;
+	const openTalksConfirmed = readBoolean(body, 'openTalksConfirmed', {}) ?? false;
 
 	requireTransition(decision, 'rule');
-	const [refusal] = rulingRefusals(decision, { revision, openQuestionsConfirmed });
+	const [refusal] = rulingRefusals(decision, { revision, openQuestionsConfirmed, openTalksConfirmed });
 	if (refusal !== undefined) error(409, refusal);
 	return { user, decision, ruling: { optionId, reason, conditions: conditions === '' ? null : conditions } };
 }
@@ -476,14 +482,12 @@ function concernAs(
 	requireTransition(decision, 'concern', now);
 	if (!linkUsable(decision, now)) error(409, CONCERN_WINDOW_ENDED);
 	const earlier = concernsOf({ participantId: participant.id });
-	if (earlier.length >= CONCERNS_PER_PARTICIPANT) {
-		error(409, `You have raised ${CONCERNS_PER_PARTICIPANT} concerns about this ruling: no more can be raised`);
-	}
-	const last = earlier.at(-1);
-	const rested = last === undefined ? null : later(last.createdAt, RECORD_MAIL_MIN_MINUTES * 60 * 1000);
-	if (rested !== null && now < rested) {
-		error(429, `Your last concern was raised less than ${RECORD_MAIL_MIN_MINUTES} minutes ago: the next can be raised from ${rested} UTC`);
-	}
+	requireUnderCap(earlier.length, CONCERNS_PER_PARTICIPANT, `You have raised ${CONCERNS_PER_PARTICIPANT} concerns about this ruling: no more can be raised`);
+	requireRested(
+		earlier.at(-1)?.createdAt,
+		now,
+		(from) => `Your last concern was raised less than ${RECORD_MAIL_MIN_MINUTES} minutes ago: the next can be raised from ${from} UTC`
+	);
 
 	const row = appendResponse({
 		decisionId: decision.id,
@@ -523,35 +527,17 @@ function concernAs(
 
 /**
  * Whether a concern from `participantId` notifies the decider (card 2679,
- * decision 3, S3), decided inside the write: `no_decider` with no decider
- * account; `no_link_address` with no App URL or `ORIGIN`; `prefs_off` when the
- * decider's `email_decisions` or every mail is switched off; `no_mail_host`
- * when no mail host is set up (code review F2); `held` within 24 hours of the
- * last notice about this participant; and `asked` otherwise, carrying how
- * many of theirs were held since that notice. Per participant: a
- * participant's first concern always notifies, and nobody else's holds it
- * back. Only `asked` holds the next one back, as only it sent anything; none
- * of the others is counted as held.
+ * decision 3, S3): `deciderNoticeOf` (card 2684, R15) over the participant's
+ * earlier `concern_raised` events, each with the outcome it recorded. A
+ * concern names no raiser to it, so `own` is never its outcome: `no_decider`,
+ * `no_link_address`, `prefs_off`, `no_mail_host` (code review F2, S5),
+ * `held` or `asked`, as before.
  */
-function noticeOf(
-	decision: Decision,
-	participantId: number,
-	now: Stamp
-): { outcome: 'no_decider' | 'no_link_address' | 'prefs_off' | 'no_mail_host' | 'held' } | { outcome: 'asked'; deciderUserId: number; heldBefore: number } {
-	const decider =
-		decision.deciderUserId === null ? undefined : db.select({ id: users.id }).from(users).where(eq(users.id, decision.deciderUserId)).get();
-	if (decider === undefined) return { outcome: 'no_decider' };
-	if (decisionLinkBase() === null) return { outcome: 'no_link_address' };
-	if (!shouldNotifyUser(decider.id, 'email_decisions')) return { outcome: 'prefs_off' };
-	// Code review F2, S5: with no mail host nothing would be sent, so nothing is recorded as asked to hold the next one back.
-	if (!isSmtpConfigured()) return { outcome: 'no_mail_host' };
-
+function noticeOf(decision: Decision, participantId: number, now: Stamp): DeciderNotice {
 	const theirs = eventsOfKind(decision.id, 'concern_raised').filter((event) => event.participantId === participantId);
-	const lastAsked = theirs.findLastIndex((event) => event.detail.notice === 'asked');
-	if (lastAsked !== -1) {
-		const rested = later(theirs[lastAsked].at, DAY_MS);
-		if (rested === null || now < rested) return { outcome: 'held' };
-	}
-	const heldBefore = theirs.slice(lastAsked + 1).filter((event) => event.detail.notice === 'held').length;
-	return { outcome: 'asked', deciderUserId: decider.id, heldBefore };
+	return deciderNoticeOf(
+		decision,
+		theirs.map((event) => ({ outcome: event.detail.notice, at: event.at, eventId: event.id })),
+		now
+	);
 }

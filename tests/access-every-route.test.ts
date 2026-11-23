@@ -1043,6 +1043,25 @@ const theViewersQuestion = (w: World, opts: Parameters<typeof makeQuestion>[2]):
 	decisionQuestionId = makeQuestion(decision, asker, { question: `${MARK} what does it cost?`, ...opts }).id;
 };
 const aQuestionOnAnOpenDecisionOfEditor = (w: World): void => theViewersQuestion(w, {});
+
+/**
+ * Card 2684: `aConsultedViewer`'s decision, of which `editor` is the decider,
+ * with an objection `viewer` raised and no reply yet, for replying to it. Its
+ * id is `decisionFlagId`, which the path names.
+ */
+let decisionFlagId: number | undefined;
+const anObjectionOnAnOpenDecisionOfEditor = (w: World): void => {
+	aConsultedViewer(w);
+	const raiser = db.select().from(decisionParticipants).where(eq(decisionParticipants.decisionId, decisionId!)).orderBy(decisionParticipants.id).get()!;
+	decisionFlagId = Number(
+		sqlite
+			.prepare(
+				'INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at) ' +
+					"VALUES (?, ?, 'objection', ?, 1, 'session', '2026-11-02 09:00:00')"
+			)
+			.run(decisionId!, raiser.id, `${MARK} the cost is not covered`).lastInsertRowid
+	);
+};
 const anAgentDraftOnAnOpenDecisionOfEditor = (w: World): void =>
 	theViewersQuestion(w, { answer: `${MARK} an agent's draft`, by: w.editor, role: 'decider', agentDrafted: true });
 
@@ -2150,6 +2169,25 @@ const TABLE: Record<string, Case | Case[]> = {
 		setup: aConsultedViewer,
 		withLink: () => sameOrigin('/api/decision-by-link/questions', { token: LINK, question: 'What does option A cost?' })
 	}),
+	// Card 2684 (R3): a participant's objection or request to talk, signed in and by the link; never by an API key.
+	'POST /api/decisions/[id]/flags': own(
+		'viewer',
+		['owner', 'admin', 'chief', 'editor', 'outsider', 'guest', 'both', 'editsB', 'editsA'],
+		() => sameOrigin(`/api/decisions/${decisionId}/flags`, { kind: 'objection', reason: 'The cost is not covered.' }),
+		{ setup: aConsultedViewer }
+	),
+	'POST /api/decision-by-link/flags': link(() => sameOrigin('/api/decision-by-link/flags', { kind: 'objection', reason: 'The cost is not covered.' }), {
+		setup: aConsultedViewer,
+		withLink: () => sameOrigin('/api/decision-by-link/flags', { token: LINK, kind: 'objection', reason: 'The cost is not covered.' })
+	}),
+	// Card 2684 (R7): the reply is the current decider's alone, with board edit; an author, a board owner and an
+	// administrator who are not the decider are refused, as everyone else is.
+	'POST /api/decisions/[id]/flags/[flagId]/reply': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => sameOrigin(`/api/decisions/${decisionId}/flags/${decisionFlagId}/reply`, { reply: 'The budget covers it.' }),
+		{ setup: anObjectionOnAnOpenDecisionOfEditor }
+	),
 	'POST /api/decisions/[id]/questions/[questionId]/answer': own(
 		'editor',
 		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],

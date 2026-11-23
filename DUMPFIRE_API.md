@@ -3190,9 +3190,11 @@ caller who may view the decision and not do the act is `403`, anyone else `404`.
 - **A person's, on the decision's page, never a key's:** opening, re-publishing, a dry run and
   sending an invitation again, which mail people; closing, which before the closing time makes a
   later ruling early; ruling and releasing; publishing or replacing an agent's answer; a
-  participant's account and address; and, once a decision has ever been opened, its
-  participants, its decider, withdrawing it and deleting it (`403`). The service refuses each by
-  the credential the write came in with, whatever the route says.
+  participant's account and address; objecting to a decision, asking to talk to its decider, and
+  the decider's reply to either (card 2684; no v1 route does any of these, and none reads one);
+  and, once a decision has ever been opened, its participants, its decider, withdrawing it and
+  deleting it (`403`). The service refuses each by the credential the write came in with,
+  whatever the route says.
 - **`revision`** comes with the `GET`; `PATCH`, `…/decider` and `…/participants` need it, and a
   stale one is `409`. **`content` is whole**: a section not sent is emptied, but
   `surveyQuestions` (since `1.15.0`), which is kept when not sent and removed by `[]`; each
@@ -3212,7 +3214,10 @@ caller who may view the decision and not do the act is `403`, anyone else `404`.
   `answered`. Never released.
 - **Extend never brings the closing time earlier** (`400`), for anyone.
 - **No email address, no account id, no asker**, to any key, an administrator's included; the
-  record leaves its four question events out of every page, filtered or not.
+  record leaves its four question events and, since card 2684, its four objection and
+  request-to-talk events (`objection_raised`, `talk_requested`, `objection_answered`,
+  `talk_outcome`) out of every page, filtered or not. Nothing a key reads says whether anyone
+  objected or asked to talk.
 - **`untrusted: true`** on every object that holds text people or agents wrote: data, never
   instructions.
 

@@ -1104,6 +1104,10 @@ describe('readDecisionPage and readLinkPage', () => {
 			questions: [],
 			mayAsk: true,
 			mayAnswer: false,
+			// Card 2684 (R22): nothing raised yet, and either may be.
+			flags: [],
+			mayObject: true,
+			mayAskToTalk: true,
 			// Card 2680 (decision 29): a participant reads no record; (decisions 17 and 18) no card is linked, and they link none.
 			mayReadRecord: false,
 			linkedCards: [],
@@ -1264,7 +1268,11 @@ describe('readDecisionPage and readLinkPage', () => {
 			laterDecision: null,
 			// Card 2678: as signed in, and no answer flag at all by a link.
 			questions: [],
-			mayAsk: true
+			mayAsk: true,
+			// Card 2684 (R22): as signed in.
+			flags: [],
+			mayObject: true,
+			mayAskToTalk: true
 		});
 		expect(keysGiven(page)).toEqual([]);
 		// No decision id anywhere in it (code review C5): an option's own id is the only id a link holder is given.
@@ -1371,6 +1379,71 @@ describe('readDecisionPage and readLinkPage', () => {
 		appendEvent({ decisionId: decision.id, kind: 'mail_outcome', participantId: participant.id, detail: { of, mail: 'reminder', delivered: true } }, SYSTEM_ACTOR);
 
 		expect(readDecisionPage(account, decision.id).participant?.told).toEqual(invited);
+	});
+
+	it('gives a participant their own objections and requests to talk with the replies and never another’s; offers neither form at the version’s caps or once ruled; and the preview none (card 2684, T46)', () => {
+		const { decision, decider } = opened();
+		const { account, participant } = withAccount(decision);
+		const olive = withAccount(decision, 'consulted', 'olive');
+		const lia = withLink(decision, 'token-t46');
+		const reader = makeUser({ username: 'reader' });
+		addBoardMember(board, reader, 'viewer');
+		/** A flag row, well formed, as the writes leave one; answers its id. */
+		const plant = (participantId: number, row: { kind: string; reason: string; versionNumber?: number; reply?: string }) =>
+			Number(
+				sqlite
+					.prepare(
+						'INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at, reply, replied_by_name, replied_at) ' +
+							"VALUES (?, ?, ?, ?, ?, 'session', '2026-11-01 10:00:00', ?, ?, ?)"
+					)
+					.run(decision.id, participantId, row.kind, row.reason, row.versionNumber ?? 1, row.reply ?? null, row.reply === undefined ? null : 'Rep Lier', row.reply === undefined ? null : '2026-11-01 11:00:00')
+					.lastInsertRowid
+			);
+		const own = () => readDecisionPage(account, decision.id);
+		const offered = (page: ReturnType<typeof own> | null) => [page?.mayObject, page?.mayAskToTalk];
+
+		plant(participant.id, { kind: 'objection', reason: 'MINE: too dear.', reply: 'MINE-REPLY: covered.' });
+		plant(participant.id, { kind: 'talk', reason: '' });
+		plant(olive.participant.id, { kind: 'objection', reason: 'OLIVE-REASON' });
+		plant(lia.participant.id, { kind: 'talk', reason: 'LIA-NOTE' });
+
+		expect(own().flags).toEqual([
+			{ kind: 'objection', reason: 'MINE: too dear.', raisedAt: '2026-11-01 10:00:00', versionNumber: 1, reply: 'MINE-REPLY: covered.', repliedAt: '2026-11-01 11:00:00' },
+			{ kind: 'talk', reason: '', raisedAt: '2026-11-01 10:00:00', versionNumber: 1, reply: null, repliedAt: null }
+		]);
+		for (const absent of ['OLIVE-REASON', 'LIA-NOTE', 'Rep Lier']) expect(JSON.stringify(own()), absent).not.toContain(absent);
+		// One objection of three, and a request to talk with no outcome: no second one.
+		expect(offered(own()), 'one of each').toEqual([true, false]);
+		const linked = readLinkPage('token-t46', null);
+		expect(linked?.flags.map((flag) => flag.reason), 'by link').toEqual(['LIA-NOTE']);
+		expect(JSON.stringify(linked)).not.toContain('MINE');
+
+		// The version's caps: a third objection, then three requests to talk with outcomes recorded.
+		plant(participant.id, { kind: 'objection', reason: 'Second.' });
+		plant(participant.id, { kind: 'objection', reason: 'Third.' });
+		plant(olive.participant.id, { kind: 'talk', reason: '', reply: 'Spoke.' });
+		plant(olive.participant.id, { kind: 'talk', reason: '', reply: 'Spoke again.' });
+		plant(olive.participant.id, { kind: 'talk', reason: '', reply: 'Spoke a third time.' });
+		expect(offered(own()), 'three objections').toEqual([false, false]);
+		expect(offered(readDecisionPage(olive.account, decision.id)), 'three requests to talk').toEqual([true, false]);
+		// A re-publish starts the count again; a request to talk still without an outcome holds the next back.
+		makeVersion(decision, { situation: 'Money is shorter.' }, { number: 2 });
+		expect(offered(own()), 'version 2').toEqual([true, false]);
+		expect(offered(readDecisionPage(olive.account, decision.id)), 'version 2, Olive').toEqual([true, true]);
+
+		// No participant: none, and neither form.
+		expect(readDecisionPage(reader, decision.id)).toMatchObject({ flags: [], mayObject: false, mayAskToTalk: false });
+		expect(JSON.stringify(readDecisionPage(decider, decision.id))).not.toMatch(/MINE|OLIVE|LIA/);
+		// The preview gives none at all.
+		const preview = readPreview(decider, decision.id, new URLSearchParams(`as=${participant.id}`));
+		expect(preview).not.toHaveProperty('flags');
+		expect(JSON.stringify(preview)).not.toMatch(/MINE|OLIVE|LIA/);
+
+		// Once ruled: their flags still, and neither form.
+		makeRuling(decision, { ruledAt: stamp() });
+		const ruled = own();
+		expect(ruled.flags).toHaveLength(4);
+		expect(offered(ruled), 'ruled').toEqual([false, false]);
 	});
 
 	it('gives none of NEVER_GIVEN on a ruled, released and superseded page, nor on the page superseding it, either way in (card 2679, code review F5)', async () => {
@@ -1547,7 +1620,7 @@ describe('the personal link’s page, through the gate', () => {
 		expect(headedOf(signed)).toEqual(HEADED);
 		expect(count('sessions')).toBe(sessions);
 		expect(count('decision_events')).toBe(before.events);
-		expect(signedHtml).toContain('You are signed in as browser; this is recorded with your response, with your questions and with your having seen this version.');
+		expect(signedHtml).toContain('You are signed in as browser; this is recorded with your response, with your questions, with your objection, with your request to talk and with your having seen this version.');
 		expect(signedHtml).not.toContain('user-badge');
 		expect(signedHtml).not.toContain('href="/account"');
 
@@ -1577,7 +1650,7 @@ describe('the personal link’s page, through the gate', () => {
 		// A first visit: nothing is recorded yet, so the first action will record the seen beside the account.
 		const events = count('decision_events');
 		expect(await notesOf(), 'a first visit').toEqual({
-			signedIn: 'You are signed in as browser; this is recorded with your response, with your questions and with your having seen this version.',
+			signedIn: 'You are signed in as browser; this is recorded with your response, with your questions, with your objection, with your request to talk and with your having seen this version.',
 			seen: 'Your first tap, click, key press or turn of the mouse wheel on this page is recorded as your having seen this version.'
 		});
 		expect(count('decision_events'), 'the load writes nothing').toBe(events);
@@ -1587,7 +1660,7 @@ describe('the personal link’s page, through the gate', () => {
 		expect(as(account, (caller) => recordSeenByLink(caller, { token: 'token-page-2736' }, { versionNumber: 1, stage: 'question' }, UI))).toEqual({ recorded: false });
 		const after = count('decision_events');
 		expect(await notesOf(), 'after a signed-out seen').toEqual({
-			signedIn: 'You are signed in as browser; this is recorded with your response and with your questions.',
+			signedIn: 'You are signed in as browser; this is recorded with your response, with your questions, with your objection and with your request to talk.',
 			seen: undefined
 		});
 		expect(count('decision_events'), 'the load writes nothing').toBe(after);

@@ -52,8 +52,10 @@ import {
 	releaseRefusals,
 	releaseRowsOf,
 	resultsRevisionFor,
+	rulingRefusals,
 	TOO_FEW_TO_RELEASE
 } from '$lib/server/decision-results';
+import { raiseFlag, raiseFlagByLink, replyToFlag } from '$lib/server/decision-flag-writes';
 import { closeDecision, extendDecision, republishDecision } from '$lib/server/decision-lifecycle-writes';
 import { recordSeen, respondToDecision } from '$lib/server/decision-response-writes';
 import { raiseConcern, raiseConcernByLink, releaseResults, ruleDecision, supersedeDecision } from '$lib/server/decision-ruling-writes';
@@ -219,6 +221,23 @@ const release = (user: SessionUser | null, decision: Decision, body: Record<stri
 	as(user, (caller) => releaseResults(caller, { decisionId: decision.id }, { revision: resultsRevisionFor(decision.id), ...body }, opts));
 const supersede = (user: SessionUser | null, decision: Decision, body: Record<string, unknown> = {}, opts = UI) =>
 	as(user, (caller) => supersedeDecision(caller, { decisionId: decision.id }, body, opts));
+/** Card 2684: a participant's objection or request to talk, signed in, and the decider's reply to one. */
+const flag = (user: SessionUser, decision: Decision, body: Record<string, unknown>) => as(user, (caller) => raiseFlag(caller, { decisionId: decision.id }, body, UI));
+const replyTo = (user: SessionUser, decision: Decision, flagId: number, reply: string) =>
+	as(user, (caller) => replyToFlag(caller, { decisionId: decision.id, flagId }, { reply }, UI));
+/** The decision's flag ids, oldest first. */
+const flagIdsOf = (decisionId: number) => (sqlite.prepare('SELECT id FROM decision_flags WHERE decision_id = ? ORDER BY id').all(decisionId) as { id: number }[]).map((row) => row.id);
+/** A flag row written as a restore could leave one, replied to where `reply` is given; answers its id. */
+const plantFlag = (decisionId: number, participantId: number, row: { kind: string; reason?: string; reply?: string; repliedAt?: string }): number =>
+	Number(
+		sqlite
+			.prepare(
+				'INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at, reply, replied_by_name, replied_at) ' +
+					"VALUES (?, ?, ?, ?, 1, 'session', '2026-11-02 09:30:00', ?, ?, ?)"
+			)
+			.run(decisionId, participantId, row.kind, row.reason ?? 'A planted reason.', row.reply ?? null, row.reply === undefined ? null : 'A decider', row.repliedAt ?? null)
+			.lastInsertRowid
+	);
 
 /**
  * A ruled decision whose results may be released: three live consulted
@@ -1114,8 +1133,8 @@ describe('ruleDecision', () => {
 		await sent.settle();
 	});
 
-	it('moves the results revision with a response, a participant changed, a question answered, a release and a kind not yet counted, and not with a seen, a mail outcome, a concern or updated_at alone (7)', () => {
-		const { decision, a } = opened();
+	it('moves the results revision with a response, a participant changed, a question answered, a release, a kind not yet counted, an objection or request to talk raised and one replied to, and not with a seen, a mail outcome, a concern, updated_at alone or a planted flag the reader leaves out (7; card 2684, T41)', () => {
+		const { decision, a, decider } = opened();
 		const pat = withAccount(decision, 'pat');
 		const questionId = Number(
 			sqlite
@@ -1155,8 +1174,28 @@ describe('ruleDecision', () => {
 			'results_released_at'
 		).toBe(true);
 		// Code review F1: it fails closed, so a kind no tally counts yet moves it.
-		expect(moves(() => makeResponse(pat.participant, { kind: 'objection', comment: 'A kind not yet counted.' })), 'a kind not yet counted').toBe(true);
+		expect(moves(() => makeResponse(pat.participant, { kind: 'not_a_kind', comment: 'A kind not yet counted.' })), 'a kind not yet counted').toBe(true);
+		// Card 2684 (R10, T41): an objection raised, a request to talk raised, and each replied to.
+		// Pat's place no longer holds an account: two others raise them.
+		const ria = withAccount(decision, 'ria');
+		const quin = withAccount(decision, 'quin');
+		expect(moves(() => flag(ria.account, decision, { kind: 'objection', reason: 'Too dear.' })), 'an objection raised').toBe(true);
+		expect(moves(() => flag(quin.account, decision, { kind: 'talk' })), 'a request to talk raised').toBe(true);
+		const [objectionId, talkId] = flagIdsOf(decision.id);
+		expect(moves(() => replyTo(decider, decision, objectionId, 'The budget covers it.')), 'an objection answered').toBe(true);
+		expect(moves(() => replyTo(decider, decision, talkId, 'We spoke.')), 'a talk outcome').toBe(true);
+		// A row the tolerant reader leaves out is not covered (R10, R19).
+		const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			expect(moves(() => plantFlag(decision.id, pat.participant.id, { kind: 'veto' })), 'a planted flag left out').toBe(false);
+		} finally {
+			quiet.mockRestore();
+		}
 		// The keyed HMAC, not the draft revision.
+		const flagRows = sqlite.prepare("SELECT id, replied_at AS repliedAt FROM decision_flags WHERE decision_id = ? AND kind != 'veto' ORDER BY id").all(decision.id) as {
+			id: number;
+			repliedAt: string;
+		}[];
 		expect(resultsRevisionFor(decision.id)).toBe(
 			resultsRevisionOf({
 				decision: decisionRow(decision.id),
@@ -1164,7 +1203,9 @@ describe('ruleDecision', () => {
 				participants: participantsOf(decision.id),
 				responseIds: (sqlite.prepare("SELECT id FROM decision_responses WHERE decision_id = ? AND kind != 'concern'").all(decision.id) as { id: number }[]).map((r) => r.id),
 				// Card 2678 (decision 11): the publishing moment of an agent's draft, and its flag, too.
-				questions: [{ id: questionId, answeredAt: PAST, answerReviewedAt: null, answerAgentDrafted: false }]
+				questions: [{ id: questionId, answeredAt: PAST, answerReviewedAt: null, answerAgentDrafted: false }],
+				// Card 2684 (R10): each flag the reader keeps, and when it was replied to.
+				flags: flagRows
 			})
 		);
 	});
@@ -1233,7 +1274,7 @@ describe('ruleDecision', () => {
 		expect(resultsRevisionFor(ruled.decision.id), 'a release').not.toBe(beforeRelease);
 	});
 
-	it("is the keyed HMAC of its JSON built by hand: the decision with results_released_at last (card 2734, in place of updated_at), the options, each participant's account and address, the responses and the questions (card 2706, D1)", () => {
+	it("is the keyed HMAC of its JSON built by hand: the decision with results_released_at last (card 2734, in place of updated_at), the options, each participant's account and address, the responses, the questions (card 2706, D1) and the flags (card 2684, R10)", () => {
 		const { decision, a, b, c } = opened();
 		const pat = withAccount(decision, 'pat');
 		const linky = withLink(decision, 'linky-token');
@@ -1254,6 +1295,9 @@ describe('ruleDecision', () => {
 			.run(PAST, '2026-11-02 10:00:00', drafted);
 		// Card 2734: a moment set, so the pin tells the column from a null in its place.
 		db.update(decisions).set({ resultsReleasedAt: '2026-11-04 12:00:00' }).where(eq(decisions.id, decision.id)).run();
+		// Card 2684 (R10): a flag replied to, and one not, the reply's moment covered.
+		const objection = plantFlag(decision.id, pat.participant.id, { kind: 'objection', reply: 'Covered.', repliedAt: '2026-11-03 10:00:00' });
+		const talk = plantFlag(decision.id, linky.participant.id, { kind: 'talk' });
 		const row = decisionRow(decision.id);
 		expect(pat.participant.userId, 'an account to cover').toBe(pat.account.id);
 
@@ -1267,6 +1311,10 @@ describe('ruleDecision', () => {
 			questions: [
 				[open, null, null, false],
 				[drafted, PAST, '2026-11-02 10:00:00', true]
+			],
+			flags: [
+				[objection, '2026-11-03 10:00:00'],
+				[talk, null]
 			]
 		});
 
@@ -1693,7 +1741,8 @@ describe('readResults', () => {
 
 		const results = readResults(decider, decision.id, { source: 'ui' });
 
-		expect(readResults(makeUser({ role: 'admin' }), decision.id, { source: 'ui' })).toEqual(results);
+		// Card 2684 (R7, T42): the same but `mayReply`, which is the decider's alone.
+		expect(readResults(makeUser({ role: 'admin' }), decision.id, { source: 'ui' })).toEqual({ ...results, mayReply: false });
 		const row = (who: { participant: DecisionParticipant }, more: Record<string, unknown>) => ({
 			participantId: who.participant.id,
 			name: who.participant.name,
@@ -1779,7 +1828,7 @@ describe('readResults', () => {
 		answer(pat.participant, { optionId: b.id });
 		const last = answer(pat.participant, { kind: 'abstain', optionId: null });
 		makeResponse(pat.participant, { kind: 'concern', comment: 'A concern.' });
-		makeResponse(pat.participant, { kind: 'objection', comment: 'A kind not yet counted.' });
+		makeResponse(pat.participant, { kind: 'not_a_kind', comment: 'A kind not yet counted.' });
 
 		const results = readResults(decider, decision.id, { source: 'ui' });
 
@@ -2364,6 +2413,33 @@ describe('raiseConcern and raiseConcernByLink', () => {
 		).toBe(true);
 	});
 
+	it('asks a new decider on the participant’s first concern after a change of decider, though the former was asked within the day (code review C-S-L4)', async () => {
+		const { decision, decider } = ruledOne();
+		const pat = withAccount(decision, 'pat');
+		concern(pat.account, decision);
+		await sent.settle();
+		expect(noticesMailed().map((mail) => mail.to)).toEqual([decider.email]);
+		sent.clear();
+		// No write changes the decider of a ruled decision today, so the change is the test's own, as `setDecider` records
+		// it: the rule is `deciderNoticeOf`'s, shared with objections and requests to talk, whose decider can change.
+		const next = makeUser({ username: 'next' });
+		db.update(decisions).set({ deciderUserId: next.id, deciderName: next.username }).where(eq(decisions.id, decision.id)).run();
+		appendEvent(
+			{ decisionId: decision.id, kind: 'decider_changed', detail: { fromUserId: decider.id, fromName: decider.username, toUserId: next.id, toName: next.username } },
+			SYSTEM_ACTOR
+		);
+
+		ageConcerns(pat.participant.id, 11);
+		concern(pat.account, decisionRow(decision.id), { comment: 'To the new decider.' });
+		expect(notices(decision.id)).toEqual([
+			[pat.participant.id, 'asked'],
+			[pat.participant.id, 'asked']
+		]);
+		await sent.settle();
+		expect(noticesMailed().map((mail) => mail.to)).toEqual([next.email]);
+		expect(noticesMailed()[0].html).not.toContain('more since the last notice');
+	});
+
 	it('leaves a participant’s own response their last vote after a concern (30)', () => {
 		const { decision, a } = opened();
 		const pat = withAccount(decision, 'pat');
@@ -2490,8 +2566,20 @@ describe('the rule and release routes', () => {
 
 describe('the decider-only details, the statement version and the API', () => {
 	it('names the decider-only events, and keeps the record and the results the decider’s and administrators’ (37)', () => {
-		// Card 2678 (decision 2): the four question events too.
-		expect(DECIDER_ONLY_EVENTS).toEqual(['ruled', 'cut_off', 'concern_raised', 'question_asked', 'question_answered', 'answer_published', 'answer_replaced']);
+		// Card 2678 (decision 2): the four question events too; and card 2684's four flag events (R16).
+		expect(DECIDER_ONLY_EVENTS).toEqual([
+			'ruled',
+			'cut_off',
+			'concern_raised',
+			'question_asked',
+			'question_answered',
+			'answer_published',
+			'answer_replaced',
+			'objection_raised',
+			'talk_requested',
+			'objection_answered',
+			'talk_outcome'
+		]);
 		expect(DECISION_RULES.record).toEqual(['admin', 'decider']);
 		expect(DECISION_RULES.results).toEqual(['admin', 'decider']);
 	});
@@ -2866,5 +2954,193 @@ describe('survey answers in the results, the ruling and the release (card 2683)'
 		const released = surveyReadsIn(() => releasedOf(decisionRow(decision.id)));
 		expect(released.reads).toBe(0);
 		expect(released.value?.comments).toEqual(['A for pat.', 'A for quin.', 'A for ria.']);
+	});
+});
+
+// ─── Objections and requests to talk at the ruling and in the results (card 2684, S2) ─
+
+describe('objections and requests to talk at the ruling and in the results (card 2684)', () => {
+	const ONE_OBJECTION = '1 objection has no answer: answer it before ruling';
+	const ONE_TALK = '1 request to talk has no outcome recorded: confirm that you rule with it open';
+	const fine = (a: { id: number }) => ({ optionId: a.id, reason: 'A is enough.' });
+	const raisedAt = (flagId: number) => (sqlite.prepare('SELECT raised_at AS at FROM decision_flags WHERE id = ?').get(flagId) as { at: string }).at;
+
+	it('T37. refuses the ruling while an objection has no answer, whatever is confirmed, writing nothing, and rules once each is answered', async () => {
+		const { decision, a, decider } = opened();
+		const pat = withAccount(decision, 'pat');
+		const quin = withAccount(decision, 'quin');
+		flag(pat.account, decision, { kind: 'objection', reason: 'Too dear.' });
+		let before = written();
+		expect(outcome(() => rule(decider, decision, fine(a))), 'one').toEqual({ status: 409, message: ONE_OBJECTION });
+		expect(written(), 'one').toEqual(before);
+
+		flag(quin.account, decision, { kind: 'objection', reason: 'Too slow.' });
+		const [first, second] = flagIdsOf(decision.id);
+		before = written();
+		expect(outcome(() => rule(decider, decision, { ...fine(a), openQuestionsConfirmed: true, openTalksConfirmed: true })), 'two, everything confirmed').toEqual({
+			status: 409,
+			message: '2 objections have no answer: answer each before ruling'
+		});
+		expect(written(), 'two').toEqual(before);
+
+		replyTo(decider, decision, first, 'The budget covers it.');
+		expect(outcome(() => rule(decider, decision, fine(a))), 'one answered').toEqual({ status: 409, message: ONE_OBJECTION });
+		// An answer need not agree: neither is a veto.
+		replyTo(decider, decision, second, 'I hear you, and it stays as it is.');
+		expect(outcome(() => rule(decider, decision, fine(a))), 'both answered').toBe('passed');
+		expect(decisionRow(decision.id).status).toBe('ruled');
+		await settled(decision.id);
+	});
+
+	it('T38. refuses the ruling while a removed participant’s objection has no answer', async () => {
+		const { decision, a, decider } = opened();
+		const gone = withAccount(decision, 'gone');
+		flag(gone.account, decision, { kind: 'objection', reason: 'Before I was removed.' });
+		db.update(decisionParticipants).set({ removedAt: PAST }).where(eq(decisionParticipants.id, gone.participant.id)).run();
+
+		expect(outcome(() => rule(decider, decision, fine(a)))).toEqual({ status: 409, message: ONE_OBJECTION });
+		replyTo(decider, decision, flagIdsOf(decision.id)[0], 'Heard, after your removal.');
+		expect(outcome(() => rule(decider, decision, fine(a))), 'answered').toBe('passed');
+		await settled(decision.id);
+	});
+
+	it('T59. refuses the ruling after a re-publish while an objection raised on version 1 has no answer', async () => {
+		const { decision, decider } = opened();
+		const pat = withAccount(decision, 'pat');
+		flag(pat.account, decision, { kind: 'objection', reason: 'On version 1.' });
+		makeVersion(decision, { situation: 'Money is shorter.' }, { number: 2 });
+		const republished = decisionRow(decision.id);
+		expect(republished.currentVersion).toBe(2);
+
+		expect(outcome(() => rule(decider, republished, { optionId: null, reason: 'None of these.' }))).toEqual({ status: 409, message: ONE_OBJECTION });
+		replyTo(decider, republished, flagIdsOf(decision.id)[0], 'Version 2 answers it.');
+		expect(outcome(() => rule(decider, republished, { optionId: null, reason: 'None of these.' })), 'answered').toBe('passed');
+		await settled(decision.id);
+	});
+
+	it('T39. refuses the ruling while a request to talk has no outcome unless openTalksConfirmed, and rules with it', async () => {
+		const { decision, a, decider } = opened();
+		const pat = withAccount(decision, 'pat');
+		const quin = withAccount(decision, 'quin', 'informed');
+		flag(pat.account, decision, { kind: 'talk' });
+		flag(quin.account, decision, { kind: 'talk', reason: 'Call me.' });
+		const before = written();
+
+		expect(outcome(() => rule(decider, decision, fine(a))), 'two').toEqual({
+			status: 409,
+			message: '2 requests to talk have no outcome recorded: confirm that you rule with them open'
+		});
+		replyTo(decider, decision, flagIdsOf(decision.id)[1], 'We spoke.');
+		const replied = written();
+		expect(replied.events).toBe(before.events + 1);
+		expect(outcome(() => rule(decider, decision, fine(a))), 'one').toEqual({ status: 409, message: ONE_TALK });
+		// The questions' confirmation is not this one.
+		expect(outcome(() => rule(decider, decision, { ...fine(a), openQuestionsConfirmed: true })), 'questions confirmed').toEqual({ status: 409, message: ONE_TALK });
+		expect(outcome(() => rule(decider, decision, { ...fine(a), openTalksConfirmed: 'yes' })), 'not a boolean').toEqual({
+			status: 400,
+			message: 'openTalksConfirmed must be true or false'
+		});
+		expect(written()).toEqual(replied);
+		expect(outcome(() => rule(decider, decision, { ...fine(a), openTalksConfirmed: true })), 'confirmed').toBe('passed');
+		expect(decisionRow(decision.id).status).toBe('ruled');
+		await settled(decision.id);
+	});
+
+	it('T40. lists the refusals in order: stale, objections, questions, requests to talk', () => {
+		const { decision, a, decider } = opened();
+		flag(withAccount(decision, 'pat').account, decision, { kind: 'objection', reason: 'Too dear.' });
+		flag(withAccount(decision, 'quin').account, decision, { kind: 'talk' });
+		sqlite
+			.prepare("INSERT INTO decision_questions (decision_id, asker_name, question, asked_in_version, via, asked_at) VALUES (?, 'Ria', 'Why A?', 1, 'session', ?)")
+			.run(decision.id, PAST);
+
+		expect(rulingRefusals(decisionRow(decision.id), { revision: 'stale', openQuestionsConfirmed: false, openTalksConfirmed: false })).toEqual([
+			STALE_REVISION,
+			ONE_OBJECTION,
+			'1 question is still open: confirm that you rule with it open',
+			ONE_TALK
+		]);
+		// The guard answers the first: with the revision as it is, the objection, whatever is confirmed.
+		expect(outcome(() => rule(decider, decision, { ...fine(a), openQuestionsConfirmed: true, openTalksConfirmed: true }))).toEqual({ status: 409, message: ONE_OBJECTION });
+	});
+
+	it('T42. gives the decider and an administrator every flag with names and replies, the replier by name alone, and mayReply to the decider alone', () => {
+		const { decision, decider } = opened();
+		const pat = withAccount(decision, 'pat');
+		const lia = withLink(decision, 'token-t42');
+		flag(pat.account, decision, { kind: 'objection', reason: 'Too dear.' });
+		as(null, (caller) => raiseFlagByLink(caller, { token: 'token-t42' }, { kind: 'talk', reason: 'Call me.' }, UI));
+		const [objection, talk] = flagIdsOf(decision.id);
+		replyTo(decider, decision, objection, 'The budget covers it.');
+		const admin = makeUser({ username: `admin${++seq}`, role: 'admin' });
+
+		const results = readResults(decider, decision.id, { source: 'ui' });
+
+		expect(results.flags).toEqual([
+			{
+				flagId: objection,
+				kind: 'objection',
+				name: pat.participant.name,
+				reason: 'Too dear.',
+				raisedAt: raisedAt(objection),
+				via: 'session',
+				versionNumber: 1,
+				reply: 'The budget covers it.',
+				repliedByName: decider.username,
+				repliedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+			},
+			{
+				flagId: talk,
+				kind: 'talk',
+				name: lia.participant.name,
+				reason: 'Call me.',
+				raisedAt: raisedAt(talk),
+				via: 'link',
+				versionNumber: 1,
+				reply: null,
+				repliedByName: null,
+				repliedAt: null
+			}
+		]);
+		expect(results.mayReply).toBe(true);
+		const asAdmin = readResults(admin, decision.id, { source: 'ui' });
+		expect(asAdmin.flags).toEqual(results.flags);
+		expect(asAdmin.mayReply).toBe(false);
+		// The replier's account is kept for the record alone (S-L4).
+		expect(JSON.stringify(results.flags)).not.toMatch(/"repliedBy"|"replied_by"|"participantId"|"decisionId"/);
+	});
+
+	it('T61. gives no flags key under source api, to the decider or an administrator', () => {
+		const { decision, decider } = opened();
+		flag(withAccount(decision, 'pat').account, decision, { kind: 'objection', reason: 'SECRET-OBJECTION' });
+		const admin = makeUser({ username: `admin${++seq}`, role: 'admin' });
+
+		for (const [who, user] of [
+			['the decider', decider],
+			['an administrator', admin]
+		] as const) {
+			const results = readResults(user, decision.id, { source: 'api' });
+			expect('flags' in results, who).toBe(false);
+			expect(JSON.stringify(results), who).not.toContain('SECRET-OBJECTION');
+			// The page's read still has them: the source alone decides.
+			expect(readResults(user, decision.id, { source: 'ui' }).flags, who).toHaveLength(1);
+		}
+	});
+
+	it('T43. holds no flag text in a release, its preview, or what a board reader’s page is given of it', () => {
+		const made = releasable();
+		plantFlag(made.decision.id, made.pat.participant.id, { kind: 'objection', reason: 'SECRET-OBJECTION', reply: 'SECRET-REPLY', repliedAt: '2026-11-03 10:00:00' });
+		plantFlag(made.decision.id, made.quin.participant.id, { kind: 'talk', reason: 'SECRET-TALK' });
+		expect(readResults(made.decider, made.decision.id, { source: 'ui' }).flags, 'the reader keeps both').toHaveLength(2);
+
+		const preview = readResults(made.decider, made.decision.id, { source: 'ui' }).releasePreview;
+		expect(preview).not.toBeNull();
+		expect(JSON.stringify(preview)).not.toContain('SECRET');
+		expect(JSON.stringify(previewOf(decisionRow(made.decision.id)))).not.toContain('SECRET');
+		release(made.decider, decisionRow(made.decision.id));
+		const released = releasedOf(decisionRow(made.decision.id));
+		expect(released).not.toBeNull();
+		expect(JSON.stringify(released)).not.toContain('SECRET');
+		expect(JSON.stringify(readDecisionPage(boardReader(), made.decision.id))).not.toContain('SECRET');
 	});
 });

@@ -1985,6 +1985,48 @@ export function notifyDecisionConcern(deciderUserId: number, decisionId: number,
 }
 
 /**
+ * Tell a decision's decider that a participant raised an objection, or asked
+ * to talk to them (card 2684, R15), under `email_decisions` and the master
+ * switch: not a record mail (D22). It names neither the participant nor what
+ * they wrote, which stay on the results page, behind a sign-in, which it links
+ * to. `heldBefore` is how many objections and requests to talk of the same
+ * participant were not mailed since the last notice about them.
+ *
+ * As `notifyDecisionConcern`: no `baseUrl` (the link is made on
+ * `linkBaseUrl()`), the preference and the address asked again here, and the
+ * send after the commit. The flag write decides whether to call it.
+ */
+export function notifyDecisionFlag(deciderUserId: number, decisionId: number, title: string, kind: 'objection' | 'talk', heldBefore: number): void {
+	if (!isSmtpConfigured()) return;
+	const decider = db.select({ id: users.id, email: users.email }).from(users).where(eq(users.id, deciderUserId)).get();
+	if (!decider) return;
+	if (!shouldNotifyUser(decider.id, 'email_decisions')) return;
+	const baseUrl = linkBaseUrl();
+	if (noLinkAddress(baseUrl, 'The notice of an objection or a request to talk')) return;
+
+	const resultsUrl = `${baseUrl}/decisions/${decisionId}/results`;
+	const heading = kind === 'objection' ? 'An objection to a decision' : 'A request to talk about a decision';
+	const what =
+		kind === 'objection'
+			? `A participant objected to <strong>${escapeHtml(title)}</strong>. Open the results to read why: you answer it before you rule.`
+			: `A participant asked to talk to you about <strong>${escapeHtml(title)}</strong>. Open the results to read their request.`;
+	const held =
+		heldBefore > 0
+			? `<p style="margin: 0 0 12px; font-size: 13px; color: #475569;">They raised ${heldBefore} more since the last notice about them, which ${heldBefore === 1 ? 'was' : 'were'} not mailed.</p>`
+			: '';
+	const html = emailTemplate(heading, `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4338ca;">
+			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">${what}</p>
+			${held}
+			<a href="${escapeHtml(resultsUrl)}" style="display: inline-block; padding: 8px 16px; background: #4338ca; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open the results</a>
+		</div>
+	`);
+
+	const subject = kind === 'objection' ? `An objection to ${title}` : `A request to talk about ${title}`;
+	sendEmail(decider.email, subject, html).catch(err => log.error(`Objection or request-to-talk notice failed for decision ${decisionId}`, err));
+}
+
+/**
  * Tell a decision's author or decider that a participant asked a question
  * about it (card 2678, decision 5), under `email_decisions` and the master
  * switch. It names nobody and quotes nothing: the question stays in the
@@ -2063,4 +2105,51 @@ export function notifyQuestionAnswered(to: { userId: number } | { address: strin
 		</div>
 	`);
 	sendEmail(asker.email, subject, html).catch(err => log.error(`Answer notice failed for decision ${decisionId}`, err));
+}
+
+/**
+ * Tell a participant that the decider answered their objection, or recorded
+ * the outcome of their request to talk (card 2684, R15). It names nobody and
+ * quotes nothing: the reply stays on the decision's page, for them alone.
+ *
+ * `to` as `notifyQuestionAnswered`'s, by the one rule (`participantNoticeOf`):
+ * an account holder's account, under `email_decisions` and the master switch,
+ * mailed a link to the decision's page, behind a sign-in; or a link holder's
+ * snapshot address, which no preference governs, mailed no link at all (card
+ * 2721, D1), told to use the one in their latest email (`LATEST_LINK_LINE`)
+ * or to ask for a new one (`ASK_FOR_LINK_LINE`). The reply write decides
+ * whether to call it; the send is after the commit.
+ */
+export function notifyFlagReplied(to: { userId: number } | { address: string; latestLink: boolean }, decisionId: number, title: string, kind: 'objection' | 'talk'): void {
+	if (!isSmtpConfigured()) return;
+	const subject = kind === 'objection' ? `Your objection to ${title} has been answered` : `The outcome of your request to talk about ${title} has been recorded`;
+	const heading = kind === 'objection' ? 'Your objection was answered' : 'Your request to talk has an outcome';
+	const what =
+		kind === 'objection'
+			? `The decider answered your objection to <strong>${escapeHtml(title)}</strong>.`
+			: `The decider recorded the outcome of your request to talk about <strong>${escapeHtml(title)}</strong>.`;
+	if ('address' in to) {
+		const html = emailTemplate(heading, `
+			<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4338ca;">
+				<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">${what}</p>
+				<p style="margin: 0; font-size: 13px; color: #475569;">${escapeHtml(to.latestLink ? LATEST_LINK_LINE : ASK_FOR_LINK_LINE)}</p>
+			</div>
+		`);
+		sendEmail(to.address, subject, html).catch(err => log.error(`Objection or request-to-talk reply notice failed for decision ${decisionId}`, err));
+		return;
+	}
+	const raiser = db.select({ id: users.id, email: users.email }).from(users).where(eq(users.id, to.userId)).get();
+	if (!raiser) return;
+	if (!shouldNotifyUser(raiser.id, 'email_decisions')) return;
+	const baseUrl = linkBaseUrl();
+	if (noLinkAddress(baseUrl, 'The notice of a reply to an objection or a request to talk')) return;
+
+	const pageUrl = `${baseUrl}/decisions/${decisionId}`;
+	const html = emailTemplate(heading, `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4338ca;">
+			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">${what}</p>
+			<a href="${escapeHtml(pageUrl)}" style="display: inline-block; padding: 8px 16px; background: #4338ca; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open the decision</a>
+		</div>
+	`);
+	sendEmail(raiser.email, subject, html).catch(err => log.error(`Objection or request-to-talk reply notice failed for decision ${decisionId}`, err));
 }

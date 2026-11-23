@@ -1079,7 +1079,8 @@ describe('what it says and what it changes', () => {
 				options: db.select().from(decisionOptions).where(eq(decisionOptions.decisionId, decision.id)).all(),
 				participants: db.select().from(decisionParticipants).where(eq(decisionParticipants.decisionId, decision.id)).all(),
 				responseIds: [],
-				questions: []
+				questions: [],
+				flags: []
 			});
 		const before = { draft: revisionNow(decision.id), results: resultsRevision(), updatedAt: decisionRow(decision.id).updatedAt };
 

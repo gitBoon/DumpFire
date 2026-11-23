@@ -157,8 +157,8 @@ export function reachOf(p: DecisionParticipant, person: Person | null, hadAccoun
  * An outcome not yet written is not delivered: fail closed. `reachOf` reads
  * no hash, so a mail that tells a link holder to use the link in their latest
  * email asks this first: the closing-date reminder (`standsAt`) and the
- * answer notice (`answerNoticeOf`) alike. A read alone: it issues and revokes
- * nothing.
+ * notice of an answer or a reply (`participantNoticeOf`) alike. A read alone:
+ * it issues and revokes nothing.
  */
 export function mailedLinkOf(
 	decision: Pick<Decision, 'id' | 'status' | 'ruledAt' | 'withdrawnAt' | 'closesAt'>,

@@ -50,6 +50,7 @@ import { labelsInVersions, peopleById, snapshotOf } from './decision-record';
 import { decisionLinkBase } from './decision-mail';
 import { isSmtpConfigured } from './email';
 import { UNPRINTABLE } from './logger';
+import { MARKDOWN_ALLOWED } from '$lib/printable';
 import { asObject, readBoolean, readChoice, readId, readList, readNumber, readObjects, readText, type RequestBody } from './request-body';
 import { purposeKey } from './request-tokens';
 import {
@@ -126,9 +127,6 @@ const SCALE_KEYS = ['max', 'lowLabel', 'highLabel'];
 
 /** The key a survey question's agent flag is kept under (card 2683, R16), as `options.<id>` is an option's. */
 export const surveyKey = (questionId: number) => `survey.${questionId}`;
-
-/** What a markdown field may hold of `UNPRINTABLE`: tab, newline, carriage return and the zero-width joiner (D12). */
-const MARKDOWN_ALLOWED = /[\t\n\r‍]/g;
 
 /** The words for a field holding a character it may not, as `createDecision`'s for the title (decision 30). */
 const unprintable = (path: string) => `${path} cannot hold control, direction or invisible characters`;
@@ -683,6 +681,11 @@ const RESULTS_REVISION_PURPOSE = 'decision-results-revision';
  * write; the release's was the one that did not, so `results_released_at`
  * stands in its place (the plan's write-by-write table,
  * docs/planning/card-2734-results-revision-delivery.md, section 2).
+ *
+ * Card 2684 (R10): and every objection and request to talk the tolerant reader
+ * keeps, by its id and the moment it was replied to, so that one raised or
+ * replied to after the results page was read makes a ruling (or a release)
+ * stale. A row the reader leaves out is not covered.
  */
 export function resultsRevisionOf(of: {
 	decision: Decision;
@@ -690,6 +693,7 @@ export function resultsRevisionOf(of: {
 	participants: DecisionParticipant[];
 	responseIds: number[];
 	questions: { id: number; answeredAt: string | null; answerReviewedAt: string | null; answerAgentDrafted: boolean }[];
+	flags: { id: number; repliedAt: string | null }[];
 }): string {
 	// Built in place, in the shape it had before card 2706, `updated_at` replaced by `results_released_at` (card 2734).
 	const covered = {
@@ -697,7 +701,8 @@ export function resultsRevisionOf(of: {
 		options: optionColumns(of.options),
 		participants: inOrder(of.participants).map((row) => [row.id, row.personId, row.role, row.userId, row.email, row.removedAt]),
 		responses: [...of.responseIds].sort((a, b) => a - b),
-		questions: inOrder(of.questions).map((question) => [question.id, question.answeredAt, question.answerReviewedAt, question.answerAgentDrafted])
+		questions: inOrder(of.questions).map((question) => [question.id, question.answeredAt, question.answerReviewedAt, question.answerAgentDrafted]),
+		flags: inOrder(of.flags).map((flag) => [flag.id, flag.repliedAt])
 	};
 	return createHmac('sha256', purposeKey(RESULTS_REVISION_PURPOSE)).update(JSON.stringify(covered)).digest('hex');
 }

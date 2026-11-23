@@ -36,7 +36,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Svelte from 'svelte';
-import type { DecisionPageData, ReleasedResults as Released, ResultRow, ResultsData, RoundTally, RulingRecord, RulingView, SurveyTally } from '$lib/decision-view-types';
+import type { DecisionPageData, ReleasedResults as Released, ResultFlag, ResultRow, ResultsData, RoundTally, RulingRecord, RulingView, SurveyTally } from '$lib/decision-view-types';
 
 const navigation = vi.hoisted(() => ({ invalidateAll: vi.fn(async () => {}), goto: vi.fn(async (_to: string) => {}) }));
 vi.mock('$app/navigation', () => ({
@@ -59,7 +59,7 @@ import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
 import ResultsView from '$lib/components/decision/ResultsView.svelte';
 import RulingBanner from '$lib/components/decision/RulingBanner.svelte';
 import RulingForm from '$lib/components/decision/RulingForm.svelte';
-import { CONCERN_WHO_SEES, NO_OPTIONS_PUT, NO_OPTIONS_TO_RELEASE, RELEASE_INFERENCE, RESULTS_READ_AGAIN, STALE_REVISION } from '$lib/decision-words';
+import { CONCERN_WHO_SEES, FLAG_REPLIES_CLOSED, FLAG_REPLY_ELSEWHERE, flagReplyWhoSees, NO_OPTIONS_PUT, NO_OPTIONS_TO_RELEASE, RELEASE_INFERENCE, RESULTS_READ_AGAIN, STALE_REVISION } from '$lib/decision-words';
 import DecisionPage from '../src/routes/decisions/[id]/+page.svelte';
 import ResultsPage from '../src/routes/decisions/[id]/results/+page.svelte';
 import { CODE, codeFieldIn } from './helpers/step-up-code';
@@ -282,7 +282,17 @@ describe('RulingForm (43)', () => {
 			{
 				what: 'POST /api/decisions/7/rule',
 				headers: JSON_TYPE,
-				body: JSON.stringify({ optionId: null, reason: 'Neither works.', conditions: '', revision: 'rev-1', openQuestionsConfirmed: true, currentPassword: 'my password', currentCode: CODE })
+				// Card 2684 (R8): with no request to talk open, `openTalksConfirmed` false.
+				body: JSON.stringify({
+					optionId: null,
+					reason: 'Neither works.',
+					conditions: '',
+					revision: 'rev-1',
+					openQuestionsConfirmed: true,
+					openTalksConfirmed: false,
+					currentPassword: 'my password',
+					currentCode: CODE
+				})
 			}
 		]);
 		expect(dialog()).toBeNull();
@@ -370,8 +380,8 @@ describe('RulingForm (43)', () => {
 		await settle();
 
 		expect(sent.map((request) => JSON.parse(request.body as string))).toEqual([
-			{ optionId: 12, reason: 'B lasts longer.', conditions: 'Reviewed in a year.', revision: 'rev-1', openQuestionsConfirmed: true, currentPassword: 'my password', currentCode: CODE },
-			{ optionId: 12, reason: 'B lasts longer.', conditions: 'Reviewed in a year.', revision: 'rev-2', openQuestionsConfirmed: true, currentPassword: 'my password', currentCode: CODE }
+			{ optionId: 12, reason: 'B lasts longer.', conditions: 'Reviewed in a year.', revision: 'rev-1', openQuestionsConfirmed: true, openTalksConfirmed: false, currentPassword: 'my password', currentCode: CODE },
+			{ optionId: 12, reason: 'B lasts longer.', conditions: 'Reviewed in a year.', revision: 'rev-2', openQuestionsConfirmed: true, openTalksConfirmed: false, currentPassword: 'my password', currentCode: CODE }
 		]);
 		expect(onRuled).toHaveBeenCalledTimes(1);
 	});
@@ -479,6 +489,9 @@ function results(more: Partial<ResultsData> = {}): ResultsData {
 		openQuestions: [],
 		mayAnswerQuestions: false,
 		concerns: [],
+		// Card 2684 (R23): nothing raised; the decider may reply.
+		flags: [],
+		mayReply: true,
 		ruling: null,
 		released: null,
 		releasePreview: {
@@ -1064,6 +1077,10 @@ describe('the decision page and DecisionActions (47, 48)', () => {
 			questions: [],
 			mayAsk: false,
 			mayAnswer: false,
+			// Card 2684 (R22): nor raises or reads an objection or a request to talk.
+			flags: [],
+			mayObject: false,
+			mayAskToTalk: false,
 			...more
 		};
 	}
@@ -1353,5 +1370,240 @@ describe('survey questions on the results and the ruling (card 2683)', () => {
 		expect(textOf(page.querySelector('[data-block="ruling"] dd')!)).toBe(NO_OPTIONS_PUT);
 		expect(page.querySelector('[data-block="release"]')).toBeNull();
 		expect(textOf(page.querySelector('[data-note="release-refusal"]')!)).toBe(NO_OPTIONS_TO_RELEASE);
+	});
+});
+
+// ─── Objections and requests to talk on the results page (card 2684, slice S3: U4 and U5) ─
+
+describe('objections and requests to talk on the results page (card 2684)', () => {
+	const flag = (flagId: number, more: Partial<ResultFlag> = {}): ResultFlag => ({
+		flagId,
+		kind: 'objection',
+		name: 'Pat Person',
+		reason: 'The cost is not covered.',
+		raisedAt: '2026-11-02 10:00:00',
+		via: 'session',
+		versionNumber: 2,
+		reply: null,
+		repliedByName: null,
+		repliedAt: null,
+		...more
+	});
+	const FLAGS = [
+		flag(21, { reply: 'We have **budget**.', repliedByName: 'Dee Cider', repliedAt: '2026-11-02 11:00:00' }),
+		flag(22, { kind: 'talk', name: 'Ivy Informed', reason: '', raisedAt: '2026-11-02 12:00:00' }),
+		flag(23, { name: 'Lin Holder', reason: 'Not <b>this</b> one.', raisedAt: '2026-11-02 13:00:00', via: 'link' })
+	];
+	const awaiting = (more: Partial<ResultsData> = {}) =>
+		results({ decision: { ...results().decision, shownStatus: 'awaiting_ruling' }, ruling: null, released: null, releasePreview: null, mayRelease: false, flags: FLAGS, ...more });
+	const panel = (target: HTMLElement) => target.querySelector<HTMLElement>('[data-block="flags"]')!;
+	const items = (target: HTMLElement) => [...panel(target).querySelectorAll<HTMLElement>('li[data-flag]')];
+	const boxIn = (item: HTMLElement) => item.querySelector<HTMLTextAreaElement>('form[data-form="reply"] textarea');
+
+	it('U4: lists the flags, unanswered objections first, a reply box for the decider under who reads it, none for an administrator; the replier by name', async () => {
+		const target = draw(ResultsPage, { data: awaiting() });
+		expect(textOf(panel(target).querySelector('h2')!)).toBe('Objections and requests to talk');
+		expect(panel(target).id).toBe('flags');
+		expect(items(target).map((item) => [item.getAttribute('data-flag'), item.getAttribute('data-flag-kind')])).toEqual([
+			['23', 'objection'],
+			['21', 'objection'],
+			['22', 'talk']
+		]);
+		const [lin, pat, ivy] = items(target);
+		expect(textOf(lin.querySelector('.line')!)).toBe('Objection from Lin Holder 2026-11-02 13:00 UTC, by link, version 2');
+		expect(textOf(lin.querySelector('[data-text="reason"]')!)).toBe('Not <b>this</b> one.');
+		expect(lin.querySelector('[data-text="reason"] b'), 'plain text').toBeNull();
+		// The replier by name alone, the reply as written.
+		expect(textOf(pat.querySelector('[data-note="replied"]')!)).toBe('Answered by Dee Cider, 2026-11-02 11:00 UTC:');
+		expect(textOf(pat.querySelector('[data-text="reply"]')!)).toBe('We have **budget**.');
+		expect(boxIn(pat), 'no box once replied').toBeNull();
+		expect(textOf(ivy.querySelector('.meta:not([data-note])')!)).toBe('2026-11-02 12:00 UTC, version 2');
+
+		// The decider's boxes, each under who reads the reply, named by it.
+		for (const [item, name] of [
+			[lin, 'Lin Holder'],
+			[ivy, 'Ivy Informed']
+		] as const) {
+			const box = boxIn(item)!;
+			const whoSees = item.querySelector('[data-note="reply-who-sees"]')!;
+			expect(textOf(whoSees)).toBe(flagReplyWhoSees(name));
+			expect(box.getAttribute('aria-describedby')!.split(' ')).toContain(whoSees.id);
+			expect(item.querySelector(`label[for="${box.id}"]`), 'labelled').not.toBeNull();
+			expect(box.maxLength).toBe(4000);
+		}
+		expect(textOf(lin.querySelector('button')!)).toBe('Send answer');
+		expect(textOf(ivy.querySelector('button')!)).toBe('Record outcome');
+		expect(lin.querySelector<HTMLButtonElement>('button')!.disabled, 'an empty reply').toBe(true);
+
+		typeInto(boxIn(lin)!, 'The budget covers it.');
+		answer('POST /api/decisions/7/flags/23/reply', 200, { flag: flag(23, { reply: 'The budget covers it.' }) });
+		lin.querySelector<HTMLButtonElement>('button')!.click();
+		await settle();
+		expect(sent.map((request) => [request.what, JSON.parse(String(request.body))])).toEqual([['POST /api/decisions/7/flags/23/reply', { reply: 'The budget covers it.' }]]);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		const region = panel(target).querySelector<HTMLElement>('[data-said="flag-reply"]')!;
+		expect(textOf(region)).toBe("Your answer to Lin Holder's objection was recorded.");
+		expect(document.activeElement).toBe(region);
+
+		// A refusal in the server's words, the reply kept.
+		typeInto(boxIn(ivy)!, 'We spoke.');
+		answer('POST /api/decisions/7/flags/22/reply', 409, { message: 'The outcome of this request to talk has already been recorded' });
+		ivy.querySelector<HTMLButtonElement>('button')!.click();
+		await settle();
+		expect(textOf(region)).toBe('The outcome of this request to talk has already been recorded');
+		expect(boxIn(ivy)!.value).toBe('We spoke.');
+
+		// An administrator: the same list, with names, and no box.
+		const admin = draw(ResultsPage, { data: awaiting({ mayReply: false }) });
+		expect(items(admin)).toHaveLength(3);
+		expect(panel(admin).querySelector('form, textarea, [data-note="reply-who-sees"]')).toBeNull();
+		expect(textOf(panel(admin).querySelector('[data-note="reply-elsewhere"]')!)).toBe(FLAG_REPLY_ELSEWHERE);
+		expect(textOf(items(admin)[0].querySelector('[data-note="no-reply"]')!)).toBe('Not answered yet');
+
+		// Ruled: a talk's outcome may still be recorded, an objection's answer no longer.
+		const ruled = draw(ResultsPage, { data: results({ flags: FLAGS }) });
+		const [ruledLin, , ruledIvy] = items(ruled);
+		expect(boxIn(ruledLin), 'an objection after the ruling').toBeNull();
+		expect(boxIn(ruledIvy), 'a talk after the ruling').not.toBeNull();
+
+		// Nothing raised: no panel.
+		expect(draw(ResultsPage, { data: results() }).querySelector('[data-block="flags"]')).toBeNull();
+	});
+
+	it('U5: Rule is off with objections unanswered, naming the count and linking to them; an open request to talk adds a box sent as openTalksConfirmed', async () => {
+		const target = draw(ResultsPage, { data: awaiting({ mayRule: true, flags: [...FLAGS, flag(24, { name: 'Sam' })] }) });
+		const form = target.querySelector<HTMLElement>('[data-form="ruling"]')!;
+		const rule = form.querySelector<HTMLButtonElement>('[data-action="rule"]')!;
+		const note = form.querySelector('[data-note="objections"]')!;
+		expect(textOf(note)).toBe('2 objections have no answer: answer each before ruling. Go to the objections');
+		expect(note.querySelector('a')!.getAttribute('href')).toBe('#flags');
+		expect(document.getElementById('flags'), 'the link’s target').toBe(panel(target));
+		choose(form.querySelector<HTMLInputElement>('input[type="radio"]')!);
+		typeInto(form.querySelector<HTMLTextAreaElement>('textarea')!, 'Plan A.');
+		const talks = form.querySelector<HTMLInputElement>('[data-check="open-talks"]')!;
+		expect(textOf(talks.closest('label')!)).toBe('1 request to talk has no outcome recorded: I rule with it open');
+		talks.click();
+		flushSync();
+		expect(rule.disabled, 'no box gets past an unanswered objection').toBe(true);
+
+		// The form alone: one objection, two requests to talk, and then none unanswered.
+		const onRuled = vi.fn(async () => {});
+		const alone = draw(RulingForm, {
+			decisionId: 7,
+			title: 'Which plan?',
+			revision: 'rev-1',
+			options: OPTIONS,
+			mostChosen: [11],
+			voted: 3,
+			early: false,
+			cutOff: [],
+			openQuestions: 0,
+			unansweredObjections: 1,
+			openTalks: 2,
+			onRuled
+		});
+		expect(textOf(alone.querySelector('[data-note="objections"]')!)).toBe('1 objection has no answer: answer it before ruling. Go to the objections');
+		const box = alone.querySelector<HTMLInputElement>('[data-check="open-talks"]')!;
+		expect(textOf(box.closest('label')!)).toBe('2 requests to talk have no outcome recorded: I rule with them open');
+		choose(alone.querySelector<HTMLInputElement>('input[type="radio"]')!);
+		typeInto(alone.querySelector<HTMLTextAreaElement>('textarea')!, 'Plan A.');
+		box.click();
+		flushSync();
+		const ruleAlone = alone.querySelector<HTMLButtonElement>('[data-action="rule"]')!;
+		expect(ruleAlone.disabled).toBe(true);
+
+		const answered = draw(RulingForm, { ...{ decisionId: 7, title: 'Which plan?', revision: 'rev-1', options: OPTIONS, mostChosen: [11], voted: 3, early: false, cutOff: [], openQuestions: 0 }, openTalks: 1, onRuled });
+		expect(answered.querySelector('[data-note="objections"]')).toBeNull();
+		choose(answered.querySelector<HTMLInputElement>('input[type="radio"]')!);
+		typeInto(answered.querySelector<HTMLTextAreaElement>('textarea')!, 'Plan A.');
+		const ruleAnswered = answered.querySelector<HTMLButtonElement>('[data-action="rule"]')!;
+		expect(ruleAnswered.disabled, 'the box unticked').toBe(true);
+		answered.querySelector<HTMLInputElement>('[data-check="open-talks"]')!.click();
+		flushSync();
+		expect(ruleAnswered.disabled).toBe(false);
+		answered.querySelector<HTMLFormElement>('[data-form="ruling"]')!.requestSubmit();
+		flushSync();
+		typeInto(passwordIn()!, 'my password');
+		typeCode(dialog()!);
+		answer('POST /api/decisions/7/rule', 200, { decision: {}, revision: 'rev-2' });
+		confirmButton().click();
+		await settle();
+		expect(sent.map((request) => JSON.parse(String(request.body)))).toEqual([
+			{ optionId: 11, reason: 'Plan A.', conditions: '', revision: 'rev-1', openQuestionsConfirmed: false, openTalksConfirmed: true, currentPassword: 'my password', currentCode: CODE }
+		]);
+		expect(onRuled).toHaveBeenCalledTimes(1);
+	});
+
+	it('U9 (card 2684): on a withdrawn decision, replies are said to be closed, to the decider and an administrator alike, and nobody is told someone else replies (code review C-E-L1)', () => {
+		const withdrawn = (more: Partial<ResultsData> = {}) =>
+			results({ decision: { ...results().decision, shownStatus: 'withdrawn' }, ruling: null, released: null, releasePreview: null, mayRelease: false, flags: FLAGS, mayReply: false, ...more });
+		const target = draw(ResultsPage, { data: withdrawn() });
+		expect(textOf(panel(target).querySelector('[data-note="replies-closed"]')!)).toBe(FLAG_REPLIES_CLOSED);
+		expect(panel(target).querySelector('[data-note="reply-elsewhere"]'), 'never "someone else replies" on a withdrawn decision').toBeNull();
+		expect(panel(target).querySelector('form, textarea')).toBeNull();
+		// Every flag replied to: nothing waits, so neither is said.
+		const settled = draw(ResultsPage, { data: withdrawn({ flags: [FLAGS[0]] }) });
+		expect(panel(settled).querySelector('[data-note="replies-closed"], [data-note="reply-elsewhere"]')).toBeNull();
+		// Not withdrawn, an administrator is still told who replies, and not that replies are closed.
+		const admin = draw(ResultsPage, { data: awaiting({ mayReply: false }) });
+		expect(textOf(panel(admin).querySelector('[data-note="reply-elsewhere"]')!)).toBe(FLAG_REPLY_ELSEWHERE);
+		expect(panel(admin).querySelector('[data-note="replies-closed"]')).toBeNull();
+	});
+
+	it('U11 (card 2684): a refused reply leaves the focus in its box, what was typed kept; a recorded one moves it to the status region (code review C-E-L5)', async () => {
+		const target = draw(ResultsPage, { data: awaiting() });
+		const [lin, , ivy] = items(target);
+		const region = panel(target).querySelector<HTMLElement>('[data-said="flag-reply"]')!;
+		typeInto(boxIn(ivy)!, 'We spoke.');
+		ivy.querySelector<HTMLButtonElement>('button')!.focus();
+		answer('POST /api/decisions/7/flags/22/reply', 400, { message: 'reply must be at most 4000 characters' });
+		ivy.querySelector<HTMLButtonElement>('button')!.click();
+		await settle();
+		expect(textOf(region)).toBe('reply must be at most 4000 characters');
+		expect(document.activeElement, 'the focus in the box').toBe(boxIn(ivy));
+		expect(boxIn(ivy)!.value).toBe('We spoke.');
+
+		typeInto(boxIn(lin)!, 'The budget covers it.');
+		answer('POST /api/decisions/7/flags/23/reply', 200, { flag: flag(23, { reply: 'The budget covers it.' }) });
+		lin.querySelector<HTMLButtonElement>('button')!.click();
+		await settle();
+		expect(document.activeElement, 'recorded: the region').toBe(region);
+	});
+
+	it('U12 (card 2684): the open-questions and open-talks boxes are unticked whenever how many are open changes (code review C-E-L6)', () => {
+		const props = $state({ decisionId: 7, title: 'Which plan?', revision: 'rev-1', options: OPTIONS, mostChosen: [11], voted: 3, early: false, cutOff: [], openQuestions: 1, openTalks: 1, onRuled: async () => {} });
+		const target = draw(RulingForm, props);
+		const questions = () => target.querySelector<HTMLInputElement>('[data-check="open-questions"]')!;
+		const talks = () => target.querySelector<HTMLInputElement>('[data-check="open-talks"]')!;
+		const rule = target.querySelector<HTMLButtonElement>('[data-action="rule"]')!;
+		choose(target.querySelector<HTMLInputElement>('input[type="radio"]')!);
+		typeInto(target.querySelector<HTMLTextAreaElement>('textarea')!, 'Plan A.');
+		questions().click();
+		talks().click();
+		flushSync();
+		expect(rule.disabled).toBe(false);
+
+		// Another request to talk arrives: its box is unticked, the questions' kept.
+		props.openTalks = 2;
+		flushSync();
+		expect([questions().checked, talks().checked], 'a talk more').toEqual([true, false]);
+		expect(rule.disabled).toBe(true);
+		talks().click();
+		flushSync();
+		expect(rule.disabled).toBe(false);
+
+		// Another question: its box is unticked, the talks' kept.
+		props.openQuestions = 2;
+		flushSync();
+		expect([questions().checked, talks().checked], 'a question more').toEqual([false, true]);
+		expect(rule.disabled).toBe(true);
+
+		// Read again with the same numbers: the ticks stay.
+		questions().click();
+		flushSync();
+		props.revision = 'rev-2';
+		flushSync();
+		expect([questions().checked, talks().checked], 'the same numbers').toEqual([true, true]);
+		expect(rule.disabled).toBe(false);
 	});
 });

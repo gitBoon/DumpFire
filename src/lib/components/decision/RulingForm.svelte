@@ -16,7 +16,7 @@
   - With questions still open, Rule is off until the box saying so is ticked.
   - Rule… opens a dialog that asks for the caller's password and sends
     `{ optionId, reason, conditions, revision, openQuestionsConfirmed,
-    currentPassword, currentCode }` as JSON (card 2770). A refusal of the password stays in the dialog
+    openTalksConfirmed, currentPassword, currentCode }` as JSON (card 2770). A refusal of the password stays in the dialog
     (`stepUpRefusal`); any other refusal closes it and is said in the status
     region, in the server's words, and the focus goes back to Rule. A ruling
     taken is handed up (`onRuled`), whose page says it in its own region, as
@@ -32,6 +32,15 @@
     survey) offers no option and no "None of these": it says
     `NO_OPTIONS_PUT`, and the ruling, with no option, records the decider's
     conclusion in its reason.
+  - Card 2684 (R8, R23): while an objection has no answer, Rule is off and a
+    note says how many, in the server's own words
+    (`objectionsUnansweredWords`), with a link to the page's objections and
+    requests to talk (`flagsHref`); no box gets past it. With requests to talk
+    still without an outcome, a second box beside the open questions' must be
+    ticked, and its tick is sent as `openTalksConfirmed`; on a stale revision
+    it is unticked with the other. Any refusal of the ruling for them is said
+    in the status region in the server's words, as every other. Each box is
+    unticked whenever the number it speaks of changes (code review C-E-L6).
 -->
 <script lang="ts">
 	import { tick } from 'svelte';
@@ -39,7 +48,7 @@
 	import { failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { againstOf, DECISION_TEXT_MAX } from '$lib/decision-rules';
-	import { NOT_REACHED_WORDS, NO_OPTIONS_PUT, RESULTS_READ_AGAIN, STALE_REVISION } from '$lib/decision-words';
+	import { NOT_REACHED_WORDS, NO_OPTIONS_PUT, objectionsUnansweredWords, RESULTS_READ_AGAIN, STALE_REVISION, talksConfirmWords } from '$lib/decision-words';
 	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	let {
@@ -53,6 +62,9 @@
 		closedEarly = false,
 		cutOff,
 		openQuestions,
+		unansweredObjections = 0,
+		openTalks = 0,
+		flagsHref = '#flags',
 		onRuled
 	}: {
 		decisionId: number;
@@ -73,6 +85,12 @@
 		cutOff: { name: string; reached: boolean }[];
 		/** How many questions are still open. */
 		openQuestions: number;
+		/** Card 2684 (R8): how many objections have no answer; while any has none, Rule is off. */
+		unansweredObjections?: number;
+		/** Card 2684 (R8): how many requests to talk have no outcome recorded. */
+		openTalks?: number;
+		/** Card 2684 (R23): where the page lists the objections and requests to talk. */
+		flagsHref?: string;
 		/** A ruling was taken: the words to say. */
 		onRuled: (words: string) => void | Promise<void>;
 	} = $props();
@@ -86,7 +104,19 @@
 	let choice = $state('');
 	let reason = $state('');
 	let conditions = $state('');
-	let confirmedOpen = $state(false);
+	/**
+	 * The decider rules with the questions still open. Unticked whenever how many are open changes (code review C-E-L6):
+	 * the tick was given for the number shown, not for one that came after it.
+	 */
+	let confirmedOpen = $derived.by(() => {
+		void openQuestions;
+		return false;
+	});
+	/** Card 2684 (R8): the decider rules with the requests to talk still open; unticked whenever how many changes, as above. */
+	let confirmedTalks = $derived.by(() => {
+		void openTalks;
+		return false;
+	});
 	let confirming = $state(false);
 	/** The last refusal, said in the status region. */
 	let refused = $state('');
@@ -102,7 +132,9 @@
 	/** Card 2734 (D3): a choice is only one still offered, as the options may change when the page is read again. */
 	const offered = $derived(chosen === NONE || options.some((option) => String(option.optionId) === chosen));
 	const against = $derived(offered && againstOf(optionId, voted, mostChosen));
-	const ready = $derived(offered && reason.trim() !== '' && (openQuestions === 0 || confirmedOpen));
+	const ready = $derived(
+		offered && reason.trim() !== '' && (openQuestions === 0 || confirmedOpen) && unansweredObjections === 0 && (openTalks === 0 || confirmedTalks)
+	);
 	const chosenWords = $derived.by(() => {
 		if (noOptions) return 'no option, as none were put to a vote';
 		if (optionId === null) return 'None of these';
@@ -132,7 +164,16 @@
 			const res = await fetch(`/api/decisions/${decisionId}/rule`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ optionId, reason, conditions, revision, openQuestionsConfirmed: confirmedOpen, currentPassword: proof.currentPassword, currentCode: proof.currentCode })
+				body: JSON.stringify({
+					optionId,
+					reason,
+					conditions,
+					revision,
+					openQuestionsConfirmed: confirmedOpen,
+					openTalksConfirmed: confirmedTalks,
+					currentPassword: proof.currentPassword,
+					currentCode: proof.currentCode
+				})
 			});
 			const refusal = await stepUpRefusal(res);
 			if (refusal !== null) return refusal;
@@ -147,6 +188,7 @@
 				// Card 2734 (D3): the results and their revision read again together; what was typed is kept, the box is not.
 				// The ruling was refused for certain, so a page that could not be read again says the server's words to reload it.
 				confirmedOpen = false;
+				confirmedTalks = false;
 				const readAgain = await invalidateAll().then(
 					() => true,
 					() => false
@@ -221,6 +263,18 @@
 			<input type="checkbox" bind:checked={confirmedOpen} data-check="open-questions" />
 			{openQuestions === 1 ? '1 question is' : `${openQuestions} questions are`} still open: I rule with {openQuestions === 1 ? 'it' : 'them'} open
 		</label>
+	{/if}
+
+	{#if openTalks > 0}
+		<label class="confirm-open">
+			<input type="checkbox" bind:checked={confirmedTalks} data-check="open-talks" />
+			{talksConfirmWords(openTalks)}
+		</label>
+	{/if}
+
+	{#if unansweredObjections > 0}
+		<!-- No box gets past it (R8): an objection is answered before the ruling, though the answer need not agree. -->
+		<p class="warning" data-note="objections">{objectionsUnansweredWords(unansweredObjections)}. <a href={flagsHref} data-action="answer-objections">Go to the objections</a></p>
 	{/if}
 
 	<div class="actions">

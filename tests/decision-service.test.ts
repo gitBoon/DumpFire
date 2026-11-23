@@ -394,6 +394,43 @@ describe('setParticipants on a draft', () => {
 		});
 		expect(count('decision_participants')).toBe(0);
 	});
+
+	it('(T54) card 2684, R18: leaves out a place a planted flag names, marked removed by the caller, not deleted; deletes one nothing names; the write succeeds', async () => {
+		const ana = makePerson({ fullName: 'Ana' });
+		const bo = makePerson({ fullName: 'Bo' });
+		const cy = makePerson({ fullName: 'Cy' });
+		const draft = makeDecision({ board, author: owner, decider: owner });
+		const rows = as(owner, (caller) =>
+			setParticipants(
+				caller,
+				{ decisionId: draft.id },
+				{ participants: [ana, bo, cy].map((person) => ({ personId: person.id, role: 'consulted' })), revision: revisionNow(draft.id) },
+				UI
+			)
+		);
+		const [anaPlace, boPlace, cyPlace] = rows.map((row) => row.id);
+		// Only a restore can put a flag on a draft's place.
+		sqlite
+			.prepare("INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at) VALUES (?, ?, 'objection', 'Planted.', 1, 'session', '2026-11-02 09:00:00')")
+			.run(draft.id, anaPlace);
+
+		const after = as(owner, (caller) =>
+			setParticipants(caller, { decisionId: draft.id }, { participants: [{ personId: cy.id, role: 'informed' }], revision: revisionNow(draft.id) }, UI)
+		);
+
+		expect(after.filter((row) => row.removedAt === null)).toEqual([expect.objectContaining({ id: cyPlace, personId: cy.id, role: 'informed' })]);
+		expect(participantRows(draft.id).find((row) => row.id === anaPlace)).toMatchObject({ removedAt: expect.any(String), removedBy: owner.id });
+		expect(participantRows(draft.id).some((row) => row.id === boPlace)).toBe(false);
+		expect(sqlite.prepare('SELECT participant_id FROM decision_flags WHERE decision_id = ?').pluck().all(draft.id)).toEqual([anaPlace]);
+		expect(eventsOf(draft.id)).toEqual([]);
+		// Ana included again is given a new place, as a place marked removed on a draft is neither kept nor read (card 3033, R10).
+		const again = as(owner, (caller) =>
+			setParticipants(caller, { decisionId: draft.id }, { participants: [ana, cy].map((person) => ({ personId: person.id, role: 'consulted' })), revision: revisionNow(draft.id) }, UI)
+		);
+		expect(again.filter((row) => row.removedAt === null && row.personId === ana.id).map((row) => row.id)).not.toContain(anaPlace);
+		await sent.settle();
+		expect(sent.all).toEqual([]);
+	});
 });
 
 describe('setParticipants on an open decision', () => {

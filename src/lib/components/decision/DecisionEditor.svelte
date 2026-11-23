@@ -20,6 +20,11 @@
   2728's code review): a person marks reviewed what is stored. The decider
   select lists the board's editors, the Product Owner
   marked, and is read-only to a caller who may not change the decider (D6).
+  Card 2684 (R24): wherever the decider may be changed, a fixed sentence
+  (`FLAGS_HANDED_OVER`) says that any objections or requests to talk already
+  raised, with names, become visible to the new decider: no number, and the
+  same words whether or not any were raised, so the form tells the author or a
+  board owner nothing of them.
 
   Every save sends the revision (R2). A refusal is said in the server's
   words, which name the field of a 400 (D12), and the edits are kept; the
@@ -54,7 +59,7 @@
 	import { untrack, type Snippet } from 'svelte';
 	import { CLOSES_HELP, checkContent, closesField, type AudienceFacts, type ContentAnswer, type Refusal, type Warning } from '$lib/decision-readiness';
 	import { stamp } from '$lib/timestamps';
-	import { STALE_REVISION, STATUS_WORDS, shownMoment } from '$lib/decision-words';
+	import { FLAGS_HANDED_OVER, STALE_REVISION, STATUS_WORDS, shownMoment } from '$lib/decision-words';
 	import { DECISION_TITLE_MAX } from '$lib/decision-rules';
 	import { failureMessage } from '$lib/api';
 	import AgentLabel from './AgentLabel.svelte';
@@ -664,7 +669,15 @@
 							<option value={String(candidate.id)}>{candidate.emoji} {candidate.username}{candidate.id === productOwnerUserId ? ' (Product Owner)' : ''}</option>
 						{/each}
 					</select>
-					<button type="button" class="btn-ghost btn-xs" aria-disabled={chosenDecider === storedDecider || saving ? 'true' : undefined} onclick={saveDecider}>Change decider</button>
+					<!-- Card 2684 (R24): fixed words wherever the form is offered, with no number and whether or not anything was raised. -->
+					<p class="small" id="{uid}-flags-handed-over" data-note="flags-handed-over">{FLAGS_HANDED_OVER}</p>
+					<button
+						type="button"
+						class="btn-ghost btn-xs"
+						aria-disabled={chosenDecider === storedDecider || saving ? 'true' : undefined}
+						aria-describedby="{uid}-flags-handed-over"
+						onclick={saveDecider}>Change decider</button
+					>
 				{:else}
 					<div class="side-head"><p class="small">Decider</p>{@render agentLabel('decider', 'Decider')}</div>
 					<p class="fixed decider-fixed">{saved.deciderName ?? 'None named'}</p>

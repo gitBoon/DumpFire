@@ -282,13 +282,15 @@ const PUBLIC_ROUTES = new Set([
 	// A decision's personal link (card 2677, decisions 4 and 9): its page, and
 	// its holder's response and seen, the token in the body. Each answers only
 	// a token whose hash a participant holds, and signs nobody in. Card 2679
-	// (decision 4) adds its holder's concern about the ruling, and card 2678
-	// (decision 12) its holder's clarification question.
+	// (decision 4) adds its holder's concern about the ruling, card 2678
+	// (decision 12) its holder's clarification question, and card 2684 (R3)
+	// its holder's objection or request to talk.
 	'/decision-link/[token]',
 	'/api/decision-by-link/responses',
 	'/api/decision-by-link/seen',
 	'/api/decision-by-link/concerns',
 	'/api/decision-by-link/questions',
+	'/api/decision-by-link/flags',
 	'/api/v1/openapi.json'
 ]);
 

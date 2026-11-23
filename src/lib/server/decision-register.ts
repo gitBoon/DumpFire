@@ -49,21 +49,23 @@ import {
 	peopleGroupMembers,
 	peopleGroups,
 	type Decision,
+	type DecisionFlag,
 	type DecisionParticipant,
 	type DecisionResponse
 } from './db/schema';
 import type { SessionUser } from './auth';
 import { editableBoardIds, getAccessibleBoardIds, isAdmin, ownedBoardIds } from './board-access';
+import { flagsOfParticipants } from './decision-flags';
 import { questionsOfParticipations } from './decision-questions';
 import {
 	concernsOfParticipants,
 	countedInRound,
 	eventsOfParticipants,
 	IDS_AT_ONCE,
+	KEY_HIDDEN_EVENTS,
 	OWN_RECORD_EVENTS,
 	ownResponseOf,
 	personOfAccount,
-	QUESTION_EVENTS,
 	RECORD_DETAIL,
 	recordEventsOf,
 	responsesOfParticipants,
@@ -91,6 +93,7 @@ import {
 	type PersonRecord,
 	type RecordAnswer,
 	type RecordEntry,
+	type RecordFlag,
 	type RecordPage,
 	type RecordResponse,
 	type RegisterPage,
@@ -99,7 +102,7 @@ import {
 	type RegisterTab,
 	type RemovedParticipation
 } from '$lib/decision-register-types';
-import type { ShownStatus } from '$lib/decision-view-types';
+import type { OwnFlag, ShownStatus } from '$lib/decision-view-types';
 import { stamp, type Stamp } from '$lib/timestamps';
 
 /** Open, Ruled and All: rows a page, newest first by id (decision 6). */
@@ -736,6 +739,15 @@ const REMOVED_EVENTS: readonly EventKind[] = ['included', 're_included', 'remove
  * any v1 import of it to a finding, and any source but `'ui'` is refused
  * before anything is read: an administrator is given the person's address
  * here, which no key is ever given (D9).
+ *
+ * Card 2684 (R11): each participation's objections and requests to talk,
+ * read once over the page's ids through the tolerant reader, with the
+ * replies: to the person as their own (`OwnFlag`), and of a participation
+ * they may no longer view only the replies given up to their removal (or now,
+ * for a live row), as their questions' answers (S-M2); to an administrator
+ * and the decider of that decision also how each was raised and who replied,
+ * by name. Since the decider's scope is the decisions they decide now, a
+ * former decider is given none (S-M1).
  */
 export function readPersonRecord(user: SessionUser, personId: number, query: { before: number | null }, opts: { source: 'ui' }): PersonRecord {
 	if (opts.source !== 'ui') error(403, PERSON_RECORD_PAGE_ONLY);
@@ -801,6 +813,23 @@ export function readPersonRecord(user: SessionUser, personId: number, query: { b
 	const concernsBy = concernsOfParticipants(participantIds);
 	const concernsFor = (participantId: number) =>
 		(concernsBy.get(participantId) ?? []).map((row) => ({ comment: row.comment ?? '', createdAt: row.createdAt }));
+	// Card 2684 (R11): the page's flags, read once over its ids, never per row.
+	const flagsBy = flagsOfParticipants(participantIds);
+	/** One flag as its raiser is given it; with `upTo`, its reply only where given at or before that moment (S-M2). */
+	const ownFlagOf = (flag: DecisionFlag, upTo?: Stamp): OwnFlag => {
+		const inTime = upTo === undefined || (flag.repliedAt !== null && flag.repliedAt <= upTo);
+		return {
+			kind: flag.kind === 'talk' ? 'talk' : 'objection',
+			reason: flag.reason,
+			raisedAt: flag.raisedAt,
+			versionNumber: flag.versionNumber,
+			reply: inTime ? flag.reply : null,
+			repliedAt: inTime ? flag.repliedAt : null
+		};
+	};
+	const ownFlagsFor = (participantId: number, upTo?: Stamp): OwnFlag[] => (flagsBy.get(participantId) ?? []).map((flag) => ownFlagOf(flag, upTo));
+	const privilegedFlagsFor = (participantId: number): RecordFlag[] =>
+		(flagsBy.get(participantId) ?? []).map((flag) => ({ ...ownFlagOf(flag), via: flag.via, repliedByName: flag.reply === null ? null : flag.repliedByName }));
 	const groupsOf = (participant: DecisionParticipant): string[] => {
 		try {
 			const read = JSON.parse(participant.groups) as unknown;
@@ -842,6 +871,8 @@ export function readPersonRecord(user: SessionUser, personId: number, query: { b
 					responses,
 					questions: questions.get(participant.id) ?? [],
 					concerns: concernsFor(participant.id),
+					// Card 2684 (S-M2): replies given up to the removal (or now), as the questions' answers.
+					flags: ownFlagsFor(participant.id, participant.removedAt ?? now),
 					events: own.filter((event) => (REMOVED_EVENTS as readonly string[]).includes(event.kind)).map(ownEventOf)
 				};
 			}
@@ -857,6 +888,8 @@ export function readPersonRecord(user: SessionUser, personId: number, query: { b
 				responses,
 				questions: questions.get(participant.id) ?? [],
 				concerns: concernsFor(participant.id),
+				// Card 2684 (R11): a removed participant's replies up to the removal, though they may still view the decision.
+				flags: ownFlagsFor(participant.id, participant.removedAt ?? undefined),
 				events: own.map(ownEventOf),
 				moreEvents: false
 			};
@@ -889,6 +922,7 @@ export function readPersonRecord(user: SessionUser, personId: number, query: { b
 			responses: all.map((row) => recordResponseOf(row, all, labels, true, asked)),
 			questions: questions.get(participant.id) ?? [],
 			concerns: concernsFor(participant.id),
+			flags: privilegedFlagsFor(participant.id),
 			events: named.slice(0, EVENTS_PER_PARTICIPATION).map((event) => recordEntryOf(event, ctx)),
 			moreEvents: named.length > EVENTS_PER_PARTICIPATION
 		};
@@ -1005,17 +1039,18 @@ function detailOf(kind: string, stored: Record<string, unknown>, ctx: RecordCont
  * Card 2682: through any source but the page's (D9, D31; fail closed), no
  * administrator-only detail is shown, an administrator's key included, and
  * each entry is marked `untrusted` (D10). Card 2678's four question events
- * (`QUESTION_EVENTS`) are never given to a key: `readRecord` leaves them out
- * in the query (code review S1), and one handed here under any source but the
- * page's is a caller's fault, thrown, never shown. `GET …/questions` is the
- * asker-free way a key reads questions. The page's callers are typed as before.
+ * and card 2684's four flag events (`KEY_HIDDEN_EVENTS`, R13) are never given
+ * to a key: `readRecord` leaves them out in the query (code review S1), and
+ * one handed here under any source but the page's is a caller's fault,
+ * thrown, never shown. `GET …/questions` is the asker-free way a key reads
+ * questions; no key reads a flag. The page's callers are typed as before.
  */
 export function recordEntryOf(event: RecordEventRow, ctx: RecordContext & { source: 'ui' }): RecordEntry;
 export function recordEntryOf(event: RecordEventRow, ctx: RecordContext & { source: 'api' }): KeyRecordEntry;
 export function recordEntryOf(event: RecordEventRow, ctx: RecordContext): RecordEntry | KeyRecordEntry {
 	const page = ctx.source === 'ui';
-	if (!page && (QUESTION_EVENTS as readonly string[]).includes(event.kind)) {
-		throw new Error(`recordEntryOf: ${event.kind} names who asked, and is never given to an API key`);
+	if (!page && (KEY_HIDDEN_EVENTS as readonly string[]).includes(event.kind)) {
+		throw new Error(`recordEntryOf: ${event.kind} could name who asked, objected or asked to talk, and is never given to an API key`);
 	}
 	const detail = detailOf(event.kind, event.detail, ctx, page && isAdmin(ctx.user));
 	const participant = event.participantId === null ? null : (ctx.participants.get(event.participantId) ?? null);
@@ -1035,8 +1070,9 @@ export function recordEntryOf(event: RecordEventRow, ctx: RecordContext): Record
  * `opts.source` decides what is shown (card 2682, D9, D15, D31): through any
  * source but the page's, card 2682's v1 record among them, each entry is
  * `recordEntryOf`'s key shape and the page is marked `untrusted`; and the
- * four question events are left out, in the query, filtered or not (code
- * review S1), as each could name who asked.
+ * four question events and card 2684's four flag events
+ * (`KEY_HIDDEN_EVENTS`) are left out, in the query, filtered or not (code
+ * review S1), as each could name who asked, objected or asked to talk.
  */
 export function readRecord(
 	user: SessionUser,
@@ -1084,7 +1120,7 @@ export function readRecord(
 	const rows = recordEventsOf(decision.id, {
 		...(query.participant === null ? {} : { participantId: query.participant }),
 		...(query.after === null ? {} : { afterId: query.after }),
-		...(page ? {} : { withoutKinds: QUESTION_EVENTS }),
+		...(page ? {} : { withoutKinds: KEY_HIDDEN_EVENTS }),
 		limit: opts.limit + 1
 	});
 	const shown = rows.slice(0, opts.limit);

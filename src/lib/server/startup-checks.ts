@@ -88,7 +88,8 @@ import { posix } from 'node:path';
 import { dev } from '$app/environment';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { createdAtStart, db, getDbPath, otherDatabaseAtStart, sqlite } from './db';
-import { decisionEvents, decisionParticipants, decisionQuestions, decisionResponses, decisions, webhooks } from './db/schema';
+import { decisionParticipants, decisions, webhooks } from './db/schema';
+import { placeIsNamed } from './db/decision-place-namers';
 import { stamp, toStamp } from '$lib/timestamps';
 import { DatabaseLocationError, described, heldInContainerLayer, importFiles, type OtherDatabase } from './db/location';
 import {
@@ -2062,12 +2063,13 @@ export const START_DECISION_CANDIDATES = {
  * (`deletions: false` in `ceilingOf`), a row dated after now never raising. Each ceiling asked once (`ceilingOf`).
  *
  * - A place at 0: on a decision past its draft, `removed_at` now, one `removed` and its link ended (`revokeLinks`, by
- *   DumpFire), as a writer's removal; on a draft (R10), deleted where no response, question or event names it, read by
- *   Drizzle, else marked removed with no event. At 1, a consulted place made informed, with `role_changed` past a draft.
+ *   DumpFire), as a writer's removal; on a draft (R10), deleted where no table of the shared list names it (card 2684,
+ *   R18: `placeIsNamed`, db/decision-place-namers.ts, which only reads), else marked removed with no event. At 1, a
+ *   consulted place made informed, with `role_changed` past a draft.
  * - A live place's account at 0: `user_id` NULL, no event.
  * - A decider the record does not name: `decider_user_id` NULL, its name kept.
  *
- * The record's tables are reached through `appendEvent`, `revokeLinks` and Drizzle objects alone (R18 Q8). Writes
+ * The record's tables are written through `appendEvent`, `revokeLinks` and Drizzle objects alone (R18 Q8). Writes
  * nothing to the record of access changes. Answers how many it lowered. Inside the caller's transaction.
  */
 function capDecisionRolesAtStart(ceilingOf: (item: AccessItem, live: number) => number | null, now: string): number {
@@ -2090,12 +2092,9 @@ function capDecisionRolesAtStart(ceilingOf: (item: AccessItem, live: number) => 
 			continue;
 		}
 		if (draft) {
-			// R10: deleted where nothing names it, else marked removed; no event names a draft's place.
-			const named =
-				db.select({ id: decisionResponses.id }).from(decisionResponses).where(eq(decisionResponses.participantId, place.id)).limit(1).get() !== undefined ||
-				db.select({ id: decisionQuestions.id }).from(decisionQuestions).where(eq(decisionQuestions.participantId, place.id)).limit(1).get() !== undefined ||
-				db.select({ id: decisionEvents.id }).from(decisionEvents).where(eq(decisionEvents.participantId, place.id)).limit(1).get() !== undefined;
-			if (!named) db.delete(decisionParticipants).where(eq(decisionParticipants.id, place.id)).run();
+			// R10: deleted where nothing names it, else marked removed; no event names a draft's place. Card 2684 (R18): what
+			// names it is the one shared list, the flags among it, as foreign keys are on here and a delete it missed would throw.
+			if (!placeIsNamed(sqlite, place.id)) db.delete(decisionParticipants).where(eq(decisionParticipants.id, place.id)).run();
 			else db.update(decisionParticipants).set({ removedAt: now, removedBy: null }).where(eq(decisionParticipants.id, place.id)).run();
 			continue;
 		}

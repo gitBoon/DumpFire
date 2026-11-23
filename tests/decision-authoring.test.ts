@@ -1098,6 +1098,44 @@ describe('readEditPage leaves the picker data out where nothing can be saved wit
 	});
 });
 
+describe('the editor holds no flag figure (card 2684, R24)', () => {
+	it('T62: gives an author, a board owner and an administrator the same editor with flags raised as without, with no reason or reply in it', () => {
+		const author = makeUser({ username: 'author' });
+		const decider = makeUser({ username: 'decider' });
+		addBoardMember(board, author, 'editor');
+		addBoardMember(board, decider, 'editor');
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const open = makeDecision({ board, author, decider, status: 'open', closesAt: FUTURE, currentVersion: 1, openedAt: '2026-11-01 09:00:00' });
+		const pat = makeParticipant(open, { person: makePerson({ fullName: 'Pat Raiser' }) });
+		const lia = makeParticipant(open, { person: makePerson({ fullName: 'Lia Raiser' }), role: 'informed' });
+		const callers = [
+			['the author', author],
+			['a board owner', owner],
+			['an administrator', admin]
+		] as const;
+		const before = callers.map(([, user]) => readEditPage(user, open.id));
+		expect(before.map((page) => page.canSetDecider), 'the change-decider form is offered to each').toEqual([true, true, true]);
+
+		const plant = (participantId: number, kind: string, reason: string, reply: string | null) =>
+			sqlite
+				.prepare(
+					'INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at, reply, replied_by_name, replied_at) ' +
+						"VALUES (?, ?, ?, ?, 1, 'session', '2026-11-02 09:00:00', ?, ?, ?)"
+				)
+				.run(open.id, participantId, kind, reason, reply, reply === null ? null : 'decider', reply === null ? null : '2026-11-02 10:00:00');
+		plant(pat.id, 'objection', 'SECRET-OBJECTION one', null);
+		plant(pat.id, 'objection', 'SECRET-OBJECTION two', 'SECRET-REPLY');
+		plant(lia.id, 'talk', 'SECRET-TALK', null);
+
+		for (const [index, [who, user]] of callers.entries()) {
+			const page = readEditPage(user, open.id);
+			// No count, kind split, name or text of a flag: the editor is as it was before any was raised.
+			expect(page, who).toEqual(before[index]);
+			expect(JSON.stringify(page), who).not.toContain('SECRET');
+		}
+	});
+});
+
 describe("setDecider's refusal of an id (C5)", () => {
 	let viewer: SessionUser;
 	beforeEach(() => {

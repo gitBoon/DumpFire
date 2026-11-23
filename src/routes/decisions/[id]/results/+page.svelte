@@ -22,6 +22,12 @@
 	 * the comments still shown, drops any other, and says
 	 * `RESULTS_READ_AGAIN`, as the ruling form does (D3).
 	 *
+	 * Card 2684 (R23): every objection and request to talk, with names, in
+	 * `FlagReplies` under the results, with a reply box for the decider; the
+	 * ruling form holds Rule off while an objection has no answer, linking to
+	 * them, and asks the decider to confirm ruling with a request to talk still
+	 * without an outcome.
+	 *
 	 * What was done is said in a status region that stays drawn, only its
 	 * words changing, and takes the focus once the page's data is read again,
 	 * as the form that was used may then be gone (DecisionActions' F6). The
@@ -32,6 +38,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import FlagReplies from '$lib/components/decision/FlagReplies.svelte';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
@@ -53,6 +60,8 @@
 	let confirmingRelease = $state(false);
 
 	const preview = $derived(data.releasePreview);
+	/** Card 2684 (R23): on the page alone, so absent from any other source's answer. */
+	const flags = $derived(data.flags ?? []);
 	const releaseMessage = $derived(
 		`${RELEASE_INFERENCE}${leftOut.length > 0 ? ` ${leftOut.length === 1 ? '1 comment is' : `${leftOut.length} comments are`} left out.` : ''} ${ASKS_FOR_PASSWORD}`
 	);
@@ -174,6 +183,14 @@
 
 		<ResultsView results={data} />
 
+		{#if flags.length > 0}
+			<!-- `flags` is where the ruling form's note links (R23). -->
+			<section class="panel glass" id="flags" aria-labelledby="flags-heading" data-block="flags">
+				<h2 id="flags-heading">Objections and requests to talk</h2>
+				<FlagReplies decisionId={data.decision.id} {flags} mayReply={data.mayReply} shownStatus={data.decision.shownStatus} />
+			</section>
+		{/if}
+
 		{#if data.mayRule}
 			<section class="panel glass" aria-label="Rule">
 				<h2>Rule</h2>
@@ -188,6 +205,9 @@
 					closedEarly={data.rulesEarly && data.decision.shownStatus !== 'open'}
 					cutOff={data.notResponded.map((person) => ({ name: person.name, reached: person.reached }))}
 					openQuestions={data.openQuestions.length}
+					unansweredObjections={flags.filter((flag) => flag.kind === 'objection' && flag.reply === null).length}
+					openTalks={flags.filter((flag) => flag.kind === 'talk' && flag.reply === null).length}
+					flagsHref="#flags"
 					onRuled={done}
 				/>
 			</section>

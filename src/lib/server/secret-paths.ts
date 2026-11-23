@@ -18,8 +18,9 @@
  * logged. Its page is card 2677's. The holder's response and seen are sent to
  * `/api/decision-by-link/responses` and `/api/decision-by-link/seen`, a
  * concern about the ruling to `/api/decision-by-link/concerns` (card 2679),
- * and a clarification question to `/api/decision-by-link/questions` (card
- * 2678), the token in the body (card 2677, decision 4): their paths hold no secret, and do not
+ * a clarification question to `/api/decision-by-link/questions` (card 2678),
+ * and an objection or request to talk to `/api/decision-by-link/flags` (card
+ * 2684), the token in the body (card 2677, decision 4): their paths hold no secret, and do not
  * contain `/decision-link/`, which `maskSecretPaths`, matching anywhere in a
  * line, would rewrite (F2).
  *

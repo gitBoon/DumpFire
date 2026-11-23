@@ -164,6 +164,9 @@ const ALLOWED: Record<string, string> = {
 	'src/routes/api/decision-by-link/questions/+server.ts POST':
 		"A personal link's clarification question (card 2678, decision 17): the address a wrong link is counted against is read " +
 		'before the body, from the request alone. It reads no row and counts nothing.',
+	'src/routes/api/decision-by-link/flags/+server.ts POST':
+		"A personal link's objection or request to talk (card 2684, R3): the address a wrong link is counted against is read " +
+		'before the body, from the request alone. It reads no row and counts nothing.',
 	'src/routes/api/admin/import/+server.ts POST':
 		'The import settles `outside` and the media type before it reads the upload, and answers either before any of it is read. ' +
 		'Who may import is requireSuperadmin, the session. Then it takes the confirmation of the password (card 2701, decision 8), ' +
@@ -3111,7 +3114,10 @@ const RECORD_WRITERS: Readonly<Record<string, readonly string[]>> = {
 		'appendQuestion',
 		'recordAnswer',
 		'recordDraftPublished',
-		'recordDraftReplaced'
+		'recordDraftReplaced',
+		// Card 2684 (R2): a flag's one insert and its one guarded reply. Its reads are decision-flags.ts's, which log.
+		'appendFlag',
+		'recordFlagReply'
 	],
 	'src/lib/server/logActivity.ts': ['logActivity', 'logUiActivity'],
 	// Card 2922's code review (C2): `revokeEveryLink`, a Remove of held mail or a held App URL ending every link.
@@ -6841,8 +6847,8 @@ const DECISION_ROLE_WRITES: Record<string, { count: number; why: string }> = {
 	},
 	'src/lib/server/decision-ruling-writes.ts#supersedeDecision': { count: 1, why: 'D3: the superseding draft, its author and decider; `decision tracked` and `decision_decider yes` recorded after it (R14: 409 first).' },
 	'src/lib/server/decision-participant-writes.ts#setParticipants': {
-		count: 7,
-		why: 'D4 and D5: a place deleted from a draft (`removed`, recorded before), re-roled, inserted, removed, brought back or added; each recorded with its role, and `held` for the account it comes with.'
+		count: 8,
+		why: 'D4 and D5: a place deleted from a draft (`removed`, recorded before), re-roled, inserted, removed, brought back or added; each recorded with its role, and `held` for the account it comes with. Card 2684 (R18): a draft place a table of the shared list names marked removed rather than deleted, recorded `removed` before, as one deleted.'
 	},
 	'src/lib/server/decision-participant-writes.ts#setParticipantAccount': { count: 2, why: "D6: a place's account attached (`held`, and `none` for the one it held) or cleared (`none`)." },
 	'src/lib/server/decision-participant-writes.ts#changeParticipantAddress': { count: 1, why: "Records nothing: a place's address, reach; an unsealed restore puts it back as this server held it (plan 3.7)." },
@@ -7127,11 +7133,14 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 					'answerQuestion',
 					'publishAnswer'
 				]
-			}
+			},
+			// Card 2684 (R3, R7): a participant's objection or request to talk, signed in or by a personal link; the decider's reply.
+			'src/lib/server/decision-flag-writes.ts': { reads: [], writes: ['raiseFlag', 'raiseFlagByLink', 'replyToFlag'] }
 		});
 		// Card 2713 (D6 row 2): however they are split, the decision services hold the 30 writes and 6 guards between them.
+		// Card 2684 adds a service of two writes, and its slice S2 a third, the reply: 33.
 		const decisionServices = [...services].filter(([file]) => DECISION_SERVICE.test(file));
-		expect(decisionServices.flatMap(([, { writes }]) => writes)).toHaveLength(30);
+		expect(decisionServices.flatMap(([, { writes }]) => writes)).toHaveLength(33);
 		expect(decisionServices.flatMap(([, { reads }]) => reads)).toHaveLength(6);
 		// The page routes' options a new card's nested writes share with them (the card 2296 review).
 		expect(Object.fromEntries([...services].filter(([, { pageOptions }]) => pageOptions.length > 0).map(([file, { pageOptions }]) => [file, pageOptions]))).toEqual({
@@ -7161,6 +7170,7 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 		expect([...decisionServices].sort()).toEqual([
 			'src/lib/server/decision-authoring-writes.ts',
 			'src/lib/server/decision-card-link-writes.ts',
+			'src/lib/server/decision-flag-writes.ts',
 			'src/lib/server/decision-lifecycle-writes.ts',
 			'src/lib/server/decision-participant-writes.ts',
 			'src/lib/server/decision-question-writes.ts',
@@ -8198,7 +8208,7 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			// The real module holding the participant guards, and the suite's helpers with a write planted in the real
 			// participantOn, which both guards call: an insert (R1), and the record's appendEvent imported and called (C2).
 			const PARTICIPANT_ON = 'export function participantOn(decisionId: number, participantId: number): DecisionParticipant {';
-			const RECORD_IMPORT = "import { accountHistory, lastMailAt, mailsSince, peopleById, recordMailsSince, snapshotOf, type RecordActor } from './decision-record';";
+			const RECORD_IMPORT = "import { accountHistory, eventsOfKind, lastMailAt, mailsSince, peopleById, recordMailsSince, snapshotOf, type RecordActor } from './decision-record';";
 			const plant = (edit: (source: string) => string) =>
 				helpers.map((given) => {
 					if (given.file !== HELPER) return given;

@@ -25,14 +25,31 @@
 	 * prompt as the version answered under asked it, a written answer as
 	 * plain text; only the person, the decider and administrators read this
 	 * page. A survey answered is said as such, never as an option chosen.
+	 *
+	 * Card 2684 (R11): each participation's objections and requests to talk,
+	 * oldest first, with the replies as plain text: to the person their own,
+	 * with no one named as who replied ("the decider"), a removed person's
+	 * with only the replies given up to their removal (the server's rule); to
+	 * an administrator and the decider also how each was raised and who
+	 * replied, by name. Their events are named in the record's words.
 	 */
 	import type { PageData } from './$types';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import RecordEvents from '$lib/components/decision/RecordEvents.svelte';
-	import type { OwnRecordEvent, ParticipationDecision, RecordAnswer, RecordResponse } from '$lib/decision-register-types';
+	import type { OwnRecordEvent, ParticipationDecision, RecordAnswer, RecordFlag, RecordResponse } from '$lib/decision-register-types';
 	import type { QuestionView } from '$lib/decision-view-types';
-	import { answeredByWords, eventWords, PARTICIPATION_ROLE_WORDS, STATUS_WORDS, shownMoment, unansweredWords } from '$lib/decision-words';
+	import {
+		answeredByWords,
+		eventWords,
+		FLAG_KIND_WORDS,
+		flagRepliedWords,
+		flagUnrepliedWords,
+		PARTICIPATION_ROLE_WORDS,
+		STATUS_WORDS,
+		shownMoment,
+		unansweredWords
+	} from '$lib/decision-words';
 	import { theme, themeIcon } from '$lib/stores/theme';
 
 	let { data }: { data: PageData } = $props();
@@ -113,6 +130,29 @@
 	{/if}
 {/snippet}
 
+{#snippet flagsOf(flags: RecordFlag[])}
+	{#if flags.length > 0}
+		<h3>{own ? 'Your objections and requests to talk' : 'Objections and requests to talk'}</h3>
+		<ul class="plain" data-list="flags">
+			{#each flags as flag, i (i)}
+				<li data-flag-kind={flag.kind}>
+					<p class="line">
+						<strong>{FLAG_KIND_WORDS[flag.kind]}</strong>
+						<span class="meta">version {flag.versionNumber}, {shownMoment(flag.raisedAt, '')}{flag.via === 'link' ? ', by link' : ''}</span>
+					</p>
+					{#if flag.reason !== ''}<p class="text" data-text="reason">{flag.reason}</p>{/if}
+					{#if flag.reply !== null}
+						<p class="text answer" data-text="reply">{flag.reply}</p>
+						<p class="meta" data-note="replied">{flagRepliedWords(flag.kind, flag.repliedByName)}, {shownMoment(flag.repliedAt, '')}</p>
+					{:else}
+						<p class="meta" data-note="no-reply">{flagUnrepliedWords(flag.kind)}</p>
+					{/if}
+				</li>
+			{/each}
+		</ul>
+	{/if}
+{/snippet}
+
 {#snippet ownEvents(events: OwnRecordEvent[])}
 	{#if events.length > 0}
 		<h3>What happened</h3>
@@ -176,6 +216,7 @@
 						{@render responsesOf(participation.responses)}
 						{@render questionsOf(participation.questions)}
 						{@render concernsOf(participation.concerns)}
+						{@render flagsOf(participation.flags)}
 						{@render ownEvents(participation.events)}
 					{:else}
 						<h2><a class="target" href="/decisions/{participation.decision.id}">{participation.decision.title}</a></h2>
@@ -188,6 +229,7 @@
 						{@render responsesOf(participation.responses)}
 						{@render questionsOf(participation.questions)}
 						{@render concernsOf(participation.concerns)}
+						{@render flagsOf(participation.flags)}
 						{@render ownEvents(participation.events)}
 					{/if}
 				</article>
@@ -208,6 +250,7 @@
 					{@render responsesOf(participation.responses)}
 					{@render questionsOf(participation.questions)}
 					{@render concernsOf(participation.concerns)}
+					{@render flagsOf(participation.flags)}
 					<h3>Events</h3>
 					<RecordEvents entries={participation.events} />
 					{#if participation.moreEvents && participation.id !== undefined}

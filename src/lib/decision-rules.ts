@@ -29,6 +29,48 @@ export const QUESTION_TEXT_MAX = 2000;
 /** The most questions one participant asks on one decision (card 2678, decision 4): the write refuses an 11th, and the page offers no form past it. */
 export const QUESTIONS_PER_PARTICIPANT = 10;
 
+/** What a participant may raise to the decider (card 2684): an objection, or a request to talk. */
+export const FLAG_KINDS = ['objection', 'talk'] as const;
+
+export type FlagKind = (typeof FLAG_KINDS)[number];
+
+/**
+ * What a flag's text, or the decider's reply, must be (card 2684, R4): whether it must hold more than white space, and
+ * its most characters, counted as `String.length` counts them (UTF-16 code units, as `readText` does). The writer and
+ * the tolerant reader ask the same rule through one predicate, `flagTextProblem` in decision-record.ts.
+ */
+export type FlagTextRule = { readonly required: boolean; readonly max: number };
+
+/**
+ * The two most lengths of a flag's text (card 2684, R4; code review C-S-L2): an objection's reason and a reply 4,000
+ * characters, a request to talk's note 2,000. Today they equal `DECISION_TEXT_MAX` and `QUESTION_TEXT_MAX`, but are the
+ * flags' own, so that tightening another field's limit never changes what the tolerant reader keeps: a stored flag
+ * past a lower limit would be left out everywhere, the ruling's gate among them, and an unanswered objection would no
+ * longer hold a ruling back. Lowering either needs a migration-style review of the stored flags; tests/decision-flags
+ * pins their values.
+ */
+export const FLAG_REASON_MAX = 4000;
+export const FLAG_NOTE_MAX = 2000;
+
+/** An objection's reason is required, up to `FLAG_REASON_MAX`; a request to talk's note is optional, up to `FLAG_NOTE_MAX` (card 2684, R4). */
+export const FLAG_TEXT_RULES: Readonly<Record<FlagKind, FlagTextRule>> = {
+	objection: { required: true, max: FLAG_REASON_MAX },
+	talk: { required: false, max: FLAG_NOTE_MAX }
+};
+
+/** The decider's reply to an objection, or the outcome of a request to talk (card 2684, R4): required, up to `FLAG_REASON_MAX`. */
+export const REPLY_TEXT_RULE: FlagTextRule = { required: true, max: FLAG_REASON_MAX };
+
+/**
+ * The most objections, and the most requests to talk, one participant raises on one version of a decision (card 2684,
+ * R5, owner's ruling on row 7): the write refuses a fourth of either, and the page offers no form past it. A re-publish
+ * starts the count again. Counted over every stored row, never the tolerant reader's output (E-L1).
+ */
+export const FLAGS_PER_PARTICIPANT_VERSION: Readonly<Record<FlagKind, number>> = { objection: 3, talk: 3 };
+
+/** The most objections and requests to talk one decision takes, from everyone, over every version (card 2684, R5), counted over every stored row. */
+export const FLAGS_PER_DECISION = 200;
+
 /**
  * Whether a decision is open for input (cards 2740 and 2743): its shown
  * status, `decisionStatus`'s, is `open`, so stored open and not past its

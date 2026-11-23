@@ -1,10 +1,11 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.295
+version: 1.296
 status: Living
-date: 2026-11-21
+date: 2026-11-23
 tags:
+  - card-2684
   - card-2683
   - card-3004
   - card-3031
@@ -92,7 +93,7 @@ tags:
   - attachments
   - two-step-sign-in
   - invites
-description: "Card 2683's slices S1 to S4 and its 83 new cases (decision survey questions: migration 0082, the closed reader, the response write, answersOf, results per version, the participant and results screens), the suite at 14,461 tests. Card 3004's six slices S1 to S4, its tests (tests/outbound-changes.test.ts new, the restore's cases in tests/backups.test.ts, the pins), the flaky creation-time race in the backups helpers fixed, and the suite at 167 files and 14,358 tests (card 3004). Card 3033's slices S1 to S4, its tests and the suite's counts (card 3033). Card 3002's 80 tests in four slices (the record of access changes and its rule, the restore's caps and the unchecked invariant, the writers, the inventory and the start pass, the import's words and A.5.15 and A.8.3; tests/access-changes.test.ts new) and 8 in its code review fix pass, and the suite at 166 files and 14,137 tests; Card 3013's 24 tests and 17 in its code review fix pass (an unsealed backup adds nothing to either record of endings, writes no belt, records only kept keys, and gives this server's accounts of their id and creation time its role and disabled state exactly; the route's words; A.5.18), and the suite at 165 files and 14,049 tests; Card 3029's 19 tests and 7 in its code review fix pass (the From of an unsealed restore kept as this server's, the From handed to nodemailer as a name and an address, and an address a save would refuse read as none), and the suite at 165 files and 14,008 tests; Card 3020's 58 cases (requests held and people marked left by an unsealed restore, the held list and release, Mark active's step-up, OpenAPI (11), A.8.12) and its code review fix pass, and the suite at 165 files and 13,982 tests; How DumpFire's automated tests are built and run: card 3012's unsealed backup that sends nothing outside as the file has it (webhooks held, schedules paused, emails, notification choices and the failure mail kept as here); card 3009's unsealed backup that gives no account not the same here a password, key or factor, and holds its mail, App URL and destinations (the installation id, sameAccountHere, the carry, the key rule and the holds, and its code review's fix pass: no invite from an unsealed file, holds told by why they were held, a working copy's App URL removed; tests/backups.test.ts, tests/setting-holds.test.ts and the inventory, 13,851 in all), card 2997's restore that never brings back a password replaced here (a hash of its own for every fixture account, tests/account-endings.test.ts, tests/backups.test.ts and the gates' suites, 13,774 in all), card 2939's service account rule, start sweep and Test of saved destinations only (tests/backups.test.ts, tests/stored-secrets.test.ts, 13,166 in all with its code review), card 2938's backup copy keeping only a service account JSON's allowlisted fields and its stricter service account key rule (tests/backups.test.ts, 19 tests added with its code review, 13,120 in all), card 2923's held already-off webhooks and the owners' mail at every ending of an account's access (9 tests added, 13,029 in all), card 2925's import that cannot write one of its files (tests/backups.test.ts, 6 cases), card 2915's two-step reset ending the keys (tests/mfa-reset.test.ts T17 to T19, tests/mfa-reset-script.test.ts T21, T23, T33 to T35, and a source scan that nothing under src keeps keys at a reset), card 2910's every upload's limits (tests/uploads.test.ts and tests/v1-attachments.test.ts, the places given back on every exit, the gate's count and Connection: close, and the new tests/attachment-names.test.ts), card 2671's disabled accounts (tests/account-disable.test.ts and the cases in each gate's, picker's and mail's own suite, the delete tests on a disabled account, the OpenAPI 1.13.0 note), card 2899's import that keeps the system log (restore, route, working copy and panel cases), card 2914's task request rows (Q1 to Q5) and the request rows of access-every-route naming who cannot read, card 2911's milestone rows of not-found-not-forbidden, access-every-route without its stillForbids marker and 44 expected fails, and unopenableSays by caller, card 2894's pins of the report schedules paused by a password change and a two-step reset, the in-memory database fixture, the route and form-action helpers, the harness that sends a request through the gate, the table that says who may call every API route and the tests made from it, the tests that read the source to keep every API failure one shape and the OpenAPI document true, the helpers that prove a request is all or nothing, the faults the suite records without hiding, the components mounted under jsdom, the board page's state, refresh and card window run without a page, the split admin, dashboard, All Tasks and plan pages mounted whole, the expected schema, what each suite covers, the MFA key the tests use and how the two-step sign-in storage is tested (card 2768), how two-step sign-in itself is tested (card 2769: the two new files, tests/helpers/two-step.ts, action()'s Cookie header, the frozen Date, the source scans and why the older sign-in tests give the account a factor), the tests of invite tokens stored as hashes and the start-up sweep (card 2849), the tests of session codes stored as hashes, limits by role and the __Host- cookie (card 2775), the tests of report schedules and report mail behind the password and a code (card 2751, T1 to T21), the tests of requester links kept as hashes and the sweep after an older image (card 2870, T1 to T9), the tests of the card window's image upload, a JPEG's kept orientation and the one-off check of the images stored before (card 2761, cases 1 to 13), and how to rehearse the migration runner against a copy of a real database"
+description: "Card 2684's slices S1a to S4, its code review's fix pass and its 70 new cases (objections and requests to talk: migration 0083, the tolerant reader, the place-namer list, the key filter, raising, replies, the ruling's gate, the pages; tests/decision-flags.test.ts new), the suite at 168 files and 14,600 tests. Card 2683's slices S1 to S4 and its 83 new cases (decision survey questions: migration 0082, the closed reader, the response write, answersOf, results per version, the participant and results screens), the suite at 14,461 tests. Card 3004's six slices S1 to S4, its tests (tests/outbound-changes.test.ts new, the restore's cases in tests/backups.test.ts, the pins), the flaky creation-time race in the backups helpers fixed, and the suite at 167 files and 14,358 tests (card 3004). Card 3033's slices S1 to S4, its tests and the suite's counts (card 3033). Card 3002's 80 tests in four slices (the record of access changes and its rule, the restore's caps and the unchecked invariant, the writers, the inventory and the start pass, the import's words and A.5.15 and A.8.3; tests/access-changes.test.ts new) and 8 in its code review fix pass, and the suite at 166 files and 14,137 tests; Card 3013's 24 tests and 17 in its code review fix pass (an unsealed backup adds nothing to either record of endings, writes no belt, records only kept keys, and gives this server's accounts of their id and creation time its role and disabled state exactly; the route's words; A.5.18), and the suite at 165 files and 14,049 tests; Card 3029's 19 tests and 7 in its code review fix pass (the From of an unsealed restore kept as this server's, the From handed to nodemailer as a name and an address, and an address a save would refuse read as none), and the suite at 165 files and 14,008 tests; Card 3020's 58 cases (requests held and people marked left by an unsealed restore, the held list and release, Mark active's step-up, OpenAPI (11), A.8.12) and its code review fix pass, and the suite at 165 files and 13,982 tests; How DumpFire's automated tests are built and run: card 3012's unsealed backup that sends nothing outside as the file has it (webhooks held, schedules paused, emails, notification choices and the failure mail kept as here); card 3009's unsealed backup that gives no account not the same here a password, key or factor, and holds its mail, App URL and destinations (the installation id, sameAccountHere, the carry, the key rule and the holds, and its code review's fix pass: no invite from an unsealed file, holds told by why they were held, a working copy's App URL removed; tests/backups.test.ts, tests/setting-holds.test.ts and the inventory, 13,851 in all), card 2997's restore that never brings back a password replaced here (a hash of its own for every fixture account, tests/account-endings.test.ts, tests/backups.test.ts and the gates' suites, 13,774 in all), card 2939's service account rule, start sweep and Test of saved destinations only (tests/backups.test.ts, tests/stored-secrets.test.ts, 13,166 in all with its code review), card 2938's backup copy keeping only a service account JSON's allowlisted fields and its stricter service account key rule (tests/backups.test.ts, 19 tests added with its code review, 13,120 in all), card 2923's held already-off webhooks and the owners' mail at every ending of an account's access (9 tests added, 13,029 in all), card 2925's import that cannot write one of its files (tests/backups.test.ts, 6 cases), card 2915's two-step reset ending the keys (tests/mfa-reset.test.ts T17 to T19, tests/mfa-reset-script.test.ts T21, T23, T33 to T35, and a source scan that nothing under src keeps keys at a reset), card 2910's every upload's limits (tests/uploads.test.ts and tests/v1-attachments.test.ts, the places given back on every exit, the gate's count and Connection: close, and the new tests/attachment-names.test.ts), card 2671's disabled accounts (tests/account-disable.test.ts and the cases in each gate's, picker's and mail's own suite, the delete tests on a disabled account, the OpenAPI 1.13.0 note), card 2899's import that keeps the system log (restore, route, working copy and panel cases), card 2914's task request rows (Q1 to Q5) and the request rows of access-every-route naming who cannot read, card 2911's milestone rows of not-found-not-forbidden, access-every-route without its stillForbids marker and 44 expected fails, and unopenableSays by caller, card 2894's pins of the report schedules paused by a password change and a two-step reset, the in-memory database fixture, the route and form-action helpers, the harness that sends a request through the gate, the table that says who may call every API route and the tests made from it, the tests that read the source to keep every API failure one shape and the OpenAPI document true, the helpers that prove a request is all or nothing, the faults the suite records without hiding, the components mounted under jsdom, the board page's state, refresh and card window run without a page, the split admin, dashboard, All Tasks and plan pages mounted whole, the expected schema, what each suite covers, the MFA key the tests use and how the two-step sign-in storage is tested (card 2768), how two-step sign-in itself is tested (card 2769: the two new files, tests/helpers/two-step.ts, action()'s Cookie header, the frozen Date, the source scans and why the older sign-in tests give the account a factor), the tests of invite tokens stored as hashes and the start-up sweep (card 2849), the tests of session codes stored as hashes, limits by role and the __Host- cookie (card 2775), the tests of report schedules and report mail behind the password and a code (card 2751, T1 to T21), the tests of requester links kept as hashes and the sweep after an older image (card 2870, T1 to T9), the tests of the card window's image upload, a JPEG's kept orientation and the one-off check of the images stored before (card 2761, cases 1 to 13), and how to rehearse the migration runner against a copy of a real database"
 ---
 
 # Testing
@@ -115,10 +116,10 @@ run exits 1. `npm test` leaves the choice to vitest, which allows `.only` unless
 environment variable `CI` is set: at a desk it can be used, and nothing in the image
 build sets `CI`, which is why the build's command carries the flag.
 
-The suite is 167 test files and 14,461 tests (card 2683, after its documents slice S4, 2026-11-21), and takes
-about three to five minutes. A run that passes on Windows reports `14456 passed | 5 skipped`:
+The suite is 168 test files and 14,600 tests (card 2684, after its review fixes, 2026-11-23), and takes
+about three to five minutes. A run that passes on Windows reports `14595 passed | 5 skipped`:
 the five are the POSIX-only cases below; on Linux, with three or more CPUs, none is skipped (card
-2860's Linux run reported `12354 passed`; card 2772's 137 more tests, card 2751's 29, card 2870's 11, card 2670's 17, the 55 of the cards since, to card 2891, card 2761's 17, card 2719's 81, card 2762's 7, card 2752's 45, card 2893's 29, card 2894's 14, card 2911's 10 more passing, card 2914's 6, card 2899's 12, card 2671's 127, card 2910's 56, card 2915's 26, card 2925's 6, card 2923's 19, card 2938's 19, the cards since to card 2935, card 2922's 57, card 2920's 20, card 2941's 50 and card 2943's 23, card 2947's 56, card 2995's 87, card 2996's 104, card 2997's 64, card 3009's 82 and card 2683's 91 new tests, 53 in its build and 29 in its code review's fix pass, 77 more passing as some replaced earlier cases, card 3012's 29 and 14 in its code review's fix pass, card 3020's 74 and 9 in its code review's fix pass, card 3029's 19 and 7 in its code review's fix pass, and card 3013's 24, and card 3002's 80 (`tests/access-changes.test.ts` and its cases in other suites) and 8 in its code review's fix pass, and card 3033's 96 and 7 in its code review's fix pass, and card 3004's 118 more passing (`tests/outbound-changes.test.ts` and its cases in other suites) and 12 in its code review's fix pass, were run on Windows only). Card 2911 took out card 2719's 44 `it.fails` tests and the meta case M2, and added 11 cases. The figures move with every card: the one rule is that nothing fails
+2860's Linux run reported `12354 passed`; card 2772's 137 more tests, card 2751's 29, card 2870's 11, card 2670's 17, the 55 of the cards since, to card 2891, card 2761's 17, card 2719's 81, card 2762's 7, card 2752's 45, card 2893's 29, card 2894's 14, card 2911's 10 more passing, card 2914's 6, card 2899's 12, card 2671's 127, card 2910's 56, card 2915's 26, card 2925's 6, card 2923's 19, card 2938's 19, the cards since to card 2935, card 2922's 57, card 2920's 20, card 2941's 50 and card 2943's 23, card 2947's 56, card 2995's 87, card 2996's 104, card 2997's 64, card 3009's 82 and card 2683's 91 new tests, 53 in its build and 29 in its code review's fix pass, 77 more passing as some replaced earlier cases, card 3012's 29 and 14 in its code review's fix pass, card 3020's 74 and 9 in its code review's fix pass, card 3029's 19 and 7 in its code review's fix pass, and card 3013's 24, and card 3002's 80 (`tests/access-changes.test.ts` and its cases in other suites) and 8 in its code review's fix pass, and card 3033's 96 and 7 in its code review's fix pass, and card 3004's 118 more passing (`tests/outbound-changes.test.ts` and its cases in other suites) and 12 in its code review's fix pass, and card 2684's 131 more (`tests/decision-flags.test.ts` and its cases in other suites) and 8 in its code review's fix pass, were run on Windows only). Card 2911 took out card 2719's 44 `it.fails` tests and the meta case M2, and added 11 cases. The figures move with every card: the one rule is that nothing fails
 and nothing is skipped but the cases below.
 
 - **None is expected to fail.** A test of a fault that is known and not yet fixed states
@@ -2917,6 +2918,89 @@ comment naming the card), migration 0065 and the account changes move these:
 - `tests/page-failures.test.ts` (plan case T61): the admin page's `accountOf` passes
   `mfaWithoutFactor` through and leaves it undefined when absent, and the report shows it on a
   line of its own after the secrets' lines.
+
+#### Card 2684: objections and requests to talk
+
+Built in four code slices, each green on its own before the next, then the documents (plan
+`docs/planning/card-2684-decision-objections-and-need-to-talk.md`, sections 9, 10 and 13). Every new
+or changed case failed under a deliberate break of the source (`S1B-BREAK`, `S2-BREAK`, `S3-BREAK`,
+none left) before it passed. 62 new cases in the slices, the plan's 59 and T63 to T65 added at S3;
+parameterised cases (T9, T11, T12, T13, T22, T50, T51) count one test per row, so the slices gained
+131 tests, and one new file, `tests/decision-flags.test.ts` (in `TEST_FILES`). The code review's fix
+pass added 8 cases, 8 tests (`FIX-BREAK`, none left): 70 new cases and 139 tests in all.
+
+```mermaid
+flowchart LR
+    S1a["S1a: 0083, the record,<br/>the reader, the place-namer list,<br/>the key filter"] --> S1b["S1b: raising, the routes,<br/>the shared helpers"]
+    S1b --> S2["S2: replies, the ruling's gate,<br/>the reads"]
+    S2 --> S3["S3: the pages"]
+    S3 --> S4["S4: the documents"]
+```
+
+- **S1a** (10 new; T2, T5, T27 and the 47 migration cases whose lists gained 0083 changed):
+  `tests/migrations.test.ts` (T1; `FILE_0083`, `TABLE_OF_0083` in every applied and
+  schema-differences list, where the name order puts it, before `COLUMN_OF_0082`);
+  `tests/admin-reset.test.ts` (T2); `tests/backups.test.ts` (T3, a restore keeps a draft's place a
+  flag names and `PRAGMA foreign_key_check` is empty; T4, the counter pass leaves flags alone);
+  `tests/decision-record.test.ts` (T5 in `SETTLED_TABLES` and `SETTLED_UPDATES`; T24 the tolerant
+  reader; T52 every foreign key to `decision_participants` on `DECISION_PLACE_NAMERS`; T56 one
+  `WARN` line with no text); `tests/decision-register.test.ts` (T27, case 66; T51 over the eight
+  `KEY_HIDDEN_EVENTS`); `tests/decisions-api.test.ts` (T45, a key's record leaves the flag events
+  out); `tests/access-changes.test.ts` (T53, the start-up pass); `tests/decision-service.test.ts`
+  (T54, a draft's participants). F1: two cases of `tests/decision-ruling.test.ts` plant `not_a_kind`
+  in place of `objection`. Pins changed: `tests/timestamps.test.ts` (88 to 90 `*_at` columns),
+  `tests/check-at-the-write.test.ts` (`RECORD_WRITERS`, `DECISION_ROLE_WRITES`),
+  `tests/decision-ruling.test.ts` case 37, `tests/decision-register.test.ts` case 63.
+- **S1b** (18 new cases, 30 tests): `tests/decision-flags.test.ts` (new: T6 to T13, T16 to T23, T50
+  over eight texts, T55); T25 in `tests/gate.test.ts`'s lists and T26 in
+  `tests/access-every-route.test.ts`. Concerns' and questions' notice, cap and rest cases pass
+  unchanged on the shared helpers. Pins changed: `decision-record` (`TRANSITIONS`), `decisions-api`
+  case 3, `activity-twins`, `mail-escaping`, `helpers/source-scan.ts`, `harness` (`TEST_FILES`).
+  After S1b: `14535 passed | 5 skipped`.
+- **S2** (24 new; T41, T44 and T49 changed): `tests/decision-flags.test.ts` (T28 to T36, T57, T58,
+  T60: replies, their notices and who may give them); `tests/decision-ruling.test.ts` (T37 to T40,
+  T59: the ruling's refusals; T41 the revision; T42, T43, T61: `readResults` and the release);
+  `tests/decisions-api.test.ts` (T44, the summary's key pin with a flag planted);
+  `tests/decision-participation.test.ts` (T46, the page model); `tests/decision-register.test.ts`
+  (T47 the person record with `upTo`; T48 a flag is not a response); `tests/decision-authoring.test.ts`
+  (T62, the editor's model holds no flag figure); `tests/openapi-document.test.ts` (T49). Pins
+  changed: `decision-ruling` case 21 and the HMAC case, `decision-participation` cases 14 and 19,
+  `decision-register` case 52, `access-every-route`, `check-at-the-write` (33 writes),
+  `activity-twins`, `mail-escaping`, and the typed fixtures of `decision-reminders` and four Svelte
+  suites. After S2: `14577 passed | 5 skipped`.
+- **S3** (10 new): `tests/decision-participation.svelte.test.ts` (U1 to U3, `FlagForm`);
+  `tests/decision-ruling.svelte.test.ts` (U4 `FlagReplies`, U5 `RulingForm`);
+  `tests/decision-register.svelte.test.ts` (U6, the person record page);
+  `tests/decision-authoring.svelte.test.ts` (U7, the change-decider warning with no digit);
+  `tests/decision-flags.test.ts` (T63 the reply route refuses a cross-origin POST before the body,
+  T64 `mayReply` and the 403 for a decider without board edit, T65 a link holder's reply notice with
+  `ASK_FOR_LINK_LINE`). Pins changed: `decision-ruling.svelte`'s two rule bodies gain
+  `openTalksConfirmed: false`; `tests/page-failures.test.ts`' `UNREAD_SENDS` gains `FlagForm.svelte`.
+  After S3: `14587 passed | 5 skipped`, 14,592 tests, 168 files.
+- **Code review fix pass** (8 new; T8, T17, T24 and gate case 21 extended), each seen to fail under
+  `FIX-BREAK`: `tests/decision-participation.svelte.test.ts` (U8 (card 2684, F5), the personal-link
+  page's signed-in note names an objection and a request to talk, each only where its form is
+  offered; U10 (card 2684, C-E-L4), the status region takes the focus once a flag is recorded);
+  `tests/decision-ruling.svelte.test.ts` (U9 (card 2684, C-E-L1), a withdrawn decision's panel says
+  `FLAG_REPLIES_CLOSED` to the decider and an administrator alike, never `FLAG_REPLY_ELSEWHERE`; U11
+  (card 2684, C-E-L5), a refused reply keeps the focus in its box with the text, a recorded one moves
+  it to the status region; U12 (card 2684, C-E-L6), the open-questions and open-talks boxes untick
+  whenever their count changes); `tests/decision-flags.test.ts` (the pin of the flags' own text
+  rules, `FLAG_REASON_MAX`, `FLAG_NOTE_MAX`, `FLAG_TEXT_UNPRINTABLE` and `FLAG_TEXT_ALLOWED`, C-S-L2;
+  a new decider is asked on a participant's first flag after a change of decider though the former
+  was asked within the day, C-S-L4); `tests/decision-ruling.test.ts` (the same for a concern,
+  C-S-L4). Extended: T8 (`decision-flags`) refuses a lone zero-width joiner and joiners among
+  spaces as an empty reason (C-E-L3); T17 (`decision-flags`) lets a participant with only a planted
+  malformed request to talk ask again, on the page and at the write, the caps still counting it
+  (C-E-L2); T24 (`decision-record`) leaves out a `via` other than `session` or `link`, a version
+  outside 1 to the current one and a reply with no replier's name (C-S-L3); `tests/gate.test.ts`
+  case 21's `UNPUBLISHED` list gains the reply route (C-S-M1). Pins changed: `check-at-the-write`
+  (the shared module's import line), `decision-register` T47 (a published version for the removed
+  participant's decision, as the reader rightly drops a flag at version 0), `decision-participation`
+  case 22 and 2736-1 (the link page now offers flags). After the fix pass: `14595 passed | 5
+  skipped`, 14,600 tests, 168 files.
+- **S4**: no test; `tests/docs-mermaid.test.ts` holds the new sequence diagrams to no semicolon and no
+  bare `#`.
 
 #### Card 2683: decision survey questions
 

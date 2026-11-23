@@ -15,6 +15,13 @@
  */
 export const UNPRINTABLE = /[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff\p{Cf}]/u;
 
+/**
+ * What a markdown field may hold of `UNPRINTABLE`: tab, newline, carriage return and the zero-width joiner (card 2675,
+ * D12). Moved here from decision-content.ts by card 2684 (R4), so that the writer of a field and every tolerant reader
+ * of it share one set: `readMultiline`, a written survey answer and a flag's text. Global: taken out with `replace`.
+ */
+export const MARKDOWN_ALLOWED = /[\t\n\r‍]/g;
+
 /** `UNPRINTABLE`, for every match in a text. */
 const UNPRINTABLE_EVERYWHERE = new RegExp(UNPRINTABLE.source, 'gu');
 

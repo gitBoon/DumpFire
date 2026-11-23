@@ -18,6 +18,7 @@ import { schedulerSetting } from '../schedulers';
 import { putBackFromTrash, type UploadFile } from '../uploads';
 import { BOARDS_UNDER_DELETED_GROUPINGS, defaultsForNull, orDefault, runBackfills, type Backfill } from './migrate';
 import { normaliseTimestamps, registerStampFunctions, unreadableList, type TimestampNormalisation } from './timestamps';
+import { placeUnnamedSql } from './decision-place-namers';
 import { isStamp, stamp, toStamp } from '$lib/timestamps';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 import { KNOWN_BROWSER_SECRET_KEY } from '../known-browsers';
@@ -3068,12 +3069,12 @@ const RECORD_PLACE_CHANGED =
 	"SELECT p.decision_id, p.id, @kind, @detail, 'DumpFire', 'system', @at FROM decision_participants AS p JOIN decisions AS d ON d.id = p.decision_id " +
 	"WHERE p.id = @place AND d.status <> 'draft'";
 
-/** A draft's place deleted where no response, question or event names it (card 3033, R10). */
-const DELETE_DRAFT_PLACE =
-	'DELETE FROM decision_participants WHERE id = @place ' +
-	'AND NOT EXISTS (SELECT 1 FROM decision_responses WHERE participant_id = @place) ' +
-	'AND NOT EXISTS (SELECT 1 FROM decision_questions WHERE participant_id = @place) ' +
-	'AND NOT EXISTS (SELECT 1 FROM decision_events WHERE participant_id = @place)';
+/**
+ * A draft's place deleted where nothing names it (card 3033, R10): no table of the one shared list,
+ * `DECISION_PLACE_NAMERS` (card 2684, R18), the flags among them. The restore runs with foreign keys off, so a place a
+ * row names that the guard missed would be deleted silently and the row left naming nothing.
+ */
+const DELETE_DRAFT_PLACE = `DELETE FROM decision_participants WHERE id = @place ${placeUnnamedSql('@place')}`;
 
 /** One place change the restore records (`RECORD_PLACE_CHANGED`): its kind and its detail, as an object. */
 type PlaceChange = { kind: 'removed' | 'role_changed' | 're_included'; detail: Record<string, unknown> };
@@ -3325,11 +3326,12 @@ function keepDecisionRolesHere(
 
 /**
  * The tables whose rows `raiseUserCounterOverNamed` never updates or deletes: the insert-only ones (decision 27; card
- * 2678, decision 7), the decision record, the people directory's record and the settled-once questions; and
+ * 2678, decision 7), the decision record, the people directory's record, the settled-once questions and the settled-once
+ * flags (card 2684, R18); and
  * `api_keys`, whose every deletion is recorded as an ending (card 2995). It counts their account ids in range and
  * leaves the rest as they are: a key naming no account in range acts as nobody.
  */
-const ROWS_LEFT_AS_THEY_ARE: readonly string[] = ['decision_versions', 'decision_responses', 'decision_rulings', 'decision_events', 'people_changes', 'decision_questions', 'api_keys'];
+const ROWS_LEFT_AS_THEY_ARE: readonly string[] = ['decision_versions', 'decision_responses', 'decision_rulings', 'decision_events', 'people_changes', 'decision_questions', 'decision_flags', 'api_keys'];
 
 /** The largest account id one restore may name and the counter be raised to: 2^53 - 1, the largest a number in JavaScript holds exactly. */
 const MOST_ACCOUNT_ID = Number.MAX_SAFE_INTEGER;

@@ -515,7 +515,7 @@ function sourceReadsOutside(file: string, source: string, mayDeclare = true): st
 describe('the decision services read the source only through sourceOf (3)', () => {
 	it('reads opts.source and names writingWithKey only inside the helper’s sourceOf, which no service declares, and the scan finds one outside it', () => {
 		// Card 2713 (D6 row 6, R5): the decision services on SERVICES and the modules on SERVICE_HELPERS, read from the lists
-		// themselves; asserted whole: the seven services and the helper, eight files.
+		// themselves; asserted whole: the eight services (card 2684 adds the flags') and the helper, nine files.
 		const files = [...SERVICES.filter((file) => DECISION_SERVICE.test(file)), ...SERVICE_HELPERS];
 		expect(files).toEqual([
 			'src/lib/server/decision-authoring-writes.ts',
@@ -525,9 +525,10 @@ describe('the decision services read the source only through sourceOf (3)', () =
 			'src/lib/server/decision-response-writes.ts',
 			'src/lib/server/decision-ruling-writes.ts',
 			'src/lib/server/decision-question-writes.ts',
+			'src/lib/server/decision-flag-writes.ts',
 			'src/lib/server/decision-write-shared.ts'
 		]);
-		expect(files).toHaveLength(8);
+		expect(files).toHaveLength(9);
 		const read = files.map((file) => ({ file, source: readFileSync(join(process.cwd(), file), 'utf8') }));
 		const declaring = read.filter(({ file, source }) => sourceOfDeclarations(ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)).length > 0);
 		expect(declaring.map(({ file }) => file)).toEqual(['src/lib/server/decision-write-shared.ts']);
@@ -689,8 +690,15 @@ describe('readSummary (5)', () => {
 		return { ...made, pat, quin, ria };
 	}
 
-	it('(a) answers exactly the allow-list, nothing to rule or release by, and an agent-answered open question with no asker', () => {
-		const { decision, decider } = summarised();
+	it('(a) answers exactly the allow-list, nothing to rule or release by, and an agent-answered open question with no asker; and no flag (card 2684, T44)', () => {
+		const { decision, decider, pat } = summarised();
+		// Card 2684 (R13): an objection, answered, which the summary never gives, in its keys or its words.
+		sqlite
+			.prepare(
+				'INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at, reply, replied_by_name, replied_at) ' +
+					"VALUES (?, ?, 'objection', 'SECRET-OBJECTION', 1, 'session', '2026-11-01 10:00:00', 'SECRET-REPLY', 'A decider', '2026-11-01 11:00:00')"
+			)
+			.run(decision.id, pat.participant.id);
 
 		const summary = readSummary(decider, decision.id, { source: 'api' });
 
@@ -703,6 +711,7 @@ describe('readSummary (5)', () => {
 		);
 		expect(summary.untrusted).toBe(true);
 		expect(summary.openQuestions).toEqual([{ question: 'What does A cost?', agentAnswered: true, untrusted: true }]);
+		expect(JSON.stringify(summary)).not.toContain('SECRET');
 	});
 
 	it('(b) gives the ruling early, against the responses, and who was cut off', () => {
@@ -775,7 +784,7 @@ describe('readRecord by source (6)', () => {
 			{ userId: null, name: linky.participant.name, source: 'link' }
 		);
 		const admin = makeUser({ username: 'admin', role: 'admin' });
-		return { decision, admin, asker, linky, included, seen };
+		return { decision, admin, decider, asker, linky, included, seen };
 	}
 	const QUESTION_KINDS = ['question_asked', 'question_answered', 'answer_published', 'answer_replaced'];
 	/** The events `recorded()` writes that are no question event: two included, responded, address_changed and seen. */
@@ -813,6 +822,36 @@ describe('readRecord by source (6)', () => {
 		const ctx = { user: admin, labels: new Map<number, string>(), participants: new Map<number, string>() };
 		expect(() => recordEntryOf(row, { ...ctx, source: 'api' })).toThrow(/never given to an API key/);
 		expect(recordEntryOf(row, { ...ctx, source: 'ui' })).toMatchObject({ kind: 'question_asked', actor: { name: 'Someone', source: 'link' } });
+	});
+
+	it("(T45) card 2684: leaves the four flag events out of a key's page, filtered by the participant who raised one or not, in the query; the decider's page shows them", () => {
+		const { decision, admin, decider, asker, linky } = recorded();
+		const FLAG_KINDS = ['objection_raised', 'talk_requested', 'objection_answered', 'talk_outcome'];
+		appendEvent({ decisionId: decision.id, kind: 'objection_raised', participantId: asker.participant.id, versionNumber: 1, detail: { flagId: 1, notice: 'asked' } }, { userId: asker.account.id, name: asker.account.username, source: 'ui' });
+		appendEvent(
+			{ decisionId: decision.id, kind: 'talk_requested', participantId: linky.participant.id, versionNumber: 1, detail: { flagId: 2, notice: 'held' } },
+			{ userId: null, name: linky.participant.name, source: 'link' }
+		);
+		appendEvent({ decisionId: decision.id, kind: 'objection_answered', detail: { flagId: 1, notice: 'sent' } }, { userId: decider.id, name: decider.username, source: 'ui' });
+		appendEvent({ decisionId: decision.id, kind: 'talk_outcome', detail: { flagId: 2, notice: 'sent' } }, { userId: decider.id, name: decider.username, source: 'ui' });
+
+		for (const reader of [admin, decider]) {
+			const page = readRecord(reader, decision.id, all, { source: 'api', limit: 500 });
+			expect(page.entries.filter((entry) => FLAG_KINDS.includes(entry.kind)), reader.username).toEqual([]);
+			expect(page.entries, reader.username).toHaveLength(OTHER_EVENTS);
+			// In the query: a page exactly as long as the other events is the last.
+			expect(readRecord(reader, decision.id, all, { source: 'api', limit: OTHER_EVENTS }).next, reader.username).toBeNull();
+			// Filtered by the participant who objected, and by the one who asked to talk: neither raise is given.
+			const byAsker = readRecord(reader, decision.id, { participant: asker.participant.id, after: null }, { source: 'api', limit: 500 });
+			expect(byAsker.entries.map((entry) => entry.kind), reader.username).toEqual(['included', 'seen']);
+			const byLink = readRecord(reader, decision.id, { participant: linky.participant.id, after: null }, { source: 'api', limit: 500 });
+			expect(byLink.entries.map((entry) => entry.kind), reader.username).toEqual(['included', 'responded', 'address_changed']);
+		}
+		// The decider's page, and an administrator's, show all four.
+		for (const reader of [decider, admin]) {
+			const shown = readRecord(reader, decision.id, all, { source: 'ui', limit: 500 });
+			expect(shown.entries.filter((entry) => FLAG_KINDS.includes(entry.kind)).map((entry) => entry.kind), reader.username).toEqual(FLAG_KINDS);
+		}
 	});
 
 	it("(c) leaves the question events out of a key's page filtered by the asker, in the query, so that next is exact", () => {

@@ -74,7 +74,7 @@ vi.mock('svelte', async () => {
 import DecisionView from '$lib/components/decision/DecisionView.svelte';
 import MarkdownBlock from '$lib/components/decision/MarkdownBlock.svelte';
 import ResponseForm from '$lib/components/decision/ResponseForm.svelte';
-import { STALE_REVISION, SURVEY_TEXT_NOTE, signedInNoteWords, surveyWhoSees, whoSeesStatement, type ToldMail } from '$lib/decision-words';
+import { FLAG_TEXT_NOTE, flagWhoSees, STALE_REVISION, SURVEY_TEXT_NOTE, signedInNoteWords, surveyWhoSees, TALK_OPEN, whoSeesStatement, type ToldMail } from '$lib/decision-words';
 import { renderMarkdown } from '$lib/markdown';
 import DecisionPage from '../src/routes/decisions/[id]/+page.svelte';
 import LinkPage from '../src/routes/decision-link/[token]/+page.svelte';
@@ -218,6 +218,10 @@ function pageData(more: Partial<DecisionPageData> = {}): DecisionPageData & { us
 		// Card 2678: no question, and none may be asked, so no questions section is drawn (tests/decision-questions.svelte.test.ts, case 31).
 		questions: [],
 		mayAsk: false,
+		// Card 2684 (R22): nothing raised, and neither form offered.
+		flags: [],
+		mayObject: false,
+		mayAskToTalk: false,
 		user: null,
 		...more
 	};
@@ -855,7 +859,7 @@ describe('the parts both participant pages share (card 2707)', () => {
 		}
 
 		// With no participant or no stage the note claims nothing, whatever the flags say (fail closed).
-		const every = { mayRespond: true, mayAsk: true, mayRaiseConcern: true, seenRecorded: false };
+		const every = { mayRespond: true, mayAsk: true, mayObject: true, mayAskToTalk: true, mayRaiseConcern: true, seenRecorded: false };
 		expect(signedInNoteWords('Sam', false, 'question', every)).toBe('You are signed in as Sam.');
 		expect(signedInNoteWords('Sam', true, null, every)).toBe('You are signed in as Sam.');
 	});
@@ -886,7 +890,7 @@ describe('the parts both participant pages share (card 2707)', () => {
 		}
 
 		// The clause follows the flag alone: the same state, not yet seen, keeps it.
-		const flags = { mayRespond: false, mayAsk: false, mayRaiseConcern: false };
+		const flags = { mayRespond: false, mayAsk: false, mayObject: false, mayAskToTalk: false, mayRaiseConcern: false };
 		expect(signedInNoteWords('Sam', true, 'ruling', { ...flags, seenRecorded: false })).toBe('You are signed in as Sam; this is recorded with your having seen the ruling.');
 		expect(signedInNoteWords('Sam', true, 'ruling', { ...flags, seenRecorded: true })).toBe('You are signed in as Sam.');
 	});
@@ -1154,5 +1158,164 @@ describe('survey questions (card 2683)', () => {
 			'You also answered 2 survey questions as that version asked them.'
 		]);
 		expect(textOf(later.querySelector('.earlier')!)).not.toContain('Tuesdays');
+	});
+});
+
+// ─── Objections and requests to talk (card 2684, slice S3: U1 to U3) ────────
+
+describe('objections and requests to talk on the participant pages (card 2684)', () => {
+	const flagsOf = (target: HTMLElement) => target.querySelector<HTMLElement>('[data-section="flags"]');
+	const formOf = (target: HTMLElement, kind: 'objection' | 'talk') => target.querySelector<HTMLFormElement>(`form[data-form="${kind}"]`);
+	const boxOf = (form: HTMLFormElement) => {
+		const area = form.querySelector<HTMLTextAreaElement>('textarea')!;
+		expect(form.querySelector(`label[for="${area.id}"]`), 'labelled').not.toBeNull();
+		return area;
+	};
+	const sendOf = (form: HTMLFormElement) => form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+	const said = (target: HTMLElement) => textOf(target.querySelector('[data-said="flag"]')!);
+	const own = (more: Partial<DecisionPageData['flags'][number]> = {}): DecisionPageData['flags'][number] => ({
+		kind: 'objection',
+		reason: 'The cost is not covered.',
+		raisedAt: '2026-11-02 10:00:00',
+		versionNumber: 1,
+		reply: null,
+		repliedAt: null,
+		...more
+	});
+
+	it('U1: the objection form needs a reason, sends { kind, reason } each way in, says who sees it, and says the server’s refusal, the reason kept', async () => {
+		const signedIn = draw(DecisionPage, { data: pageData({ mayObject: true, mayAskToTalk: true }) });
+		const section = flagsOf(signedIn)!;
+		expect(textOf(section.querySelector('h2')!)).toBe('Objections and requests to talk');
+		expect(textOf(section.querySelector('[data-note="flag-who-sees"]')!)).toBe(flagWhoSees('Dee Cider'));
+		expect(textOf(section.querySelector('[data-note="flag-who-sees"]')!)).toContain('whoever decides (now Dee Cider)');
+		const form = formOf(signedIn, 'objection')!;
+		const box = boxOf(form);
+		expect(box.maxLength).toBe(4000);
+		expect(box.required).toBe(true);
+		expect(textOf(form.querySelector('.note')!)).toBe(FLAG_TEXT_NOTE);
+		expect(sendOf(form).disabled, 'no reason').toBe(true);
+		type(box, '   ');
+		expect(sendOf(form).disabled, 'spaces alone').toBe(true);
+		type(box, 'The cost is not covered.');
+		expect(sendOf(form).disabled).toBe(false);
+
+		// A refusal in the server's words, the reason kept, and the page read again after a 409.
+		answer('POST /api/decisions/5/flags', { message: 'You have raised 3 objections on this version of the decision: no more can be raised' }, 409);
+		sendOf(form).click();
+		await settle();
+		expect(said(signedIn)).toBe('You have raised 3 objections on this version of the decision: no more can be raised');
+		expect(signedIn.querySelector('[data-said="flag"]')!.getAttribute('role')).toBe('status');
+		expect(box.value).toBe('The cost is not covered.');
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+
+		answer('POST /api/decisions/5/flags', { flag: own() });
+		sendOf(form).click();
+		await settle();
+		expect(requests('POST /api/decisions/5/flags')).toEqual([
+			{ kind: 'objection', reason: 'The cost is not covered.' },
+			{ kind: 'objection', reason: 'The cost is not covered.' }
+		]);
+		expect(said(signedIn)).toBe('Your objection was recorded on 2026-11-02 10:00 UTC.');
+		expect(box.value, 'emptied once recorded').toBe('');
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(2);
+
+		clear();
+		const linked = draw(LinkPage, { data: linkData({ mayObject: true, mayAskToTalk: false }) });
+		expect(textOf(flagsOf(linked)!.querySelector('[data-note="flag-who-sees"]')!)).toBe(flagWhoSees('Dee Cider'));
+		const byLink = formOf(linked, 'objection')!;
+		type(boxOf(byLink), 'By my link.');
+		answer('POST /api/decision-by-link/flags', { flag: own({ reason: 'By my link.' }) });
+		sendOf(byLink).click();
+		await settle();
+		expect(sent.map((request) => request.what)).toEqual(['POST /api/decision-by-link/flags']);
+		expect(requests('POST /api/decision-by-link/flags')).toEqual([{ token: 'tok-page', kind: 'objection', reason: 'By my link.' }]);
+	});
+
+	it('U2: the request to talk’s note is optional; the form is gone while a request has no outcome, saying why', async () => {
+		const target = draw(DecisionPage, { data: pageData({ participant: { role: 'informed', includedAt: '2026-11-01 09:00:00', told: null }, mayRespond: false, mayAskToTalk: true }) });
+		const form = formOf(target, 'talk')!;
+		const box = boxOf(form);
+		expect(box.maxLength).toBe(2000);
+		expect(box.required).toBe(false);
+		expect(textOf(form.querySelector('.note')!)).toBe(FLAG_TEXT_NOTE);
+		expect(formOf(target, 'objection'), 'not offered').toBeNull();
+		expect(sendOf(form).disabled, 'no note is needed').toBe(false);
+		answer('POST /api/decisions/5/flags', { flag: own({ kind: 'talk', reason: '' }) });
+		sendOf(form).click();
+		await settle();
+		expect(requests('POST /api/decisions/5/flags')).toEqual([{ kind: 'talk', reason: '' }]);
+		expect(said(target)).toBe('Your request to talk was recorded on 2026-11-02 10:00 UTC.');
+
+		clear();
+		const waiting = draw(DecisionPage, { data: pageData({ flags: [own({ kind: 'talk', reason: '' })], mayObject: true, mayAskToTalk: false }) });
+		expect(formOf(waiting, 'talk'), 'gone while the request has no outcome').toBeNull();
+		expect(formOf(waiting, 'objection')).not.toBeNull();
+		expect(textOf(waiting.querySelector('[data-note="talk-closed"]')!)).toBe(`${TALK_OPEN}.`);
+
+		clear();
+		// Neither offered and nothing raised: no section at all.
+		expect(flagsOf(draw(DecisionPage, { data: pageData() }))).toBeNull();
+	});
+
+	it('U3: the participant’s own flags show with the decider’s reply, as plain text, never markup', () => {
+		const target = draw(LinkPage, {
+			data: linkData({
+				version: { number: 2, publishedAt: '2026-11-03 09:00:00', content: CONTENT },
+				flags: [
+					own({ reason: 'It costs **too much** <i>now</i>.', reply: 'We have **budget** <b>set aside</b>.', repliedAt: '2026-11-02 12:00:00' }),
+					own({ kind: 'talk', reason: '', raisedAt: '2026-11-03 10:00:00', versionNumber: 2 })
+				]
+			})
+		});
+		const items = [...flagsOf(target)!.querySelectorAll('[data-list="own-flags"] li')];
+		expect(items.map((item) => item.getAttribute('data-flag-kind'))).toEqual(['objection', 'talk']);
+		expect(textOf(items[0].querySelector('.line')!)).toBe('Objection 2026-11-02 10:00 UTC, about version 1');
+		expect(textOf(items[0].querySelector('[data-text="reason"]')!)).toBe('It costs **too much** <i>now</i>.');
+		expect(textOf(items[0].querySelector('[data-note="replied"]')!)).toBe('Answered by the decider, 2026-11-02 12:00 UTC:');
+		expect(textOf(items[0].querySelector('[data-text="reply"]')!)).toBe('We have **budget** <b>set aside</b>.');
+		expect(items[0].querySelector('strong:not(:first-child), i, b, .markdown-body'), 'no markup drawn from what was written').toBeNull();
+		expect(textOf(items[1].querySelector('.line')!)).toBe('Request to talk 2026-11-03 10:00 UTC');
+		expect(items[1].querySelector('[data-text="reason"]'), 'no note').toBeNull();
+		expect(textOf(items[1].querySelector('[data-note="no-reply"]')!)).toBe('No outcome recorded yet');
+		// Neither form is offered: each says why, and no decider is named as who replied.
+		expect(textOf(target.querySelector('[data-note="objection-closed"]')!)).toBe('You cannot object to this decision now.');
+		expect(textOf(flagsOf(target)!)).not.toContain('Dee Cider,');
+	});
+
+	it('U8 (card 2684, F5): in a signed-in browser, the link page says an objection and a request to talk are recorded with the account, each only where its form is offered', () => {
+		const signedIn = (more: Partial<DecisionPageData>) => {
+			clear();
+			const page = draw(LinkPage, { data: { ...linkData(more), signedInAs: 'Sam' } });
+			return [...page.querySelectorAll('.signed-in')].map(textOf);
+		};
+		expect(signedIn({ mayAsk: true, mayObject: true, mayAskToTalk: true })).toEqual([
+			'You are signed in as Sam; this is recorded with your response, with your questions, with your objection, with your request to talk and with your having seen this version.'
+		]);
+		expect(signedIn({ mayRespond: false, mayObject: false, mayAskToTalk: true }), 'a request to talk alone').toEqual([
+			'You are signed in as Sam; this is recorded with your request to talk and with your having seen this version.'
+		]);
+		expect(signedIn({ mayRespond: false, mayObject: true, mayAskToTalk: false, seenRecorded: true }), 'an objection alone').toEqual([
+			'You are signed in as Sam; this is recorded with your objection.'
+		]);
+		expect(signedIn({ mayRespond: false, mayObject: false, mayAskToTalk: false, seenRecorded: true }), 'neither offered').toEqual(['You are signed in as Sam.']);
+		// The signed-in page draws no such line, whatever it is offered.
+		clear();
+		const session = draw(DecisionPage, { data: { ...pageData({ mayObject: true, mayAskToTalk: true }), signedInAs: 'Sam' } as DecisionPageData });
+		expect(session.querySelector('.signed-in')).toBeNull();
+	});
+
+	it('U10 (card 2684): once a flag is recorded, the status region takes the focus, as the form used may then be gone (code review C-E-L4)', async () => {
+		const target = draw(DecisionPage, { data: pageData({ mayObject: true }) });
+		const form = formOf(target, 'objection')!;
+		type(boxOf(form), 'The cost is not covered.');
+		sendOf(form).focus();
+		answer('POST /api/decisions/5/flags', { flag: own() });
+		sendOf(form).click();
+		await settle();
+		const region = target.querySelector<HTMLElement>('[data-said="flag"]')!;
+		expect(said(target)).toBe('Your objection was recorded on 2026-11-02 10:00 UTC.');
+		expect(region.getAttribute('tabindex')).toBe('-1');
+		expect(document.activeElement).toBe(region);
 	});
 });

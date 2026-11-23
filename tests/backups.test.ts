@@ -13884,6 +13884,28 @@ describe('a restore never brings back a decision role removed here, and an unche
 			expect(restoreEvents(decision.id)).toEqual([]);
 		});
 
+		it("(T3) card 2684, R18: a draft's place a flag names in the backup: kept and marked removed, no event, and no key left naming nothing", () => {
+			const decision = trackedDecision(board, chief, { status: 'draft' });
+			const { place } = placeOn(decision, bob);
+			const backup = backupNow();
+			backup
+				.prepare("INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at) VALUES (?, ?, 'objection', 'Planted.', 1, 'session', '2026-11-02 09:00:00')")
+				.run(decision.id, place.id);
+			sealedFor(sqlite, backup);
+			sqlite.prepare('DELETE FROM decision_participants WHERE id = ?').run(place.id);
+			notePlace(decision, place.id, 'removed');
+
+			const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+			expect(result.sealVerified).toBe(true);
+			expect(result.errors).toEqual([]);
+			expect(placeRow(place.id)).toMatchObject({ removedAt: expect.any(String), removedBy: null });
+			expect(sqlite.prepare('SELECT participant_id FROM decision_flags WHERE decision_id = ?').pluck().all(decision.id)).toEqual([place.id]);
+			expect(restoreEvents(decision.id)).toEqual([]);
+			expect(result.accessKept).toEqual({ ...NO_KEPT, participantsRemoved: 1 });
+			expect(sqlite.pragma('foreign_key_check')).toEqual([]);
+		});
+
 		/** (k1)'s case: Bob's place and Carol the decider on a decision withdrawn and deleted here, then the backup restored. */
 		const deletedHere = () => {
 			const decision = trackedDecision(board, carol);
@@ -14425,6 +14447,26 @@ describe('a restore never brings back a decision role removed here, and an unche
 		expect(result.sealVerified).toBe(true);
 		expect(sqlite.prepare('SELECT max(id) FROM users').pluck().get()).toBeLessThan(1700);
 		expect(makeUser({ username: 'next' }).id).toBeGreaterThan(1700);
+	});
+
+	it('(T4) card 2684, R18: a flag whose replied_by is out of range is left as it is, a settled-once row the counter pass never changes, and not counted', () => {
+		const decision = makeDecision({ board, author: chief, decider: chief, status: 'open', closesAt: '2099-01-01 00:00:00', openedAt: '2026-11-01 09:00:00' });
+		const place = makeParticipant(decision);
+		const backup = backupNow();
+		backup.pragma('foreign_keys = OFF');
+		const flag = backup
+			.prepare(
+				"INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at, reply, replied_by, replied_by_name, replied_at) VALUES (?, ?, 'objection', 'No.', 1, 'session', '2026-11-02 09:00:00', 'Heard.', 1152921504606846976, 'Gone', '2026-11-03 09:00:00')"
+			)
+			.run(decision.id, place.id).lastInsertRowid;
+		sealedFor(sqlite, backup);
+
+		const result = restoreFromBackup(sqlite, backup, { importer: chief.id });
+
+		expect(result.sealVerified).toBe(true);
+		expect(sqlite.prepare('SELECT CAST(replied_by AS TEXT) AS repliedBy, reply FROM decision_flags WHERE id = ?').get(flag)).toEqual({ repliedBy: '1152921504606846976', reply: 'Heard.' });
+		expect(result.errors.filter((line) => line.includes('restored account number(s)'))).toEqual([]);
+		expect(usersCounter()).toEqual({ type: 'integer', inRange: 1 });
 	});
 
 	describe('rolled back whole', () => {

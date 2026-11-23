@@ -172,8 +172,10 @@ describe('timestampColumns', () => {
 		// made here (migration 0079, card 3002: its two creation times are held in `subject_created` and
 		// `holder_created`, not `*_at` columns, so that the normaliser never rewrites a row of the append-only record); and
 		// when a change of where this server sends was made here (migration 0081, card 3004: its item's creation time is
-		// held in `item_created`, not an `*_at` column, for the same reason).
-		expect(found).toHaveLength(88);
+		// held in `item_created`, not an `*_at` column, for the same reason); and when an objection or a request to talk was
+		// raised and replied to (migration 0083, card 2684).
+		expect(found).toHaveLength(90);
+		expect(found).toEqual(expect.arrayContaining(['decision_flags.raised_at', 'decision_flags.replied_at']));
 		expect(found).not.toContain('account_endings.account_created');
 		expect(found).not.toContain('access_changes.subject_created');
 		expect(found).not.toContain('access_changes.holder_created');

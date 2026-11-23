@@ -170,6 +170,103 @@ export const PERSON_ANSWERED = "This question was answered by a person: there is
 /** The 409 for publishing an agent's draft a second time (decision 17). */
 export const ALREADY_PUBLISHED = "This agent's answer has already been published";
 
+// ─── Objections and requests to talk: the writes' refusals (card 2684, R3, R5) ─
+
+/**
+ * The 409 for an objection or a request to talk on a ruled decision (card 2684, R3): after the ruling, a concern about
+ * it is the way to speak. A superseded or withdrawn decision is refused in `requireTransition`'s words.
+ */
+export const FLAGS_CLOSED = 'This decision has been ruled: objections and requests to talk are closed. You can raise a concern about the ruling instead';
+
+/**
+ * The 409 past the most objections, or requests to talk, one participant raises on one version (card 2684, R5): the
+ * server's refusal and the closed form's words alike, written once.
+ */
+export const flagsLimitWords = (kind: 'objection' | 'talk', max: number) =>
+	kind === 'objection'
+		? `You have raised ${max} objections on this version of the decision: no more can be raised`
+		: `You have asked to talk ${max} times on this version of the decision: no more can be asked`;
+
+/** The 409 for a second request to talk while one has no outcome recorded (card 2684, R5). */
+export const TALK_OPEN = 'You have asked to talk to the decider and no outcome is recorded yet: you can ask again once it is';
+
+/** The 409 past the most objections and requests to talk one decision takes (card 2684, R5). */
+export const flagsFullWords = (max: number) => `This decision has ${max} objections and requests to talk: no more can be raised. Speak to the decider directly`;
+
+/** The 429 within the rest after a participant's last objection or request to talk (card 2684, R5), saying from when, in UTC. */
+export const flagRestWords = (minutes: number, from: string) =>
+	`Your last objection or request to talk was raised less than ${minutes} minutes ago: the next can be raised from ${from} UTC`;
+
+/**
+ * The ruling's 409 while objections have no answer (card 2684, R8), and the ruling form's note holding Rule off (R23):
+ * written once, so the page says what the server would refuse.
+ */
+export const objectionsUnansweredWords = (count: number) =>
+	count === 1 ? '1 objection has no answer: answer it before ruling' : `${count} objections have no answer: answer each before ruling`;
+
+/** The ruling's 409 while requests to talk have no outcome recorded and the decider has not confirmed ruling with them open (card 2684, R8). */
+export const talksOpenWords = (count: number) =>
+	count === 1
+		? '1 request to talk has no outcome recorded: confirm that you rule with it open'
+		: `${count} requests to talk have no outcome recorded: confirm that you rule with them open`;
+
+/** The ruling form's box for the same (card 2684, R23), beside the open questions' box. */
+export const talksConfirmWords = (count: number) =>
+	`${count === 1 ? '1 request to talk has' : `${count} requests to talk have`} no outcome recorded: I rule with ${count === 1 ? 'it' : 'them'} open`;
+
+// ─── Objections and requests to talk: the pages (card 2684, R12, R16, R22 to R24) ─
+// Every one is plain text: nothing a participant or the decider wrote is read as markdown.
+
+/**
+ * What the participant's forms say above them (card 2684, R12), `decider` the decider's name now: the role first, as
+ * the decider can change, and a new one sees everything raised before (R11).
+ */
+export const flagWhoSees = (decider: string) =>
+	`What you raise here is seen by whoever decides (now ${decider}) and DumpFire's administrators, with your name. ` +
+	'Nobody else sees it, and it is never released. ' +
+	'An objection must be answered before the decision is ruled on; it does not stop the decider ruling as they see fit.';
+
+/** What the participant's forms say under each box (card 2684, R12, as card 2683 R14): data minimisation. */
+export const FLAG_TEXT_NOTE = 'Write only what the decider needs. Do not include personal details about yourself or anyone else.';
+
+/** What the results page says above the decider's reply box (card 2684, R12, S-L3), `name` the participant's. */
+export const flagReplyWhoSees = (name: string) => `${name} reads this, and so does anyone holding their personal link.`;
+
+/** What the results page says to a viewer who may not reply (card 2684, R7): an administrator, who reads them and replies to none. */
+export const FLAG_REPLY_ELSEWHERE = 'Only whoever decides replies to objections and requests to talk.';
+
+/** What the results page says of the flags with no reply on a withdrawn decision (card 2684, R7; code review C-E-L1), to the decider and an administrator alike. */
+export const FLAG_REPLIES_CLOSED = 'This decision is withdrawn: objections and requests to talk can no longer be replied to.';
+
+/**
+ * The change-decider form's warning (card 2684, R24): fixed words, no number, shown wherever the form is offered,
+ * whether or not anything has been raised, so it says neither how many nor whether there are any.
+ */
+export const FLAGS_HANDED_OVER = 'Any objections or requests to talk already raised, with names, become visible to the new decider.';
+
+/** Each kind of flag, as the pages name it (card 2684, 3.1). */
+export const FLAG_KIND_WORDS: Readonly<Record<'objection' | 'talk', string>> = { objection: 'Objection', talk: 'Request to talk' };
+
+/** Who replied, by name; "the decider" where the viewer is given no name (the participant's own, R22). */
+export const flagRepliedWords = (kind: 'objection' | 'talk', byName?: string | null) =>
+	`${kind === 'objection' ? 'Answered' : 'Outcome recorded'} by ${byName ?? 'the decider'}`;
+
+/** A flag with no reply yet. */
+export const flagUnrepliedWords = (kind: 'objection' | 'talk') => (kind === 'objection' ? 'Not answered yet' : 'No outcome recorded yet');
+
+/**
+ * Why the participant's form for `kind` is not offered (card 2684, R22): their last allowed of that kind on this
+ * version raised, a request to talk still without an outcome, the decision ruled (a concern instead), superseded or
+ * withdrawn, or another reason (the decision's own cap, a link past its time). Worked out from the page's data.
+ */
+export function flagsClosedWords(kind: 'objection' | 'talk', ownOnVersion: number, max: number, talkOpen: boolean, shownStatus: string): string {
+	if (shownStatus === 'ruled') return `${FLAGS_CLOSED}.`;
+	if (shownStatus !== 'open' && shownStatus !== 'awaiting_ruling') return 'Objections and requests to talk on this decision are closed.';
+	if (kind === 'talk' && talkOpen) return `${TALK_OPEN}.`;
+	if (ownOnVersion >= max) return `${flagsLimitWords(kind, max)}.`;
+	return kind === 'objection' ? 'You cannot object to this decision now.' : 'You cannot ask to talk about this decision now.';
+}
+
 // ─── The agent-drafted label (card 2712, folded into card 2678, decision 20) ─
 
 /**
@@ -283,8 +380,8 @@ export const seenNoteWords = (stage: 'question' | 'ruling' | 'withdrawal') =>
  * what the link records beside the account, as `signedIn`, on this page and
  * no more. It claims nothing unless the page is a participant's and has a
  * stage. Then each write clause is added only where the page's own flag lets
- * the participant make that write now (`mayRespond`, `mayAsk`,
- * `mayRaiseConcern`, which carry the status, the role and each per-person
+ * the participant make that write now (`mayRespond`, `mayAsk`, `mayObject`,
+ * `mayAskToTalk` (card 2684), `mayRaiseConcern`, which carry the status, the role and each per-person
  * limit), and the seen clause, in `seenNoteWords`'s words for the stage,
  * only where `seenRecorded` is false (card 2736): a seen already recorded is
  * not recorded again, so nothing of it is recorded beside the account now.
@@ -295,12 +392,15 @@ export function signedInNoteWords(
 	name: string,
 	participating: boolean,
 	stage: 'question' | 'ruling' | 'withdrawal' | null,
-	flags: { mayRespond: boolean; mayAsk: boolean; mayRaiseConcern: boolean; seenRecorded: boolean }
+	flags: { mayRespond: boolean; mayAsk: boolean; mayObject: boolean; mayAskToTalk: boolean; mayRaiseConcern: boolean; seenRecorded: boolean }
 ): string {
 	const kept: string[] = [];
 	if (participating && stage !== null) {
 		if (flags.mayRespond) kept.push('your response');
 		if (flags.mayAsk) kept.push('your questions');
+		// Card 2684 (code review F5): an objection and a request to talk by link record the signed-in account too.
+		if (flags.mayObject) kept.push('your objection');
+		if (flags.mayAskToTalk) kept.push('your request to talk');
 		if (flags.mayRaiseConcern) kept.push('your concern');
 		if (!flags.seenRecorded) kept.push(`your having seen ${stage === 'ruling' ? 'the ruling' : 'this version'}`);
 	}
@@ -514,6 +614,11 @@ export const EVENT_WORDS: Readonly<Record<string, string>> = {
 	question_answered: 'Question answered',
 	answer_published: "Agent's answer published",
 	answer_replaced: "Agent's answer replaced",
+	// Card 2684 (R16): the decider's and administrators' alone.
+	objection_raised: 'Objection raised',
+	talk_requested: 'Asked to talk',
+	objection_answered: 'Objection answered',
+	talk_outcome: 'Talk outcome recorded',
 	// Card 2685 (decision 11, S8): claims no delivery, as a person's own record never shows a mail outcome.
 	reminded: 'A reminder was due before closing'
 };

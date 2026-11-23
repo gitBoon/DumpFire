@@ -41,6 +41,11 @@
 	 * where `mayLinkCards`, and Unlink where `mayUnlinkCards`; the section is
 	 * drawn where there is a card or the caller may link or unlink one.
 	 *
+	 * Card 2684 (R22): for a participant, their own objections and requests
+	 * to talk with the decider's replies, and the forms to raise one
+	 * (`FlagForm`), posting to `/api/decisions/[id]/flags`; the section is
+	 * drawn where they have raised one or may raise one now.
+	 *
 	 * Card 2707: the banner and the response section are components shared
 	 * with the link page, `ParticipantBanner` (with no personal link) and
 	 * `ParticipantResponse` (to this page's route, keyed on the decision), so
@@ -55,6 +60,7 @@
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
+	import FlagForm from '$lib/components/decision/FlagForm.svelte';
 	import LinkedCards from '$lib/components/decision/LinkedCards.svelte';
 	import ParticipantBanner from '$lib/components/decision/ParticipantBanner.svelte';
 	import ParticipantResponse from '$lib/components/decision/ParticipantResponse.svelte';
@@ -135,6 +141,8 @@
 		stage={data.stage}
 		mayRespond={data.mayRespond}
 		mayAsk={data.mayAsk}
+		mayObject={data.mayObject}
+		mayAskToTalk={data.mayAskToTalk}
 		mayRaiseConcern={data.mayRaiseConcern}
 		seenRecorded={data.seenRecorded}
 		personalLink={null}
@@ -169,6 +177,21 @@
 		{#if data.participant !== null}
 			<QuestionForm url="/api/decisions/{data.decision.id}/questions" mayAsk={data.mayAsk} questions={data.questions} shownStatus={data.decision.shownStatus} />
 		{/if}
+	{/key}
+{/snippet}
+
+{#snippet flagsSection()}
+	<!-- Drawn afresh for another decision, so one decision's flags and typed words are never shown on another's. -->
+	{#key data.decision.id}
+		<FlagForm
+			url="/api/decisions/{data.decision.id}/flags"
+			flags={data.flags}
+			mayObject={data.mayObject}
+			mayAskToTalk={data.mayAskToTalk}
+			decider={data.decision.deciderName ?? 'the decider'}
+			shownStatus={data.decision.shownStatus}
+			versionNumber={data.version?.number ?? 0}
+		/>
 	{/key}
 {/snippet}
 
@@ -274,6 +297,7 @@
 				results={data.released !== null ? releasedResults : undefined}
 				concern={data.participant !== null && (data.mayRaiseConcern || data.concerns.length > 0) ? concern : undefined}
 				questions={data.questions.length > 0 || data.mayAsk ? questions : undefined}
+				flags={data.participant !== null && (data.flags.length > 0 || data.mayObject || data.mayAskToTalk) ? flagsSection : undefined}
 				linkedCards={(data.linkedCards ?? []).length > 0 || data.mayLinkCards || data.mayUnlinkCards ? linkedCards : undefined}
 			/>
 		{/if}

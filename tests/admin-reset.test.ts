@@ -209,8 +209,8 @@ function everything(): Everything {
 		.prepare("INSERT INTO request_links (token_hash, request_id, source) VALUES (?, ?, 'mail')")
 		.run('d'.repeat(64), request.id);
 
-	// A decision record, a row in each of its twelve tables (card 2673, migration 0061) and in its survey questions (card
-	// 2683, migration 0082), and a Product Owner.
+	// A decision record, a row in each of its twelve tables (card 2673, migration 0061), in its survey questions (card
+	// 2683, migration 0082) and in its objections and requests to talk (card 2684, migration 0083), and a Product Owner.
 	const at = '2026-11-03 09:00:00';
 	sqlite.exec(`
 		UPDATE boards SET product_owner_user_id = ${member.id} WHERE id = ${A.board.id};
@@ -228,6 +228,8 @@ function everything(): Everything {
 		INSERT INTO decision_responses (decision_id, participant_id, version_number, round, kind, option_id, via) VALUES (1, 1, 1, 1, 'vote', 1, 'session');
 		INSERT INTO decision_questions (decision_id, participant_id, asker_name, question, asked_in_version, via, asked_at)
 			VALUES (1, 1, 'Member', 'How much?', 1, 'session', '${at}');
+		INSERT INTO decision_flags (decision_id, participant_id, kind, reason, version_number, via, raised_at, reply, replied_by, replied_by_name, replied_at)
+			VALUES (1, 1, 'objection', 'Too dear.', 1, 'session', '${at}', 'Heard.', ${member.id}, 'member', '${at}');
 		INSERT INTO decision_rulings (decision_id, option_id, reason, against_responses, early, version_number, ruled_by, ruled_by_name, ruled_at)
 			VALUES (1, 1, 'Cheaper.', 0, 0, 1, ${member.id}, 'member', '${at}');
 		INSERT INTO decision_events (decision_id, participant_id, kind, actor_user_id, actor_name, source) VALUES (1, 1, 'responded', ${member.id}, 'member', 'ui');

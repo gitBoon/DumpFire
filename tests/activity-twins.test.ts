@@ -2822,6 +2822,17 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/decision-by-link/questions/+server.ts POST': [
 		{ service: 'askQuestionByLink', args: [code('caller'), { token: code('token') }, code('body'), { source: 'ui' }] }
 	],
+	// Card 2684 (R3): a participant's objection or request to talk, signed in and by a personal link; no v1 row.
+	'src/routes/api/decisions/[id]/flags/+server.ts POST': [
+		{ service: 'raiseFlag', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decision-by-link/flags/+server.ts POST': [
+		{ service: 'raiseFlagByLink', args: [code('caller'), { token: code('token') }, code('body'), { source: 'ui' }] }
+	],
+	// Card 2684 (R7): the decider's reply to either; no v1 row.
+	'src/routes/api/decisions/[id]/flags/[flagId]/reply/+server.ts POST': [
+		{ service: 'replyToFlag', args: [code('caller'), { decisionId: code('decisionId'), flagId: code('flagId') }, code('body'), { source: 'ui' }] }
+	],
 	'src/routes/api/decisions/[id]/questions/[questionId]/answer/+server.ts POST': [
 		{ service: 'answerQuestion', args: [code('caller'), { decisionId: code('decisionId'), questionId: code('questionId') }, code('body'), { source: 'ui' }] }
 	],

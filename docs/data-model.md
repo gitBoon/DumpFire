@@ -1,10 +1,13 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.106
+version: 1.107
 status: As-Built
-date: 2026-11-21
+date: 2026-11-23
 tags:
+  - card-2684
+  - migration-0083
+  - decision-flags
   - card-2683
   - card-3004
   - card-3031
@@ -81,7 +84,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "decision_survey_questions and decision_responses.answers, a decision's survey questions kept as options are and the answers given with a response, read tolerantly and never released, migration 0082 (card 2683). outbound_changes, the append-only record of every change of where this server sends: its seven kinds, keyed digests, three indexes, writers and readers, migration 0081 (card 3004). access_changes' four decision kinds (decision, decision_decider, decision_participant, decision_account) and its index on changed_at, migration 0080 (card 3033). access_changes, the append-only record of every change of board, team and person access by identity, its kinds, words, indexes, writers, readers and once-only seed (migration 0079, card 3002); Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
+description: "decision_flags, a participant's objections and requests to talk and the decider's replies, settled once, read tolerantly, never released, and DECISION_PLACE_NAMERS, the one list of tables that name a decision place, migration 0083 (card 2684). decision_survey_questions and decision_responses.answers, a decision's survey questions kept as options are and the answers given with a response, read tolerantly and never released, migration 0082 (card 2683). outbound_changes, the append-only record of every change of where this server sends: its seven kinds, keyed digests, three indexes, writers and readers, migration 0081 (card 3004). access_changes' four decision kinds (decision, decision_decider, decision_participant, decision_account) and its index on changed_at, migration 0080 (card 3033). access_changes, the append-only record of every change of board, team and person access by identity, its kinds, words, indexes, writers, readers and once-only seed (migration 0079, card 3002); Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -513,11 +516,13 @@ erDiagram
 
 The people directory, the decisions and their record, and a board's Product Owner (card 2673,
 milestone 35); since migration 0082 (card 2683) a decision's survey questions and the answers
-given with a response ([below](#survey-questions-and-their-answers-card-2683-migration-0082)).
+given with a response ([below](#survey-questions-and-their-answers-card-2683-migration-0082));
+since migration 0083 (card 2684) a participant's objections and requests to talk, with the
+decider's replies ([below](#objections-and-requests-to-talk-settled-once-card-2684-migration-0083)).
 Every key to `users` is SET NULL, with a name kept beside it; every table under
-a decision cascades from it; the six references from the record to participants and options
-have no ON DELETE action (NO ACTION), so the database refuses to delete one the record
-mentions. Columns are listed in full under [Key Schema Notes](#key-schema-notes).
+a decision cascades from it; the references from the record, the questions and the flags to
+participants and options have no ON DELETE action (NO ACTION), so the database refuses to delete
+one the record mentions. Columns are listed in full under [Key Schema Notes](#key-schema-notes).
 
 ```mermaid
 erDiagram
@@ -626,6 +631,15 @@ erDiagram
         int answered_by FK
         int answer_reviewed_by FK
     }
+    decision_flags {
+        int id PK "AUTOINCREMENT (0083)"
+        int decision_id FK
+        int participant_id FK "NO ACTION"
+        text kind "objection or talk"
+        int version_number
+        text reply "settled once"
+        int replied_by FK "SET NULL; record only"
+    }
     decision_rulings {
         int decision_id PK_FK
         int option_id FK "NO ACTION; NULL: none of them"
@@ -676,6 +690,9 @@ erDiagram
     decision_options |o--o{ decision_responses : "NO ACTION"
     decisions ||--o{ decision_questions : "CASCADE"
     decision_participants |o--o{ decision_questions : "NO ACTION"
+    decisions ||--o{ decision_flags : "CASCADE (0083)"
+    decision_participants ||--o{ decision_flags : "NO ACTION (0083)"
+    users |o--o{ decision_flags : "replied_by (SET NULL)"
     decisions ||--o| decision_rulings : "CASCADE"
     decision_options |o--o| decision_rulings : "NO ACTION"
     decisions ||--o{ decision_events : "CASCADE"
@@ -756,7 +773,10 @@ a JSON list of names in order, `user_id`) are copied from the person when they a
 draft and copied again for every draft row at opening, with `included_at` stamped then. After
 opening a snapshot is never refreshed from the directory: only an administrator's
 `changeParticipantAddress` changes `email`, and `setParticipantAccount` changes `user_id`. In a
-draft, a row left out is deleted, since no event names it. After opening, a row left out is
+draft, a row left out is deleted where no table of `DECISION_PLACE_NAMERS` names it (card 2684,
+[below](#the-tables-that-name-a-decision-place-card-2684-r18)), and otherwise marked removed
+(`removed_at`, `removed_by` the caller), as after opening; no write can put a flag on a draft, so
+only a restored row can name a draft's place that way. After opening, a row left out is
 marked `removed_at` and `removed_by` and kept with its responses, and a person added again comes
 back on the same row. No key stops two live rows of a decision sharing a `user_id`, so the
 service refuses one (409), and `decisionAccess` gives no participant role to an account that two
@@ -1447,6 +1467,178 @@ stateDiagram-v2
     Live --> Retired: re-publish with it left out (retired_in_version N+1, asks everyone again)
     Retired --> [*]
     note right of Live: answers keyed by its id are read against the version they were given under
+```
+
+#### Objections and requests to talk, settled once (card 2684, migration 0083)
+
+Card 2684 (plan `docs/planning/card-2684-decision-objections-and-need-to-talk.md`) lets anyone
+included in an open decision, or one awaiting its ruling, object ("I cannot live with this", a
+reason required) or ask to talk to the decider (a note optional), and the decider answer each
+objection and record the outcome of each conversation, once. Both are kept in one table, a row
+each, as `decision_questions` keeps a question and its answer: they are not responses and never
+read as one (`RESPONSE_KINDS` is unchanged, so a participant who only objected has not
+responded). In code the row is a "flag"; the pages never say the word. Migration
+`0083_add_decision_flags.sql` adds the table and its three indexes, changes no row and declares
+nothing to the rehearsal:
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | never reused |
+| `decision_id` | INTEGER `NOT NULL` | `decisions.id`, **CASCADE**, `idx_decision_flags_decision_id` |
+| `participant_id` | INTEGER `NOT NULL` | `decision_participants.id`, **NO ACTION**, `idx_decision_flags_participant_id`: a place a flag names is never deleted, only marked removed |
+| `kind` | TEXT `NOT NULL` | `objection` or `talk` (`FLAG_KINDS`, `$lib/decision-rules.ts`), free text checked in code |
+| `reason` | TEXT `NOT NULL` | an objection's reason, 1 to 4,000 (`FLAG_TEXT_RULES.objection`, `FLAG_REASON_MAX`); a request to talk's note, 0 to 2,000, `''` when none was sent (`FLAG_TEXT_RULES.talk`, `FLAG_NOTE_MAX`). The flags' own limits, never tied to another field's, as the reader drops a stored row past them |
+| `version_number` | INTEGER `NOT NULL` | the decision's current version when raised; the per-version caps count by it |
+| `via` | TEXT `NOT NULL` | `session` or `link`; never `api`, as no API key can raise one |
+| `raised_at` | TEXT `NOT NULL` | stamped by `appendFlag` |
+| `reply` | TEXT | NULL until the decider replies; then 1 to 4,000 (`REPLY_TEXT_RULE`) |
+| `replied_by` | INTEGER | `users.id`, **SET NULL**, `idx_decision_flags_replied_by`. Kept for the record alone: nothing reads it for access, links or mail, and no page or answer shows it |
+| `replied_by_name` | TEXT | the replier's name at the moment of the reply, the only "who replied" any page shows |
+| `replied_at` | TEXT | stamped by `recordFlagReply` |
+
+No `IF NOT EXISTS`, as 0063 and 0082. The table is not one the runner rebuilds from the model
+(`RECONCILED_TABLES`). `decisionFlags` follows `decisionQuestions` in `schema.ts`; the schema
+difference lists it in name order, before `decision_responses`. A backup made before 0083
+restores with the table empty; restore, backup and Reset find the table for themselves.
+
+**Settled once.** One insert and one guarded update, both in `decision-record.ts`, are the only
+writes of the table in `src` but the cascade, the restore and the generic writers.
+`tests/decision-record.test.ts` holds it, with `decision_questions`, in `SETTLED_TABLES` and pins
+the update in `SETTLED_UPDATES`:
+
+| Write | Sets | Guard (`WHERE id = ? AND …`) | Settles |
+|---|---|---|---|
+| `appendFlag` (insert) | `decision_id`, `participant_id`, `kind`, `reason` (trimmed), `version_number` (current), `via`, `raised_at` | n/a | a new flag with no reply |
+| `recordFlagReply` | `reply` (trimmed), `replied_by`, `replied_by_name`, `replied_at` | `reply IS NULL` | the decider's answer, or the outcome of the talk |
+
+`recordFlagReply` answers whether it changed one row; on no change the service answers 409 and
+the transaction rolls back. A reply cannot be changed and a flag cannot be withdrawn.
+
+**One text check, for the write and the read.** `flagTextProblem(text, rule)`
+(`decision-record.ts`) answers `empty` (the rule requires text and it holds only white space and
+the characters of `FLAG_TEXT_ALLOWED`, so a lone U+200D is no reason), `too_long` (past
+`rule.max`, counted in UTF-16 code units as `String.length` and `readText` count) or
+`unprintable` (a character of `FLAG_TEXT_UNPRINTABLE` other than `FLAG_TEXT_ALLOWED`'s tab, line
+feed, carriage return and U+200D), or null. `FLAG_TEXT_UNPRINTABLE` and `FLAG_TEXT_ALLOWED` are
+today `UNPRINTABLE` and `MARKDOWN_ALLOWED` character for character, but are the flags' own, as
+`FLAG_REASON_MAX` and `FLAG_NOTE_MAX` are: a stored flag the check refuses is left out everywhere,
+the ruling's gate among them, so tightening another field's rule must never change what is kept.
+`tests/decision-flags.test.ts` pins them. The write asks it of what it is sent, after trimming,
+and the reader asks it of what is stored, so everything the write accepts, the reader keeps.
+Every text is plain, never markdown.
+
+**Read tolerantly.** `flagsOf(decisionId)` and `flagsOfParticipants(ids)`
+(`src/lib/server/decision-flags.ts`, a read module beside `decision-questions.ts`) are every read
+of the table, the ruling's gate and the results revision among them. A row is kept only where
+its `kind` is one of `FLAG_KINDS`, its `via` is `session` or `link`, its `version_number` is a
+whole number from 1 to its decision's current version, its participant row is of the same
+decision (a left join on `decision_participants`), its reason passes `flagTextProblem` with its
+kind's rule (so an objection with an empty reason is left out) and its reply is NULL, or passes
+the check with `REPLY_TEXT_RULE` and has a `replied_at` and a non-empty `replied_by_name`.
+Anything else is left out everywhere, so a row planted
+by an unsealed restore that the write could not have made neither shows nor refuses a ruling.
+Whenever a read leaves a row out it logs one `WARN` line under `DECISIONS`, one per read, naming
+the decision ids and how many rows, never a reason, reply or name. A well-formed planted row is
+kept: that is a recorded residual risk until card 3030 (see
+[Authentication & Security](authentication-security.md#decision-access-and-personal-links)).
+
+**Caps count raw rows.** `flagsCounted(decisionId, participantId)` reads the stored rows as they
+are, never the reader's output, so a planted row still counts and cannot be used to get past a
+cap. Per participant per version (`FLAGS_PER_PARTICIPANT_VERSION`): 3 objections and 3 requests
+to talk; per decision, any version (`FLAGS_PER_DECISION`): 200; between any two of one
+participant's flags: 10 minutes (`RECORD_MAIL_MIN_MINUTES`). A re-publish starts the per-version
+count again. The one exception: "no second request to talk while one has no reply" asks the
+reader's output (`flagsOfParticipants`), so a planted malformed request, which shows nowhere and
+could never be replied to, cannot block the participant for good.
+
+**Four event kinds**, each in `DECIDER_ONLY_EVENTS` and `FLAG_EVENTS`, and so in
+`KEY_HIDDEN_EVENTS` (`[...QUESTION_EVENTS, ...FLAG_EVENTS]`), never given to an API key; none in
+`OWN_RECORD_EVENTS` (the person's own record shows their flags from the rows):
+
+| Kind | Participant | Detail | Record view words |
+|---|---|---|---|
+| `objection_raised` | the participant | `{ flagId, notice, signedIn? }` | "Objection raised" |
+| `talk_requested` | the participant | `{ flagId, notice, signedIn? }` | "Asked to talk" |
+| `objection_answered` | none | `{ flagId, notice }` | "Objection answered" |
+| `talk_outcome` | none | `{ flagId, notice }` | "Talk outcome recorded" |
+
+`notice` is the outcome of the mail decided inside the write
+([Notifications](notifications-email.md#the-objection-and-request-to-talk-notices-card-2684)); `signedIn` is the account a link
+holder's browser was signed in as. The record view shows `notice` and `signedIn` and drops
+`flagId`, as it drops every id. No activity entry, live event or webhook is written.
+
+**Never released, kept for good.** `ReleaseRow`, `releaseRowsOf` and `releasedOf` read no flag.
+A flag is kept with its decision for good (design D7), deleted only by the cascade when a draft
+or withdrawn decision is deleted (its four kinds of event go with the decision's record), and
+replaced wholesale by a restore or Reset. The restore's counter pass leaves the table's rows as
+they are (`ROWS_LEFT_AS_THEY_ARE` in `restore.ts`). Redacting a reason or reply is card 3047.
+
+```mermaid
+erDiagram
+    decisions ||--o{ decision_flags : "holds (CASCADE)"
+    decision_participants ||--o{ decision_flags : "raises (NO ACTION)"
+    users |o--o{ decision_flags : "replied_by (SET NULL, record only)"
+    decisions ||--o{ decision_events : "objection_raised, talk_requested, objection_answered, talk_outcome"
+    decision_flags ||..o{ decision_events : "flagId in detail (no key)"
+    decision_flags {
+        int id PK "AUTOINCREMENT"
+        int decision_id FK "CASCADE"
+        int participant_id FK "NOT NULL, NO ACTION"
+        text kind "objection or talk"
+        text reason "objection 1-4000; talk 0-2000"
+        int version_number "current version when raised"
+        text via "session or link"
+        text raised_at
+        text reply "NULL until settled once"
+        int replied_by FK "SET NULL; never read for access"
+        text replied_by_name
+        text replied_at
+    }
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Raised: appendFlag (open or awaiting a ruling)
+    Raised --> Replied: recordFlagReply WHERE reply IS NULL
+    Replied --> [*]: kept with the decision (D7)
+    note right of Raised
+      objection: the ruling is refused until replied
+      talk: the ruling needs openTalksConfirmed
+    end note
+```
+
+##### The tables that name a decision place (card 2684, R18)
+
+`src/lib/server/db/decision-place-namers.ts` holds the one list of the tables with a foreign key
+to `decision_participants`, `DECISION_PLACE_NAMERS = ['decision_responses',
+'decision_questions', 'decision_events', 'decision_flags']`, and two builders from it:
+`placeUnnamedSql('@place')` (one `AND NOT EXISTS (SELECT 1 FROM <table> WHERE participant_id =
+@place)` per table; it throws for anything but a named parameter) and `placeIsNamed(sqlite,
+placeId)` (one statement over the same clause, prepared once per connection). Three writers
+delete a draft's place only where it is false, and otherwise keep the place marked removed:
+
+| Reader | Where | Foreign keys | Without the list |
+|---|---|---|---|
+| The restore's `DELETE_DRAFT_PLACE` | `db/restore.ts`, built from `placeUnnamedSql` | off | a place a planted flag names would be deleted silently, leaving the flag naming nothing |
+| The start-up pass's `capDecisionRolesAtStart` | `startup-checks.ts`, through `placeIsNamed` | on | the delete would throw and the pass fail |
+| Setting a draft's participants (`setParticipants`) | `decision-participant-writes.ts`, through `placeIsNamed` | on | as the start-up pass |
+
+`tests/decision-record.test.ts` reads every foreign key to `decision_participants` from the
+migrated schema (`PRAGMA foreign_key_list` over every table) and holds the list to it both ways,
+so a table added later that names a place cannot be missed.
+
+```mermaid
+flowchart LR
+    L["decision-place-namers.ts<br/>DECISION_PLACE_NAMERS<br/>responses, questions, events, flags"]
+    L --> R["restore.ts DELETE_DRAFT_PLACE<br/>(foreign keys off)"]
+    L --> S["startup-checks.ts capDecisionRolesAtStart<br/>(foreign keys on)"]
+    L --> P["decision-participant-writes.ts setParticipants<br/>(draft)"]
+    R --> Q{"place named?"}
+    S --> Q
+    P --> Q
+    Q -- no --> X["place deleted"]
+    Q -- yes --> M["place kept, marked removed"]
+    T["schema test: every FK to decision_participants<br/>is on the list"] -.-> L
 ```
 
 ### Two-step sign-in storage (migration 0065)
@@ -2425,11 +2617,11 @@ erDiagram
 | `users` | `cards.committed_by` (migration 0060, milestone 22) | SET NULL: the card keeps `committed_at`, and who committed it reads as not recorded. `deleteUser()` clears nothing of it by hand |
 | `users` | `cards.discarded_by` (migration 0060, milestone 22) | SET NULL, as `committed_by` |
 | `users` | `boards.product_owner_user_id` (migration 0061, card 2673) | SET NULL: the board has no Product Owner until someone sets one |
-| `users` | every user key of the decision records: `people.user_id`, `people.created_by`, `decisions.author_user_id`, `decider_user_id`, `results_released_by`, `decision_versions.published_by`, `decision_participants.included_by`, `removed_by`, `user_id`, `decision_questions.answered_by`, `answer_reviewed_by`, `decision_rulings.ruled_by`, `decision_events.actor_user_id`, `decision_card_links.created_by` (migration 0061) | SET NULL. The name kept beside each (`author_name`, `ruled_by_name` and so on) stays. `decision_participants.user_id` is a snapshot of `people.user_id` taken at inclusion and never made to follow the person; its key only empties it when that account is deleted. Before the key empties `people.user_id`, `deleteUser()` marks that person left and ends their personal links (card 2675's S4) |
+| `users` | every user key of the decision records: `people.user_id`, `people.created_by`, `decisions.author_user_id`, `decider_user_id`, `results_released_by`, `decision_versions.published_by`, `decision_participants.included_by`, `removed_by`, `user_id`, `decision_questions.answered_by`, `answer_reviewed_by`, `decision_rulings.ruled_by`, `decision_events.actor_user_id`, `decision_card_links.created_by` (migration 0061), `decision_flags.replied_by` (migration 0083, card 2684) | SET NULL. The name kept beside each (`author_name`, `ruled_by_name` and so on) stays. `decision_participants.user_id` is a snapshot of `people.user_id` taken at inclusion and never made to follow the person; its key only empties it when that account is deleted. Before the key empties `people.user_id`, `deleteUser()` marks that person left and ends their personal links (card 2675's S4) |
 | `boards` | `decisions.board_id` (migration 0061) | SET NULL: the decision outlives its board, and keeps its name in `board_name` |
-| `decisions` | `decision_options`, `decision_versions`, `decision_participants`, `decision_responses`, `decision_questions`, `decision_rulings`, `decision_events`, `decision_card_links` (migration 0061), `decision_survey_questions` (migration 0082, card 2683) | CASCADE |
+| `decisions` | `decision_options`, `decision_versions`, `decision_participants`, `decision_responses`, `decision_questions`, `decision_rulings`, `decision_events`, `decision_card_links` (migration 0061), `decision_survey_questions` (migration 0082, card 2683), `decision_flags` (migration 0083, card 2684) | CASCADE |
 | `decisions` | `decisions.supersedes_id` (migration 0061) | SET NULL |
-| `decision_participants` | `decision_responses.participant_id`, `decision_questions.participant_id`, `decision_events.participant_id` (migration 0061) | **NO ACTION**: deleting a participant the record mentions is refused. Deleting the whole decision still cascades, as SQLite checks NO ACTION at the end of the statement |
+| `decision_participants` | `decision_responses.participant_id`, `decision_questions.participant_id`, `decision_events.participant_id` (migration 0061), `decision_flags.participant_id` (migration 0083, card 2684) | **NO ACTION**: deleting a participant the record mentions is refused. Deleting the whole decision still cascades, as SQLite checks NO ACTION at the end of the statement. The four tables are `DECISION_PLACE_NAMERS`, the one list every draft-place delete asks ([above](#the-tables-that-name-a-decision-place-card-2684-r18)) |
 | `decision_options` | `decision_responses.option_id`, `decision_rulings.option_id` (migration 0061) | **NO ACTION**, as above |
 | `decision_responses` | `decision_responses.replaces_id` (migration 0061) | SET NULL |
 | `people` | `decision_participants.person_id` (migration 0061) | SET NULL: the participant keeps the name, email, job title and groups it was included with |
@@ -3757,6 +3949,11 @@ erDiagram
     `question`, `asked_in_version`, `via` and `asked_at` (all `NOT NULL`), `answer`,
     `answered_by` (SET NULL), `answered_by_name`, `answered_at`, `answer_agent_drafted`
     (`DEFAULT false`), `answer_reviewed_by` (SET NULL), `answer_reviewed_at`.
+  - `decision_flags` (migration 0083, card 2684): `decision_id` (CASCADE), `participant_id`
+    (NO ACTION), `kind`, `reason`, `version_number`, `via` and `raised_at` (all `NOT NULL`),
+    `reply`, `replied_by` (SET NULL), `replied_by_name`, `replied_at`; `id` AUTOINCREMENT; an
+    index on each of the three keys
+    ([above](#objections-and-requests-to-talk-settled-once-card-2684-migration-0083)).
   - `decision_rulings`: `decision_id` the primary key (CASCADE), `option_id` (NO ACTION; NULL
     is "none of these"), `reason`, `conditions`, `against_responses` and `early` (`NOT NULL`,
     no default), `version_number`, `ruled_by` (SET NULL), `ruled_by_name`, `ruled_at`.
@@ -3803,7 +4000,9 @@ stateDiagram-v2
   retired. `decision_versions`, `decision_responses`, `decision_rulings` and `decision_events`
   are insert-only in code alone. The migration's header comment also lists
   `decision_questions` as insert-only, which is wrong: its answer is settled once by guarded
-  updates (card 2678, [above](#clarification-questions-settled-once-card-2678)). 0061 changes no row and declares nothing to the rehearsal;
+  updates (card 2678, [above](#clarification-questions-settled-once-card-2678)). Since migration
+  0083 `decision_flags.participant_id` is a further NO ACTION key, and `decision_flags` is settled
+  once in the same way (card 2684). 0061 changes no row and declares nothing to the rehearsal;
   a backup from before it restores with the twelve tables empty and every Product Owner NULL.
   Backup, restore, reset and the timestamp upkeep find the tables for themselves.
 - **`sessions.wrong_password_count` is how many current-password attempts a session has had

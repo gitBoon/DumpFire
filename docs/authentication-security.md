@@ -1,10 +1,13 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.170
+version: 1.171
 status: As-Built
-date: 2026-11-21
+date: 2026-11-23
 tags:
+  - card-2684
+  - objections
+  - need-to-talk
   - card-2683
   - survey-answers
   - card-3004
@@ -144,7 +147,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Survey answers (card 2683): given only by a person, never through an API key, seen with names by the decider and administrators alone, never released, free text as plain text, a forwarded personal link sees and changes them. Where the server sends through a restore: outbound_changes, keyed digests under an MFA subkey, the writers O1 to O19, the rule, re-pointing, the restore's reset branch, settings that are not text and the start pass (card 3004, card 3031). Decision roles through a restore: four kinds in the record of access changes, the place's account kept per place, the writers D1 to D8, 409 for an unreadable account time, deletion per item, the start pass, the unsealed invariant, every ruling's Product Owner rewritten at the copy, and the users counter (card 3033). Board, team and person access through a restore (card 3002): the access_changes record and its writers, the seq ranking, the rule with the guess only where not held here, the start and five-minute pass, and the unchecked invariant; Deep-dive into DumpFire's authentication system, an unsealed backup's requests held with no link minted until an administrator releases each with a password and a code, its people marked left, and Mark active behind the step-up (card 3020), the unsealed-backup webhook hold with a new secret on switch-on and the same-here email kept (card 3012), the grant identity (sameAccountHere, the installation id, the username fallback) and an unsealed backup giving no account not the same here a password, key or factor, with the superadmin carry, earlier key ends and held settings (card 3009), every password change recorded by a fingerprint of the hash it replaces so that no restore brings it back and the sign-in, createSession, the step-up and the start refuse or end one found in place, never locking the superadmin out (card 2997), a Google Drive destination that takes only a service account's key file and signs in with a JWT built from it, never GoogleAuth, and a Test that runs only a saved destination (card 2939), the service secrets kept in the database sealed at rest (card 2898: the mail password, backup destination credentials, webhook secrets and three signing keys sealed with AES-256-GCM under a key derived from the MFA key file, each bound to where it is used, the key check recorded with the first sealed value, plain values sealed at every start and the file scrubbed, and what a value that does not open does), a two-step reset that ends the account's API keys and switches off its webhooks (card 2915: always from the admin page, on the host unless --keep-api-keys, its options read strictly, the message saying what ended and what settings the account set), disabled accounts (card 2671: who may disable, enable and delete, what disabling ends, every gate that refuses a disabled account, and a restore that keeps them disabled), a restore that keeps the running system log and brings none of the backup's lines in, with the import's CRITICAL line naming who imported which file (card 2899), what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), a milestone the caller cannot see answered 404 Milestone not found, the goal a card is in refused in words of its own, and the id counter accepted as R6 (card 2911), a task request a signed-in caller cannot read answered 404 Request not found, the accept and reject on requireRequest (card 2914), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), every upload's limits whatever the file (card 2910: 30 an hour counted before the body, 100 MB a day charged what was read, 3 at once for an account and 6 for the server with each place given back in a finally and lapsing after 10 minutes, Connection: close on every refusal before the body, 120 seconds for the body to arrive, a failed read charged what was read, one part to a form, 20 other files a card, names cleaned, types normalised and the disk name the server's), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty-four actions that ask for the current password and a code from the authenticator app again (card 2671's disable and enable, card 2922's held setting kept or removed and card 3020's held request mail released among them) (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
+description: "Objections and requests to talk (card 2684): raised by a participant signed in or by link, replied to by the current decider alone, never through an API key, seen with names by the person, the decider and administrators alone, never released, plain text, a forwarded link sees and adds to them, replied_by never read for access, the place-namer guard and tolerant reader with its WARN line, and the residual risk of well-formed flags from an unsealed restore until card 3030. Survey answers (card 2683): given only by a person, never through an API key, seen with names by the decider and administrators alone, never released, free text as plain text, a forwarded personal link sees and changes them. Where the server sends through a restore: outbound_changes, keyed digests under an MFA subkey, the writers O1 to O19, the rule, re-pointing, the restore's reset branch, settings that are not text and the start pass (card 3004, card 3031). Decision roles through a restore: four kinds in the record of access changes, the place's account kept per place, the writers D1 to D8, 409 for an unreadable account time, deletion per item, the start pass, the unsealed invariant, every ruling's Product Owner rewritten at the copy, and the users counter (card 3033). Board, team and person access through a restore (card 3002): the access_changes record and its writers, the seq ranking, the rule with the guess only where not held here, the start and five-minute pass, and the unchecked invariant; Deep-dive into DumpFire's authentication system, an unsealed backup's requests held with no link minted until an administrator releases each with a password and a code, its people marked left, and Mark active behind the step-up (card 3020), the unsealed-backup webhook hold with a new secret on switch-on and the same-here email kept (card 3012), the grant identity (sameAccountHere, the installation id, the username fallback) and an unsealed backup giving no account not the same here a password, key or factor, with the superadmin carry, earlier key ends and held settings (card 3009), every password change recorded by a fingerprint of the hash it replaces so that no restore brings it back and the sign-in, createSession, the step-up and the start refuse or end one found in place, never locking the superadmin out (card 2997), a Google Drive destination that takes only a service account's key file and signs in with a JWT built from it, never GoogleAuth, and a Test that runs only a saved destination (card 2939), the service secrets kept in the database sealed at rest (card 2898: the mail password, backup destination credentials, webhook secrets and three signing keys sealed with AES-256-GCM under a key derived from the MFA key file, each bound to where it is used, the key check recorded with the first sealed value, plain values sealed at every start and the file scrubbed, and what a value that does not open does), a two-step reset that ends the account's API keys and switches off its webhooks (card 2915: always from the admin page, on the host unless --keep-api-keys, its options read strictly, the message saying what ended and what settings the account set), disabled accounts (card 2671: who may disable, enable and delete, what disabling ends, every gate that refuses a disabled account, and a restore that keeps them disabled), a restore that keeps the running system log and brings none of the backup's lines in, with the import's CRITICAL line naming who imported which file (card 2899), what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), a milestone the caller cannot see answered 404 Milestone not found, the goal a card is in refused in words of its own, and the id counter accepted as R6 (card 2911), a task request a signed-in caller cannot read answered 404 Request not found, the accept and reject on requireRequest (card 2914), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), every upload's limits whatever the file (card 2910: 30 an hour counted before the body, 100 MB a day charged what was read, 3 at once for an account and 6 for the server with each place given back in a finally and lapsing after 10 minutes, Connection: close on every refusal before the body, 120 seconds for the body to arrive, a failed read charged what was read, one part to a form, 20 other files a card, names cleaned, types normalised and the disk name the server's), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty-four actions that ask for the current password and a code from the authenticator app again (card 2671's disable and enable, card 2922's held setting kept or removed and card 3020's held request mail released among them) (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
 ---
 
 # Authentication & Security
@@ -8351,6 +8354,8 @@ is held only as itself: `boardOwner` does not imply `boardReader`.
 | record (card 2680) | yes | no | yes¹ | no | no | no | no |
 | linkCard, unlinkCard (card 2680)³ | yes | no | no | yes | yes | no | no |
 | respond (card 2677)² | no | no | no | no | no | no | yes |
+| flag (card 2684: an objection or a request to talk)² | no | no | no | no | no | no | yes |
+| reply (card 2684: to an objection or a request to talk) | no | no | yes¹ | no | no | no | no |
 
 ¹ While the decision's board exists, a grant resting on `author`, `decider` or `boardOwner` is
 good for anything but `view` only if the caller can edit the board at that moment
@@ -9199,6 +9204,135 @@ sequenceDiagram
     X->>P: answer shown with "reviewed by a person", the asker mailed after the commit
 ```
 
+### Objections and Requests to Talk (card 2684)
+
+Card 2684 (plan `docs/planning/card-2684-decision-objections-and-need-to-talk.md`;
+[Architecture](architecture.md#objections-and-requests-to-talk-card-2684)) lets a participant
+object to a decision or ask to talk to the decider before the ruling, and the decider reply to
+each once. The reason, the note, the reply and the outcome are personal data, kept with the
+participant's name and moments.
+
+- **Never through an API key, both ways in.** `raiseFlag`, `raiseFlagByLink` and `replyToFlag`
+  each refuse `keyed(opts)` with `403` ("Raising an objection or asking to talk is a person's act:
+  it cannot be done with an API key"; "Replying to … is a person's act: …"), and the three routes,
+  `POST /api/decisions/[id]/flags`, `POST /api/decision-by-link/flags` and
+  `POST /api/decisions/[id]/flags/[flagId]/reply`, are outside `/api/v1/`, where a Bearer key is
+  never read. No v1 operation raises, replies to or reads a flag; `readSummary` is unchanged;
+  `readResults` under any source but `ui` has no `flags` key (fail closed); and
+  `GET /api/v1/decisions/{id}/record` leaves the four events (`objection_raised`,
+  `talk_requested`, `objection_answered`, `talk_outcome`) out through `KEY_HIDDEN_EVENTS`,
+  filtered by a participant or not, while `recordEntryOf` throws for one handed to it under any
+  source but the page's.
+- **Who may raise one.** `flag` (`['participant']`): a live participant, consulted or informed,
+  signed in and still reached through the account (`requireReachedByAccount`), or holding a link
+  that opens the decision (`requireLinkHolder`). A removed participant and a person who has left
+  (card 3020) are refused: signed in a `403`, by link the one dead-link `404`. Only while the
+  decision is `open` or `closed`.
+- **Who replies.** `reply` (`['decider']`, in `NEED_BOARD_EDIT`): the **current** decider alone,
+  signed in, with edit access to the board while it exists. Not the author, a board owner or an
+  administrator (the answer is the decider's accountable statement), and not a former decider. No
+  password step-up; the ruling keeps its own. `replied_by` is written for the record alone and is
+  **never** read for access, links or mail; pages and answers show `replied_by_name` alone.
+- **Who sees them, with names.** The person who raised each (their own, on both participant pages
+  and their own person record, never the replier's account: "Answered by the decider"); the
+  current decider and administrators (the results page, the record view's events, the person
+  record for decisions they decide). A removed participant's own record shows replies given only
+  up to their removal. Nobody else: not an author who is not the decider, a board reader, another
+  participant, the preview, the register or a key. No count of flags is shown anywhere but those
+  views.
+- **A change of decider.** The new decider sees every flag raised before they were named, with
+  names, and may reply to every open one (they must answer objections to rule). The former
+  decider loses every view and every reply the moment the change is written. Whoever changes the
+  decider is warned first, above **Change decider**, in fixed words with no number, shown whether
+  or not anything was raised: "Any objections or requests to talk already raised, with names,
+  become visible to the new decider." (`FLAGS_HANDED_OVER`). The editor's model gains no flag
+  figure, so the author or a board owner learns neither how many nor whether any exist.
+- **Never released.** `ReleaseRow`, `releaseRowsOf` and `releasedOf` read no flag; the ruling's
+  banner and mail say nothing of them. No activity entry, live event or webhook is written, so
+  nothing tells a watcher that someone objected (design S3). The two notices name nobody and
+  quote nothing ([Notifications](notifications-email.md#the-objection-and-request-to-talk-notices-card-2684)).
+- **Said honestly.** Above the participant's forms, `flagWhoSees(decider)`: "What you raise here
+  is seen by whoever decides (now <decider>) and DumpFire's administrators, with your name. Nobody
+  else sees it, and it is never released. An objection must be answered before the decision is
+  ruled on; it does not stop the decider ruling as they see fit." Under each box,
+  `FLAG_TEXT_NOTE`: "Write only what the decider needs. Do not include personal details about
+  yourself or anyone else."
+- **A forwarded personal link.** Whoever holds a participant's personal link sees that
+  participant's flags and replies and can raise more in their name, exactly as for their vote.
+  The decider is told so above each reply box: `flagReplyWhoSees(name)`, "<name> reads this, and
+  so does anyone holding their personal link." On the link page in a signed-in browser,
+  `signedInNoteWords` names objections and requests to talk among what is recorded beside the
+  account (`signedIn` on the raise's event), never as the raiser.
+- **The link route.** `POST /api/decision-by-link/flags` follows the question link route: it is on
+  `PUBLIC_ROUTES` with `PERSONAL_LINK_HEADERS`, refuses anything but same-origin JSON first
+  (`requireSameOriginJson`), reads the token from the body (`''` when it is not text; the path
+  holds no secret, `secret-paths.ts`), counts only a `404` against the caller's address
+  (`refuseWrongLink`) and past the limit answers `429` with `Retry-After`. A link that works is
+  never counted, whatever else refuses the flag.
+- **Cached and indexed nowhere.** Every flag route's answer, its errors and `429` included, is
+  `Cache-Control: no-store` and `X-Robots-Tag: noindex, nofollow` (`ROUTE_HEADERS`,
+  `gate-answers.ts`): `/api/decisions/[id]/flags` through `OWN_RESPONSE_HEADERS`, the link route
+  through `PERSONAL_LINK_HEADERS`, and the decider's reply route,
+  `/api/decisions/[id]/flags/[flagId]/reply`, through `UNPUBLISHED_HEADERS`, as its answer names
+  the participant, as a question's answer route does (code review C-S-M1; gate case 21).
+- **Free text is plain text.** One predicate, `flagTextProblem` (`decision-record.ts`), reads the
+  trimmed reason, note and reply for the write and the stored ones for the read, with one length
+  measure (UTF-16 code units) and one character rule, the flags' own (`FLAG_TEXT_UNPRINTABLE` less
+  `FLAG_TEXT_ALLOWED`: tab, line feed, carriage return, U+200D; today `UNPRINTABLE` and
+  `MARKDOWN_ALLOWED` character for character, pinned so that tightening another field's rule
+  never makes the reader drop a stored objection and so release a ruling). A required text of
+  white space and allowed characters alone (a lone U+200D) is empty. Each is shown as text, never
+  markdown. Refusals never repeat the text ("reason must be at most 4000 characters").
+- **Limits against flooding.** Per participant per version, 3 objections and 3 requests to talk,
+  and no second request to talk while one is open; 200 per decision; 10 minutes between any two
+  (429 naming the UTC moment). Every cap and the rest count the stored rows, never the reader's
+  output, so a planted row cannot be used to get past one; only "one request to talk open at a
+  time" asks the reader, so a planted malformed request no one could reply to cannot block the
+  participant for good. The decider's notice is held to one a day per participant, the count
+  starting again at a change of decider, for concerns as for flags (code review C-S-L4: only the
+  notices after the last `decider_changed` event count, so a hold earned under a former decider
+  never keeps the new one uninformed).
+- **Read tolerantly.** `flagsOf` and `flagsOfParticipants` (`decision-flags.ts`) keep a stored
+  row only where the write could have made it: a known kind, `via` `session` or `link`, a version
+  from 1 to the decision's current one, a participant row of the same decision, a reason and
+  reply that pass `flagTextProblem` with their rules, and a `replied_at` and a replier's name
+  beside any reply. Anything else is left out everywhere, so a malformed or misplaced row planted
+  by an unsealed restore neither shows nor refuses a ruling. Whenever a read leaves a row out it
+  logs one `WARN` line under `DECISIONS`, one per read, naming the decision ids and how many, and
+  never a reason, reply or name.
+- **A place a flag names is never deleted.** `decision_flags.participant_id` has no ON DELETE
+  action, and the one list of tables that name a decision place, `DECISION_PLACE_NAMERS`
+  (`db/decision-place-namers.ts`), is asked by the restore's draft-place delete (foreign keys
+  off there, so without it a planted flag would be left naming nothing), the start-up pass and the
+  draft participant write: a named place is kept and marked removed. A schema-driven test holds the
+  list to every foreign key to `decision_participants`.
+- **Kept.** With the decision for good (design D7), deleted only by the cascade when a draft or
+  withdrawn decision is deleted, with their events, and replaced wholesale by a restore or Reset.
+  Redacting a reason or reply, recorded, is card 3047.
+
+**Residual risk (S-M3, accepted).** The tolerant reader drops only rows the write could not
+have made. A backup whose seal does not verify can still bring in **well-formed** flags: a
+believable objection in a participant's name, or a reply put in the decider's name, which the
+reader keeps and the decider and administrators see; a planted objection with no reply refuses
+the ruling until the decider answers it. Card 3030 (parked) carries the binding note to treat
+`decision_flags` as decision content from unsealed restores. Until it is built, an administrator
+restoring a backup whose seal does not verify should treat its decision content as unverified.
+
+```mermaid
+flowchart TD
+    P["Participant: session or personal link"] -->|"flag, source ui"| W["raiseFlag / raiseFlagByLink"]
+    K["API key"] -.->|"no v1 route, 403 if reached"| W
+    K -.->|"no v1 route, 403 if reached"| Y
+    W --> T[("decision_flags")]
+    D["Current decider, board edit"] -->|"reply"| Y["replyToFlag"] --> T
+    U["Unsealed restore"] -.->|"rows copied"| T
+    T --> R{"flagsOf: could the write have made it?"}
+    R -- no --> X["left out everywhere,<br/>one WARN line, no text"]
+    R -- yes --> V["the person: their own<br/>decider and administrators: all, with names"]
+    R -- "yes, but planted (S-M3)" --> V
+    V -.->|"never"| N["release, register, preview, author,<br/>board readers, API keys, activity,<br/>live events, webhooks, mail text"]
+```
+
 ### The Register, Records and Card Links (card 2680)
 
 Card 2680 (plan `docs/planning/card-2680-register-records-links.md` v1.2) adds three signed-in
@@ -9426,7 +9560,11 @@ inside its transaction, and reports the count as `RestoreResult.decisionLinksCle
 mailed before a restore stops working. A restore that cannot copy every row of `decisions` and
 the `decision_*` tables is rolled back and refused, as a partial record would be a false one. A
 NULL in a decision table's NOT NULL column is not given the column's default, as it is elsewhere,
-so such a row is left out and the restore refused (the code review's F8). See
+so such a row is left out and the restore refused (the code review's F8). Since card 2684 the
+restore's draft-place delete asks `DECISION_PLACE_NAMERS`, so a place a restored flag names is
+kept and marked removed, and `decision_flags` is read tolerantly afterwards; well-formed flags from
+an unsealed backup are the residual risk recorded under
+[Objections and Requests to Talk](#objections-and-requests-to-talk-card-2684). See
 [What a Backup Holds, and What a Restore Brings In](#what-a-backup-holds-and-what-a-restore-brings-in).
 
 ## The Public Request Form
@@ -11039,20 +11177,23 @@ redirects, to a caller who is signed in or not.
 
   | Route id | Headers |
   |---|---|
-  | `/decision-link/[token]`, `/api/decision-by-link/responses`, `/api/decision-by-link/seen`, `/api/decision-by-link/concerns` (card 2679) | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
+  | `/decision-link/[token]`, `/api/decision-by-link/responses`, `/api/decision-by-link/seen`, `/api/decision-by-link/concerns` (card 2679); `/api/decision-by-link/flags` (card 2684) | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
   | `/invite/[token]` (card 2698) | `Referrer-Policy: strict-origin`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
   | `/login/verify`, `/login/enrol` (card 2769) | `Referrer-Policy: strict-origin`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` (`FORM_LINK_HEADERS`) |
   | `/enrol/[token]` (card 2769) | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` (`PERSONAL_LINK_HEADERS`) |
   | `/request/[id]/confirm`, `/request/[id]/reply`, `/api/requests/[id]`, `/api/requests/[id]/messages`, `/api/requests/[id]/confirm` (card 2698) | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
-  | `/decisions/[id]`, `/api/decisions/[id]/responses`, `/api/decisions/[id]/seen`, `/api/decisions/[id]/concerns` (card 2679) | `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow` (the robots header since card 2679) |
-  | `/decisions/[id]/preview`, `/decisions/[id]/edit`, `/board/[id]/decisions` (card 2697); `/decisions/[id]/results`, `/api/decisions/[id]/rule`, `/api/decisions/[id]/release`, `/api/decisions/[id]/supersede` (card 2679) | `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow` (`UNPUBLISHED_HEADERS`) |
+  | `/decisions/[id]`, `/api/decisions/[id]/responses`, `/api/decisions/[id]/seen`, `/api/decisions/[id]/concerns` (card 2679); `/api/decisions/[id]/flags` (card 2684) | `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow` (the robots header since card 2679) |
+  | `/decisions/[id]/preview`, `/decisions/[id]/edit`, `/board/[id]/decisions` (card 2697); `/decisions/[id]/results`, `/api/decisions/[id]/rule`, `/api/decisions/[id]/release`, `/api/decisions/[id]/supersede` (card 2679); `/api/decisions/[id]/flags/[flagId]/reply` (card 2684, code review C-S-M1) | `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow` (`UNPUBLISHED_HEADERS`) |
 
   The first four hold or take a personal link's token, so nothing they answer names their
   address to another site, is indexed or is cached; the four of `/decisions/[id]` show or answer
   the caller's own response and, once released, other participants' comments without names, so
   card 2679 keeps them out of search too. The results page names every participant beside their
   response, the ruling's and the release's answers follow it, and superseding answers a new
-  draft. Card 2679 added six rows in all, one per new route id, and no new header set. The middle six carry a secret (card 2698): an invite's token, which sets its
+  draft. Card 2679 added six rows in all, one per new route id, and no new header set. Card 2684
+  adds its three flag routes to the rows above with no new header set: the link route and the
+  participant's route as their neighbours, and the decider's reply route as the results page, since
+  its answer names the participant. The middle six carry a secret (card 2698): an invite's token, which sets its
   account's password, in the path of `/invite/[token]` (its page, its `__data.json` and its
   form's answers alike), and a request link's `?token=` in the query of the request form's
   confirm and reply pages and of the two reads those pages make with it, whose answers hold the

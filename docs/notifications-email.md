@@ -1,10 +1,13 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.94
+version: 1.95
 status: As-Built
-date: 2026-11-21
+date: 2026-11-23
 tags:
+  - card-2684
+  - objections
+  - need-to-talk
   - card-2683
   - card-3004
   - card-3031
@@ -46,7 +49,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "The ruling mail of a survey says No options were put to a vote, and no mail carries a survey answer (card 2683). Mail, the App URL and report schedules moved away from or switched off here held or paused by a restore, and mail settings that are not text read as none (card 3004, card 3031). The From handed over as a name and an address, and kept as this server's by an unsealed restore (card 3029), Complete guide to DumpFire's notification pipeline: requester mail held after an unsealed restore, progress mail to every unheld accepted request on a card, mailed false on a reply, and people marked left mailed nothing about decisions (card 3020), the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
+description: "Two notices for objections and requests to talk (card 2684): to the decider on a raise and to the person on a reply, naming nobody and quoting nothing, under email_decisions, decided inside the write by the shared deciderNoticeOf and participantNoticeOf. The ruling mail of a survey says No options were put to a vote, and no mail carries a survey answer (card 2683). Mail, the App URL and report schedules moved away from or switched off here held or paused by a restore, and mail settings that are not text read as none (card 3004, card 3031). The From handed over as a name and an address, and kept as this server's by an unsealed restore (card 3029), Complete guide to DumpFire's notification pipeline: requester mail held after an unsealed restore, progress mail to every unheld accepted request on a card, mailed false on a reply, and people marked left mailed nothing about decisions (card 3020), the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -1488,9 +1491,12 @@ arrived:
 - **Its limit is per participant** (S3): a participant's first concern on a decision always
   notifies; after a notice about them, their next notifies only once that notice is 24 hours
   (`DAY_MS`) old, and sooner it is recorded as `held`. Another participant's concerns never
-  hold it back. A participant's own concerns are already at most 5 and 10 minutes apart.
+  hold it back. A participant's own concerns are already at most 5 and 10 minutes apart. Since
+  card 2684 (the shared `deciderNoticeOf`), only the notices since the decision's last change of
+  decider count, so a new decider is told of the first concern after the change.
 - **The outcome is written on `concern_raised { responseId, notice }`, decided inside the
-  write** (`noticeOf` in `decision-ruling-writes.ts`), in this order:
+  write** (`noticeOf` in `decision-ruling-writes.ts`, since card 2684 a thin caller of the
+  shared `deciderNoticeOf` in `decision-write-shared.ts`, which flags use too), in this order:
 
 | `notice` | When | Mail |
 |---|---|---|
@@ -1498,7 +1504,7 @@ arrived:
 | `no_link_address` | No App URL and no `ORIGIN` (`decisionLinkBase()` is null) | None |
 | `prefs_off` | The decider's `email_decisions` or **All Email Notifications** is off (`shouldNotifyUser`, exported for this) | None; not counted |
 | `no_mail_host` | No mail host is set up (`isSmtpConfigured()` is false; code review F2, S5) | None; not counted |
-| `held` | Within 24 hours of the last `asked` notice about this participant | None; counted into the next notice's held number |
+| `held` | Within 24 hours of the last `asked` notice about this participant since the decision's last change of decider (card 2684, code review C-S-L4) | None; counted into the next notice's held number |
 | `asked` | Otherwise | Queued for after the commit |
 
 Only `asked` holds the next notice back: the other outcomes sent nothing. `prefs_off` and
@@ -1613,7 +1619,7 @@ sequenceDiagram
     Note over Q: commit, then sent, dropped on any rollback
     Q-->>A: "A participant asked a question about …" (no name, no text)
     D->>X: an answer, a publish or a replacement
-    X->>X: answerNoticeOf: awaiting_review (a key's draft), not_reached, …, asked
+    X->>X: awaiting_review (a key's draft), else participantNoticeOf: not_reached, …, asked
     X->>Q: notifyQuestionAnswered
     Q-->>P: "Your question about … has been answered" (a link holder's: no link, the latest-email line only under mailedLinkOf)
 ```
@@ -1622,6 +1628,94 @@ Covered by `tests/decision-questions.test.ts` (cases 6, 12, 13 to 16, 19 to 21, 
 2721-2: a link cleared by a restore, by an answer, by a publish and by a replacement; a refused latest mail; one
 with no outcome yet; no record mail; a link past its time) and `tests/mail-escaping.test.ts`
 (both of a link holder's lines).
+
+### The Objection and Request-to-Talk Notices (card 2684)
+
+Card 2684 (2026-11-23) lets a participant object to an open decision, or one awaiting its ruling,
+or ask to talk to the decider, and the decider answer each objection and record the outcome of
+each conversation (see [Feature Overview](feature-overview.md)). It adds two notices, neither a
+record mail (design D22), so both are under `email_decisions` and **All Email Notifications** for
+an account holder. Both follow the concern and question notices' pattern: **the outcome is decided
+inside the write and written on its event, the mail is sent after the commit, and mail never
+refuses a flag or a reply**. Both name nobody and quote nothing: the reason, the note and the
+reply stay behind a sign-in or the personal link. No mail goes to any other participant, and no
+record or ruling mail carries a flag.
+
+**Two shared rules, in `decision-write-shared.ts`** (moved there by card 2684 so that one rule
+serves each kind of notice):
+
+| Helper | Outcomes | Used by |
+|---|---|---|
+| `recipientNoticeOf(userId, earlier, now)` | `no_link_address`, `prefs_off`, `no_mail_host`, `held` (within 24 hours of the last `asked` of `earlier`), `asked` with `heldBefore` | both question notices to the author and the decider |
+| `deciderNoticeOf(decision, earlier, now, raisedBy)` | `no_decider`, `own` (the decider's account is the raiser's), then `recipientNoticeOf`'s over only the notices after the decision's last `decider_changed` event (those went to an earlier decider) | the concern notice; the objection and request-to-talk notice |
+| `participantNoticeOf(decision, participantId)` | `not_reached`, `no_link_address`, `prefs_off`, `no_mail_host`, `asked` to `{ userId }` or `{ address, latestLink }` | the question answer notice; the reply notice |
+
+**The decider's notice** (`notifyDecisionFlag(deciderUserId, decisionId, title, kind,
+heldBefore)`). Decided by `deciderNoticeOf` over the participant's earlier
+`objection_raised` and `talk_requested` events on the decision, so **objections and requests to
+talk share one 24-hour rest per participant**, and another participant's never holds a first
+notice back. Only the notices since the decision's last change of decider count: a new decider is
+told of the first raise after the change, whatever was mailed to the one before. Written on `objection_raised` or `talk_requested { flagId, notice, signedIn? }`, in
+this order:
+
+| `notice` | When | Mail |
+|---|---|---|
+| `no_decider` | The decision's decider account is gone | None |
+| `own` | The raiser's account is the decider's | None |
+| `no_link_address` | No App URL and no `ORIGIN` | None |
+| `prefs_off` | The decider's `email_decisions` or **All Email Notifications** is off | None; not counted |
+| `no_mail_host` | No mail host is set up | None; not counted |
+| `held` | Within 24 hours (`DAY_MS`) of the last `asked` notice about this participant since the last change of decider | None; counted into the next notice's held number |
+| `asked` | Otherwise | Sent after the commit |
+
+| Kind | Subject | Body |
+|---|---|---|
+| objection | "An objection to <title>" | "A participant objected to <title>. Open the results to read why: you answer it before you rule." |
+| talk | "A request to talk about <title>" | "A participant asked to talk to you about <title>. Open the results to read their request." |
+
+Both carry **Open the results**, a link to `<App URL>/decisions/<id>/results` behind a sign-in,
+and with `heldBefore` above 0 "They raised <n> more since the last notice about them, which
+were not mailed." No `baseUrl`: the link is made on `linkBaseUrl()`.
+
+**The reply notice** (`notifyFlagReplied(to, decisionId, title, kind)`, `to` being `{ userId }`
+or `{ address, latestLink }`). Decided by `participantNoticeOf`, the question answer's rule, and
+written on `objection_answered` or `talk_outcome { flagId, notice }`, neither of which names the
+participant. No rest: each flag is replied to once.
+
+| `notice` | When | Mail |
+|---|---|---|
+| `not_reached` | The participant is removed, has left (card 3020), or `reachOf` skips them | None |
+| `no_link_address` | An account holder, with no App URL and no `ORIGIN` | None |
+| `prefs_off` | An account holder whose `email_decisions` or master switch is off | None |
+| `no_mail_host` | No mail host is set up (account or link holder) | None |
+| `asked` | Otherwise; a link holder has no preference to ask | Sent after the commit |
+
+| Kind | Subject | Body |
+|---|---|---|
+| objection | "Your objection to <title> has been answered" | "The decider answered your objection to <title>." |
+| talk | "The outcome of your request to talk about <title> has been recorded" | "The decider recorded the outcome of your request to talk about <title>." |
+
+An account holder's mail links to `<App URL>/decisions/<id>` (**Open the decision**). **A link
+holder's mail carries no link and issues none** (card 2721, D1); it goes to the participant row's
+snapshot address, never to an account a browser beside the link was signed in as, with
+`LATEST_LINK_LINE` or `ASK_FOR_LINK_LINE` as `mailedLinkOf` decides, as the question answer
+notice above. Both notices escape the title in the body and are rows of
+`tests/mail-escaping.test.ts`.
+
+```mermaid
+flowchart TD
+    R["raiseFlag / raiseFlagByLink"] --> DN{"deciderNoticeOf"}
+    DN -- "no_decider, own, no_link_address,<br/>prefs_off, no_mail_host, held" --> E1["outcome on objection_raised /<br/>talk_requested, no mail"]
+    DN -- asked --> M1["after the commit: notifyDecisionFlag<br/>to the decider (no name, no text)"]
+    Y["replyToFlag (decider)"] --> PN{"participantNoticeOf"}
+    PN -- "not_reached, no_link_address,<br/>prefs_off, no_mail_host" --> E2["outcome on objection_answered /<br/>talk_outcome, no mail"]
+    PN -- "asked, account" --> M2["notifyFlagReplied: account address,<br/>link to /decisions/id"]
+    PN -- "asked, link holder" --> M3["notifyFlagReplied: snapshot address,<br/>no link; latest-email or ask-for-link line"]
+```
+
+Covered by `tests/decision-flags.test.ts` (the decider's notice outcomes, the shared rest, the
+reply notice to an account and to a link holder, `ASK_FOR_LINK_LINE`) and
+`tests/mail-escaping.test.ts`.
 
 ### The Closing-Date Reminder (card 2685)
 

@@ -47,6 +47,13 @@
  * exists but the write would record a new one): nobody else's, with no
  * moment or way in.
  *
+ * Card 2684 (R22) adds, for a participant, their own objections and requests
+ * to talk with the decider's replies (`flags`, through the tolerant reader),
+ * never another's, and whether they may object or ask to talk now
+ * (`mayObject`, `mayAskToTalk`), asked as the write asks: open or awaiting a
+ * ruling, and under the caps counted over the stored rows. A viewer who is no
+ * participant is given none and false; the preview gives none at all.
+ *
  * Card 2697 adds the preview, `readPreview`, for `/decisions/[id]/preview`:
  * the working copy as a participant of the caller's choosing will see it,
  * built by the same `viewModelOf` and `groupsOf`, so that the preview cannot
@@ -79,7 +86,8 @@ import { participantAnswers, versionContentAnswer, workingViewContent } from './
 import { listedOptionIds, liveOptionsOf, liveSurveyOf, optionChanges, parseVersionContent, parseWorkingContent, participantsOf, surveyKey } from './decision-content';
 import { participantForLink } from './decision-links';
 import { mayAnswerOf, mayAskOf, questionsFor, reachedParticipantOf } from './decision-questions';
-import { concernsOf, currentRound, lastToldOf, ownResponses, rulingOf, seenStands, supersedingOf } from './decision-record';
+import { concernsOf, currentRound, flagsCounted, lastToldOf, ownResponses, rulingOf, seenStands, supersedingOf } from './decision-record';
+import { flagsOfParticipants } from './decision-flags';
 import { releasedOf, versionOptionsOf } from './decision-results';
 import { decisionStatus, linkUsable, TRANSITIONS } from './decision-status';
 import { createLogger } from './logger';
@@ -87,8 +95,8 @@ import { checkRateLimit } from './rate-limit';
 import { readQueryId } from './request-body';
 import { requireDecision } from './route-guards';
 import type { SurveyQuestion } from '$lib/decision-readiness';
-import type { DecisionPageData, ViewAudience, ViewContent, ViewDecision, ViewOption, ViewParticipant, ViewSurveyQuestion } from '$lib/decision-view-types';
-import { CONCERNS_PER_PARTICIPANT } from '$lib/decision-rules';
+import type { DecisionPageData, OwnFlag, ViewAudience, ViewContent, ViewDecision, ViewOption, ViewParticipant, ViewSurveyQuestion } from '$lib/decision-view-types';
+import { CONCERNS_PER_PARTICIPANT, FLAGS_PER_DECISION, FLAGS_PER_PARTICIPANT_VERSION, type FlagKind } from '$lib/decision-rules';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DECISIONS');
@@ -486,7 +494,11 @@ function pageOf(
 		laterDecision: null,
 		// Card 2678: given below, but on a draft, which takes no question.
 		questions: [],
-		mayAsk: false
+		mayAsk: false,
+		// Card 2684 (R22): a participant's alone, given below.
+		flags: [],
+		mayObject: false,
+		mayAskToTalk: false
 	};
 	if (page.draft) return page;
 	page.ruling = rulingViewOf(decision);
@@ -530,5 +542,40 @@ function pageOf(
 	page.concerns = concernsOf({ participantId: participant.id }).map((row) => ({ comment: row.comment ?? '', createdAt: row.createdAt }));
 	// Code review F9: no form past the fifth, as the write refuses a sixth.
 	page.mayRaiseConcern = decision.status === 'ruled' && linkUsable(decision, now) && page.concerns.length < CONCERNS_PER_PARTICIPANT;
+	// Card 2684 (R22): their own flags with the replies, and whether each form is offered, as the write would take one.
+	page.flags = ownFlagsOf(participant);
+	page.mayObject = mayFlag(decision, participant, 'objection', page.flags);
+	page.mayAskToTalk = mayFlag(decision, participant, 'talk', page.flags);
 	return page;
+}
+
+/** The participant's own objections and requests to talk, oldest first, as the tolerant reader keeps them (card 2684, R19, R22): no id, no replier. */
+function ownFlagsOf(participant: DecisionParticipant): OwnFlag[] {
+	return (flagsOfParticipants([participant.id]).get(participant.id) ?? []).map((flag) => ({
+		kind: flag.kind === 'talk' ? 'talk' : 'objection',
+		reason: flag.reason,
+		raisedAt: flag.raisedAt,
+		versionNumber: flag.versionNumber,
+		reply: flag.reply,
+		repliedAt: flag.repliedAt
+	}));
+}
+
+/**
+ * Whether the participant, live and reached, may raise a flag of `kind` now
+ * (card 2684, R5, R22), asked as `raiseFlag` asks: a decision stored open or
+ * closed; under the per-version cap for the kind and the decision's cap, both
+ * counted over the stored rows (`flagsCounted`, E-L1); and, for a request to
+ * talk, none of `own` still without an outcome: their flags as the tolerant
+ * reader keeps them (code review C-E-L2), so that a planted malformed request
+ * never blocks them, as `flagAs` asks. The 10-minute rest is the write's
+ * alone, which says from when.
+ */
+function mayFlag(decision: Decision, participant: DecisionParticipant, kind: FlagKind, own: readonly OwnFlag[]): boolean {
+	if (participant.removedAt !== null || !(TRANSITIONS.flag as readonly string[]).includes(decision.status)) return false;
+	const counted = flagsCounted(decision.id, participant.id);
+	if (counted.onDecision >= FLAGS_PER_DECISION) return false;
+	const thisVersion = counted.theirs.filter((row) => row.kind === kind && row.versionNumber === decision.currentVersion).length;
+	if (thisVersion >= FLAGS_PER_PARTICIPANT_VERSION[kind]) return false;
+	return kind !== 'talk' || !own.some((flag) => flag.kind === 'talk' && flag.reply === null);
 }

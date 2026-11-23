@@ -1331,6 +1331,12 @@ export type NewTokenUsage = typeof tokenUsage.$inferInsert;
 // options are (added and retired by version), and `decision_responses.answers`;
 // a response's kind may be `answered`, a survey answered in a round with no
 // options.
+//
+// Card 2684 (migration 0083) adds `decision_flags`, a participant's objections
+// and requests to talk, settled once by the decider's reply as
+// `decision_questions` is by its answer; it names a participant with no ON
+// DELETE action, as the record does (db/decision-place-namers.ts lists every
+// table that names one).
 
 /** Who can be consulted or informed, with an account or without one. */
 export const people = sqliteTable('people', {
@@ -1587,6 +1593,34 @@ export const decisionQuestions = sqliteTable('decision_questions', {
 	index('idx_decision_questions_answer_reviewed_by').on(table.answerReviewedBy)
 ]);
 
+/**
+ * Card 2684 (migration 0083): a participant's objection (`kind` `objection`, a reason required) or request to talk to
+ * the decider (`talk`, a note optional), settled once by the decider's reply, as a question is by its answer.
+ * `replied_by` is kept for the record alone, never read for access, links or mail.
+ */
+export const decisionFlags = sqliteTable('decision_flags', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	decisionId: integer('decision_id')
+		.notNull()
+		.references(() => decisions.id, { onDelete: 'cascade' }),
+	participantId: integer('participant_id')
+		.notNull()
+		.references(() => decisionParticipants.id),
+	kind: text('kind').notNull(), // 'objection' | 'talk'
+	reason: text('reason').notNull(),
+	versionNumber: integer('version_number').notNull(),
+	via: text('via').notNull(), // 'session' | 'link'
+	raisedAt: text('raised_at').notNull(),
+	reply: text('reply'),
+	repliedBy: integer('replied_by').references(() => users.id, { onDelete: 'set null' }),
+	repliedByName: text('replied_by_name'),
+	repliedAt: text('replied_at')
+}, (table) => [
+	index('idx_decision_flags_decision_id').on(table.decisionId),
+	index('idx_decision_flags_participant_id').on(table.participantId),
+	index('idx_decision_flags_replied_by').on(table.repliedBy)
+]);
+
 export const decisionRulings = sqliteTable('decision_rulings', {
 	decisionId: integer('decision_id')
 		.primaryKey()
@@ -1674,6 +1708,8 @@ export type DecisionResponse = typeof decisionResponses.$inferSelect;
 export type NewDecisionResponse = typeof decisionResponses.$inferInsert;
 export type DecisionQuestion = typeof decisionQuestions.$inferSelect;
 export type NewDecisionQuestion = typeof decisionQuestions.$inferInsert;
+export type DecisionFlag = typeof decisionFlags.$inferSelect;
+export type NewDecisionFlag = typeof decisionFlags.$inferInsert;
 export type DecisionRuling = typeof decisionRulings.$inferSelect;
 export type NewDecisionRuling = typeof decisionRulings.$inferInsert;
 export type DecisionEvent = typeof decisionEvents.$inferSelect;

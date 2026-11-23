@@ -11,6 +11,7 @@
  */
 import type { SurveyKind, SurveyQuestion, SurveyScale } from '$lib/decision-readiness';
 import type { LinkedCardView } from '$lib/decision-register-types';
+import type { FlagKind } from '$lib/decision-rules';
 import type { ToldMail } from '$lib/decision-words';
 import type { Stamp } from '$lib/timestamps';
 
@@ -260,6 +261,13 @@ export type ResultsData = {
 	/** Card 2678 (decision 9): whether the caller may answer the questions now, on the decision's page. */
 	mayAnswerQuestions: boolean;
 	concerns: { name: string; comment: string; createdAt: Stamp; via: string }[];
+	/**
+	 * Card 2684 (R11, R23): every objection and request to talk, oldest first, with names; on the page alone, so absent
+	 * under any other source (E-L2).
+	 */
+	flags?: ResultFlag[];
+	/** Card 2684 (R7): whether the caller may reply to them now: the current decider alone, with board edit. */
+	mayReply: boolean;
 	ruling: RulingRecord | null;
 	released: { at: Stamp; byName: string; omitted: number } | null;
 	releasePreview: ReleasePreview | null;
@@ -292,6 +300,31 @@ export type RulingView = {
 
 /** A participant's own concern about the ruling (card 2679, decision 4): its text and when, and no id. */
 export type OwnConcern = { comment: string; createdAt: Stamp };
+
+/**
+ * A participant's own objection or request to talk (card 2684, R6, R22): its kind, its reason (`''` for a request to
+ * talk with no note), when it was raised, about which version, and the decider's reply and its moment, null until there
+ * is one. No id, and never who replied by account.
+ */
+export type OwnFlag = { kind: FlagKind; reason: string; raisedAt: Stamp; versionNumber: number; reply: string | null; repliedAt: Stamp | null };
+
+/**
+ * An objection or request to talk as the results page gives it to the decider and administrators (card 2684, R23):
+ * its id (to reply by), the participant's name, what they said, when, by which way in and about which version, and
+ * the reply with who gave it by name alone, never by account (S-L4); each null until there is a reply.
+ */
+export type ResultFlag = {
+	flagId: number;
+	kind: FlagKind;
+	name: string;
+	reason: string;
+	raisedAt: Stamp;
+	via: string;
+	versionNumber: number;
+	reply: string | null;
+	repliedByName: string | null;
+	repliedAt: Stamp | null;
+};
 
 // ─── Clarification questions (card 2678, decisions 2, 8 and 19) ──────────────
 
@@ -432,6 +465,15 @@ export type DecisionPageData = {
 	questions: QuestionView[];
 	/** Card 2678 (decisions 4 and 10): whether the viewer's own participant row may ask a question now (`mayAskOf`). */
 	mayAsk: boolean;
+	/**
+	 * Card 2684 (R22): the participant's own objections and requests to talk, oldest first, each with the decider's
+	 * reply; never another's. None for a viewer who is no participant.
+	 */
+	flags: OwnFlag[];
+	/** Card 2684 (R22): whether the participant may object now: open or awaiting a ruling, under the current version's caps. */
+	mayObject: boolean;
+	/** Card 2684 (R22): whether they may ask to talk now: as `mayObject`, and with no request to talk still without an outcome. */
+	mayAskToTalk: boolean;
 	/** Card 2678, session only: whether the caller may answer the questions now (`mayAnswerOf`). */
 	mayAnswer?: boolean;
 	/** Card 2680 (decision 29), session only: whether the caller may read the record view (`record`), a draft's too. */

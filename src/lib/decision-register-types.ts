@@ -12,7 +12,7 @@
  * it; anyone else is given the name it had when the decision was made, with
  * no id (S1).
  */
-import type { QuestionView, ShownStatus } from '$lib/decision-view-types';
+import type { OwnFlag, QuestionView, ShownStatus } from '$lib/decision-view-types';
 import type { Stamp } from '$lib/timestamps';
 
 // ─── The register (decisions 1 to 8) ─────────────────────────────────────────
@@ -163,6 +163,13 @@ export type RecordEntry = {
 	detail: Record<string, unknown>;
 };
 
+/**
+ * An objection or request to talk as a person record shows it (card 2684, R11): the person's own as `OwnFlag`, and to
+ * an administrator and the decider also how it was raised (`via`) and who replied, by name alone (`repliedByName`, null
+ * until there is a reply), never by account.
+ */
+export type RecordFlag = OwnFlag & { via?: string; repliedByName?: string | null };
+
 /** The decision a participation is on, as the register gives it. */
 export type ParticipationDecision = { id: number; title: string; shownStatus: ShownStatus; board: ListedBoard; closesAt: Stamp | null };
 
@@ -185,6 +192,8 @@ export type Participation<E> = {
 	responses: RecordResponse[];
 	questions: QuestionView[];
 	concerns: { comment: string; createdAt: Stamp }[];
+	/** Card 2684 (R11): the participation's objections and requests to talk, oldest first, with the replies. */
+	flags: RecordFlag[];
 	events: E[];
 	moreEvents: boolean;
 };
@@ -195,7 +204,9 @@ export type Participation<E> = {
  * responses and concerns, and their own questions with the answers given up
  * to the removal. Nothing of the decision. `removedAt` null is a live row the
  * person may not view (two live rows on one account, say): the page says "A
- * decision you can no longer open", never "removed" (code review F4).
+ * decision you can no longer open", never "removed" (code review F4). Card
+ * 2684 (R11, S-M2): their own objections and requests to talk, with only the
+ * replies given up to the removal (or now, for a live row).
  */
 export type RemovedParticipation = {
 	kind: 'removed';
@@ -204,6 +215,7 @@ export type RemovedParticipation = {
 	responses: RecordResponse[];
 	questions: QuestionView[];
 	concerns: { comment: string; createdAt: Stamp }[];
+	flags: OwnFlag[];
 	events: OwnRecordEvent[];
 };
 

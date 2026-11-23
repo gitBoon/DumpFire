@@ -4373,6 +4373,8 @@ const UNREAD_SENDS = [
 	'src/lib/api.ts › jsonRequest › fetch(url)',
 	'src/lib/board/board-state.svelte.ts › (top) › fetch(input)',
 	'src/lib/components/decision/ConcernForm.svelte › send › fetch(url)',
+	// Card 2684 (R22): the objection and request-to-talk form posts to the signed-in route or the personal link's.
+	'src/lib/components/decision/FlagForm.svelte › send › fetch(url)',
 	'src/lib/components/decision/QuestionForm.svelte › send › fetch(url)',
 	'src/lib/components/decision/ResponseForm.svelte › send › fetch(url)',
 	'src/lib/decision-seen.ts › send › fetch(url)',

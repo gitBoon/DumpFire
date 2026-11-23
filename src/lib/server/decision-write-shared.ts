@@ -41,17 +41,27 @@
  * board is there writes its activity entry, its action written out at its
  * call as `activity-twins.test.ts` requires, and the `decision` live event
  * (decisions 21 and 23).
+ *
+ * Card 2684 (R5, R15; its plan review's E-M4) adds what a participant's
+ * concern, question and objection or request to talk share: the cap and the
+ * rest on raising one (`requireUnderCap`, `requireRested`), the decider's
+ * notice of one (`deciderNoticeOf`, on the one rule of a notice held a day
+ * per participant, `recipientNoticeOf`), and the notice to the person whose
+ * question or flag is answered (`participantNoticeOf`). Each keeps the words
+ * and statuses its callers gave before.
  */
 import { error } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
 import { db, sqlite } from './db';
-import { decisionParticipants, type Decision, type DecisionParticipant } from './db/schema';
+import { decisionParticipants, users, type Decision, type DecisionParticipant } from './db/schema';
 import { accountTimeUnreadable } from './access-changes';
 import type { SessionUser } from './auth';
 import { allOptionsOf, participantsOf, revisionOf } from './decision-content';
-import { accountHistory, lastMailAt, mailsSince, peopleById, recordMailsSince, snapshotOf, type RecordActor } from './decision-record';
-import { participantForLink, reachOf, type Reach } from './decision-links';
-import { CALLER_MAIL_DAILY_CAP, DAY_MS, dailyCapFrom, type HoldReason, mailRestOf } from './decision-mail';
+import { accountHistory, eventsOfKind, lastMailAt, mailsSince, peopleById, recordMailsSince, snapshotOf, type RecordActor } from './decision-record';
+import { mailedLinkOf, participantForLink, reachOf, type Reach } from './decision-links';
+import { CALLER_MAIL_DAILY_CAP, DAY_MS, dailyCapFrom, decisionLinkBase, type HoldReason, later, mailRestOf, RECORD_MAIL_MIN_MINUTES } from './decision-mail';
+import { isSmtpConfigured } from './email';
+import { shouldNotifyUser } from './notifications';
 import { actorOf } from './logActivity';
 import { takeAllowance } from './rate-limit';
 import { DECISION_TEXT_MAX } from '$lib/decision-rules';
@@ -258,6 +268,132 @@ export function heldAsks(user: SessionUser, decisionId: number, rows: DecisionPa
 	const sending = reachable.filter((row) => !held.has(row.id));
 	if (recordMailRefusal(user, sending.length, now, pending) !== null) for (const row of sending) held.set(row.id, 'caller_cap');
 	return held;
+}
+
+// ─── A participant's concern, question, objection or request to talk (card 2684, R5, R15) ─
+
+/** A 409 in `words` once `count` has reached `cap` (card 2684, R5): the per-participant and per-decision caps on raising. */
+export function requireUnderCap(count: number, cap: number, words: string): void {
+	if (count >= cap) error(409, words);
+}
+
+/**
+ * A 429 while `RECORD_MAIL_MIN_MINUTES` have not passed since `lastAt`, the
+ * participant's last concern, question, objection or request to talk (card
+ * 2684, R5), in `words` given the moment, in UTC, from which the next may be
+ * raised. None with no last, or a last that names no moment.
+ */
+export function requireRested(lastAt: Stamp | undefined, now: Stamp, words: (from: Stamp) => string): void {
+	const rested = lastAt === undefined ? null : later(lastAt, RECORD_MAIL_MIN_MINUTES * 60 * 1000);
+	if (rested !== null && now < rested) error(429, words(rested));
+}
+
+/** One earlier notice about the same participant to the same recipient, as its event recorded it: its outcome and when. */
+export type EarlierNotice = { outcome: unknown; at: Stamp };
+
+/**
+ * The one rule of a notice to `userId` about something a participant raised
+ * (card 2679, decision 3; card 2678, decision 5; card 2684, R15), decided
+ * inside the write: `no_link_address` with no App URL or `ORIGIN`; `prefs_off`
+ * when their `email_decisions` or every mail is switched off; `no_mail_host`
+ * with no mail host (2679's code review, F2: nothing would be sent, so nothing
+ * holds the next one back); `held` within 24 hours of the last `asked` of
+ * `earlier`, the same participant's notices to them in order; and `asked`
+ * otherwise, carrying how many were held since that one. Only `asked` holds
+ * the next back, as only it sent anything.
+ */
+export function recipientNoticeOf(
+	userId: number,
+	earlier: readonly EarlierNotice[],
+	now: Stamp
+): { outcome: 'no_link_address' | 'prefs_off' | 'no_mail_host' | 'held' } | { outcome: 'asked'; heldBefore: number } {
+	if (decisionLinkBase() === null) return { outcome: 'no_link_address' };
+	if (!shouldNotifyUser(userId, 'email_decisions')) return { outcome: 'prefs_off' };
+	if (!isSmtpConfigured()) return { outcome: 'no_mail_host' };
+	const lastAsked = earlier.findLastIndex((notice) => notice.outcome === 'asked');
+	if (lastAsked !== -1) {
+		const rested = later(earlier[lastAsked].at, DAY_MS);
+		if (rested === null || now < rested) return { outcome: 'held' };
+	}
+	return { outcome: 'asked', heldBefore: earlier.slice(lastAsked + 1).filter((notice) => notice.outcome === 'held').length };
+}
+
+/** The decider's notice of a concern or a flag, as decided inside the write (`deciderNoticeOf`). */
+export type DeciderNotice =
+	| { outcome: 'no_decider' | 'own' | 'no_link_address' | 'prefs_off' | 'no_mail_host' | 'held' }
+	| { outcome: 'asked'; deciderUserId: number; heldBefore: number };
+
+/**
+ * Whether something a participant raised notifies the decision's decider
+ * (card 2679, decision 3, S3; card 2684, R15), decided inside the write:
+ * `no_decider` with no decider account; `own` where the decider's account is
+ * one of `raisedBy`, the raiser's (never asked of a concern, whose `raisedBy`
+ * is empty, so its outcomes are as before); and then `recipientNoticeOf`'s
+ * rule over `earlier`, the same participant's notices of the same kind or
+ * kinds, in order. Per participant: their first always notifies, and nobody
+ * else's holds it back. Only the notices after the decision's last
+ * `decider_changed` event are asked (code review C-S-L4): those went to an
+ * earlier decider, so a new decider is told of the first after the change.
+ * Each of `earlier` names its event's id, which places it against the change.
+ */
+export function deciderNoticeOf(
+	decision: Decision,
+	earlier: readonly (EarlierNotice & { eventId: number })[],
+	now: Stamp,
+	raisedBy: readonly (number | null)[] = []
+): DeciderNotice {
+	const decider =
+		decision.deciderUserId === null ? undefined : db.select({ id: users.id }).from(users).where(eq(users.id, decision.deciderUserId)).get();
+	if (decider === undefined) return { outcome: 'no_decider' };
+	if (raisedBy.includes(decider.id)) return { outcome: 'own' };
+	const changedAt = eventsOfKind(decision.id, 'decider_changed').at(-1)?.id ?? 0;
+	const notice = recipientNoticeOf(
+		decider.id,
+		earlier.filter((before) => before.eventId > changedAt),
+		now
+	);
+	return notice.outcome === 'asked' ? { outcome: 'asked', deciderUserId: decider.id, heldBefore: notice.heldBefore } : notice;
+}
+
+/** The notice to a participant whose question or flag is answered, as decided inside the write (`participantNoticeOf`). */
+export type ParticipantNotice =
+	| { outcome: 'not_reached' | 'no_link_address' | 'prefs_off' | 'no_mail_host' }
+	| { outcome: 'asked'; to: { userId: number } | { address: string; latestLink: boolean } };
+
+/**
+ * Whether an answer a person now stands behind tells the participant who
+ * asked or raised it (card 2678, decision 5; card 2684, R15, moved here from
+ * the question module in its slice S1b), decided inside the write:
+ * `not_reached` for no participant, one removed, or one `reachOf` skips (card
+ * 3020's people who have left among them); an account holder
+ * `no_link_address`, `prefs_off`, `no_mail_host`, or `asked` to their
+ * account; a link holder `no_mail_host`, or `asked` to the participant's
+ * snapshot address, which no preference governs, and never to an account a
+ * browser beside their link was signed in as. No rest: each is answered once.
+ *
+ * A link holder's notice issues no link (card 2721, D1). `latestLink` is
+ * whether it may tell them to use the one in their latest email:
+ * `mailedLinkOf`, the closing-date reminder's rule, on the write's clock (D2,
+ * D4). Otherwise it tells them to ask for a new one (D3).
+ */
+export function participantNoticeOf(decision: Decision, participantId: number | null): ParticipantNotice {
+	if (participantId === null) return { outcome: 'not_reached' };
+	const participant = db
+		.select()
+		.from(decisionParticipants)
+		.where(and(eq(decisionParticipants.id, participantId), eq(decisionParticipants.decisionId, decision.id)))
+		.get();
+	if (participant === undefined || participant.removedAt !== null) return { outcome: 'not_reached' };
+	const reach = reachesOf(decision.id, [participant]).get(participant.id)!;
+	if (!('via' in reach)) return { outcome: 'not_reached' };
+	if (reach.via === 'account' && participant.userId !== null) {
+		if (decisionLinkBase() === null) return { outcome: 'no_link_address' };
+		if (!shouldNotifyUser(participant.userId, 'email_decisions')) return { outcome: 'prefs_off' };
+		if (!isSmtpConfigured()) return { outcome: 'no_mail_host' };
+		return { outcome: 'asked', to: { userId: participant.userId } };
+	}
+	if (!isSmtpConfigured()) return { outcome: 'no_mail_host' };
+	return { outcome: 'asked', to: { address: participant.email, latestLink: mailedLinkOf(decision, participant, stamp()) !== null } };
 }
 
 /** The moment 24 hours ago, from which the daily caps count. */

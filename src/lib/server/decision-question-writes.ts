@@ -13,7 +13,7 @@
  * their own (`answerQuestion` with `replacesDraft`), each a person's act
  * alone. A question tells whoever may answer it now, and an answer a person
  * stands behind tells the asker, by notices that name nobody and quote
- * nothing, sent after the commit (`questionNoticesOf`, `answerNoticeOf`). Each
+ * nothing, sent after the commit (`questionNoticesOf`, `participantNoticeOf`). Each
  * settling of an answer is a guarded update that a 409 ends when it changes
  * nothing. No activity entry, live event or webhook (design S3).
  *
@@ -26,9 +26,9 @@
  * decision-write-shared.ts's header says.
  */
 import { error } from '@sveltejs/kit';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from './db';
-import { decisionParticipants, users, type Decision, type DecisionParticipant, type DecisionQuestion } from './db/schema';
+import { users, type Decision, type DecisionParticipant, type DecisionQuestion } from './db/schema';
 import type { SessionUser } from './auth';
 import { decisionAccess, mayDo, type DecisionAccess } from './decision-access';
 import { readMultiline } from './decision-content';
@@ -47,11 +47,9 @@ import {
 	type RecordActor
 } from './decision-record';
 import { answererRoleOf, pendingDraft, questionsFor } from './decision-questions';
-import { mailedLinkOf } from './decision-links';
-import { DAY_MS, dailyCapFrom, decisionLinkBase, later, RECORD_MAIL_MIN_MINUTES } from './decision-mail';
+import { DAY_MS, dailyCapFrom, RECORD_MAIL_MIN_MINUTES } from './decision-mail';
 import { DECISION_ACTION_WORDS, requireTransition } from './decision-status';
-import { isSmtpConfigured } from './email';
-import { notifyDecisionQuestion, notifyQuestionAnswered, shouldNotifyUser } from './notifications';
+import { notifyDecisionQuestion, notifyQuestionAnswered } from './notifications';
 import { takeAllowance } from './rate-limit';
 import { readBoolean, type RequestBody } from './request-body';
 import { DECISION_TEXT_MAX, QUESTION_TEXT_MAX, QUESTIONS_PER_PARTICIPANT } from '$lib/decision-rules';
@@ -69,7 +67,18 @@ import {
 import { requireDecision, requireUser } from './route-guards';
 import { stamp, type Stamp } from '$lib/timestamps';
 import { inWrite, type ServiceOptions } from './write-as';
-import { dayBefore, keyed, participantOn, reachesOf, requireLinkHolder, requireReachedByAccount, sourceOf } from './decision-write-shared';
+import {
+	dayBefore,
+	keyed,
+	participantNoticeOf,
+	participantOn,
+	recipientNoticeOf,
+	requireLinkHolder,
+	requireReachedByAccount,
+	requireRested,
+	requireUnderCap,
+	sourceOf
+} from './decision-write-shared';
 
 /** None of the question writes has a guard of its own: every export here is a write, and starts with `inWrite()`. */
 export const READS: readonly string[] = [];
@@ -175,7 +184,7 @@ export function answerQuestion(
 	if (replacesDraft) {
 		const discarded = { text: row.answer, byName: row.answeredByName, at: row.answeredAt };
 		if (!recordDraftReplaced(row.id, answer, by)) error(409, NO_DRAFT);
-		const notice = answerNoticeOf(decision, row);
+		const notice = participantNoticeOf(decision, row.participantId);
 		appendEvent({ decisionId: decision.id, kind: 'answer_replaced', detail: { questionId: row.id, role, discarded, notice: notice.outcome } }, by);
 		const replaced = answererViewOf(decision, access, row.id, sourceOf(opts));
 		if (notice.outcome === 'asked') notifyQuestionAnswered(notice.to, decision.id, decision.title);
@@ -186,7 +195,7 @@ export function answerQuestion(
 	const agentDrafted = keyed(opts);
 	if (!recordAnswer(row.id, answer, by, agentDrafted)) error(409, ANSWERED);
 	// Decision 8: an agent's draft is not mailed until a person stands behind it.
-	const notice = agentDrafted ? { outcome: 'awaiting_review' as const } : answerNoticeOf(decision, row);
+	const notice = agentDrafted ? { outcome: 'awaiting_review' as const } : participantNoticeOf(decision, row.participantId);
 	appendEvent({ decisionId: decision.id, kind: 'question_answered', detail: { questionId: row.id, role, agentDrafted, notice: notice.outcome } }, by);
 	const answered = answererViewOf(decision, access, row.id, sourceOf(opts));
 	if (notice.outcome === 'asked') notifyQuestionAnswered(notice.to, decision.id, decision.title);
@@ -221,7 +230,7 @@ export function publishAnswer(
 
 	const by = actorFor(user, sourceOf(opts));
 	if (!recordDraftPublished(row.id, by)) error(409, ALREADY_PUBLISHED);
-	const notice = answerNoticeOf(decision, row);
+	const notice = participantNoticeOf(decision, row.participantId);
 	appendEvent({ decisionId: decision.id, kind: 'answer_published', detail: { questionId: row.id, notice: notice.outcome } }, by);
 	const published = answererViewOf(decision, access, row.id, sourceOf(opts));
 	if (notice.outcome === 'asked') notifyQuestionAnswered(notice.to, decision.id, decision.title);
@@ -268,15 +277,17 @@ function questionAs(
 	if (decision.status === 'ruled') error(409, QUESTIONS_CLOSED);
 	requireTransition(decision, 'ask', now);
 	const theirs = questionsBy(participant.id);
-	if (theirs.length >= QUESTIONS_PER_PARTICIPANT) error(409, questionsLimitWords(QUESTIONS_PER_PARTICIPANT));
-	if (questionsOf(decision.id).length >= QUESTIONS_PER_DECISION) {
-		error(409, `This decision has ${QUESTIONS_PER_DECISION} questions: no more can be asked. Ask the decider directly`);
-	}
-	const last = theirs.at(-1);
-	const rested = last === undefined ? null : later(last.askedAt, RECORD_MAIL_MIN_MINUTES * 60 * 1000);
-	if (rested !== null && now < rested) {
-		error(429, `Your last question was asked less than ${RECORD_MAIL_MIN_MINUTES} minutes ago: the next can be asked from ${rested} UTC`);
-	}
+	requireUnderCap(theirs.length, QUESTIONS_PER_PARTICIPANT, questionsLimitWords(QUESTIONS_PER_PARTICIPANT));
+	requireUnderCap(
+		questionsOf(decision.id).length,
+		QUESTIONS_PER_DECISION,
+		`This decision has ${QUESTIONS_PER_DECISION} questions: no more can be asked. Ask the decider directly`
+	);
+	requireRested(
+		theirs.at(-1)?.askedAt,
+		now,
+		(from) => `Your last question was asked less than ${RECORD_MAIL_MIN_MINUTES} minutes ago: the next can be asked from ${from} UTC`
+	);
 	if (account !== null) requireQuestionAllowed(account, now);
 
 	const row = appendQuestion({
@@ -354,62 +365,19 @@ function questionNoticesOf(decision: Decision, participant: DecisionParticipant,
 	return notices;
 }
 
-/** One recipient's outcome of a new question's notice, from the participant's earlier `question_asked` events (`questionNoticesOf`). */
+/**
+ * One recipient's outcome of a new question's notice, from the participant's earlier `question_asked` events
+ * (`questionNoticesOf`): `recipientNoticeOf`'s rule (card 2684, R15, the decider's notice of a concern or a flag shares
+ * it), over the outcome each event recorded for this recipient.
+ */
 function questionNoticeFor(userId: number, earlier: { detail: Record<string, unknown>; at: Stamp }[], now: Stamp): Omit<QuestionNotice, 'userId'> {
-	if (decisionLinkBase() === null) return { outcome: 'no_link_address', heldBefore: 0 };
-	if (!shouldNotifyUser(userId, 'email_decisions')) return { outcome: 'prefs_off', heldBefore: 0 };
-	// As the concern's notice (2679's code review F2): with no mail host nothing would be sent, so nothing holds the next one back.
-	if (!isSmtpConfigured()) return { outcome: 'no_mail_host', heldBefore: 0 };
-	const outcomes = earlier.map((event) => {
+	const theirs = earlier.map((event) => {
 		const sent = Array.isArray(event.detail.notices) ? (event.detail.notices as unknown[]) : [];
 		const mine = sent.find((entry) => entry !== null && typeof entry === 'object' && (entry as { userId?: unknown }).userId === userId);
-		return mine === undefined ? null : (mine as { outcome?: unknown }).outcome;
+		return { outcome: mine === undefined ? null : (mine as { outcome?: unknown }).outcome, at: event.at };
 	});
-	const lastAsked = outcomes.lastIndexOf('asked');
-	if (lastAsked !== -1) {
-		const rested = later(earlier[lastAsked].at, DAY_MS);
-		if (rested === null || now < rested) return { outcome: 'held', heldBefore: 0 };
-	}
-	return { outcome: 'asked', heldBefore: outcomes.slice(lastAsked + 1).filter((outcome) => outcome === 'held').length };
-}
-
-/**
- * Whether an answer a person now stands behind tells the asker (card 2678,
- * decision 5), decided inside the write: `not_reached` for a participant
- * removed, or one `reachOf` skips; an account holder `no_link_address`,
- * `prefs_off`, `no_mail_host`, or `asked` to their account; a link holder
- * `no_mail_host`, or `asked` to the participant's snapshot address, which no
- * preference governs, and never to an account a browser beside their link
- * was signed in as. No rest: each question is answered once.
- *
- * A link holder's notice issues no link (card 2721, D1). `latestLink` is
- * whether it may tell them to use the one in their latest email:
- * `mailedLinkOf`, the closing-date reminder's rule, on the write's clock (D2,
- * D4). Otherwise it tells them to ask for a new one (D3).
- */
-function answerNoticeOf(
-	decision: Decision,
-	row: DecisionQuestion
-):
-	| { outcome: 'not_reached' | 'no_link_address' | 'prefs_off' | 'no_mail_host' }
-	| { outcome: 'asked'; to: { userId: number } | { address: string; latestLink: boolean } } {
-	if (row.participantId === null) return { outcome: 'not_reached' };
-	const participant = db
-		.select()
-		.from(decisionParticipants)
-		.where(and(eq(decisionParticipants.id, row.participantId), eq(decisionParticipants.decisionId, decision.id)))
-		.get();
-	if (participant === undefined || participant.removedAt !== null) return { outcome: 'not_reached' };
-	const reach = reachesOf(decision.id, [participant]).get(participant.id)!;
-	if (!('via' in reach)) return { outcome: 'not_reached' };
-	if (reach.via === 'account' && participant.userId !== null) {
-		if (decisionLinkBase() === null) return { outcome: 'no_link_address' };
-		if (!shouldNotifyUser(participant.userId, 'email_decisions')) return { outcome: 'prefs_off' };
-		if (!isSmtpConfigured()) return { outcome: 'no_mail_host' };
-		return { outcome: 'asked', to: { userId: participant.userId } };
-	}
-	if (!isSmtpConfigured()) return { outcome: 'no_mail_host' };
-	return { outcome: 'asked', to: { address: participant.email, latestLink: mailedLinkOf(decision, participant, stamp()) !== null } };
+	const notice = recipientNoticeOf(userId, theirs, now);
+	return { outcome: notice.outcome, heldBefore: notice.outcome === 'asked' ? notice.heldBefore : 0 };
 }
 
 /** The question of this decision, or 404 for one that is not on it (card 2678, decision 17). */

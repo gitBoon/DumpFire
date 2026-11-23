@@ -52,6 +52,7 @@ import ParticipantPicker from '$lib/components/decision/ParticipantPicker.svelte
 import DecisionEditor from '$lib/components/decision/DecisionEditor.svelte';
 import BoardDecisionsPage from '../src/routes/board/[id]/decisions/+page.svelte';
 import type { WorkingContent } from '$lib/decision-readiness';
+import { FLAGS_HANDED_OVER } from '$lib/decision-words';
 
 // The browser's `mount`, loaded by its path (see the XP bars' file).
 const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
@@ -741,6 +742,27 @@ describe('DecisionEditor (cases 26 to 29)', () => {
 		expect(target.querySelector('.side-column select[id$="-decider"]')).toBeNull();
 		expect(button(target, 'Change decider')).toBeUndefined();
 		expect(textOf(target.querySelector('.decider-fixed')!)).toBe('bob');
+	});
+
+	it('U7 (card 2684, R24): the change-decider form says flags raised go to the new decider, wherever it is offered, in fixed words with no number', () => {
+		const WORDS = 'Any objections or requests to talk already raised, with names, become visible to the new decider.';
+		expect(FLAGS_HANDED_OVER).toBe(WORDS);
+		for (const [name, more] of [
+			['a draft', {}],
+			['an open decision', { decision: decision({ status: 'open', shownStatus: 'open', currentVersion: 1 }) }],
+			['one awaiting its ruling', { decision: decision({ status: 'closed', shownStatus: 'awaiting_ruling', currentVersion: 2 }) }]
+		] as const) {
+			const target = drawEditor(more);
+			const section = deciderSelect(target).closest('.side-section')!;
+			const note = section.querySelector('[data-note="flags-handed-over"]')!;
+			expect(textOf(note), name).toBe(WORDS);
+			expect(button(target, 'Change decider').getAttribute('aria-describedby'), name).toBe(note.id);
+			// No digit anywhere in the form: no count of flags, nor whether there are any.
+			expect(textOf(section), name).not.toMatch(/\d/);
+		}
+		// Not offered: no warning.
+		const fixed = drawEditor({ canSetDecider: false, deciderCandidates: [], callerId: 2 });
+		expect(fixed.querySelector('[data-note="flags-handed-over"]')).toBeNull();
 	});
 });
 

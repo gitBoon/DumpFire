@@ -55,6 +55,7 @@ import {
 	sourceOf
 } from './decision-write-shared';
 import { ACCESS_KIND, recordAccessChange } from './access-changes';
+import { placeIsNamed } from './db/decision-place-namers';
 
 /**
  * The functions here that only read: the guards of the administrator's two
@@ -141,6 +142,11 @@ const STEP_UP_ACT = "Changing a participant's account or address asks for your p
  * the live places are read, so a place a restore or the start marked removed
  * is neither kept nor deleted, and a person whose only place is removed is
  * given a new one.
+ *
+ * Card 2684 (R18): on a draft, a place left out that a table of the shared
+ * list names (`placeIsNamed`, db/decision-place-namers.ts) is marked removed,
+ * `removed_by` the caller, rather than deleted; only a restore can put such a
+ * row on a draft's place.
  */
 export function setParticipants(
 	caller: SessionUser | null,
@@ -197,8 +203,19 @@ export function setParticipants(
 		const gone = rows.filter((row) => row.personId === null || !named.has(row.personId)).map((row) => row.id);
 		// Card 3033 (D4): recorded before the delete, as the record reads the place it names.
 		for (const id of gone) recordAccessChange(sqlite, { kind: ACCESS_KIND.decisionParticipant, subject: decision.id, holder: id, access: 'removed' });
-		for (let from = 0; from < gone.length; from += IDS_AT_ONCE) {
-			db.delete(decisionParticipants).where(inArray(decisionParticipants.id, gone.slice(from, from + IDS_AT_ONCE))).run();
+		// Card 2684 (R18): a place a table of the shared list names (a flag or a response a restore planted) is marked removed,
+		// never deleted; the rest are deleted, as no write can name a draft's place.
+		const namedPlaces = new Set(gone.filter((id) => placeIsNamed(sqlite, id)));
+		const unnamed = gone.filter((id) => !namedPlaces.has(id));
+		const markedRemoved = gone.filter((id) => namedPlaces.has(id));
+		for (let from = 0; from < unnamed.length; from += IDS_AT_ONCE) {
+			db.delete(decisionParticipants).where(inArray(decisionParticipants.id, unnamed.slice(from, from + IDS_AT_ONCE))).run();
+		}
+		for (let from = 0; from < markedRemoved.length; from += IDS_AT_ONCE) {
+			db.update(decisionParticipants)
+				.set({ removedAt: now, removedBy: user.id })
+				.where(inArray(decisionParticipants.id, markedRemoved.slice(from, from + IDS_AT_ONCE)))
+				.run();
 		}
 		const reRoled = kept.filter((row) => named.get(row.personId!) !== row.role);
 		for (const row of reRoled) {
