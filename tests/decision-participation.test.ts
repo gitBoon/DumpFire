@@ -1112,7 +1112,9 @@ describe('readDecisionPage and readLinkPage', () => {
 			mayReadRecord: false,
 			linkedCards: [],
 			mayLinkCards: false,
-			mayUnlinkCards: false
+			mayUnlinkCards: false,
+			// Card 2687 (R8): a participant who links no card marks none as waiting.
+			mayMarkWaiting: false
 		});
 		expect(page.version!.content).not.toHaveProperty('options');
 		expect(page.version!.content).not.toHaveProperty('audiences');
@@ -1272,7 +1274,9 @@ describe('readDecisionPage and readLinkPage', () => {
 			// Card 2684 (R22): as signed in.
 			flags: [],
 			mayObject: true,
-			mayAskToTalk: true
+			mayAskToTalk: true,
+			// Card 2687 (S-L6): off by a link, always.
+			mayMarkWaiting: false
 		});
 		expect(keysGiven(page)).toEqual([]);
 		// No decision id anywhere in it (code review C5): an option's own id is the only id a link holder is given.

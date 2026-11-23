@@ -19,38 +19,66 @@
   access, on any decision but a draft, at the cap too), Unlink beside each
   card.
 
+  Card 2687 (R8): where `mayMarkWaiting` (the same editor, on a decision
+  open or awaiting its ruling, at the cap too), one toggle beside each card:
+  its words fixed, "Waits on this decision", named "Waits on this decision:
+  #12 Plan the move", with `aria-pressed` alone saying whether it waits, and
+  drawn pressed (a tick in a filled box) or not (an empty box), not by colour
+  alone. Where it is not offered, a card whose link is `waits` is marked
+  "Waits on this decision" while the decision is shown open or awaiting its
+  ruling. It is offered per page, not per card: a card on a board the person
+  can only read is refused by the server in its own words, as Unlink is
+  (E-L5).
+
   Link sends `PUT /api/decisions/:id/cards/:cardId` and Unlink `DELETE`, each
-  saying it is JSON and carrying no body (the route reads none). The answer,
-  `{ outcome?, linkedCards }`, is drawn at once, and then the page's data is
-  read again (`invalidateAll`), which replaces it. A refusal (404, 403, 409
-  for an archived card or a cap) is said in the server's words
-  (`failureMessage`). What was done, or refused, is said in a polite status
-  region that stays drawn, only its words changing. After a link the focus
-  goes back to the search box, emptied; after an unlink to the next card's
-  Unlink, else the one before, else the search box, else the list's empty
-  words.
+  saying it is JSON and carrying no body, so a link already there keeps its
+  relation. The toggle sends the same `PUT` with `{"relation": "waits"}` or
+  `{"relation": "relates"}`. The answer, `{ outcome?, linkedCards }`, is
+  drawn at once, and then the page's data is read again (`invalidateAll`),
+  which replaces it. A toggle answered `linked` was pressed on a card
+  unlinked meanwhile, which the PUT linked again: that is said plainly. A
+  refusal (404, 403, 409 for an archived card, a cap, or a wait on a
+  decision already ruled) is said in the server's words (`failureMessage`).
+  What was done, or refused, is said in a polite status region that stays
+  drawn, only its words changing. After a link the focus goes back to the
+  search box, emptied; after an unlink to the next card's Unlink, else the
+  one before, else the search box, else the list's empty words. After the
+  toggle, done, refused or unanswered, the page's data is read again, the
+  words kept, and the focus goes back on that card's toggle, else the search
+  box, else the list's empty words, else the first card's toggle, else the
+  section's heading; unless the person has moved it elsewhere meanwhile.
 -->
 <script lang="ts">
 	import { onDestroy, tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
 	import type { LinkedCardView, LinkOutcome } from '$lib/decision-register-types';
+	import type { ShownStatus } from '$lib/decision-view-types';
 
 	let {
 		decisionId,
+		shownStatus,
 		cards,
 		mayLink,
-		mayUnlink
+		mayUnlink,
+		mayMarkWaiting
 	}: {
 		/** The decision the cards are linked to. */
 		decisionId: number;
+		/** The decision's shown status: a wait holds a card only while it is open or awaiting its ruling (card 2687, R2). */
+		shownStatus: ShownStatus;
 		/** The linked cards the page was given, on boards the viewer can open. */
 		cards: LinkedCardView[];
 		/** Whether the viewer may link a card now (`mayLinkCards`). */
 		mayLink: boolean;
 		/** Whether the viewer may unlink a card now (`mayUnlinkCards`). */
 		mayUnlink: boolean;
+		/** Whether the viewer may mark a card as waiting, or stop it waiting (`mayMarkWaiting`, card 2687). */
+		mayMarkWaiting: boolean;
 	} = $props();
+
+	/** Whether a `waits` link holds its card now: the decision is open or awaiting its ruling. */
+	const holds = $derived(shownStatus === 'open' || shownStatus === 'awaiting_ruling');
 
 	const id = $props.id();
 
@@ -66,6 +94,7 @@
 	let searchBox = $state<HTMLInputElement>();
 	let emptyWords = $state<HTMLParagraphElement>();
 	let list = $state<HTMLUListElement>();
+	let root = $state<HTMLDivElement>();
 
 	// ─── The card search, as the card window's ──────────────────────────────
 
@@ -214,12 +243,72 @@
 		await reread();
 		// Once the buttons are enabled again: a disabled one takes no focus.
 		await tick();
-		const next = after === null ? null : list?.querySelector<HTMLButtonElement>(`button[data-card="${after}"]`);
+		const next = after === null ? null : list?.querySelector<HTMLButtonElement>(`button[data-action="unlink"][data-card="${after}"]`);
 		(next ?? searchBox ?? emptyWords)?.focus();
+	}
+
+	/**
+	 * Card 2687 (R7, R8): marks the card as waiting on the decision, or stops
+	 * it waiting, with the same PUT and its relation in the body. An answer
+	 * `linked` means the card had been unlinked meanwhile and the PUT linked it
+	 * again (review P-M1), which is said. Done, refused or unanswered, the
+	 * page's data is read again, the words kept (P-L5). The focus goes back to
+	 * the card's toggle, as it is lost while the button is disabled; else to
+	 * the search box, else the list's empty words, else the first card's
+	 * toggle, else the section's heading; and stays where the person has put
+	 * it meanwhile (P-L6).
+	 */
+	async function toggleWaiting(card: LinkedCardView) {
+		if (busy) return;
+		busy = true;
+		said = null;
+		const from = document.activeElement;
+		const relation = card.relation === 'waits' ? 'relates' : 'waits';
+		const asked = relation === 'waits' ? 'marked as waiting' : 'stopped waiting';
+		try {
+			const res = await fetch(`/api/decisions/${decisionId}/cards/${card.id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ relation })
+			});
+			if (!res.ok) {
+				said = { refused: true, words: await failureMessage(res, `${named(card)} was not ${asked}.`) };
+			} else {
+				const answer = await cardsOf(res);
+				shown = answer !== null ? answer.linkedCards : shown.map((c) => (c.id === card.id ? { ...c, relation } : c));
+				const words =
+					answer?.outcome === 'linked'
+						? `${named(card)} was no longer linked to this decision: it is linked again, and ${relation === 'waits' ? 'waits on it' : 'does not wait on it'}.`
+						: relation === 'waits'
+							? `${named(card)} waits on this decision.`
+							: `${named(card)} no longer waits on this decision.`;
+				said = { refused: false, words };
+			}
+		} catch {
+			said = { refused: true, words: `No answer from the server. It is not known whether ${named(card)} was ${asked}.` };
+		} finally {
+			busy = false;
+		}
+		// What is drawn may now be out of date, whatever the answer: the words said are kept.
+		await reread();
+		// Once the buttons are enabled again: a disabled one takes no focus.
+		await tick();
+		const now = document.activeElement;
+		if (now !== from && now !== null && now !== document.body) return;
+		const again = list?.querySelector<HTMLButtonElement>(`button[data-action="wait"][data-card="${card.id}"]`);
+		const first = list?.querySelector<HTMLButtonElement>('button[data-action="wait"]');
+		(again ?? searchBox ?? emptyWords ?? first ?? headingOf())?.focus();
+	}
+
+	/** The heading of the section the list is drawn in, focusable from code: the last place the focus can go. */
+	function headingOf(): HTMLElement | null {
+		const heading = root?.closest('section')?.querySelector<HTMLElement>('h2, h3') ?? null;
+		if (heading && !heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');
+		return heading;
 	}
 </script>
 
-<div class="linked-cards" data-part="linked-cards">
+<div class="linked-cards" data-part="linked-cards" bind:this={root}>
 	{#if shown.length > 0}
 		<ul class="cards" bind:this={list}>
 			{#each shown as card (card.id)}
@@ -230,6 +319,23 @@
 					</a>
 					<span class="card-where">{card.boardName}</span>
 					{#if card.archived}<span class="archived" data-mark="archived">Archived</span>{/if}
+					{#if mayMarkWaiting}
+						<!-- Its words and name fixed; aria-pressed alone says whether it waits (review P-M2). -->
+						<button
+							type="button"
+							class="btn-ghost row-action wait-toggle"
+							class:pressed={card.relation === 'waits'}
+							data-action="wait"
+							data-card={card.id}
+							aria-pressed={card.relation === 'waits'}
+							aria-label="Waits on this decision: {named(card)}"
+							disabled={busy}
+							onclick={() => toggleWaiting(card)}
+							><span class="press-box" aria-hidden="true">{card.relation === 'waits' ? '✓' : ''}</span>Waits on this decision</button
+						>
+					{:else if card.relation === 'waits' && holds}
+						<span class="waits" data-mark="waits">Waits on this decision</span>
+					{/if}
 					{#if mayUnlink}
 						<button
 							type="button"
@@ -311,6 +417,17 @@
 	.card-where { font-size: 0.9rem; color: var(--text-secondary); overflow-wrap: anywhere; }
 	.archived, .already { font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); }
 	.row-action { min-height: 44px; min-width: 44px; font-size: 0.95rem; margin-left: auto; }
+	/* The toggle and Unlink sit together at the row's end (card 2687). */
+	.row-action + .row-action { margin-left: 0; }
+	.waits { font-size: 0.85rem; font-weight: 600; color: var(--text-primary); }
+	/* The toggle (review P-M2): pressed is a tick in a filled box and a solid edge, unpressed an empty box and a dashed one, so not colour alone. */
+	.wait-toggle { display: inline-flex; align-items: center; gap: var(--space-xs); border: 1px dashed var(--glass-border); }
+	.wait-toggle.pressed { border-style: solid; border-color: var(--text-primary); font-weight: 600; }
+	.press-box {
+		display: inline-flex; align-items: center; justify-content: center; width: 1.1em; height: 1.1em;
+		border: 1.5px solid currentColor; border-radius: 3px; font-size: 0.85rem; line-height: 1;
+	}
+	.wait-toggle.pressed .press-box { background: var(--text-primary); color: var(--bg-elevated); border-color: var(--text-primary); }
 	.none { margin: 0; color: var(--text-secondary); }
 	.link-search { display: flex; flex-direction: column; gap: var(--space-xs); }
 	.small { margin: 0; font-size: 0.9rem; color: var(--text-secondary); }

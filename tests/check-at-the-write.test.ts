@@ -124,7 +124,10 @@ const READER_METHODS = ['json', 'formData', 'arrayBuffer', 'text', 'blob', 'byte
 const BODY_READERS = [
 	'readBody',
 	// Card 2910's code review (CS2): an upload's read, given its deadline; the read it is handed is the request's own.
-	'readBodyWithin'
+	'readBodyWithin',
+	// Card 2687's code review (C-S-L1, C-S-L2): a body that may be left out, read with readBody when it is sent as JSON;
+	// it looks at the request's headers alone first, and reads no row.
+	'readOptionalBody'
 ];
 
 /**

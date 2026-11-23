@@ -2117,7 +2117,8 @@ const TABLE: Record<string, Case | Case[]> = {
 	),
 
 	// ── Card links (card 2680, decision 17) ──────────────────────────────
-	// `across`: edit access to the decision's board, B, and to the card's, A. Neither reads a body.
+	// `across`: edit access to the decision's board, B, and to the card's, A. The DELETE reads no body; the PUT reads one
+	// only when one is sent (card 2687), and none is sent here.
 	'PUT /api/decisions/[id]/cards/[cardId]': across((w) => `/api/decisions/${decisionId}/cards/${w.A.card.id}`, { setup: anOpenDecisionOnB }),
 	'DELETE /api/decisions/[id]/cards/[cardId]': across((w) => `/api/decisions/${decisionId}/cards/${w.A.card.id}`, { setup: aLinkFromBToA }),
 

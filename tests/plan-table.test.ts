@@ -42,6 +42,8 @@ import {
 	tableRows,
 	type CardGroup,
 	type OpenCards,
+	type PlanDecisionWait,
+	type TableNode,
 	type TableOptions,
 	type TableRow
 } from '$lib/plan-table';
@@ -279,6 +281,36 @@ describe('the counts and Expand all', () => {
 		for (const stored of [null, '', 'not json', '{"a":1}', '"5"', '[1.5,"2",-3,0,null]']) {
 			expect([...readOpenCards(stored)], String(stored)).toEqual([]);
 		}
+	});
+});
+
+describe('a card waiting on a decision (card 2687)', () => {
+	it('U1: a card with waits and no open blocker is Blocked with its decisions, and the Blocked filter keeps it; its ordered subtask carrying the wait is Blocked too', () => {
+		const wait: PlanDecisionWait = { id: 41, title: 'Which host', shownStatus: 'awaiting_ruling', closesAt: '2026-11-30 12:00:00' };
+		const base = {
+			title: 'Held',
+			priority: 'low',
+			columnTitle: 'To Do',
+			boardId: 3,
+			boardName: 'Board A',
+			isComplete: false,
+			withheld: false,
+			openBlockers: [],
+			downstreamCount: 0,
+			onCriticalPath: false
+		};
+		const nodes: TableNode[] = [
+			{ ...base, kind: 'card', id: 1, waitingOnDecisions: [wait] },
+			{ ...base, kind: 'subtask', id: 11, title: 'Held step', parentCardId: 1, waitingOnDecisions: [wait] },
+			{ ...base, kind: 'card', id: 2, title: 'Free', waitingOnDecisions: [] }
+		];
+		const groups = cardGroups(nodes, [], { 1: [{ id: 11, title: 'Held step', priority: 'low', completed: false }] });
+
+		expect(groups[0].card).toMatchObject({ id: 1, state: 'blocked', blockers: [], decisions: [wait] });
+		expect(groups[0].subtasks).toEqual([expect.objectContaining({ kind: 'subtask', id: 11, state: 'blocked', inGraph: true, decisions: [wait] })]);
+		expect(groups[1].card).toMatchObject({ id: 2, state: 'ready', decisions: [] });
+		expect(stateCounts(groups)).toMatchObject({ ready: 1, blocked: 2 });
+		expect(ids(tableRows(groups, { ...NONE, stateFilter: 'blocked' }))).toEqual(['card:1', 'subtask:11']);
 	});
 });
 

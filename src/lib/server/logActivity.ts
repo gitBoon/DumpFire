@@ -131,7 +131,11 @@ export const ACTIONS = {
 	// title, which the card's board's readers may not view. None sends a webhook.
 	decisionCardLinked: 'decision_card_linked',
 	decisionCardUnlinked: 'decision_card_unlinked',
-	decisionCardLinkDeleted: 'decision_card_link_deleted'
+	decisionCardLinkDeleted: 'decision_card_link_deleted',
+	// Card 2687 (R7, S-M1): a link's relation changed, on the decision's board with no card, detail "a card": never the
+	// card, the decision or the relation. None when the decision has no board. No webhook, and never counted as work on
+	// a card, as it names none.
+	decisionCardRelationChanged: 'decision_card_relation_changed'
 } as const;
 
 export interface ActivityEntry {

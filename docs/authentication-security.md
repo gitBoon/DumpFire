@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.172
+version: 1.173
 status: As-Built
 date: 2026-11-23
 tags:
+  - card-2687
+  - decision-waits
   - card-2686
   - group-breakdown
   - card-2684
@@ -9487,21 +9489,28 @@ sequenceDiagram
     R-->>L: { entries, participants, next }
 ```
 
-**Card links.** `PUT` and `DELETE /api/decisions/[id]/cards/[cardId]` (no body read; the relation
-is `relates`) call `linkCard` and `unlinkCard`. Refusals in order: the decision (`linkCard`: 404
+**Card links.** `PUT` and `DELETE /api/decisions/[id]/cards/[cardId]` call `linkCard` and
+`unlinkCard`. Since card 2687 the `PUT` reads an optional body, `{ relation: 'relates' | 'waits' }`,
+through `readOptionalBody` (below); with none, a new link is `relates` and one already there is
+left as it is. Refusals in order: the body's own (400, 413, before any access check, as on every
+route that reads a body), the decision (`linkCard`: 404
 not viewable, 403 not an editor of its board, or not an administrator where it has none), the
 card (`requireCard(…, 'edit')`: 404, 403 `No edit access to this board`), the status (409; never
 a draft or, for a new link, a withdrawn decision), an archived card (409, before the link already
 there is looked for, so a PUT again on an archived card is 409, not 200), a relation outside
-`CARD_LINK_RELATIONS` (400), the link already there (the same relation: 200 `unchanged`, nothing
-written), the caps (409: 100 a decision, 20 a card, a new link only), then the insert. Unlinking a
+`CARD_LINK_RELATIONS` (400, read after the guards, so a caller who may not view the decision or
+edit the card learns nothing from it), the link already there (the same relation, or none sent:
+200 `unchanged`, nothing written), `waits` on a ruled or superseded decision (409), a relation
+changed (the caps not asked), the caps (409: 100 a decision, 20 a card, a new link only), then
+the insert. Unlinking a
 link that is not there is 404 `Link not found`; an archived card may be unlinked. API keys
 link and unlink through `PUT` and `DELETE /api/v1/decisions/{decisionId}/cards/{cardId}`
 (card 2682), each entry written through the API.
 
 - **Each side shows only what the viewer can see of the other (decision 18).** The decision page
   lists a linked card only on a board the viewer can open now, `{ id, title, boardId, boardName,
-  archived }`, with no count of the rest; a personal link is given no linked cards at all.
+  archived, relation }` (`relation` since card 2687), with no count of the rest; a personal link
+  is given no linked cards at all, and `mayMarkWaiting` false.
   `GET /api/cards/[id]/decisions` refuses as `requireCard(…, 'view')` refuses, then lists only the
   decisions the viewer may view (`visibleDecisionIdsOf`), `{ id, title, shownStatus, closesAt,
   relation }`, the closing time null once ruled, with no count. Neither side names who linked it.
@@ -9509,7 +9518,9 @@ link and unlink through `PUT` and `DELETE /api/v1/decisions/{decisionId}/cards/{
 - **The activity entries name no decision (S7).** `decision_card_linked`,
   `decision_card_unlinked` and `decision_card_link_deleted` are written on the card's board with
   its card, detail "a decision" or "a linked decision was deleted": the card's board's readers
-  may not view the decision. No live event, no mail, no webhook.
+  may not view the decision. No live event, no mail, no webhook. A relation changed (card 2687)
+  is written on the **decision's** board instead; see
+  [Cards Waiting on a Decision](#cards-waiting-on-a-decision-card-2687).
 - **The decision's cap discloses a count (S8)**: a 409 at 100 tells an editor of the decision's
   board that it holds 100 links, some perhaps on boards they cannot open. Accepted: only a count,
   only to an editor, only at the cap. **The card's cap states none** (code review S3): its 409 is
@@ -9533,6 +9544,68 @@ new route is in `tests/access-every-route.test.ts` (the API table and `PAGES`).
 to a caller who can open its board; a decision with no board emits none. So a participant-only
 caller is never sent another board's event, and is current on navigation, a return to the tab, or
 a reconnect.
+
+### Cards Waiting on a Decision (card 2687)
+
+A card linked to a decision as `waits` is held out of its goal's startable work while the decision
+is open or awaiting its ruling ([Critical-Path Planning](critical-path-planning.md#cards-waiting-on-a-decision-card-2687)).
+Who may view a decision is narrower than who may open a board, so the plan, which anyone who can
+open the goal reads, is the one new place a decision could leak. The rules:
+
+- **The plan names a decision only to someone who may view it, worked out per viewer.**
+  `decisionWaitsFor(viewer, cardIds)` keeps a wait only where `visibleDecisionIdsOf(viewer, …)`
+  says the viewer may view the decision, the register's own predicate. For anyone else the card is
+  placed by its dependencies alone: no placeholder, no count, no difference in any figure they are
+  given, so a startable card does not tell them a decision exists. What is shown of a decision is
+  the card window's projection alone: title, shown status (`open` or `awaiting_ruling`) and
+  closing time; never its decider, participants, responses, tallies, survey answers, objections
+  or requests to talk, or a count of any.
+- **A disabled account may view no decision.** Since card 2687 `visibleDecisionIdsOf` asks
+  `isDisabledActor` before the role, so a disabled administrator is given the empty set (card
+  2671's rule), in its two older callers (the card window, the register) as well.
+- **`decisionWaitsFor` checks the card's board itself.** It does not trust its caller to have
+  asked only for cards the viewer can open: a card with a wait is kept only on a board in
+  `getAccessibleBoardIds(viewer)`, before any decision is asked about. A withheld card therefore
+  carries no decision, as the decision page lists only cards on boards the viewer can open. Source
+  scans pin its callers to `decision-cards.ts` and `planning.ts`, and `workSummary`'s (the plan
+  without decisions) to `planning.ts` and the plan-mail route.
+- **The relation change's entry is on the decision's board.** `decision_card_relation_changed`,
+  "Changed a card's link to a decision", is written on the decision's board with no card, detail
+  "a card", naming neither card, decision nor relation; none when the decision has no board.
+  Anyone who can open the decision's board may view the decision (never a draft, which is never
+  linked). On the card's board, readers who may not view the decision could have counted such
+  entries against the plan. Residual, accepted (C-S-I1): a reader of the decision's board who sees
+  no change among the cards they can open may infer a linked card on a board they cannot.
+- **The plan-created mail is made per recipient.** The work is worked out once per set of boards,
+  the decisions once per recipient, and a mail is shared only by recipients with the same boards
+  and the same held waits. It carries counts, never a decision's title.
+- **The PDF says whose view it is.** It is made for whoever exports it and names only decisions
+  they may view; since it can be passed on, it closes with "Decisions named are those the exporter
+  may view.". What is forwarded is the exporter's choice, as for the work titles in it.
+- **A body that was never read is refused.** The node adapter leaves `request.body` null for a
+  request with no `Content-Type` whatever it carries. `readOptionalBody` therefore answers 400
+  `send the body as application/json` where `request.body` is null but a `Transfer-Encoding`, or a
+  `Content-Length` other than exactly `0` (one that is not a number included), says a body was
+  sent, and where a body was sent with any type but `application/json`; so a `{"relation":
+  "relates"}` meant to clear a wait is never answered 200 while ignored. On the internal route the
+  gate's 415 refuses a write that does not say it is JSON first.
+- **API keys may set it**, as they may link (D13): an agent records what waits on what, as it
+  records dependencies. Through a key the entry is `api:decision_card_relation_changed`.
+- **A restore** brings `decision_card_links` back wholesale, as before. A `waits` row from a
+  backup whose seal does not verify can only make a card look waiting to people who may view that
+  decision; it shows nothing they may not see, and is cleared with the toggle. Residual, accepted.
+
+```mermaid
+flowchart TD
+    V["A viewer reads the plan<br/>(page, v1 summary, PDF, mail)"] --> S{"link waits, decision shown<br/>open or awaiting ruling?"}
+    S -- no --> N["no decision holds the card"]
+    S -- yes --> B{"card on a board the viewer can open?<br/>(a disabled account opens none)"}
+    B -- no --> N
+    B -- yes --> VD{"visibleDecisionIdsOf: may view the decision?<br/>(a disabled account: none)"}
+    VD -- no --> N
+    VD -- yes --> H["card held: title, status,<br/>closing time named"]
+    N --> P["card placed by its dependencies alone,<br/>nothing of the decision, no count"]
+```
 
 ### Who is mailed
 

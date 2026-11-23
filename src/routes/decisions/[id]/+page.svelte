@@ -39,7 +39,10 @@
 	 * administrators. And (decisions 18 and 23, slice 3b) the linked cards on
 	 * boards the caller can open (`LinkedCards`), with Link and a card search
 	 * where `mayLinkCards`, and Unlink where `mayUnlinkCards`; the section is
-	 * drawn where there is a card or the caller may link or unlink one.
+	 * drawn where there is a card or the caller may link or unlink one. Card
+	 * 2687: Mark as waiting / Stop waiting beside each card where
+	 * `mayMarkWaiting`, and "Waits on this decision" on a card that waits
+	 * while the decision is open or awaiting its ruling.
 	 *
 	 * Card 2684 (R22): for a participant, their own objections and requests
 	 * to talk with the decider's replies, and the forms to raise one
@@ -165,7 +168,14 @@
 	<!-- The signed-in page's decision always carries its id; only the personal link's leaves it out. -->
 	{#if data.decision.id !== undefined}
 		{#key data.decision.id}
-			<LinkedCards decisionId={data.decision.id} cards={data.linkedCards ?? []} mayLink={data.mayLinkCards ?? false} mayUnlink={data.mayUnlinkCards ?? false} />
+			<LinkedCards
+				decisionId={data.decision.id}
+				shownStatus={data.decision.shownStatus}
+				cards={data.linkedCards ?? []}
+				mayLink={data.mayLinkCards ?? false}
+				mayUnlink={data.mayUnlinkCards ?? false}
+				mayMarkWaiting={data.mayMarkWaiting ?? false}
+			/>
 		{/key}
 	{/if}
 {/snippet}

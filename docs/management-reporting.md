@@ -1,10 +1,11 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.16
+version: 1.17
 status: As-Built
-date: 2026-11-18
+date: 2026-11-23
 tags:
+  - card-2687
   - card-2719
   - reporting
   - audit-log
@@ -191,13 +192,18 @@ entries that **do** name a card, on the card's board: `decision_card_linked`,
 `decision_card_unlinked` and `decision_card_link_deleted`. Linking a card to a
 decision is planning, as a dependency or a goal is, so the three are on
 `NOT_WORK_ON_THE_CARD` (`src/lib/server/activity-report.ts`) in both spellings
-and never put a card in the window or down to whoever linked it.
+and never put a card in the window or down to whoever linked it. Card 2687
+(2026-11-23) adds `decision_card_relation_changed`, written when a link is marked
+as waiting on its decision or stops waiting: on the **decision's** board with no
+card, detail "a card", so the report never joins it to a card and never counts it
+as work. It is planning too, and is on `NOT_WORK_ON_THE_CARD` in both spellings as
+well, so that it could never count even if it named one.
 
 ```mermaid
 flowchart LR
     Entry["An activity entry"] --> HasCard{"Names a card?"}
     HasCard -->|"yes: card_moved, subtask_completed, …"| Counted["Joined to its card:<br/>counted as work"]
-    HasCard -->|"no: decision_opened … decision_deleted,<br/>decision_ruled, decision_superseded,<br/>decision_results_released, milestone_*"| Ignored["Never counted"]
+    HasCard -->|"no: decision_opened … decision_deleted,<br/>decision_ruled, decision_superseded,<br/>decision_results_released,<br/>decision_card_relation_changed, milestone_*"| Ignored["Never counted"]
     HasCard -->|"yes, but planning: dependency_*, milestone_card_*,<br/>decision_card_linked, decision_card_unlinked,<br/>decision_card_link_deleted"| Ignored
 ```
 

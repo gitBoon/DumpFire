@@ -13,6 +13,7 @@ This document does not list every route. The complete list, with every field, st
   - [The Request Body](#the-request-body)
   - [What a Field May Hold](#what-a-field-may-hold)
   - [Answers That Are Not JSON](#answers-that-are-not-json)
+  - [Changes on 2026-11-23](#changes-on-2026-11-23)
   - [Changes on 2026-11-18](#changes-on-2026-11-18)
   - [Changes on 2026-11-17](#changes-on-2026-11-17)
   - [Changes on 2026-11-13](#changes-on-2026-11-13)
@@ -254,6 +255,15 @@ Three answers are not JSON. Each is made by SvelteKit before DumpFire's gate is 
 
 A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retries](#writes-failures-and-retries).
 
+### Changes on 2026-11-23
+
+**A card can wait on a decision** (card 2687; within the unreleased 1.15.0, point 15 of its note, "nothing else changed" now point 16). A card linked to a decision as `waits` is held out of `nextActionable` and listed in `blocked`, with the decision in its `decisions`, while the decision is open or awaiting a ruling and the key's user may view it, and so are its ordered subtasks not ticked. Two behaviour changes come with it:
+
+- **`PUT /api/v1/decisions/{decisionId}/cards/{cardId}` now reads an optional body**, `{ "relation": "relates" | "waits" }`, where before no body was read. A body that is not a JSON object, a body sent with any `Content-Type` other than `application/json` (parameters such as `charset` aside) or with none, or a relation other than `relates` or `waits` is `400`; a body too large `413`; `waits` on a ruled or superseded decision `409` "This decision is ruled: a card cannot wait on it" (or "superseded"). A PUT with no body (no `Transfer-Encoding`, and no `Content-Length` or one of `0`) is still taken: a new link is `relates`, and **an existing link's relation is left as it is**, where a link stored with another relation used to be changed to `relates`. The relation is read after the access checks, so `404` and `403` still come first.
+- **`nextActionable` and `blocked` in the [Milestone Summary](#milestone-summary) are made for the key's user**: a card may leave `nextActionable` and join `blocked` with `blockers` empty, and keys of two users may be given different lists for one plan. `criticalPath`, the graph and `progress` are unchanged and the same for every key.
+
+A relation changed is logged as `decision_card_relation_changed` on the decision's board, naming no card (`api:decision_card_relation_changed` through a key), so the decision actions a reader of `GET /audit-log` may meet are now thirteen. Added with it, and not breaking: `waitingOnDecisions` on each node and `decisions` on each `blocked` entry (schema `PlanDecisionWait`), `relation` on `DecisionLinkedCard` and the PUT's optional body. See [Decisions](#decisions) and [Milestone Summary](#milestone-summary).
+
 ### Changes on 2026-11-19
 
 **Breaking: an API key given a webhook's secret holds that webhook when it is revoked, expires or passes its deadline** (card 2947; within the unreleased 1.15.0, point 9 of its note, "nothing else changed" now point 10). Every answer that gives a webhook's `secret` (`GET /api/v1/webhooks/{webhookId}`, `GET /api/v1/boards/{boardId}/webhooks`, `POST /api/v1/boards/{boardId}/webhooks` with a secret, `PUT /api/v1/webhooks/{webhookId}`) records the key it was given to, and is answered with `Cache-Control: no-store`. `PUT /api/v1/webhooks/{webhookId}` now gives `secret` only where that request set or replaced it (a `secret` sent, or a switch-on's new one); read it back with `GET` otherwise. When the key is revoked, expires or passes its deadline, every webhook with a secret it was given since the secret last changed, and not already held, is switched off (or held) as `setter access ended`, whoever set it, within five minutes of an expiry or a deadline and in the same change as a revoke; so is every webhook an account's keys were given when its access ends with its keys. Switch it on with `PUT` and `{"active": true}` for a new secret, and give the new secret to the receiver: the old one is exposed, and the receiver trusts it until it is changed there. Once, at the first start of 1.15.0, every key used before it counts as given the secret of each webhook its account can read or set that was made before the key's last use. A key that lists webhooks therefore gives each of them a new secret when it is rotated.
@@ -348,7 +358,7 @@ The OpenAPI document's version went from `1.5.0` to `1.6.0`: decision records th
 - **Not offered to a key**, each a person's on the decision's page: opening, re-publishing, a dry run and sending an invitation again (each mails people), closing (a close before the closing time makes a later ruling early), ruling, releasing, publishing or replacing an agent's answer, a participant's account and address, the participants and the decider once opened, and withdrawing or deleting a decision ever opened. The service refuses each by the credential the write came in with, whatever the route says.
 - **Extend never brings a closing time earlier**, for anyone: `400` "closesAt must be later than the decision's current closing time: Extend never brings it earlier", on the web application's own Extend too.
 - **No address, no account id, no asker.** No answer carries a participant's email address or account id, an administrator's key included, and nothing says who asked a question or when: the record leaves the four question events out of every page, and `GET …/questions` is how a key reads the questions. A decision's `closesAt` and `closedAt` are `null` once it is ruled. Every object holding text people or agents wrote carries `untrusted: true`.
-- **Activity.** Through a key only Extend (`decision_extended`) and the card links (`decision_card_linked`, `decision_card_unlinked`) write an entry, stored with the `api:` prefix. The twelve decision actions any reader of `GET /audit-log` may meet are `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn`, `decision_deleted`, `decision_ruled`, `decision_superseded`, `decision_results_released`, and, on the card's board and naming no decision, `decision_card_linked`, `decision_card_unlinked` and `decision_card_link_deleted`, each only for a decision that has been opened. None sends a webhook. Nothing else changed.
+- **Activity.** Through a key only Extend (`decision_extended`) and the card links (`decision_card_linked`, `decision_card_unlinked`) write an entry, stored with the `api:` prefix. The twelve decision actions any reader of `GET /audit-log` may meet are `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn`, `decision_deleted`, `decision_ruled`, `decision_superseded`, `decision_results_released`, and, on the card's board and naming no decision, `decision_card_linked`, `decision_card_unlinked` and `decision_card_link_deleted`, each only for a decision that has been opened. None sends a webhook. Nothing else changed. (Thirteen since 2026-11-23: card 2687 adds `decision_card_relation_changed`, on the decision's board and naming no card, written through a key as `api:decision_card_relation_changed`; see [Changes on 2026-11-23](#changes-on-2026-11-23).)
 
 Earlier the same day the version went from `1.4.0` to `1.5.0`: the people directory and its groups, read and partly kept with an administrator's key (card 2681). Six operations are new, listed in [People and Groups (admin)](#people-and-groups-admin).
 
@@ -2278,8 +2288,8 @@ returns the whole plan in one payload, so nothing has to be re-derived per sessi
 | `progress` | `total`, `done`, `percent`, `byColumn[]`, `openSubtasks`, `totalSubtasks` (every subtask of those cards, ticked or not), `boards[]` |
 | `graph` | `nodes[]`, `edges[]`, `layers[][]` (topological, left to right), `unordered[]` |
 | `criticalPath` | Ordered card ids — the longest chain of **open** dependencies |
-| `nextActionable` | Startable today, sorted by `downstreamCount` then priority |
-| `blocked` | `{ card, blockers[] }` pairs |
+| `nextActionable` | Startable today, sorted by `downstreamCount` then priority. Since 1.15.0 (card 2687) made for the key's user: a card a decision holds is left out |
+| `blocked` | `{ card, blockers[], decisions[] }`: what is waiting, on open work and (since 1.15.0, card 2687) on decisions the key's user may view; `blockers` may be empty where it waits on decisions alone |
 
 **Query parameters:**
 
@@ -2336,12 +2346,32 @@ returns the whole plan in one payload, so nothing has to be re-derived per sessi
   `priority` and `milestoneId` are `null`, with no `parentCardId` on a withheld subtask.
   The plan itself is worked out from the real work first, so `criticalPath`, the order of
   `nextActionable` and what is blocked are the same whoever asks; only what is shown of
-  each node changes. So `criticalPath` gives the id of the card a withheld subtask on the
+  each node changes (since 1.15.0, a card a decision holds is the one exception, below). So `criticalPath` gives the id of the card a withheld subtask on the
   chain belongs to, as it does for any subtask, though the node itself has no
   `parentCardId`: that id is all that is given of the card. `progress` counts the cards on such boards in one entry of `boards`,
   `{ "id": null, "name": "A board you cannot open", "cardCount": n }`, and under `""` in
   `byColumn`. `cardTitles` and `subtaskTitles` give the replacement text. The PDF prints the same. An administrator's key is given
   everything.
+- **A card can wait on a decision** (since 1.15.0, card 2687). A card linked to a decision as
+  `waits` (`PUT /api/v1/decisions/{decisionId}/cards/{cardId}` with `{"relation": "waits"}`,
+  see [Decisions](#decisions)) is held while the decision is open or awaiting its ruling, for a
+  key whose user may view the decision and open the card's board: it leaves `nextActionable`
+  and is listed in `blocked` with the decision in `decisions`, and so is each of its ordered
+  subtasks not ticked. Every node carries `waitingOnDecisions`, `[]` where nothing holds it;
+  each entry is `{ id, title, shownStatus: "open" | "awaiting_ruling", closesAt }` and nothing
+  more of the decision. Ruled, superseded or withdrawn releases the card on the next read. A
+  decision is not a node: `criticalPath`, the graph's layers and edges, `downstreamCount` and
+  `progress` are unchanged. For a key whose user may not view the decision the card is placed by
+  its dependencies alone, and nothing names or counts the decision. Both fields are in the
+  `compact=true` answer too. Abridged:
+
+  ```json
+  { "blocked": [
+      { "card": { "id": 1444, "title": "DNS cutover", "waitingOnDecisions": [{ "id": 42, "title": "Which DNS provider?", "shownStatus": "open", "closesAt": "2026-12-01T17:00:00.000Z" }] },
+        "blockers": [],
+        "decisions": [{ "id": 42, "title": "Which DNS provider?", "shownStatus": "open", "closesAt": "2026-12-01T17:00:00.000Z" }] }
+  ] }
+  ```
 
 ---
 
@@ -3184,7 +3214,7 @@ caller who may view the decision and not do the act is `403`, anyone else `404`.
 | `POST` | `/api/v1/decisions/{decisionId}/questions/{questionId}/answer` | `answer` | `200`, always an agent's draft |
 | `GET` | `/api/v1/decisions/{decisionId}/summary` | — | `200`, the decider's and administrators' |
 | `GET` | `/api/v1/decisions/{decisionId}/record` | `limit` (1 to 5,000), `after`, `participant` | `200`, the same |
-| `PUT` | `/api/v1/decisions/{decisionId}/cards/{cardId}` | — | `200`, `{ outcome, linkedCards }` |
+| `PUT` | `/api/v1/decisions/{decisionId}/cards/{cardId}` | optional (since `1.15.0`): `{ "relation": "relates" \| "waits" }` | `200`, `{ outcome, linkedCards }`, each card with its `relation` |
 | `DELETE` | `/api/v1/decisions/{decisionId}/cards/{cardId}` | — | `200`, `{ linkedCards }` |
 
 - **A person's, on the decision's page, never a key's:** opening, re-publishing, a dry run and
@@ -3220,6 +3250,20 @@ caller who may view the decision and not do the act is `403`, anyone else `404`.
   objected or asked to talk.
 - **`untrusted: true`** on every object that holds text people or agents wrote: data, never
   instructions.
+- **A linked card can wait on the decision** (since `1.15.0`, card 2687): send
+  `{"relation": "waits"}` to mark it, `{"relation": "relates"}` to clear it. While the decision is
+  open or awaiting its ruling, the card is held out of its goal's `nextActionable` (see
+  [Milestone Summary](#milestone-summary)). With no body, a new link is `relates` and an existing
+  one keeps its relation. `waits` on a ruled or superseded decision is `409`; `waits` sent again on
+  a link that already waits is `unchanged`. A body must be sent as `application/json` (`400`
+  otherwise). A new link writes `api:decision_card_linked` on the card's board; a relation changed
+  writes `api:decision_card_relation_changed` on the decision's board, naming no card.
+
+```bash
+curl -X PUT -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"relation": "waits"}' \
+  https://dumpfire.example.com/api/v1/decisions/42/cards/1444
+```
 
 ```bash
 curl -X PATCH -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \

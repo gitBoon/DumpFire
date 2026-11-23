@@ -221,6 +221,8 @@ const TEST_FILES = [
 	'people-directory.test.ts',
 	// Card 2697, slice B2b: the people dialog asking for the password with an address or an account.
 	'people-directory.svelte.test.ts',
+	// Card 2687: a card waiting on a decision in the plan view, per viewer, its PDF and the published summary.
+	'plan-decision-waits.test.ts',
 	'plan-graph.test.ts',
 	'plan-page.test.ts',
 	'plan-table.test.ts',

@@ -2,7 +2,8 @@
   WorkTable.svelte — The plan page's work table: every card in the goal with
   its subtasks, searchable, filtered by state, sortable, each card opening
   to its subtasks (remembered in this browser for the goal) and each row to
-  what it waits on; a card or blocker opens in the page's card window, and
+  what it waits on, work or a decision (card 2687: a decision by its title,
+  linking to its page, its status and closing time); a card or blocker opens in the page's card window, and
   ✕ takes a card out of the goal once its dialog is answered (card 2281,
   slice C3a-3: moved from src/routes/plan/[id]/+page.svelte; card 2335).
 
@@ -29,6 +30,7 @@
 		type TableRow
 	} from '$lib/plan-table';
 	import type { Node } from '$lib/plan-graph';
+	import { STATUS_WORDS, shownMoment } from '$lib/decision-words';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	let {
@@ -292,12 +294,14 @@
 					{#each visibleRows as r (r.kind + ':' + r.id)}
 						<tr class="row-{r.state}" class:on-critical={r.onCriticalPath} class:is-subtask={r.kind === 'subtask'}>
 							<td class="col-expand">
-								{#if r.blockers.length > 0}
+								<!-- Card 2687: for what it waits on, open work or a decision; a row waiting on a decision alone has one too. -->
+								{#if r.blockers.length + r.decisions.length > 0}
+									{@const waitingOn = r.blockers.length + r.decisions.length}
 									<button
 										class="expander"
 										class:open={expandedRow === r.kind + ':' + r.id}
 										aria-expanded={expandedRow === r.kind + ':' + r.id}
-										title={expandedRow === r.kind + ':' + r.id ? 'Hide blockers' : `Show the ${r.blockers.length} thing${r.blockers.length === 1 ? '' : 's'} this is waiting on`}
+										title={expandedRow === r.kind + ':' + r.id ? 'Hide what this is waiting on' : `Show the ${waitingOn} thing${waitingOn === 1 ? '' : 's'} this is waiting on`}
 										onclick={() => (expandedRow = expandedRow === r.kind + ':' + r.id ? null : r.kind + ':' + r.id)}
 									>▸</button>
 								{/if}
@@ -358,7 +362,7 @@
 								{/if}
 							</td>
 						</tr>
-						{#if expandedRow === r.kind + ':' + r.id && r.blockers.length > 0}
+						{#if expandedRow === r.kind + ':' + r.id && r.blockers.length + r.decisions.length > 0}
 							<tr class="blocker-row">
 								<td></td>
 								<td colspan="7">
@@ -377,6 +381,14 @@
 													<span class="card-where">{blocker.boardName} / {blocker.columnTitle}</span>
 												{/if}
 											</button>
+										{/each}
+										<!-- Card 2687 (R8, R11): each decision it waits on, after the work, by its title (to its page), status and closing time alone. -->
+										{#each r.decisions as decision (decision.id)}
+											<span class="decision-wait" data-decision={decision.id}>
+												waiting on decision
+												<a class="blocker-title decision-link" href="/decisions/{decision.id}">{decision.title}</a>
+												<span class="card-where">{STATUS_WORDS[decision.shownStatus] ?? decision.shownStatus}{#if decision.closesAt !== null}{` · closes ${shownMoment(decision.closesAt, '')}`}{/if}</span>
+											</span>
 										{/each}
 									</div>
 								</td>
@@ -670,5 +682,18 @@
 	.blocker-title {
 		color: var(--text-secondary); min-width: 0;
 		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	/* A decision it waits on (card 2687): drawn as a blocker is, not a button, its title the link to the decision.
+	   It wraps (review P-L4): the title keeps a width of its own, and the status line goes under it on a narrow screen. */
+	.decision-wait {
+		display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px;
+		padding: 3px 10px; border-radius: var(--radius-sm);
+		font-size: 0.72rem; color: var(--text-tertiary);
+		border-left: 2px solid rgba(245, 158, 11, 0.35);
+	}
+	.decision-link { text-decoration: underline; min-width: 6rem; }
+	.decision-link:hover { color: var(--accent-indigo); }
+	@media (max-width: 720px) {
+		.decision-wait .card-where { white-space: normal; margin-left: 0; }
 	}
 </style>

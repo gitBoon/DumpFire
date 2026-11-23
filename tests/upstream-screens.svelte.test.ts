@@ -701,6 +701,7 @@ describe('a goal’s options', () => {
 		openBlockers: [],
 		downstreamCount: 0,
 		onCriticalPath: false,
+		waitingOnDecisions: [],
 		...more
 	});
 
@@ -727,7 +728,7 @@ describe('a goal’s options', () => {
 	});
 
 	it('are drawn as options in the graph and on the critical path', () => {
-		const base = { isComplete: false, external: false, openBlockers: [] as { kind: 'card'; id: number }[] };
+		const base = { isComplete: false, external: false, openBlockers: [] as { kind: 'card'; id: number }[], waitingOnDecisions: [] };
 		expect(nodeState(base)).toBe('ready');
 		expect(nodeState({ ...base, openBlockers: [{ kind: 'card', id: 1 }] })).toBe('blocked');
 		expect(nodeState({ ...base, isOption: true, openBlockers: [{ kind: 'card', id: 1 }] })).toBe('option');

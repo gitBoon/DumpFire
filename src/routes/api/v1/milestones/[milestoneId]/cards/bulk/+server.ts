@@ -6,7 +6,7 @@ import { eq, inArray, isNull, and } from 'drizzle-orm';
 import { canEditBoard, canViewBoard, getAccessibleBoardIds, type Actor } from '$lib/server/board-access';
 import { canViewMilestone, logCardInOrOut, requireMilestone, MilestoneError, type MilestoneRow } from '$lib/server/milestones';
 import { emit } from '$lib/server/events';
-import { getMilestoneSummary, WITHHELD_CARD_TITLE } from '$lib/server/planning';
+import { withDecisionWaits, workSummary, WITHHELD_CARD_TITLE, type MilestoneSummary } from '$lib/server/planning';
 import { notifyPlanCreated, type PlanCreatedNotice } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readIds, type RequestBody } from '$lib/server/request-body';
@@ -64,25 +64,37 @@ function parseCardIds(body: RequestBody): number[] {
  * see it on its page (card 2152, decision 8), or null when they cannot open
  * it, and they are not mailed. Work on a board they cannot open is withheld
  * by the summary made for them (card 2129). Recipients who can open the same
- * boards see the same plan, so the summary is worked out once for each set of
- * boards: once for every administrator.
+ * boards see the same work, so the work's summary, which reads every
+ * dependency, is worked out once for each set of boards: once for every
+ * administrator. Which decisions hold its cards is each recipient's own
+ * (card 2687, R9): two who open the same boards may view different decisions.
+ * So the decisions are applied per recipient, and a notice is shared by those
+ * with the same boards and the same cards held by the same decisions.
  */
 function planNoticeFor(milestoneId: number, name: string): (recipient: Actor) => PlanCreatedNotice | null {
 	const milestone = db.select().from(milestones).where(eq(milestones.id, milestoneId)).get();
-	const byBoards = new Map<string, PlanCreatedNotice | null>();
+	const byBoards = new Map<string, MilestoneSummary | null>();
+	const notices = new Map<string, PlanCreatedNotice | null>();
 	return (recipient) => {
 		if (!milestone || !canViewMilestone(recipient, milestone)) return null;
 		const boardIds = getAccessibleBoardIds(recipient);
-		const key = boardIds === null ? 'all' : [...boardIds].sort((a, b) => a - b).join(',');
-		if (!byBoards.has(key)) byBoards.set(key, planNotice(milestoneId, name, recipient));
-		return byBoards.get(key)!;
+		const boards = boardIds === null ? 'all' : [...boardIds].sort((a, b) => a - b).join(',');
+		if (!byBoards.has(boards)) byBoards.set(boards, workSummary(milestoneId, recipient));
+		const work = byBoards.get(boards)!;
+		if (!work) return null;
+		const summary = withDecisionWaits(work, recipient);
+		const held = summary.graph.nodes
+			.filter((n) => n.kind === 'card' && n.waitingOnDecisions.length > 0)
+			.map((n) => `${n.id}:${n.waitingOnDecisions.map((d) => d.id).join('.')}`)
+			.join(',');
+		const key = `${boards}|${held}`;
+		if (!notices.has(key)) notices.set(key, planNotice(milestoneId, name, summary));
+		return notices.get(key)!;
 	};
 }
 
-/** The notice of the plan as `viewer` would see it, or null when it is gone. */
-function planNotice(milestoneId: number, name: string, viewer: Actor): PlanCreatedNotice | null {
-	const summary = getMilestoneSummary(milestoneId, viewer);
-	if (!summary) return null;
+/** The notice of the plan as its summary, made for one recipient, gives it. */
+function planNotice(milestoneId: number, name: string, summary: MilestoneSummary): PlanCreatedNotice {
 	// `criticalPath` puts a subtask's card in its place, and that card need not
 	// be in the plan. A step that is shown is on a board the viewer can open,
 	// and so is its card, whose title is read. A withheld one has no card

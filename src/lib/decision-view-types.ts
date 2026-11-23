@@ -512,6 +512,13 @@ export type DecisionPageData = {
 	/** Card 2680 (decision 17), session only: whether the caller may link a card now, below the cap, as `linkCard` asks. */
 	mayLinkCards?: boolean;
 	/**
+	 * Card 2687 (R8, S-L6): whether the caller may mark a linked card as
+	 * waiting on the decision, or stop it waiting: an editor `linkCard` lets in,
+	 * while the decision is open or awaiting its ruling, at the cap too, as a
+	 * relation change asks none. False on the page by personal link.
+	 */
+	mayMarkWaiting?: boolean;
+	/**
 	 * Card 2680 (decision 17, slice 3b), session only: whether the caller may
 	 * unlink a card now, as `unlinkCard` asks: also at the cap and on a
 	 * withdrawn decision, where `mayLinkCards` is false.

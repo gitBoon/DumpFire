@@ -98,7 +98,8 @@ const TITLES: Record<number, string> = { 7: 'Plan', 8: 'Ship', 9: 'Docs', 10: 'C
 /** A node of the plan's graph. */
 const node = (id: number, extra: Record<string, unknown> = {}) => ({
 	kind: 'card', id, title: TITLES[id] ?? `Card ${id}`, priority: 'low', columnTitle: 'To Do', boardId: 3, boardName: 'Website', isComplete: false,
-	withheld: false, layer: 0, blockedBy: [], blocks: [], openBlockers: [], downstreamCount: 0, onCriticalPath: false, ...extra
+	withheld: false, layer: 0, blockedBy: [], blocks: [], openBlockers: [], downstreamCount: 0, onCriticalPath: false, isOption: false,
+	waitingOnDecisions: [], ...extra
 });
 const ref = (kind: string, id: number) => ({ kind, id });
 
@@ -118,7 +119,9 @@ const planData = (progress: Record<string, unknown> = {}, shipDone = false) => (
 			byColumn: [{ columnTitle: 'To Do', count: 3 }], boards: [{ id: 3, name: 'Website', cardCount: 3 }], ...progress
 		},
 		nextActionable: [ref('card', 7), ref('card', 9)],
-		blocked: [{ card: ref('card', 8), blockers: [{ kind: 'card', id: 7, title: 'Plan', boardName: 'Website', columnTitle: 'To Do', boardId: 3, withheld: false }] }],
+		blocked: [
+			{ card: ref('card', 8), blockers: [{ kind: 'card', id: 7, title: 'Plan', boardName: 'Website', columnTitle: 'To Do', boardId: 3, withheld: false }], decisions: [] as unknown[] }
+		],
 		criticalPathNodes: [ref('card', 7), ref('card', 8)],
 		graph: {
 			nodes: [
@@ -1619,6 +1622,150 @@ describe('the plan page draws its graph as HEAD’s page drew it (card 2281, sli
 		['CriticalPathPanel.svelte', '.chain-card:hover']
 	])('writes the rule in %s for %s once (card 2352)', (name, selector) => {
 		expect(selectorsOf(name).filter((s) => s === selector)).toEqual([selector]);
+	});
+});
+
+describe('the plan page shows the cards waiting on a decision (card 2687)', () => {
+	const WAIT = { id: 41, title: 'Which host', shownStatus: 'awaiting_ruling', closesAt: '2026-11-30 12:00:00' };
+
+	/**
+	 * The page's own plan as the server gives it to a viewer who may view the
+	 * decision: Plan (on the critical path, unblocking two) and Docs
+	 * (unordered) each wait on it; Ship waits on Plan alone.
+	 */
+	const waitingData = () => {
+		const data = planData();
+		const [, ship] = data.summary.graph.nodes;
+		data.summary.graph.nodes = [
+			node(7, { downstreamCount: 2, onCriticalPath: true, blocks: [ref('card', 8)], waitingOnDecisions: [WAIT] }),
+			ship,
+			node(9, { waitingOnDecisions: [WAIT] })
+		];
+		data.summary.nextActionable = [];
+		data.summary.blocked = [
+			{ card: ref('card', 7), blockers: [], decisions: [WAIT] },
+			{ card: ref('card', 9), blockers: [], decisions: [WAIT] },
+			...data.summary.blocked
+		];
+		return data;
+	};
+	const rowOf = (id: number) => $$('.work-table tbody tr').find((tr) => textOf(tr.querySelector('.id-link')) === `#${id}`)!;
+
+	it('U3: offers the expander for a row waiting on a decision alone, counting it, and lists it by its title, linking to its page, its status and closing time', async () => {
+		await draw(waitingData());
+		const docs = rowOf(9);
+		expect(textOf(docs.querySelector('.state-chip'))).toBe('Blocked');
+		const expander = docs.querySelector('.expander')!;
+		expect(expander).not.toBeNull();
+		expect(expander.getAttribute('title')).toBe('Show the 1 thing this is waiting on');
+
+		click(expander);
+		// Open, its title says what it hides, in the same words (review P-L7).
+		expect(expander.getAttribute('title')).toBe('Hide what this is waiting on');
+		const waits = $$('.blocker-row .decision-wait');
+		expect(waits.map(textOf)).toEqual(['waiting on decision Which host Awaiting ruling · closes 2026-11-30 12:00 UTC']);
+		const link = waits[0].querySelector('a')!;
+		expect([textOf(link), link.getAttribute('href')]).toEqual(['Which host', '/decisions/41']);
+		// Ship's blocker is listed as it was, with no decision under it.
+		click(rowOf(9).querySelector('.expander'));
+		click(rowOf(8).querySelector('.expander'));
+		expect($$('.blocker-row .blocker').map(textOf)).toEqual(['waiting on #7 Plan Website / To Do']);
+		expect($$('.blocker-row .decision-wait')).toEqual([]);
+	});
+
+	it('U4: the graph says "waits on a decision · unblocks 2" on a waiting card that unblocks two, and "waits on a decision" alone on one that unblocks none; the unordered list and the critical path tag it', async () => {
+		await draw(waitingData());
+		const subs = $$('.graph-scroll g.node').map((g) => textOf(g.querySelector('.node-sub')));
+		expect(subs).toEqual(['waits on a decision · unblocks 2', 'low', 'waits on a decision']);
+		expect($$('.graph-scroll g.node').map((g) => g.getAttribute('class')!.split(' ').find((c) => c.startsWith('node-') && c !== 'node-critical'))).toEqual([
+			'node-blocked',
+			'node-blocked',
+			'node-blocked'
+		]);
+		expect($$('.unordered .wait-tag').map(textOf)).toEqual(['waits on a decision']);
+		expect($$('.chain-card').map((step) => [...step.querySelectorAll('.ext-tag')].map(textOf))).toEqual([['waits on a decision'], []]);
+		// The legend says amber is work waiting on a decision too (review P-L1).
+		expect($$('.graph-legend .legend-item').map(textOf)).toContain('Blocked or waiting on a decision');
+		expect($$('.graph-legend .legend-item').map(textOf)).not.toContain('Blocked');
+	});
+
+	/** Plan (7) with two ordered subtasks: Held step (71), carrying Plan's wait, and Free step (72), carrying none. */
+	const subtaskWaitData = () => {
+		const data = waitingData();
+		const sub = (id: number, title: string, waitingOnDecisions: unknown[]) => ({ ...node(id), kind: 'subtask', title, parentCardId: 7, waitingOnDecisions });
+		(data as { subtasks: unknown }).subtasks = {
+			7: [
+				{ id: 71, title: 'Held step', priority: 'low', completed: false },
+				{ id: 72, title: 'Free step', priority: 'low', completed: false }
+			]
+		};
+		data.summary.graph.nodes.push(sub(71, 'Held step', [WAIT]) as never, sub(72, 'Free step', []) as never);
+		data.summary.blocked.push({ card: ref('subtask', 71), blockers: [], decisions: [WAIT] });
+		return data;
+	};
+	const subtaskRowOf = (title: string) => $$('.work-table tbody tr.is-subtask').find((tr) => textOf(tr.querySelector('.title-text')) === title)!;
+
+	it.each([
+		[
+			'a card waiting on work and a decision: its title sums both',
+			() => {
+				const data = waitingData();
+				const at = data.summary.graph.nodes.findIndex((n) => n.id === 8);
+				data.summary.graph.nodes[at] = { ...data.summary.graph.nodes[at], waitingOnDecisions: [WAIT] as never[] };
+				return data;
+			},
+			() => rowOf(8),
+			'Show the 2 things this is waiting on',
+			['waiting on #7 Plan Website / To Do'],
+			['waiting on decision Which host Awaiting ruling · closes 2026-11-30 12:00 UTC']
+		],
+		[
+			'a decision with no closing time: its status alone',
+			() => {
+				const data = waitingData();
+				const at = data.summary.graph.nodes.findIndex((n) => n.id === 9);
+				data.summary.graph.nodes[at] = { ...data.summary.graph.nodes[at], waitingOnDecisions: [{ ...WAIT, shownStatus: 'open', closesAt: null }] as never[] };
+				return data;
+			},
+			() => rowOf(9),
+			'Show the 1 thing this is waiting on',
+			[],
+			['waiting on decision Which host Open']
+		],
+		[
+			'an ordered subtask of a waiting card: its card’s decision under its own expander',
+			subtaskWaitData,
+			() => {
+				click(rowOf(7).querySelector('.sub-btn'));
+				expect(subtaskRowOf('Free step').querySelector('.expander')).toBeNull();
+				expect(textOf(subtaskRowOf('Held step').querySelector('.state-chip'))).toBe('Blocked');
+				return subtaskRowOf('Held step');
+			},
+			'Show the 1 thing this is waiting on',
+			[],
+			['waiting on decision Which host Awaiting ruling · closes 2026-11-30 12:00 UTC']
+		]
+	] as const)('U3 (P-T1): %s', async (_, data, row, title, blockers, decisions) => {
+		await draw(data());
+		const expander = row().querySelector('.expander')!;
+		expect(expander.getAttribute('title')).toBe(title);
+		click(expander);
+		expect($$('.blocker-row .blocker').map(textOf)).toEqual(blockers);
+		expect($$('.blocker-row .decision-wait').map(textOf)).toEqual(decisions);
+	});
+
+	it('U4 (P-L2): an ordered subtask waiting on a decision, opened in the graph, says so in a word and in its title, not by its colour alone', async () => {
+		await draw(subtaskWaitData());
+		click($('.sub-toggle'));
+		const subs = $$('.graph-scroll g.node-subtask').map((g) => [
+			textOf(g.querySelector('.node-sub-title')),
+			textOf(g.querySelector('.node-sub-wait')) ?? null,
+			g.querySelector(':scope > title')?.textContent ?? null
+		]);
+		expect(subs).toEqual([
+			['↳ Held step', 'waits', 'waits on a decision'],
+			['↳ Free step', null, null]
+		]);
 	});
 });
 

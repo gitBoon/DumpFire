@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.107
+version: 1.108
 status: As-Built
 date: 2026-11-23
 tags:
+  - card-2687
+  - decision-waits
   - card-2684
   - migration-0083
   - decision-flags
@@ -3971,14 +3973,28 @@ erDiagram
     withdrawn one, nor for an archived card; it may be taken off on any status but a draft.
     At most 100 links a decision and 20 a card (`LINKS_PER_DECISION`, `LINKS_PER_CARD`), each
     counted in SQL with `count()` (`linkCountOf`, `cardLinkCountOf`), a 409 beyond; the card's
-    409 states no count. Linking a card already linked with the same relation writes nothing;
-    with another relation it updates `relation` on the row (no new row, the caps not asked),
-    for card 2687's `waits`, and writes a `decision_card_linked` entry for now (card 2687
-    gives the change its own action, `decision_card_relation_changed`). `CARD_LINK_RELATIONS` is `['relates']` alone today, and a stored
-    relation outside it is read back as `relates`. Neither write touches the `decisions` row,
-    so neither revision moves, and neither is on `decision_events`. Each writes one activity
-    entry on the **card's** board with its `card_id`: `decision_card_linked` or
-    `decision_card_unlinked`, detail "a decision", never the decision's id or title. A card
+    409 states no count. `CARD_LINK_RELATIONS` is `['relates', 'waits']` since card 2687
+    (no migration: `relation` is free text checked in code), and a stored relation outside it
+    is read back as `relates` (`relationOf`), so a planted value holds nothing. `relates` only
+    says the two are related; **`waits`** holds the card, and its ordered subtasks, out of the
+    plan's startable work while the decision is shown open or awaiting its ruling, for a viewer
+    who may view the decision ([Critical-Path Planning](critical-path-planning.md#cards-waiting-on-a-decision-card-2687));
+    nothing is written when the decision is ruled, superseded or withdrawn, as the plan is
+    worked out on read. The relation comes from the PUT's optional body, `{ "relation":
+    "relates" | "waits" }`, read after the access checks. With **no body**, a new link is
+    `relates` and a link already there is left as it is, so a repeated call never clears a
+    wait (before card 2687 a body-less PUT changed a link of another relation to `relates`).
+    Linking a card already linked with the relation sent, or with none sent, writes nothing
+    (`unchanged`); `waits` on a **ruled or superseded** decision is a 409, "This decision is
+    ruled: a card cannot wait on it" (or "superseded"), nothing written, while `relates` is still
+    taken there and `waits` sent again on a link that already waits is `unchanged`. With another
+    relation it updates `relation` on the row (no new row, the caps not asked) and writes one
+    `decision_card_relation_changed` entry on the **decision's** board with no `card_id`, detail
+    "a card", naming neither card, decision nor relation; none when the decision has no board.
+    Neither write touches the `decisions` row, so neither revision moves, and neither is on
+    `decision_events`. A new link and an unlink each write one activity entry on the **card's**
+    board with its `card_id`: `decision_card_linked` or `decision_card_unlinked`, detail "a
+    decision", never the decision's id or title. A card
     deleted takes its links with it, with no entry beyond its own; a decision deleted (a
     withdrawn one: a draft is never linked) first writes one `decision_card_link_deleted`
     ("a linked decision was deleted") on each linked card's board, then the links cascade; a
@@ -3987,8 +4003,8 @@ erDiagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Linked: linkCard (open, closed, ruled, superseded; card not archived; below the caps)
-    Linked --> Linked: linkCard again (same relation: nothing; another: relation updated)
+    [*] --> Linked: linkCard (open, closed, ruled, superseded; card not archived; below the caps; relates unless waits sent)
+    Linked --> Linked: linkCard again (same relation or none sent: nothing; another: relation updated, decision_card_relation_changed on the decision's board; waits on ruled or superseded: 409)
     Linked --> [*]: unlinkCard (any status but draft; archived card too)
     Linked --> [*]: card deleted (cascade, no extra entry)
     Linked --> [*]: decision deleted (decision_card_link_deleted on the card's board, then cascade)

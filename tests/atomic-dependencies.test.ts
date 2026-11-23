@@ -53,6 +53,8 @@ import {
 	addBoardMember,
 	makeBoard,
 	makeCard,
+	makeCardLink,
+	makeDecision,
 	makeDependency,
 	makeSubtask,
 	makeUser,
@@ -593,12 +595,29 @@ describe('the activity report does not count a dependency, or a milestone, added
 	});
 
 	// Card 2680 (slice 4, found in the build): a card linked to a decision, unlinked, or left by a linked decision's
-	// deletion names the card, on its board; it is planning, as a goal is, and not work on the card.
-	it('a card linked to a decision, unlinked, or left by a linked decision deleted is not work on the card, in either spelling (card 2680)', async () => {
+	// deletion names the card, on its board; it is planning, as a goal is, and not work on the card. Card 2687 (T11): a
+	// link's relation changed names no card, on the decision's board, and so is never joined to one: written here by
+	// the link routes themselves, in both spellings.
+	it('a card linked to a decision, unlinked, left by a linked decision deleted, or its link’s relation changed is not work on the card, in either spelling (cards 2680, 2687)', async () => {
 		const s = scene();
 		db.update(cards).set({ createdAt: '2020-01-01 00:00:00', updatedAt: '2020-01-01 00:00:00' }).run();
 		for (const action of ['decision_card_linked', 'decision_card_unlinked', 'decision_card_link_deleted']) {
 			for (const spelt of [action, `api:${action}`]) logActivity({ boardId: s.A.board.id, cardId: s.first.id, userId: s.owner.id, action: spelt, detail: 'a decision' });
+		}
+		const decision = makeDecision({ board: s.A.board, status: 'open', closesAt: '2099-01-01 12:00:00', openedAt: '2026-01-01 09:00:00' });
+		makeCardLink(decision, s.first, { relation: 'relates' });
+		for (const [path, relation] of [
+			[`/api/decisions/${decision.id}/cards/${s.first.id}`, 'waits'],
+			[`/api/v1/decisions/${decision.id}/cards/${s.first.id}`, 'relates']
+		]) {
+			const res = await api('PUT', path, { user: s.owner, body: { relation } });
+			expect(res.body.outcome, path).toBe('relation_changed');
+		}
+		const changed = db.select({ action: activityLog.action }).from(activityLog).all().filter((row) => row.action.endsWith('decision_card_relation_changed'));
+		expect(changed.map((row) => row.action)).toEqual(['decision_card_relation_changed', 'api:decision_card_relation_changed']);
+		// Card 2687's code review (C-E-L5): if one ever named a card, as the bulk entry above, it would not count either.
+		for (const spelt of ['decision_card_relation_changed', 'api:decision_card_relation_changed']) {
+			logActivity({ boardId: s.A.board.id, cardId: s.first.id, userId: s.owner.id, action: spelt, detail: 'a card' });
 		}
 
 		expect(reported(s)).toEqual([]);

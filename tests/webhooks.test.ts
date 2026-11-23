@@ -2034,7 +2034,9 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			// Card 2680 (decision 22): none; decision webhooks are card 2689's.
 			decision_card_linked: null,
 			decision_card_unlinked: null,
-			decision_card_link_deleted: null
+			decision_card_link_deleted: null,
+			// Card 2687 (R7): a link's relation changed, on the decision's board with no card; none.
+			decision_card_relation_changed: null
 		});
 	});
 

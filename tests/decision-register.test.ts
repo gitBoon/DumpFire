@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import type { SessionUser } from '$lib/server/auth';
-import { boards, decisions, decisionSurveyQuestions, people, type Board, type Decision, type DecisionParticipant, type Person } from '$lib/server/db/schema';
+import { boards, decisions, decisionSurveyQuestions, people, users, type Board, type Decision, type DecisionParticipant, type Person } from '$lib/server/db/schema';
 import { decisionAccess, mayDo } from '$lib/server/decision-access';
 import { readEditPage } from '$lib/server/decision-authoring';
 import { reachedParticipantOf } from '$lib/server/decision-questions';
@@ -265,6 +265,24 @@ describe('who sees which decisions', () => {
 		asked.push(999_999);
 
 		expect(sorted(visibleDecisionIdsOf(viewer, asked))).toEqual(sorted(seen));
+	});
+
+	it('answers visibleDecisionIdsOf the empty set for a disabled account, an administrator’s included, and 401 for none (card 2687 T13, S-L1)', () => {
+		const admin = makeUser({ role: 'admin' });
+		const author = makeUser();
+		const A = makeBoard({ owner: makeUser() }).board;
+		addBoardMember(A, author, 'editor');
+		const ids = [decisionOn(A, { author }).id, decisionOn(A, { status: 'draft', author }).id, decisionOn(null).id];
+		expect(visibleDecisionIdsOf(admin, ids).size).toBe(3);
+		expect(visibleDecisionIdsOf(author, ids).size).toBe(2);
+
+		db.update(users).set({ disabledAt: '2026-11-01 09:00:00' }).run();
+		for (const [name, user] of Object.entries({ admin, author })) {
+			// Read by id, as a plan's viewer is when it carries no disabledAt, and as the account carries it.
+			expect(visibleDecisionIdsOf({ id: user.id, role: user.role }, ids), name).toEqual(new Set());
+			expect(visibleDecisionIdsOf({ ...user, disabledAt: '2026-11-01 09:00:00' }, ids), name).toEqual(new Set());
+		}
+		expect(outcome(() => visibleDecisionIdsOf(null, ids))).toEqual({ status: 401, message: 'Not authenticated' });
 	});
 });
 

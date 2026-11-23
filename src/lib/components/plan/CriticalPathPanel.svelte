@@ -51,6 +51,8 @@
 								{#if n.external}<span class="ext-tag">outside this goal</span>{/if}
 								<!-- An option on the path: open, so the goal waits on it, but not committed to (milestone 22). -->
 								{#if n.isOption && !n.isComplete}<span class="ext-tag">option</span>{/if}
+								<!-- A step a decision holds (card 2687, R3): still on the chain, as the decision adds no work to it. -->
+								{#if n.waitingOnDecisions.length > 0}<span class="ext-tag">waits on a decision</span>{/if}
 								{#if !n.withheld}
 									{#if n.kind === 'subtask'}of #{n.parentCardId} · {/if}{n.boardName} / {n.columnTitle}
 								{/if}
@@ -108,4 +110,12 @@
 	.chain-card:hover { background: var(--bg-elevated); }
 
 	.ext-tag { font-style: italic; margin-right: 4px; }
+
+	/* On a narrow screen (card 2687, review P-L4) the step wraps: where it is,
+	   with "waits on a decision" or another tag, goes under the title and may
+	   wrap itself, so it never runs out of the panel at 360px. */
+	@media (max-width: 720px) {
+		.chain-card { flex-wrap: wrap; row-gap: 2px; }
+		.chain-card .card-where { white-space: normal; flex-shrink: 1; min-width: 0; }
+	}
 </style>

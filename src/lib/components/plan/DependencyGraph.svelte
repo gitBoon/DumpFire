@@ -102,7 +102,8 @@
 		<div class="graph-legend">
 			<span class="legend-item"><span class="legend-swatch critical"></span>Critical path</span>
 			<span class="legend-item"><span class="legend-swatch complete"></span>Complete</span>
-			<span class="legend-item"><span class="legend-swatch blocked"></span>Blocked</span>
+			<!-- Amber is also work a decision holds (card 2687, review P-L1). -->
+			<span class="legend-item"><span class="legend-swatch blocked"></span>Blocked or waiting on a decision</span>
 			<span class="legend-item"><span class="legend-swatch ready"></span>Startable</span>
 			<span class="legend-item"><span class="legend-swatch external"></span>Outside this goal</span>
 			<!-- Only where the graph has one (milestone 22). -->
@@ -142,13 +143,17 @@
 						{@const state = nodeState(n)}
 						{@const subs = n.kind === 'card' ? (subtasksByCard.get(n.id) ?? []) : []}
 						{@const isOpen = n.kind === 'card' && expandedCards.has(n.id)}
+						{@const subWaits = n.kind === 'subtask' && state === 'blocked' && n.waitingOnDecisions.length > 0}
 						<g class="node node-{state}" class:node-critical={n.onCriticalPath} class:node-subtask={n.kind === 'subtask'}>
+							<!-- Card 2687 (review P-L2): a subtask's box has no line to say it, so its wait is said by more than its colour. -->
+							{#if subWaits}<title>waits on a decision</title>{/if}
 							<rect x={p.x} y={p.y} width={NODE_W} height={p.h} rx={n.kind === 'subtask' ? 5 : 8} />
 
 							{#if n.kind === 'subtask'}
 								<!-- svelte-ignore a11y_click_events_have_key_events -->
 								<g class="node-link" role="button" tabindex="0" onclick={() => openCard(n)}>
-									<text class="node-sub-title" x={p.x + 10} y={p.y + 17}>↳ {clip(n.title, 28)}</text>
+									<text class="node-sub-title" x={p.x + 10} y={p.y + 17}>↳ {clip(n.title, subWaits ? 21 : 28)}</text>
+									{#if subWaits}<text class="node-sub-wait" x={p.x + NODE_W - 8} y={p.y + 17} text-anchor="end">waits</text>{/if}
 								</g>
 							{:else}
 								<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -163,6 +168,9 @@
 											{n.withheld ? 'outside goal' : `${clip(n.boardName, 20)} · outside goal`}
 										{:else if n.isOption && !n.isComplete}
 											option{n.downstreamCount > 0 ? ` · unblocks ${n.downstreamCount}` : ''}
+										{:else if n.waitingOnDecisions.length > 0}
+											<!-- Card 2687 (E-L2): a decision holds it, and what it frees up is still said. -->
+											waits on a decision{n.downstreamCount > 0 ? ` · unblocks ${n.downstreamCount}` : ''}
 										{:else if n.downstreamCount > 0}
 											unblocks {n.downstreamCount}
 										{:else if n.isComplete}
@@ -216,6 +224,8 @@
 							<span class="card-title">{n.title}</span>
 							<!-- An option, not committed to (milestone 22). -->
 							{#if n.isOption && !n.isComplete}<span class="option-tag">option</span>{/if}
+							<!-- Card 2687: held by a decision it waits on, which the viewer may view. -->
+							{#if n.waitingOnDecisions.length > 0}<span class="wait-tag">waits on a decision</span>{/if}
 							{#if !n.withheld}<span class="card-where">{n.boardName} / {n.columnTitle}</span>{/if}
 						</button>
 					{/each}
@@ -267,6 +277,12 @@
 		border: 1px dashed rgba(136, 136, 170, 0.5); border-radius: var(--radius-full);
 		padding: 0 6px; flex-shrink: 0;
 	}
+	/* A card waiting on a decision in the unordered list (card 2687): amber, as the graph draws it. */
+	.wait-tag {
+		font-size: 0.62rem; font-weight: 700; color: #f59e0b;
+		border: 1px solid rgba(245, 158, 11, 0.3); border-radius: var(--radius-full);
+		padding: 0 6px; flex-shrink: 0;
+	}
 
 	/* ─── Graph ────────────────────────────────────────────────────────── */
 
@@ -294,6 +310,8 @@
 	   dashed-free so they read as 'inside' rather than 'elsewhere'. */
 	.node-subtask rect { stroke-dasharray: none; }
 	.node-sub-title { font-size: 10.5px; fill: var(--text-primary); }
+	/* A subtask waiting on a decision (card 2687): a word, not the box's colour alone. */
+	.node-sub-wait { font-size: 9px; font-weight: 700; fill: #f59e0b; }
 
 	.sub-toggle { cursor: pointer; }
 	.sub-toggle rect {

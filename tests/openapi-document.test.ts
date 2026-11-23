@@ -2930,8 +2930,8 @@ describe('what a route answers, against the schema the document gives for it', (
 		// else changed", then (10); card 3012's webhooks from a backup whose seal did not verify are (10), and card 3020's
 		// people from such a backup marked left (11), and card 3033's 409 for a Product Owner or decider whose account's
 		// creation time cannot be read (12), and card 3004's webhooks a restore brings back switched off (13), and card 2683's
-		// survey questions (14), so it is now (15).
-		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+		// survey questions (14), and card 2687's cards waiting on a decision (15), so it is now (16).
+		expect([...held.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
 		expect(held).toContain(
 			"(7) when a board owner's or an administrator's access ends with its keys (a password reset, a two-step reset, on the server's host too unless run with --keep-api-keys, an invite used, its own password change that ends keys, a disable, or a delete, unless the account's disable already covered it and it held no key), or an administrator is made an ordinary user, or an owner of a board is made an editor or a viewer or taken off it, "
 		);
@@ -2953,9 +2953,9 @@ describe('what a route answers, against the schema the document gives for it', (
 		for (const because of [HELD_DELETED_HERE, HELD_REPOINTED_HERE, HELD_NOT_RECORDED] as const) {
 			expect(spec.components.schemas.Webhook.properties.pausedBecause.description, because).toContain(`"${SWITCHED_OFF_BECAUSE[because]}"`);
 		}
-		expect(held).toContain('(15) nothing else changed: no other operation, field or schema.');
+		expect(held).toContain('(16) nothing else changed: no other operation, field or schema.');
 		// Card 2684 (R14, T49): the record route and its entry name the four events of objections and requests to talk
-		// among those a key is never given, with no point added to the note: (15) stays the last, and it names none.
+		// among those a key is never given, with no point added to the note for them; the last names none.
 		const FLAG_KINDS_NAMED = 'objection_raised, talk_requested, objection_answered, talk_outcome';
 		expect(res.body.paths['/api/v1/decisions/{decisionId}/record'].get.description).toContain(
 			"So are the four events of a participant's objections and requests to talk to the decider (objection_raised, talk_requested, objection_answered, talk_outcome), which no key raises, answers or reads."
@@ -2979,13 +2979,14 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(held.indexOf('(11) a person whose address')).toBeGreaterThan(held.indexOf('(10) a webhook that comes in'));
 		expect(held.indexOf("(12) a board's Product Owner")).toBeGreaterThan(held.indexOf('(11) a person whose address'));
 		expect(held.indexOf('(14) decisions may ask survey questions')).toBeGreaterThan(held.indexOf('(13) a webhook deleted'));
-		expect(held.indexOf('(15) nothing else changed')).toBeGreaterThan(held.indexOf('(14) decisions may ask survey questions'));
+		expect(held.indexOf('(15) a card linked to a decision as waits')).toBeGreaterThan(held.indexOf('(14) decisions may ask survey questions'));
+		expect(held.indexOf('(16) nothing else changed')).toBeGreaterThan(held.indexOf('(15) a card linked to a decision as waits'));
 		// Card 2683's code review (F5, F6): point (14) says the PATCH's vote mode change (R23) and its agent flag, word for word.
 		const modeChange =
 			'PATCH /decisions/{decisionId} no longer answers 409 for a change of `voteMode` on an opened decision while its current version puts no option to a vote (a survey): the re-publish that adds the first options publishes them in that mode, and a change of it there through an API key is flagged `voteMode` in agentDrafted, a readiness warning until a person marks it reviewed; ';
 		expect(held).toContain(modeChange);
 		expect(held.indexOf(modeChange)).toBeGreaterThan(held.indexOf('(14) decisions may ask survey questions'));
-		expect(held.indexOf('(15) nothing else changed')).toBeGreaterThan(held.indexOf(modeChange));
+		expect(held.indexOf('(16) nothing else changed')).toBeGreaterThan(held.indexOf(modeChange));
 		expect(res.body.components.schemas.DecisionContent.properties.agentDrafted.description).toContain("and voteMode when a key changed an opened survey's vote mode (since 1.15.0)");
 		// Card 3033 (R14): point (12), word for word.
 		expect(held).toContain(
@@ -3030,7 +3031,7 @@ describe('what a route answers, against the schema the document gives for it', (
 			"(6) webhook urls are stored sealed too, bound to the webhook's id, board and receiver (card 2928)",
 			"a backup holds no url: a restore onto the server that made it puts each back, and any other gives url '' until it is entered",
 			'a PUT that switches such a webhook on must send url in the same request (400 otherwise)',
-			'(15) nothing else changed: no other operation, field or schema.'
+			'(16) nothing else changed: no other operation, field or schema.'
 		]) {
 			expect(held, words).toContain(words);
 		}
@@ -3078,7 +3079,7 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(schemas.DecisionSurveyTally.description).toContain('never released');
 		expect(schemas.DecisionSummary.properties.surveyQuestions.items).toEqual(surveyItems);
 		expect(schemas.DecisionSummary.required).toContain('surveyQuestions');
-		// Point (14), as written, with the absent-keeps exception, and then (15).
+		// Point (14), as written, with the absent-keeps exception, and then (15) and (16).
 		for (const words of [
 			"(14) decisions may ask survey questions (card 2683): a decision's content holds `surveyQuestions`, and one with none of its options live but at least one survey question asks those alone; ",
 			'the readiness refusal `too_few_options` now refuses one option, or none with no survey question, and the new refusal `survey_incomplete` a survey question with no prompt or a choice question with fewer than two choices; ',
@@ -3086,10 +3087,22 @@ describe('what a route answers, against the schema the document gives for it', (
 			'a response row of GET /decisions/{decisionId}/summary may have kind `answered`, a survey answered in a round with no options; ',
 			"answers are given on the decision's page or by personal link alone, never with an API key; ",
 			"added with it, and not breaking: `surveyQuestions` in DecisionContent and in the PATCH request, `surveyQuestions` rows on the decision's answers, and on the summary `answers` on each response row, `survey` on each tally and the current version's `surveyQuestions`; ",
-			'(15) nothing else changed: no other operation, field or schema.'
+			'(16) nothing else changed: no other operation, field or schema.'
 		]) {
 			expect(held, words).toContain(words);
 		}
+		// Card 2687 (R12, S-L4, P13): point (15) as written, its two behaviour changes in order, and then (16).
+		const point15 = [
+			"(15) a card linked to a decision as waits is held out of nextActionable and listed in blocked, with the decision in its decisions, while the decision is open or awaiting a ruling and the key's user may view it, and so are its ordered subtasks (card 2687); ",
+			'two behaviour changes come with it: (a) PUT /decisions/{decisionId}/cards/{cardId} now reads an optional body, where before no body was read: ',
+			'a body that is not a JSON object, a body sent with any Content-Type other than application/json (parameters such as charset aside) or with none, or a relation other than relates or waits is answered 400, a body too large 413, waits on a ruled or superseded decision 409, ',
+			"a PUT with no body (no Transfer-Encoding, and no Content-Length or one of 0) is still taken and leaves an existing link's relation as it is, and a link marked waits now holds a card in the plan; ",
+			"(b) nextActionable and blocked are made for the key's user: a card may leave nextActionable and join blocked with blockers empty, and keys of two users may be given different lists for one plan; ",
+			"a relation changed is logged as decision_card_relation_changed on the decision's board, naming no card; ",
+			"added with it, and not breaking: waitingOnDecisions on each node, decisions on each blocked entry, relation on DecisionLinkedCard and the PUT's optional body; ",
+			'(16) nothing else changed: no other operation, field or schema.'
+		];
+		expect(held).toContain(point15.join(''));
 
 		// The 1.14.0 note (card 2915): a two-step reset ends the account's keys and switches off its webhooks; breaking.
 		const resets = note.slice(note.indexOf('**Changed on 2026-11-18 (version 1.14.0), breaking.**'), note.indexOf('**Changed on 2026-11-18 (version 1.13.1).**'));
@@ -3692,6 +3705,47 @@ describe('what a route answers, against the schema the document gives for it', (
 		const decisions = OPS.filter((op) => (op.entry.tags ?? []).includes('Decisions')).map((op) => op.name);
 		expect(decisions).toHaveLength(17);
 		expect(decisions.filter((name) => /\/(open|close|republish|dry-run|resend|rule|release|publish)$/.test(name))).toEqual([]);
+	});
+
+	it('documents the link PUT’s optional body, its 400, 413 and 409, the relation on linked cards, the plan’s waits and the thirteenth decision action (card 2687 P12)', () => {
+		const put = spec.paths['/api/v1/decisions/{decisionId}/cards/{cardId}'].put;
+		expect(put.requestBody).not.toHaveProperty('required');
+		expect(put.requestBody.description).toContain('Optional');
+		const relation = put.requestBody.content['application/json'].schema.properties.relation;
+		expect(relation).toMatchObject({ type: 'string', enum: ['relates', 'waits'] });
+		expect(relation.description).toContain('Optional');
+		expect(put.description).toContain('Not sent, a new link is relates and a link already there is left as it is (unchanged)');
+		expect(put.description).toContain("a relation changed is a decision_card_relation_changed entry on the decision's board, naming no card");
+		for (const words of [
+			'decisionId or cardId is not a whole number of 1 or more',
+			'the body is not a JSON object',
+			'relation must be one of: relates, waits',
+			// Card 2687's code review (C-S-L1, C-S-L2): what the routes refuse, as readOptionalBody refuses it.
+			'a body was sent with any Content-Type other than application/json, parameters such as charset aside, or with none',
+			'as a Transfer-Encoding or a Content-Length other than 0 says (send the body as application/json); a PUT with no body is taken'
+		]) {
+			expect(put.responses['400'].description, words).toContain(words);
+		}
+		expect(put.requestBody.description).toContain('sent with any other, or none, it is 400');
+		expect(put.responses['413']).toEqual({ $ref: '#/components/responses/PayloadTooLarge' });
+		expect(put.responses['409'].description).toContain('the card is asked to wait on a decision that is ruled or superseded');
+
+		const schemas = spec.components.schemas;
+		expect(schemas.DecisionLinkedCard.properties.relation).toMatchObject({ type: 'string', enum: ['relates', 'waits'] });
+		expect(schemas.DecisionLinkedCard.required).toContain('relation');
+		expect(schemas.PlanDecisionWait.properties.shownStatus.enum).toEqual(['open', 'awaiting_ruling']);
+		expect(schemas.PlanDecisionWait.required).toEqual(['id', 'title', 'shownStatus', 'closesAt']);
+		expect(schemas.MilestoneNode.properties.waitingOnDecisions.items).toEqual({ $ref: '#/components/schemas/PlanDecisionWait' });
+		expect(schemas.MilestoneNode.required).toContain('waitingOnDecisions');
+		const blocked = schemas.MilestoneSummary.properties.blocked;
+		expect(blocked.items.properties.decisions.items).toEqual({ $ref: '#/components/schemas/PlanDecisionWait' });
+		expect(blocked.items.required).toEqual(['card', 'blockers', 'decisions']);
+		expect(blocked.items.properties.blockers.description).toContain('may be empty when it waits on decisions alone');
+		for (const list of [blocked, schemas.MilestoneSummary.properties.nextActionable]) expect(list.description).toContain("key's user");
+
+		const audit = OPS.find((op) => op.name === 'GET /api/v1/audit-log')!.entry.description as string;
+		expect(audit).toContain('write thirteen actions');
+		expect(audit).toContain("decision_card_relation_changed on the decision's board, naming no card");
 	});
 
 	it('announces the people and groups operations, the refused keys and no addresses in the 1.5.0 note (card 2681)', () => {

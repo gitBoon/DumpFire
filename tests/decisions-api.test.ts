@@ -30,7 +30,7 @@ import ts from 'typescript';
 import { isHttpError } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { apiKeys, decisions, decisionSurveyQuestions, people, settings, type Board, type Column, type Decision } from '$lib/server/db/schema';
+import { apiKeys, decisionCardLinks, decisions, decisionSurveyQuestions, people, settings, type Board, type Column, type Decision } from '$lib/server/db/schema';
 import { STALE_REVISION } from '$lib/decision-words';
 import type { Credential, SessionUser } from '$lib/server/auth';
 import { decisionAnswer, readDecisionForKey, readinessOf, revisionFor, versionContentAnswer, workingViewContent } from '$lib/server/decision-authoring';
@@ -1671,6 +1671,25 @@ describe('PUT and DELETE /api/v1/decisions/{decisionId}/cards/{cardId} (26)', ()
 		expect(unlinked.status).toBe(200);
 		expect(unlinked.body).toEqual({ linkedCards: [] });
 		expect(activityRows().slice(before + 1)).toEqual([{ boardId: board.id, action: 'api:decision_card_unlinked', source: 'api' }]);
+	});
+
+	it('(c) links a card as waits with {"relation": "waits"}, signed in through the internal PUT and through a key: stored, answered with the relation, one decision_card_linked (card 2687 T1)', async () => {
+		const { decision, author } = opened();
+		const routes = [
+			{ name: 'internal', path: (cardId: number) => `/api/decisions/${decision.id}/cards/${cardId}`, call: (path: string) => api('PUT', path, { user: author, body: { relation: 'waits' } }), action: 'decision_card_linked', source: 'ui' },
+			{ name: 'v1', path: (cardId: number) => `/api/v1/decisions/${decision.id}/cards/${cardId}`, call: (path: string) => withKey(author, 'PUT', path, { relation: 'waits' }), action: 'api:decision_card_linked', source: 'api' }
+		];
+		for (const route of routes) {
+			const card = makeCard(cols['To Do']);
+			const before = activityRows().length;
+
+			const res = await route.call(route.path(card.id));
+			expect(res.status, route.name).toBe(200);
+			expect(res.body.outcome, route.name).toBe('linked');
+			expect(res.body.linkedCards.find((c: { id: number }) => c.id === card.id), route.name).toMatchObject({ id: card.id, relation: 'waits' });
+			expect(db.select().from(decisionCardLinks).where(eq(decisionCardLinks.cardId, card.id)).all().map((row) => row.relation), route.name).toEqual(['waits']);
+			expect(activityRows().slice(before), route.name).toEqual([{ boardId: board.id, action: route.action, source: route.source }]);
+		}
 	});
 });
 

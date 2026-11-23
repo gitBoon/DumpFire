@@ -226,12 +226,15 @@ export type PersonRecord =
 
 // ─── Card links (decisions 17 to 23) ─────────────────────────────────────────
 
+/** What a link between a card and a decision says (card 2680, D2; card 2687, R1): related, or the card waits on it. */
+export type CardLinkRelationView = 'relates' | 'waits';
+
 /**
  * A card linked to a decision, as the decision page lists it (decision 18):
  * only on a board the viewer can open now, with no count of the rest, and
- * never who linked it.
+ * never who linked it. Card 2687: with its link's relation.
  */
-export type LinkedCardView = { id: number; title: string; boardId: number; boardName: string; archived: boolean };
+export type LinkedCardView = { id: number; title: string; boardId: number; boardName: string; archived: boolean; relation: CardLinkRelationView };
 
 /**
  * A decision linked to a card, as the card window lists it (decision 18):
@@ -239,7 +242,7 @@ export type LinkedCardView = { id: number; title: string; boardId: number; board
  * and closing time through `listedStatusOf`, the closing time null once
  * ruled.
  */
-export type LinkedDecisionView = { id: number; title: string; shownStatus: ShownStatus; closesAt: Stamp | null; relation: string };
+export type LinkedDecisionView = { id: number; title: string; shownStatus: ShownStatus; closesAt: Stamp | null; relation: CardLinkRelationView };
 
 /** What linking answers (decision 21): a new link, a relation changed, or nothing written for a link that was there already. */
 export type LinkOutcome = 'linked' | 'relation_changed' | 'unchanged';

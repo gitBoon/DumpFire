@@ -84,7 +84,9 @@ export const ACTIVITY_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	// Card 2680.
 	decision_card_linked: 'Linked card to decision',
 	decision_card_unlinked: 'Unlinked card from decision',
-	decision_card_link_deleted: 'Linked decision deleted'
+	decision_card_link_deleted: 'Linked decision deleted',
+	// Card 2687.
+	decision_card_relation_changed: "Changed a card's link to a decision"
 });
 
 /**

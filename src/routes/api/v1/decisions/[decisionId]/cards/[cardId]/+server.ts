@@ -1,7 +1,7 @@
 import { json } from '$lib/server/v1-json';
 import { linkedCardsFor } from '$lib/server/decision-cards';
 import { linkCard, unlinkCard } from '$lib/server/decision-card-link-writes';
-import { pathId } from '$lib/server/request-body';
+import { pathId, readOptionalBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
@@ -10,18 +10,27 @@ import type { RequestHandler } from './$types';
  * PUT /api/v1/decisions/:decisionId/cards/:cardId — link a card to a decision
  * (card 2682, D18; card 2680, decisions 17 to 22): edit access to the
  * decision's board, or an administrator's where it has none, and edit access
- * to the card's. No body is read: the relation is `relates`. Linking a card
- * already linked writes nothing. A link written is recorded on the card's
- * board's activity, through the API. The answer is `{ outcome, linkedCards }`,
- * the cards as v1's card routes answer cards: board cards, not marked.
+ * to the card's. Card 2687 (R7): an optional body, `{ relation: 'relates' |
+ * 'waits' }`, read only when one is sent; with none, a new link is `relates`
+ * and a link already there is left as it is. A body sent with any content
+ * type but `application/json`, or one the server never read (chunked, or a
+ * length declared, with no content type), is 400 (S-L3, `readOptionalBody`).
+ * Linking a card already linked with the same
+ * relation writes nothing. A link written is recorded on the card's board's
+ * activity, and a relation changed on the decision's, through the API. The
+ * answer is `{ outcome, linkedCards }`, the cards as v1's card routes answer
+ * cards: board cards, not marked.
  */
-export const PUT: RequestHandler = async ({ params, locals }) => {
+export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);
 	const id = pathId(params.decisionId, 'decision');
 	const cardId = pathId(params.cardId, 'card');
+	// Null when none was sent; a body sent other than as application/json, or one the server never read (chunked, or a
+	// length declared, with no content type), is 400 (card 2687, S-L3; review C-S-L1, C-S-L2).
+	const body = await readOptionalBody(request);
 
 	const answer = writeAs(locals, (caller) => {
-		const { outcome } = linkCard(caller, { decisionId: id, cardId, relation: 'relates' }, null, { source: 'api' });
+		const { outcome } = linkCard(caller, { decisionId: id, cardId }, body, { source: 'api' });
 		return { outcome, linkedCards: linkedCardsFor(requireUser(caller), { id }) };
 	});
 	return json(answer);

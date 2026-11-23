@@ -9,7 +9,9 @@
  * Each writes its activity entry on the card's board, naming the card and no
  * decision, and touches no decision row, so that no revision moves. Deleting
  * a linked decision leaves an entry on each linked card's board
- * (decision-lifecycle-writes.ts's `deleteDecision`).
+ * (decision-lifecycle-writes.ts's `deleteDecision`). A link's relation
+ * changed (card 2687, R7) is the one entry written on the decision's board
+ * instead, naming no card.
  *
  * Card 2682 adds the API v1 routes, which call `linkCard` and `unlinkCard`
  * with `source: 'api'`.
@@ -28,6 +30,7 @@ import { ACTIONS, logActivity } from './logActivity';
 import { CARD_LINK_RELATIONS, cardLinkCountOf, LINKS_PER_CARD, LINKS_PER_DECISION, linkCountOf, type CardLinkRelation } from './decision-cards';
 import type { LinkOutcome } from '$lib/decision-register-types';
 import { requireCard, requireDecision, requireUser } from './route-guards';
+import { readChoice, type RequestBody } from './request-body';
 import { stamp } from '$lib/timestamps';
 import { inWrite, type ServiceOptions } from './write-as';
 import { decisionEntry } from './decision-write-shared';
@@ -40,21 +43,36 @@ export const READS: readonly string[] = [];
  * of refusals (D11): the decision (`linkCard`: 404, 403), the card
  * (`requireCard(…, 'edit')`: 404, 403), the status (409), the card archived
  * (409, before the link already there is looked for, so that linking an
- * archived card again is refused, not answered as nothing to do), the link
- * already there (the same relation: `unchanged`, nothing written; another:
- * the relation changed, `relation_changed`, the caps not asked), the caps
- * (409, a new link alone), then the link.
+ * archived card again is refused, not answered as nothing to do), the
+ * relation (400), the link already there (the same relation, or none sent:
+ * `unchanged`, nothing written), `waits` on a ruled or superseded decision
+ * (409), a link already there with another relation (the relation changed,
+ * `relation_changed`, the caps not asked), the caps (409, a new link alone),
+ * then the link.
+ *
+ * Card 2687 (R7): the relation is read from the body, `relation`, one of
+ * `CARD_LINK_RELATIONS`, after every guard, so that a caller who may not view
+ * the decision or edit the card is refused as before any 400. Not sent (no
+ * body, or none in it), a new link is `relates` and a link already there is
+ * left as it is, so that a repeated call never clears a wait. The same
+ * relation is looked for before the 409, so that `waits` sent again on a link
+ * that waits is `unchanged` after the ruling too (E-L4).
  *
  * Neither the link nor the change touches the decision's row, so neither of
  * its revisions moves (decision 20), and neither is on the decision's record.
- * One `decision_card_linked` on the **card's** board with its card, detail "a
- * decision" (S7): no id and no title, which the card's board's readers may
- * not view. No live event, no mail, no webhook.
+ * A new link writes one `decision_card_linked` on the **card's** board with
+ * its card, detail "a decision" (S7): no id and no title, which the card's
+ * board's readers may not view. A relation changed writes one
+ * `decision_card_relation_changed` on the **decision's** board, detail "a
+ * card", with no card (S-M1): its readers may view the decision, and on the
+ * card's board readers who may not could count the entries against the plan.
+ * None when the decision has no board, as the decision's own entries. No live
+ * event, no mail, no webhook.
  */
 export function linkCard(
 	caller: SessionUser | null,
-	at: { decisionId: number; cardId: number; relation: CardLinkRelation },
-	body: null,
+	at: { decisionId: number; cardId: number },
+	body: RequestBody | null,
 	opts: ServiceOptions
 ): { outcome: LinkOutcome } {
 	inWrite();
@@ -65,14 +83,20 @@ export function linkCard(
 	const now = stamp();
 	requireTransition(decision, 'linkCard', now);
 	if (card.archivedAt !== null) error(409, 'This card is archived: it cannot be linked to a decision');
-	if (!(CARD_LINK_RELATIONS as readonly string[]).includes(at.relation)) error(400, `relation must be one of: ${CARD_LINK_RELATIONS.join(', ')}`);
+	const sent: CardLinkRelation | undefined = body === null ? undefined : readChoice(body, 'relation', { from: CARD_LINK_RELATIONS });
 
 	const where = and(eq(decisionCardLinks.decisionId, decision.id), eq(decisionCardLinks.cardId, card.id));
 	const existing = db.select({ relation: decisionCardLinks.relation }).from(decisionCardLinks).where(where).get();
+	if (existing !== undefined && (sent === undefined || existing.relation === sent)) return { outcome: 'unchanged' };
+	if (sent === 'waits' && (decision.status === 'ruled' || decision.status === 'superseded')) {
+		error(409, `This decision is ${decision.status}: a card cannot wait on it`);
+	}
+	const relation: CardLinkRelation = sent ?? 'relates';
 	if (existing !== undefined) {
-		if (existing.relation === at.relation) return { outcome: 'unchanged' };
-		db.update(decisionCardLinks).set({ relation: at.relation }).where(where).run();
-		logActivity({ action: ACTIONS.decisionCardLinked, ...decisionEntry(boardId, 'a decision', user, opts, card.id) });
+		db.update(decisionCardLinks).set({ relation }).where(where).run();
+		if (decision.boardId !== null) {
+			logActivity({ action: ACTIONS.decisionCardRelationChanged, ...decisionEntry(decision.boardId, 'a card', user, opts) });
+		}
 		return { outcome: 'relation_changed' };
 	}
 
@@ -82,7 +106,7 @@ export function linkCard(
 	// count would tell them how many there are.
 	if (cardLinkCountOf(card.id) >= LINKS_PER_CARD) error(409, 'This card has reached its limit of linked decisions');
 
-	db.insert(decisionCardLinks).values({ decisionId: decision.id, cardId: card.id, relation: at.relation, createdBy: user.id, createdAt: now }).run();
+	db.insert(decisionCardLinks).values({ decisionId: decision.id, cardId: card.id, relation, createdBy: user.id, createdAt: now }).run();
 	logActivity({ action: ACTIONS.decisionCardLinked, ...decisionEntry(boardId, 'a decision', user, opts, card.id) });
 	return { outcome: 'linked' };
 }

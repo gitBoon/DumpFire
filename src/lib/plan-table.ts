@@ -9,16 +9,32 @@
  *
  * A subtask row is one of two kinds:
  *   - ordered: the subtask carries a dependency, so it is a node of the plan's
- *     graph, with a state (Startable, Blocked or Done), its blockers, its
- *     Unblocks count and whether it is on the critical path;
+ *     graph, with a state (Startable, Blocked or Done), its blockers, the
+ *     decisions it waits on (card 2687), its Unblocks count and whether it
+ *     is on the critical path;
  *   - plain: it is in no plan, and is Done or Open and nothing more.
  *
  * Nothing here works out a plan. The states, blockers and counts are the
  * server's (`getMilestoneSummary`); this only arranges them into rows.
  */
 
+import type { Stamp } from './timestamps';
+
 export type WorkKind = 'card' | 'subtask';
 export type WorkRef = { kind: WorkKind; id: number };
+
+/**
+ * A decision that holds a piece of work in the plan (card 2687, R4): one the
+ * viewer may view, linked to the card as `waits`, shown open or awaiting its
+ * ruling. Only what the card window shows of it (R11): its title, shown
+ * status and closing time, never who takes part or what they said.
+ */
+export interface PlanDecisionWait {
+	id: number;
+	title: string;
+	shownStatus: 'open' | 'awaiting_ruling';
+	closesAt: Stamp | null;
+}
 
 /**
  * One subtask of a card the caller can open, as the page load gives it
@@ -54,6 +70,12 @@ export interface TableNode extends WorkRef {
 	openBlockers: WorkRef[];
 	downstreamCount: number;
 	onCriticalPath: boolean;
+	/**
+	 * The decisions this work waits on for the viewer (card 2687, R4): the
+	 * server's, on a card and on each ordered subtask of it not ticked; `[]`
+	 * on everything else.
+	 */
+	waitingOnDecisions: PlanDecisionWait[];
 }
 
 /** One thing a blocked row is waiting on, as the summary's `blocked` lists it. */
@@ -90,6 +112,8 @@ export interface PlanRow {
 	onCriticalPath: boolean;
 	state: RowState;
 	blockers: PlanBlocker[];
+	/** The decisions it waits on (card 2687): its node's own, so `[]` on a plain subtask. */
+	decisions: PlanDecisionWait[];
 	/** 0 for a card, 1 for one of its subtasks. */
 	depth: number;
 	parentCardId?: number;
@@ -139,8 +163,16 @@ export function cardGroups(
 		withheld: n.withheld,
 		downstreamCount: n.downstreamCount,
 		onCriticalPath: n.onCriticalPath,
-		state: n.isComplete ? 'done' : n.isOption ? 'option' : n.openBlockers.length > 0 ? 'blocked' : 'ready',
+		// Blocked by open work or, card 2687, by a decision it waits on: an ordered subtask carries its card's on its own node.
+		state: n.isComplete
+			? 'done'
+			: n.isOption
+				? 'option'
+				: n.openBlockers.length > 0 || n.waitingOnDecisions.length > 0
+					? 'blocked'
+					: 'ready',
 		blockers: blockersByKey.get(key(n)) ?? [],
+		decisions: n.waitingOnDecisions,
 		depth,
 		parentCardId: n.parentCardId,
 		inGraph: true,
@@ -161,6 +193,7 @@ export function cardGroups(
 		onCriticalPath: false,
 		state: st.completed ? 'done' : 'open',
 		blockers: [],
+		decisions: [],
 		depth: 1,
 		parentCardId: card.id,
 		inGraph: false,

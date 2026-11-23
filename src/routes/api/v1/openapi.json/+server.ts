@@ -102,7 +102,14 @@ const spec = {
 			'a response row of GET /decisions/{decisionId}/summary may have kind `answered`, a survey answered in a round with no options; ' +
 			'answers are given on the decision\'s page or by personal link alone, never with an API key; ' +
 			'added with it, and not breaking: `surveyQuestions` in DecisionContent and in the PATCH request, `surveyQuestions` rows on the decision\'s answers, and on the summary `answers` on each response row, `survey` on each tally and the current version\'s `surveyQuestions`; ' +
-			'(15) nothing else changed: no other operation, field or schema.\n\n' +
+			'(15) a card linked to a decision as waits is held out of nextActionable and listed in blocked, with the decision in its decisions, while the decision is open or awaiting a ruling and the key\'s user may view it, and so are its ordered subtasks (card 2687); ' +
+			'two behaviour changes come with it: (a) PUT /decisions/{decisionId}/cards/{cardId} now reads an optional body, where before no body was read: ' +
+			'a body that is not a JSON object, a body sent with any Content-Type other than application/json (parameters such as charset aside) or with none, or a relation other than relates or waits is answered 400, a body too large 413, waits on a ruled or superseded decision 409, ' +
+			'a PUT with no body (no Transfer-Encoding, and no Content-Length or one of 0) is still taken and leaves an existing link\'s relation as it is, and a link marked waits now holds a card in the plan; ' +
+			'(b) nextActionable and blocked are made for the key\'s user: a card may leave nextActionable and join blocked with blockers empty, and keys of two users may be given different lists for one plan; ' +
+			'a relation changed is logged as decision_card_relation_changed on the decision\'s board, naming no card; ' +
+			'added with it, and not breaking: waitingOnDecisions on each node, decisions on each blocked entry, relation on DecisionLinkedCard and the PUT\'s optional body; ' +
+			'(16) nothing else changed: no other operation, field or schema.\n\n' +
 			'**Changed on 2026-11-18 (version 1.14.0), breaking.** A reset of an account\'s two-step sign-in, by an administrator or on the server\'s host, ends the account\'s API keys and switches off the webhooks it set (card 2915): ' +
 			'(1) its keys answer 401, as after a password reset; ' +
 			'(2) the webhooks it set are switched off, active false, recording setter access ended, so switching one on again is the board owner\'s or an administrator\'s and gives it a new secret; ' +
@@ -2348,9 +2355,28 @@ const spec = {
 					title: { type: 'string' },
 					boardId: { type: 'integer' },
 					boardName: { type: 'string' },
-					archived: { type: 'boolean' }
+					archived: { type: 'boolean' },
+					relation: {
+						type: 'string',
+						enum: ['relates', 'waits'],
+						description:
+							'What the link says (since 1.15.0, card 2687): relates, the two are related; or waits, the card waits on the decision, which holds it out of its plan\'s nextActionable while the decision is open or awaiting a ruling'
+					}
 				},
-				required: ['id', 'title', 'boardId', 'boardName', 'archived']
+				required: ['id', 'title', 'boardId', 'boardName', 'archived', 'relation']
+			},
+			PlanDecisionWait: {
+				type: 'object',
+				description:
+					'A decision that holds a piece of work in a milestone\'s plan (since 1.15.0, card 2687): one the key\'s user may view, linked to the card as waits, shown open or awaiting a ruling. ' +
+					'Only its title, status and closing time: never who takes part or what they said.',
+				properties: {
+					id: { type: 'integer' },
+					title: { type: 'string' },
+					shownStatus: { type: 'string', enum: ['open', 'awaiting_ruling'] },
+					closesAt: { type: ['string', 'null'], format: 'date-time', description: 'When it closes for input, or null where it has no closing time' }
+				},
+				required: ['id', 'title', 'shownStatus', 'closesAt']
 			},
 			UserStats: {
 				type: 'object',
@@ -2882,7 +2908,7 @@ const spec = {
 			MilestoneNode: {
 				type: 'object',
 				description:
-					'A card or a subtask in a milestone\'s plan, with its place in the order of work. Every property of PlanNode, described there, and eight more. ' +
+					'A card or a subtask in a milestone\'s plan, with its place in the order of work. Every property of PlanNode, described there, and nine more. ' +
 					'Withheld work keeps its place in the plan: only what PlanNode says is replaced.',
 				properties: {
 					kind: { type: 'string', enum: ['card', 'subtask'] },
@@ -2912,11 +2938,18 @@ const spec = {
 						description:
 							'true for an option, a card in a board\'s Options column or on an ideas board, or a subtask of one. It stays in the graph, where an unfinished option still blocks ' +
 							'what waits on it, but is in no count of progress and never in nextActionable. Told of withheld work too, as isComplete is.'
+					},
+					waitingOnDecisions: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/PlanDecisionWait' },
+						description:
+							'The decisions it waits on for the key\'s user (since 1.15.0, card 2687): on a card of the milestone, not finished, not an option and on a board they can open, linked as waits to a decision open or awaiting a ruling that they may view; ' +
+							'on an ordered subtask of such a card, not ticked, its card\'s. Empty on every other node. A decision is no node of the graph: it moves no layer, downstreamCount or step of the critical path.'
 					}
 				},
 				required: [
 					'kind', 'id', 'title', 'priority', 'columnId', 'columnTitle', 'boardId', 'boardName', 'isComplete', 'milestoneId',
-					'withheld', 'external', 'layer', 'blockedBy', 'blocks', 'openBlockers', 'downstreamCount', 'onCriticalPath', 'isOption'
+					'withheld', 'external', 'layer', 'blockedBy', 'blocks', 'openBlockers', 'downstreamCount', 'onCriticalPath', 'isOption', 'waitingOnDecisions'
 				]
 			},
 			MilestoneSummary: {
@@ -3022,18 +3055,32 @@ const spec = {
 					nextActionable: {
 						type: 'array',
 						items: { $ref: '#/components/schemas/MilestoneNode' },
-						description: 'Work in the milestone that is not finished and waits on nothing unfinished: what can be started now. The work that most other work waits on is first.'
+						description:
+							'Work in the milestone that is not finished and waits on nothing unfinished: what can be started now. The work that most other work waits on is first. ' +
+							'Since 1.15.0 (card 2687) work that waits on a decision open or awaiting a ruling is left out, a card linked to it as waits and its ordered subtasks not ticked; ' +
+							'made for the key\'s user, who is told only of decisions they may view, so keys of two users may be given different lists for one plan.'
 					},
 					blocked: {
 						type: 'array',
-						description: 'Work in the milestone that is not finished and waits on something unfinished',
+						description:
+							'Work in the milestone that is not finished and waits on something unfinished, or, since 1.15.0 (card 2687), on a decision open or awaiting a ruling that the key\'s user may view: ' +
+							'a card linked to it as waits, and its ordered subtasks not ticked. Made for the key\'s user. In order of how many blockers and decisions each has, fewest first, then by id.',
 						items: {
 							type: 'object',
 							properties: {
 								card: { $ref: '#/components/schemas/MilestoneNode' },
-								blockers: { type: 'array', items: { $ref: '#/components/schemas/PlanNode' }, description: 'The unfinished work it waits on' }
+								blockers: {
+									type: 'array',
+									items: { $ref: '#/components/schemas/PlanNode' },
+									description: 'The unfinished work it waits on; may be empty when it waits on decisions alone'
+								},
+								decisions: {
+									type: 'array',
+									items: { $ref: '#/components/schemas/PlanDecisionWait' },
+									description: 'The decisions it waits on, as its waitingOnDecisions (since 1.15.0, card 2687)'
+								}
 							},
-							required: ['card', 'blockers']
+							required: ['card', 'blockers', 'decisions']
 						}
 					}
 				},
@@ -7334,9 +7381,10 @@ const spec = {
 					'Since 2026-10-26 (milestone 22) the actions include card_committed, card_returned_to_options, card_discarded, card_abandoned, card_sent, column_converted_to_options and board_converted_to_ideas, ' +
 					'and card_archived is written only for a card archived from a Complete column: unfinished committed work archived is card_abandoned, and an option card_discarded. ' +
 					'A commitment is card_committed, not card_moved, and an option leaving its board card_sent, not card_moved_away. Entries written before keep their actions. ' +
-					'Decision records (cards 2675 to 2680) write twelve actions, each only for a decision that has been opened, on its board, its detail the title and the step, never a count, a name or a reason: ' +
+					'Decision records (cards 2675 to 2680, 2687) write thirteen actions, each only for a decision that has been opened, on its board, its detail the title and the step, never a count, a name or a reason: ' +
 					'decision_opened, decision_republished, decision_closed, decision_extended, decision_withdrawn, decision_deleted, decision_ruled, decision_superseded and decision_results_released; ' +
-					'and, on the board of the card linked, naming no decision, decision_card_linked, decision_card_unlinked and decision_card_link_deleted. None sends a webhook.',
+					'on the board of the card linked, naming no decision, decision_card_linked, decision_card_unlinked and decision_card_link_deleted; ' +
+					'and, since 1.15.0, decision_card_relation_changed on the decision\'s board, naming no card, detail "a card", where a link\'s relation is changed. None sends a webhook.',
 				operationId: 'getAuditLog',
 				parameters: [
 					{
@@ -9729,11 +9777,34 @@ const spec = {
 				tags: ['Decisions'],
 				summary: 'Link a card to a decision',
 				description:
-					'Links a card to a decision (card 2682): edit access to the decision\'s board, or an administrator\'s where it has none, and edit access to the card\'s. No body is read: the relation is relates. ' +
-					'A draft holds no link, nor does a withdrawn decision take one, and an archived card is not linked. Linking a card already linked as relates writes nothing (unchanged); a link stored with another relation is changed to relates and logged (relation_changed). ' +
-					'A link written or changed is a decision_card_linked entry on the card\'s board, naming no decision, written through the API; no webhook. The answer is the outcome and the cards linked, on boards the key\'s user can open.',
+					'Links a card to a decision (card 2682): edit access to the decision\'s board, or an administrator\'s where it has none, and edit access to the card\'s. ' +
+					'Since 1.15.0 (card 2687) an optional body, { "relation": "relates" | "waits" }, says what the link is: waits holds the card out of its plan\'s nextActionable while the decision is open or awaiting a ruling. ' +
+					'The relation is read after the access checks. Not sent, a new link is relates and a link already there is left as it is (unchanged); until 1.15.0 a link stored with another relation was changed to relates. ' +
+					'A draft holds no link, nor does a withdrawn decision take one, and an archived card is not linked; waits is refused on a ruled or superseded decision, where relates is still taken, and waits sent again on a link that already waits is unchanged. ' +
+					'Linking a card already linked with the relation sent writes nothing (unchanged); another relation is changed and logged (relation_changed). ' +
+					'A new link is a decision_card_linked entry on the card\'s board, naming no decision; a relation changed is a decision_card_relation_changed entry on the decision\'s board, naming no card, and none where the decision\'s board is deleted; both written through the API; no webhook. ' +
+					'The answer is the outcome and the cards linked, on boards the key\'s user can open.',
 				operationId: 'linkDecisionCard',
 				parameters: [{ $ref: '#/components/parameters/decisionId' }, { $ref: '#/components/parameters/cardId' }],
+				requestBody: {
+					description: 'Optional (since 1.15.0, card 2687): send none for a relates link, or to leave a link already there as it is. Sent, it is JSON, with Content-Type application/json; sent with any other, or none, it is 400.',
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								properties: {
+									relation: {
+										type: 'string',
+										enum: ['relates', 'waits'],
+										description:
+											'Optional. relates, the two are related; waits, the card waits on the decision. Left out: a new link is relates, and a link already there keeps its relation.'
+									}
+								}
+							},
+							example: { relation: 'waits' }
+						}
+					}
+				},
 				responses: {
 					'200': {
 						description: 'The outcome, and the cards linked',
@@ -9747,13 +9818,16 @@ const spec = {
 									},
 									required: ['outcome', 'linkedCards']
 								},
-								example: { outcome: 'linked', linkedCards: [{ id: 1713, title: 'Price the lean budget', boardId: 3, boardName: 'Finance', archived: false }] }
+								example: { outcome: 'linked', linkedCards: [{ id: 1713, title: 'Price the lean budget', boardId: 3, boardName: 'Finance', archived: false, relation: 'waits' }] }
 							}
 						}
 					},
 					'400': {
-						description: 'decisionId or cardId is not a whole number of 1 or more',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
+						description:
+							'decisionId or cardId is not a whole number of 1 or more; or, since 1.15.0, the body is not a JSON object, the relation is not relates or waits ' +
+							'(relation must be one of: relates, waits), or a body was sent with any Content-Type other than application/json, parameters such as charset aside, or with none, ' +
+							'as a Transfer-Encoding or a Content-Length other than 0 says (send the body as application/json); a PUT with no body is taken',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'relation must be one of: relates, waits' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
@@ -9765,9 +9839,12 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Decision not found' } } }
 					},
 					'409': {
-						description: 'Its status does not allow a link; the card is archived; or the decision or the card holds the most links it may',
+						description:
+							'Its status does not allow a link; the card is archived; the card is asked to wait on a decision that is ruled or superseded (This decision is ruled: a card cannot wait on it, since 1.15.0); ' +
+							'or the decision or the card holds the most links it may',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This card is archived: it cannot be linked to a decision' } } }
 					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
 				}

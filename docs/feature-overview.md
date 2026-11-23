@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.95
+version: 1.96
 status: As-Built
 date: 2026-11-23
 tags:
+  - card-2687
+  - decision-waits
   - card-2686
   - group-breakdown
   - card-2684
@@ -157,6 +159,7 @@ A card's window lists what the card is **Blocked by** and what it **Blocks**. Ei
 - **Every change is recorded.** Adding or removing one dependency, in the card window or through the API, shows in the board's activity panel and on the Audit page; both activity panels, the board's and All Tasks', name it "Added dependency" or "Removed dependency" whichever way it was done. A batch through the bulk endpoint records each link it creates in the same way, one "Added dependency" on the card that waits, on that card's board (card 2291: it wrote one "Added dependencies" entry for the whole batch, on the first board it touched only), and the links that go when a card is deleted write none of their own. A goal's changes are recorded too (card 2289; none was): putting a card in a goal or taking it out, from the card window's picker, the plan page or the API, shows as "Added card to milestone" or "Removed card from milestone" on the card's board, and renaming a goal, changing its description, target date or board, closing, reopening or deleting it shows as "Updated milestone", "Closed milestone", "Reopened milestone" or "Deleted milestone" on the goal's board (for a goal across boards, on each board holding its cards, which reads it as "milestone #id", since not every reader there can open it). A save on the plan page that changed nothing records nothing. A deleted goal's 🎯 chip leaves every open board at once.
 - **Not counted as work.** The activity report does not take a dependency added or removed, or a card put in a goal or taken out, to be work on the card, or the work of whoever did it.
 - **Work on a board you cannot open is not named.** A card that waits on a card of a board you were not given still shows as blocked, and the other end is listed as "A card on a board you cannot open", with no link and no board or column: on the Blocked chip, in the card window, on All Tasks and on the plan. You can still remove the link.
+- **A card can also wait on a decision** (card 2687, from 23 November 2026). Marked on the decision's page (see [linked cards](#every-decision-in-one-place-each-persons-record-and-linked-cards)), it holds the card in its goal's plan: while the decision is open or awaiting its ruling, the plan does not offer the card, or its ordered subtasks, as startable, and lists it as waiting, naming the decision. The moment the decision is ruled, superseded or withdrawn the card is released, with nothing to do. The decision is not a step in the plan's graph, so the critical path, the order of work and the goal's progress are unchanged. Only the plan reads it for now: the board's Blocked chip, All To Do's Startable filter and the card's blocked state do not.
 
 ### Drag and Drop
 
@@ -466,7 +469,8 @@ Decisions can be found across boards, each person's part in them read back, a de
 - **A person's record** — `/decisions/people/<id>`: what a person was asked and what they said. **My record**, in the register's header, opens your own (where your account is linked to a person of the directory); a decision's record view lists **People's records** for its decider and administrators; and any record opens by its address. An administrator sees anyone's, with their job title, groups, address and whether they have left; a decider sees it only for the decisions they decide; and you see your own. Each decision lists your role, when you were included and removed, every response you gave (replaced ones too), your questions and the answers, your concerns, your objections and requests to talk with the decider's replies (card 2684), and what happened to you on it (invited, told, seen, responded). Your own record never shows who did what or anything only the decider sees, and does not include anything you answered through a personal link before your account was linked to you. A decision you were removed from and can no longer open is shown as "A decision you were removed from": when you were included and removed, and your own words, with no title or board; one you are still on but cannot open is shown the same way as "A decision you can no longer open". Anyone who may not see a person's record, and a person who is not there, get the same "Person not found"
 - **The record view** — **Record**, on the decision's page and in its editor, for the decider (while they can edit its board) and administrators, opens `/decisions/<id>/record`: everything that happened on the decision, oldest first, 500 at a time, which can be narrowed to one participant. Each entry says what happened, when, to whom and by whom; addresses, and the account a personal link was opened while signed in as, are shown to administrators alone
 - **Linking a card** — on a decision's page, **Linked cards** lists the cards linked to it on boards you can open, each linking to the card, with its board and "Archived" where it is. If you can edit the decision's board, **Find a card to link** searches by #id or title, and **Link** links one you can edit (one on a board you can only read is refused, and the page says why); **Unlink** takes one off. A decision can be linked to at most 100 cards and a card to at most 20 decisions (at its limit a card says only that it has reached it, not how many it holds). Linking a card already linked does nothing. An archived card cannot be linked, but can be unlinked. Drafts cannot be linked, and a withdrawn decision gains no new links
-- **On the card** — a card's window lists the decisions linked to it that you can see, under its subtasks, each with its status and, until it is ruled, its closing time, and each opening the decision. The card's board's activity says "Linked card to decision" or "Unlinked card from decision", naming the card but not the decision, as someone who can read the board may not be able to see it. Deleting a linked decision leaves "Linked decision deleted" on each linked card's board. Linking is not counted as work on the card in the management report
+- **Marking a card as waiting on the decision** (card 2687) — while the decision is open or awaiting its ruling, anyone who can link cards to it sees a **Waits on this decision** toggle beside each linked card: pressed (a tick in a filled box) the card waits on the decision, not pressed it is only related. Pressing it says what was done, or why it was refused (a card on a board you can only read is refused, as Unlink is). Where you cannot change it, a waiting card is marked "Waits on this decision". A decision already ruled or superseded cannot be waited on, though a wait can still be cleared there. The change is recorded on the decision's board as "Changed a card's link to a decision", naming no card. **In the plan**, a waiting card and its ordered subtasks are Blocked: the work table lists "waiting on decision" with the decision's title (a link to it), its status and closing time; the graph's box reads "waits on a decision · unblocks N"; the critical path and the unordered list tag it "waits on a decision". The plan PDF lists each decision under its card and ends "Decisions named are those the exporter may view.". Someone who can see the card but not the decision sees the card as if it waited on nothing, and is never told the decision exists
+- **On the card** — a card's window lists the decisions linked to it that you can see, under its subtasks, each with its status and, until it is ruled, its closing time, and each opening the decision; "This card waits on it" beside a decision the card waits on while it is open or awaiting its ruling (card 2687). The card's board's activity says "Linked card to decision" or "Unlinked card from decision", naming the card but not the decision, as someone who can read the board may not be able to see it. Deleting a linked decision leaves "Linked decision deleted" on each linked card's board. Linking is not counted as work on the card in the management report
 - **Staying current** — the register re-reads itself when a decision on a board you can open changes; a board's decision list when one of its own does. A decision with no board, or one you take part in on a board you cannot open, is brought up to date when you next open or return to the page
 
 ```mermaid
@@ -483,6 +487,8 @@ flowchart LR
     Page -->|"Link / Unlink"| Cards["Linked cards"]
     Cards -->|"a card"| Window["The card's window: its decisions"]
     Window -->|"a decision"| Page
+    Cards -->|"Waits on this decision"| Plan["The goal's plan:<br/>the card waiting, naming the decision"]
+    Plan -->|"the decision's title"| Page
 ```
 
 #### Survey questions
@@ -559,7 +565,7 @@ decides what happens to people. Through the API, an agent can:
 - **Supersede** a ruled decision with a new draft
 - **Ask a question** as its own participant, and **draft an answer** as the author or the decider: the draft waits for a person to publish it
 - **Read the results and the record** of a decision it decides, or as an administrator
-- **Link and unlink cards**
+- **Link and unlink cards**, and mark a linked card as waiting on the decision or not (`{"relation": "waits"}` or `"relates"`, card 2687)
 
 What stays on the decision's page, a person's alone: **Open**, **Re-publish**, **Send me a dry
 run** and **Resend** (each mails people), **Close**, reopening a closed decision with

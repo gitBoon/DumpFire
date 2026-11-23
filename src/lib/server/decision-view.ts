@@ -142,6 +142,9 @@ export function readDecisionPage(user: SessionUser, decisionId: number): Decisio
 		(TRANSITIONS.linkCard as readonly string[]).includes(decision.status) && mayDo(access, 'linkCard', decision) && linkCountOf(decision.id) < LINKS_PER_DECISION;
 	// Slice 3b: whether they may unlink one, as `unlinkCard` asks: at the cap and on a withdrawn decision too, where Link is not offered.
 	page.mayUnlinkCards = (TRANSITIONS.unlinkCard as readonly string[]).includes(decision.status) && mayDo(access, 'unlinkCard', decision);
+	// Card 2687 (R8): whether they may mark a card as waiting, or stop it: stored open or closed (shown open or awaiting a
+	// ruling) and `linkCard`'s editor, at the cap too, as a relation change asks no cap.
+	page.mayMarkWaiting = (decision.status === 'open' || decision.status === 'closed') && mayDo(access, 'linkCard', decision);
 	return page;
 }
 
@@ -498,7 +501,9 @@ function pageOf(
 		// Card 2684 (R22): a participant's alone, given below.
 		flags: [],
 		mayObject: false,
-		mayAskToTalk: false
+		mayAskToTalk: false,
+		// Card 2687 (S-L6): off unless the signed-in page sets it, so the page by personal link carries it off.
+		mayMarkWaiting: false
 	};
 	if (page.draft) return page;
 	page.ruling = rulingViewOf(decision);

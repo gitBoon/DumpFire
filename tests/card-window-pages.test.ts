@@ -198,7 +198,7 @@ const todoData = (card: typeof row = row) => ({
 /** A card as the plan's graph has it. */
 const node = (card: typeof row, layer: number) => ({
 	kind: 'card', id: card.id, title: card.title, priority: card.priority, columnTitle: 'To Do', boardId: 3, boardName: 'Website', isComplete: false,
-	withheld: false, layer, blockedBy: [], blocks: [], openBlockers: [], downstreamCount: 0, onCriticalPath: true
+	withheld: false, layer, blockedBy: [], blocks: [], openBlockers: [], downstreamCount: 0, onCriticalPath: true, waitingOnDecisions: []
 });
 
 /** The plan page's load: a milestone whose cards are its critical path, the first card alone unless both are asked for. */

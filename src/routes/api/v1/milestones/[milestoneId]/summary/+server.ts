@@ -15,7 +15,8 @@ import type { RequestHandler } from './$types';
  *   graph          — nodes, edges and topological layers for drawing the plan
  *   criticalPath   — ordered card ids: the longest chain of open dependencies
  *   nextActionable — startable today, most-unblocking first
- *   blocked        — what is waiting, and on what
+ *   blocked        — what is waiting, and on what: work, and decisions the
+ *                    key's user may view (card 2687)
  *
  * `?compact=true` drops the graph (nodes/edges/layers), which is the bulky part
  * and is only needed for drawing. Everything a planner reasons about stays,
@@ -25,7 +26,12 @@ import type { RequestHandler } from './$types';
  *
  * Made for the key's user: work on a board they cannot open is in it withheld,
  * its title replaced in the nodes and so in both lists of titles, and its
- * board counted in one entry of `progress.boards` with no id (card 2129).
+ * board counted in one entry of `progress.boards` with no id (card 2129). So
+ * are `nextActionable` and `blocked` (card 2687): a card linked as waiting on
+ * a decision open or awaiting its ruling, and its ordered subtasks, leave the
+ * first and join the second, with the decision in `decisions` and on each
+ * node's `waitingOnDecisions`, only where that user may view the decision.
+ * The graph, its layers and the critical path are the same for everyone.
  *
  * The read is `readMilestoneSummary` in `$lib/server/milestone-service`, which
  * the internal route shares (card 2012); `compact` is this route's.

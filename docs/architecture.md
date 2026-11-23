@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.153
+version: 1.154
 status: As-Built
 date: 2026-11-23
 tags:
+  - card-2687
+  - decision-waits
   - card-2686
   - group-breakdown
   - card-2684
@@ -2511,7 +2513,7 @@ flowchart LR
     end
     subgraph Reads["Read modules (user: SessionUser, write nothing)"]
       DR["decision-register.ts<br/>readRegister, readPersonRecord,<br/>readRecord, recordEntryOf,<br/>visibleDecisionIdsOf"]
-      DC["decision-cards.ts<br/>linkedCardsFor, readCardDecisions,<br/>decisionLinksOfCardsUnchecked"]
+      DC["decision-cards.ts<br/>linkedCardsFor, readCardDecisions,<br/>decisionLinksOfCardsUnchecked,<br/>decisionWaitsFor (card 2687)"]
     end
     subgraph Service["Decision services (card 2713)"]
       LC["decision-card-link-writes.ts<br/>linkCard / unlinkCard"]
@@ -2554,7 +2556,10 @@ anyone who can open its board now (public boards included), its author, its deci
 participant whose account holds exactly one live row on it (`GROUP BY … HAVING count(*) = 1`); a
 draft to its author, its decider and the board's owners alone (`ownedBoardIds`). A test holds the
 register to `requireDecision` over the whole access cast. `visibleDecisionIdsOf(user, ids)` is the
-same predicate for any other list (the card window's; card 2687's plan view).
+same predicate for any other list: the card window's, and the plan view's through
+`decisionWaitsFor` (card 2687). Since card 2687 it takes any `Actor` (the plan's viewer is one):
+none is 401, as before, and a disabled account, an administrator's included, is given the empty
+set before its role is asked (card 2671's rule), in all three callers.
 
 The register read, by tab:
 
@@ -2580,7 +2585,7 @@ flowchart TD
 `REGISTER_BOARDS_MAX` 500, `PEOPLE_MATCHES_MAX` 25, `PERSON_PAGE_SIZE` 25,
 `EVENTS_PER_PARTICIPATION` 200, `RECORD_PAGE_SIZE` 500, `RECORD_READ_MAX` 5,000. In
 `decision-cards.ts`: `LINKS_PER_DECISION` 100, `LINKS_PER_CARD` 20, `CARD_LINK_RELATIONS =
-['relates']`.
+['relates', 'waits']` (`waits` since card 2687), `WAITING_STATUSES = ['open', 'awaiting_ruling']`.
 
 **The record view and `RECORD_DETAIL`.** `readRecord(user, id, query, { source, limit })` asks
 `requireDecision(user, id, 'record')` (administrators, and the decider with board edit while the
@@ -2599,11 +2604,20 @@ through any source but `'ui'` no reader gets them, and the question events are l
 link to their person record, where they are a person of the directory and the decision has been
 opened; the register gives `myPersonId` for its **My record** link (code review F1).
 
-**Card links.** `linkCard(caller, { decisionId, cardId, relation }, null, opts)` and
+**Card links.** `linkCard(caller, { decisionId, cardId }, body: RequestBody | null, opts)` and
 `unlinkCard(caller, { decisionId, cardId }, null, opts)`: edit access to the decision's board (an
 administrator where it has none: `DECISION_RULES.linkCard = ['admin', 'boardOwner',
 'boardEditor']`) and to the card's (`requireCard(…, 'edit')`). Neither touches the decision's row,
-so neither revision moves.
+so neither revision moves. Since card 2687 the relation is read from an optional body: both PUT
+routes call `readOptionalBody(request)` (`request-body.ts`), which gives null when no body was
+sent (`request.body` null, no `Transfer-Encoding`, and no `Content-Length` or one of exactly
+`0`), the JSON object when one was sent as `application/json` (parameters aside, `saysJson`),
+and 400 `send the body as application/json` for anything else (a body the node adapter left
+unread because it had no Content-Type, or one of another type). `readBody` then answers 400 for a
+body that is not a JSON object and 413 for one too large. `linkCard` reads `relation` with
+`readChoice(…, { from: CARD_LINK_RELATIONS })` after every guard, so a caller who may not view the
+decision or edit the card is refused 404 or 403 before the relation's 400. Not sent, a new link is
+`relates` and an existing one is left as it is.
 
 ```mermaid
 sequenceDiagram
@@ -2611,18 +2625,27 @@ sequenceDiagram
     participant Route as PUT /api/decisions/[id]/cards/[cardId]
     participant Svc as decision-card-link-writes.ts linkCard
     participant DB as SQLite
-    Page->>Route: PUT, Content-Type JSON, no body
-    Route->>Svc: writeAs(locals, caller => linkCard(caller, {decisionId, cardId, relation:'relates'}, null, {source:'ui'}))
+    Page->>Route: PUT, Content-Type JSON, no body (Link) or relation waits or relates (the toggle)
+    Route->>Route: pathId 400, readOptionalBody: null, the object, or 400 or 413
+    Route->>Svc: writeAs(locals, caller => linkCard(caller, {decisionId, cardId}, body, {source:'ui'}))
     Svc->>Svc: requireDecision 404/403, requireCard 404/403
-    Svc->>Svc: TRANSITIONS 409, archived card 409, relation not allowed 400
-    Svc->>DB: link there? same relation: unchanged, another: UPDATE relation
+    Svc->>Svc: TRANSITIONS 409, archived card 409, relation outside the list 400
+    Svc->>DB: link there with the same relation, or none sent: unchanged
+    Svc->>Svc: waits on a ruled or superseded decision: 409
+    Svc->>DB: link there, another relation: UPDATE relation
+    Svc->>DB: decision_card_relation_changed on the decision's board, no card, "a card" (none if boardless)
     Svc->>DB: caps 100 a decision, 20 a card: 409 (a new link only)
-    Svc->>DB: INSERT decision_card_links
+    Svc->>DB: INSERT decision_card_links (relates when none sent)
     Svc->>DB: decision_card_linked on the card's board, cardId, "a decision"
-    Route->>Route: linkedCardsFor(caller, decision)
+    Route->>Route: linkedCardsFor(caller, decision), each with its relation
     Route-->>Page: 200 { outcome, linkedCards }
-    Page->>Page: draws the answer, invalidateAll(), focus to the search box
+    Page->>Page: draws the answer, invalidateAll(), focus to the search box or the toggle
 ```
+
+The `UPDATE` and the `INSERT` are alternatives: a relation change asks no cap and writes no
+`decision_card_linked`; a new link writes no `decision_card_relation_changed`. Sending `waits`
+again on a link that already waits is `unchanged`, even after the ruling, because the same
+relation is looked for before the 409.
 
 Deleting a linked decision (only a withdrawn one can be: a draft is never linked):
 
@@ -2655,9 +2678,22 @@ sequenceDiagram
   server's words (`failureMessage`) in a polite `role="status"` line that stays drawn. After a
   link the focus goes back to the emptied search box; after an unlink to the next card's Unlink,
   else the previous one's, else the search box, else the list's empty words. Every link and
-  button is at least 44 px.
+  button is at least 44 px. Since card 2687, where the page flag `mayMarkWaiting` is set
+  (`readDecisionPage`: stored `open` or `closed` and `mayDo(access, 'linkCard')`, at the cap too;
+  `false` from `pageOf`, so the personal link's page and the preview never offer it), each card
+  has one toggle with fixed words, "Waits on this decision", `aria-label` "Waits on this
+  decision: #12 title" and `aria-pressed`; pressed is a tick in a filled box with a solid edge,
+  not colour alone. It sends the same `PUT` with `{"relation": "waits"}` or `{"relation":
+  "relates"}`; the answer or refusal is said in the status line, the page is read again after
+  any answer, and focus goes back to that card's toggle unless the person moved it. A toggle
+  answered `linked` (the card had been unlinked meanwhile) says so. Where it is not offered, a
+  `waits` card is marked "Waits on this decision" while the decision is shown open or awaiting
+  its ruling. The flag is per page, not per card: a card on a board the person can only read is
+  refused 403 by the server, as Unlink is.
 - `CardDecisions` (`src/lib/components/card/`) lists each decision by its title, linking to
-  `/decisions/<id>`, with its shown status and, while not ruled, its closing time. The window
+  `/decisions/<id>`, with its shown status and, while not ruled, its closing time; since card
+  2687, "This card waits on it" where the link is `waits` and the decision is shown open or
+  awaiting its ruling. The window
   reads them: `CardModal`'s `onMount` calls `loadDecisions(card.id)` (`GET
   /api/cards/${cardId}/decisions`) beside its comments and dependencies, once per open, and keeps
   the answer while another tab is shown; the section has no read, `$effect` or `onMount` of its
@@ -3312,6 +3348,50 @@ The page keeps its props, the summary and milestone values (`milestoneId` a numb
 `src/lib/plan-graph.ts` holds the graph's geometry as plain functions, each body as it was in the page: `drawnKey`, `drawnNodes`, `drawnEdges`, `layers`, `nodeHeight`, `positions`, `graphWidth`, `graphHeight`, `edgePath`, `criticalSteps`, `isCriticalEdge`, `clip`, the sizes (`NODE_W`, `NODE_H`, `SUB_H`, `GAP_X`, `GAP_Y`, `PAD`), `key`, and the `Node` and `WorkRef` types. Drawn before and after the move, the node boxes and edge paths are byte-identical.
 
 Thirteen rules several blocks share stay in the page as `.plan-body :global(...)`. `.panel`, the panel's frame, is copied into each block, since a page rule would outrank the card picker's border; and `PlanBurndown.svelte` keeps its own copy of `.muted`, since its tips open outside `.plan-body`.
+
+### Cards waiting on a decision in the plan (card 2687)
+
+Card 2687 (plan `docs/planning/card-2687-cards-waiting-on-a-decision.md`, no migration) lets a card's link to a decision say the card **waits** on it. While the decision is shown open or awaiting its ruling, the plan holds the card, and its ordered subtasks not ticked, out of `nextActionable` and lists them in `blocked` with the decision, for a viewer who may view that decision. A decision is not a node of the graph (D11): the critical path, layers, reach and progress are untouched. The rule in full is in [Critical-Path Planning](critical-path-planning.md#cards-waiting-on-a-decision-card-2687).
+
+```mermaid
+flowchart TD
+    subgraph Callers
+      Page["/plan/[id] load"]
+      Sum["GET summary, both trees"]
+      PDF["PDF, both trees"]
+      Mail["plan-created mail<br/>(cards/bulk route)"]
+    end
+    GMS["getMilestoneSummary(id, viewer)"]
+    WS["workSummary(id, viewer)<br/>the work alone, waits all []"]
+    WD["withDecisionWaits(summary, viewer)<br/>a new summary, the one given unchanged"]
+    DWF["decisionWaitsFor(viewer, cardIds)<br/>decision-cards.ts"]
+    U["decisionLinksOfCardsUnchecked<br/>waits, shown open or awaiting ruling"]
+    BA["getAccessibleBoardIds(viewer)<br/>only cards with a wait"]
+    V["visibleDecisionIdsOf(viewer, ids)<br/>disabled: none"]
+    Page --> GMS
+    Sum --> GMS
+    PDF --> GMS
+    GMS --> WS
+    GMS --> WD
+    Mail -->|"once per set of boards"| WS
+    Mail -->|"once per recipient"| WD
+    WD --> DWF
+    DWF --> U
+    DWF --> BA
+    DWF --> V
+```
+
+| Piece | What it does |
+|---|---|
+| `workSummary(id, viewer)` (`planning.ts`) | The summary as it was before card 2687, with every `waitingOnDecisions` and `decisions` `[]`. It reads every dependency row, so the plan mail calls it once per set of boards. A source scan pins its callers to `planning.ts` and the plan-mail route |
+| `withDecisionWaits(summary, viewer)` (`planning.ts`) | Asks `decisionWaitsFor` once, for the member cards not complete, not options, not withheld and not external; puts each card's waits on it and on its ordered subtasks not ticked (by `parentCardId`); filters `nextActionable` in its order; rebuilds `blocked` from the nodes (open blockers or waits, by their sum then id). Copies every node and returns a new summary, never changing the one handed in (case P14) |
+| `decisionWaitsFor(viewer, cardIds)` (`decision-cards.ts`) | A plain read. `waits` links first (`decisionLinksOfCardsUnchecked`, kept where `shownStatus` is in `WAITING_STATUSES`), so a plan with none reads no board; then the boards of the linked cards, chunked by `IDS_AT_ONCE`, keeping only cards on a board the viewer can open (it trusts no caller, S-L2); then `visibleDecisionIdsOf`. Answers `Map<cardId, PlanDecisionWait[]>`, each list by decision id. Its callers are pinned to `decision-cards.ts` and `planning.ts` |
+| `PlanDecisionWait` (`$lib/plan-table.ts`) | `{ id, title, shownStatus: 'open' \| 'awaiting_ruling', closesAt }`: the card window's projection of a decision, and nothing else |
+| The plan mail (`api/v1/milestones/[milestoneId]/cards/bulk/+server.ts`, `planNoticeFor`) | Caches `workSummary` by set of boards, applies `withDecisionWaits` per recipient, and shares one notice by boards plus the held waits (card and decision ids), so one mail is still built per notice |
+| Pages | `plan-table.ts` gives a row `decisions` and the state Blocked; `plan-graph.ts`'s `nodeState` is `blocked` for a node with waits; `WorkTable`, `DependencyGraph` and `CriticalPathPanel` draw it (see the planning document) |
+| PDF (`milestone-report.ts`) | State Blocked; each decision under its entry as `waiting on decision "<title>" (<status>)`; the intro sized to its text; `DECISIONS_NAMED_LINE` at the end |
+
+Board faces, To Do's Startable filter and a card's `isBlocked` in card answers (`getBlockedStateForCards`) do not read waits: card 3059.
 
 ### The card window off the board
 

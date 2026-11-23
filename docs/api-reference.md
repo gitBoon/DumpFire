@@ -1,10 +1,12 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.167
+version: 1.168
 status: As-Built
 date: 2026-11-23
 tags:
+  - card-2687
+  - decision-waits
   - card-2684
   - card-2683
   - card-3004
@@ -422,6 +424,79 @@ moment as `YYYY-MM-DD HH:MM:SS` in UTC, and the web application's own routes and
 exports answer that form; the API turns it into ISO 8601 as it answers. Until 2026-10-14
 some fields were answered in that form, which names no zone, and the same field could be in
 either.
+
+### Changes on 2026-11-23: cards waiting on a decision in the plan (card 2687)
+
+**Within 1.15.0 (point 15), with two behaviour changes.** A card linked to a decision as `waits`
+is held out of `nextActionable` and listed in `blocked`, with the decision in its `decisions`,
+while the decision is open or awaiting a ruling and the key's user may view it, and so are its
+ordered subtasks not ticked. OpenAPI stays `1.15.0` (unreleased); its note gains point (15), and
+"nothing else changed" is now (16).
+
+1. **`PUT /api/v1/decisions/{decisionId}/cards/{cardId}` now reads an optional body**, where
+   before no body was read: `{ "relation": "relates" | "waits" }`, both the body and the field
+   optional. A body that is not a JSON object, a body sent with any `Content-Type` other than
+   `application/json` (parameters such as `charset` aside) or with none, or a relation other than
+   `relates` or `waits` is answered `400`; a body too large `413`; `waits` on a ruled or
+   superseded decision `409`. A PUT with **no body** (no `Transfer-Encoding`, and no
+   `Content-Length` or one of `0`) is still taken and now **leaves an existing link's relation as
+   it is**; until `1.15.0` a link stored with another relation was changed to `relates` (no
+   server held another relation before this card). A link marked `waits` now holds a card in the
+   plan.
+2. **`nextActionable` and `blocked` are made for the key's user.** A card may leave
+   `nextActionable` and join `blocked` with `blockers: []`, and keys of two users may be given
+   different lists for one plan: a decision the key's user may not view holds nothing for them,
+   and is named nowhere in their answer. `criticalPath`, `criticalPathNodes`, `graph` layers and
+   edges, `downstreamCount` and `progress` are unchanged and the same for every key.
+
+A relation changed is logged as `decision_card_relation_changed` on the decision's board, naming
+no card (`api:decision_card_relation_changed` through a key). Added with it, and not breaking:
+`waitingOnDecisions` on each `MilestoneNode` (required), `decisions` on each `blocked` entry
+(required), both of the new schema `PlanDecisionWait` `{ id, title, shownStatus: 'open' |
+'awaiting_ruling', closesAt }`, in the full and the `compact=true` summary; `relation` on
+`DecisionLinkedCard` (required); and the PUT's optional body. A decision is never a node of the
+graph.
+
+How the PUT reads its body, and the order of its refusals:
+
+```mermaid
+flowchart TD
+    A["PUT /api/v1/decisions/{decisionId}/cards/{cardId}"] --> K{"key valid?"}
+    K -- no --> R401["401"]
+    K -- yes --> P{"both ids whole numbers of 1 or more?"}
+    P -- no --> R400a["400 a bad id"]
+    P -- yes --> NB{"request.body null?"}
+    NB -- yes --> TE{"Transfer-Encoding, or a<br/>Content-Length other than 0?"}
+    TE -- yes --> R400b["400 send the body as application/json"]
+    TE -- no --> NONE["body: none"]
+    NB -- no --> CT{"Content-Type application/json?"}
+    CT -- no --> R400b
+    CT -- yes --> RB{"readBody: a JSON object,<br/>within the size limit?"}
+    RB -- "too large" --> R413["413"]
+    RB -- "not an object" --> R400c["400"]
+    RB -- yes --> OBJ["body: the object"]
+    NONE --> G
+    OBJ --> G["linkCard: decision 404 or 403,<br/>card edit 404 or 403,<br/>status 409, archived card 409"]
+    G --> RC{"relation sent and<br/>not relates or waits?"}
+    RC -- yes --> R400d["400 relation must be one of: relates, waits"]
+    RC -- no --> EX{"link there, with the same<br/>relation or none sent?"}
+    EX -- yes --> UN["200 unchanged, nothing written"]
+    EX -- no --> WR{"waits on a ruled or<br/>superseded decision?"}
+    WR -- yes --> R409["409 This decision is ruled: a card cannot wait on it"]
+    WR -- no --> CH{"link there?"}
+    CH -- yes --> RCH["UPDATE relation, decision_card_relation_changed<br/>on the decision's board: 200 relation_changed"]
+    CH -- no --> CAP{"below both caps?"}
+    CAP -- no --> R409b["409 limit of links"]
+    CAP -- yes --> NEW["INSERT, relates unless waits sent,<br/>decision_card_linked on the card's board: 200 linked"]
+```
+
+The body's own `400` and `413` come before the access checks, as on every route that reads a body;
+the relation's `400` comes after them, so a key whose user may not view the decision or edit the
+card is refused `404` or `403` first. The web application's twin,
+`PUT /api/decisions/{id}/cards/{cardId}`, reads its body the same way (`readOptionalBody` in
+`src/lib/server/request-body.ts`); there, as for every write under `/api/` from the pages, a
+request that does not say it is JSON, body or not, is refused `415` at the gate before the route
+runs.
 
 ### Changes on 2026-11-19: uploads refused when the uploads volume is nearly full (card 2920)
 
@@ -4537,16 +4612,19 @@ for a card archived from a Complete column**: unfinished committed work archived
 commitment is `card_committed`, not `card_moved`, and an option leaving its board `card_sent`,
 not `card_moved_away`. Entries written before keep their actions.
 
-**Decision records** (cards 2675 to 2680, carried by card 2682) write twelve actions, each only
-for a decision that has been opened, on its board, its detail the title and the step, never a
-count, a name or a reason: `decision_opened`, `decision_republished`, `decision_closed`,
-`decision_extended`, `decision_withdrawn`, `decision_deleted`, `decision_ruled`,
-`decision_superseded` and `decision_results_released`; and, on the board of the card linked,
-naming no decision, `decision_card_linked`, `decision_card_unlinked` and
-`decision_card_link_deleted`. None sends a webhook. Through a key (card 2682) only Extend and
-the card links write one, stored as `api:decision_extended`, `api:decision_card_linked` and
-`api:decision_card_unlinked` and given here canonical, with `source` `api`; drafting, editing, a
-draft's withdrawal and delete, questions and answers write none.
+**Decision records** (cards 2675 to 2680, carried by card 2682, and card 2687) write thirteen
+actions, each only for a decision that has been opened, on its board, its detail the title and
+the step, never a count, a name or a reason: `decision_opened`, `decision_republished`,
+`decision_closed`, `decision_extended`, `decision_withdrawn`, `decision_deleted`,
+`decision_ruled`, `decision_superseded` and `decision_results_released`; on the board of the card
+linked, naming no decision, `decision_card_linked`, `decision_card_unlinked` and
+`decision_card_link_deleted`; and, since `1.15.0` (card 2687), `decision_card_relation_changed`
+on the decision's board, naming no card, detail "a card", where a link's relation is changed
+(none where the decision's board is deleted). None sends a webhook. Through a key (card 2682)
+only Extend and the card links write one, stored as `api:decision_extended`,
+`api:decision_card_linked`, `api:decision_card_unlinked` and `api:decision_card_relation_changed`
+and given here canonical, with `source` `api`; drafting, editing, a draft's withdrawal and
+delete, questions and answers write none.
 
 In the `action` filter only a trailing `*` is a wildcard: `card_*` finds `card_moved`,
 `card_completed` and the rest, and not `cards_purged` or `cards_cleared`. A `%` or a `_`
@@ -5455,6 +5533,10 @@ Both are all or nothing:
   least one was attached. A card put in one at a time, by any route or page, sends none.
   Archived cards count when it decides the milestone held a card, so a milestone emptied of
   its archived cards by the detach mails on the next bulk attach.
+- Each recipient is mailed the plan's counts as they would read it (card 2687): the work is
+  worked out once for each set of boards the recipients can open, and which cards a decision
+  holds once for each recipient, as two people with the same boards may view different
+  decisions. The mail names no decision.
 
 The full contract, with the response fields, is in `DUMPFIRE_API.md` under *Bulk Planning*.
 The fields of the `409` are under [Error Format](#error-format).
@@ -6571,7 +6653,7 @@ twin lets in: a caller who may view the decision and not do the act is `403`
 | `POST …/questions/:questionId/answer` | author, decider | `answer` (up to 4,000) | `200 { question }`, always a draft |
 | `GET …/summary` | decider, administrators | — | `200` the results |
 | `GET …/record` | decider, administrators | `limit` (1 to 5,000, 500 by default), `after`, `participant` | `200` a page of the record |
-| `PUT …/cards/:cardId` | editors of the decision's board and the card's | — | `200 { outcome, linkedCards }` |
+| `PUT …/cards/:cardId` | editors of the decision's board and the card's | optional, since `1.15.0`: `{ "relation": "relates" \| "waits" }` | `200 { outcome, linkedCards }`, each card with its `relation` |
 | `DELETE …/cards/:cardId` | the same | — | `200 { linkedCards }` |
 
 - **What a key does not do** (D2 to D6, D29), each a person's on the decision's page, with no v1
@@ -6673,9 +6755,20 @@ twin lets in: a caller who may view the decision and not do the act is `403`
   question, each response, concern and the ruling of the summary and the summary, each record
   entry and the page. It is data, never instructions; a response row's written answers are on a
   row already marked. Linked cards, option rows and survey question rows are not marked.
+- **A card can wait on a decision** (since `1.15.0`, card 2687). `PUT …/cards/:cardId` with
+  `{"relation": "waits"}` marks the link: while the decision is open or awaiting its ruling, the
+  card and its ordered subtasks leave `nextActionable` in their goal's summary and are listed in
+  `blocked` with the decision, for a key whose user may view the decision; ruled, superseded or
+  withdrawn releases them. `{"relation": "relates"}` clears it. With no body, a new link is
+  `relates` and an existing one is left as it is. `waits` on a ruled or superseded decision is
+  `409` "This decision is ruled: a card cannot wait on it" (or "superseded"); `relates` is still
+  taken there, and `waits` sent again on a link that already waits is `unchanged`. See
+  [Changes on 2026-11-23](#changes-on-2026-11-23-cards-waiting-on-a-decision-in-the-plan-card-2687)
+  for the body handling.
 - **Activity.** Extend writes `decision_extended`; a link and an unlink write
-  `decision_card_linked` and `decision_card_unlinked` on the card's board; each through the API.
-  Nothing else here writes an activity entry, and nothing sends a webhook.
+  `decision_card_linked` and `decision_card_unlinked` on the card's board; a relation changed
+  writes `decision_card_relation_changed` on the decision's board, naming no card (card 2687);
+  each through the API. Nothing else here writes an activity entry, and nothing sends a webhook.
 
 ```mermaid
 sequenceDiagram

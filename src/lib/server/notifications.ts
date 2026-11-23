@@ -1850,8 +1850,9 @@ export function notifyPlanCreated(
 	if (toSend.length === 0) return;
 	if (noLinkAddress(baseUrl, 'The mail about a new plan')) return;
 
-	// One mail for each notice: recipients who see the plan alike are given
-	// the same notice, and so the same mail.
+	// One mail for each notice: recipients who see the plan alike (the same
+	// boards and the same decisions, card 2687) are given the same notice, and
+	// so the same mail.
 	const built = new Map<PlanCreatedNotice, string>();
 	for (const r of toSend) {
 		const notice = noticeFor(r);

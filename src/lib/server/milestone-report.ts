@@ -22,6 +22,7 @@ import {
 	formatDate
 } from './reports';
 import { formatDueDate } from '$lib/utils/date-utils';
+import { STATUS_WORDS } from '$lib/decision-words';
 import type { MilestoneSummary, MilestoneNode } from './planning';
 
 /** A4 portrait with the same margins the board reports use. */
@@ -39,8 +40,15 @@ const label = (n: { kind: string; id: number; parentCardId?: number }) =>
 			? 'a step of a card on a board you cannot open'
 			: `step of #${n.parentCardId}`;
 
+// Blocked by open work, or waiting on a decision the exporter may view (card 2687, R8).
 const stateOf = (n: MilestoneNode): 'Done' | 'Blocked' | 'Startable' =>
-	n.isComplete ? 'Done' : n.openBlockers.length > 0 ? 'Blocked' : 'Startable';
+	n.isComplete ? 'Done' : n.openBlockers.length > 0 || n.waitingOnDecisions.length > 0 ? 'Blocked' : 'Startable';
+
+/**
+ * The line that closes the document (card 2687, S-L5): who may view a
+ * decision is narrower than who may open a board, and a PDF can be passed on.
+ */
+export const DECISIONS_NAMED_LINE = 'Decisions named are those the exporter may view.';
 
 const stateColour = (s: string) =>
 	s === 'Done' ? C.emerald : s === 'Blocked' ? C.amber : C.blue;
@@ -97,14 +105,15 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 		let y = 94;
 
 		// ─── What this document is ───────────────────────────────────────────
-		doc.roundedRect(mx, y, pw, 30, 4).fill(C.accentLight);
-		doc.font('Helvetica').fontSize(7.5).fillColor(C.accent).text(
-			'This plan is derived, not written by hand. Only two things are recorded: which piece of work blocks which, ' +
-				'and which work belongs to this goal. The order below, what can start today and what is waiting are all ' +
-				'computed from those two facts, so this document cannot drift from the board.',
-			mx + 10, y + 6, { width: pw - 20 }
-		);
-		y += 40;
+		// The box is sized to its text, which runs to three lines since card 2687 added a third fact (code review, C-E-L1).
+		const intro =
+			'This plan is derived, not written by hand. Only three things are recorded: which piece of work blocks which, ' +
+			'which work belongs to this goal, and which cards are marked as waiting on a decision. The order below, what ' +
+			'can start today and what is waiting are all computed from those facts, so this document cannot drift from the board.';
+		const introH = heightOf(doc, intro, pw - 20, 7.5) + 12;
+		doc.roundedRect(mx, y, pw, introH, 4).fill(C.accentLight);
+		doc.font('Helvetica').fontSize(7.5).fillColor(C.accent).text(intro, mx + 10, y + 6, { width: pw - 20 });
+		y += introH + 10;
 
 		// ─── Progress ────────────────────────────────────────────────────────
 		const p = summary.progress;
@@ -137,7 +146,7 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 
 		doc.font('Helvetica').fontSize(6.5).fillColor(C.textLight).text(
 			`Items of work = the ${p.total} cards in this goal. ` +
-				`Can start now = nothing is blocking them. Waiting = something must finish first. ` +
+				`Can start now = nothing is blocking them. Waiting = something must finish, or a decision be ruled, first. ` +
 				`Open steps = ${p.openSubtasks} unticked subtasks of the ${p.totalSubtasks} across those cards.`,
 			mx, y, { width: pw }
 		);
@@ -203,7 +212,7 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 			for (const b of summary.blocked) {
 				const title = stripTag(b.card.title);
 				const h = Math.max(18, heightOf(doc, title, pw - 60, 8.5) + 8, heightOf(doc, label(b.card), 46, 7, 'Helvetica-Bold') + 6);
-				y = ensureSpace(doc, h + b.blockers.length * 13 + 8, y);
+				y = ensureSpace(doc, h + (b.blockers.length + b.decisions.length) * 13 + 8, y);
 
 				doc.font('Helvetica-Bold').fontSize(7).fillColor(C.textMuted)
 					.text(label(b.card), mx, y + 3, { width: 46 });
@@ -211,11 +220,22 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 					.text(title, mx + 50, y + 2, { width: pw - 60 });
 				y += h;
 
+				// Each line is one line, cut with an ellipsis (`height`, as the graph's node title): the 13pt kept for it
+				// holds no second, which would be drawn over the next (card 2687's code review, C-E-M1).
 				for (const blocker of b.blockers) {
 					doc.rect(mx + 54, y, 1.5, 11).fill(C.amber);
 					doc.font('Helvetica').fontSize(7.5).fillColor(C.textMuted).text(
 						`waiting on ${label(blocker)}  ${stripTag(blocker.title)}`,
-						mx + 62, y + 1.5, { width: pw - 72, ellipsis: true }
+						mx + 62, y + 1.5, { width: pw - 72, height: 11, ellipsis: true }
+					);
+					y += 13;
+				}
+				// Card 2687 (R8): each decision it waits on, after its work, by title and shown status alone (R11).
+				for (const decision of b.decisions) {
+					doc.rect(mx + 54, y, 1.5, 11).fill(C.amber);
+					doc.font('Helvetica').fontSize(7.5).fillColor(C.textMuted).text(
+						`waiting on decision "${stripTag(decision.title)}" (${STATUS_WORDS[decision.shownStatus]})`,
+						mx + 62, y + 1.5, { width: pw - 72, height: 11, ellipsis: true }
 					);
 					y += 13;
 				}
@@ -231,7 +251,11 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 		y = ensureSpace(doc, 70, y);
 		y = drawSectionTitle(doc, 'Everything in this goal', mx, y);
 		y += 2;
-		drawFullTable(doc, summary, mx, y, pw);
+		y = drawFullTable(doc, summary, mx, y, pw);
+
+		// ─── Whose view this is (card 2687, S-L5) ────────────────────────────
+		y = ensureSpace(doc, 24, y + 8);
+		doc.font('Helvetica-Oblique').fontSize(7).fillColor(C.textLight).text(DECISIONS_NAMED_LINE, mx, y, { width: pw });
 
 		doc.end();
 	});
@@ -368,7 +392,7 @@ function drawGraphOrSayWhyNot(
 
 	y += neededH + 6;
 	doc.font('Helvetica').fontSize(6.5).fillColor(C.textLight).text(
-		'Red outline and red lines mark the chain that cannot slip. Amber is waiting, blue can start, green is done. ' +
+		'Red outline and red lines mark the chain that cannot slip. Amber is waiting, on other work or on a decision; blue can start, green is done. ' +
 			'A white box is work outside this goal that something here is waiting on.',
 		mx, y, { width: pw }
 	);

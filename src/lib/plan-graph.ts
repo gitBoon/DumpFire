@@ -9,6 +9,8 @@
  * is the page's, unchanged.
  */
 
+import type { PlanDecisionWait } from './plan-table';
+
 export type WorkKind = 'card' | 'subtask';
 export type WorkRef = { kind: WorkKind; id: number };
 
@@ -38,6 +40,11 @@ export type Node = WorkRef & {
 	 * startable nor waiting.
 	 */
 	isOption?: boolean;
+	/**
+	 * The decisions it waits on for the viewer (card 2687, R4): drawn as
+	 * blocked, though no edge, layer or step of the path is added for them.
+	 */
+	waitingOnDecisions: PlanDecisionWait[];
 };
 
 /** `card:123` / `subtask:456` — matches the server's node key exactly. */
@@ -49,13 +56,14 @@ export type NodeState = 'complete' | 'external' | 'option' | 'blocked' | 'ready'
 /**
  * A node's state in the graph: complete, outside the goal, an option
  * (milestone 22: never startable, nor blocked, as the summary's lists have
- * it), blocked by something open, or startable.
+ * it), blocked by something open or by a decision it waits on (card 2687),
+ * or startable.
  */
-export function nodeState(n: Pick<Node, 'isComplete' | 'external' | 'isOption' | 'openBlockers'>): NodeState {
+export function nodeState(n: Pick<Node, 'isComplete' | 'external' | 'isOption' | 'openBlockers' | 'waitingOnDecisions'>): NodeState {
 	if (n.isComplete) return 'complete';
 	if (n.external) return 'external';
 	if (n.isOption) return 'option';
-	return n.openBlockers.length > 0 ? 'blocked' : 'ready';
+	return n.openBlockers.length > 0 || n.waitingOnDecisions.length > 0 ? 'blocked' : 'ready';
 }
 
 // ─── Graph geometry ──────────────────────────────────────────────────────

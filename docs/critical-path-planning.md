@@ -1,9 +1,9 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.26
+version: 1.27
 status: As-Built
-date: 2026-11-17
+date: 2026-11-23
 tags:
   - planning
   - dependencies
@@ -13,7 +13,9 @@ tags:
   - scheduling
   - errors
   - upstream
-description: "How DumpFire derives critical path, next-actionable work and blocked state from two recorded facts, and where the planning view sits relative to the Kanban board"
+  - decisions
+  - card-2687
+description: "How DumpFire derives critical path, next-actionable work and blocked state from two recorded facts (and, since card 2687, cards marked as waiting on a decision), and where the planning view sits relative to the Kanban board"
 ---
 
 # Critical-Path Planning
@@ -36,9 +38,17 @@ facts by hand:
 1. **Which card or subtask blocks which** — `work_dependencies`
 2. **Which milestone a card belongs to** — `cards.milestone_id`
 
+Since card 2687 a third fact kept by hand is read too: **a card's link to a decision marked as
+waiting on it** — `decision_card_links.relation = 'waits'`. While that decision is open or
+awaiting its ruling, the card (and its ordered subtasks) is not startable for anyone who may
+view the decision. The decision is not a node: what is startable and what is waiting read the
+wait, but the critical path, the order of work, the reach and progress do not
+([Cards waiting on a decision](#cards-waiting-on-a-decision-card-2687)).
+
 Everything else — the critical path, what is startable today, what is blocked and by what,
 how much finishing a card would unblock, percent complete — is **computed on read** in
-`src/lib/server/planning.ts`. Nothing derived is stored, so nothing derived can drift.
+`src/lib/server/planning.ts`. Nothing derived is stored, so nothing derived can drift: a
+decision ruled releases its waiting cards on the next read, with nothing written.
 
 There are deliberately **no start or end dates on cards** and no estimates. A chain of cards
 is enough to say what cannot slip. Per-card dates, resource levelling, hours tracking and
@@ -249,11 +259,17 @@ flowchart TD
     K --> W["Withhold, once, every node on a board<br/>the viewer cannot open: title, board,<br/>column, priority replaced,<br/>withheld: true"]
     L --> W
     W --> M["Progress: by column, done/total,<br/>open/all subtasks, boards<br/>(from the withheld nodes)"]
-    M --> N["MilestoneSummary"]
+    M --> WS["workSummary: the work alone<br/>(every waitingOnDecisions empty)"]
+    WS --> DW["withDecisionWaits(summary, viewer)<br/>a new summary: waits on nodes,<br/>nextActionable filtered, blocked rebuilt"]
+    DW --> N["MilestoneSummary"]
 ```
 
-Everything above the withholding step works on the real nodes, so the plan is the same
-whoever asks; only what is shown of each node differs (card 2129, below).
+Everything above the withholding step works on the real nodes, so the order of work is the
+same whoever asks; only what is shown of each node differs (card 2129, below). Since card
+2687 `getMilestoneSummary` is two exported steps in turn: `workSummary(id, viewer)`, the
+flow above, and `withDecisionWaits(summary, viewer)`, which moves work a decision holds from
+`nextActionable` to `blocked` for that viewer. So `nextActionable` and `blocked` are made for
+the viewer; the critical path, layers, reach and progress stay the same for everyone.
 
 ### Design decisions inside that flow
 
@@ -418,6 +434,144 @@ this card waits on), and `dependencyRow()` labels it, "#12" for a card and "subt
 #12" for a subtask, whose link opens card 12. Until card 2138 the remove button sent every
 row's id as a card's, so removing a subtask row removed nothing, or the link to the card
 with the subtask's number, and the row's link opened that card.
+
+## Cards waiting on a decision (card 2687)
+
+A card can be linked to a decision (card 2680). Until card 2687 the link only said the two
+were related. Now a link has one of two relations, `CARD_LINK_RELATIONS = ['relates', 'waits']`
+in `src/lib/server/decision-cards.ts`: **`relates`** says only that, and **`waits`** says the
+card cannot start until the decision is settled. A stored relation outside the list is read back
+as `relates` (`relationOf`), so a planted value holds nothing.
+
+### The rule
+
+A wait **holds** a piece of work in the plan when all of these are true, worked out on every
+read:
+
+- the link is `waits`;
+- the decision is shown `open` or `awaiting_ruling` (`WAITING_STATUSES`: stored `open`, or
+  `closed`, or `open` past its closing time). Ruled, superseded and withdrawn release the card
+  at once; nothing is written at the release. A superseded decision's wait does not pass to the
+  decision that superseded it: link that one too if the work waits on it. A draft is never
+  linked, and a planted one holds nothing;
+- the viewer **may view the decision** (`visibleDecisionIdsOf`, the register's own rule). A
+  disabled account, an administrator's included, may view none, so nothing holds a card for it;
+- the card is on a board the viewer can open, and is a member of the goal that is not
+  complete, not an option and not withheld.
+
+An **ordered subtask** of a held card (a subtask that is a node of the graph), not ticked,
+carries its card's waits: a step of the card is the card's work. A subtask is never linked
+itself, so it carries nothing of its own. External nodes never carry a wait.
+
+What holding does, and does not do:
+
+| Part of the summary | Effect of a held wait |
+|---|---|
+| `nextActionable` | The node is left out; the order of the rest is kept |
+| `blocked` | The node is listed, with `decisions` (the waits) beside `blockers`, which may be `[]`. Sorted by open blockers plus decisions, then id |
+| Each node | `waitingOnDecisions: PlanDecisionWait[]`, `[]` where nothing holds it |
+| `criticalPath`, `criticalPathNodes`, `graph.layers`, `graph.edges`, `downstreamCount`, `graph.unordered`, `progress` | **Unchanged.** A decision is not a node of the graph (D11): no edge, layer, reach or step is added, and these are the same for everyone. A step on the critical path that waits stays on it, tagged |
+
+A `PlanDecisionWait` is `{ id, title, shownStatus: 'open' | 'awaiting_ruling', closesAt }`
+(declared in `src/lib/plan-table.ts`, so the page reads the same type): exactly what the card
+window shows of a linked decision. Never its decider, participants, responses, tallies, survey
+answers, objections or requests to talk, nor any count of them, in the page, the API, the PDF or
+the mail.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Startable: no open blocker, no held wait
+    Startable --> Waiting: link set to waits on an open decision the viewer may view
+    Waiting --> Startable: decision ruled, superseded or withdrawn, or link set to relates or removed
+    Waiting --> Waiting: an open dependency added or finished (the wait still holds)
+    Startable --> Done: card completed
+    Waiting --> Done: card completed (waits ignored once done)
+    note right of Waiting
+      for a viewer who may not view the decision
+      the card stays Startable;
+      its ordered subtasks not ticked
+      are Waiting with it
+    end note
+```
+
+### Per viewer
+
+The plan's lists are made for whoever reads them, in this one respect. Someone who can open the
+card but may not view the decision is told nothing of it: for them the card is placed by its
+dependencies alone, with no placeholder, no count and no difference in any figure. Two API keys
+of different users may therefore be given different `nextActionable` and `blocked` lists for one
+plan; the critical path and the order of work stay the same for both.
+
+```mermaid
+flowchart LR
+    L["decision_card_links<br/>relation = waits"] --> F{"shown open or<br/>awaiting ruling?"}
+    F -- no --> X["ignored"]
+    F -- yes --> BF{"card on a board<br/>the viewer can open?"}
+    BF -- no --> X
+    BF -- yes --> V{"visibleDecisionIdsOf(viewer)<br/>may view? (disabled: none)"}
+    V -- no --> X
+    V -- yes --> W["decisionWaitsFor: waits by card"]
+    WS["workSummary(id, viewer)<br/>the work alone"] --> D["withDecisionWaits(summary, viewer)<br/>asks for member cards: open,<br/>not option, not withheld"]
+    W --> D
+    D --> N["node.waitingOnDecisions<br/>(card, and its ordered subtasks)"]
+    D --> A["nextActionable: left out"]
+    D --> B["blocked: listed with decisions"]
+    WS -. "unchanged" .-> C["critical path, layers,<br/>reach, progress"]
+    N --> P1["/plan/id page"]
+    B --> P2["GET summary, both trees"]
+    B --> P3["PDF, both trees"]
+    B --> P4["plan-created mail"]
+```
+
+`decisionWaitsFor(viewer, cardIds)` in `decision-cards.ts` is the one read. It reads the `waits`
+links first (through `decisionLinksOfCardsUnchecked`), so a plan with none reads no board; then
+it keeps only cards on a board the viewer can open, checking that itself rather than trusting
+its caller; then it asks `visibleDecisionIdsOf(viewer, …)` once. A test pins its callers to
+`decision-cards.ts` and `planning.ts`, and another pins `workSummary`'s to `planning.ts` and
+the plan-mail route. `withDecisionWaits` never changes the summary it is handed: it returns a
+new one, because the plan mail shares one work summary between recipients.
+
+### Where it shows
+
+- **The work table**: the row's state is Blocked; the expander is offered for a row with
+  blockers or decisions, titled "Show the N things this is waiting on" (both counted) and, open,
+  "Hide what this is waiting on". Each decision reads "waiting on decision", its title a link to
+  `/decisions/{id}`, then its status ("Open" or "Awaiting ruling") and " · closes <moment>"
+  where it has a closing time. The Blocked filter counts it.
+- **The graph**: the node is amber (blocked), its last line "waits on a decision · unblocks N",
+  or "waits on a decision" where it unblocks nothing; a waiting subtask's box says "waits" and
+  carries the SVG title "waits on a decision". The legend reads "Blocked or waiting on a
+  decision". In the unordered list the card is tagged "waits on a decision".
+- **The critical path**: the step is tagged "waits on a decision", with no link (the step is a
+  button); the work table carries the link.
+- **The PDF**: the node is Blocked, and under "What is waiting, and on what" each decision reads
+  `waiting on decision "<title>" (<status>)` after the work, one line each, cut with an ellipsis.
+  The intro says three things are recorded ("…and which cards are marked as waiting on a
+  decision"), the progress note reads "Waiting = something must finish, or a decision be ruled,
+  first.", the graph legend "Amber is waiting, on other work or on a decision", and the
+  document closes with **"Decisions named are those the exporter may view."**, because a PDF can
+  be passed to people who may not.
+- **The plan-created mail**: see [When a plan appears](#when-a-plan-appears-people-are-told).
+
+Not changed (card 3059 will take them): the board face's Blocked chip, the To Do page's
+Startable filter, a card's `isBlocked` and `blockedBy` in card answers
+(`getBlockedStateForCards`), dependency validation and unblock notices. When a decision is ruled
+no "Unblocked" comment is written on its waiting cards: it would reach card readers who may not
+view the decision. The plan page has no live channel, so a ruling shows on its next read.
+
+### Marking a card as waiting
+
+On the decision's page each linked card has a toggle, **"Waits on this decision"**, offered to
+an editor who may link cards (`mayMarkWaiting`: the decision stored `open` or `closed`, at the
+link cap too). Its words are fixed; `aria-pressed` says whether it waits, and pressed is drawn
+as a tick in a filled box with a solid border, not by colour alone. It sends
+`PUT /api/decisions/{id}/cards/{cardId}` with `{"relation": "waits"}` or
+`{"relation": "relates"}`. Where the toggle is not offered, a waiting card is marked "Waits on
+this decision" while the decision is open or awaiting its ruling. The card window shows "This
+card waits on it" beside such a decision. Over the API the same is
+`PUT /api/v1/decisions/{decisionId}/cards/{cardId}` with the same optional body; a PUT with no
+body leaves an existing link's relation as it is, so a repeated call never clears a wait. The
+body handling and refusals are in [the API reference](api-reference.md).
 
 ## Unblock notification
 
@@ -624,7 +778,8 @@ they answer a real question:
 
 The work is one table of every card in the goal, searchable and sortable, with a state filter
 (All, Startable, Blocked, Done) whose counts are what were once the Next actionable and Blocked
-lists. A blocked row opens to what it is waiting on. A goal with options also has an **Options**
+lists. A blocked row opens to what it is waiting on: open work, and since card 2687 the
+decisions it waits on that the viewer may view. A goal with options also has an **Options**
 filter, and each option's state reads **Option**, never Startable or Blocked; the Progress block
 notes "and N options" under its cards complete, and `/plan` writes a goal's progress as
 "3/5 and 2 options" (card 2462).
@@ -840,6 +995,12 @@ A key whose user cannot open a board is given its work withheld, as the screens 
 wrapper prints that text for such an end. Until 2026-10-14 the title, board, column and
 priority of an external blocker were given to anyone who could read the plan.
 
+Since card 2687 (OpenAPI 1.15.0, point 15) each node carries `waitingOnDecisions` and each
+`blocked` entry `decisions` (schema `PlanDecisionWait`), in the full answer and with
+`compact=true` alike: a card a decision holds, and its ordered subtasks, leave `nextActionable`
+and join `blocked`, possibly with `blockers: []`. Both lists are made for the key's user, so
+keys of two users may be given different lists for one plan.
+
 ### Recording a plan
 
 Goals are recorded in bulk, not link by link. On a board of any size, entering dependencies
@@ -909,7 +1070,12 @@ a goal across boards, is not mailed. Each one mailed is sent the plan as they wo
 on its page, from `getMilestoneSummary(milestoneId, recipient)`: a step on a board they
 cannot open is `#12 A card on a board you cannot open` in the chain, and "Covering" counts
 the boards they cannot open as "A board you cannot open". Recipients who can open the same
-boards share one summary and one mail, so the administrators cost one. The route hands
+boards share one summary and one mail, so the administrators cost one. Since card 2687 the
+route works out `workSummary(milestoneId, recipient)` once for each set of boards (it reads
+every dependency row) and applies `withDecisionWaits(work, recipient)` for each recipient, as
+two people with the same boards may view different decisions; a notice, and so a mail, is
+shared by recipients with the same boards and the same cards held by the same decisions. The
+mail carries counts alone, never a decision's title. The route hands
 `notifyPlanCreated` a function that gives a recipient's notice or null, so that
 `notifications.ts` imports neither `planning.ts` nor `milestones.ts`, which import it. The
 mail used to be read as the person who attached the cards would read it, for everyone. It
@@ -934,7 +1100,9 @@ document prints how many items and stages there are and points at the planning s
 picture nobody can read is worse than a sentence admitting it does not fit.
 
 Because it takes the same `MilestoneSummary` the screen renders, the document and the view
-cannot disagree about what the critical path is.
+cannot disagree about what the critical path is. It is made for whoever exports it, so it
+names only decisions they may view, and closes with "Decisions named are those the exporter
+may view." (card 2687, [Where it shows](#where-it-shows)).
 
 ## Files
 
@@ -945,7 +1113,8 @@ cannot disagree about what the critical path is.
 | `src/lib/server/work-access.ts` | Which board a piece of work lives on |
 | `src/lib/server/work-dependencies.ts` | The one service all four single-link routes call (card 2012): `readWorkDependencies`, `addWorkDependency` and `removeWorkDependency`, for a card or a subtask (`at: { kind, id }`), each write run inside the route's `writeAs`; it replaced `subtask-dependencies.ts` |
 | `src/lib/server/dependency-refusals.ts` | How one link that cannot be made or removed is answered, and the link written or taken away with its activity entry, for all four single-link routes |
-| `src/lib/server/planning.ts` | Every derived planning fact — graph, cycles, critical path, actionable, unblock hook |
+| `src/lib/server/planning.ts` | Every derived planning fact — graph, cycles, critical path, actionable, unblock hook; `workSummary` and `withDecisionWaits` (card 2687) |
+| `src/lib/server/decision-cards.ts` | `decisionWaitsFor`: the waits that hold a viewer's cards (card 2687), with its own board check |
 | `src/lib/server/milestones.ts` | Milestone CRUD, card assignment, access rules |
 | `src/routes/api/v1/milestones/**` | Bearer-token API |
 | `src/routes/api/milestones/**`, `src/routes/api/cards/[id]/dependencies` | Session-cookie siblings for the UI |

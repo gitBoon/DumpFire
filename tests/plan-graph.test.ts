@@ -27,6 +27,7 @@ import {
 	key,
 	layers,
 	nodeHeight,
+	nodeState,
 	positions,
 	type Node,
 	type WorkRef
@@ -34,7 +35,7 @@ import {
 
 const card = (id: number): Node => ({
 	kind: 'card', id, title: `Card ${id}`, priority: 'low', columnTitle: 'To Do', boardId: 3, boardName: 'Website', isComplete: false,
-	withheld: false, layer: 0, blockedBy: [], blocks: [], openBlockers: [], downstreamCount: 0, onCriticalPath: false
+	withheld: false, layer: 0, blockedBy: [], blocks: [], openBlockers: [], downstreamCount: 0, onCriticalPath: false, waitingOnDecisions: []
 });
 const sub = (id: number, parentCardId: number): Node => ({ ...card(id), kind: 'subtask', title: `Sub ${id}`, parentCardId });
 const ref = (kind: 'card' | 'subtask', id: number): WorkRef => ({ kind, id });
@@ -163,5 +164,14 @@ describe('the plan page’s graph, laid out as HEAD’s page laid it out (card 2
 		expect(clip('A title that runs on past the box', 12)).toBe('A title tha…');
 		// A space where it is cut is not kept before the ellipsis.
 		expect(clip('Ends in a space here', 9)).toBe('Ends in…');
+	});
+});
+
+describe('a node waiting on a decision (card 2687)', () => {
+	it('U2: is drawn blocked for its waits alone, with no open blocker; done, it is complete', () => {
+		const waits = { ...card(1), waitingOnDecisions: [{ id: 41, title: 'Which host', shownStatus: 'open' as const, closesAt: null }] };
+		expect(nodeState(card(1))).toBe('ready');
+		expect(nodeState(waits)).toBe('blocked');
+		expect(nodeState({ ...waits, isComplete: true })).toBe('complete');
 	});
 });

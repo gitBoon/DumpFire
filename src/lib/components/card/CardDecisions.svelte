@@ -10,8 +10,9 @@
   own (tests/card-window.test.ts). The answer lists only the decisions the
   viewer may view, with no count of the rest; each is drawn by its title,
   linking to its page, with its shown status and, while it is not ruled, its
-  closing time. Read only: links are made and removed on the decision's
-  page. It draws nothing for none; a read refused, unanswered or unreadable
+  closing time, and "This card waits on it" where the link is `waits` and the
+  decision is open or awaiting its ruling (card 2687). Read only: links are
+  made, removed and marked as waiting on the decision's page. It draws nothing for none; a read refused, unanswered or unreadable
   says so in one line, and never blocks the card.
 -->
 <script lang="ts">
@@ -44,6 +45,10 @@
 						<a class="decision-link" href="/decisions/{decision.id}">{decision.title}</a>
 						<span class="status" data-status={decision.shownStatus}>{STATUS_WORDS[decision.shownStatus] ?? decision.shownStatus}</span>
 						{#if decision.closesAt !== null}<span class="closes">Closes {shownMoment(decision.closesAt, '')}</span>{/if}
+						<!-- Card 2687 (R8): a wait holds the card only while the decision is open or awaiting its ruling. -->
+						{#if decision.relation === 'waits' && (decision.shownStatus === 'open' || decision.shownStatus === 'awaiting_ruling')}
+							<span class="waits" data-mark="waits">This card waits on it</span>
+						{/if}
 					</li>
 				{/each}
 			</ul>
@@ -59,5 +64,6 @@
 	.decision-link { min-height: 44px; display: inline-flex; align-items: center; flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; color: var(--text-primary); }
 	.status, .closes { font-size: 0.85rem; color: var(--text-secondary); }
 	.status { font-weight: 600; }
+	.waits { font-size: 0.85rem; font-weight: 600; color: var(--text-primary); }
 	.note { margin: 0; font-size: 0.85rem; color: var(--text-secondary); }
 </style>

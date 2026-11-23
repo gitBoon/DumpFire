@@ -77,6 +77,7 @@ import { isCoverValue, isHexColour } from '$lib/colours';
 import { reportRecipients } from '$lib/report-recipients';
 import { canonicalTimeZone } from '$lib/report-schedule-time';
 import { parseStamp, toStamp, type Edge, type Stamp } from '$lib/timestamps';
+import { saysJson } from './same-origin';
 
 /** A request body: a JSON object, none of whose fields has been looked at. */
 export type RequestBody = Record<string, unknown>;
@@ -168,6 +169,35 @@ export async function readBody(request: Request): Promise<RequestBody> {
 	const body: unknown = await request.json();
 	if (!isObject(body)) error(400, 'The request body must be a JSON object');
 	return body;
+}
+
+/** What `readOptionalBody` answers a body it will not read, 400. */
+export const SEND_AS_JSON = 'send the body as application/json';
+
+/**
+ * A body that may be left out (card 2687, R7; review C-S-L1, C-S-L2): null
+ * when none was sent, the JSON object when one was sent as JSON, or 400
+ * `send the body as application/json` for any other.
+ *
+ * "None was sent" is `request.body` null, as the node adapter leaves it, and
+ * neither a `Transfer-Encoding` nor a `Content-Length` other than exactly `0`.
+ * The adapter leaves `request.body` null for a request with no `Content-Type`
+ * whatever it carries, so a chunked one, or one that declares a length, sent a
+ * body the server never read: it is refused rather than answered as if nothing
+ * was asked. A `Content-Length` that is not a number still says one was sent.
+ *
+ * A body the adapter did make is read only when its `Content-Type` is
+ * `application/json`, its parameters aside (`saysJson`): `text/plain` holding
+ * JSON is refused in the same words, so the contract is the one it states.
+ */
+export async function readOptionalBody(request: Request): Promise<RequestBody | null> {
+	if (request.body === null) {
+		const length = request.headers.get('content-length');
+		if (request.headers.has('transfer-encoding') || (length !== null && length !== '0')) error(400, SEND_AS_JSON);
+		return null;
+	}
+	if (!saysJson(request)) error(400, SEND_AS_JSON);
+	return readBody(request);
 }
 
 // ─── What every field reader does first ──────────────────────────────────────

@@ -4,6 +4,10 @@
  * DumpFire records exactly two planning facts by hand:
  *   1. which piece of work blocks which  (`work_dependencies`)
  *   2. which milestone a card belongs to (`cards.milestone_id`)
+ * and card 2687 reads a third: a card's link to a decision marked `waits`
+ * (`decision_card_links`), which holds the card, for a viewer who may view
+ * the decision, out of what is startable while it is open. A decision is no
+ * node of the graph, so the order of work and the critical path never read it.
  *
  * Everything else the planning view shows — the dependency graph, the critical
  * path, what is actionable today, what is blocked and by what — is computed
@@ -45,7 +49,8 @@ import { WITHHELD_BOARD_NAME, WITHHELD_CARD_TITLE, WITHHELD_SUBTASK_TITLE } from
 import { emit } from './events';
 import { createLogger } from './logger';
 import { completionPercent } from '$lib/progress';
-import type { PlanSubtask } from '$lib/plan-table';
+import type { PlanDecisionWait, PlanSubtask } from '$lib/plan-table';
+import { decisionWaitsFor } from './decision-cards';
 
 const log = createLogger('PLAN');
 
@@ -181,6 +186,15 @@ export interface MilestoneNode extends PlanNode {
 	 * is finished is.
 	 */
 	isOption: boolean;
+	/**
+	 * The decisions this work waits on for the viewer (card 2687, R4): on a
+	 * member card not complete, not an option and not withheld, linked `waits`
+	 * to a decision shown open or awaiting its ruling that the viewer may view;
+	 * on an ordered subtask of such a card, not ticked, its card's. `[]` on every
+	 * other node. Not a node of the graph: it moves no layer, reach or step of
+	 * the critical path (D11), only `nextActionable` and `blocked`.
+	 */
+	waitingOnDecisions: PlanDecisionWait[];
 }
 
 export interface MilestoneSummary {
@@ -224,8 +238,12 @@ export interface MilestoneSummary {
 	criticalPath: number[];
 	criticalPathNodes: PlanNode[];
 	nextActionable: MilestoneNode[];
-	/** `card` is the blocked node — a card, or a subtask when `kind` says so. */
-	blocked: { card: MilestoneNode; blockers: PlanNode[] }[];
+	/**
+	 * `card` is the blocked node — a card, or a subtask when `kind` says so —
+	 * with its open blockers and the decisions it waits on (card 2687, R4):
+	 * `blockers` is empty where it waits on decisions alone.
+	 */
+	blocked: { card: MilestoneNode; blockers: PlanNode[]; decisions: PlanDecisionWait[] }[];
 }
 
 // ─── Node loading ────────────────────────────────────────────────────────────
@@ -865,6 +883,18 @@ function weightOf(priority: string): number {
  * milestone was moved to another board with its cards, until card 2179.
  */
 export function getMilestoneSummary(milestoneId: number, viewer: Actor): MilestoneSummary | null {
+	const work = workSummary(milestoneId, viewer);
+	return work === null ? null : withDecisionWaits(work, viewer);
+}
+
+/**
+ * The summary as the work alone places it (card 2687, R9): everything
+ * `getMilestoneSummary` gives, with no decision holding any card, so every
+ * `waitingOnDecisions` and `decisions` is `[]`. It reads every dependency, so
+ * the plan mail works it out once for each set of boards, and asks
+ * `withDecisionWaits` for each recipient.
+ */
+export function workSummary(milestoneId: number, viewer: Actor): MilestoneSummary | null {
 	const milestone = db.select().from(milestones).where(eq(milestones.id, milestoneId)).get();
 	if (!milestone) return null;
 
@@ -1060,7 +1090,8 @@ export function getMilestoneSummary(milestoneId: number, viewer: Actor): Milesto
 			openBlockers: openBlockers.map(parseNodeKey),
 			downstreamCount: reach.get(k)?.size ?? 0,
 			onCriticalPath: criticalSet.has(k),
-			isOption: byKey.get(k)!.isOption
+			isOption: byKey.get(k)!.isOption,
+			waitingOnDecisions: []
 		};
 	});
 	const nodeByKeyMap = new Map(nodes.map((n) => [refKey(n), n]));
@@ -1159,8 +1190,49 @@ export function getMilestoneSummary(milestoneId: number, viewer: Actor): Milesto
 		criticalPath,
 		criticalPathNodes,
 		nextActionable,
-		blocked: blocked.map((b) => ({ card: nodeByKeyMap.get(refKey(b.card))!, blockers: b.blockers }))
+		blocked: blocked.map((b) => ({ card: nodeByKeyMap.get(refKey(b.card))!, blockers: b.blockers, decisions: [] }))
 	};
+}
+
+/**
+ * `summary` with the decisions that hold its work for `viewer` (card 2687,
+ * R4, R5, R9), as a new summary: the one handed in is never changed, as the
+ * plan mail hands one to every recipient who opens the same boards.
+ *
+ * `decisionWaitsFor` is asked once, for the summary's own member cards that
+ * are not complete, not options and not withheld; it checks their boards
+ * again itself. A card it answers for carries its waits, and so does each of
+ * its ordered subtasks not yet ticked: a step of the card is the card's work.
+ * `nextActionable` leaves out whatever waits, in its order; `blocked` is made
+ * again from the nodes, a node with open blockers or waits, by how many of
+ * both it has and then its id. The critical path, the layers, the reach and
+ * the progress are the work's, the same for everyone (D11, R3).
+ */
+export function withDecisionWaits(summary: MilestoneSummary, viewer: Actor): MilestoneSummary {
+	const asked = summary.graph.nodes
+		.filter((n) => n.kind === 'card' && !n.external && !n.isComplete && !n.isOption && !n.withheld)
+		.map((n) => n.id);
+	const waits = decisionWaitsFor(viewer, asked);
+
+	const waitsOf = (n: MilestoneNode): PlanDecisionWait[] => {
+		if (n.external || n.isComplete || n.isOption || n.withheld) return [];
+		if (n.kind === 'card') return waits.get(n.id) ?? [];
+		return n.parentCardId === undefined ? [] : (waits.get(n.parentCardId) ?? []);
+	};
+	const nodes: MilestoneNode[] = summary.graph.nodes.map((n) => ({ ...n, waitingOnDecisions: waitsOf(n) }));
+	const byKey = new Map(nodes.map((n) => [refKey(n), n]));
+	const blockersOf = new Map(summary.blocked.map((b) => [refKey(b.card), b.blockers]));
+
+	const nextActionable = summary.nextActionable.map((n) => byKey.get(refKey(n))!).filter((n) => n.waitingOnDecisions.length === 0);
+	const blocked = nodes
+		.filter((n) => !n.external && !n.isComplete && !n.isOption && (n.openBlockers.length > 0 || n.waitingOnDecisions.length > 0))
+		.sort(
+			(a, b) =>
+				a.openBlockers.length + a.waitingOnDecisions.length - (b.openBlockers.length + b.waitingOnDecisions.length) || a.id - b.id
+		)
+		.map((n) => ({ card: n, blockers: blockersOf.get(refKey(n)) ?? [], decisions: n.waitingOnDecisions }));
+
+	return { ...summary, graph: { ...summary.graph, nodes }, nextActionable, blocked };
 }
 
 /**

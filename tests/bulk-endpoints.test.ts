@@ -12,9 +12,9 @@
  * sent. It also checks, on the run that succeeds, that nothing was sent while
  * the transaction was still open.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
 import {
 	activityLog,
 	cards,
@@ -35,8 +35,11 @@ import {
 	assignCard,
 	makeBoard,
 	makeCard,
+	makeCardLink,
+	makeDecision,
 	makeDependency,
 	makeMilestone,
+	makeParticipant,
 	makeSmtp,
 	makeSubtask,
 	makeUser,
@@ -368,6 +371,43 @@ describe('POST /api/v1/milestones/:milestoneId/cards/bulk', () => {
 			expect(to('editsa')).toContain(`<li>#${c1.id} A1</li>`);
 			expect(to('admin')).toContain(`<li>#${X.id} XSECRET2152</li>`);
 		} finally {
+			sent.restore();
+		}
+	});
+
+	it('mails two recipients who open the same boards each their own counts where only one may view the decision a card waits on, the plan worked out once for those boards (card 2687 P11)', async () => {
+		// `plain` and `participant` open board A alone. A1 waits on a decision on board B that only `participant`, who holds
+		// a live participant row on it, may view: for `plain` A1 is startable.
+		const s = withGoals();
+		const decision = makeDecision({ board: s.B.board, status: 'open', closesAt: '2099-01-01 12:00:00', openedAt: '2026-01-01 09:00:00', title: 'DSECRET2687' });
+		makeCardLink(decision, s.a[0], { relation: 'waits' });
+		const plain = makeUser({ username: 'plain' });
+		const participant = makeUser({ username: 'participant' });
+		for (const who of [plain, participant]) addBoardMember(s.A.board, who, 'viewer');
+		makeParticipant(decision, { userId: participant.id });
+		assignCard(s.a[0], plain);
+		assignCard(s.a[1], participant);
+
+		const sent = effects();
+		const prepare = vi.spyOn(sqlite, 'prepare');
+		try {
+			const res = await api('POST', `/api/v1/milestones/${s.goal.id}/cards/bulk`, {
+				user: s.owner,
+				body: { cardIds: [s.a[0].id, s.a[1].id] }
+			});
+			await sent.settle();
+			expect(res.status).toBe(200);
+
+			const to = (who: string) => sent.emails.find((e) => e.to === `${who}@example.test` && e.subject === 'Plan created: Goal')!.html;
+			expect(to('plain')).toContain('2 can be started now &middot; 0 waiting');
+			expect(to('participant')).toContain('1 can be started now &middot; 1 waiting');
+			expect(to('admin')).toContain('1 can be started now &middot; 1 waiting');
+			for (const who of ['plain', 'participant', 'admin']) expect(to(who), who).not.toContain('DSECRET2687');
+			// Every dependency is read once for each set of boards the recipients open: board A, and every board.
+			const wholeTable = prepare.mock.calls.filter(([text]) => /^select .* from "work_dependencies"$/.test(String(text)));
+			expect(wholeTable).toHaveLength(2);
+		} finally {
+			prepare.mockRestore();
 			sent.restore();
 		}
 	});

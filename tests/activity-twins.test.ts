@@ -2849,9 +2849,10 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'resultsReleaseGuard', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] },
 		{ service: 'releaseResults', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
 	],
-	// Card 2680 (decisions 17 and 21): linking and unlinking a card read no body; the relation is `relates` until card 2687.
+	// Card 2680 (decisions 17 and 21): unlinking a card reads no body. Card 2687 (R7): linking passes the body, read only
+	// when one is sent, and the service reads the relation from it.
 	'src/routes/api/decisions/[id]/cards/[cardId]/+server.ts PUT': [
-		{ service: 'linkCard', args: [code('caller'), { decisionId: code('id'), cardId: code('cardId'), relation: 'relates' }, null, { source: 'ui' }] }
+		{ service: 'linkCard', args: [code('caller'), { decisionId: code('id'), cardId: code('cardId') }, code('body'), { source: 'ui' }] }
 	],
 	'src/routes/api/decisions/[id]/cards/[cardId]/+server.ts DELETE': [
 		{ service: 'unlinkCard', args: [code('caller'), { decisionId: code('id'), cardId: code('cardId') }, null, { source: 'ui' }] }
@@ -2883,7 +2884,7 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'supersedeDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'api' }] }
 	],
 	// Card 2682, slice 2b: a question asked as the key's own participant row, an answer that is always an agent's draft
-	// (card 2678, decision 8), and a card linked and unlinked, neither reading a body.
+	// (card 2678, decision 8), and a card linked and unlinked, the link handed its optional body since card 2687.
 	'src/routes/api/v1/decisions/[decisionId]/questions/+server.ts POST': [
 		{ service: 'askQuestion', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'api' }] }
 	],
@@ -2891,7 +2892,7 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'answerQuestion', args: [code('caller'), { decisionId: code('decisionId'), questionId: code('questionId') }, code('body'), { source: 'api' }] }
 	],
 	'src/routes/api/v1/decisions/[decisionId]/cards/[cardId]/+server.ts PUT': [
-		{ service: 'linkCard', args: [code('caller'), { decisionId: code('id'), cardId: code('cardId'), relation: 'relates' }, null, { source: 'api' }] }
+		{ service: 'linkCard', args: [code('caller'), { decisionId: code('id'), cardId: code('cardId') }, code('body'), { source: 'api' }] }
 	],
 	'src/routes/api/v1/decisions/[decisionId]/cards/[cardId]/+server.ts DELETE': [
 		{ service: 'unlinkCard', args: [code('caller'), { decisionId: code('id'), cardId: code('cardId') }, null, { source: 'api' }] }

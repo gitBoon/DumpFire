@@ -54,7 +54,7 @@ import {
 	type DecisionResponse
 } from './db/schema';
 import type { SessionUser } from './auth';
-import { editableBoardIds, getAccessibleBoardIds, isAdmin, ownedBoardIds } from './board-access';
+import { editableBoardIds, getAccessibleBoardIds, isAdmin, isDisabledActor, ownedBoardIds, type Actor } from './board-access';
 import { flagsOfParticipants } from './decision-flags';
 import { questionsOfParticipations } from './decision-questions';
 import {
@@ -191,7 +191,7 @@ function needleOf(params: URLSearchParams, name: string, max: number, mode: 'pag
  */
 type Scope = { admin: true } | { admin: false; accessible: Set<number>; owned: Set<number>; editable: Set<number> };
 
-function scopeOf(user: SessionUser): Scope {
+function scopeOf(user: Actor): Scope {
 	if (isAdmin(user)) return { admin: true };
 	return {
 		admin: false,
@@ -222,7 +222,7 @@ function oneLiveRowWhere(userId: number): SQL {
  * theirs; and a draft on a board they own. The board-edit rule never limits
  * `view`.
  */
-function visibleWhere(user: SessionUser, scope: Scope): SQL | undefined {
+function visibleWhere(user: Actor, scope: Scope): SQL | undefined {
 	if (scope.admin) return undefined;
 	return or(
 		eq(decisions.authorUserId, user.id),
@@ -236,10 +236,16 @@ function visibleWhere(user: SessionUser, scope: Scope): SQL | undefined {
  * The ids among `ids` of the decisions `user` may view (decision 1): one
  * query per `IDS_AT_ONCE`, by `visibleWhere`, and never `decisionAccess` per
  * row. For every list that must filter decisions by `view`.
+ *
+ * Card 2687 (E-M1, S-L1): it takes any `Actor`, as the plan's viewer is one,
+ * and answers 401 to none, as it did. A disabled account, an administrator's
+ * included, may view no decision (card 2671's rule): it is given the empty
+ * set before its role is asked.
  */
-export function visibleDecisionIdsOf(user: SessionUser, ids: readonly number[]): Set<number> {
-	const caller = requireUser(user);
-	const visible = visibleWhere(caller, scopeOf(caller));
+export function visibleDecisionIdsOf(user: Actor | null | undefined, ids: readonly number[]): Set<number> {
+	if (!user) error(401, 'Not authenticated');
+	if (isDisabledActor(user)) return new Set();
+	const visible = visibleWhere(user, scopeOf(user));
 	const unique = [...new Set(ids)];
 	const found = new Set<number>();
 	for (let from = 0; from < unique.length; from += IDS_AT_ONCE) {

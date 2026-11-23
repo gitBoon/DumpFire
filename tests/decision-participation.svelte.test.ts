@@ -945,9 +945,10 @@ describe('the parts both participant pages share (card 2707)', () => {
 			maySupersede: true,
 			mayReadRecord: true,
 			mayAnswer: true,
-			linkedCards: [{ id: 21, title: 'Build the site', boardId: 3, boardName: 'Shop', archived: false }],
+			linkedCards: [{ id: 21, title: 'Build the site', boardId: 3, boardName: 'Shop', archived: false, relation: 'relates' }],
 			mayLinkCards: true,
-			mayUnlinkCards: true
+			mayUnlinkCards: true,
+			mayMarkWaiting: true
 		};
 
 		// The signed-in page draws each, so the link page's absences below are not empty checks.
@@ -957,6 +958,13 @@ describe('the parts both participant pages share (card 2707)', () => {
 		expect(session.querySelector('.edit-link')).not.toBeNull();
 		expect(textOf(session.querySelector('.crumb')!)).toBe('Website');
 		expect(session.querySelector('[data-section="linked-cards"]')).not.toBeNull();
+		// Card 2687: the toggle that marks a card as waiting.
+		const toggle = session.querySelector('button[data-action="wait"]')!;
+		expect([toggle.textContent, toggle.getAttribute('aria-pressed'), toggle.getAttribute('aria-label')]).toEqual([
+			'Waits on this decision',
+			'false',
+			'Waits on this decision: #21 Build the site'
+		]);
 
 		// The same data on the link page, as a loader handing it too much would.
 		clear();
@@ -968,7 +976,8 @@ describe('the parts both participant pages share (card 2707)', () => {
 		expect(textOf(link.querySelector('[data-line="later"]')!)).toBe('A later decision was ruled on without superseding this one');
 		expect(textOf(link.querySelector('[data-line="earlier"]')!)).toBe('This decision supersedes an earlier decision');
 		const text = textOf(link);
-		for (const word of ['Plan A first', 'Plan C', 'Website', 'Build the site', 'Shop', 'Results and ruling', 'Record', 'Supersede', 'Edit']) expect(text, word).not.toContain(word);
+		for (const word of ['Plan A first', 'Plan C', 'Website', 'Build the site', 'Shop', 'Results and ruling', 'Record', 'Supersede', 'Edit', 'Waits on this decision']) expect(text, word).not.toContain(word);
+		expect(link.querySelector('button[data-action="wait"]')).toBeNull();
 	});
 
 	it('2707-3: on either page, Reload after the stale-version 409 reads the page again once and draws the form afresh', async () => {
