@@ -2965,6 +2965,8 @@ describe('what a route answers, against the schema the document gives for it', (
 		);
 		expect(res.body.components.schemas.DecisionRecordEntry.description).toContain(`nor one of the four events of objections and requests to talk (${FLAG_KINDS_NAMED})`);
 		expect(res.body.components.schemas.DecisionRecordEntry.properties.kind.description).toContain('nor objection_raised, talk_requested, objection_answered or talk_outcome');
+		// Card 2688 (R16; its code review, E-L7): the kind a full record's PDF writes, named on the entry's kind.
+		expect(res.body.components.schemas.DecisionRecordEntry.properties.kind.description).toContain('and since 1.15.1 record_exported (a full record downloaded as a PDF)');
 		for (const kind of ['objection_raised', 'talk_requested', 'objection_answered', 'talk_outcome']) expect(held, kind).not.toContain(kind);
 		// Card 2947: what an API key was given, held when it ends; the PUT's answer; no-store; the seed; the exposed secret.
 		for (const words of [
@@ -3656,7 +3658,7 @@ describe('what a route answers, against the schema the document gives for it', (
 	// Card 3064 (R22, R-L1, the amendment's shape, D1): the 1.15.1 note word for word: the one-off effects not applied on
 	// an upgraded server, points (1) to (8), everything a client written for 1.3.1 sees change, then "Added with it, not
 	// breaking:", then the closing point. Cards 3059, 2688 and 2689 each insert a point before the closing one and renumber it:
-	// card 3059's is (9), and the closing one (10).
+	// card 3059's is (9), card 2688's (10), and the closing one (11).
 	// Its code review (CR-M3): point (5) names the reveal rule (1.15.0 (9)), and the closing point lists the answers that read
 	// differently rather than saying nothing else changed.
 	it('says in the 1.15.1 note what an upgraded server does not apply and everything a 1.3.1 client sees change, word for word (card 3064, D1)', () => {
@@ -3686,14 +3688,18 @@ describe('what a route answers, against the schema the document gives for it', (
 				"(9) GET /cards/{cardId} and GET /cards/{cardId}/dependencies give waitingOnDecisions, the decisions the card waits on while each is open or awaiting a ruling and the key's user may view it, and [] for a card that is complete or an option (card 3059); " +
 				'isBlocked and blockedBy are unchanged and still count dependencies alone, so a card is free to start when isBlocked is false and waitingOnDecisions is empty; ' +
 				'keys of two users may be given different lists for one card, and both answers carry Cache-Control: no-store; ' +
-				"(10) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry's source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), " +
+				// Card 2688 (R16): its point, inserted before the closing one, which is renumbered (11).
+				"(10) GET /decisions/{decisionId}/record may give entries of a new kind, record_exported, written when the decider or an administrator downloads the decision's full record as a PDF on its page (card 2688), " +
+				'naming no participant, with detail {} and versionNumber the version exported; the PDF itself is not offered to an API key; ' +
+				"(11) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry's source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), " +
 				"a 413 for a body declared too large, and every other refusal of an upload before its body is read, carries Connection: close (1.13.1 (3)), and a card's move between milestones it cannot see is refused in words of its own (1.12.0 (3)).\n\n"
 		);
 		// The points in order, the closing one last: a later card inserts its own before it and renumbers it.
 		const points = [...changes.slice(changes.indexOf('sees change: ')).matchAll(/ \((\d+)\) [a-zA-Z0-9]/g)].map((m) => Number(m[1]));
-		expect(points).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+		expect(points).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 		expect(changes.indexOf('Added with it, not breaking:')).toBeLessThan(changes.indexOf('(9) GET /cards/{cardId} and GET /cards/{cardId}/dependencies give waitingOnDecisions'));
-		expect(changes.indexOf('(9) GET /cards/{cardId}')).toBeLessThan(changes.indexOf('(10) no other operation, field or schema changed'));
+		expect(changes.indexOf('(9) GET /cards/{cardId}')).toBeLessThan(changes.indexOf('(10) GET /decisions/{decisionId}/record may give entries of a new kind, record_exported'));
+		expect(changes.indexOf('(10) GET /decisions/{decisionId}/record')).toBeLessThan(changes.indexOf('(11) no other operation, field or schema changed'));
 	});
 
 	// Card 2845: a note of its own, for a change of what costUsd answers.

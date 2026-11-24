@@ -2770,6 +2770,8 @@ describe('the security headers', () => {
 			'/decisions',
 			'/decisions/people/[personId]',
 			'/decisions/[id]/record',
+			// Card 2688 (R13): a decision as a PDF, the full record naming each participant beside their views.
+			'/api/decisions/[id]/pdf',
 			// Card 3059 (R12): the board, All Tasks and All To Do, each page and its data, and the two v1 card reads, which
 			// name the open decisions that hold a card for one person.
 			'/board/[id]',

@@ -2578,7 +2578,9 @@ describe('the decider-only details, the statement version and the API', () => {
 			'objection_raised',
 			'talk_requested',
 			'objection_answered',
-			'talk_outcome'
+			'talk_outcome',
+			// Card 2688 (R5): a full record taken as a PDF.
+			'record_exported'
 		]);
 		expect(DECISION_RULES.record).toEqual(['admin', 'decider']);
 		expect(DECISION_RULES.results).toEqual(['admin', 'decider']);

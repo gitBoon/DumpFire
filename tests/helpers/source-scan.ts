@@ -45,7 +45,9 @@ export const SERVICES: readonly string[] = [
 	'src/lib/server/decision-ruling-writes.ts',
 	'src/lib/server/decision-question-writes.ts',
 	// Card 2684: a participant's objection or request to talk to the decider.
-	'src/lib/server/decision-flag-writes.ts'
+	'src/lib/server/decision-flag-writes.ts',
+	// Card 2688: a full record taken as a PDF, noted on the decision's record.
+	'src/lib/server/decision-export-writes.ts'
 ];
 
 /**

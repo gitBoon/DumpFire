@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.98
+version: 1.99
 status: As-Built
 date: 2026-11-24
 tags:
+  - card-2688
+  - decision-pdf-export
   - card-3059
   - decision-waits-on-faces
   - card-3064
@@ -41,7 +43,7 @@ tags:
   - two-step-sign-in
   - authenticators
   - api-key-deadline
-description: "Non-technical overview of all DumpFire features for stakeholders, managers, and end users, with two-step sign-in not required until the superadmin requires it and no API key deadline until one is applied (card 3064), and a card waiting on an open decision shown Blocked on its board, All Tasks and All To Do (card 3059)"
+description: "Non-technical overview of all DumpFire features for stakeholders, managers, and end users, with a decision downloaded as a PDF, a shareable copy for every viewer and the private full record for the decider and administrators (card 2688), two-step sign-in not required until the superadmin requires it and no API key deadline until one is applied (card 3064), and a card waiting on an open decision shown Blocked on its board, All Tasks and All To Do (card 3059)"
 ---
 
 # DumpFire — Feature Overview
@@ -494,6 +496,21 @@ flowchart LR
     Cards -->|"Waits on this decision"| Plan["The goal's plan:<br/>the card waiting, naming the decision"]
     Plan -->|"the decision's title"| Page
 ```
+
+#### Downloading a decision as a PDF
+
+A decision can be taken out of DumpFire as a PDF, to file it or pass the ruling on (card 2688).
+Each PDF is made for the person who downloads it and never holds more than they can see on the
+page. Both are on the decision's page, beside **Results and ruling** and **Record**; neither is
+offered for a draft, on the personal-link page, or through an API key.
+
+- **Shareable copy (PDF)** — for anyone who can open the decision once it is out of draft. It holds what every one of them already sees: the question as published, the options with their pros and cons, who it affects (in the order written), the board's name as the decision recorded it, the ruling and its reason and conditions, and, once the decider has released them, the totals and comments without names ("The results have not been released." until then). It holds nobody's response, no names of the people consulted, no survey answer or count, no objection or request to talk, no figure by group, no question, no closing time, and not when the ruling was made. Every copy of one decision reads the same apart from the name of the person who downloaded it, and it ends by saying it holds only what everyone who may view the decision sees
+- **Full record (PDF)** — for the decider (while they can edit its board) and DumpFire's administrators, with the note "Private: holds names and views. Taking one is written on the record." It is what they see on screen: the decision and its ruling (whether early, against the responses, and who it cut off), what was released, the version in full and every earlier version listed with its change note, the objections and requests to talk with the replies, concerns about the ruling, questions with who asked them, then the current round's totals and figures by group, its responses by name with each person's survey answers, and last the record of who was told what and when. Earlier rounds are given as their totals only
+- **What the full record leaves out** — participants' addresses and anything else only an administrator sees on the record view, whoever downloads it. Very long written answers are cut at 1,000 characters with "[cut here: the results page holds the rest]"; a very large decision lists the first 500 responses by name and says how many more the results page holds, and the record's first 5,000 entries. Any PDF stops at 1,500 pages or 20 MB, saying so
+- **Marked as private** — every page of the full record carries a red band: "Private record: names, views, survey answers, objections and requests to talk. For the decider and DumpFire's administrators. Do not forward." Every page of either copy names the copy, the decision, who downloaded it and the day (never the time), and "page n of N"; the file's name says "full-record" or "shareable" and the day
+- **Written on the record** — each full record downloaded is noted on the decision's record as "Full record exported as a PDF", with who and when, because a copy outside DumpFire cannot be withdrawn or redacted later. If the decision changes while the copy is being made, the download is refused ("This decision changed while it was being exported: export it again") and nothing is noted. A shareable copy is not noted
+- **Limits** — 20 downloads an hour per person, both copies counted together ("You have exported 20 decisions in the last hour: the next can be exported from <time> UTC"); and one PDF is made at a time across DumpFire, so a download asked for while another is being made is told "Another decision is being exported: try again in a few seconds", which does not count against the hour
+- **Letters** — names and text are printed in the PDF's standard font, which has Western European letters only: other accented letters are printed plain (ł as l, ș as s) and anything else (Greek, Cyrillic, Chinese, emoji) as "?", with a note at the end that the decision's page shows them
 
 #### Survey questions
 

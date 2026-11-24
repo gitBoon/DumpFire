@@ -2779,6 +2779,11 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/decisions/[id]/dry-run/+server.ts POST': [
 		{ service: 'dryRunDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
 	],
+	// Card 2688 (R5, R6): a full record taken as a PDF, noted on the record in a writeAs of its own once it is drawn,
+	// handed the version, status and updatedAt it was drawn from; the shareable copy writes nothing. No v1 row.
+	'src/routes/api/decisions/[id]/pdf/+server.ts POST': [
+		{ service: 'recordExport', args: [code('caller'), { decisionId: code('id') }, code('drawn'), { source: 'ui' }] }
+	],
 	// Card 2679 (decision 5): a draft superseding a ruled decision.
 	'src/routes/api/decisions/[id]/supersede/+server.ts POST': [
 		{ service: 'supersedeDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }

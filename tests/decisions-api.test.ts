@@ -515,7 +515,7 @@ function sourceReadsOutside(file: string, source: string, mayDeclare = true): st
 describe('the decision services read the source only through sourceOf (3)', () => {
 	it('reads opts.source and names writingWithKey only inside the helper’s sourceOf, which no service declares, and the scan finds one outside it', () => {
 		// Card 2713 (D6 row 6, R5): the decision services on SERVICES and the modules on SERVICE_HELPERS, read from the lists
-		// themselves; asserted whole: the eight services (card 2684 adds the flags') and the helper, nine files.
+		// themselves; asserted whole: the nine services (card 2684 adds the flags', card 2688 the export's) and the helper, ten files.
 		const files = [...SERVICES.filter((file) => DECISION_SERVICE.test(file)), ...SERVICE_HELPERS];
 		expect(files).toEqual([
 			'src/lib/server/decision-authoring-writes.ts',
@@ -526,9 +526,10 @@ describe('the decision services read the source only through sourceOf (3)', () =
 			'src/lib/server/decision-ruling-writes.ts',
 			'src/lib/server/decision-question-writes.ts',
 			'src/lib/server/decision-flag-writes.ts',
+			'src/lib/server/decision-export-writes.ts',
 			'src/lib/server/decision-write-shared.ts'
 		]);
-		expect(files).toHaveLength(9);
+		expect(files).toHaveLength(10);
 		const read = files.map((file) => ({ file, source: readFileSync(join(process.cwd(), file), 'utf8') }));
 		const declaring = read.filter(({ file, source }) => sourceOfDeclarations(ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)).length > 0);
 		expect(declaring.map(({ file }) => file)).toEqual(['src/lib/server/decision-write-shared.ts']);

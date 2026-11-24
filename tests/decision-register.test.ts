@@ -1443,7 +1443,9 @@ describe('the record view', () => {
 				objection_raised: { flagId: 1, notice: 'asked', signedIn },
 				talk_requested: { flagId: 2, notice: 'held', signedIn },
 				objection_answered: { flagId: 1, notice: 'sent' },
-				talk_outcome: { flagId: 2, notice: 'not_reached' }
+				talk_outcome: { flagId: 2, notice: 'not_reached' },
+				// Card 2688 (R5): a full record taken as a PDF writes no detail but {}.
+				record_exported: {}
 			};
 		}
 

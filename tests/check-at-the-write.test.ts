@@ -2511,7 +2511,19 @@ const OUTSIDE_WRITE: Record<string, string> = {
 	whilePasswordHolds:
 		'Runs the write it is given, a writeAs whose callback calls the service, only while the stored hash is the one the ' +
 		"password was checked against (`$lib/server/auth`, card 2701): it reads the caller's account row in its own " +
-		'transaction, and decides nothing else.'
+		'transaction, and decides nothing else.',
+	holdDrawing:
+		"The one place on the server where a decision's PDF is drawn (`$lib/server/decision-report`, card 2688, R9a), an " +
+		"in-memory place in flight as an upload's is: no row and no caller. Taken between the writeAs that asks whether the " +
+		'caller may take the copy and the one that reads the projection, so that a caller refused never holds it (card ' +
+		"2688's code review, S-M1).",
+	generateDecisionPdf:
+		"Draws a decision's PDF from the projection the writeAs before it read (`$lib/server/decision-report`, card 2688): " +
+		'no row and no caller, and asynchronous, so it cannot run inside a transaction; the full record\'s entry is written ' +
+		'after it, in a writeAs that asks `record` again.',
+	decisionPdfFilename:
+		"The download's file name, from the decision's title, the copy and the export date (`$lib/server/decision-report`, " +
+		'card 2688): a string alone, no row, no caller.'
 };
 
 /** The source file a `$lib/server/...` import names, or null for any other import. */
@@ -7147,12 +7159,14 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 				]
 			},
 			// Card 2684 (R3, R7): a participant's objection or request to talk, signed in or by a personal link; the decider's reply.
-			'src/lib/server/decision-flag-writes.ts': { reads: [], writes: ['raiseFlag', 'raiseFlagByLink', 'replyToFlag'] }
+			'src/lib/server/decision-flag-writes.ts': { reads: [], writes: ['raiseFlag', 'raiseFlagByLink', 'replyToFlag'] },
+			// Card 2688 (R5, R6): a full record taken as a PDF, noted on the decision's record.
+			'src/lib/server/decision-export-writes.ts': { reads: [], writes: ['recordExport'] }
 		});
 		// Card 2713 (D6 row 2): however they are split, the decision services hold the 30 writes and 6 guards between them.
-		// Card 2684 adds a service of two writes, and its slice S2 a third, the reply: 33.
+		// Card 2684 adds a service of two writes, and its slice S2 a third, the reply: 33. Card 2688 adds the export's: 34.
 		const decisionServices = [...services].filter(([file]) => DECISION_SERVICE.test(file));
-		expect(decisionServices.flatMap(([, { writes }]) => writes)).toHaveLength(33);
+		expect(decisionServices.flatMap(([, { writes }]) => writes)).toHaveLength(34);
 		expect(decisionServices.flatMap(([, { reads }]) => reads)).toHaveLength(6);
 		// The page routes' options a new card's nested writes share with them (the card 2296 review).
 		expect(Object.fromEntries([...services].filter(([, { pageOptions }]) => pageOptions.length > 0).map(([file, { pageOptions }]) => [file, pageOptions]))).toEqual({
@@ -7182,6 +7196,7 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 		expect([...decisionServices].sort()).toEqual([
 			'src/lib/server/decision-authoring-writes.ts',
 			'src/lib/server/decision-card-link-writes.ts',
+			'src/lib/server/decision-export-writes.ts',
 			'src/lib/server/decision-flag-writes.ts',
 			'src/lib/server/decision-lifecycle-writes.ts',
 			'src/lib/server/decision-participant-writes.ts',

@@ -76,7 +76,9 @@ const spec = {
 			'(9) GET /cards/{cardId} and GET /cards/{cardId}/dependencies give waitingOnDecisions, the decisions the card waits on while each is open or awaiting a ruling and the key\'s user may view it, and [] for a card that is complete or an option (card 3059); ' +
 			'isBlocked and blockedBy are unchanged and still count dependencies alone, so a card is free to start when isBlocked is false and waitingOnDecisions is empty; ' +
 			'keys of two users may be given different lists for one card, and both answers carry Cache-Control: no-store; ' +
-			'(10) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry\'s source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), ' +
+			'(10) GET /decisions/{decisionId}/record may give entries of a new kind, record_exported, written when the decider or an administrator downloads the decision\'s full record as a PDF on its page (card 2688), ' +
+			'naming no participant, with detail {} and versionNumber the version exported; the PDF itself is not offered to an API key; ' +
+			'(11) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry\'s source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), ' +
 			'a 413 for a body declared too large, and every other refusal of an upload before its body is read, carries Connection: close (1.13.1 (3)), and a card\'s move between milestones it cannot see is refused in words of its own (1.12.0 (3)).\n\n' +
 			'**Changed on 2026-11-18 (version 1.15.0), breaking.** Ending an account\'s access also holds the webhooks it set that were switched off without a hold, and mails the board\'s owners (card 2923); ending an owner\'s or administrator\'s access, or lowering its role, holds every webhook whose secret it could read (card 2935): ' +
 			'(1) a webhook switched off without a hold (by PUT, or by a restore kept apart) whose setter then has their password reset, has their two-step sign-in reset (on the server\'s host, unless run with --keep-api-keys), uses an invite, ends their keys on their own password change, is disabled or is deleted is held as setter access ended; ' +
@@ -2328,7 +2330,9 @@ const spec = {
 				properties: {
 					kind: {
 						type: 'string',
-						description: 'What happened: created, published, included, responded, seen, ruled, extended…; never a question event, nor objection_raised, talk_requested, objection_answered or talk_outcome'
+						description:
+							'What happened: created, published, included, responded, seen, ruled, extended…, and since 1.15.1 record_exported (a full record downloaded as a PDF); ' +
+							'never a question event, nor objection_raised, talk_requested, objection_answered or talk_outcome'
 					},
 					at: { type: 'string', format: 'date-time' },
 					versionNumber: { type: ['integer', 'null'] },

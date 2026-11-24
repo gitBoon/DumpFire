@@ -305,7 +305,8 @@ const UNPUBLISHED_HEADERS: readonly [name: string, value: string][] = [
  * has not been published, and are cached and indexed nowhere (card 2697, Q12);
  * so are superseding's answer, a new draft, the results page, which names
  * each participant beside their response, and the ruling's and the release's
- * answers (card 2679).
+ * answers (card 2679); and a decision's PDF, whose full record names each
+ * participant beside their views (card 2688, R13).
  *
  * The board page, All Tasks and All To Do, and `GET /api/v1/cards/{cardId}`
  * and its `/dependencies`, name the open decisions that hold a card to the
@@ -387,6 +388,8 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	['/decisions', UNPUBLISHED_HEADERS],
 	['/decisions/people/[personId]', UNPUBLISHED_HEADERS],
 	['/decisions/[id]/record', UNPUBLISHED_HEADERS],
+	// Card 2688 (R13): a decision as a PDF, the full record naming every participant beside their views.
+	['/api/decisions/[id]/pdf', UNPUBLISHED_HEADERS],
 	// Card 3059 (R12, S-L1): the board, All Tasks and All To Do (each page and its data) and the two v1 card reads name
 	// the open decisions that hold a card, for one person alone.
 	['/board/[id]', UNPUBLISHED_HEADERS],

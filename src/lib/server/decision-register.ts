@@ -968,12 +968,18 @@ export function readPersonRecord(user: SessionUser, personId: number, query: { b
  * read came through (card 2682, D9, D31): administrator-only detail is
  * shown on the page alone, and an API key is given the question events with
  * no asker.
+ *
+ * Card 2688 (R3.11, S-M2): `adminDetail: false` takes the administrator-only
+ * detail away for an administrator too, for the full record's PDF, which can
+ * be forwarded anywhere. It can only take detail away: left out, the account
+ * decides, as before.
  */
 export type RecordContext = {
 	user: SessionUser;
 	labels: ReadonlyMap<number, string>;
 	participants: ReadonlyMap<number, string>;
 	source: 'ui' | 'api';
+	adminDetail?: false;
 };
 
 /** A key that names an id, which is never shown, at any depth (S3). */
@@ -1058,7 +1064,8 @@ export function recordEntryOf(event: RecordEventRow, ctx: RecordContext): Record
 	if (!page && (KEY_HIDDEN_EVENTS as readonly string[]).includes(event.kind)) {
 		throw new Error(`recordEntryOf: ${event.kind} could name who asked, objected or asked to talk, and is never given to an API key`);
 	}
-	const detail = detailOf(event.kind, event.detail, ctx, page && isAdmin(ctx.user));
+	// Card 2688 (S-M2): `adminDetail: false` only takes the administrator's detail away.
+	const detail = detailOf(event.kind, event.detail, ctx, page && ctx.adminDetail !== false && isAdmin(ctx.user));
 	const participant = event.participantId === null ? null : (ctx.participants.get(event.participantId) ?? null);
 	const entry = { kind: event.kind, at: event.at, versionNumber: event.versionNumber, participant, actor: { name: event.actorName, source: event.source }, detail };
 	return page ? entry : { ...entry, untrusted: true };
@@ -1079,12 +1086,16 @@ export function recordEntryOf(event: RecordEventRow, ctx: RecordContext): Record
  * four question events and card 2684's four flag events
  * (`KEY_HIDDEN_EVENTS`) are left out, in the query, filtered or not (code
  * review S1), as each could name who asked, objected or asked to talk.
+ *
+ * Card 2688 (R3.11, S-M2): `opts.adminDetail: false`, on the page's source,
+ * gives no administrator-only detail to an administrator either, for the full
+ * record's PDF (`recordEntryOf`). Left out, the account decides, as before.
  */
 export function readRecord(
 	user: SessionUser,
 	decisionId: number,
 	query: { participant: number | null; after: number | null },
-	opts: { source: 'ui'; limit: number }
+	opts: { source: 'ui'; limit: number; adminDetail?: false }
 ): RecordPage;
 export function readRecord(
 	user: SessionUser,
@@ -1096,7 +1107,7 @@ export function readRecord(
 	user: SessionUser,
 	decisionId: number,
 	query: { participant: number | null; after: number | null },
-	opts: { source: 'ui' | 'api'; limit: number }
+	opts: { source: 'ui' | 'api'; limit: number; adminDetail?: false }
 ): RecordPage | KeyRecordPage {
 	if (!Number.isSafeInteger(opts.limit) || opts.limit < 1 || opts.limit > RECORD_READ_MAX) {
 		throw new Error(`readRecord: limit must be a whole number from 1 to ${RECORD_READ_MAX}, and it is ${opts.limit}`);
@@ -1133,7 +1144,8 @@ export function readRecord(
 	const ctx = {
 		user: caller,
 		labels: labelsOf(decision.id),
-		participants: new Map(participants.map((row) => [row.id, row.name]))
+		participants: new Map(participants.map((row) => [row.id, row.name])),
+		...(opts.adminDetail === false ? { adminDetail: false as const } : {})
 	};
 	const heading = { id: decision.id, title: decision.title, shownStatus: decisionStatus(decision) };
 	const next = rows.length > opts.limit ? shown[shown.length - 1].id : null;

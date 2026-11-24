@@ -190,7 +190,10 @@ export const EVENT_KINDS = [
 	'objection_raised',
 	'talk_requested',
 	'objection_answered',
-	'talk_outcome'
+	'talk_outcome',
+	// Card 2688 (R5): the decision's full record downloaded as a PDF, naming no participant, `version_number` the version
+	// drawn, detail `{}`, by the decider or administrator who took it, through the page.
+	'record_exported'
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
@@ -220,6 +223,12 @@ export const RESPONSE_KINDS = ['vote', 'abstain', 'no_concerns', 'answered'] as 
  * question rows, never from these events. Card 2684 (R16) adds its four flag
  * events (`FLAG_EVENTS`): a participant's own flags are shown them from the
  * flag rows, never from these.
+ *
+ * Card 2688 (R5, S-L5) adds `record_exported`, a full record taken as a PDF.
+ * The list is documentation and a pin (tests/decision-register.test.ts keeps
+ * it off a person's own record); it is not what keeps an entry from webhooks,
+ * which are sent from board activity actions alone, and a record event is
+ * never one (card 2689 pins that).
  */
 export const DECIDER_ONLY_EVENTS: readonly EventKind[] = [
 	'ruled',
@@ -232,7 +241,8 @@ export const DECIDER_ONLY_EVENTS: readonly EventKind[] = [
 	'objection_raised',
 	'talk_requested',
 	'objection_answered',
-	'talk_outcome'
+	'talk_outcome',
+	'record_exported'
 ];
 
 /**
@@ -365,7 +375,9 @@ export const RECORD_DETAIL: Readonly<Record<EventKind, DetailSpec>> = {
 	objection_raised: { notice: 'value', signedIn: SIGNED_IN },
 	talk_requested: { notice: 'value', signedIn: SIGNED_IN },
 	objection_answered: { notice: 'value' },
-	talk_outcome: { notice: 'value' }
+	talk_outcome: { notice: 'value' },
+	// Card 2688 (R5): no detail is written; the version drawn is the event's version.
+	record_exported: {}
 };
 
 /**

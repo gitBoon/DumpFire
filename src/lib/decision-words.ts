@@ -647,7 +647,9 @@ export const EVENT_WORDS: Readonly<Record<string, string>> = {
 	objection_answered: 'Objection answered',
 	talk_outcome: 'Talk outcome recorded',
 	// Card 2685 (decision 11, S8): claims no delivery, as a person's own record never shows a mail outcome.
-	reminded: 'A reminder was due before closing'
+	reminded: 'A reminder was due before closing',
+	// Card 2688 (R5): the decider's and administrators' alone.
+	record_exported: 'Full record exported as a PDF'
 };
 
 /** An event's kind in words (`EVENT_WORDS`), or its stored name with its underscores as spaces. */
@@ -715,3 +717,73 @@ export const PARTICIPATION_ROLE_WORDS: Readonly<Record<'consulted' | 'informed',
 	consulted: 'Consulted',
 	informed: 'Informed'
 };
+
+// ─── A decision as a PDF (card 2688) ─────────────────────────────────────────
+
+/** The 409 for either copy of a draft (R1). */
+export const DRAFT_NOT_EXPORTED = 'A draft has not been published: there is nothing to export yet.';
+
+/** The 409 of a full record whose decision changed while it was being drawn (R6.5, E-L1, S-L4): nothing is noted on the record. */
+export const EXPORT_CHANGED = 'This decision changed while it was being exported: export it again';
+
+/** The 503 while another export is being drawn anywhere on the server (R9a), answered with `Retry-After: 10`. */
+export const EXPORT_BUSY = 'Another decision is being exported: try again in a few seconds';
+
+/** The 408 for a body that did not arrive within its deadline (card 2688's code review, S-M1): nothing was read, counted or held. */
+export function exportLateWords(seconds: number): string {
+	return `The request did not arrive within ${seconds} seconds: nothing was exported.`;
+}
+
+/** The 429 past the hourly allowance of exports (R9b), both copies counted together: `from` a stored moment, UTC. */
+export function exportsSpentWords(most: number, from: string): string {
+	return `You have exported ${most} decisions in the last hour: the next can be exported from ${from} UTC`;
+}
+
+/** The band on every page of the full record (R8): two lines, the first what it holds, the second who it is for. */
+export const PRIVATE_BAND = [
+	'Private record: names, views, survey answers, objections and requests to talk.',
+	"For the decider and DumpFire's administrators. Do not forward."
+] as const;
+
+/** The full record's closing statement (R8): what is never released, and that a copy cannot be redacted later. */
+export const FULL_RECORD_CLOSING =
+	'Survey answers, objections and requests to talk, and figures by group are never released to anyone else. ' +
+	'This copy is outside DumpFire: it cannot be withdrawn or redacted later, and taking it is written on the decision\'s record.';
+
+/**
+ * The shareable copy's closing line (R8; as card 2687's S-L5). It names no other decision, whoever exports it (card
+ * 2688's code review, S-L2), and says so.
+ */
+export const SHAREABLE_CLOSING =
+	'It holds only what everyone who may view this decision sees. Another decision is mentioned only as existing, never by its title.';
+
+/** After a person's text cut at `PDF_TEXT_MOST` characters (R3.6, E-H3). */
+export const TEXT_CUT = '[cut here: the results page holds the rest]';
+
+/** The end of an earlier round, given as its totals alone (R3.7). */
+export const EARLIER_ROUND_HELD = "The results page holds this round's responses.";
+
+/**
+ * After the full record's responses by name, where the round holds more than it lists (F2, ruled at S1): how many
+ * are left out, and that the results page holds them. The totals and the group breakdown always count every one.
+ */
+export function responsesHeldWords(left: number): string {
+	return left === 1
+		? 'One more response of this round is not listed here: the results page holds it.'
+		: `${left.toLocaleString('en-GB')} more responses of this round are not listed here: the results page holds them.`;
+}
+
+/** A removed participant's latest response, once the full record has listed as many responses as it lists (F2). */
+export const REMOVED_RESPONSE_HELD = 'their latest response is on the results page.';
+
+/** The end of the record section when the record holds more entries than one read gives (R10). */
+export const RECORD_MORE = 'The record holds more entries than this copy shows: the record view holds them all.';
+
+/** Where a PDF stops at its ceiling (R10). */
+export const PDF_CEILING_LINE = 'This copy stops here: it reached the most one PDF holds. The results page and the record view hold the rest.';
+
+/** The document's last line where any character was drawn as "?" (R11). */
+export const PDF_REPLACED_NOTE = "Some characters could not be shown in this PDF and appear as ?. The decision's page shows them.";
+
+/** The shareable copy's results before a release (R4). */
+export const RESULTS_NOT_RELEASED = 'The results have not been released.';

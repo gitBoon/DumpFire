@@ -954,7 +954,14 @@ describe('the parts both participant pages share (card 2707)', () => {
 		// The signed-in page draws each, so the link page's absences below are not empty checks.
 		const session = draw(DecisionPage, { data: pageData(everything) });
 		expect([...session.querySelectorAll('[data-section="banner"] a')].map((a) => a.getAttribute('href'))).toEqual(['/decisions/7', '/decisions/4']);
-		expect([...session.querySelectorAll<HTMLElement>('.page-actions [data-action]')].map((a) => a.dataset.action)).toEqual(['results', 'record', 'supersede']);
+		// Card 2688 (R14, E-M1): and the decision as a PDF, the shareable copy and the full record.
+		expect([...session.querySelectorAll<HTMLElement>('.page-actions [data-action]')].map((a) => a.dataset.action)).toEqual([
+			'results',
+			'record',
+			'supersede',
+			'export-shareable',
+			'export-full'
+		]);
 		expect(session.querySelector('.edit-link')).not.toBeNull();
 		expect(textOf(session.querySelector('.crumb')!)).toBe('Website');
 		expect(session.querySelector('[data-section="linked-cards"]')).not.toBeNull();
@@ -976,7 +983,23 @@ describe('the parts both participant pages share (card 2707)', () => {
 		expect(textOf(link.querySelector('[data-line="later"]')!)).toBe('A later decision was ruled on without superseding this one');
 		expect(textOf(link.querySelector('[data-line="earlier"]')!)).toBe('This decision supersedes an earlier decision');
 		const text = textOf(link);
-		for (const word of ['Plan A first', 'Plan C', 'Website', 'Build the site', 'Shop', 'Results and ruling', 'Record', 'Supersede', 'Edit', 'Waits on this decision']) expect(text, word).not.toContain(word);
+		for (const word of [
+			'Plan A first',
+			'Plan C',
+			'Website',
+			'Build the site',
+			'Shop',
+			'Results and ruling',
+			'Record',
+			'Supersede',
+			'Edit',
+			'Waits on this decision',
+			// Card 2688 (R14): no export from the personal link's page.
+			'Shareable copy (PDF)',
+			'Full record (PDF)'
+		]) {
+			expect(text, word).not.toContain(word);
+		}
 		expect(link.querySelector('button[data-action="wait"]')).toBeNull();
 	});
 

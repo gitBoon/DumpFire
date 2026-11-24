@@ -2128,6 +2128,15 @@ const TABLE: Record<string, Case | Case[]> = {
 		() => json(`/api/decisions/${decisionId}/release`, { revision: resultsRevisionOfTheDecision() }),
 		{ setup: aReleasableDecisionOfEditor }
 	),
+	// Card 2688 (R1, E-M3): the full record, the stricter gate (`record`): its decider's (with board edit) and an
+	// administrator's; the shareable copy is `view`'s, held by E4 and E5 of tests/decision-export.test.ts. The full
+	// record writes one entry on the decision's record.
+	'POST /api/decisions/[id]/pdf': own(
+		'editor',
+		['owner', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => sameOrigin(`/api/decisions/${decisionId}/pdf`, { copy: 'full' }),
+		{ setup: aRuledDecisionOfEditor }
+	),
 
 	// ── Card links (card 2680, decision 17) ──────────────────────────────
 	// `across`: edit access to the decision's board, B, and to the card's, A. The DELETE reads no body; the PUT reads one

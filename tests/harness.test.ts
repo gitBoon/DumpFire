@@ -145,6 +145,10 @@ const TEST_FILES = [
 	'decision-card-links.test.ts',
 	// Card 2680, slice 3b: the decision page's linked cards with Link and Unlink, and the card window's decisions, in the page.
 	'decision-card-links.svelte.test.ts',
+	// Card 2688: a decision as a PDF, the shareable copy and the full record, and the entry a full record writes.
+	'decision-export.test.ts',
+	// Card 2688 (R14): the two buttons of a decision's page that download it as a PDF, in the page.
+	'decision-export.svelte.test.ts',
 	// Card 2679: the results, the ruling, the release of results and superseding, and what the pages read of them.
 	'decision-ruling.test.ts',
 	// Card 2679, slice 2a: the results page, the ruling form and the release, in the page.
@@ -218,6 +222,8 @@ const TEST_FILES = [
 	'page-card-window.test.ts',
 	'page-failures.test.ts',
 	'password-checks.test.ts',
+	// Card 2688 (R11): text the standard PDF fonts can draw.
+	'pdf-text.test.ts',
 	// Card 2681: the people directory and its groups under API v1, and what a key may never change.
 	'people-api.test.ts',
 	'people-directory.test.ts',

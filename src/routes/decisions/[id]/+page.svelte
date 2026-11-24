@@ -49,6 +49,10 @@
 	 * (`FlagForm`), posting to `/api/decisions/[id]/flags`; the section is
 	 * drawn where they have raised one or may raise one now.
 	 *
+	 * Card 2688 (R14): in the same bar, a decision out of draft as a PDF
+	 * (`DecisionExport`): the shareable copy, which every viewer may take, and,
+	 * where `mayReadRecord`, the private full record.
+	 *
 	 * Card 2707: the banner and the response section are components shared
 	 * with the link page, `ParticipantBanner` (with no personal link) and
 	 * `ParticipantResponse` (to this page's route, keyed on the decision), so
@@ -62,6 +66,7 @@
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
+	import DecisionExport from '$lib/components/decision/DecisionExport.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
 	import FlagForm from '$lib/components/decision/FlagForm.svelte';
 	import LinkedCards from '$lib/components/decision/LinkedCards.svelte';
@@ -241,7 +246,7 @@
 	</header>
 
 	<main class="decision-content">
-		{#if data.mayReadResults || data.maySupersede || data.mayReadRecord}
+		{#if data.mayReadResults || data.maySupersede || data.mayReadRecord || !data.draft}
 			<!-- Not in the fixed header, which has no room for them at phone width. -->
 			<nav class="page-actions" aria-label="What you can do with this decision">
 				{#if data.mayReadResults}
@@ -260,6 +265,10 @@
 						bind:this={supersedeToggle}
 						onclick={toggleSupersede}>Supersede…</button
 					>
+				{/if}
+				<!-- Card 2688 (R14): the shareable copy out of draft, and the full record where the record may be read. -->
+				{#if data.decision.id !== undefined}
+					<DecisionExport decisionId={data.decision.id} draft={data.draft} mayReadRecord={data.mayReadRecord ?? false} />
 				{/if}
 			</nav>
 			{#if superseding}

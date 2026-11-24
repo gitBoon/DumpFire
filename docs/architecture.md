@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.155
+version: 1.157
 status: As-Built
 date: 2026-11-24
 tags:
+  - card-2688
+  - decision-pdf-export
   - card-3059
   - decision-waits-on-faces
   - card-2687
@@ -73,7 +75,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "A wait on an open decision on board faces, All Tasks, All To Do and the v1 card reads (card 3059): getDecisionWaitsForCards beside getBlockedStateForCards, decisionWaits per viewer, heldTooltip, waitingOnDecisions asked after the card checks, no-store on five routes, two live listeners. The group breakdown (card 2686): groupBreakdownOf in decision-results.ts, the current round per group from each participant's snapshot names, on readResults alone, never in the summary or a release, drawn by GroupBreakdown.svelte. Objections and requests to talk (card 2684): decision-flag-writes.ts (raise signed in or by link, the decider's reply), the ruling's two new refusals, the results revision over flags, who sees them (a change of decider included), the pages, the shared notice, cap and rest helpers, and the one list of tables that name a decision place. Decision survey questions (card 2683): rows plus words, survey-only decisions, any change but help asks everyone again, the answered kind, the tolerant answers reader, results per version and never released. The restore's outbound steps (seedOutbound, carryOutboundChanges, applyOutboundSchedules, applyOutboundSettings, applyOutboundWebhooks, holdResetSettersIn) and the sweep's outbound seed and pass (card 3004). The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "A decision as a PDF (card 2688): the shareable copy and the full record, readShareableExport and readFullExport in decision-export.ts, the body read under a deadline, the access asked before the route's hold (code review S-M1), the writeAs either side of the drawing, recordExport and its 409 (the release compared too), the record_exported entry, the renderer's order, caps, ceiling and yields in decision-report.ts, pdfSafe, DecisionExport.svelte. A wait on an open decision on board faces, All Tasks, All To Do and the v1 card reads (card 3059): getDecisionWaitsForCards beside getBlockedStateForCards, decisionWaits per viewer, heldTooltip, waitingOnDecisions asked after the card checks, no-store on five routes, two live listeners. The group breakdown (card 2686): groupBreakdownOf in decision-results.ts, the current round per group from each participant's snapshot names, on readResults alone, never in the summary or a release, drawn by GroupBreakdown.svelte. Objections and requests to talk (card 2684): decision-flag-writes.ts (raise signed in or by link, the decider's reply), the ruling's two new refusals, the results revision over flags, who sees them (a change of decider included), the pages, the shared notice, cap and rest helpers, and the one list of tables that name a decision place. Decision survey questions (card 2683): rows plus words, survey-only decisions, any change but help asks everyone again, the answered kind, the tolerant answers reader, results per version and never released. The restore's outbound steps (seedOutbound, carryOutboundChanges, applyOutboundSchedules, applyOutboundSettings, applyOutboundWebhooks, holdResetSettersIn) and the sweep's outbound seed and pass (card 3004). The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -2860,8 +2862,10 @@ shows survey figures to the decider alone and never per group in a release (buil
 breakdown gives no survey question figure per group, counts an `answered` response as responded
 and not as a vote, and is never released, [Results, the ruling and the
 release](#results-the-ruling-and-the-release)); card 2688's PDF holds
-answers only in the decider's and administrators' export; card 2689's webhooks never carry answers
-or survey figures; a card that wants to release answers must give `surveyWhoSees` a version,
+answers only in the decider's and administrators' export (built: the full record names them, the
+shareable copy prints the questions' words alone, [Exporting a decision](#exporting-a-decision-card-2688));
+card 2689's webhooks never carry answers or survey figures, and never a record event, since webhooks
+are sent from board activity actions alone and a `decision_events` kind is never one (card 2688, R5); a card that wants to release answers must give `surveyWhoSees` a version,
 record it per response and refuse answers given before it, and a comment given with an `answered`
 response is never releasable.
 
@@ -3124,8 +3128,177 @@ flowchart LR
 **Binding notes for later cards** (in `decision-results.ts` and the design's 5.2): card 2686
 shows no flag figure outside the decider's and administrators' views (built: its group breakdown
 reads no flag at all); card 2688's PDF puts flags
-in their export alone; card 2689's webhooks never carry a flag event or figure; card 3030 covers
+in their export alone (built: in the full record only, with names and replies, never in the shareable
+copy, [Exporting a decision](#exporting-a-decision-card-2688)); card 2689's webhooks never carry a flag event or figure; card 3030 covers
 `decision_flags` as decision content from unsealed restores; card 3047 redacts a reason or reply.
+
+### Exporting a decision (card 2688)
+
+Card 2688 (plan `docs/planning/card-2688-decision-pdf-export.md`, no migration) gives a decision's
+page two downloads. **The shareable copy** is what every viewer of the decision sees, for anyone
+`view` lets in once it is out of draft; **the full record** is what the decider and administrators
+see on screen, for those `record` lets in. Each is worked out from who is exporting and never holds
+more than they see; there is no API key route (an agent reads the record and summary as data).
+
+**The two projections** (`decision-export.ts`, plain reads typed `user: SessionUser`, not a
+service):
+
+| Projection | Gate | Built from | Never holds |
+|---|---|---|---|
+| `readShareableExport(user, id)` | `requireDecision(…, 'view')`: 404; a draft 409 `DRAFT_NOT_EXPORTED` | `readDecisionPage`, field by field (never spread): title, the **stored** `boardName`, shown status, vote mode, decider, withdrawal (drawn as its day); the version's options, survey questions and audiences built again by `viewModelOf(content, options, new Set())`, so audiences are in stored order for everyone; the ruling (`RulingView`, no moment); `released`; that a decision it supersedes, or a later one, exists (`supersedes: {}`, `laterDecision: { superseded }`) | a closing time, the ruling's moment, anyone's name or response, a survey answer or count, a flag, a concern, a question, a group figure, a linked card, anything of the exporter's own participation, the title of another decision even where the exporter may view it (code review S-L2) |
+| `readFullExport(user, id)` | `requireDecision(…, 'record')`: 404, then 403; a draft 409 | `readResults` (`ui`: flags, the group breakdown, survey answers), `readQuestions` (`ui`, an agent's unpublished draft left out), `readRecord(…, { source: 'ui', limit: 5000, adminDetail: false })`, `versionsOf` (every version's number, moment, publisher, asks-again, change note), `releasedOf`, `namedFor` for the other decisions; earlier rounds reduced to their totals (`totalsOf`) | administrator-only record detail (participants' addresses, the `signedIn` account), for every exporter; an earlier round's responses by name |
+
+`recordEntryOf`'s context gains `adminDetail?: false`, and `detailOf` is handed
+`page && ctx.adminDetail !== false && isAdmin(ctx.user)`: the option can only take detail away,
+and every other caller is unchanged. `FullExport.drawn` holds the version, stored status,
+`updatedAt` and `resultsReleasedAt` the projection was read at.
+
+**The order of work in the route** (`POST /api/decisions/[id]/pdf`, decision 25; restructured by
+the code review, S-M1, so that nothing is held while the body arrives or for a caller refused):
+
+1. The session (401) and the id (400).
+2. The body, read with `readBodyWithin(request, EXPORT_READ_DEADLINE_MS, …)` (5 seconds, as card
+   2910's upload read): past it `408` with `Connection: close` and `exportLateWords`, nothing held
+   or counted.
+3. **`writeAs` #1**, read only: `copy` (`readChoice`, 400); the account's hour looked at with
+   nothing taken (`allowanceState('decision-export:<userId>', 20, HOUR)`, both copies together, 429
+   naming when the next may be taken); then `requireExportable(user, id, copy)`
+   (`decision-export.ts`: `record` 404/403 or `view` 404, and 409 for a draft).
+4. `holdDrawing()` (`decision-report.ts`), the one place on the server a decision's PDF is drawn in
+   (`enterInFlight('decision-pdf:server', 1)`, card 2910's places in flight): held by another
+   export, `503` with `Retry-After: 10` and `EXPORT_BUSY`, the hour not spent. On `OUTSIDE_WRITE`
+   in `tests/check-at-the-write.test.ts`. Its `release` closure is called in a `finally` around 5
+   and 6 alone; a place a fault never gave back lapses with card 2910's sweep.
+5. **`writeAs` #2**, read only, with no turn of the event loop since #1: the hour taken
+   (`takeAllowance(…, 1, 20, HOUR)`), then the projection, which asks its gate again, returned from
+   the callback.
+6. **`generateDecisionPdf(projection)` outside any transaction** (asynchronous, as pdfkit is); it
+   and `decisionPdfFilename` are on `OUTSIDE_WRITE`. The place is given back.
+7. **`writeAs` #3**, full record only: `recordExport(caller, { decisionId }, drawn, { source: 'ui' })`
+   (`decision-export-writes.ts`, on `SERVICES`) asks `record` and "not a draft" again, refuses a key
+   (403), refuses `409 EXPORT_CHANGED` where the current version, stored status, `updatedAt` or
+   `resultsReleasedAt` moved while the copy was drawn (E-L2: `updatedAt` is to the second), and
+   appends one `record_exported` event (no participant, `version_number` the version drawn, detail
+   `{}`, the exporter, `ui`).
+8. One INFO line (`DECISIONS`: decision id, account id, copy, pages, whether the ceiling stopped
+   it; no title, no content) and the PDF: `Content-Type: application/pdf`,
+   `Content-Disposition: attachment; filename="decision-<id>-<slug>-full-record|shareable-<YYYY-MM-DD>.pdf"`,
+   `Content-Length`; `Cache-Control: no-store` and `X-Robots-Tag` are the route's
+   `UNPUBLISHED_HEADERS` (`ROUTE_HEADERS`).
+
+So no copy leaves without its entry, the record never shows an export that was not handed over,
+and the entry names the version actually drawn. A drawing that fails is a 500 with no entry.
+
+**The export entry and webhooks.** `record_exported` is in `EVENT_KINDS`, `RECORD_DETAIL` (`{}`),
+`EVENT_WORDS` ("Full record exported as a PDF") and `DECIDER_ONLY_EVENTS`, not in
+`OWN_RECORD_EVENTS` or `KEY_HIDDEN_EVENTS`: a decider's or administrator's key reading the v1
+record meets it (OpenAPI 1.15.1 point (10)). The decider-only list is documentation and a pin; what
+keeps the entry from webhooks is that webhooks fire from board **activity actions** alone
+(`ACTION_TO_EVENT`), and a `decision_events` kind is never one.
+
+**The renderer** (`decision-report.ts`) draws with the board reports' palette (`REPORT_COLORS`):
+
+- **Text the font can draw.** Every string goes through `pdfSafe` (`pdf-text.ts`): NFC; tab and
+  line breaks kept; control, format and bidi characters dropped; WinAnsi kept; anything else folded
+  to its base letter where it decomposes, or from a short table (Ł, Đ, ı), else `?`, and the
+  document then ends with `PDF_REPLACED_NOTE`. The font stays Helvetica (F1, own card). Each value
+  drawn as a line, heading or label of the document's own (`Sheet.line`, `heading`, `subheading`, a
+  quoted block's label, the footer's exporter) then goes through `oneLine`, each run of line breaks
+  and tabs one space (code review S-L1); a quoted block's own words keep their line breaks.
+- **People's words never pose as the document.** Everything a person or agent wrote is drawn in body
+  text in an indented block with a rule beside it, under a fixed label saying whose words they are;
+  no link annotation is made. The information dictionary is set here alone: `Title`
+  `Decision #<id>: <title>` (" (private record)" on the full record), `Author`, `Creator` and
+  `Producer` `DumpFire`, no `Subject` or `Keywords`, `CreationDate` the export's UTC day at midnight.
+- **The full record's order** (F2, ruled at S1): the decision, the ruling and release, the version in
+  full and the versions listed, the objections and requests to talk, the concerns and the questions,
+  all **before** the responses; then the current round (totals and the group breakdown always,
+  responses by name up to `RESPONSES_MOST` = 500 and then one line, `responsesHeldWords`, that the
+  results page holds the rest; a removed participant's latest within the same 500), the earlier
+  rounds' totals, and **the record last**, at most 5,000 entries and then `RECORD_MORE`. Each piece
+  of a person's own text is cut at `PDF_TEXT_MOST` = 1,000 characters with `TEXT_CUT`.
+- **The ceiling.** Long text is drawn in pieces of at most 2,000 characters and 60 lines
+  (`PIECE_LINES`, code review E-L1, so a piece always fits within the reserve however many line
+  breaks it holds). `room()` is asked before each piece: at 1,500 pages less a reserve, or 20 MB
+  counted as each finished page's content deflated plus the open page and a reserve per page
+  (D3), it draws `PDF_CEILING_LINE` and nothing more; the closing lines and every footer still follow.
+- **The event loop given back** (F2). `Sheet.breathe()` after each row or block yields
+  (`setImmediate`) once 50 rows or 20 ms have passed; the last pass decorates 25 pages at a time
+  (the rules beside quoted blocks, the private band on every page of the full record, the footer
+  "page n of N"), writes them out with pdfkit's `flushPages` given those pages alone, and yields.
+  A 5,000-participant full record with 5,000 record entries draws in about 2 seconds, holding the
+  loop at most about 50 ms (E21).
+
+**The page.** `DecisionExport.svelte` sits in the decision page's actions bar (the bar is drawn
+where the decision is out of draft too): "Shareable copy (PDF)" (`data-action="export-shareable"`)
+out of draft, and "Full record (PDF)" (`data-action="export-full"`, with its note "Private: holds
+names and views. Taking one is written on the record.") where `mayReadRecord`. Each posts
+`{ copy }` as JSON, saves the blob under the answer's file name (only `[a-z0-9.-]`, else
+`decision-<id>.pdf`), and says a refusal in the server's words (`failureMessage`). Once an export
+ends, the pressed button, disabled while it ran, has the focus again where the focus was left on
+nothing (code review E-L5). The personal link's page draws neither.
+
+```mermaid
+flowchart LR
+    U["Decision page<br/>DecisionExport.svelte"] -->|"POST {copy}"| R["/api/decisions/{id}/pdf"]
+    R --> RB["readBodyWithin, 5 s<br/>(else 408)"]
+    RB --> W0["writeAs 1 (read only)<br/>copy, allowanceState 20/h,<br/>requireExportable"]
+    W0 --> H{"holdDrawing()<br/>one place, server-wide"}
+    H -->|"taken by another"| B["503, Retry-After: 10<br/>nothing counted"]
+    H -->|"held (released in finally,<br/>once drawn)"| W1["writeAs 2 (read only)<br/>takeAllowance, the projection"]
+    W1 -->|"shareable"| S["readShareableExport<br/>(view)"]
+    W1 -->|"full"| F["readFullExport<br/>(record)"]
+    S --> P1["readDecisionPage allow-list<br/>stored board name, viewModelOf(…, new Set())"]
+    F --> RR["readResults (ui)<br/>current round; earlier rounds as totals"]
+    F --> RC["readRecord (ui, adminDetail: false)<br/>5,000 entries"]
+    F --> Q["readQuestions (ui)"]
+    F --> V["versionsOf"]
+    P1 --> D["generateDecisionPdf, outside any transaction<br/>pdfSafe, oneLine, 1,000-character cap, 500 responses,<br/>pieces of 2,000 characters / 60 lines,<br/>ceiling 1,500 pages / 20 MB, breathe()"]
+    RR --> D
+    RC --> D
+    Q --> D
+    V --> D
+    D -->|"full only"| W["writeAs 3 → recordExport<br/>record again; 409 if version, status,<br/>updatedAt or release moved; append record_exported"]
+    D -->|"shareable"| A["application/pdf, attachment, no-store<br/>decisionPdfFilename (date only)"]
+    W --> A
+    K["API key"] -. "never reaches /api/ (not v1)" .-> R
+```
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant H as Route
+    participant X as decision-export.ts
+    participant P as decision-report.ts
+    participant W as decision-export-writes.ts
+    B->>H: POST {copy: "full"}
+    H->>H: readBodyWithin(5 s), readBody (else 408)
+    H->>X: writeAs 1: readChoice, allowanceState, requireExportable(user, id, full)
+    X-->>H: may (else 429, 404, 403 or 409, nothing held)
+    H->>P: holdDrawing()
+    P-->>H: release (or null: 503, Retry-After)
+    H->>X: writeAs 2: takeAllowance, readFullExport(user, id)
+    X->>X: requireDecision(record), not a draft, reads (adminDetail false)
+    X-->>H: FullExport (drawn: versionNumber, status, updatedAt, resultsReleasedAt)
+    H->>P: generateDecisionPdf(export), no transaction open, yielding between rows
+    P-->>H: { pdf, pages, stopped }
+    H->>H: release() in finally
+    H->>W: writeAs 3: recordExport(caller, {decisionId}, drawn)
+    W->>W: inWrite, requireDecision(record), not a draft, unchanged? else 409, appendEvent
+    W-->>H: committed
+    H->>H: log one INFO line
+    H-->>B: 200 application/pdf, attachment
+```
+
+| File | What it holds |
+|---|---|
+| `src/lib/server/decision-export.ts` | `readFullExport`, `readShareableExport`, `requireExportable`, `versionsOf`; the types `FullExport`, `ShareableExport`, `DecisionExport` |
+| `src/lib/server/decision-export-writes.ts` | `recordExport`, on `SERVICES` |
+| `src/lib/server/decision-report.ts` | `generateDecisionPdf`, `decisionPdfFilename`, `holdDrawing` (`DRAWING_KEY`), `PDF_TEXT_MOST`, `PDF_PAGE_CEILING`, `PDF_BYTE_CEILING`, `RESPONSES_MOST`, `EXPORTS_AN_HOUR`, `exportAllowanceKey`, `EXPORT_READ_DEADLINE_MS`; pdfkit pinned to the exact version installed (0.18.0, code review E-L4), an upgrade to pass E17, E22, E24 and E25 first |
+| `src/lib/server/pdf-text.ts` | `pdfSafe`, `oneLine` |
+| `src/routes/api/decisions/[id]/pdf/+server.ts` | the route |
+| `src/lib/components/decision/DecisionExport.svelte` | the two buttons |
+| `src/lib/decision-words.ts` | the refusals, the band, the closing lines, the cut and ceiling lines, `exportsSpentWords`, `exportLateWords`, `responsesHeldWords` |
 
 ### Decisions through API v1 (card 2682)
 

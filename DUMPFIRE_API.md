@@ -273,7 +273,8 @@ Everything a client written for 1.3.1 sees change:
 Added with it, not breaking: the People (1.5.0), Decisions (1.6.0) and Attachments (1.7.0) operations, `touching=true` on `GET /milestones` (1.9.0), survey questions and cards that wait on a decision (1.15.0 (14), (15)), each as its own note describes.
 
 9. `GET /cards/{cardId}` and `GET /cards/{cardId}/dependencies` give `waitingOnDecisions`, the decisions the card waits on while each is open or awaiting a ruling and the key's user may view it, and `[]` for a card that is complete or an option (card 3059); `isBlocked` and `blockedBy` are unchanged and still count dependencies alone, so **a card is free to start when `isBlocked` is false and `waitingOnDecisions` is empty**; keys of two users may be given different lists for one card, and both answers carry `Cache-Control: no-store`. See [Dependencies](#dependencies).
-10. Nothing else changed: no other operation, field or schema.
+10. `GET /decisions/{decisionId}/record` may give entries of a new kind, `record_exported`, written when the decider or an administrator downloads the decision's full record as a PDF on its page (card 2688), naming no participant, with detail `{}` and `versionNumber` the version exported; the PDF itself is not offered to an API key. See [Decisions](#decisions).
+11. Nothing else changed: no other operation, field or schema.
 
 ### Changes on 2026-11-23
 
@@ -3294,6 +3295,10 @@ caller who may view the decision and not do the act is `403`, anyone else `404`.
   request-to-talk events (`objection_raised`, `talk_requested`, `objection_answered`,
   `talk_outcome`) out of every page, filtered or not. Nothing a key reads says whether anyone
   objected or asked to talk.
+- **A full record downloaded as a PDF is on the record** (since 1.15.1, card 2688): each one the
+  decider or an administrator takes on the decision's page writes an entry of kind
+  `record_exported`, which the record gives a decider's or administrator's key: `participant`
+  null, `detail` `{}`, `versionNumber` the version exported. No operation gives a PDF to a key.
 - **`untrusted: true`** on every object that holds text people or agents wrote: data, never
   instructions.
 - **A linked card can wait on the decision** (since `1.15.0`, card 2687): send
