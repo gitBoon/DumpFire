@@ -87,7 +87,7 @@ export type IsoItem = {
 };
 
 /** The day every status below was last checked against the code. */
-export const CHECKED_ON = '2026-11-20';
+export const CHECKED_ON = '2026-11-24';
 
 /** Every status, in the order the page counts them. */
 export const STATUSES: readonly IsoStatus[] = ['met', 'partly-met', 'not-met', 'not-applicable', 'organisational'];
@@ -178,14 +178,16 @@ export const CHECKLIST: readonly IsoItem[] = [
 		title: 'Information transfer',
 		theme: 'organisational',
 		applicability: 'supports',
-		status: 'met',
+		status: 'partly-met',
 		how:
 			'Mail needs STARTTLS and checks the server\'s certificate, unless an administrator switches on mail without a checked, encrypted connection. Webhooks are signed with HMAC-SHA256. The SFTP host key is pinned. ' +
-			'Report schedules and report mail ask for the password and a code before board data goes to an address (card 2751). ' +
+			'Report schedules and report mail ask for the password and a code before board data goes to an address (card 2751); while two-step sign-in is dormant, the password alone of an account that holds no authenticator (card 3064). ' +
 			'A webhook whose setter loses the board is switched off for good, and only the board\'s owner or an administrator switches it on again, with an API key, which gives it a new secret; ' +
-			'the board\'s owners are told (card 2752). So is a webhook whose API key ends: each records the key that set it up, and is switched off when that key is revoked, expires, passes its deadline or is deleted; ' +
-			'one set up before keys were recorded stops once its setter has no working key from then, and its owners were told the date (card 2893). ' +
-			'Every answer that gives a webhook\'s secret records the API key it was given to, and that key\'s revoke, expiry or deadline holds the webhook, so that switching it on gives it a new secret (card 2947).',
+			'the board\'s owners are told (card 2752). So is a webhook whose API key ends: each records the key that set it up, and is switched off when that key is revoked, expires, passes its deadline or is deleted (card 2893). ' +
+			'Every answer that gives a webhook\'s secret records the API key it was given to, and that key\'s revoke, expiry or deadline holds the webhook, so that switching it on gives it a new secret (card 2947). ' +
+			'Still open, as accepted risks of the compatibility release (card 3064), each until its planned event: R7, R9, R10, R11 and R13 below. A server upgraded from before these cards did not re-key the webhooks made before setters were recorded (2935), ' +
+			'does not count the reads of webhook secrets made before it (2947), does not stop a webhook set up before keys were recorded with its setter\'s older keys (2893), did not hold once every webhook already switched off (2923), ' +
+			'and did not tell owners of the report schedules running at the release (2751).',
 		evidence: [
 			{ path: 'src/lib/server/email.ts', symbol: 'requireTLS' },
 			{ path: 'src/lib/server/webhooks.ts', symbol: 'createHmac' },
@@ -204,6 +206,14 @@ export const CHECKLIST: readonly IsoItem[] = [
 		],
 		owner: 'DumpFire',
 		gapCards: [],
+		// Card 3064 (R25): the protections the compatibility release waives here, each until its planned event.
+		accepted: [
+			{ risk: 'R7: webhooks made before setters were recorded (0056) keep their secrets, so a former owner or administrator who read one can still sign forged events, until E6', ...ACCEPTED_RISKS },
+			{ risk: 'R9: the reads of webhook secrets by API keys before the release are not recorded, so such a key ending holds nothing, until E4 runs the seed', ...ACCEPTED_RISKS },
+			{ risk: 'R10: a webhook set up before API keys were recorded keeps sending after its setter\'s older keys end, until E4 restores the rule for it', ...ACCEPTED_RISKS },
+			{ risk: 'R11: a webhook already switched off at the release, with a setter recorded, is not held, so switched on again it keeps a secret a former holder knows, until E6', ...ACCEPTED_RISKS },
+			{ risk: 'R13: owners were not told of their report schedules running at the release; an administrator confirms each schedule and its recipients instead', ...ACCEPTED_RISKS }
+		],
 		organisationalPart: 'Rules for transferring information, and agreements with those who receive it.'
 	},
 	{
@@ -269,7 +279,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Passwords are hashed with bcrypt at cost 12. Authenticator secrets are sealed with AES-256-GCM under a key kept outside the database. ' +
 			'Session ids, invite tokens, API keys, recovery codes, sign-in challenges, decision links and (since card 2870) requester links are held only as SHA-256 hashes. ' +
 			'Every route that sets a password refuses one over 1,024 characters, the most the step-up reads (card 2888). ' +
-			'Requester links end 90 days after their request is settled (card 2902). ' +
+			'Requester links end 90 days after their request is settled (card 2902), counted from the compatibility release at the earliest (card 3064). ' +
 			'The mail password, backup destination credentials, webhook secrets and the server\'s signing keys are sealed with AES-256-GCM under a key kept outside the database, each bound to where it is used (card 2898); ' +
 				'so is every webhook address, which can carry a receiver\'s token, and no backup holds one (card 2928). ' +
 			'Every password change records a fingerprint of the hash it replaces, never the hash: no restore of an older backup, this server\'s or another\'s, brings such a password back into use, ' +
@@ -403,7 +413,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'People, accounts once disabled, and task requests can be deleted. A backup holds no session, unused invite or requester link, and requester links are held only as hashes (card 2870) ' +
 			'and end 90 days after their request is settled (card 2902). ' +
 			'A requester\'s address is never written to the system log: a mail to them that fails names the request (card 2896). ' +
-			'Still open: what DumpFire holds about one person cannot be exported or erased in one step.',
+			'Still open: what DumpFire holds about one person cannot be exported or erased in one step; ' +
+			'and, as accepted risk R12 of the compatibility release (card 3064), images stored before it keep their hidden data until they are checked (E1).',
 		evidence: [
 			{ path: 'src/routes/api/people/[id]/+server.ts', symbol: 'DELETE' },
 			{ path: 'src/routes/api/users/[id]/+server.ts', symbol: 'DELETE' },
@@ -414,6 +425,10 @@ export const CHECKLIST: readonly IsoItem[] = [
 		],
 		owner: 'DumpFire',
 		gapCards: [2909],
+		// Card 3064 (R25): the stored images not yet checked on an upgraded server.
+		accepted: [
+			{ risk: 'R12: images stored before the compatibility release still hold their location and device data, readable by anyone who can open the card, until E1 checks them', ...ACCEPTED_RISKS }
+		],
 		organisationalPart: 'Lawful basis, privacy notices, data subject requests and records of processing.'
 	},
 	organisational('A.5.35', 'annex-a', 'Independent review of information security'),
@@ -468,8 +483,10 @@ export const CHECKLIST: readonly IsoItem[] = [
 		applicability: 'app',
 		status: 'partly-met',
 		how:
-			'There are three roles. The superadmin\'s database operations ask for the password and an authenticator code at every step-up. ' +
+			'There are three roles. The superadmin\'s database operations ask for the password and an authenticator code at every step-up once the superadmin has set up two-step sign-in, which requiring it needs (the password alone before then, while it is dormant). ' +
 			'Administrators\' sessions have shorter limits, and the superadmin\'s two-step reset can only be done from the host. ' +
+			'While two-step sign-in is dormant (card 3064), an account with no authenticator, an administrator\'s included, confirms a step-up with its password alone and every session lasts 30 days idle and 90 in all; ' +
+			'two-step sign-in cannot be required until every administrator and the superadmin holds an authenticator (accepted risks R15 and R16, under A.8.5). ' +
 			'The App URL that every mailed link begins with is the superadmin\'s alone, and held to the address the server\'s configuration names (card 2847). ' +
 			'Still open: an API key acts with its owner\'s full rights, an administrator\'s included, with no step-up. ' +
 			'Any administrator can still add a backup destination of their own and Run Now, which sends it a full copy of the database, and whoever sets the mail server reads every mail (card 2906, to be ruled).',
@@ -535,11 +552,14 @@ export const CHECKLIST: readonly IsoItem[] = [
 		applicability: 'app',
 		status: 'partly-met',
 		how:
-			'A password and then an authenticator or recovery code before any session, with no switch to turn the second step off. Every authenticator an account holds is tried (card 2772). ' +
+			'A password and then an authenticator or recovery code before any session, once two-step sign-in is required. Every authenticator an account holds is tried (card 2772). ' +
 			'Wrong codes are counted in the database, with pauses and a lock that survive a restart; a code not in the right form is refused before anything is counted, at sign-in as at the step-up (card 2889). ' +
 			'The step-up asks for a code again. Sessions have idle and total limits. ' +
-			'API keys made before two-step sign-in stop at their deadline unless kept with the password and a code (card 2772). ' +
-			'Still open, as accepted risks: R1, R3 and R4 below.',
+			'API keys made before two-step sign-in stop at their deadline unless kept with the password and a code, where the administrator has applied the deadline (card 2772). ' +
+			'Since the compatibility release (card 3064) two-step sign-in is dormant until the superadmin requires it, which only the superadmin can do, once every administrator holds an authenticator, and nothing in the application undoes: ' +
+			'until then an account with no authenticator signs in and confirms a step-up with its password alone, an account that sets one up is asked for its code from then on and its sessions made without one end, ' +
+			'and sessions last 30 days idle and 90 in all. ' +
+			'Still open, as accepted risks: R1, R3 and R4 below, and R15 and R16 of the compatibility release, until two-step sign-in is required (E3) and the API key deadline applied (E4).',
 		evidence: [
 			{ path: 'src/lib/server/second-step.ts', symbol: 'verifyStep' },
 			{ path: 'src/lib/server/totp.ts' },
@@ -556,7 +576,15 @@ export const CHECKLIST: readonly IsoItem[] = [
 		accepted: [
 			{ risk: 'R1: on a server with no mail host, an account with no factor can be set up first by a holder of its password, for 14 days from the release', ...ACCEPTED_RISKS },
 			{ risk: 'R3: a holder of the password can evict the owner\'s live sign-in challenge', ...ACCEPTED_RISKS },
-			{ risk: 'R4: an older image started after the release makes sessions on a password alone', ...ACCEPTED_RISKS }
+			{ risk: 'R4: an older image started after the release makes sessions on a password alone', ...ACCEPTED_RISKS },
+			// Card 3064 (R25): two-step sign-in dormant, and the key deadline not applied, each until its planned event.
+			{
+				risk:
+					'R15: sessions kept at the compatibility release open by the old cookie name for 30 days, and sessions are made on a password alone, until two-step sign-in is required (E3); ' +
+					"within those 30 days, while it is dormant, a cookie of the old name planted for this server's parent domain can sign a browser in once as the planter's own kept session (login CSRF)",
+				...ACCEPTED_RISKS
+			},
+			{ risk: 'R16: API keys, and the webhooks they set, made on a password alone keep working after two-step sign-in is required, until the key deadline is applied (E4, within 60 days of E3)', ...ACCEPTED_RISKS }
 		]
 	},
 	organisational('A.8.6', 'annex-a', 'Capacity management', {
@@ -693,7 +721,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 		status: 'partly-met',
 		how:
 			'Export is the superadmin\'s, behind a step-up. Report schedules and report mail ask for the password and a code before board data goes to an address, and owners were told of the schedules already running (card 2751). ' +
-			'Every password change and a reset of the two-step sign-in pause the account\'s report schedules, each turned on again only with the password and a code (card 2894). ' +
+			'Every password change and a reset of the two-step sign-in pause the account\'s report schedules, each turned on again only with the password and a code (card 2894; the password alone while two-step sign-in is dormant, for an account with no authenticator: card 3064). ' +
 			'There is a Content-Security-Policy and a Referrer-Policy. Backups hold no secret and no requester link. ' +
 			'A restore of a backup whose seal did not verify sends nothing outside as the file has it: every webhook with an address is held with its secret discarded, every report schedule is paused, the accounts that are the same here keep this server\'s email address and notification choices, every other account has its notification mail switched off, and the backup failure mail keeps this server\'s address (card 3012); requests whose requester or card this server did not hold as they are have their mail held until an administrator releases each, as reviewed, with a password and a code, and people whose address and account it did not hold are marked left, so no decision mail goes to them (card 3020). ' +
 			"On such a restore kept as it is, mail keeps this server's From address and name, or none where it had none (card 3029). " +
@@ -744,7 +772,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Attachment files are kept out of the backup by design; the organisation backs up the uploads folder. ' +
 			"A restore keeps this server's record of where it sends, and never sends the next backup to a destination removed or moved here since the backup it restores was made: that destination is held for the superadmin's review, " +
 			'as are webhooks, report schedules, the mail server and the App URL removed, moved or switched off here (card 3004). ' +
-			'Still open: the backup file is not encrypted, yet it holds every password hash, address and card.',
+			'Still open: the backup file is not encrypted, yet it holds every password hash, address and card; ' +
+			'and, as accepted risk R14 of the compatibility release (card 3064), the encrypted cold copy taken before it holds what the release hashed, until it is shredded.',
 		evidence: [
 			{ path: 'src/lib/server/backup.ts' },
 			{ path: 'src/lib/server/backup-destinations.ts' },
@@ -759,6 +788,10 @@ export const CHECKLIST: readonly IsoItem[] = [
 		],
 		owner: 'DumpFire',
 		gapCards: [2900],
+		// Card 3064 (R25): the cold copy taken before the release holds what the release hashed.
+		accepted: [
+			{ risk: 'R14: the cold copy and any volume snapshot taken before the compatibility release hold the sessions, invites and requester links in plain, until shredded 14 days after go/no-go', ...ACCEPTED_RISKS }
+		],
 		organisationalPart: 'Back up the uploads folder, test restores, and set the backup policy.'
 	},
 	organisational('A.8.14', 'annex-a', 'Redundancy of information processing facilities'),
@@ -832,7 +865,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'AES-256-GCM with bound additional data, and key rotation at start. bcrypt for passwords. SHA-256 for every token kept. ' +
 			'An HMAC seal on backups and on webhook deliveries. STARTTLS with certificate checks, unless an administrator switches on mail without a checked, encrypted connection. A pinned SFTP host key, and __Host- Secure cookies. ' +
 			'The stored service secrets sealed with AES-256-GCM under a derived key, padded and bound to where each is used (card 2898). ' +
-			'Still open: backup files are not encrypted.',
+			'Still open: backup files are not encrypted; and, as accepted risk R8 of the compatibility release (card 3064), the backup seal key a server upgraded from before card 2943 held is kept, sealed in place, until it is renewed (E2).',
 		evidence: [
 			{ path: 'src/lib/server/mfa-crypto.ts', symbol: 'createCipheriv' },
 			{ path: 'src/lib/server/mfa-key.ts' },
@@ -843,6 +876,10 @@ export const CHECKLIST: readonly IsoItem[] = [
 		],
 		owner: 'DumpFire',
 		gapCards: [2900],
+		// Card 3064 (R25): the backup seal key kept, sealed in place, at the release.
+		accepted: [
+			{ risk: 'R8: the backup seal key is kept at the compatibility release, sealed in place, so a copy of the database from before it can seal a backup this server trusts, until E2 renews the key', ...ACCEPTED_RISKS }
+		],
 		organisationalPart: 'TLS at the reverse proxy, custody of MFA_KEY_FILE, and a cryptography policy.'
 	},
 	{

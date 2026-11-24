@@ -13,7 +13,7 @@
 	import Toast from '$lib/components/Toast.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { toasts } from '$lib/stores/toast';
-	import { PURGE_WARNING, cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
+	import { cardDeleteWarning, deleteFailure, failureMessage, purgeWarning } from '$lib/api';
 	import { stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import { parseStamp } from '$lib/timestamps';
 
@@ -115,7 +115,7 @@
 	async function purgeAll() {
 		showConfirm(
 			'Purge All Archived Cards',
-			PURGE_WARNING,
+			purgeWarning(data.codeAsked),
 			'Purge All',
 			async (proof: StepUpProof) => {
 				purging = true;

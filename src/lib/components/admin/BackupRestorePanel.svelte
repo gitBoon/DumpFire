@@ -32,7 +32,9 @@
 	import { holdFocus } from '$lib/dialog-focus';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
-	import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { page } from '$app/state';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, CONFIRMATION_HEADER, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	/** This instance's default way to restore, from the page's load. */
 	let { importOutsideDefault }: { importOutsideDefault: 'keep' | 'off' } = $props();
@@ -378,7 +380,7 @@
 	 */
 	async function confirmImport() {
 		const chosen = importFile;
-		if (!proofTyped(importPassword, importCode) || importConfirming || !chosen) return;
+		if (!proofTyped(importPassword, importCode, page.data.codeAsked) || importConfirming || !chosen) return;
 		const currentPassword = importPassword;
 		const currentCode = importCode;
 		importPassword = '';
@@ -519,7 +521,7 @@
 			</div>
 			<div class="backup-info">
 				<strong>Export Database</strong>
-				<p>Download the complete database as a .db file — includes all data automatically. {ASKS_FOR_PASSWORD}</p>
+				<p>Download the complete database as a .db file — includes all data automatically. {asksForPassword(codeAskedHere())}</p>
 			</div>
 			<button class="btn-backup export" onclick={askExport} disabled={exporting}>
 				{#if exporting}
@@ -539,7 +541,7 @@
 			</div>
 			<div class="backup-info">
 				<strong>Import Database</strong>
-				<p>Restore from a backup file. <span class="warning-text">This will replace ALL current data.</span> {ASKS_FOR_PASSWORD}</p>
+				<p>Restore from a backup file. <span class="warning-text">This will replace ALL current data.</span> {asksForPassword(codeAskedHere())}</p>
 			</div>
 			<button class="btn-backup import" onclick={pickImportFile} disabled={importing}>
 				{#if importing}
@@ -661,13 +663,13 @@
 			</div>
 			<!-- The caller's own password (card 2701), sent alone to the confirm; the backup is uploaded once it is accepted. -->
 			<CurrentPasswordField bind:value={importPassword} bind:code={importCode} refusal={importRefusal} readonly={importConfirming} onEnter={confirmImport} />
-			<p class="import-default-note">{ASKS_FOR_PASSWORD} Confirm checks it, and then sends the backup.</p>
+			<p class="import-default-note">{asksForPassword(codeAskedHere())} Confirm checks it, and then sends the backup.</p>
 			<div class="modal-actions">
 				<button class="btn-ghost" onclick={cancelImportDialog} disabled={importConfirming}>Cancel</button>
 				<button
 					class="btn-danger-solid"
 					onclick={confirmImport}
-					disabled={!proofTyped(importPassword, importCode) || importConfirming}
+					disabled={!proofTyped(importPassword, importCode, page.data.codeAsked) || importConfirming}
 					aria-busy={importConfirming ? 'true' : undefined}
 				>{importConfirming ? 'Working…' : 'Confirm'}</button>
 			</div>
@@ -679,7 +681,7 @@
 {#if askingToExport}
 	<ConfirmModal
 		title="Export Database"
-		message={`The file holds every account's email address and password hash, and every setting. Keep it where only you can read it. ${ASKS_FOR_PASSWORD}`}
+		message={`The file holds every account's email address and password hash, and every setting. Keep it where only you can read it. ${asksForPassword(codeAskedHere())}`}
 		confirmText="Export"
 		confirmDanger={false}
 		askPassword

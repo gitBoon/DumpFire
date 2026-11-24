@@ -126,7 +126,13 @@ export const sessions = sqliteTable('sessions', {
 	// 2769). createSession writes 1; findSession refuses and deletes a hashed
 	// row with 0. An older image's sessions are held in plain, so this image
 	// never finds them, and endPlainSessions sweeps them at start (card 2775).
-	twoStep: integer('two_step').notNull().default(0)
+	twoStep: integer('two_step').notNull().default(0),
+	// 1 for a session migration 0084 kept at the compatibility release (card
+	// 3064) and nobody has used by the old cookie name since, 2 once swapped to
+	// a new code under the secure name (its last 60 seconds), 0 for every
+	// other session. Written by 0084 and by the swap alone; "kept" is never
+	// read from a date.
+	keptAtRelease: integer('kept_at_release').notNull().default(0)
 }, (table) => [
 	index('idx_sessions_user_id').on(table.userId)
 ]);

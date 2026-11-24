@@ -22,9 +22,14 @@ const log = createLogger('TEST');
 
 // `settings` is a key and a value, which is all these tests need of a table.
 const put = (key: string) => sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(key, 'x');
-// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750).
+// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750); nor
+// two-step sign-in's switch, which `resetDb` writes back (card 3064, R23).
 const keys = () =>
-	(sqlite.prepare("SELECT key FROM settings WHERE key NOT IN ('request_form_secret', 'mfa_key_check') ORDER BY key").all() as { key: string }[]).map((r) => r.key);
+	(
+		sqlite
+			.prepare("SELECT key FROM settings WHERE key NOT IN ('request_form_secret', 'mfa_key_check', 'two_step_required_at') ORDER BY key")
+			.all() as { key: string }[]
+	).map((r) => r.key);
 const logged = () =>
 	sqlite.prepare('SELECT timestamp, level, context, message, meta FROM system_logs ORDER BY id').all() as {
 		timestamp: string;

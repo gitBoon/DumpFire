@@ -76,6 +76,8 @@ import { keyGroup, keyPerson, type KeyGroup, type KeyPerson } from './people-sha
 import { readChoice, readEmail, readId, readIds, readText, type RequestBody } from './request-body';
 import { requireAdmin } from './route-guards';
 import { stamp } from '$lib/timestamps';
+import { yourProof } from '$lib/step-up-words';
+import { codeAskedOf } from './mfa-store';
 import { inWrite, writingWithKey, type ServiceOptions } from './write-as';
 
 const log = createLogger('PEOPLE');
@@ -110,9 +112,9 @@ const KEY_RENAME_WORDS = 'A group is renamed on the People page: an API key cann
 const PAGE_ONLY_WORDS =
 	'Adding a person, deleting one and adding people from accounts are done on the People page, which asks for your password: an API key cannot';
 const GROUP_DELETE_WORDS = 'A group is deleted on the People page: an API key cannot delete one';
-/** Card 3020 (R6): Mark active, reached without the step-up. */
-const MARK_ACTIVE_WORDS =
-	'Marking a person active asks for your password and a code: their decision mail and personal links go to their address again. Nothing was changed.';
+/** Card 3020 (R6): Mark active, reached without the step-up; saying what the step-up asks of the caller (card 3064, F25). */
+const markActiveWords = (codeAsked: boolean) =>
+	`Marking a person active asks for ${yourProof(codeAsked)}: their decision mail and personal links go to their address again. Nothing was changed.`;
 /** Card 3020's code review (FP5): Mark active, the address reviewed not the person's now. */
 const MARK_ACTIVE_MOVED =
 	"This person's address has changed since the page was read: read it again and check the address before you mark them active. Nothing was changed.";
@@ -394,7 +396,7 @@ export function personUpdateGuard(
 	if (linkChange) updates.userId = userId;
 	const statusChange = status !== undefined && status !== person.status;
 	if (statusChange && status === 'active') {
-		if (!opts.steppedUp) error(400, MARK_ACTIVE_WORDS);
+		if (!opts.steppedUp) error(400, markActiveWords(codeAskedOf(actor.id)));
 		// The address the confirmation showed: read only, never written (FP5).
 		const reviewed = readText(body, 'reviewedEmail', { required: true, max: 1000 });
 		if (reviewed !== person.email) error(409, MARK_ACTIVE_MOVED);

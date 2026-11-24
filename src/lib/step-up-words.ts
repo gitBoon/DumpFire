@@ -60,19 +60,66 @@ export const NO_PROOF: Readonly<StepUpProof> = Object.freeze({ currentPassword: 
  * Whether a dialog that asks may send: a password typed and a code that is
  * not blank (card 2770, the plan review's S1). The one rule of every send
  * guard and button that sends a proof, so that Enter cannot get round one.
+ *
+ * `codeAsked` is the layout's (card 3064, R7): false only for an account that
+ * holds no second factor while two-step sign-in is dormant, which the server
+ * asks for the password alone (R6); then the code may be blank. Anything but
+ * `false`, a page with no data among them, asks for the code: the server's
+ * rule is the guard, and the page only follows it.
  */
-export function proofTyped(currentPassword: string, currentCode: string): boolean {
-	return currentPassword !== '' && currentCode.trim() !== '';
+export function proofTyped(currentPassword: string, currentCode: string, codeAsked: boolean = true): boolean {
+	return currentPassword !== '' && (codeAsked === false || currentCode.trim() !== '');
+}
+
+/**
+ * What a confirmation asks for, said inside a sentence (card 3064, F25): "your
+ * password and a code" where `codeAsked`, and "your password" alone where it
+ * is false, by the one rule `proofTyped` follows (the layout's `codeAsked` on a
+ * page; the step-up's own rule, `codeAskedOf`, on the server). Anything but
+ * `false` is the code asked, as there.
+ */
+export function yourProof(codeAsked: boolean = true): string {
+	return codeAsked === false ? 'your password' : 'your password and a code';
+}
+
+/** `yourProof`, the code named in full: "your password and a code from your authenticator app", or "your password" alone. */
+export function yourProofInFull(codeAsked: boolean = true): string {
+	return codeAsked === false ? 'your password' : 'your password and a code from your authenticator app';
 }
 
 /** The answer to a listed request with no current password or no code, an empty one, or one that is not text. */
 export const STEP_UP_MISSING = 'Enter your password and a code from your authenticator app to confirm this. Nothing was changed.';
 
 /**
+ * The answer to a listed request with no current password where no code is
+ * asked (card 3064, F25): an account with no factor while two-step sign-in is
+ * dormant (R6).
+ */
+export const STEP_UP_MISSING_PASSWORD = 'Enter your password to confirm this. Nothing was changed.';
+
+/** The answer to no current password (or no code), by whether a code is asked (card 3064, F25): `STEP_UP_MISSING` or `STEP_UP_MISSING_PASSWORD`. */
+export function stepUpMissing(codeAsked: boolean = true): string {
+	return codeAsked === false ? STEP_UP_MISSING_PASSWORD : STEP_UP_MISSING;
+}
+
+/** Whether `refusal` is either answer to no current password (card 3064, F25), which a dialog that showed no field meets by showing it. */
+export function isStepUpMissing(refusal: string | null): boolean {
+	return refusal === STEP_UP_MISSING || refusal === STEP_UP_MISSING_PASSWORD;
+}
+
+/**
  * The answer to a wrong current password or a wrong code, on every listed
  * route: the same words whichever was wrong (card 2771, D4).
  */
 export const STEP_UP_WRONG = 'Your password or code was not right. Nothing was changed.';
+
+/** The answer to a wrong current password where no code was asked (card 3064, F25): the password was the only thing sent. */
+export const STEP_UP_WRONG_PASSWORD = 'Your password was not right. Nothing was changed.';
+
+/** The answer to a wrong answer, by whether a code was asked (card 3064, F25): `STEP_UP_WRONG` or `STEP_UP_WRONG_PASSWORD`. */
+export function stepUpWrong(codeAsked: boolean = true): string {
+	return codeAsked === false ? STEP_UP_WRONG_PASSWORD : STEP_UP_WRONG;
+}
 
 /**
  * The answer to a code in neither form: six digits from the authenticator
@@ -135,8 +182,21 @@ export const PASSWORD_CHANGED_MEANWHILE =
 /** The header the import's confirmation is sent in. Hyphens: proxies that drop underscored headers keep it. */
 export const CONFIRMATION_HEADER = 'x-dumpfire-confirmation';
 
-/** What the pages say beside an action that asks. */
+/** What the pages say beside an action that asks, where a code is asked. */
 export const ASKS_FOR_PASSWORD = 'You will be asked for your password and a code from your authenticator app.';
+
+/** What the pages say beside an action that asks, where no code is asked (card 3064, F25). */
+export const ASKS_FOR_PASSWORD_ALONE = 'You will be asked for your password.';
+
+/**
+ * What the pages say beside an action that asks, by the layout's `codeAsked`
+ * (card 3064, F25): `ASKS_FOR_PASSWORD`, or `ASKS_FOR_PASSWORD_ALONE` for an
+ * account with no factor while two-step sign-in is dormant. Anything but
+ * `false` is the code asked.
+ */
+export function asksForPassword(codeAsked: boolean = true): string {
+	return codeAsked === false ? ASKS_FOR_PASSWORD_ALONE : ASKS_FOR_PASSWORD;
+}
 
 /** What a dialog says when its Confirm got no answer at all (the code review's F9). */
 export const NO_ANSWER_TRY_AGAIN = 'No answer from the server. Try again.';
@@ -191,7 +251,8 @@ const isStepUpCode = (code: unknown): code is StepUpCode => typeof code === 'str
  * Decided by the answer's code (`stepUp`), never by its words: an answer with
  * no code is no refusal of the password, whatever it says. The words given
  * back are the server's, for display; for the codes that change what a
- * dialog does, `missing` (it shows the field), `signed-out` (it takes the
+ * dialog does, `missing` (it shows the field; `STEP_UP_MISSING_PASSWORD`
+ * where the server said that, else `STEP_UP_MISSING`), `signed-out` (it takes the
  * field away, the page going to sign in), and `code-spent`, `code-malformed`
  * and `factor-unusable` (it keeps the password, card 2771), they are this
  * module's own words, so that a dialog can tell them by identity.
@@ -203,6 +264,8 @@ export async function stepUpRefusal(res: Response): Promise<string | null> {
 		if (body === null || typeof body !== 'object') return null;
 		const { message, stepUp } = body as { message?: unknown; stepUp?: unknown };
 		if (!isStepUpCode(stepUp)) return null;
+		// No password where no code is asked has words of its own (card 3064, F25), the server's by its rule.
+		if (stepUp === 'missing' && message === STEP_UP_MISSING_PASSWORD) return STEP_UP_MISSING_PASSWORD;
 		if (BY_IDENTITY.includes(stepUp)) return WORDS_OF[stepUp];
 		return typeof message === 'string' && message ? message : WORDS_OF[stepUp];
 	} catch {

@@ -1,5 +1,5 @@
--- Where a requester's links are kept, only as hashes, and every link held in
--- plain ended once (card 2870, 2026-11-17).
+-- Where a requester's links are kept, only as hashes (card 2870, 2026-11-17;
+-- its end of every link held in plain taken out by card 3064, 2026-11-24).
 --
 -- request_links holds one row for each mail to a requester that carried a
 -- link (the confirmation, a team reply, a progress mail: source 'mail') and
@@ -16,19 +16,21 @@
 -- The column is retired and kept, so that an older image still reads the
 -- table; from this release it is always NULL.
 --
--- A one-off change to data: the UPDATE sets every access_token to NULL, and
--- request_links starts empty, so every link mailed before the deploy is
--- ended. Hashing in place would leave each token in the file's free pages and
--- its WAL, still working, and SQLite has no SHA-256.
+-- As written for card 2870 this file also set every access_token to NULL,
+-- ending every link mailed before the deploy. Card 3064, the compatibility
+-- release, took that statement out before the file ever ran on live: it ran
+-- before 0084, and so would have ended, on live, the links 0084 keeps. 0084
+-- moves each token into request_links as its hash, with a SHA-256 the
+-- migration runner provides, and then empties the column; the start's scrub
+-- takes the plain token out of the file's free pages and its WAL before the
+-- server listens. A database that ran this file in its earlier form lost
+-- those links then. This file changes no row.
 --
--- What people see: every requester link mailed before the deploy stops
--- working, once. The page it opens asks for the address the request was made
--- with and mails a new link, and the next team reply or progress mail brings
--- one by itself. Requests and their messages are untouched.
+-- What people see: nothing. A requester link mailed before the deploy works
+-- as it did (0084). Requests and their messages are untouched.
 --
--- Harmless where it finds nothing: a new database has no requests. Declared
--- to the rehearsal in tests/rehearsal/one-offs.ts as a one-off that keeps its
--- rows (keepsRows on task_requests: every access_token ended).
+-- Declares nothing to the rehearsal: it makes a table and two indexes, and
+-- takes or rewrites no row.
 --
 -- Runs once. The runner records this file by name and never runs it again,
 -- and it would not survive a second run: "already exists" is tolerated only
@@ -64,5 +66,3 @@ CREATE TABLE `request_links` (
 CREATE UNIQUE INDEX `request_links_token_hash_unique` ON `request_links` (`token_hash`);
 --> statement-breakpoint
 CREATE INDEX `idx_request_links_request_id` ON `request_links` (`request_id`);
---> statement-breakpoint
-UPDATE `task_requests` SET `access_token` = NULL;

@@ -30,7 +30,9 @@
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
-	import { ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
+	import { page } from '$app/state';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
 	import { asciiShown } from '$lib/printable';
 
 	type DirectoryPerson = PageData['people'][number];
@@ -77,7 +79,7 @@
 	 */
 	let asks = $derived(start === null || emailChanged || accountChanged);
 
-	let canSave = $derived(fullName.trim() !== '' && email.trim() !== '' && (!asks || proofTyped(currentPassword, stepUpCode)));
+	let canSave = $derived(fullName.trim() !== '' && email.trim() !== '' && (!asks || proofTyped(currentPassword, stepUpCode, page.data.codeAsked)));
 
 	/**
 	 * The address or the account changed back, so that nothing asks: the
@@ -190,7 +192,7 @@
 				<!-- Card 2697 (Q21, and the code review's part B, S1): an address or an account decides where decision mail and personal links go. -->
 				<p class="dialog-hint">
 					{start ? "A new address or account changes where this person's decision mail and personal links go." : "This person's address and account decide where their decision mail and personal links go."}
-					{ASKS_FOR_PASSWORD}
+					{asksForPassword(codeAskedHere())}
 				</p>
 				<CurrentPasswordField bind:value={currentPassword} bind:code={stepUpCode} {refusal} readonly={saving} onEnter={save} />
 			{/if}

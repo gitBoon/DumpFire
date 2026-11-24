@@ -102,7 +102,7 @@ import { NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import { readTimeZone } from '$lib/server/request-body';
 import { requireManagedAccount } from '$lib/server/route-guards';
 import { STEP_UP_ACTIONS } from '$lib/server/step-up';
-import { endsTheSession, watchForSignOut, type Fetch } from '$lib/signed-out';
+import { endsTheSession, pathOfThisSite, watchForSignOut, type Fetch } from '$lib/signed-out';
 import {
 	CONFIRMATION_HEADER,
 	CONFIRMATION_REFUSED,
@@ -297,7 +297,7 @@ describe('the reports page, src/routes/reports/+page.svelte', () => {
 			addresses: 'reportRecipients(emailRecipients)',
 			bodies: 2,
 			hint: 'email-hint',
-			button: 'disabled={emailSending || !emailRecipients.trim() || !proofTyped(emailPassword, emailCode)}',
+			button: 'disabled={emailSending || !emailRecipients.trim() || !proofTyped(emailPassword, emailCode, data.codeAsked)}',
 			closer: 'closeEmailModal',
 			shown: 'showEmailModal',
 			// The backdrop, its X and Cancel; the close after a send that reached everyone; and the preview's Close.
@@ -312,7 +312,7 @@ describe('the reports page, src/routes/reports/+page.svelte', () => {
 			addresses: 'reportRecipients(schedRecipients)',
 			bodies: 1,
 			hint: 'form-hint',
-			button: 'disabled={!proofTyped(schedPassword, schedCode) || schedCreating}',
+			button: 'disabled={!proofTyped(schedPassword, schedCode, data.codeAsked) || schedCreating}',
 			closer: 'closeNewSchedule',
 			shown: 'showNewSchedule',
 			// The form's Cancel, and its close once the schedule is made.
@@ -323,17 +323,18 @@ describe('the reports page, src/routes/reports/+page.svelte', () => {
 		({ fn, password, code, refusal, inFlight, addresses, bodies, hint, button, closer, shown, closes }) => {
 			const sending = functionNamed(page, fn);
 
-			// The field, bound to the form's own password and code, given its refusal, with ASKS_FOR_PASSWORD under it.
+			// The field, bound to the form's own password and code, given its refusal, with what it asks under it, by the
+			// layout's codeAsked (card 3064, F25).
 			expect(markup).toMatch(
 				new RegExp(
-					`<CurrentPasswordField\\s+label="Your password"\\s+bind:value=\\{${password}\\}\\s+bind:code=\\{${code}\\}\\s+refusal=\\{${refusal}\\}[^>]*/>\\s*<span class="${hint}">\\{ASKS_FOR_PASSWORD\\}</span>`
+					`<CurrentPasswordField\\s+label="Your password"\\s+bind:value=\\{${password}\\}\\s+bind:code=\\{${code}\\}\\s+refusal=\\{${refusal}\\}[^>]*/>\\s*<span class="${hint}">\\{asksForPassword\\(data\\.codeAsked\\)\\}</span>`
 				)
 			);
 			// Its button and its send guard, one rule, and its in-flight flag: one press sends one request.
 			expect(markup).toContain(button);
 			const guard = sending.body!.statements[0];
 			expect(ts.isIfStatement(guard) && guard.thenStatement.getText()).toBe('return;');
-			expect(ts.isIfStatement(guard) && guard.expression.getText()).toContain(`!proofTyped(${password}, ${code})`);
+			expect(ts.isIfStatement(guard) && guard.expression.getText()).toContain(`!proofTyped(${password}, ${code}, data.codeAsked)`);
 			expect(ts.isIfStatement(guard) && guard.expression.getText()).toMatch(new RegExp(`\\|\\| ${inFlight}$`));
 
 			// The addresses read, and a list the server would refuse said, before the copy (E12); both copied into
@@ -379,7 +380,7 @@ describe('the reports page, src/routes/reports/+page.svelte', () => {
 			expect(markup).not.toContain(`${shown} = false`);
 			for (const handler of new Set(closes.markup)) expect(markup.split(handler).length - 1, handler).toBe(closes.markup.filter((h) => h === handler).length);
 			for (const name of closes.script) expect(callsOf(functionNamed(page, name), `${closer}`).length, name).toBe(1);
-			expect(page.getText()).toMatch(/import \{ ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof \} from '\$lib\/step-up-words';/);
+			expect(page.getText()).toMatch(/import \{ asksForPassword, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof \} from '\$lib\/step-up-words';/);
 		}
 	);
 
@@ -419,12 +420,12 @@ describe('the reports page, src/routes/reports/+page.svelte', () => {
 		expect(markup).toMatch(
 			/\{#if turningOn\}\s*\{@const schedule = turningOn\}\s*<ConfirmModal\s+title="Turn on this schedule\?"\s+message=\{turnOnMessage\(schedule\)\}\s+confirmText="Turn on"\s+confirmDanger=\{false\}\s+askPassword\s+onConfirm=\{\(proof\) => turnScheduleOn\(schedule\.id, proof\)\}\s+onCancel=\{\(\) => \(turningOn = null\)\}\s*\/>\s*\{\/if\}/
 		);
-		// Its words: every address, or that there is none yet; then that it asks.
+		// Its words: every address, or that there is none yet; then what it asks, by the layout's codeAsked (card 3064, F25).
 		const words = functionNamed(page, 'turnOnMessage').getText();
 		expect(words).toContain('const sentTo = reportRecipients(schedule.recipients).addresses;');
 		expect(words).toContain("`It will email its report to: ${sentTo.join(', ')}. `");
 		expect(words).toContain("'It has no addresses yet, so nothing is emailed until some are added. '");
-		expect(words).toContain('return `${to}${ASKS_FOR_PASSWORD}`;');
+		expect(words).toContain('return `${to}${asksForPassword(data.codeAsked)}`;');
 
 		// On: enabled: true with the dialog's proof; a refusal of it given back to the dialog, any other in a toast.
 		const on = functionNamed(page, 'turnScheduleOn');
@@ -987,6 +988,8 @@ const ADMINISTRATOR_COMPONENTS = [
 	'SettingsHeldPanel',
 	'SmtpPanel',
 	'TeamsPanel',
+	// Card 3064 (R10): two-step sign-in, every administrator's to read; its button is the superadmin's, by the load's `mayRequire`.
+	'TwoStepSwitchPanel',
 	'UsersPanel'
 ].map((name) => `src/lib/components/admin/${name}.svelte`);
 
@@ -1510,6 +1513,30 @@ function bodiesSent(within: ts.Node): string[][] {
 	});
 }
 
+// Card 3064 (S4b, F25): the notes written out on their own say what a confirmation asks by the layout's codeAsked.
+describe("the notes that say what a confirmation asks, by the layout's codeAsked (card 3064, S4b)", () => {
+	it('F25 the reports page: a report sent to some addresses and not others asks for the password and a new code, or the password alone', () => {
+		const source = readFileSync(join(ROOT, 'src/routes/reports/+page.svelte'), 'utf8');
+		expect(source).toContain('\tconst codeAsked = $derived(data.codeAsked !== false);');
+		expect(source).toContain(
+			"left in the box. ${codeAsked ? 'Enter your password and a new code to send again.' : 'Enter your password to send again.'}`"
+		);
+		expect(source).not.toContain('left in the box. Enter your password and a new code');
+	});
+
+	it('F25 the API documentation page: making and keeping a key, and what a wrong answer is told, by the reader\'s codeAsked', () => {
+		const source = readFileSync(join(ROOT, 'src/routes/docs/+page.svelte'), 'utf8');
+		expect(source).toContain('\tlet codeAsked = $derived(codeAskedHere());');
+		expect(source).toContain(
+			'<li>Enter your current password{#if codeAsked} and the code from your authenticator app (or one of your recovery codes){/if}. ' +
+				'A wrong one is refused with "{stepUpWrong(codeAsked)}" '
+		);
+		expect(source).toContain('sign in again.{#if codeAsked} With two or three authenticators on your account,');
+		expect(source).toContain("by the account's holder, with {codeAsked ? 'the password and a code' : 'the password'}: the API itself");
+		expect(source).toContain('keep it on your Account page, with {yourProof(codeAsked)}, or it ends then.');
+	});
+});
+
 describe('the account page, src/routes/account/+page.svelte', () => {
 	const file = 'src/routes/account/+page.svelte';
 	const source = readFileSync(join(ROOT, file), 'utf8');
@@ -1549,7 +1576,7 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 			refusal: 'emailRefusal',
 			inFlight: 'changingEmail',
 			body: ['newEmail', 'currentPassword', 'currentCode'],
-			button: 'disabled={!newEmail?.trim() || !proofTyped(emailPassword, emailCode) || newEmail.trim() === displayedEmail || changingEmail}'
+			button: 'disabled={!newEmail?.trim() || !proofTyped(emailPassword, emailCode, data.codeAsked) || newEmail.trim() === displayedEmail || changingEmail}'
 		},
 		{
 			fn: 'changePassword',
@@ -1559,7 +1586,7 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 			refusal: 'passwordRefusal',
 			inFlight: 'changingPassword',
 			body: ['currentPassword', 'currentCode', 'newPassword', 'endApiKeys'],
-			button: 'disabled={!proofTyped(passwordCurrent, passwordCode) || !newPassword || !confirmPassword || changingPassword}'
+			button: 'disabled={!proofTyped(passwordCurrent, passwordCode, data.codeAsked) || !newPassword || !confirmPassword || changingPassword}'
 		},
 		{
 			fn: 'generateApiKey',
@@ -1569,7 +1596,7 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 			refusal: 'keyRefusal',
 			inFlight: 'generatingKey',
 			body: ['name', 'currentPassword', 'currentCode'],
-			button: 'disabled={!newKeyName.trim() || !proofTyped(newKeyPassword, newKeyCode) || generatingKey}'
+			button: 'disabled={!newKeyName.trim() || !proofTyped(newKeyPassword, newKeyCode, data.codeAsked) || generatingKey}'
 		}
 	])(
 		'T14. $fn asks in CurrentPasswordField, sends only once proofTyped, copies both into currentPassword and currentCode and clears them before the fetch, and puts the password back only as passwordKeptAfter says',
@@ -1584,7 +1611,7 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 			expect(markup).toContain(button);
 			const guard = sending.body!.statements[0];
 			expect(ts.isIfStatement(guard) && guard.thenStatement.getText()).toBe('return;');
-			expect(ts.isIfStatement(guard) && guard.expression.getText()).toContain(`!proofTyped(${password}, ${code})`);
+			expect(ts.isIfStatement(guard) && guard.expression.getText()).toContain(`!proofTyped(${password}, ${code}, data.codeAsked)`);
 			// And while its own send is out, so that one press sends one request (card 2771's code review, CR2).
 			expect(ts.isIfStatement(guard) && guard.expression.getText()).toMatch(new RegExp(`\\|\\| ${inFlight}$`));
 
@@ -1696,11 +1723,11 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 	});
 
 	// Card 2894 (case 7, D1, E22): a change always pauses the account's report schedules, said above the button, and
-	// only while one is on.
+	// only while one is on; what turning one on asks said by the layout's codeAsked (card 3064, F25).
 	it('says before the change that it pauses the report schedules, only while one is on', () => {
 		const line =
 			'Changing your password pauses your {schedulesInWords(schedulesOn)}. Turn on the ones you recognise on the ' +
-			'<a href="/reports">Reports page</a> afterwards: it asks for your password and a code.';
+			'<a href="/reports">Reports page</a> afterwards: it asks for {yourProof(data.codeAsked)}.';
 		expect(around(line)).toEqual([{ condition: 'schedulesOn > 0', inElse: false }]);
 		expect(markup.indexOf(line)).toBeLessThan(markup.indexOf('onclick={changePassword}'));
 		expect(page.getText()).toContain('let schedulesOn = $derived(data.reportSchedulesOn ?? 0);');
@@ -2260,6 +2287,24 @@ describe('a 401 that says the page’s session has ended, src/lib/signed-out.ts'
 			{ address: () => PAGE, signedIn: () => true, toLogin: () => {} }
 		);
 		await expect(unreachable('/api/boards')).rejects.toBe(offline);
+	});
+});
+
+describe('where the Account page may send the browser after a self set-up, src/lib/signed-out.ts (card 3064, CR-L7)', () => {
+	const ORIGIN = 'https://dumpfire.example.test';
+
+	it('CR-L7: a path of this site as the browser reads it, and null for anything the URL parser takes to another host or that is no path', () => {
+		expect(pathOfThisSite('/login/enrol', ORIGIN)).toBe('/login/enrol');
+		expect(pathOfThisSite('/login/enrol?next=%2F', ORIGIN)).toBe('/login/enrol?next=%2F');
+		for (const next of ['//evil.example', '/\\evil.example', '/\t/evil.example', '/\n/evil.example', '\t//evil.example', 'https://evil.example/', 'login/enrol', '', null, undefined, 7, { next: '/' }]) {
+			expect(pathOfThisSite(next, ORIGIN), JSON.stringify(next)).toBeNull();
+		}
+	});
+
+	it('CR-L7: the Account page sends the browser only where pathOfThisSite allows, and reads the page again otherwise', () => {
+		const text = readFileSync(join(ROOT, 'src/routes/account/+page.svelte'), 'utf8');
+		expect(text).toContain('const next = pathOfThisSite(answer?.next, location.origin);');
+		expect(text).toContain('if (next !== null) window.location.href = next;');
 	});
 });
 
@@ -3048,6 +3093,16 @@ const WRITES: Record<string, Write[]> = {
 	'src/lib/components/admin/SettingsHeldPanel.svelte': [
 		{ name: 'release', reads: 'sentAsking', done: ['showToast(await releasedWords(setting, action, res))', 'onChanged(setting.setting)', 'await load()'] }
 	],
+	// Card 3064 (R10): Require two-step sign-in, with the password and a code; the page read again once it is required.
+	// Card 3064's code review (CR-L8): the page read again after any other refusal too, so the success is pinned by its toast; both re-reads
+	// are tests/admin-panels.test.ts (U5, CR-L8).
+	'src/lib/components/admin/TwoStepSwitchPanel.svelte': [
+		{
+			name: 'requireTwoStep',
+			reads: 'sentAsking',
+			done: ["showToast(`Two-step sign-in is now required. ${counted(ended, 'session', 'sessions')} signed in on a password alone ${ended === 1 ? 'was' : 'were'} ended.`)"]
+		}
+	],
 	'src/lib/components/admin/ScheduledBackupsPanel.svelte': [
 		// The card 2398 review: a refused save puts the list back to the one each
 		// caller hands it (`was`) and reads the settings again quietly, so the
@@ -3253,6 +3308,8 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'keepKey', reads: 'failureMessage', via: 'stepUpRefusal' },
 		// Card 2772 (D6): That was me, the same; any other refusal, a newer warning among them, said under the warning.
 		{ name: 'dismissBanner', reads: 'failureMessage', via: 'stepUpRefusal' },
+		// Card 3064 (R8): Set up two-step sign-in, the same; once begun, the browser goes to the set-up the answer names.
+		{ name: 'startSetUp', reads: 'failureMessage', via: 'stepUpRefusal', done: ['window.location.href = next'] },
 		{ name: 'toggleNotif', reads: 'failureMessage', putsBack: ['notifPrefs = was'], done: ['notifPrefs = await res.json()'] }
 	],
 	// Card 2772 (D1-D3, D9): the Account page's two-step section. Each step-up through ConfirmModal, a refusal of
@@ -3449,7 +3506,9 @@ describe('every write of the seven pages of card 2109, of the label picker, and 
 			expect(kept?.name.getText()).toBe('res');
 			const text = fn.getText();
 			expect(text).toMatch(/if \(typeof res === 'string'\) (return res;|\{)/);
-			expect(text.indexOf("if (typeof res === 'string')")).toBeLessThan(text.indexOf('if (!res) return;'));
+			// The other refusals after it: returned at once, or (card 3064's code review, CR-L8) in a block that reads the page again first.
+			expect(text).toMatch(/if \(!res\) (return;|\{)/);
+			expect(text.indexOf("if (typeof res === 'string')")).toBeLessThan(text.indexOf('if (!res)'));
 		}
 		if (write.reads === 'write') {
 			const through = ['boardState.write', 'boardState.writeCard', 'boardState.writeColumn'].flatMap((callee) => callsOf(fn, callee));
@@ -4393,6 +4452,14 @@ const UNREAD_SENDS = [
 const asSent = (key: string) => key.replace(/\[[^\]]+\]/g, '[id]');
 
 /**
+ * The listed actions whose page is built in a later slice of their card, and
+ * so are sent from no page yet. Only while no page sends it: one sent from a
+ * page and still here fails. Empty since card 3064's slice S4, whose Account
+ * page button and Admin panel send its two (R8, R10).
+ */
+const NO_PAGE_YET: readonly string[] = [];
+
+/**
  * The listed actions that ask only when the body carries one of the keys
  * named (card 2697, Q21): a send whose literal body holds none of them asks
  * nothing, as the route decides by the body's keys. A body that cannot be
@@ -4478,7 +4545,9 @@ describe('every page write of an action that asks for the password sends it, rea
 		expect(unaskedIn(sends)).toEqual([]);
 		// Every listed action is sent from a page, each with the password, matched by position (card 2697, Q11).
 		const reached = new Set(sends.map((send) => send.action));
-		expect(Object.keys(STEP_UP_ACTIONS).filter((action) => !reached.has(asSent(action)))).toEqual([]);
+		expect(Object.keys(STEP_UP_ACTIONS).filter((action) => !reached.has(asSent(action)) && !NO_PAGE_YET.includes(action))).toEqual([]);
+		// Card 3064: those of a later slice are listed, and sent from no page yet.
+		expect(NO_PAGE_YET.filter((action) => !Object.hasOwn(STEP_UP_ACTIONS, action) || reached.has(asSent(action)))).toEqual([]);
 		// The named few are each still there to be named, and no more are let off.
 		expect(sends.filter((send) => send.action === null).map((send) => send.at).sort()).toEqual([...UNREAD_SENDS].sort());
 		// And the export and the import's two steps, as they are sent.
@@ -4921,7 +4990,9 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 			'src/lib/components/admin/TeamsPanel.svelte',
 			'src/lib/components/admin/DangerZonePanel.svelte',
 			// Card 2922: Keep and Remove, through `sentAsking`.
-			'src/lib/components/admin/SettingsHeldPanel.svelte'
+			'src/lib/components/admin/SettingsHeldPanel.svelte',
+			// Card 3064 (R10): Require two-step sign-in, through `sentAsking`.
+			'src/lib/components/admin/TwoStepSwitchPanel.svelte'
 		];
 		if (ownLine.includes(file) || throughSent.includes(file)) expect(checked).toEqual([]);
 		else expect(checked.length).toBeGreaterThan(0);
@@ -6960,7 +7031,7 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		expect(functionNamed(tree, 'askResetTwoStep').body!.statements[0].getText()).toBe('if (inviteInFlight !== null || inviteLink !== null) return;');
 		// And Create waits for the caller's own password too (card 2701).
 		expect(markup).toContain(
-			'onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !proofTyped(newUserCurrentPassword, newUserCurrentCode)}>'
+			'onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !proofTyped(newUserCurrentPassword, newUserCurrentCode, page.data.codeAsked)}>'
 		);
 	});
 
@@ -7136,6 +7207,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 			'focused',
 			'proofTyped',
 			'passwordKeptAfter',
+			'page',
 			"let gdriveConnecting = '', gdriveAuthCode = 'old paste', gdriveAuthUrl = '', gdriveBlocked = false, gdriveAttempt = 0, gdriveExchanging = false;\n" +
 				"let gdrivePassword = '', gdriveStepUpCode = '', gdriveRefusal = null;\n" +
 				'const gdrivePasswordField = { focus: focused };\n' +
@@ -7152,7 +7224,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 				'\texchange: () => exchangeGDriveCode(),\n' +
 				'\texchanging: () => gdriveExchanging\n' +
 				'};'
-		)(fetch, window, showToast, { navigation: () => 7 }, failureMessage, answerBody, sentAsking, loadBackupConfig, async () => {}, focused, proofTyped, passwordKeptAfter) as {
+		)(fetch, window, showToast, { navigation: () => 7 }, failureMessage, answerBody, sentAsking, loadBackupConfig, async () => {}, focused, proofTyped, passwordKeptAfter, { data: {} }) as {
 			connect: (name: string) => Promise<void>;
 			cancel: () => void;
 			state: () => { connecting: string; code: string; authUrl: string; blocked: boolean };
@@ -7420,7 +7492,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 		// The paste box and its Connect wait for the address.
 		expect(box).toMatch(/<input\s+type="text"\s+placeholder="Paste the whole address, starting http:\/\/localhost\/\?state=…"\s+bind:value=\{gdriveAuthCode\}\s+disabled=\{!gdriveAuthUrl\}/);
 		// And for the caller's own password (card 2701) and a sign-in code (card 2770).
-		expect(box).toContain('disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || !proofTyped(gdrivePassword, gdriveStepUpCode) || gdriveExchanging}');
+		expect(box).toContain('disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || !proofTyped(gdrivePassword, gdriveStepUpCode, page.data.codeAsked) || gdriveExchanging}');
 		expect(box).toContain('<button class="btn-ghost" onclick={closeGDriveConnect}>Cancel</button>');
 	});
 

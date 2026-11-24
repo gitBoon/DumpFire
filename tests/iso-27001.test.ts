@@ -345,6 +345,42 @@ describe('the checklist source', () => {
 		expect(backup.how.slice(backup.how.indexOf('Still open:'))).not.toContain('3004');
 	});
 
+	it('D2 card 3064: the ten accepted risks of the compatibility release, R7 to R16, each once, under the item whose protection it waives, by the accepted-risks anchor, which exists', () => {
+		const expected: Record<string, string> = {
+			R7: 'A.5.14',
+			R8: 'A.8.24',
+			R9: 'A.5.14',
+			R10: 'A.5.14',
+			R11: 'A.5.14',
+			R12: 'A.5.34',
+			R13: 'A.5.14',
+			R14: 'A.8.13',
+			R15: 'A.8.5',
+			R16: 'A.8.5'
+		};
+		const found: Record<string, string[]> = {};
+		for (const item of CHECKLIST) {
+			for (const risk of item.accepted ?? []) {
+				const id = /^(R\d+):/.exec(risk.risk)?.[1];
+				if (id === undefined || Number(id.slice(1)) < 7) continue;
+				(found[id] ??= []).push(item.ref);
+				expect(risk.path, id).toBe('docs/authentication-security.md');
+				expect(risk.anchor, id).toBe('accepted-risks');
+				expect(evidenceFault(risk), id).toBeNull();
+			}
+		}
+		expect(Object.fromEntries(Object.entries(found).map(([id, refs]) => [id, refs.join(' ')]))).toEqual(expected);
+		// Each is named in its item's own words as still open, with the card that waived it.
+		for (const ref of new Set(Object.values(expected))) {
+			const item = CHECKLIST.find((entry) => entry.ref === ref)!;
+			expect(item.status, ref).not.toBe('met');
+			expect(item.how, ref).toContain('card 3064');
+		}
+		// And the authentication document's register holds a row for each.
+		const register = readFileSync(join(ROOT, 'docs/authentication-security.md'), 'utf8');
+		for (const id of Object.keys(expected)) expect(register, id).toMatch(new RegExp(`^\\| ${id} \\|`, 'm'));
+	});
+
 	it('names every gap: a card or an accepted risk for each item short of met, and neither for a met one', () => {
 		const faults: string[] = [];
 		for (const item of APPLICATION_SIDE) {

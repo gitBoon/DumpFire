@@ -1201,6 +1201,14 @@ const TABLE: Record<string, Case | Case[]> = {
 		}
 	),
 	'POST /api/account/two-step/recovery-codes': signedIn(() => json('/api/account/two-step/recovery-codes', {})),
+	// Card 3064 (R8, S-L7): setting up two-step sign-in while it is dormant, on the password alone. Two-step sign-in
+	// made dormant and the allowed caller's authenticator taken away for the case, so that the set-up begins.
+	'POST /api/account/two-step/set-up': signedIn(() => json('/api/account/two-step/set-up', {}), {
+		setup: (w) => {
+			db.delete(settings).where(eq(settings.key, 'two_step_required_at')).run();
+			db.delete(mfaFactors).where(eq(mfaFactors.userId, w.outsider.id)).run();
+		}
+	}),
 	// Every account's warning raised at one moment, the one the page showed.
 	'DELETE /api/account/two-step/banner': signedIn(() => json('/api/account/two-step/banner', { bannerAt: BANNER_SHOWN }), {
 		setup: () => {
@@ -1282,6 +1290,11 @@ const TABLE: Record<string, Case | Case[]> = {
 		setup: () => void db.insert(userXp).values({ name: 'owner', xp: 120 }).run()
 	}),
 	'POST /api/admin/reset': superadmin(() => '/api/admin/reset'),
+	// Card 3064 (R10, S-L7): two-step sign-in required, the superadmin's alone, with the password and a code. Made
+	// dormant for the case; every administrator here holds an authenticator, given where the world is built.
+	'POST /api/admin/two-step/require': superadmin(() => json('/api/admin/two-step/require', {}), {
+		setup: () => void db.delete(settings).where(eq(settings.key, 'two_step_required_at')).run()
+	}),
 	'GET /api/admin/smtp': admin(() => '/api/admin/smtp'),
 	'PUT /api/admin/smtp': admin(() =>
 		json('/api/admin/smtp', { host: 'smtp.example.test', port: 587, fromAddress: 'dumpfire@example.test' })

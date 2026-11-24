@@ -68,7 +68,7 @@ import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { mfaFactors, mfaRecoveryCodes, reportSchedules, sessions, signInChallenges, users } from '$lib/server/db/schema';
-import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, createSession, type SessionUser } from '$lib/server/auth';
 import {
 	ADD_ENDED,
 	ADD_REPLACED,
@@ -84,8 +84,8 @@ import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
 import { addTotpFactor, matchFactors, resetTwoStep, spendStep } from '$lib/server/mfa-store';
 import { pendingAddOf } from '$lib/server/pending-authenticators';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
-import { ENROL_WRONG_CODE, NO_MFA_KEY, WRONG_RECOVERY_CODE } from '$lib/server/second-step';
-import { pauseCrossed } from '$lib/server/sign-in-challenges';
+import { ENROL_WRONG_CODE, NO_MFA_KEY, OWN_SET_UP_HELD, OWN_SET_UP_REQUIRED, WRONG_RECOVERY_CODE } from '$lib/server/second-step';
+import { CHALLENGE_COOKIE, pauseCrossed, tokenHashOf, type ChallengeRow } from '$lib/server/sign-in-challenges';
 import * as totp from '$lib/server/totp';
 import { newTotpSecret, stepAt } from '$lib/server/totp';
 import { PASSWORD_CHANGED_MEANWHILE } from '$lib/step-up-words';
@@ -95,16 +95,21 @@ import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
 import {
 	FIXTURE_PASSWORD,
+	fixtureHashOf,
 	makeApiKey,
 	makeBoard,
 	makeSession,
 	makeSmtp,
+	makeTwoStepDormant,
 	makeUser,
 	makeWebhook,
 	resetDb,
 	sessionHashOf,
-	stepUp
+	sessionRow,
+	stepUp,
+	writeRequiredSettings
 } from './helpers/fixtures';
+import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { diffSnapshots, snapshotDb } from './helpers/snapshot';
 import { codeFor, giveAuthenticator, giveFactor, passwordStep, verify, wrongCodeFor } from './helpers/two-step';
 
@@ -809,5 +814,162 @@ describe('the Two-step sign-in section (card 2772, S3)', () => {
 		// The layout's count, for the confirm dialog's line.
 		const layout = await pageLoad('/', { user, layout: true });
 		expect(layout).toMatchObject({ type: 'data', data: { authenticators: 2 } });
+	});
+});
+
+// ─── Card 3064, S3b: setting up two-step sign-in while it is dormant ─────────
+
+describe('setting up two-step sign-in from the Account page while it is dormant (card 3064, S3b)', () => {
+	/** The set-up, as the Account page sends it: the password alone (R6), from the session `token`, through the gate. */
+	const setUpFrom = (token: string) =>
+		gate('POST', '/api/account/two-step/set-up', {
+			headers: { cookie: `${SESSION_COOKIE_NAME}=${token}`, ...FROM_THE_PAGE, accept: 'application/json' },
+			body: { currentPassword: FIXTURE_PASSWORD }
+		});
+
+	/** The value of the cookie `name` an answer sets, and the whole line that sets it. */
+	const cookieSet = (res: Response, name: string) => {
+		const line = res.headers.getSetCookie().find((cookie) => cookie.startsWith(`${name}=`));
+		return line === undefined ? undefined : { value: line.slice(name.length + 1).split(';')[0], line };
+	};
+
+	const challenges = () => sqlite.prepare('SELECT * FROM sign_in_challenges ORDER BY rowid').all() as ChallengeRow[];
+
+	beforeEach(() => {
+		makeTwoStepDormant();
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date());
+	});
+
+	it('T50. dormant, no factor: the password alone, then a set-up challenge of grant account, the session ended and its cookie cleared, /login/enrol next; finishing it there gives a session with two_step 1', async () => {
+		const user = makeUser();
+		const token = createSession(user.id, { twoStep: 0 }).token;
+
+		const { result: res, lines } = await logged(() => setUpFrom(token));
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({ next: '/login/enrol' });
+		expect(res.headers.get('cache-control')).toBe('no-store');
+		const challenge = cookieSet(res, CHALLENGE_COOKIE)!.value;
+		expect(challenges()).toEqual([
+			expect.objectContaining({
+				token_hash: tokenHashOf(challenge),
+				user_id: user.id,
+				purpose: 'enrol',
+				stage: 'secret_shown',
+				lane: 'other',
+				enrol_grant: 'account',
+				enrolment_link_hash: null,
+				password_hash: fixtureHashOf(user)
+			})
+		]);
+		expect(sessionRow(token)).toBeUndefined();
+		expect(cookieSet(res, SESSION_COOKIE_NAME)).toMatchObject({ value: '', line: expect.stringMatching(/Max-Age=0/i) });
+		expect(authLines(lines, 'Password confirmed')).toEqual([
+			{
+				level: 'INFO',
+				message: `Password confirmed by ${user.username} (ID: ${user.id}) for POST /api/account/two-step/set-up, no code: two-step sign-in is not required on this server`
+			}
+		]);
+		expect(authLines(lines, 'Second step issued')).toEqual([
+			{ level: 'INFO', message: expect.stringMatching(new RegExp(`^Second step issued \\(enrol\\) for user ${user.id} from the Account page, challenge [0-9a-f]{8}: the session was ended$`)) }
+		]);
+		expect(factorsOf(user)).toEqual([]);
+
+		// The set-up pages, unchanged: the secret, the first code, the ten recovery codes and the confirm.
+		const holding = { headers: { cookie: `${CHALLENGE_COOKIE}=${challenge}` } };
+		const shown = await pageLoad('/login/enrol', holding);
+		const secret = secretOf(shown.type === 'data' ? shown.data.secret : '');
+		expect(await action('/login/enrol', { name: 'code', form: { code: codeFor(secret) }, cookies: { [CHALLENGE_COOKIE]: challenge } })).toMatchObject({
+			type: 'redirect',
+			location: '/login/enrol'
+		});
+		expect(await pageLoad('/login/enrol', holding)).toMatchObject({ type: 'data', data: { stage: 'codes_shown' } });
+		const done = await action('/login/enrol', { name: 'confirm', cookies: { [CHALLENGE_COOKIE]: challenge } });
+
+		expect(done).toMatchObject({ type: 'redirect', status: 303, location: '/' });
+		expect(sessionRow(done.cookies[SESSION_COOKIE_NAME].value)).toMatchObject({ userId: user.id, twoStep: 1 });
+		expect(factorsOf(user)).toHaveLength(1);
+		expect(unusedCodes(user)).toBe(10);
+	});
+
+	it('T51. refused 409 when the account holds a factor, before the password: no compare, nothing written', async () => {
+		const user = makeUser();
+		giveFactor(user);
+		const req = stepUp(user);
+		const before = snapshotDb();
+
+		const res = await api('POST', '/api/account/two-step/set-up', req);
+
+		expect(answer(res)).toEqual({ status: 409, body: { message: OWN_SET_UP_HELD } });
+		expect(stub.compared).toBe(0);
+		expect(countOf(tokenOf(req))).toBe(0);
+		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
+	});
+
+	it('T52. refused 409 when two-step sign-in is required, before the password: no compare, nothing written', async () => {
+		writeRequiredSettings();
+		const user = makeUser();
+		const req = stepUp(user, {}, FIXTURE_PASSWORD, '');
+		const before = snapshotDb();
+
+		const res = await api('POST', '/api/account/two-step/set-up', req);
+
+		expect(answer(res)).toEqual({ status: 409, body: { message: OWN_SET_UP_REQUIRED } });
+		expect(stub.compared).toBe(0);
+		expect(countOf(tokenOf(req))).toBe(0);
+		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
+		expect(factorsOf(user)).toEqual([]);
+	});
+
+	// Card 3064, S4: ruled 2026-11-24 from S3b's cases found missing.
+	it('S4: refused 503 with no MFA key loaded, before the password: no compare, nothing written', async () => {
+		const user = makeUser();
+		const req = stepUp(user, {}, FIXTURE_PASSWORD, '');
+		keyStub.none = true;
+		const before = snapshotDb();
+
+		const res = await api('POST', '/api/account/two-step/set-up', req);
+
+		expect(answer(res)).toEqual({ status: 503, body: { message: NO_MFA_KEY } });
+		expect(stub.compared).toBe(0);
+		expect(countOf(tokenOf(req))).toBe(0);
+		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
+		expect(challenges()).toEqual([]);
+	});
+
+	it('U4. the Account page offers Set up two-step sign-in to an account with no factor while it is dormant, and not to one with a factor, nor once it is required', async () => {
+		const offered = async (user: SessionUser) => {
+			const res = await pageLoad('/account', { user });
+			if (res.type !== 'data') throw new Error(JSON.stringify(res));
+			return res.data.offerTwoStepSetUp;
+		};
+		const plain = makeUser();
+		const holder = makeUser();
+		giveFactor(holder);
+
+		expect(await offered(plain)).toBe(true);
+		expect(await offered(holder)).toBe(false);
+
+		writeRequiredSettings();
+		expect(await offered(plain)).toBe(false);
+		expect(await offered(holder)).toBe(false);
+	});
+
+	// Card 3064, S4b (ruled with F25): the words of every confirmation follow the layout's codeAsked.
+	it("S4b. the layout's codeAsked is false for an account with no factor while dormant, and true once it holds one, and for every account once two-step sign-in is required", async () => {
+		const codeAsked = async (user: SessionUser) => {
+			const res = await pageLoad('/', { user, layout: true });
+			if (res.type !== 'data') throw new Error(JSON.stringify(res));
+			return res.data.codeAsked;
+		};
+		const plain = makeUser();
+
+		expect(await codeAsked(plain)).toBe(false);
+		giveFactor(plain);
+		expect(await codeAsked(plain)).toBe(true);
+
+		writeRequiredSettings();
+		expect(await codeAsked(makeUser())).toBe(true);
 	});
 });

@@ -26,7 +26,9 @@
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
-	import { ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
+	import { page } from '$app/state';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
 
 	let {
 		data,
@@ -74,7 +76,7 @@
 	}
 
 	async function add() {
-		if (ticked.length === 0 || !proofTyped(currentPassword, stepUpCode) || saving) return;
+		if (ticked.length === 0 || !proofTyped(currentPassword, stepUpCode, page.data.codeAsked) || saving) return;
 		saving = true;
 		const password = currentPassword;
 		const currentCode = stepUpCode;
@@ -146,14 +148,14 @@
 				{/each}
 			</div>
 			<!-- The code review's part B, S1: each person made is given an account and its address. -->
-			<p class="dialog-hint">Each account's address decides where that person's decision mail and personal links go. {ASKS_FOR_PASSWORD}</p>
+			<p class="dialog-hint">Each account's address decides where that person's decision mail and personal links go. {asksForPassword(codeAskedHere())}</p>
 			<div class="password-row">
 				<CurrentPasswordField bind:value={currentPassword} bind:code={stepUpCode} {refusal} readonly={saving} onEnter={add} />
 			</div>
 		{/if}
 		<div class="modal-actions">
 			<button class="btn-ghost" onclick={onClose}>Cancel</button>
-			<button class="btn-primary" onclick={add} disabled={ticked.length === 0 || !proofTyped(currentPassword, stepUpCode)} aria-busy={saving ? 'true' : undefined}>
+			<button class="btn-primary" onclick={add} disabled={ticked.length === 0 || !proofTyped(currentPassword, stepUpCode, page.data.codeAsked)} aria-busy={saving ? 'true' : undefined}>
 				Add {ticked.length} {ticked.length === 1 ? 'person' : 'people'}
 			</button>
 		</div>

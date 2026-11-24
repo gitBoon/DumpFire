@@ -95,8 +95,16 @@ describe('failingWrite', () => {
 		expect(writes.fired).toBe(true);
 		setting('third');
 
-		// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750).
-		expect(db.select().from(settings).all().map((r) => r.key).filter((key) => key !== 'request_form_secret' && key !== 'mfa_key_check')).toEqual(['first', 'third']);
+		// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750); nor
+		// two-step sign-in's switch, which `resetDb` writes back (card 3064, R23).
+		expect(
+			db
+				.select()
+				.from(settings)
+				.all()
+				.map((r) => r.key)
+				.filter((key) => key !== 'request_form_secret' && key !== 'mfa_key_check' && key !== 'two_step_required_at')
+		).toEqual(['first', 'third']);
 	});
 
 	it('starts counting again when it is armed and when it is reset', () => {
@@ -122,7 +130,13 @@ describe('failingWrite', () => {
 		insert.run('a', 'x');
 		setting('b');
 		expect(writes.count).toBe(0);
-		expect(db.select().from(settings).all().filter((r) => r.key !== 'request_form_secret' && r.key !== 'mfa_key_check')).toHaveLength(2);
+		expect(
+			db
+				.select()
+				.from(settings)
+				.all()
+				.filter((r) => r.key !== 'request_form_secret' && r.key !== 'mfa_key_check' && r.key !== 'two_step_required_at')
+		).toHaveLength(2);
 
 		// Installed again for afterEach to remove.
 		writes = failingWrite();
@@ -527,8 +541,9 @@ describe('pageLoad(), the caller for page loads', () => {
 		expect(page.type).toBe('data');
 		expect(page.type === 'data' && page.data.board.name).toBe('Read by its page');
 
-		// The layout's count of the caller's authenticators too (card 2772, D10): none here.
-		expect(await pageLoad('/', { user: owner, layout: true })).toEqual({ type: 'data', data: { user: owner, authenticators: 0 } });
+		// The layout's count of the caller's authenticators too (card 2772, D10): none here; and a code asked at a
+		// confirmation, as two-step sign-in is required under the tests (card 3064, R7).
+		expect(await pageLoad('/', { user: owner, layout: true })).toEqual({ type: 'data', data: { user: owner, authenticators: 0, codeAsked: true } });
 	});
 
 	// It imports two pages' loads, and on a cold cache that once took longer

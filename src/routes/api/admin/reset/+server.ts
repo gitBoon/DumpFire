@@ -9,6 +9,7 @@ import { resetFormSecretCache, writeFormSecret } from '$lib/server/request-token
 import { markScrubPending } from '$lib/server/stored-secrets';
 import { resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { requireSuperadmin } from '$lib/server/route-guards';
+import { TWO_STEP_REQUIRED_AT } from '$lib/server/two-step-switch';
 import { confirmStepUp } from '$lib/server/step-up';
 import { moveToTrash, type TrashResult, type UploadFile } from '$lib/server/uploads';
 import { writeAs } from '$lib/server/write-as';
@@ -24,6 +25,12 @@ const log = createLogger('ADMIN');
  * already and which are named here so that no change to that list can make a reset clear them.
  */
 const KEPT = ['system_logs', 'backup_log', 'api_key_revocations', 'account_endings', 'access_changes', 'outbound_changes'];
+
+/**
+ * The settings a reset writes back when two-step sign-in is required (card 3064, R1, F3): the switch first, then the
+ * moment it was released at.
+ */
+const TWO_STEP_KEPT = [TWO_STEP_REQUIRED_AT, 'two_step_released_at'] as const;
 
 const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -57,6 +64,10 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
  * superadmin enables the ones wanted. The answer counts them,
  * `accountsRecorded`. The password hash of each is recorded as replaced too
  * (card 2997, decision 5), so each comes back needing its password set.
+ *
+ * Two-step sign-in, where it is required, stays required (card 3064, R1, F3):
+ * its switch and `two_step_released_at` are read before the clear and written
+ * back after it, in the same transaction. Where it is dormant, neither is.
  *
  * Attachment files are moved to the trash once the reset is committed. A file
  * that cannot be moved is named in the answer, which is still a success: the
@@ -100,6 +111,17 @@ export const POST: RequestHandler = async ({ request, locals, cookies, url }) =>
 				...leftBehind
 			];
 
+			// Two-step sign-in's switch and its release moment, read before the
+			// settings are cleared, and written back after (card 3064, R1, F3): a
+			// Reset never makes two-step sign-in optional again, and card 2935's
+			// "made after the release" keeps its moment. With the switch off,
+			// neither is written back.
+			const kept = TWO_STEP_KEPT.map((key) => ({
+				key,
+				row: sqlite.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined
+			}));
+			const twoStepOn = kept[0].row !== undefined;
+
 			// Read before anything is deleted: the rows of one table go with the
 			// rows of another by cascade, and cannot be asked about afterwards.
 			const files = sqlite
@@ -126,6 +148,13 @@ export const POST: RequestHandler = async ({ request, locals, cookies, url }) =>
 
 			// Nothing is caught: one table that cannot be cleared fails them all.
 			for (const table of tables) sqlite.prepare(`DELETE FROM "${table}"`).run();
+
+			// Two-step sign-in, on before the reset, is on after it, with its moment (card 3064, F3).
+			if (twoStepOn) {
+				for (const { key, row } of kept) {
+					if (row !== undefined) sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(key, row.value);
+				}
+			}
 
 			// The form signing key was a setting and went with the rest: a new
 			// one, in this transaction, so the reset never commits without one

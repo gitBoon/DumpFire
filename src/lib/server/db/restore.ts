@@ -54,7 +54,7 @@ import {
 } from '../backup-secrets';
 import { HELD_FROM_UNSEALED_BACKUP, HELD_NOT_RECORDED, HELD_REMOVED_HERE } from '$lib/settings-held';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
-import { BACKUP_SEAL_KEY_MADE_AT, NoKeyToSeal, SECRETS_SCRUB_PENDING, WEBHOOK_ADDRESS_MAC_KEY, addressToBind, checkpointTruncate, markScrubPending, receiverColumn, sealedForRestore } from '../stored-secrets';
+import { BACKUP_SEAL_KEY_MADE_AT, NoKeyToSeal, SEAL_KEY_KEEP_ONCE, SECRETS_SCRUB_PENDING, WEBHOOK_ADDRESS_MAC_KEY, addressToBind, checkpointTruncate, markScrubPending, receiverColumn, sealedForRestore } from '../stored-secrets';
 import {
 	MFA_ROWS_NOT_RESTORED,
 	NO_MFA_RESTORE,
@@ -4375,13 +4375,129 @@ const KEEP_API_KEY_DEADLINE_SETTING =
 
 /**
  * This server's API key deadline (migration 0069), in the stored form, read
- * before a restore clears `settings`; null where it has none, or one that
- * names no moment.
+ * before a restore clears `settings`; null where it has none (card 3064, R18:
+ * none is applied until a later, planned event); `unreadable` where it holds
+ * one that names no moment, which is not "none" (F21): the restore then gives
+ * its own moment, failing closed, as it did before card 3064.
  */
-function apiKeyDeadlineHere(live: Database.Database): string | null {
+function apiKeyDeadlineHere(live: Database.Database): string | 'unreadable' | null {
 	if (!columnNamesOf(live, 'settings').includes('value')) return null;
 	const row = live.prepare('SELECT value FROM settings WHERE key = ?').get(API_KEY_DEADLINE_SETTING) as { value: unknown } | undefined;
-	return row ? toStamp(row.value) : null;
+	if (row === undefined) return null;
+	return toStamp(row.value) ?? 'unreadable';
+}
+
+/**
+ * What a restore says, CRITICAL once committed, where this server's API key deadline names no moment and a backup
+ * from before 0069 was restored (card 3064, F21): its keys were given the restore's own moment, and have ended.
+ */
+export const API_KEY_DEADLINE_UNREADABLE =
+	"This server's API key deadline names no moment: the keys of a backup from before the deadline were given the restore's moment, and have ended";
+
+/**
+ * Two-step sign-in's switch (card 3064, R1): absent, two-step sign-in is dormant; present, whatever its value, it is
+ * required (one that names no moment still counts: fail closed).
+ */
+const TWO_STEP_REQUIRED_AT = 'two_step_required_at';
+
+/** The moment of the compatibility release (card 3064), written once by migration 0084. */
+const COMPATIBILITY_RELEASE_AT = 'compatibility_release_at';
+
+/**
+ * The six first-run flags migration 0084 seeds (card 3064, R19): each first-run pass takes its steady state while its
+ * flag is present. Cards 2923, 2935, 2947, 2893, 2751 and 2761.
+ */
+const FIRST_RUN_FLAGS = [
+	'webhooks_already_off_held',
+	'webhooks_readable_by_disabled_held',
+	'webhook_reveals_seeded',
+	'webhooks_before_keys_announced',
+	'report_schedules_announced',
+	'stored_images_rechecked'
+] as const;
+
+/** Card 2935's flag among them, whose value is a moment the restore's own run of its pass reads (`holdRestoredReadable`). */
+const READABLE_COVERED_FLAG = 'webhooks_readable_by_disabled_held';
+
+/** What a restore turned two-step sign-in on with, said CRITICAL once it is committed (card 3064, R1, S-H1). */
+export const TWO_STEP_TURNED_ON_BY_RESTORE = 'A restore turned two-step sign-in on: the backup required it';
+
+/**
+ * This server's settings of the compatibility release (card 3064), each as stored, or undefined where it has none:
+ * two-step sign-in's switch and `two_step_released_at` (R1), the release moment, those of the six first-run flags it
+ * holds (R24), and the one-shot leave to keep a plain seal key (its code review, CS-M2). Read before a restore clears
+ * `settings`.
+ */
+type ReleaseSettingsHere = {
+	twoStepRequired: unknown;
+	twoStepReleased: unknown;
+	release: unknown;
+	sealKeyKeepOnce: unknown;
+	flags: Map<string, unknown>;
+};
+
+/** `key`'s value in `live`'s settings as stored, or undefined where there is no such row. */
+function storedSetting(live: Database.Database, key: string): unknown {
+	return (live.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: unknown } | undefined)?.value;
+}
+
+/** This server's settings of the compatibility release, read before the clear; null where `settings` cannot hold them. */
+function releaseSettingsHere(live: Database.Database): ReleaseSettingsHere | null {
+	if (!hasColumns(live, 'settings', ['key', 'value'])) return null;
+	const flags = new Map<string, unknown>();
+	for (const flag of FIRST_RUN_FLAGS) {
+		const value = storedSetting(live, flag);
+		if (value !== undefined) flags.set(flag, value);
+	}
+	return {
+		twoStepRequired: storedSetting(live, TWO_STEP_REQUIRED_AT),
+		twoStepReleased: storedSetting(live, TWO_STEP_RELEASED_AT),
+		release: storedSetting(live, COMPATIBILITY_RELEASE_AT),
+		sealKeyKeepOnce: storedSetting(live, SEAL_KEY_KEEP_ONCE),
+		flags
+	};
+}
+
+/**
+ * The settings of the compatibility release, once the backup's are copied in (card 3064), in the restore's
+ * transaction, before any step of it that reads them. Answers whether the restore turned two-step sign-in on.
+ *
+ * - **Two-step sign-in, on never off** (R1, S-H1). On here: on, with this server's switch and `two_step_released_at`
+ *   (absent where it had none), whatever the backup held. Off here and on in the backup: on, with the backup's switch
+ *   and `two_step_released_at`, or the restore's moment where the backup holds none; answered true, and said CRITICAL by
+ *   the caller once committed. Off on both sides: neither, whatever `two_step_released_at` the backup held.
+ * - **The release moment**: this server's, or none where it has none.
+ * - **The one-shot leave to keep a plain seal key** (its code review, CS-M2): this server's, or none where it has none;
+ *   never the backup's, so that no restore gives a later start leave to keep a plain key.
+ * - **The six first-run flags** (R24, R-M5): each this server holds, as this server holds it, so that a restore of a
+ *   backup from before the release does not run again the passes the release avoided; one this server does not hold
+ *   is the backup's, or none. But card 2935's moment is the backup's wherever the backup holds one (its code review,
+ *   C3: the restore covers the backup's disables from the backup's own moment); this server's only where it holds none.
+ */
+function keepReleaseSettings(live: Database.Database, here: ReleaseSettingsHere): boolean {
+	const put = live.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value');
+	const drop = live.prepare('DELETE FROM settings WHERE key = ?');
+	/** `key` written back as `value` was read here, or deleted where there was none. */
+	const asHere = (key: string, value: unknown) => (value === undefined ? drop.run(key) : put.run(key, value));
+	let turnedOn = false;
+	if (here.twoStepRequired !== undefined) {
+		put.run(TWO_STEP_REQUIRED_AT, here.twoStepRequired);
+		asHere(TWO_STEP_RELEASED_AT, here.twoStepReleased);
+	} else if (storedSetting(live, TWO_STEP_REQUIRED_AT) !== undefined) {
+		turnedOn = true;
+		if (storedSetting(live, TWO_STEP_RELEASED_AT) === undefined) put.run(TWO_STEP_RELEASED_AT, stamp());
+	} else {
+		drop.run(TWO_STEP_RELEASED_AT);
+	}
+	asHere(COMPATIBILITY_RELEASE_AT, here.release);
+	asHere(SEAL_KEY_KEEP_ONCE, here.sealKeyKeepOnce);
+	for (const [flag, value] of here.flags) {
+		// Card 2935's moment is the backup's where the backup holds one (its code review, C3): the restore's own run of
+		// its pass covers the backup's disables from the backup's own moment, whatever this server's says.
+		if (flag === READABLE_COVERED_FLAG && storedSetting(live, flag) !== undefined) continue;
+		put.run(flag, value);
+	}
+	return turnedOn;
 }
 
 function messageOf(err: unknown): string {
@@ -4767,7 +4883,10 @@ export function rowsToRestore(
 				// This server's own: set by the restore itself (card 2898's code review, S1).
 				SECRETS_SCRUB_PENDING,
 				// This server's installation id, put back as it was, or none where it had none (card 3009, R6).
-				INSTALLATION_ID
+				INSTALLATION_ID,
+				// The one-shot leave to keep a plain seal key, this server's alone (card 3064's code review, CS-M2):
+				// `keepReleaseSettings` puts this server's back.
+				SEAL_KEY_KEEP_ONCE
 			];
 			const read = backup.prepare(fromTableStorage(backup, table, leftOut.map(() => 'key IS NOT ?').join(' AND '))).all(...leftOut) as Record<string, unknown>[];
 			// Before the sealing, so that the mail password is bound to the mail settings as text.
@@ -5032,10 +5151,21 @@ export function defaultOutside(
  *   the clear, and after the copy, inside the transaction, 0069's `UPDATE` is
  *   repeated with it: every key with no expiry, or one later than it (read as
  *   the moment it names, `stamp_of`), is given it, and the setting is written
- *   back where the backup held none. Where this server has no deadline that
- *   can be read, the restore's own moment is used, so such keys end at once.
- *   The count is `apiKeyDeadlines`. A backup taken since is restored as it
- *   is, so a key kept there stays kept.
+ *   back where the backup held none. Where this server holds no deadline,
+ *   nothing is done and such keys keep none, as this server's own do (card
+ *   3064, R18: no deadline is applied until a later, planned event). Where it
+ *   holds one that names no moment, the restore's own moment is used, so such
+ *   keys end at once, as before card 3064 (F21: an unreadable deadline is not
+ *   "none"), with one CRITICAL line once committed
+ *   (`API_KEY_DEADLINE_UNREADABLE`). The count is `apiKeyDeadlines`. A backup
+ *   taken since is restored as it is, so a key kept there stays kept.
+ * - Two-step sign-in's switch, the release moment and the six first-run flags
+ *   of the compatibility release (card 3064) are read before the clear and
+ *   settled after the copy (`keepReleaseSettings`): two-step sign-in on, never
+ *   off, by a restore, with one CRITICAL line once committed where the backup
+ *   turned it on (`TWO_STEP_TURNED_ON_BY_RESTORE`); the release moment this
+ *   server's; and each first-run flag this server holds kept as it holds it,
+ *   before the restore's own steps that read them.
  *
  * A row that still cannot be copied is left out and reported in `errors`, and
  * the restore goes on, on one condition: nothing depends on that row. Before
@@ -5415,6 +5545,10 @@ function restoreInOneSnapshot(
 
 	let failure: unknown = null;
 	let unfinished: number[] = [];
+	// Whether the backup turned two-step sign-in on here (card 3064, R1): said CRITICAL once committed.
+	let twoStepTurnedOn = false;
+	// Whether a backup's keys were given the restore's moment for this server's deadline that names none (card 3064, F21).
+	let deadlineUnreadable = false;
 	try {
 		live.transaction(() => {
 			// This server's secrets, read before anything is cleared, for the
@@ -5426,6 +5560,9 @@ function restoreInOneSnapshot(
 			// And its API key deadline (migration 0069, card 2772), for a backup
 			// made before it: see above. Null where there is none that can be read.
 			const deadlineHere = apiKeyDeadlineHere(live);
+			// And its settings of the compatibility release (card 3064): two-step sign-in's switch and its release moment,
+			// the release moment and the six first-run flags. See `keepReleaseSettings`.
+			const releaseNow = releaseSettingsHere(live);
 			// And when it began to record keys on webhooks (migration 0071), kept over the backup's: see above.
 			const keysRecordedHere = webhookKeysRecordedHere(live);
 			// And its webhooks switched off for good, whatever their secret (card 2752's code review, CS5): see above.
@@ -5598,6 +5735,9 @@ function restoreInOneSnapshot(
 			if (macKeyHere !== null) keepSetting(live, WEBHOOK_ADDRESS_MAC_KEY, macKeyHere.stored);
 			// And its installation id (card 3009, R6): none kept, and none made, where it had none.
 			if (installationHere !== null) keepSetting(live, INSTALLATION_ID, installationHere);
+			// And its settings of the compatibility release (card 3064, R1, R24): two-step sign-in on never off, the release
+			// moment this server's, and the first-run flags it holds, before every step below that reads them. Not caught.
+			if (releaseNow !== null && tables.includes('settings')) twoStepTurnedOn = keepReleaseSettings(live, releaseNow);
 
 			// A new form signing key, which no restore brings in and the clear
 			// took (card 2158): made here, so the restore never commits without
@@ -5699,19 +5839,25 @@ function restoreInOneSnapshot(
 
 			// A backup made before 0069 (its api_keys has no deadline_at): every
 			// key of it with no expiry, or one later than the deadline, given
-			// this server's deadline, or the restore's own moment where this
-			// server has none that can be read, so such keys end at once; and the
-			// setting written back where the backup held none (card 2772, D5,
-			// S11). Not caught, so that a restore that could not do it is rolled
-			// back, and brings in no key a backup held without its deadline. A
-			// backup made since is restored as it is: a key kept there stays kept.
+			// this server's deadline; and the setting written back where the
+			// backup held none (card 2772, D5, S11). Not caught, so that a restore
+			// that could not do it is rolled back, and brings in no key a backup
+			// held without its deadline. A backup made since is restored as it
+			// is: a key kept there stays kept. Card 3064 (R18): where this server
+			// holds no deadline (none is applied until a later, planned event,
+			// E4), nothing is done, and the restored keys keep none, as this
+			// server's own do. Where it holds one that names no moment (F21), the
+			// restore's own moment, so such keys end at once, as before card 3064,
+			// and said CRITICAL once committed.
 			if (
+				deadlineHere !== null &&
 				inBackup('api_keys') &&
 				!columnNamesOf(backup, 'api_keys').includes('deadline_at') &&
 				tables.includes('api_keys') &&
 				columnNamesOf(live, 'api_keys').includes('deadline_at')
 			) {
-				const deadline = deadlineHere ?? stamp();
+				const deadline = deadlineHere === 'unreadable' ? stamp() : deadlineHere;
+				deadlineUnreadable = deadlineHere === 'unreadable';
 				registerStampFunctions(live);
 				apiKeyDeadlines = live.prepare(GIVE_API_KEY_DEADLINES).run({ deadline }).changes;
 				if (tables.includes('settings')) live.prepare(KEEP_API_KEY_DEADLINE_SETTING).run({ deadline });
@@ -6189,6 +6335,22 @@ function restoreInOneSnapshot(
 
 	// The restore is committed. A failure from here on is something to report
 	// about a restore that succeeded, not a failed restore.
+	// Two-step sign-in turned on by the backup (card 3064, R1, S-H1): CRITICAL, so that the system log keeps it for good.
+	if (twoStepTurnedOn) {
+		try {
+			log.critical(TWO_STEP_TURNED_ON_BY_RESTORE);
+		} catch {
+			// The restore is committed; only its line was lost.
+		}
+	}
+	// A backup's keys ended at the restore's moment, for this server's deadline that names none (card 3064, F21).
+	if (deadlineUnreadable) {
+		try {
+			log.critical(API_KEY_DEADLINE_UNREADABLE);
+		} catch {
+			// The restore is committed; only its line was lost.
+		}
+	}
 	// The webhooks it switched off, each a WARN, and the boards' owners mailed
 	// only where the schedulers run (card 2752, S1, S2).
 	// Those already off that it held with them, listed apart (card 2923).

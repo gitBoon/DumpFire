@@ -39,7 +39,7 @@ import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
 import { readyDraft, revisionNow } from './helpers/decision-faults';
 import { allowOtherTimestampForms } from './helpers/timestamps';
-import { addBoardMember, ageRecordMail, makeApiKeyRow, makeBoard, makeDecision, makeParticipant, makePerson, makeSmtp, makeTeam, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
+import { addBoardMember, ageRecordMail, forgetFirstRunFlags, makeApiKeyRow, makeBoard, makeDecision, makeParticipant, makePerson, makeSmtp, makeTeam, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
 
 const REAL_MIGRATIONS = join(process.cwd(), 'drizzle');
 
@@ -52,6 +52,9 @@ function migratedDb(): Database.Database {
 	runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 	return database;
 }
+
+// Each first-run pass in full, as before migration 0084 seeded their flags (card 3064, R23).
+beforeEach(() => forgetFirstRunFlags());
 
 afterEach(() => {
 	for (const database of opened.splice(0)) database.close();

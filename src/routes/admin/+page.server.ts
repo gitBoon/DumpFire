@@ -2,7 +2,7 @@ import type { PageServerLoad } from './$types';
 import { redirect } from '@sveltejs/kit';
 import { isAdmin } from '$lib/server/board-access';
 import { mayManageAccount } from '$lib/account-rule';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
 import { getDbPath } from '$lib/server/db';
 import { defaultOutside } from '$lib/server/db/restore';
 import { isFailureAddress, settingsSetBy } from '$lib/server/setting-setters';
@@ -10,9 +10,70 @@ import { TWO_STEP_RELEASED_AT, passwordSetUpEnds } from '$lib/server/mfa-store';
 import { stamp } from '$lib/timestamps';
 import { readableCountSql, readyReadableCounts } from '$lib/server/webhooks';
 import { uploadSpace } from '$lib/server/upload-space';
-import { boards, columns, cards, categories, users, teams, teamMembers } from '$lib/server/db/schema';
-import { count, eq, sql } from 'drizzle-orm';
+import { keyEnded } from '$lib/server/auth';
+import { TWO_STEP_REQUIRED_AT, administratorsWithoutFactor } from '$lib/server/two-step-switch';
+import { apiKeys, boards, columns, cards, categories, users, teams, teamMembers } from '$lib/server/db/schema';
+import { and, count, eq, isNull, sql } from 'drizzle-orm';
 import { statSync } from 'node:fs';
+
+/** An account that holds no second factor, as a condition on `users` (card 3064). */
+const holdsNoFactor = sql`NOT EXISTS (SELECT 1 FROM "mfa_factors" WHERE "mfa_factors"."user_id" = "users"."id")`;
+
+/**
+ * What the Admin page's Two-step sign-in panel shows (card 3064, R10, S-L7,
+ * S-M6, D24), read at `now` for `caller`: whether two-step sign-in is
+ * required (the switch's row there, as `twoStepRequired` reads it) and since
+ * when; the enabled accounts that have set up no second factor; the sessions
+ * made on a password alone, which requiring it ends; the superadmin and every
+ * enabled administrator holding no factor, by name, for while any is listed
+ * it cannot be required (`administratorsWithoutFactor`, the route's own
+ * rule); and the API keys of enabled accounts holding no factor that still
+ * work (`keyEnded`, the gate's rule), which outlive requiring it until the key
+ * deadline (E4). Those keys are listed by holder and dates for the superadmin
+ * alone, whose action this is, and only counted for any other administrator:
+ * never a key's name or prefix, as nowhere else in this load. `mayRequire`
+ * says whether the caller is offered the button. The state and both counts
+ * in one read.
+ */
+function twoStepSwitchView(caller: { id: number; role: string }, now: number) {
+	const state = sqlite
+		.prepare(
+			'SELECT EXISTS (SELECT 1 FROM settings WHERE key = @key) AS required, (SELECT value FROM settings WHERE key = @key) AS requiredAt, ' +
+				'(SELECT COUNT(*) FROM users WHERE disabled_at IS NULL AND NOT EXISTS (SELECT 1 FROM mfa_factors WHERE mfa_factors.user_id = users.id)) AS accounts, ' +
+				'(SELECT COUNT(*) FROM sessions WHERE two_step = 0) AS passwordOnly'
+		)
+		.get({ key: TWO_STEP_REQUIRED_AT }) as { required: number; requiredAt: string | null; accounts: number; passwordOnly: number };
+	const nowStamp = stamp(new Date(now));
+	const keys = db
+		.select({
+			id: apiKeys.id,
+			keyHash: apiKeys.keyHash,
+			expiresAt: apiKeys.expiresAt,
+			deadlineAt: apiKeys.deadlineAt,
+			createdAt: apiKeys.createdAt,
+			lastUsedAt: apiKeys.lastUsedAt,
+			holder: users.username,
+			holderId: users.id
+		})
+		.from(apiKeys)
+		.innerJoin(users, eq(users.id, apiKeys.userId))
+		.where(and(isNull(users.disabledAt), holdsNoFactor))
+		.orderBy(apiKeys.id)
+		.all()
+		.filter((key) => !keyEnded(key, nowStamp))
+		.map(({ id, createdAt, lastUsedAt, holder, holderId }) => ({ id, createdAt, lastUsedAt, holder, holderId }));
+	const superadmin = caller.role === 'superadmin';
+	return {
+		required: state.required === 1,
+		requiredAt: state.requiredAt,
+		accountsWithoutFactor: state.accounts,
+		passwordOnlySessions: state.passwordOnly,
+		administratorsWithoutFactor: administratorsWithoutFactor(),
+		keysWithoutFactor: keys.length,
+		keysWithoutFactorListed: superadmin ? keys : null,
+		mayRequire: superadmin
+	};
+}
 
 export const load: PageServerLoad = async ({ locals }) => {
 	// Administrators only. ADMIN_ROUTES in hooks.server.ts turns everyone else
@@ -181,6 +242,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 		uploadsSpace: await uploadSpace(),
 		// Which way the import dialog opens: the choice the import route makes
 		// when it is given none.
-		importOutsideDefault: defaultOutside()
+		importOutsideDefault: defaultOutside(),
+		// The Two-step sign-in panel (card 3064, R10): its state, its counts, who
+		// holds no factor, and the keys that outlive requiring it.
+		twoStepSwitch: twoStepSwitchView(caller, now)
 	};
 };

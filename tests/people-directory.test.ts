@@ -26,6 +26,7 @@ import {
 	makeBoard,
 	makeSession,
 	makeTeam,
+	makeTwoStepDormant,
 	makeUser,
 	resetDb,
 	sessionCredential,
@@ -446,6 +447,28 @@ describe('PUT /api/people/[id]', () => {
 			}
 			expectUnchanged(before);
 			expect(peopleLines()).toEqual([]);
+		});
+
+		it('(ag4) card 3064 (S4b, F25): while two-step sign-in is dormant, the refusal names the password alone to an administrator with no factor, and the password and a code to one that holds one', () => {
+			makeTwoStepDormant();
+			const plain = makeUser({ username: 'plain-admin', role: 'admin' });
+			const holder = makeUser({ username: 'holder-admin', role: 'admin' });
+			stepUpFactor(holder);
+			const localsOf = new Map([plain, holder].map((who) => [who, { user: who, credential: sessionCredential(makeSession(who)) }]));
+			const refusal = (who: SessionUser) =>
+				outcome(() => writeAs(localsOf.get(who)!, (caller) => updatePerson(caller, { personId: ann }, { status: 'active' }, { source: 'ui' })));
+			const before = snapshotDb();
+
+			expect(refusal(plain)).toEqual({
+				status: 400,
+				message: 'Marking a person active asks for your password: their decision mail and personal links go to their address again. Nothing was changed.'
+			});
+			expect(refusal(holder)).toEqual({
+				status: 400,
+				message:
+					'Marking a person active asks for your password and a code: their decision mail and personal links go to their address again. Nothing was changed.'
+			});
+			expectUnchanged(before);
 		});
 	});
 

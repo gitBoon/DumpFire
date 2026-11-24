@@ -21,7 +21,9 @@
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { toasts } from '$lib/stores/toast';
 	import { holdFocus } from '$lib/dialog-focus';
-	import { ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
+	import { page } from '$app/state';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
 
 	/** The Scheduled Backups panel's: its settings read again, once a destination is connected. */
 	let { loadBackupConfig }: { loadBackupConfig: () => Promise<boolean> } = $props();
@@ -122,7 +124,7 @@
 		"Paste the whole address from the browser's address bar: it holds the code and the check that this connection was started here.";
 
 	async function exchangeGDriveCode() {
-		if (!gdriveAuthCode.trim() || !gdriveConnecting || !proofTyped(gdrivePassword, gdriveStepUpCode)) return;
+		if (!gdriveAuthCode.trim() || !gdriveConnecting || !proofTyped(gdrivePassword, gdriveStepUpCode, page.data.codeAsked)) return;
 		// The Connect this exchange is for: a Cancel, or a later Connect, moves
 		// it on, and the box is then no longer this exchange's to close.
 		const attempt = gdriveAttempt;
@@ -234,10 +236,10 @@
 			/>
 			<!-- The caller's own password, which Connect asks for (card 2701), with the server's refusal of it. -->
 			<CurrentPasswordField bind:value={gdrivePassword} bind:code={gdriveStepUpCode} refusal={gdriveRefusal} disabled={!gdriveAuthUrl} onEnter={exchangeGDriveCode} />
-			<p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: var(--space-md)">{ASKS_FOR_PASSWORD} Connecting chooses the Google account every backup to this destination goes to.</p>
+			<p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: var(--space-md)">{asksForPassword(codeAskedHere())} Connecting chooses the Google account every backup to this destination goes to.</p>
 			<div class="modal-actions">
 				<button class="btn-ghost" onclick={closeGDriveConnect}>Cancel</button>
-				<button class="btn-primary" onclick={exchangeGDriveCode} disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || !proofTyped(gdrivePassword, gdriveStepUpCode) || gdriveExchanging}>
+				<button class="btn-primary" onclick={exchangeGDriveCode} disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || !proofTyped(gdrivePassword, gdriveStepUpCode, page.data.codeAsked) || gdriveExchanging}>
 					{gdriveExchanging ? '⏳ Connecting...' : '✅ Connect'}
 				</button>
 			</div>

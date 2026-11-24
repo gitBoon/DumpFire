@@ -719,8 +719,9 @@ describe('PUT /api/admin/smtp', () => {
 				.from(settings)
 				.all()
 				// Nor the MFA key's check, which the superadmin's factor wrote (card 2771), nor the record that mail was
-				// set up, written in the save's own transaction (card 2922, R9).
-				.filter((row) => row.key !== 'request_form_secret' && row.key !== 'mfa_key_check' && row.key !== 'mail_ever_configured_at')
+				// set up, written in the save's own transaction (card 2922, R9), nor two-step sign-in's switch, which
+				// `resetDb` writes back (card 3064, R23).
+				.filter((row) => row.key !== 'request_form_secret' && row.key !== 'mfa_key_check' && row.key !== 'mail_ever_configured_at' && row.key !== 'two_step_required_at')
 				// The mail password opened: a save stores it sealed (card 2898).
 				.map((row) => [row.key, row.key === 'smtp_pass' ? readOpened('settings', 'smtp_pass') : row.value])
 		);

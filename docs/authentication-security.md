@@ -1,10 +1,14 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.173
+version: 1.175
 status: As-Built
-date: 2026-11-23
+date: 2026-11-24
 tags:
+  - card-3064
+  - compatibility-release
+  - two-step-dormant
+  - accepted-risks
   - card-2687
   - decision-waits
   - card-2686
@@ -151,7 +155,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "The group breakdown (card 2686): the current round per group for the decider and administrators alone, never released, never in an API key's summary, no small-group withholding in that view, no flag or survey answer counted. Objections and requests to talk (card 2684): raised by a participant signed in or by link, replied to by the current decider alone, never through an API key, seen with names by the person, the decider and administrators alone, never released, plain text, a forwarded link sees and adds to them, replied_by never read for access, the place-namer guard and tolerant reader with its WARN line, and the residual risk of well-formed flags from an unsealed restore until card 3030. Survey answers (card 2683): given only by a person, never through an API key, seen with names by the decider and administrators alone, never released, free text as plain text, a forwarded personal link sees and changes them. Where the server sends through a restore: outbound_changes, keyed digests under an MFA subkey, the writers O1 to O19, the rule, re-pointing, the restore's reset branch, settings that are not text and the start pass (card 3004, card 3031). Decision roles through a restore: four kinds in the record of access changes, the place's account kept per place, the writers D1 to D8, 409 for an unreadable account time, deletion per item, the start pass, the unsealed invariant, every ruling's Product Owner rewritten at the copy, and the users counter (card 3033). Board, team and person access through a restore (card 3002): the access_changes record and its writers, the seq ranking, the rule with the guess only where not held here, the start and five-minute pass, and the unchecked invariant; Deep-dive into DumpFire's authentication system, an unsealed backup's requests held with no link minted until an administrator releases each with a password and a code, its people marked left, and Mark active behind the step-up (card 3020), the unsealed-backup webhook hold with a new secret on switch-on and the same-here email kept (card 3012), the grant identity (sameAccountHere, the installation id, the username fallback) and an unsealed backup giving no account not the same here a password, key or factor, with the superadmin carry, earlier key ends and held settings (card 3009), every password change recorded by a fingerprint of the hash it replaces so that no restore brings it back and the sign-in, createSession, the step-up and the start refuse or end one found in place, never locking the superadmin out (card 2997), a Google Drive destination that takes only a service account's key file and signs in with a JWT built from it, never GoogleAuth, and a Test that runs only a saved destination (card 2939), the service secrets kept in the database sealed at rest (card 2898: the mail password, backup destination credentials, webhook secrets and three signing keys sealed with AES-256-GCM under a key derived from the MFA key file, each bound to where it is used, the key check recorded with the first sealed value, plain values sealed at every start and the file scrubbed, and what a value that does not open does), a two-step reset that ends the account's API keys and switches off its webhooks (card 2915: always from the admin page, on the host unless --keep-api-keys, its options read strictly, the message saying what ended and what settings the account set), disabled accounts (card 2671: who may disable, enable and delete, what disabling ends, every gate that refuses a disabled account, and a restore that keeps them disabled), a restore that keeps the running system log and brings none of the backup's lines in, with the import's CRITICAL line naming who imported which file (card 2899), what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), a milestone the caller cannot see answered 404 Milestone not found, the goal a card is in refused in words of its own, and the id counter accepted as R6 (card 2911), a task request a signed-in caller cannot read answered 404 Request not found, the accept and reject on requireRequest (card 2914), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), every upload's limits whatever the file (card 2910: 30 an hour counted before the body, 100 MB a day charged what was read, 3 at once for an account and 6 for the server with each place given back in a finally and lapsing after 10 minutes, Connection: close on every refusal before the body, 120 seconds for the body to arrive, a failed read charged what was read, one part to a form, 20 other files a card, names cleaned, types normalised and the disk name the server's), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty-four actions that ask for the current password and a code from the authenticator app again (card 2671's disable and enable, card 2922's held setting kept or removed and card 3020's held request mail released among them) (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
+description: "The compatibility release (card 3064): two-step sign-in dormant behind the superadmin's switch two_step_required_at (a restore may turn it on, never off; a Reset writes it back), password-only sign-in and sessions (two_step 0) refused once required or once the account holds a factor, 30 days idle and 90 in all while dormant, sessions, invites and requester links kept and hashed in place by migration 0084, the old cookie name read for 30 days for a kept session and swapped at first use, the self set-up from the Account page, the step-up asking the password alone of an account with no factor, and accepted risks R7 to R16 until events E1 to E6. The group breakdown (card 2686): the current round per group for the decider and administrators alone, never released, never in an API key's summary, no small-group withholding in that view, no flag or survey answer counted. Objections and requests to talk (card 2684): raised by a participant signed in or by link, replied to by the current decider alone, never through an API key, seen with names by the person, the decider and administrators alone, never released, plain text, a forwarded link sees and adds to them, replied_by never read for access, the place-namer guard and tolerant reader with its WARN line, and the residual risk of well-formed flags from an unsealed restore until card 3030. Survey answers (card 2683): given only by a person, never through an API key, seen with names by the decider and administrators alone, never released, free text as plain text, a forwarded personal link sees and changes them. Where the server sends through a restore: outbound_changes, keyed digests under an MFA subkey, the writers O1 to O19, the rule, re-pointing, the restore's reset branch, settings that are not text and the start pass (card 3004, card 3031). Decision roles through a restore: four kinds in the record of access changes, the place's account kept per place, the writers D1 to D8, 409 for an unreadable account time, deletion per item, the start pass, the unsealed invariant, every ruling's Product Owner rewritten at the copy, and the users counter (card 3033). Board, team and person access through a restore (card 3002): the access_changes record and its writers, the seq ranking, the rule with the guess only where not held here, the start and five-minute pass, and the unchecked invariant; Deep-dive into DumpFire's authentication system, an unsealed backup's requests held with no link minted until an administrator releases each with a password and a code, its people marked left, and Mark active behind the step-up (card 3020), the unsealed-backup webhook hold with a new secret on switch-on and the same-here email kept (card 3012), the grant identity (sameAccountHere, the installation id, the username fallback) and an unsealed backup giving no account not the same here a password, key or factor, with the superadmin carry, earlier key ends and held settings (card 3009), every password change recorded by a fingerprint of the hash it replaces so that no restore brings it back and the sign-in, createSession, the step-up and the start refuse or end one found in place, never locking the superadmin out (card 2997), a Google Drive destination that takes only a service account's key file and signs in with a JWT built from it, never GoogleAuth, and a Test that runs only a saved destination (card 2939), the service secrets kept in the database sealed at rest (card 2898: the mail password, backup destination credentials, webhook secrets and three signing keys sealed with AES-256-GCM under a key derived from the MFA key file, each bound to where it is used, the key check recorded with the first sealed value, plain values sealed at every start and the file scrubbed, and what a value that does not open does), a two-step reset that ends the account's API keys and switches off its webhooks (card 2915: always from the admin page, on the host unless --keep-api-keys, its options read strictly, the message saying what ended and what settings the account set), disabled accounts (card 2671: who may disable, enable and delete, what disabling ends, every gate that refuses a disabled account, and a restore that keeps them disabled), a restore that keeps the running system log and brings none of the backup's lines in, with the import's CRITICAL line naming who imported which file (card 2899), what a caller cannot open answered 404 as what is not there, 403 kept for the role, and the timing residual accepted as R5 (card 2719), a milestone the caller cannot see answered 404 Milestone not found, the goal a card is in refused in words of its own, and the id counter accepted as R6 (card 2911), a task request a signed-in caller cannot read answered 404 Request not found, the accept and reject on requireRequest (card 2914), an attachment or comment id under a card's address asked about only once the caller can open the card (card 2762), the card window's image upload held to the API upload's checks and allowances, a JPEG's orientation kept as one pinned EXIF segment, and the one-off re-check of the images stored before (card 2761), every upload's limits whatever the file (card 2910: 30 an hour counted before the body, 100 MB a day charged what was read, 3 at once for an account and 6 for the server with each place given back in a finally and lapsing after 10 minutes, Connection: close on every refusal before the body, 120 seconds for the body to arrive, a failed read charged what was read, one part to a form, 20 other files a card, names cleaned, types normalised and the disk name the server's), what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty-four actions that ask for the current password and a code from the authenticator app again (card 2671's disable and enable, card 2922's held setting kept or removed and card 3020's held request mail released among them) (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870), and a webhook whose setter loses the board switched off for good at the write that takes the access away, at start, after a restore and at delivery, switched on again only by the board's owner or an administrator with a key and a new secret, the owners mailed (card 2752), and a webhook switched off for good when the API key that set it up ends: revoked (the Account page counts them first), expired, past its deadline, deleted or another account's, one set before keys were recorded once its setter has no working key from then, with the one-time notice of those and their dates, and the setter mailed too (card 2893), and every password change, the holder's own included, and a two-step reset pausing the account's report schedules, the reset's message and mail listing the keys and webhooks it keeps, the host's command alike, and the factor-removed notice listing the schedules that are on (card 2894)"
 ---
 
 # Authentication & Security
@@ -1725,6 +1729,16 @@ limit plus 60 seconds away (a role raised on the host, where no code runs, leave
 expiry already written), counts as passed. The 60 seconds is the same grace
 `known-browsers.ts` gives a clock that steps back a little.
 
+> **Since card 3064 these limits hold for every session made with a code, whatever the switch, and
+> for every session once two-step sign-in is required.** While it is dormant (no
+> `two_step_required_at` setting) a session made on a password alone (`two_step` 0) has
+> `DORMANT_LIMITS`, 30 days idle and 90 days in all, for every role (`auth.ts:92`, chosen by
+> `sessionLimits(role, required, twoStep)` at `auth.ts:116-119`; a session made with a code keeping
+> these is the code review's CS-L2), and every reader of a session's length (the gate, the slide,
+> `createSession`, the own password change, the cookie's `Max-Age` and `cleanExpiredSessions`)
+> asks the switch, and the session's own `two_step`, where it reads the limits.
+> See [Two-Step Sign-In: Dormant Until Required](#two-step-sign-in-dormant-until-required-card-3064).
+
 ```mermaid
 sequenceDiagram
     participant Browser
@@ -1849,6 +1863,14 @@ on an empty table; recorded once, and a later start replaces nothing.
 
 ### Every Session and Remembered Browser Ended Once, by Migration 0067
 
+> **Changed by card 3064 (the compatibility release):** 0067 no longer holds `DELETE FROM
+> sessions`. It forgets every remembered browser (its `known_browser_secret` delete stays), and
+> migration 0084 hashes every session still held in plain in place and marks it kept
+> (`kept_at_release` 1), so nobody is signed out at the release. The text below describes the
+> file as it was first written, which the development server ran on 13 November. See
+> [Two-Step Sign-In: Dormant Until Required](#two-step-sign-in-dormant-until-required-card-3064)
+> and [The Compatibility Release](deployment.md#the-compatibility-release-card-3064).
+
 The release of two-step sign-in (card 2769) ends every session again, and forgets every
 remembered browser. `0067_end_sessions_for_two_step.sql` is two statements, `DELETE FROM
 sessions` and `DELETE FROM settings WHERE key = 'known_browser_secret'`, under a header comment
@@ -1938,6 +1960,13 @@ read into an address gets the dead-link page, on this image or an older one. Sto
 the same hash would have been a working link on the older image. **"In hash form"** means
 `typeof(token) = 'blob' AND length(token) = 32`; any other value is held in plain.
 
+> **Changed by card 3064 (the compatibility release):** 0068 no longer holds the `DELETE`. Its
+> used-invite `UPDATE` stays, and migration 0084 hashes every unused invite still held in plain in
+> place (`sha256_blob(token)`), so a link mailed before the release opens as before. The plain
+> text it overwrites is scrubbed from the file before the server listens. The table and the
+> reasoning below describe the file as first written, which the development server ran on
+> 16 November. See [The Compatibility Release](deployment.md#the-compatibility-release-card-3064).
+
 | What | After the start that applies 0068 |
 |---|---|
 | Invites not yet used, expired or not | Deleted. Each link shows the page for a link that no longer works. Send again, from User Management, the ones still wanted: the host lists them before the deploy, the only time they can be listed |
@@ -2017,9 +2046,17 @@ exactly as the browser held it, so whoever could read the database file, its WAL
 a restore's safety copy held a working session of everyone signed in, past both the password and
 the authenticator, and a session slid for 30 days with no total limit, renewed even by a tab left
 open. Card 2869 (session ids stored in plain, raised in the review of card 2849) is folded into
-this card. It has no migration of its own: migration 0067 ends every session at the release that
-brings it (see [Two-Step Sign-In](#two-step-sign-in-card-2769)), and the start-up sweep below
+this card. It has no migration of its own: migration 0067 ended every session at the release that
+brought it (see [Two-Step Sign-In](#two-step-sign-in-card-2769)), and the start-up sweep below
 ends any session left in plain.
+
+> **Changed by card 3064 (the compatibility release):** 0067 no longer ends sessions. Migration
+> 0084 adds `sessions.kept_at_release` and hashes every session still in plain in place
+> (`sha256_blob(id)`), marks it kept (1), dates it from the release and caps its expiry at 30 days.
+> `endPlainSessions()` then finds nothing at that start. The role limits below hold once two-step
+> sign-in is required, and for a session made with a code whatever the switch; while it is dormant a
+> password-only session has 30 days idle and 90 days in all, whatever its role, and a kept session
+> is read for 30 days after the release and swapped at its first use, by either cookie name. See [Two-Step Sign-In: Dormant Until Required](#two-step-sign-in-dormant-until-required-card-3064).
 
 **The server now keeps only the code's SHA-256, the raw 32-byte digest, a BLOB value**, in the
 existing `sessions.id` column, whose declared type stays `TEXT` (no change to the schema or to
@@ -3859,6 +3896,290 @@ request to `/enrol/<token>`, and its percent-encoded forms, as `/enrol/[token]`,
 `maskSecretPaths()` rewrites `/enrol/<token>` to `/enrol/[token]` wherever a line holds it, in a
 mail server's refusal, a backup's copy of the log and the start-up sweep of the running log alike.
 
+## Two-Step Sign-In: Dormant Until Required (Card 3064)
+
+The compatibility release (card 3064) ships everything built since `106ea45` so that its first
+start changes nothing a person, an API client or a webhook receiver can see. Two-step sign-in
+(card 2769) ships **dormant**: everyone with no authenticator goes on signing in with their
+password, exactly as before, until the superadmin **requires** it, once, at event E3. Anyone may
+set up an authenticator from their Account page beforehand, and from then on is asked for its
+code. Sessions, waiting invites and requester links from before the release are kept, converted
+to their hashed form in place by migration 0084. The release and the later events E1 to E6 are in
+[The Compatibility Release](deployment.md#the-compatibility-release-card-3064); what is waived
+until each event is under [Accepted Risks](#accepted-risks) (R7 to R16).
+
+```mermaid
+stateDiagram-v2
+    [*] --> Dormant: release (0084 writes no switch)
+    Dormant --> Dormant: sign-in with no factor makes a password-only session (two_step 0)
+    Dormant --> Dormant: an account sets up two-step on its Account page, asked for a code from then on
+    Dormant --> Dormant: Reset, or a restore of a backup that did not require it
+    Dormant --> Required: E3, the superadmin's Require two-step sign-in
+    Dormant --> Required: a restore of a backup that required it (CRITICAL line)
+    note right of Required
+        one transaction: two_step_required_at and
+        two_step_released_at written, accounts with no
+        factor and no link marked, every two_step 0
+        session deleted. One CRITICAL line.
+        Password-only browsers and the old cookie retired.
+    end note
+    Required --> Required: a restore (switch kept) or a Reset (switch written back)
+    Required --> Dormant: only a host edit with the server stopped (CRITICAL at every start)
+```
+
+### The Switch
+
+| Where | What it holds |
+|---|---|
+| `src/lib/server/two-step-switch.ts` | `twoStepRequired()` (`:42`), the one read; `refuseRequiring()` (`:88`) and `requireTwoStep()` (`:123`), event E3; the E3 line (`:149`) and the start's line for a switch turned off (`:159`) |
+| `settings.two_step_required_at` | Absent: dormant. Present, whatever it holds (one that names no moment included): required. Nothing in the release writes it: no migration and no start pass |
+| `src/routes/api/admin/two-step/require/+server.ts` | `POST /api/admin/two-step/require`, the superadmin's step-up action that turns it on |
+| `src/routes/api/account/two-step/set-up/+server.ts` | `POST /api/account/two-step/set-up`, an account's own set-up while dormant |
+
+`twoStepRequired()` is a single read of the settings' primary key at every call, with no cache:
+one process, and a cache would be one more thing to get wrong on a security boundary. Every
+dormant branch below is keyed on it.
+
+**A restore may turn it on, never off** (`keepReleaseSettings`, `restore.ts:4472`). This server's
+switch and `two_step_released_at` are read before the clear and decide what the restore leaves:
+
+| Here | In the backup | After the restore | `two_step_released_at` |
+|---|---|---|---|
+| on | on or off | on, this server's value | this server's (none where it held none) |
+| off | on | on, the backup's value, and once committed one CRITICAL line: "A restore turned two-step sign-in on: the backup required it" (`restore.ts:4423`) | the backup's, or the restore's moment where the backup holds none |
+| off | off | absent | absent, whatever the backup held |
+
+The release moment `compatibility_release_at` and the six first-run flags are this server's too
+(the flags: see [The Compatibility Release](deployment.md#the-compatibility-release-card-3064)).
+**A Reset writes it back**: `api/admin/reset/+server.ts` reads the switch and
+`two_step_released_at` before it clears `settings` and writes both back when the switch was on
+(`:115-123`, `:153-157`), so a Reset never makes two-step sign-in optional again. With it off,
+neither is written.
+
+### Path by Path
+
+| Path | Dormant | Required (after E3) |
+|---|---|---|
+| Sign-in, account holding a factor | Verify challenge, code asked, `two_step` 1 | Same |
+| Sign-in, no factor, a live set-up link cookie of the account | Enrol challenge on the link | Same |
+| Sign-in, no factor, otherwise | **The password signs in**: a `two_step` 0 session, `last_sign_in_at` written, no challenge, the browser remembered under the password-only domain | Card 2769's order: the 14-day leave where mail was never set up, else the release mail, 403 or 503 |
+| A session with `two_step` 0 | Opens, **unless its account now holds a factor** | Refused and deleted |
+| The old cookie name `dumpfire_session` | Read only for a session 0084 kept, for 30 days after the release, and swapped at its first use; a kept code sent under the secure name is held to the same window and swapped the same way (CS-M1) | Never read, only deleted |
+| An invite used, account with no factor | Password set, **signed in** (`two_step` 0) as before card 2769 | Set-up challenge |
+| An invite of an account holding a factor | Refused as a dead link, nothing written (`usableInvite`, `invites.ts:145-169`), as before card 3064 | Same |
+| First-run set-up (`/setup`) | Unchanged: sets up two-step | Same |
+| Step-up, account holding a factor | Password **and** code | Same |
+| Step-up, account with no factor | **Password alone** | 403 `no-factor` |
+| Session lengths | A password-only session: 30 days idle, 90 days in all, every role. A session made with a code: as required (CS-L2) | 12 h and 24 h for administrators and the superadmin, 3 d and 7 d for users |
+| Account page, no factor | **Set up two-step sign-in** | Not shown |
+
+The superadmin asking to require it from a password-only session is answered 401 by the gate,
+not the route's 409: once the superadmin holds a factor, `findSession` refuses their `two_step`
+0 sessions (below). The route keeps its 409 as defence in depth.
+
+### Signing In While Dormant
+
+```mermaid
+flowchart TD
+    P["Right password, checked hash H"] --> D{"Account there<br/>and not disabled?"}
+    D -- no --> GONE["400: the sign-in has expired"]
+    D -- yes --> F{"Account holds a factor?"}
+    F -- yes --> V["Verify challenge<br/>303 /login/verify"]
+    F -- no --> K{"MFA key loaded?"}
+    K -- no --> NK["503: no MFA key"]
+    K -- yes --> L{"Live set-up link cookie<br/>of this account?"}
+    L -- yes --> EL["Enrol challenge, grant link<br/>303 /login/enrol"]
+    L -- no --> S{"two_step_required_at<br/>present?"}
+    S -- yes --> REQ["Card 2769's order:<br/>leave, release mail, 403 or 503"]
+    S -- no --> H{"Stored hash still H?"}
+    H -- no --> CH["409: password changed<br/>while signing in, nothing written"]
+    H -- yes --> PO["finishPasswordSignIn:<br/>last_sign_in_at written,<br/>session two_step 0"]
+    PO --> RB["Cookie set, browser remembered<br/>under known-browser:password-only,<br/>throttles forgotten, 303 /"]
+```
+
+- **Branch (a2) of `afterPassword`** (`second-step.ts:309-317`), in the same synchronous
+  transaction as the disabled check and the factor read (`:297-300`), after the MFA-key step (0)
+  and the link step (a): with the switch off, the account's `password_hash` is read again and
+  compared with the hash checked. Different is 409 `changed`, nothing written, as
+  `issueChallenge` does on every other branch.
+- **`finishPasswordSignIn`** (`second-step.ts:724-739`) writes `last_sign_in_at`,
+  `last_sign_in_from` and `failed_codes_since_sign_in = 0`, as `finishSignIn` does, then
+  `createSession(user.id, { twoStep: 0 })`. It throws, rolling the transaction back, when the
+  switch is on or a factor is held. Writing `last_sign_in_at` matters: card 2935's "provably read
+  nothing" clears only an account that never signed in.
+- **After the commit** (`second-step.ts:342-358`): the session cookie, the challenge cookie
+  deleted, the browser remembered under its own MAC domain, the throttles forgotten for a browser
+  not already remembered, and one INFO line, `User "<name>" logged in, no second step: two-step
+  sign-in is not required on this server`.
+- **Invites** (`invite/[token]/+page.server.ts:198-204`): the switch and `holdsFactor` are read in
+  the invite's own transaction; dormant and no factor signs the invitee in through
+  `finishPasswordSignIn`. While dormant an invite still answers 503 with no MFA key loaded.
+
+**Remembered browsers under a domain of their own.** `rememberBrowser` signs a cookie for a
+`two_step` 1 session under `known-browser:2` and for a `two_step` 0 one under
+`known-browser:password-only` (`known-browsers.ts:142`, `:154`, `:191`). `rememberedNonce`
+accepts the password-only domain only while two-step sign-in is dormant **and** the account holds
+no factor (`:249`), so the lenient lane never outlives dormancy nor an account's set-up. The own
+password change and the sign-out remember under the domain of the session they come from
+(`api/account/password/+server.ts:176`, `logout/+page.server.ts:49`). Migration 0067 still
+forgets every remembered browser once, at the release.
+
+### Sessions Made on a Password Alone
+
+`createSession(userId, { twoStep })` takes `twoStep` with no default: `finishSignIn` passes 1,
+`finishPasswordSignIn` 0, and the own password change the replaced session's own value
+(`api/account/password/+server.ts:159-160`), so a password change never turns a password-only
+session into one made with a code. `findSession` (`auth.ts:780-781`) refuses a session whose
+`two_step` is not 1 when the switch is on **or** its account holds a factor, and the gate deletes
+it with one WARN line naming why. An account that sets up two-step sign-in on one browser ends
+its password-only sign-ins on every other.
+
+**Lengths by state** (`sessionLimits(role, required, twoStep)`, `auth.ts:116-119`): dormant, a
+password-only session has `DORMANT_LIMITS`, 30 days idle and 90 days in all for every role
+(`:92`); a session made with a code has `SESSION_LIMITS` (`:79-82`) whatever the switch (the
+code review's CS-L2: an account that set up two-step sign-in keeps card 2775's limits); required,
+`SESSION_LIMITS` for every session. A session on a password alone is never made once two-step
+sign-in is required or for an account holding a factor: `createSession` throws and writes nothing
+(`auth.ts:698-700`, the code review's CS-L3). Every reader of a session's length asks the switch,
+and the session's own `two_step`, where it reads them: `findSession` through `deadlineOf`, the slide, `createSession`'s total-limit check,
+`replacementStart` (so a kept administrator session can still change its own password days after
+the release), the cookie's `Max-Age` (`:1542-1545`) and `cleanExpiredSessions`, which would
+otherwise delete every kept session at the first start.
+
+### Kept Sessions and the Old Cookie Name
+
+Migration 0084 adds `sessions.kept_at_release` and, for every session still in plain, replaces
+its id by `sha256_blob(id)`, marks it **1**, dates `created_at` from the release
+(`compatibility_release_at`) and caps `expires_at` at 30 days ahead, in the stored form. Those
+rows are `two_step` 0, so they open while dormant and end at E3. Live's browsers still hold the
+cookie under the name from before card 2775, `dumpfire_session`.
+
+| `kept_at_release` | Meaning |
+|---|---|
+| 0 | Every session made since the release |
+| 1 | Kept by 0084, not yet used by either cookie name |
+| 2 | Swapped to a new code under the secure name: its last 60 seconds |
+
+- **Read** (`readSessionCookie`, `auth.ts:1486-1504`): where cookies are HTTPS-only and the
+  request sends **no** `__Host-dumpfire_session` cookie at all, exactly one `dumpfire_session`
+  value in a code's shape is read as the old name. A browser that sends both is read by the
+  secure name alone, and nothing is swapped.
+- **Refused before any row is read** (`oldNameRefusal`, `auth.ts:921-928`) when two-step
+  sign-in is required, when no readable `compatibility_release_at` is stored, or from 30 days
+  after it (`OLD_NAME_WINDOW_MS`).
+- **The same by the secure name** (`validateSession`, `auth.ts:911-920`, the code review's CS-M1):
+  a mark-1 row found by a code sent under `__Host-dumpfire_session` (or the plain name where cookies
+  are not HTTPS-only) is refused once `oldNameRefusal` refuses, read after the row is found, and is
+  otherwise swapped exactly as below, never slid. So every kept code, wherever a browser sends it,
+  is under the 30-day window and the one-time swap.
+- **Accepted** (`keptByOldName`, `auth.ts:989-1031`) only for a session with `two_step` 0 and mark
+  1 or 2 that passes every other `findSession` rule. **Mark 1**, its first use: in one
+  transaction the row becomes mark 2 with its expiry 60 seconds on (`OLD_NAME_GRACE_MS`), and a
+  new session with a **new code** is made for the account with the same start, `two_step` 0 and
+  mark 0; the request goes on as the new session. Where the mark was no longer 1, a parallel
+  request swapped it first and this one is treated as mark 2. **Mark 2**: accepted as the old
+  row's session for its last 60 seconds, never slid, never swapped again, no new cookie; then it
+  has ended and the five-minute sweep deletes it.
+- **The answer** (`hooks.server.ts:750-765`): the gate appends the new code under
+  `__Host-dumpfire_session` (`sessionCookieReissue`, `auth.ts:1556-1560`) to every answer it logs,
+  a page, a `__data.json` load and a live stream alike, **unless the answer already sets or
+  clears the session cookie itself** (a sign-in, the own password change, a sign-out). Beside it
+  go two deletions of the old name (`oldSessionCookieDeletion`, `auth.ts:1654-1660`): one with no
+  `Domain`, as live set it, and one with `Domain=` the `ORIGIN` host less its first label where it
+  has three or more (`elecfron.com` for `dumpfire.elecfron.com`), which clears a cookie of that
+  name a sibling site could plant. They go with the swap's answer and with every answer that
+  refuses the old name, **never with an answer that accepted it as mark 2** (`keptByOldNameUnswapped`,
+  `hooks.server.ts:430`, the code review's CR-L5): until the swap's own answer arrives, that cookie
+  is the browser's only session cookie.
+- A sign-out by the old name ends the old-name session too, so its swapped-out code is not left
+  usable for its 60 seconds.
+
+The window closes by itself: 30 days after the release the old name is never read, a kept
+session ends at its 90-day total, and E3 refuses all of them.
+
+**The residual it leaves (the code review's CS-L1, accepted under R15):** within those 30 days,
+while dormant, someone with a kept session of their own could plant its code as a
+`dumpfire_session` cookie for the parent domain from a sibling site; a browser that sends no
+`__Host-` cookie is then signed in once as the planter (login CSRF), and could type its own data
+into the planter's account. It is one-shot per kept session (the swap), ends at R + 30 or E3,
+and the page names the account signed in. Gating the old name on `Sec-Fetch-Site` was not chosen:
+it would sign out every person who arrives by a mailed link, the common way in.
+
+### Step-Ups While Dormant
+
+`confirmStepUp` asks a code only where `codeAskedOf(caller)` is true: the account holds a factor
+or the switch is on (`mfa-store.ts:82-84`, `step-up.ts:307-330`). Otherwise the current password
+alone confirms and any code sent is ignored. `checkCurrentProof` with no code reads the factors
+and the switch again in its committing transaction: a factor added, or the switch turned on,
+since the read is answered 400 `STEP_UP_MISSING` with nothing done and the attempt left counted
+(`auth.ts:366-376`, `:422-428`). Live asked nothing before these actions, so asking the password is
+stricter, never a breakage. The layout gives each page `codeAsked` (`+layout.server.ts:25`), and
+the confirm dialogs hide the code field where it is false. Where the server answers
+`STEP_UP_MISSING` (it asks a code) to a page whose `codeAsked` is false (a factor set up, or the
+switch turned on, since the page loaded), `CurrentPasswordField` reads the page again
+(`invalidateAll`), which draws the code field (the code review's CS-L5); the app's confirm dialog
+mounts that field on every such answer. The Two-step sign-in panel reads the page again after any
+refusal that is not of the password or the code (CR-L8).
+
+### Setting Up Two-Step Sign-In From the Account Page
+
+While dormant, an account with no factor is offered **Set up two-step sign-in**.
+`POST /api/account/two-step/set-up` is a step-up action (the password alone, by the rule above).
+`refuseOwnSetUp` (`second-step.ts:1355-1359`) answers 409 when the account already holds a factor
+("Two-step sign-in is already set up for this account.") or two-step sign-in is required ("Two-step
+sign-in is required on this server: it is set up when you next sign in."), and 503 with no MFA key.
+Then, in one transaction (`startOwnSetUp`, `:1373-1379`): an enrol challenge of grant `account` on
+the password just checked, and the caller's session deleted, so that `/login/enrol` serves the
+browser. The answer sets the challenge cookie, clears the session cookie and is
+`{ "next": "/login/enrol" }` with `Cache-Control: no-store`. The Account page goes there only where
+`pathOfThisSite` (`$lib/signed-out.ts`) finds it a path of this site as the browser's URL parser
+reads it, `new URL(next, location.origin).origin === location.origin` (the code review's CR-L7), and
+reads the page again otherwise. The set-up pages then run as for any
+set-up, and their confirm makes a `two_step` 1 session. Abandoned, the person is signed out with
+their password working as before. This is how every administrator, and the superadmin first,
+holds a factor before E3.
+
+### Requiring It (Event E3)
+
+`POST /api/admin/two-step/require` is the superadmin's alone, a step-up action with the password
+and a code. `refuseRequiring` (`two-step-switch.ts:88-100`) answers 409 with nothing written, in
+this order: already required; the caller holds no factor; the session asked from is not one made
+with a code (`two_step` 1); the superadmin or any enabled administrator holds no factor, each
+named. It is asked before the password and again inside the write. `requireTwoStep`
+(`:123-140`) then, in one transaction:
+
+1. `INSERT` `two_step_required_at` = now, with no `ON CONFLICT` (a second press fails);
+2. `two_step_released_at` = now, replacing any (the 14 days of migration 0066 start at E3);
+3. every account with no factor and no enrolment link marked `mfa_password_enrol = 1`;
+4. `DELETE FROM sessions WHERE two_step = 0`: every password-only session, the kept ones among
+   them. The caller's, made with a code, stays.
+
+After the commit, one CRITICAL line, kept for good (card 2899):
+`Two-step sign-in is now required on this server, by <username> (ID: <id>): N session(s) made on a
+password alone ended (sessions kept at the release included)` followed by
+`M account(s) with no second factor and no set-up link (disabled accounts included) may set up on
+the password alone for 14 days where mail was never set up` (`two-step-switch.ts:149-152`, the two
+parts joined by a semicolon). Every other session made while dormant ends at its next use, its
+expiry being past the role's idle limit, so E3 is one planned sign-out for everybody. The Admin
+page's panel lists, before the button, every administrator with no factor and the working keys of
+enabled accounts with no factor.
+
+### Turning It Off: Only on the Host
+
+No route and no page turns it off. Deleting the row on the host, with the server stopped, turns
+password sign-in back on; it is a security event, written as an emergency step in
+[The Compatibility Release](deployment.md#the-compatibility-release-card-3064), with the cold copy
+taken at E3 as the preferred way back. Every start that finds `two_step_released_at` and no switch
+writes one CRITICAL line, kept for good (`reportTwoStepTurnedOff`, `startup-checks.ts:2814-2818`):
+"Two-step sign-in was required on this server and is not now: a host edit or a restore turned it
+off". Migration 0084 deletes `two_step_released_at`, so the release itself never says it. A person
+locked out wrongly is recovered with `scripts/mfa-reset.mjs`, as before.
+
+Covered by `tests/session-hardening.test.ts`, `tests/two-step-sign-in.test.ts`,
+`tests/two-step-switch.test.ts`, `tests/account-two-step.test.ts`, `tests/invite-hashes.test.ts`,
+`tests/step-up.test.ts`, `tests/admin-reset.test.ts`, `tests/backups.test.ts`,
+`tests/compatibility-release.test.ts` and `tests/migrations.test.ts`.
+
 ## Two-Step Sign-In (Card 2769)
 
 **A right password no longer signs anyone in.** It opens a ten-minute pending sign-in, a
@@ -3875,6 +4196,13 @@ as hashes, built: see [Invite Tokens Stored as Hashes](#invite-tokens-stored-as-
 an invite is now a grant to set up the second factor. Every running instance is stopped before the release starts, production
 needs `MFA_KEY_FILE`, and where mail is set up the App URL or `ORIGIN` must be the real address.
 The steps are in [The Release That Turns On Two-Step Sign-In](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769).
+
+> **Since card 3064 this section describes two-step sign-in once it is required.** On a server
+> without the setting `two_step_required_at` (every server after the compatibility release, until
+> the superadmin requires it at event E3) an account with no factor signs in on its password alone,
+> branch (a2) of `afterPassword` (`second-step.ts:309-317`), and no session, invite or remembered
+> browser is ended at the release. See
+> [Two-Step Sign-In: Dormant Until Required](#two-step-sign-in-dormant-until-required-card-3064).
 
 | Where | What it holds |
 |---|---|
@@ -4612,12 +4940,36 @@ code, a secret or a link.
 
 | # | Risk | Bound |
 |---|---|---|
-| R1 | On a server with **no mail host configured**, an account that existed at the release, with no factor and no link, can be set up first by someone who holds its password | 14 days from `two_step_released_at`, then never. An administrator's reset ends it for an account at once, and so does a reset by an older image. Where any mail host is configured, R1 does not apply, but an administrator who clears the mail settings within the 14 days reopens it: that is an administrator's action. A working copy closes it for every account. Reset every administrator's two-step sign-in before the release; the Users panel shows who still may |
-| R2 | API keys made before the release, on a password alone, keep working | **Closed by card 2772 (built 2026-11-17)**: migration 0069 gives every key that exists at that release a deadline 60 days after it, and one not kept on the Account page, with the password and a code, stops working then (see [Keys Made Before Two-Step Sign-In: the Deadline](#keys-made-before-two-step-sign-in-the-deadline-card-2772)). Until the deadline a key is a non-interactive credential, a 256-bit secret kept hashed, recorded as such against ISO 27001 A.8.5; the enrolment notice and the report list the account's keys and webhooks |
+| R1 | On a server with **no mail host configured**, an account that existed at the release, with no factor and no link, can be set up first by someone who holds its password | Since card 3064 the 14 days start at E3, when the superadmin requires two-step sign-in and `two_step_released_at` is written; while dormant the leave is never read. 14 days from `two_step_released_at`, then never. An administrator's reset ends it for an account at once, and so does a reset by an older image. Where any mail host is configured, R1 does not apply, but an administrator who clears the mail settings within the 14 days reopens it: that is an administrator's action. A working copy closes it for every account. Reset every administrator's two-step sign-in before the release; the Users panel shows who still may |
+| R2 | API keys made before the release, on a password alone, keep working | **Reopened by card 3064 as R16 below, until event E4**: migration 0084 takes 0069's deadline back from every key on the server that applies it, so no key has one until the administrator applies it at E4, within 60 days of E3 (see [The Compatibility Release](deployment.md#the-compatibility-release-card-3064)). As card 2772 built it (2026-11-17): migration 0069 gives every key that exists at that release a deadline 60 days after it, and one not kept on the Account page, with the password and a code, stops working then (see [Keys Made Before Two-Step Sign-In: the Deadline](#keys-made-before-two-step-sign-in-the-deadline-card-2772)). Until the deadline a key is a non-interactive credential, a 256-bit secret kept hashed, recorded as such against ISO 27001 A.8.5; the enrolment notice and the report list the account's keys and webhooks |
 | R3 | A password holder can evict the owner's live challenge: an account has at most three, the oldest goes | The owner signs in again. Each eviction needs the right password, and a verify challenge left unused is itself a signal (S12) |
 | R4 | An older image started after the release makes sessions and cookies on a password alone that it would accept | This image refuses both; the deployment guide makes a rollback a security event |
 | R5 | A missing id is answered a little faster than one the caller cannot open: a board or a card (card 2719), a milestone (card 2911), a task request (card 2914). The first is answered after one query, the second after a few (one per board for a goal across boards; for a task request, up to two team-membership reads, the route's own rule and then `canReadRequest`, the second asked on the refusal path only), so the two could in principle be told apart by timing. The public new-link route (`POST /api/requests/:id/link`) is not in it: it does the same work for every id before it answers (card 2158) | The answers are identical in status and body. The difference is a few queries on a local SQLite file, well under the jitter of a network round trip, and every probe is bounded by the gate's 60 requests a minute per key or address. Equalising the time was not chosen (card 2719, D13). Named in A.8.3's accepted risks |
 | R6 | Ids are counted up one at a time, so anyone who can make a board, a card, a milestone or a task request learns from its id how many were made since their last (cards 2911 and 2914, S6): a count, not which ids exist on what they cannot see | No content is given, and making things is bounded by the gate's rate limits. Opaque ids were not chosen. Named in A.8.3's accepted risks |
+
+The compatibility release (card 3064) waives ten protections until their planned events, so that
+its first start changes nothing anyone can see. Each is an accepted ISO 27001 risk with a bound:
+the event that closes it, a target date counted from the release day (R) and fixed on that
+event's card, the superadmin as system owner, and a review monthly and at the event. Each count
+is taken on the host before the release by the read-only check P-new-3 in
+[The Compatibility Release](deployment.md#the-compatibility-release-card-3064), and the events
+E1 to E6 are written there as procedures. In the ISO register, R7, R9, R10, R11 and R13 are named
+under A.5.14 Information transfer; R8 under A.8.24 Use of cryptography; R12 under A.5.34 Privacy
+and protection of PII; R14 under A.8.13 Information backup; R15 and R16 under A.8.5 Secure
+authentication.
+
+| # | Protection waived | Threat | Count (P-new-3) | Who could hold the secret | Compensating controls | Treatment, target | Owner, review |
+|---|---|---|---|---|---|---|---|
+| R7 | Card 2935: every webhook made before setters were recorded (migration 0056) held and re-keyed once, at the first start. Skipped: 0084 seeds `webhooks_readable_by_disabled_held` | A former owner or administrator who read such a secret signs forged events the receiver trusts | Webhooks made before 0056 with a secret | Anyone who was an owner of the board, or an administrator, before 0056 | Secrets sealed at rest from the release (card 2898); every disable, demotion, reset or ending of keys from now holds what that person could read (card 2935, shipped active) | E6 (the flag deleted, a start), R + 90 | Superadmin; monthly and at E6 |
+| R8 | Card 2943: the backup seal key made anew. Kept instead: a plain 64-hex key is sealed in place as `v2:<key>`, `backup_seal_key_made_at` left absent | A copy of the database from before the release holds the key in plain and could seal a backup this server trusts | 1 key; the cold copy and every pre-release snapshot | Anyone holding a pre-release copy of the database | Kept at the first start after 0084 alone, by its one-shot leave `backup_seal_key_keep_once`, which that start deletes in its transaction and a restore never brings in: a plain key planted later (a host edit, an older image's import) is made anew at the next start (the code review's CS-M2). The cold copy encrypted, root-only and shredded (R14); every restore is an incident with its own review | E2 (the key deleted with the server stopped, made anew at the next start), R + 30 | Superadmin; monthly and at E2 |
+| R9 | Card 2947: every API key used before the release counted once as given the secret of each webhook its account could read. Skipped: 0084 seeds `webhook_reveals_seeded` | A key that read a webhook's secret before the release ends, and that webhook is not held, so its secret is not renewed | API keys with `last_used_at` set, and the webhooks their accounts can read or set | Holders of keys used before the release | Every read of a secret from the release on is recorded and holds the webhook when the key ends | E4 (the flag deleted, the seed runs), E3 + 60 | Superadmin; monthly and at E4 |
+| R10 | Card 2893: a webhook set up before keys were recorded stops once its setter has no working key from before. Skipped: 0084 sets `webhooks.set_with_key` 0 where it was NULL | A webhook set up with a key keeps sending after that key ends | Webhooks with `set_with_key` NULL before 0084 | Holders of the setters' keys | The rule applies to every webhook set or switched on from the release | E4 (`set_with_key` reset to NULL for webhooks made before keys were recorded, the announcement flag deleted: mandatory), E3 + 60 | Superadmin; monthly and at E4 |
+| R11 | Card 2923: every webhook already switched off held once, whoever set it. Skipped: 0084 seeds `webhooks_already_off_held`. Its every-start hold still holds each one whose setter is disabled or not recorded | An off webhook switched on again keeps a secret a former holder knows | Off webhooks with no hold, less those with no setter recorded (held at the first start) | Anyone who could read it before | Switching one on is an owner's or administrator's logged act; a held one is given a new secret | E6 (the flag deleted, a start), R + 90 | Superadmin; monthly and at E6 |
+| R12 | Card 2761: metadata and trailing data taken out of every image stored before it. Skipped: 0084 seeds `stored_images_rechecked` | Location and device data in older images read by anyone who can open the card | Image attachments | Board members | Card access control; every new upload is checked as it is stored | E1 (the flag deleted after the uploads copy, a start), R + 60 | Superadmin; monthly and at E1 |
+| R13 | Card 2751: each owner mailed once about their report schedules at the release. Skipped: 0084 seeds `report_schedules_announced` | A schedule made by someone holding the owner's session keeps mailing board activity out | Enabled report schedules | Whoever made the schedule | An administrator confirms each enabled schedule and its recipients at the release (P-new-3) and pauses any not recognised; from the release every schedule change asks the password, and a code where one is asked | Closed at the release by that confirmation; reviewed at E3 | Superadmin; at E3 |
+| R14 | Cards 2775, 2849, 2870: the plain session ids, invite tokens and requester tokens gone from every copy. The cold copy taken before the release keeps them | A pre-release copy holds them in plain, and they open sessions, invites and requester links kept on the live server | Sessions, unused invites, requests with a token | Anyone holding the cold copy or a pre-release snapshot | Encrypted with a passphrase kept off the volume, in a root-only folder; the live file scrubbed before it listens (checkpoint, `VACUUM`, checkpoint, and the scrub's INFO line) | Shredded, with every pre-release volume snapshot, at go/no-go + 14 days | Superadmin; at go/no-go |
+| R15 | Card 2775: the `__Host-` cookie name alone, and no session made on a password alone | A kept session's cookie under the old name, which a sibling site on the parent domain could plant, and sessions made on a password alone. **Residual (the code review's CS-L1): login CSRF.** Within the 30 days, while dormant, someone holding their own kept session's code could plant it as a cookie of the old name for this server's parent domain from a sibling site; a browser that sends no `__Host-` cookie is then signed in once as the planter, and may type its own data into the planter's account | Kept sessions; then every password-only session made while dormant | Holders of the pre-release cookies | The old name is read only when no `__Host-` cookie is sent, only for a session 0084 marked kept, within 30 days of the release, and swapped at its first use for a new code under the secure name (a kept code sent under the secure name too: CS-M1); it is deleted with and without `Domain=elecfron.com`; a password-only session and a password-only remembered browser are refused once the account holds a factor. The CSRF residual is one-shot per kept session (the swap), bounded by the 30 days and by E3, needs a planter with a kept session and a sibling site under the same parent domain, and the page always names the account signed in. `Sec-Fetch-Site` gating was not chosen: it would sign out every person arriving by a mailed link, the common case | R + 30 (the old name, by itself); E3 (every password-only session) | Superadmin; at R + 30 and at E3 |
+| R16 | Card 2772: keys and webhooks set up on a password alone end with two-step sign-in. 0084 takes every key's deadline back | Credentials set before E3 keep working after two-step sign-in is required | The E3 panel's list of working keys of enabled accounts with no factor | Their holders | E4 due within 60 days of E3, its webhook reset mandatory; the panel lists the keys before the superadmin presses the button | E4, E3 + 60 | Superadmin; at E3 and at E4 |
 
 ### ISO/IEC 27001:2022
 
@@ -4628,7 +4980,7 @@ also names what is still open and the card that closes it. Its method is in
 
 | Control | How two-step sign-in meets it |
 |---|---|
-| A.8.5 Secure authentication | Two factors for every interactive sign-in: a password, then an authenticator code or a recovery code, before any session. No switch turns it off. Wrong codes are counted in the database, per challenge and per lane, with pauses and a lock that survive restarts. API keys are non-interactive credentials (R2). The code is asked for again, and checked, before every step-up action (cards 2770 and 2771, released together): the forty-four destructive, privilege-changing, exfiltrating and credential-issuing actions, the Account page's email, password and key forms, (card 2772) its two-step section and Keep this key, (card 2751) report schedules and report mail, (card 2671) disabling and enabling an account, (card 2922) a held setting kept or removed and (card 3020) a held request's mail released among them. Every authenticator of an account is tried, at sign-in and at a step-up, with the guessing bounds held (card 2772) |
+| A.8.5 Secure authentication | Once the superadmin requires two-step sign-in (card 3064, event E3), two factors for every interactive sign-in: a password, then an authenticator code or a recovery code, before any session; once required, nothing in the application turns it off. Until then it is dormant: an account that has set up an authenticator is asked for its code, and one that has not signs in on its password alone, as before the release (accepted risks R15 and R16; see [Two-Step Sign-In: Dormant Until Required](#two-step-sign-in-dormant-until-required-card-3064)). Wrong codes are counted in the database, per challenge and per lane, with pauses and a lock that survive restarts. API keys are non-interactive credentials (R2, R16). The code is asked for again, and checked, before every step-up action of an account that holds a factor, and of every account once required (while dormant an account with no factor confirms with its password alone) (cards 2770 and 2771, released together): the forty-four destructive, privilege-changing, exfiltrating and credential-issuing actions, the Account page's email, password and key forms, (card 2772) its two-step section and Keep this key, (card 2751) report schedules and report mail, (card 2671) disabling and enabling an account, (card 2922) a held setting kept or removed and (card 3020) a held request's mail released among them. Every authenticator of an account is tried, at sign-in and at a step-up, with the guessing bounds held (card 2772) |
 | A.5.17 Authentication information | Secrets sealed under a key kept out of the database; challenge tokens, link tokens and recovery codes kept only as hashes; nothing secret logged or answered. The owner is mailed at every enrolment, recovery-code use, pause, lock and likely stolen password, and shown the last sign-in and their keys |
 
 Covered by `tests/two-step-sign-in.test.ts`, `tests/two-step-enrol.test.ts`, and the pins in
@@ -6969,7 +7321,19 @@ deadline (below).
 ### Keys Made Before Two-Step Sign-In: the Deadline (Card 2772)
 
 Until two-step sign-in, a key was made on a password alone, so it may have been made by whoever
-held the password (risk R2 of [Accepted Risks](#accepted-risks), now closed). **Migration 0069**
+held the password (risk R2 of [Accepted Risks](#accepted-risks)).
+
+> **Changed by card 3064 (the compatibility release):** migration 0084 clears every
+> `api_keys.deadline_at` and deletes `settings.api_key_deadline` in the same start that runs 0069,
+> so on a server that applies them no key has a deadline, and none is given at installation. A key
+> has a deadline only where the administrator has applied one, at event E4 (0069's `INSERT` and
+> `UPDATE` run on the host with the chosen days, within 60 days of E3, with notice to every key
+> holder). Until then this is accepted risk R16. With no deadline stored here, a restore gives
+> restored keys none either. Keep this key answers 409 `NO_DEADLINE` for a key with none. See
+> [The Compatibility Release](deployment.md#the-compatibility-release-card-3064). What follows is
+> the rule once a deadline is applied.
+
+**Migration 0069**
 (`drizzle/0069_add_api_key_deadline.sql`) gives every key that exists at card 2772's release a
 deadline 60 days after it:
 
@@ -10031,6 +10395,15 @@ erDiagram
   copy, each still working, because its hash is exactly what is looked up; and SQLite has no
   SHA-256. The page a dead link opens mails a new one (card 2158), and the next reply or
   progress mail brings one by itself.
+  **Changed by card 3064 (the compatibility release):** 0070 no longer empties `access_token`.
+  Migration 0084 moves each request's token into `request_links` as its `sha256_hex`, source
+  `mail`, dated at the release (`compatibility_release_at`), then sets the column to NULL, so a
+  link mailed before the release keeps working (it is pruned like any mail link once 20 newer
+  ones exist). The plain text it overwrites leaves the file at that same start, before the
+  server listens: the scrub's checkpoint, `VACUUM` and checkpoint, which now says so in one INFO
+  line (`SCRUBBED_LINE`, `startup-checks.ts:1121`). A request settled before the release counts
+  its 90 days from the release (`linkEnded` in `request-access.ts`). See
+  [The Compatibility Release](deployment.md#the-compatibility-release-card-3064).
 - **Two caps, each kind trimmed only among its own** (decision 3, the review's S1 and E11). A
   request keeps its newest **20** `mail` links, so the 21st mail ends the oldest, and its
   newest **3** `ask` links (`REQUEST_MAIL_LINKS_KEPT`, `REQUEST_ASK_LINKS_KEPT`). Anyone who

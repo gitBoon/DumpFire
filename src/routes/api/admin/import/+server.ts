@@ -392,7 +392,8 @@ function unsealedReachSentence(reach: UnsealedReach | undefined): string | null 
 					`${reach.peopleMailOff} person(s) in the people directory were marked left, as this server did not hold their address and account, ` +
 						'or has them as left' +
 						(reach.decisionPlacesMailOff > 0 ? `, so ${reach.decisionPlacesMailOff} place(s) on decisions are mailed nothing` : '') +
-						': an administrator marks each active on the People page, with a password and a code, once the address is checked'
+						': an administrator marks each active on the People page, with a password and a code (the password alone while two-step sign-in is dormant, ' +
+						'for one who has not set it up: card 3064), once the address is checked'
 				]
 			: []),
 		// Card 3029: the mail's From address and name, this server's again, counted only.

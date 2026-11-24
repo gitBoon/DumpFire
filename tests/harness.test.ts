@@ -106,6 +106,8 @@ const TEST_FILES = [
 	'columns.test.ts',
 	// Milestone 22, slice S2: a move across the commitment point, by every route.
 	'commitment.test.ts',
+	// Card 3064: the compatibility release's first start, on a database as the version before two-step sign-in left it.
+	'compatibility-release.test.ts',
 	'confirm-modal.svelte.test.ts',
 	'content-security-policy.test.ts',
 	// Card 2526: the side pane's panels in the dashboard's Display menu, remembered per user.
@@ -267,6 +269,8 @@ const TEST_FILES = [
 	'two-step-enrol.test.ts',
 	// Card 2769: two-step sign-in, from sessions made only after a second factor to the code page.
 	'two-step-sign-in.test.ts',
+	// Card 3064: two-step sign-in required by the superadmin (event E3), and the start that finds it turned off.
+	'two-step-switch.test.ts',
 	// Milestone 22, slice S4a: options are left out of every delivery measure; lead and cycle time from the commitment.
 	'upstream-measures.test.ts',
 	// Milestone 22, slice S6: the public API's reads of upstream, its filters and the upstream figures.

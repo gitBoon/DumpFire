@@ -46,7 +46,7 @@
 	import RulingForm from '$lib/components/decision/RulingForm.svelte';
 	import { RELEASE_INFERENCE, RESULTS_READ_AGAIN, shownMoment, STALE_REVISION, STATUS_WORDS } from '$lib/decision-words';
 	import type { PreviewComment, ReleasePreview } from '$lib/decision-view-types';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import { theme, themeIcon } from '$lib/stores/theme';
 
 	let { data }: { data: PageData } = $props();
@@ -63,7 +63,7 @@
 	/** Card 2684 (R23): on the page alone, so absent from any other source's answer. */
 	const flags = $derived(data.flags ?? []);
 	const releaseMessage = $derived(
-		`${RELEASE_INFERENCE}${leftOut.length > 0 ? ` ${leftOut.length === 1 ? '1 comment is' : `${leftOut.length} comments are`} left out.` : ''} ${ASKS_FOR_PASSWORD}`
+		`${RELEASE_INFERENCE}${leftOut.length > 0 ? ` ${leftOut.length === 1 ? '1 comment is' : `${leftOut.length} comments are`} left out.` : ''} ${asksForPassword(data.codeAsked)}`
 	);
 
 	/** Something was done: the data read again, then the words said and the focus on them. */

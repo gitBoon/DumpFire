@@ -29,10 +29,11 @@
 	import TwoStepSection from '$lib/components/account/TwoStepSection.svelte';
 	import { answerBody, failureMessage } from '$lib/api';
 	import { passwordKeptAfter, proofTyped, stepUpRefusal } from '$lib/step-up-words';
-	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
+	import { asksForPassword, yourProof, yourProofInFull, type StepUpProof } from '$lib/step-up-words';
 	import { MASTER_PREF, NOTIFICATION_PREFS, type NotificationPrefKey } from '$lib/notification-prefs';
 	import { onMount } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
+	import { pathOfThisSite } from '$lib/signed-out';
 	import { parseStamp } from '$lib/timestamps';
 
 	let { data }: { data: PageData } = $props();
@@ -165,7 +166,7 @@
 	}
 
 	async function changeEmail() {
-		if (!newEmail?.trim() || !proofTyped(emailPassword, emailCode) || changingEmail) return;
+		if (!newEmail?.trim() || !proofTyped(emailPassword, emailCode, data.codeAsked) || changingEmail) return;
 		if (newEmail.trim() === displayedEmail) {
 			emailMessage = 'This is already your current email';
 			emailError = true;
@@ -215,7 +216,7 @@
 	}
 
 	async function changePassword() {
-		if (!proofTyped(passwordCurrent, passwordCode) || !newPassword || !confirmPassword || changingPassword) return;
+		if (!proofTyped(passwordCurrent, passwordCode, data.codeAsked) || !newPassword || !confirmPassword || changingPassword) return;
 		if (newPassword.length < 8) {
 			passwordMessage = 'New password must be at least 8 characters';
 			passwordError = true;
@@ -414,7 +415,7 @@
 	}
 
 	async function generateApiKey() {
-		if (!newKeyName.trim() || !proofTyped(newKeyPassword, newKeyCode) || generatingKey) return;
+		if (!newKeyName.trim() || !proofTyped(newKeyPassword, newKeyCode, data.codeAsked) || generatingKey) return;
 		generatingKey = true;
 		newlyCreatedKey = '';
 		keyCopied = false;
@@ -602,6 +603,53 @@
 		} catch {
 			dismissing = false;
 			bannerError = 'No answer from the server. Reload the page to see whether the warning was cleared.';
+		}
+	}
+
+	// Setting up two-step sign-in while it is dormant (card 3064, R8)
+	/** The Set up two-step sign-in dialog is open. */
+	let askingToSetUp = $state(false);
+	/** Why the set-up was not begun, under the section's words. */
+	let setUpError = $state('');
+
+	/**
+	 * Set up two-step sign-in, confirmed with the password (a code is not asked
+	 * of an account with no factor while two-step sign-in is dormant, R6): the
+	 * server ends this browser's session and issues the set-up, and the browser
+	 * goes where it says (the set-up pages, which run as for any account),
+	 * loaded afresh as a signed-out browser. An answer that names no path of
+	 * this site reads the page again, which, signed out, goes to sign in. A
+	 * refusal of the password goes back to the dialog; any other
+	 * closes it, said under the section's words in the server's own, and a 409
+	 * (a factor already held, or two-step sign-in now required) reads the page
+	 * again, so that the section shows the account as it now is.
+	 */
+	async function startSetUp(proof: StepUpProof): Promise<string | void> {
+		setUpError = '';
+		try {
+			const res = await fetch('/api/account/two-step/set-up', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode })
+			});
+			if (res.ok) {
+				const answer = await answerBody(res);
+				askingToSetUp = false;
+				// Only a path of this site, as the browser reads it: never anywhere else the answer could name (card 3064's
+				// code review, CR-L7).
+				const next = pathOfThisSite(answer?.next, location.origin);
+				if (next !== null) window.location.href = next;
+				else await invalidateAll();
+			} else {
+				const refusal = await stepUpRefusal(res);
+				if (refusal !== null) return refusal;
+				askingToSetUp = false;
+				setUpError = await failureMessage(res, 'Two-step sign-in was not set up.');
+				if (res.status === 409) await invalidateAll();
+			}
+		} catch {
+			askingToSetUp = false;
+			setUpError = 'No answer from the server. Reload the page: if it asks you to sign in, sign in to carry on setting up two-step sign-in.';
 		}
 	}
 
@@ -799,7 +847,7 @@
 					<button
 						class="btn-primary"
 						onclick={changeEmail}
-						disabled={!newEmail?.trim() || !proofTyped(emailPassword, emailCode) || newEmail.trim() === displayedEmail || changingEmail}
+						disabled={!newEmail?.trim() || !proofTyped(emailPassword, emailCode, data.codeAsked) || newEmail.trim() === displayedEmail || changingEmail}
 					>
 						{changingEmail ? 'Updating...' : 'Update Email'}
 					</button>
@@ -875,7 +923,7 @@
 
 				{#if schedulesOn > 0}
 					<!-- Card 2894 (D1): a change always pauses the account's report schedules; said before the button. -->
-					<p class="end-keys-note">Changing your password pauses your {schedulesInWords(schedulesOn)}. Turn on the ones you recognise on the <a href="/reports">Reports page</a> afterwards: it asks for your password and a code.</p>
+					<p class="end-keys-note">Changing your password pauses your {schedulesInWords(schedulesOn)}. Turn on the ones you recognise on the <a href="/reports">Reports page</a> afterwards: it asks for {yourProof(data.codeAsked)}.</p>
 				{/if}
 
 				<div class="password-actions">
@@ -886,7 +934,7 @@
 					<button
 						class="btn-primary"
 						onclick={changePassword}
-						disabled={!proofTyped(passwordCurrent, passwordCode) || !newPassword || !confirmPassword || changingPassword}
+						disabled={!proofTyped(passwordCurrent, passwordCode, data.codeAsked) || !newPassword || !confirmPassword || changingPassword}
 					>
 						{changingPassword ? 'Changing...' : 'Change Password'}
 					</button>
@@ -894,8 +942,27 @@
 			</div>
 		</section>
 
-		<!-- Two-step sign-in (card 2772, D9) -->
-		<TwoStepSection twoStep={data.twoStep} />
+		<!-- Two-step sign-in (card 2772, D9); while it is dormant, an account with no factor is offered to set it up in its place (card 3064, R8). -->
+		{#if data.offerTwoStepSetUp}
+			<section class="account-card glass fade-in-up" style="animation-delay: 0.25s" aria-labelledby="two-step-set-up-heading">
+				<h2 id="two-step-set-up-heading">🛡️ Two-step sign-in</h2>
+				<p class="notif-desc">
+					Two-step sign-in is not set up for your account. With it, signing in asks for your password and a code from an authenticator app on your phone, so your password alone is not enough to get in.
+				</p>
+				<p class="notif-desc">
+					Setting it up signs you out of this browser and takes you to the set-up: scan a QR code with the app, enter the code it shows, and save ten recovery codes. Once it is done, your other browsers are signed out and you sign in with a code from then on.
+				</p>
+				{#if setUpError}
+					<div class="password-msg error" role="alert">{setUpError}</div>
+				{/if}
+				<div class="password-actions">
+					<span></span>
+					<button class="btn-primary" onclick={() => (askingToSetUp = true)}>Set up two-step sign-in</button>
+				</div>
+			</section>
+		{:else}
+			<TwoStepSection twoStep={data.twoStep} />
+		{/if}
 
 		<!-- Email Notifications section -->
 		<section class="account-card glass fade-in-up" style="animation-delay: 0.3s">
@@ -945,7 +1012,7 @@
 		<!-- API Keys section -->
 		<section class="account-card glass fade-in-up" style="animation-delay: 0.4s">
 			<h2>🔑 API Keys</h2>
-			<p class="notif-desc">Generate API keys for automation and external integrations. Generating a key asks for your password and a code from your authenticator app. See <a href="/docs" target="_blank">API documentation</a> for usage.</p>
+			<p class="notif-desc">Generate API keys for automation and external integrations. Generating a key asks for {yourProofInFull(data.codeAsked)}. See <a href="/docs" target="_blank">API documentation</a> for usage.</p>
 
 			<!-- New key creation -->
 			<div class="apikey-create">
@@ -980,7 +1047,7 @@
 						id="apikey-generate-btn"
 						class="btn-primary"
 						onclick={generateApiKey}
-						disabled={!newKeyName.trim() || !proofTyped(newKeyPassword, newKeyCode) || generatingKey}
+						disabled={!newKeyName.trim() || !proofTyped(newKeyPassword, newKeyCode, data.codeAsked) || generatingKey}
 					>
 						{generatingKey ? 'Generating...' : 'Generate Key'}
 					</button>
@@ -1069,12 +1136,25 @@
 	{@const key = keepingKey}
 	<ConfirmModal
 		title="Keep this key"
-		message={`Keep “${key.name}” past its deadline? It goes on working as it is, with no deadline. ${ASKS_FOR_PASSWORD}`}
+		message={`Keep “${key.name}” past its deadline? It goes on working as it is, with no deadline. ${asksForPassword(data.codeAsked)}`}
 		confirmText="Keep"
 		confirmDanger={false}
 		askPassword
 		onConfirm={(proof) => keepKey(key.id, proof)}
 		onCancel={() => (keepingKey = null)}
+	/>
+{/if}
+
+<!-- Set up two-step sign-in asks for the password alone: the account holds no factor, and two-step sign-in is dormant (card 3064, R6, R8). -->
+{#if askingToSetUp}
+	<ConfirmModal
+		title="Set up two-step sign-in"
+		message="Set up two-step sign-in now? This browser is signed out and taken to the set-up. If you stop part way, sign in again with your password as before. You will be asked for your password."
+		confirmText="Continue"
+		confirmDanger={false}
+		askPassword
+		onConfirm={(proof) => startSetUp(proof)}
+		onCancel={() => (askingToSetUp = false)}
 	/>
 {/if}
 
@@ -1084,7 +1164,7 @@
 	{@const bannerAt = data.twoStep.banner.latestAt}
 	<ConfirmModal
 		title="That was me"
-		message={`Clear this warning? Do this only if it was you who entered your password. ${ASKS_FOR_PASSWORD}`}
+		message={`Clear this warning? Do this only if it was you who entered your password. ${asksForPassword(data.codeAsked)}`}
 		confirmText="Clear the warning"
 		confirmDanger={false}
 		askPassword

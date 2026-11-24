@@ -91,7 +91,7 @@ import {
 	users,
 	webhooks
 } from '$lib/server/db/schema';
-import { PASSWORD_CHANGED_MEANWHILE, SESSION_COOKIE_NAME, deleteSession, forgetChecksInFlight, passwordHeld, whilePasswordHolds } from '$lib/server/auth';
+import { PASSWORD_CHANGED_MEANWHILE, SESSION_COOKIE_NAME, deleteSession, forgetChecksInFlight, passwordHeld, requirePasswordHeld, whilePasswordHolds } from '$lib/server/auth';
 import { addressKey } from '$lib/server/client-address';
 import { PASSWORDS_BUSY } from '$lib/server/passwords';
 import {
@@ -113,10 +113,12 @@ import {
 	STEP_UP_FACTOR_UNUSABLE,
 	STEP_UP_IN_FLIGHT,
 	STEP_UP_MISSING,
+	STEP_UP_MISSING_PASSWORD,
 	STEP_UP_NO_FACTOR,
 	STEP_UP_NO_PASSWORD,
 	STEP_UP_SIGNED_OUT,
 	STEP_UP_WRONG,
+	STEP_UP_WRONG_PASSWORD,
 	forgetImportConfirmations,
 	issueImportConfirmation,
 	takeImportConfirmation,
@@ -137,6 +139,7 @@ import {
 	makePerson,
 	makeSession,
 	makeSmtp,
+	makeTwoStepDormant,
 	makeUser,
 	makeWebhook,
 	resetDb,
@@ -144,7 +147,8 @@ import {
 	stepUpCode,
 	stepUpFactor,
 	sessionHashOf,
-	sessionCredential
+	sessionCredential,
+	writeRequiredSettings
 } from './helpers/fixtures';
 import { failingWrite } from './helpers/failing-write';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
@@ -152,8 +156,21 @@ import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot
 import { readOpened, readOpenedUrl } from './helpers/reads';
 import { handlersOf } from './helpers/source-scan';
 import { codeFor, giveAuthenticator, giveFactor, wrongCodeFor } from './helpers/two-step';
-import { factorSecret, spendStep } from '$lib/server/mfa-store';
+import { codeAskedOf, factorSecret, spendStep } from '$lib/server/mfa-store';
+import { boardDeleteWarning, clearCardsWarning, columnDeleteWarning, purgeDescription, purgeWarning, resetWarning } from '$lib/api';
 import { stepAt } from '$lib/server/totp';
+import {
+	ASKS_FOR_PASSWORD,
+	ASKS_FOR_PASSWORD_ALONE,
+	asksForPassword,
+	isStepUpMissing,
+	proofTyped,
+	stepUpMissing,
+	stepUpRefusal,
+	stepUpWrong,
+	yourProof,
+	yourProofInFull
+} from '$lib/step-up-words';
 
 beforeEach(() => {
 	resetDb();
@@ -347,7 +364,7 @@ const linkRevokedReasons = (participantId: number) =>
 // ─── 1 and 2. The list, and the routes that ask ──────────────────────────────
 
 describe('the list of what asks, pinned against the routes (cases 1 and 2)', () => {
-	it("is the forty-four actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two, card 2773's one, card 2771's three, card 2772's five, card 2751's three, card 2671's two, card 2922's one and card 3020's one, each with why it asks", () => {
+	it("is the forty-six actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two, card 2773's one, card 2771's three, card 2772's five, card 2751's three, card 2671's two, card 2922's one, card 3020's one and card 3064's two, each with why it asks", () => {
 		expect(Object.keys(STEP_UP_ACTIONS).sort()).toEqual(
 			[
 				// Card 2922: a setting held for review kept or removed.
@@ -405,10 +422,13 @@ describe('the list of what asks, pinned against the routes (cases 1 and 2)', () 
 				'POST /api/reports/email',
 				// Card 2671: an account disabled, and enabled again.
 				'POST /api/users/[id]/disable',
-				'POST /api/users/[id]/enable'
+				'POST /api/users/[id]/enable',
+				// Card 3064 (R8, R10, S-L7): two-step sign-in set up while it is dormant, and required.
+				'POST /api/account/two-step/set-up',
+				'POST /api/admin/two-step/require'
 			].sort()
 		);
-		expect(Object.keys(STEP_UP_ACTIONS)).toHaveLength(44);
+		expect(Object.keys(STEP_UP_ACTIONS)).toHaveLength(46);
 		for (const [action, why] of Object.entries(STEP_UP_ACTIONS)) expect(why.trim().length, action).toBeGreaterThan(20);
 		expect(Object.isFrozen(STEP_UP_ACTIONS)).toBe(true);
 	});
@@ -2114,6 +2134,232 @@ describe('the code from the authenticator app, or a recovery code, beside the pa
 		expect(answer(res)).toEqual(refused);
 		expect(stub.compared).toBe(0);
 		expect(db.select({ count: sessions.wrongPasswordCount }).from(sessions).all()).toEqual([{ count: 0 }]);
+	});
+});
+
+// ─── Card 3064, S3a: the password alone while two-step sign-in is dormant ────
+
+describe('the step-up while two-step sign-in is dormant (card 3064, S3a: T40, T41, T43)', () => {
+	const PURGE = '/api/admin/purge-archived';
+
+	/** The `api()` options of `user` confirming with `body` alone, from a session made for it: no code added. */
+	const asking = (user: Scene['admin'], body: Record<string, unknown>) => ({
+		user,
+		body,
+		headers: { cookie: `${SESSION_COOKIE_NAME}=${makeSession(user)}` }
+	});
+
+	beforeEach(() => {
+		makeTwoStepDormant();
+	});
+
+	it('T40. no factor: the password alone confirms, the count cleared and an INFO line; a code sent is ignored; a wrong password is counted once', async () => {
+		const s = scene();
+		logAt('INFO');
+		const alone = asking(s.admin, { currentPassword: FIXTURE_PASSWORD });
+		const token = tokenOf(alone);
+
+		expect(answer(await api('POST', PURGE, alone))).toEqual({ status: 200, body: { success: true, purged: 1 } });
+		expect(stub.compared).toBe(1);
+		expect(countOf(token)).toBe(0);
+		expect(linesStarting('INFO', 'Password confirmed')).toEqual([
+			{
+				message: `Password confirmed by admin (ID: ${s.admin.id}) for POST /api/admin/purge-archived, no code: two-step sign-in is not required on this server`,
+				userId: s.admin.id
+			}
+		]);
+
+		// A code sent beside it, in neither form or a six-digit one, is not read.
+		for (const currentCode of ['not a code', '123456']) {
+			const res = await api('POST', PURGE, { ...alone, body: { currentPassword: FIXTURE_PASSWORD, currentCode } });
+			expect(answer(res), currentCode).toEqual({ status: 200, body: { success: true, purged: 0 } });
+		}
+		expect(db.select().from(mfaFactors).all()).toEqual([]);
+
+		// A wrong password: 403 wrong, in the password-alone words (card 3064, F25), counted by a weight of one.
+		expect(answer(await api('POST', PURGE, { ...alone, body: { currentPassword: WRONG } }))).toEqual({
+			status: 403,
+			body: { message: STEP_UP_WRONG_PASSWORD, stepUp: 'wrong' }
+		});
+		expect(countOf(token)).toBe(1);
+	});
+
+	it('T41. a factor held: no code is 400 missing, with no compare and nothing counted', async () => {
+		const s = scene();
+		giveFactor(s.admin);
+		const alone = asking(s.admin, { currentPassword: FIXTURE_PASSWORD });
+		const before = snapshotDb();
+
+		const res = await api('POST', PURGE, alone);
+
+		expect(answer(res)).toEqual({ status: 400, body: MISSING });
+		expect(stub.compared).toBe(0);
+		expect(countOf(tokenOf(alone))).toBe(0);
+		expectUnchanged(before);
+	});
+
+	it.each([
+		['a factor added', (s: Scene) => void giveFactor(s.admin)],
+		['two-step sign-in required', () => writeRequiredSettings()]
+	])('T43. %s between the read and the commit of a password-alone step-up: 400 missing, nothing done, the attempt left counted', async (_what, meanwhile) => {
+		const s = scene();
+		logAt('WARN');
+		const alone = asking(s.admin, { currentPassword: FIXTURE_PASSWORD });
+		const release = holdChecks();
+		const pending = api('POST', PURGE, alone);
+		await vi.waitFor(() => expect(stub.compared).toBe(1));
+		meanwhile(s);
+		release();
+
+		expect(answer(await pending)).toEqual({ status: 400, body: MISSING });
+		expect(archivedLeft()).toBe(1);
+		expect(countOf(tokenOf(alone))).toBe(1);
+		expect(linesStarting('WARN', 'Password not confirmed')).toEqual([
+			{
+				message: `Password not confirmed for user ${s.admin.id} on POST /api/admin/purge-archived: a second factor was added, or two-step sign-in required, while it was checked`,
+				userId: s.admin.id
+			}
+		]);
+	});
+
+	// Card 3064 (S4b, F25): the refusals say what the step-up asks of the account, by its own rule.
+	it('F25 codeAskedOf: false for an account with no factor while dormant; true once it holds one, and for every account once two-step sign-in is required', () => {
+		const plain = makeUser();
+		const holder = makeUser();
+		giveFactor(holder);
+
+		expect(codeAskedOf(plain.id)).toBe(false);
+		expect(codeAskedOf(holder.id)).toBe(true);
+		giveFactor(plain);
+		expect(codeAskedOf(plain.id)).toBe(true);
+		writeRequiredSettings();
+		expect(codeAskedOf(makeUser().id)).toBe(true);
+	});
+
+	it('F25 no current password: 400 in the password-alone words for an account with no factor while dormant, and in the words with a code once it holds one or two-step sign-in is required; nothing compared', async () => {
+		const s = scene();
+		const none = (user: Scene['admin']) => api('POST', PURGE, asking(user, {}));
+
+		expect(answer(await none(s.admin))).toEqual({ status: 400, body: { message: STEP_UP_MISSING_PASSWORD, stepUp: 'missing' } });
+		giveFactor(s.chief);
+		expect(answer(await none(s.chief))).toEqual({ status: 400, body: MISSING });
+		writeRequiredSettings();
+		expect(answer(await none(s.admin))).toEqual({ status: 400, body: MISSING });
+		expect(stub.compared).toBe(0);
+	});
+
+	it('F25 a wrong password with a code, from an account that holds a factor while dormant: 403 in the words with a code', async () => {
+		const s = scene();
+
+		expect(answer(await api('POST', PURGE, stepUp(s.admin, {}, WRONG)))).toEqual({ status: 403, body: WRONG_ONE });
+	});
+
+	it('F25 requirePasswordHeld: 400 in the password-alone words for an account with no factor while dormant, and in the words with a code once it holds one or two-step sign-in is required', () => {
+		const refusalOf = (userId: number) => {
+			try {
+				requirePasswordHeld(userId);
+			} catch (thrown) {
+				return thrown;
+			}
+			throw new Error('not refused');
+		};
+		const plain = makeUser();
+		const holder = makeUser();
+		giveFactor(holder);
+
+		expect(refusalOf(plain.id)).toMatchObject({ status: 400, body: { message: STEP_UP_MISSING_PASSWORD, stepUp: 'missing' } });
+		expect(refusalOf(holder.id)).toMatchObject({ status: 400, body: MISSING });
+		writeRequiredSettings();
+		expect(refusalOf(plain.id)).toMatchObject({ status: 400, body: MISSING });
+	});
+});
+
+// ─── Card 3064, S4: the pages follow the rule (R7) ──────────────────────────
+
+describe('the one rule of every send guard and button, with the code asked or not (card 3064, S4: U1)', () => {
+	it('U1. proofTyped asks for the code unless told it is not asked: the password alone sends only with codeAsked false', () => {
+		// Not asked (an account with no factor while two-step sign-in is dormant): the password alone, a code sent or not.
+		expect(proofTyped('a password', '', false)).toBe(true);
+		expect(proofTyped('a password', '123456', false)).toBe(true);
+		// Asked, as before: a blank code holds it back.
+		expect(proofTyped('a password', '', true)).toBe(false);
+		expect(proofTyped('a password', '   ', true)).toBe(false);
+		expect(proofTyped('a password', '123456', true)).toBe(true);
+		// Asked where nothing says otherwise: a page with no data among them.
+		expect(proofTyped('a password', '')).toBe(false);
+		expect(proofTyped('a password', '', undefined)).toBe(false);
+		// The password is always asked.
+		expect(proofTyped('', '', false)).toBe(false);
+		expect(proofTyped('', '123456', true)).toBe(false);
+	});
+});
+
+// ─── Card 3064, S4b: the words follow the rule (F25) ────────────────────────
+
+describe('the words of what a confirmation asks for, with the code asked or not (card 3064, S4b: F25)', () => {
+	/** The code asked, as false alone says it is not: true, undefined (a page with no data) and a value that is not false. */
+	const ASKED = [true, undefined, 'false' as unknown as boolean];
+
+	it('F25 yourProof: "your password" alone where no code is asked, else "your password and a code"', () => {
+		expect(yourProof(false)).toBe('your password');
+		for (const asked of ASKED) expect(yourProof(asked), String(asked)).toBe('your password and a code');
+		expect(yourProof()).toBe('your password and a code');
+	});
+
+	it('F25 yourProofInFull: "your password" alone where no code is asked, else the code named in full', () => {
+		expect(yourProofInFull(false)).toBe('your password');
+		for (const asked of ASKED) expect(yourProofInFull(asked), String(asked)).toBe('your password and a code from your authenticator app');
+	});
+
+	it('F25 asksForPassword: the password alone where no code is asked, else the words as before', () => {
+		expect(ASKS_FOR_PASSWORD_ALONE).toBe('You will be asked for your password.');
+		expect(asksForPassword(false)).toBe(ASKS_FOR_PASSWORD_ALONE);
+		expect(ASKS_FOR_PASSWORD).toBe('You will be asked for your password and a code from your authenticator app.');
+		for (const asked of ASKED) expect(asksForPassword(asked), String(asked)).toBe(ASKS_FOR_PASSWORD);
+		expect(asksForPassword()).toBe(ASKS_FOR_PASSWORD);
+	});
+
+	it('F25 stepUpMissing: the password alone where no code is asked, else the words as before; isStepUpMissing knows both and nothing else', () => {
+		expect(STEP_UP_MISSING_PASSWORD).toBe('Enter your password to confirm this. Nothing was changed.');
+		expect(stepUpMissing(false)).toBe(STEP_UP_MISSING_PASSWORD);
+		expect(STEP_UP_MISSING).toBe('Enter your password and a code from your authenticator app to confirm this. Nothing was changed.');
+		for (const asked of ASKED) expect(stepUpMissing(asked), String(asked)).toBe(STEP_UP_MISSING);
+		expect(isStepUpMissing(STEP_UP_MISSING)).toBe(true);
+		expect(isStepUpMissing(STEP_UP_MISSING_PASSWORD)).toBe(true);
+		for (const other of [STEP_UP_WRONG, STEP_UP_WRONG_PASSWORD, null, '']) expect(isStepUpMissing(other), String(other)).toBe(false);
+	});
+
+	it('F25 stepUpWrong: the password alone where no code was asked, else the words as before', () => {
+		expect(STEP_UP_WRONG_PASSWORD).toBe('Your password was not right. Nothing was changed.');
+		expect(stepUpWrong(false)).toBe(STEP_UP_WRONG_PASSWORD);
+		expect(STEP_UP_WRONG).toBe('Your password or code was not right. Nothing was changed.');
+		for (const asked of ASKED) expect(stepUpWrong(asked), String(asked)).toBe(STEP_UP_WRONG);
+	});
+
+	it('F25 stepUpRefusal: a missing answer in the password-alone words gives those words; any other missing answer the words with a code', async () => {
+		const refused = (message: unknown) => new Response(JSON.stringify({ message, stepUp: 'missing' }), { status: 400 });
+
+		expect(await stepUpRefusal(refused(STEP_UP_MISSING_PASSWORD))).toBe(STEP_UP_MISSING_PASSWORD);
+		for (const message of [STEP_UP_MISSING, 'Something else', undefined]) {
+			expect(await stepUpRefusal(refused(message)), String(message)).toBe(STEP_UP_MISSING);
+		}
+	});
+
+	it("F25 the pages' warnings that end in what they ask: the password alone where codeAsked is false, else the words with a code", () => {
+		const warnings = (asked?: boolean) => [
+			columnDeleteWarning('Doing', true, asked),
+			boardDeleteWarning('Plans', asked),
+			clearCardsWarning('Plans', asked),
+			purgeWarning(asked),
+			purgeDescription(asked),
+			resetWarning(asked)
+		];
+		for (const words of warnings(false)) expect(words.endsWith(` ${ASKS_FOR_PASSWORD_ALONE}`), words).toBe(true);
+		for (const asked of [true, undefined]) {
+			for (const words of warnings(asked)) expect(words.endsWith(` ${ASKS_FOR_PASSWORD}`), words).toBe(true);
+		}
+		// A column the page sees no card in asks nothing, and says nothing of it.
+		for (const asked of [true, false]) expect(columnDeleteWarning('Doing', false, asked)).not.toContain('You will be asked');
 	});
 });
 

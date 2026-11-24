@@ -23,13 +23,15 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { toasts } from '$lib/stores/toast';
-	import { ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { asksForPassword, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 	import { parseStamp } from '$lib/timestamps';
 	import { calendarPeriod, canonicalTimeZone, isCalendarPreset, nextRunAfter } from '$lib/report-schedule-time';
 	import { onMount } from 'svelte';
 
 	let { data }: { data: PageData } = $props();
+	/** Whether a confirmation here asks for a code (card 3064, F25), for words read where an answer's body is named `data`. */
+	const codeAsked = $derived(data.codeAsked !== false);
 	let currentTheme = $state('light');
 	theme.subscribe((v) => (currentTheme = v));
 
@@ -255,7 +257,7 @@
 	}
 
 	async function sendReportEmail() {
-		if (!emailRecipients.trim() || !proofTyped(emailPassword, emailCode) || emailSending) return;
+		if (!emailRecipients.trim() || !proofTyped(emailPassword, emailCode, data.codeAsked) || emailSending) return;
 		emailResult = null;
 
 		// Read as the server reads it (card 2182): commas, semicolons, spaces or
@@ -344,7 +346,7 @@
 				if (notSent.length > 0) {
 					emailRecipients = notSent.join(', ');
 					emailResult = {
-						message: `${data.message} Only ${notSent.length === 1 ? 'the address' : 'the addresses'} not reached ${notSent.length === 1 ? 'is' : 'are'} left in the box. Enter your password and a new code to send again.`,
+						message: `${data.message} Only ${notSent.length === 1 ? 'the address' : 'the addresses'} not reached ${notSent.length === 1 ? 'is' : 'are'} left in the box. ${codeAsked ? 'Enter your password and a new code to send again.' : 'Enter your password to send again.'}`,
 						type: 'error'
 					};
 				} else {
@@ -442,7 +444,7 @@
 	}
 
 	async function createSchedule() {
-		if (!proofTyped(schedPassword, schedCode) || schedCreating) return;
+		if (!proofTyped(schedPassword, schedCode, data.codeAsked) || schedCreating) return;
 		// Read as the server reads them (card 2182), before the password is
 		// copied and cleared (card 2751, E12): a list the server would refuse is
 		// said here, the password kept for the list put right.
@@ -608,7 +610,7 @@
 			sentTo.length > 0
 				? `It will email its report to: ${sentTo.join(', ')}. `
 				: 'It has no addresses yet, so nothing is emailed until some are added. ';
-		return `${to}${ASKS_FOR_PASSWORD}`;
+		return `${to}${asksForPassword(data.codeAsked)}`;
 	}
 
 	/**
@@ -778,14 +780,14 @@
 					readonly={emailSending}
 					onEnter={sendReportEmail}
 				/>
-				<span class="email-hint">{ASKS_FOR_PASSWORD}</span>
+				<span class="email-hint">{asksForPassword(data.codeAsked)}</span>
 				{#if emailResult}
 					<div class="email-result {emailResult.type}">{emailResult.message}</div>
 				{/if}
 			</div>
 			<div class="email-modal-footer">
 				<button class="btn-ghost" onclick={closeEmailModal}>Cancel</button>
-				<button class="btn-primary" onclick={sendReportEmail} disabled={emailSending || !emailRecipients.trim() || !proofTyped(emailPassword, emailCode)}>
+				<button class="btn-primary" onclick={sendReportEmail} disabled={emailSending || !emailRecipients.trim() || !proofTyped(emailPassword, emailCode, data.codeAsked)}>
 					{#if emailSending}
 						Sending...
 					{:else}
@@ -1065,10 +1067,10 @@
 									readonly={schedCreating}
 									onEnter={createSchedule}
 								/>
-								<span class="form-hint">{ASKS_FOR_PASSWORD}</span>
+								<span class="form-hint">{asksForPassword(data.codeAsked)}</span>
 							</div>
 						</div>
-						<button class="btn-primary" onclick={createSchedule} disabled={!proofTyped(schedPassword, schedCode) || schedCreating}>
+						<button class="btn-primary" onclick={createSchedule} disabled={!proofTyped(schedPassword, schedCode, data.codeAsked) || schedCreating}>
 							{schedCreating ? 'Creating…' : 'Create Schedule'}
 						</button>
 					</div>

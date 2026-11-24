@@ -172,6 +172,8 @@ import {
 	RestoreError,
 	RestoreLeavesNoSuperadmin,
 	SIGNED_OUT,
+	API_KEY_DEADLINE_UNREADABLE,
+	TWO_STEP_TURNED_ON_BY_RESTORE,
 	backupLacksSuperadmin,
 	restorableTables,
 	restoreFromBackup,
@@ -217,6 +219,10 @@ import {
 	makeTeam,
 	shareBoardWithTeam,
 	startedSinceAlreadyOffHeld,
+	FIRST_RUN_FLAGS,
+	forgetFirstRunFlags,
+	makeAttachment,
+	testUploadsDir,
 	resetDb,
 	stepUp,
 	stepUpCode,
@@ -230,6 +236,8 @@ import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { afterEachTimestampCheck, allowOtherTimestampForms } from './helpers/timestamps';
 import { readOpened, readOpenedUrl } from './helpers/reads';
 import { giveFactor, openReleaseWindow, passwordStep, signInFully } from './helpers/two-step';
+import { png, pngChunk } from './helpers/image-bytes';
+import { recheckStoredImages } from '$lib/server/image-recheck';
 
 /** What the stand-in destination was handed: the bytes, under the name and for the destination they were for. */
 const uploaded = vi.hoisted(() => [] as { destination: string; filename: string; bytes: Buffer }[]);
@@ -380,6 +388,8 @@ const exported = () =>
 
 beforeEach(() => {
 	resetDb();
+	// Each first-run pass in full, as before migration 0084 seeded their flags (card 3064, R23).
+	forgetFirstRunFlags();
 	uploaded.length = 0;
 	handed.length = 0;
 	chief = makeUser({ username: 'chief', role: 'superadmin' });
@@ -648,8 +658,15 @@ describe('a backup', () => {
 			expect(bytes.includes(Buffer.from(key))).toBe(false);
 			expect(bytes.includes(Buffer.from(KNOWN_BROWSER_SECRET_KEY))).toBe(false);
 			// The other settings are there, and the backup's seal (card 2169's S1), which is no secret, and the
-			// MFA key's check the superadmin's factor wrote (card 2771), which is none either.
-			expect(column(opening(bytes), 'SELECT key FROM settings ORDER BY key')).toEqual(['app_url', BACKUP_SEAL, 'installation_id', 'mfa_key_check']);
+			// MFA key's check the superadmin's factor wrote (card 2771), which is none either; and two-step sign-in's switch,
+			// which `resetDb` writes back (card 3064, R23).
+			expect(column(opening(bytes), 'SELECT key FROM settings ORDER BY key')).toEqual([
+				'app_url',
+				BACKUP_SEAL,
+				'installation_id',
+				'mfa_key_check',
+				'two_step_required_at'
+			]);
 		}
 		// And the running database still has it.
 		expect(column(sqlite, `SELECT value FROM settings WHERE key = '${KNOWN_BROWSER_SECRET_KEY}'`)).toEqual([key]);
@@ -857,27 +874,31 @@ describe('a restore', () => {
 
 		expect(result.errors).toEqual([]);
 		// And the form signing key the restore makes in its transaction (card
-		// 2750), and the backup's two_step_released_at, which migration 0066
-		// wrote to it and a restore brings in as any setting (card 2769), and
-		// its api_key_deadline, which migration 0069 wrote to it (card 2772),
-		// and this server's webhook_keys_recorded_at, which migration 0071 wrote
+		// 2750), and this server's webhook_keys_recorded_at, which migration 0071 wrote
 		// here and a restore keeps (card 2752). And the key check the sealed form
 		// key records, and the scrub every restore marks pending (card 2898). And the moment the restore's own run of the
 		// start pass covered, written by it for a backup that had none (card 2935, P12). And the once-only seed's flag,
 		// written for a backup that had none before the keys ended here are left out (card 2995, R3).
+		// Card 3064: and the backup's release moment and six first-run flags, which migration 0084 wrote to it, taking back
+		// 0066's two_step_released_at and 0069's api_key_deadline. And this server's one-shot leave to keep a plain seal key,
+		// written by its 0084 and not yet spent by a start, kept by the restore (its code review, CS-M2).
 		expect(column(live, 'SELECT key FROM settings ORDER BY key')).toEqual([
-			'api_key_deadline',
 			'app_url',
+			'backup_seal_key_keep_once',
+			'compatibility_release_at',
 			'mfa_key_check',
+			'report_schedules_announced',
 			'request_form_secret',
 			'secrets_scrub_pending',
-			'two_step_released_at',
+			'stored_images_rechecked',
 			'webhook_keys_recorded_at',
 			'webhook_reveals_seeded',
+			'webhooks_already_off_held',
+			'webhooks_before_keys_announced',
 			'webhooks_readable_by_disabled_held'
 		]);
 		// The backup's own webhook_keys_recorded_at among them, and the earlier of the two kept.
-		expect(result.restored.settings).toBe(4);
+		expect(result.restored.settings).toBe(9);
 		expect(column(live, "SELECT value FROM settings WHERE key = 'webhook_keys_recorded_at'")).toEqual([kept]);
 	});
 
@@ -1370,7 +1391,8 @@ describe('a restore', () => {
 			'included, is held until an administrator releases it under Mail held in the Requests inbox; ' +
 			'1 unconfirmed request(s) were held too: they cannot be released, and lapse 7 days after they were made; ' +
 			'1 person(s) in the people directory were marked left, as this server did not hold their address and account, or has them as left, ' +
-			'so 1 place(s) on decisions are mailed nothing: an administrator marks each active on the People page, with a password and a code, once ' +
+			'so 1 place(s) on decisions are mailed nothing: an administrator marks each active on the People page, with a password and a code (the password alone while two-step sign-in is dormant, ' +
+			'for one who has not set it up: card 3064), once ' +
 			'the address is checked.';
 		const HELD_3020_CRITICAL =
 			", keeping what a backup whose seal did not verify would send outside: 1 request(s)' requester mail held; 1 unconfirmed request(s) held; " +
@@ -2499,9 +2521,11 @@ describe('the line in the system log when there are users and no superadmin', ()
 		// the boards over the webhook cap (card 2201), the webhooks refused
 		// as written (the webhook review, O1), the SFTP destinations with no
 		// confirmed host key (card 2250), the App URL saved and not used (card
-		// 2847), and the App URL in use not saved by the superadmin (its code
-		// review, CS2). The ORIGIN check reads none here.
+		// 2847), the App URL in use not saved by the superadmin (its code
+		// review, CS2), and two-step sign-in's release moment held with no
+		// switch (card 3064, R11). The ORIGIN check reads none here.
 		expect(said.mock.calls.map(([line]) => String(line))).toEqual([
+			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',
@@ -4331,6 +4355,8 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		const backup = backupNow();
 		backup.prepare("DELETE FROM settings WHERE key = 'webhooks_already_off_held'").run();
 		const working = migratedDb();
+		// Onto a database that has not held them either: one that holds the flag keeps it across the restore (card 3064, R24).
+		working.prepare("DELETE FROM settings WHERE key = 'webhooks_already_off_held'").run();
 		const result = restoreFromBackup(working, backup, { outside: 'off' });
 
 		// Their addresses are still to enter, and every one of them is held, the unsigned one too (card 2928's code
@@ -8606,7 +8632,7 @@ describe('a restore never brings back an account deleted, disabled or demoted on
 		expect(keysOf(x.id)).toEqual([]);
 		expect(result.apiKeysLeftOut.keyIds).toContain(x.key.id);
 		expect(sqlite.prepare('SELECT enabled FROM report_schedules WHERE user_id = ?').pluck().all(x.id)).toEqual([0]);
-		expect(() => createSession(x.id)).toThrow(AccountDisabled);
+		expect(() => createSession(x.id, { twoStep: 1 })).toThrow(AccountDisabled);
 		// An exact deleted row named it already: none is added (R3). The one row added is the hash DUMMY_HASH replaced,
 		// recorded as replaced (card 2997, N1); none from a copy whose seal does not verify (card 3013, D3), whose hash was
 		// the file's word, and which the start rules again from this server's own exact row.
@@ -16099,6 +16125,274 @@ describe("a restore keeps this server's record of where it sends, and reads no o
 				refused(thrown, 'card 3004 s2b3 refused');
 				expectUnchanged(before);
 			});
+		});
+	});
+});
+
+// ─── Card 3064: the compatibility release's settings across a restore ────────
+
+describe("a restore keeps two-step sign-in on, the release moment and the first-run flags as this server's, and gives no key a deadline this server has not (card 3064)", () => {
+	const RELEASE_HERE = '2026-11-24 06:00:00';
+	const RELEASE_IN_BACKUP = '2026-01-02 00:00:00';
+	const AN_ISO_OR_STORED_MOMENT_NOW = (value: unknown) => typeof value === 'string' && Math.abs(Date.parse(`${toStamp(value)!.replace(' ', 'T')}Z`) - Date.now()) < 60_000;
+
+	/** A server as the release leaves it: one superadmin, and 0084's release moment. */
+	const liveHere = () => {
+		const live = migratedDb();
+		live.exec("INSERT INTO users (id, username, email, password_hash, role) VALUES (9, 'here', 'here@example.test', 'x', 'superadmin')");
+		live.prepare("UPDATE settings SET value = ? WHERE key = 'compatibility_release_at'").run(RELEASE_HERE);
+		return live;
+	};
+	/** `database`'s value of `key` as stored, or undefined. */
+	const settingIn = (database: Database.Database, key: string) => (database.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: unknown } | undefined)?.value;
+	const put = (database: Database.Database, key: string, value: string) =>
+		database.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, value);
+	/** The CRITICAL lines the restore wrote of turning two-step sign-in on, in the running database's system log. */
+	const turnedOnLines = () => column<string>(sqlite, `SELECT level || ' ' || context || ' ' || message FROM system_logs WHERE message = '${TWO_STEP_TURNED_ON_BY_RESTORE}'`);
+	/** `backup` restored over `live`, quietly. */
+	const restored = (live: Database.Database, backup: Database.Database) => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		return restoreFromBackup(live, backup);
+	};
+
+	it('T18: a backup made before 0069, with no deadline here, keeps every key with none; with one here, its keys are given it', () => {
+		/** A backup made before 0069, sealed as `live`'s own (an unsealed one brings back no key: card 3009). */
+		const backupBefore0069 = (live: Database.Database) => {
+			const backup = backupWithSignIns();
+			const key = generateApiKey();
+			backup.prepare("INSERT INTO api_keys (key_hash, key_prefix, name, user_id) VALUES (?, ?, 'No expiry', 1)").run(key.keyHash, key.keyPrefix);
+			backup.exec(`
+				ALTER TABLE api_keys DROP COLUMN deadline_at;
+				DELETE FROM settings WHERE key = 'api_key_deadline';
+				DELETE FROM __drizzle_migrations WHERE hash = '0069_add_api_key_deadline.sql';
+			`);
+			return sealedFor(live, backup);
+		};
+		const live = liveHere();
+		expect(settingIn(live, 'api_key_deadline')).toBeUndefined();
+
+		const result = restored(live, backupBefore0069(live));
+
+		expect(result.apiKeyDeadlines).toBe(0);
+		expect(live.prepare('SELECT name, deadline_at AS deadlineAt FROM api_keys').all()).toEqual([{ name: 'No expiry', deadlineAt: null }]);
+		expect(settingIn(live, 'api_key_deadline')).toBeUndefined();
+
+		// With a deadline here (after event E4), as card 2772's own case has it.
+		const withDeadline = liveHere();
+		put(withDeadline, 'api_key_deadline', '2030-06-15 12:00:00');
+		const given = restored(withDeadline, backupBefore0069(withDeadline));
+		expect(given.apiKeyDeadlines).toBe(1);
+		expect(withDeadline.prepare('SELECT deadline_at FROM api_keys').pluck().all()).toEqual(['2030-06-15 12:00:00']);
+	});
+
+	it("T19: with two-step sign-in on here, a restore keeps it on with this server's switch and release moment, whatever the backup holds; and the compatibility release's moment is this server's", () => {
+		for (const backupSwitch of [null, '2026-02-02 02:02:02']) {
+			const live = liveHere();
+			put(live, 'two_step_required_at', '2026-11-25 10:00:00');
+			put(live, 'two_step_released_at', '2026-11-25 10:00:00');
+			const backup = backupWithSignIns();
+			put(backup, 'two_step_released_at', '2026-01-01 00:00:00');
+			put(backup, 'compatibility_release_at', RELEASE_IN_BACKUP);
+			if (backupSwitch !== null) put(backup, 'two_step_required_at', backupSwitch);
+			sqlite.prepare('DELETE FROM system_logs').run();
+
+			const result = restored(live, backup);
+
+			expect(result.errors, String(backupSwitch)).toEqual([]);
+			expect(settingIn(live, 'two_step_required_at'), String(backupSwitch)).toBe('2026-11-25 10:00:00');
+			expect(settingIn(live, 'two_step_released_at'), String(backupSwitch)).toBe('2026-11-25 10:00:00');
+			expect(settingIn(live, 'compatibility_release_at'), String(backupSwitch)).toBe(RELEASE_HERE);
+			// Not turned on by the restore: nothing said.
+			expect(turnedOnLines()).toEqual([]);
+		}
+	});
+
+	it('T53: with two-step sign-in off here and on in the backup, a restore turns it on with the backup’s switch and release moment (the restore’s moment where the backup holds none), and says so once, CRITICAL', () => {
+		for (const releasedInBackup of ['2026-03-03 03:03:03', null]) {
+			const live = liveHere();
+			const backup = backupWithSignIns();
+			put(backup, 'two_step_required_at', '2026-03-03 03:03:03');
+			if (releasedInBackup !== null) put(backup, 'two_step_released_at', releasedInBackup);
+			sqlite.prepare('DELETE FROM system_logs').run();
+
+			const result = restored(live, backup);
+
+			expect(result.errors, String(releasedInBackup)).toEqual([]);
+			expect(settingIn(live, 'two_step_required_at'), String(releasedInBackup)).toBe('2026-03-03 03:03:03');
+			if (releasedInBackup !== null) expect(settingIn(live, 'two_step_released_at')).toBe(releasedInBackup);
+			else expect(AN_ISO_OR_STORED_MOMENT_NOW(settingIn(live, 'two_step_released_at'))).toBe(true);
+			expect(settingIn(live, 'compatibility_release_at')).toBe(RELEASE_HERE);
+			expect(turnedOnLines()).toEqual([`CRITICAL AUTH ${TWO_STEP_TURNED_ON_BY_RESTORE}`]);
+			expect(TWO_STEP_TURNED_ON_BY_RESTORE).toBe('A restore turned two-step sign-in on: the backup required it');
+		}
+	});
+
+	it('T54: with two-step sign-in off on both sides, a restore leaves it off and removes the release moment of two-step sign-in the backup held', () => {
+		const live = liveHere();
+		const backup = backupWithSignIns();
+		put(backup, 'two_step_released_at', '2026-04-04 04:04:04');
+		sqlite.prepare('DELETE FROM system_logs').run();
+
+		const result = restored(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(settingIn(live, 'two_step_required_at')).toBeUndefined();
+		expect(settingIn(live, 'two_step_released_at')).toBeUndefined();
+		expect(turnedOnLines()).toEqual([]);
+	});
+
+	it("with two-step sign-in on here and no release moment of it here, a restore keeps it on with this server's switch, and none of the backup's release moment", () => {
+		const live = liveHere();
+		put(live, 'two_step_required_at', '2026-11-25 10:00:00');
+		const backup = backupWithSignIns();
+		put(backup, 'two_step_required_at', '2026-02-02 02:02:02');
+		put(backup, 'two_step_released_at', '2026-02-02 02:02:02');
+		sqlite.prepare('DELETE FROM system_logs').run();
+
+		const result = restored(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(settingIn(live, 'two_step_required_at')).toBe('2026-11-25 10:00:00');
+		expect(settingIn(live, 'two_step_released_at')).toBeUndefined();
+		expect(turnedOnLines()).toEqual([]);
+	});
+
+	it('with two-step sign-in off here, a backup whose switch names no moment still turns it on, and says so once, CRITICAL', () => {
+		const live = liveHere();
+		const backup = backupWithSignIns();
+		put(backup, 'two_step_required_at', 'not a moment');
+		sqlite.prepare('DELETE FROM system_logs').run();
+
+		const result = restored(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(settingIn(live, 'two_step_required_at')).toBe('not a moment');
+		expect(AN_ISO_OR_STORED_MOMENT_NOW(settingIn(live, 'two_step_released_at'))).toBe(true);
+		expect(turnedOnLines()).toEqual([`CRITICAL AUTH ${TWO_STEP_TURNED_ON_BY_RESTORE}`]);
+	});
+
+	it("with no moment of the compatibility release here, a restore leaves none, whatever the backup holds", () => {
+		const live = liveHere();
+		live.prepare("DELETE FROM settings WHERE key = 'compatibility_release_at'").run();
+		const backup = backupWithSignIns();
+		put(backup, 'compatibility_release_at', RELEASE_IN_BACKUP);
+
+		const result = restored(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(settingIn(live, 'compatibility_release_at')).toBeUndefined();
+	});
+
+	it("F21: a backup made before 0069 onto a server whose deadline names no moment: its keys are given the restore's moment, and have ended, and that is said once, CRITICAL", () => {
+		const live = liveHere();
+		put(live, 'api_key_deadline', 'not a moment');
+		const backup = backupWithSignIns();
+		const key = generateApiKey();
+		backup.prepare("INSERT INTO api_keys (key_hash, key_prefix, name, user_id) VALUES (?, ?, 'No expiry', 1)").run(key.keyHash, key.keyPrefix);
+		backup.exec(`
+			ALTER TABLE api_keys DROP COLUMN deadline_at;
+			DELETE FROM settings WHERE key = 'api_key_deadline';
+			DELETE FROM __drizzle_migrations WHERE hash = '0069_add_api_key_deadline.sql';
+		`);
+		sqlite.prepare('DELETE FROM system_logs').run();
+
+		const result = restored(live, sealedFor(live, backup));
+
+		expect(result.apiKeyDeadlines).toBe(1);
+		const [deadline] = live.prepare('SELECT deadline_at FROM api_keys').pluck().all();
+		expect(AN_ISO_OR_STORED_MOMENT_NOW(deadline)).toBe(true);
+		expect(AN_ISO_OR_STORED_MOMENT_NOW(settingIn(live, 'api_key_deadline'))).toBe(true);
+		expect(column<string>(sqlite, `SELECT level || ' ' || message FROM system_logs WHERE message = '${API_KEY_DEADLINE_UNREADABLE.replace(/'/g, "''")}'`)).toEqual([
+			`CRITICAL ${API_KEY_DEADLINE_UNREADABLE}`
+		]);
+	});
+
+	describe('T55: the six first-run flags', () => {
+		const schedulers = process.env.SCHEDULERS;
+		let board: Board;
+		let eve: SessionUser;
+		let ofEve: number;
+		let ofNobody: number;
+		let readable: number;
+
+		beforeEach(() => {
+			process.env.SCHEDULERS = 'off';
+			vi.spyOn(console, 'warn').mockImplementation(() => {});
+			eve = makeUser({ username: 'eve' });
+			board = makeBoard({ owner: member, name: 'Flags board' }).board;
+			addBoardMember(board, eve, 'editor');
+			// Already off with no hold: one an enabled account set, and one nobody is recorded as having set.
+			ofEve = makeWebhook(board, { setBy: eve, active: false, secret: '' }).id;
+			ofNobody = makeWebhook(board, { setBy: null, active: false, secret: '' }).id;
+			// One with a secret, and a key of the superadmin's used since it was made: what card 2947's once-only seed records.
+			readable = makeWebhook(board, { setBy: member, secret: 'a secret 3064' }).id;
+			sqlite.prepare("UPDATE webhooks SET created_at = '2026-01-01 00:00:00' WHERE id = ?").run(readable);
+			const { id } = makeApiKeyRow(chief);
+			sqlite.prepare("UPDATE api_keys SET last_used_at = '2026-06-01 00:00:00' WHERE id = ?").run(id);
+		});
+		afterEach(() => {
+			if (schedulers === undefined) delete process.env.SCHEDULERS;
+			else process.env.SCHEDULERS = schedulers;
+		});
+
+		const heldOf = (id: number) => sqlite.prepare('SELECT held_because FROM webhooks WHERE id = ?').pluck().get(id);
+		const reveals = () => sqlite.prepare('SELECT COUNT(*) FROM webhook_reveals').pluck().get();
+		const flagsOf = (database: Database.Database) => Object.fromEntries(FIRST_RUN_FLAGS.map((flag) => [flag, settingIn(database, flag)]));
+		/** This database as a backup of it, sealed as its own: none of the six flags in it. */
+		const backupWithoutFlags = () => {
+			const backup = opening(Buffer.from(sqlite.serialize()));
+			forgetFirstRunFlags(backup);
+			return sealedFor(sqlite, backup);
+		};
+
+		it("T55: a backup without them, imported onto a server that holds them, keeps this server's: only the gone setter's webhook held, no reveal seeded, and the import's image check does nothing", async () => {
+			const photo = makeAttachment(makeCard(makeBoard({ owner: member, name: 'Images' }).cols['To Do']), {
+				name: 'photo.png',
+				mimeType: 'image/png',
+				content: png({ before: [pngChunk('tEXt', 'Comment\0secret-location-3064')] })
+			});
+			const backup = backupWithoutFlags();
+			const here = Object.fromEntries(FIRST_RUN_FLAGS.map((flag, i) => [flag, `2026-11-24 0${i}:00:00`]));
+			for (const [flag, value] of Object.entries(here)) put(sqlite, flag, value);
+			const file = join(testUploadsDir(), String(photo.cardId), photo.filename);
+			const bytes = readFileSync(file);
+			await routeMethods('/api/admin/import');
+			const dir = mkdtempSync(join(tmpdir(), 'dumpfire-import-'));
+			tempDirs.push(dir);
+			vi.spyOn(process, 'cwd').mockReturnValue(dir);
+			vi.spyOn(console, 'error').mockImplementation(() => {});
+
+			const res = await api('POST', '/api/admin/import?outside=keep', { user: chief, headers: confirmedImport(), body: backup.serialize() });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(flagsOf(sqlite)).toEqual(here);
+			expect(heldOf(ofNobody)).toBe('setter access ended');
+			expect(heldOf(ofEve)).toBeNull();
+			// Nor the restore's own run of card 2935's pass in full: the webhook made before setters were recorded is not held.
+			expect(heldOf(readable)).toBeNull();
+			expect(reveals()).toBe(0);
+			// The image check the import started found the flag, and did nothing: the file as it was.
+			expect(await recheckStoredImages()).toBeNull();
+			expect(Buffer.compare(readFileSync(file), bytes)).toBe(0);
+		});
+
+		it("T55: onto a server that holds none, the backup's stand: as the backup has them, or not at all", () => {
+			const withFlags = opening(Buffer.from(sqlite.serialize()));
+			const inBackup = Object.fromEntries(FIRST_RUN_FLAGS.map((flag, i) => [flag, `2026-10-0${i + 1} 00:00:00`]));
+			for (const [flag, value] of Object.entries(inBackup)) put(withFlags, flag, value);
+			sealedFor(sqlite, withFlags);
+			expect(flagsOf(sqlite)).toEqual(Object.fromEntries(FIRST_RUN_FLAGS.map((flag) => [flag, undefined])));
+
+			const result = restored(sqlite, withFlags);
+
+			expect(result.errors).toEqual([]);
+			expect(flagsOf(sqlite)).toEqual(inBackup);
+			// The backup's flag for card 2923: only the gone setter's held.
+			expect(heldOf(ofNobody)).toBe('setter access ended');
+			expect(heldOf(ofEve)).toBeNull();
+			// Nor the restore's own run of card 2935's pass in full: the webhook made before setters were recorded is not held.
+			expect(heldOf(readable)).toBeNull();
+			expect(reveals()).toBe(0);
 		});
 	});
 });

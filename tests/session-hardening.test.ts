@@ -25,6 +25,20 @@
  * The cases are the plan's T1 to T19
  * (`docs/planning/card-2775-session-hardening.md`, section 6.1). T34 of
  * tests/two-step-sign-in.test.ts holds the cookie a full sign-in sets.
+ *
+ * Card 3064 (the compatibility release, slice S2: T23 to T33, T56 to T58,
+ * T61, T64, T65, T70 and T71 of `docs/planning/card-3064-compatibility-release.md`,
+ * section 9): two-step sign-in may be dormant, while `two_step_required_at` is
+ * absent. Every case above runs with it present (`resetDb`, R23), as two-step
+ * sign-in required; the last block deletes it. Dormant, every role has 30
+ * days idle and 90 in all, a session made on a password alone opens while its
+ * account holds no factor, and a session migration 0084 kept is read once by
+ * the old cookie name, for 30 days after the release, and swapped to a new
+ * code under the secure name.
+ *
+ * Slice S3a adds F22 (a sign-out by the old name ends the swapped row too)
+ * and the case that a swapped row's code is not slid under the secure name;
+ * T30 and T61 meet the real step-up, the current password alone (R6).
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
@@ -48,10 +62,22 @@ import {
 	type SessionUser
 } from '$lib/server/auth';
 import { endPlainSessions } from '$lib/server/startup-checks';
+import { twoStepRequired } from '$lib/server/two-step-switch';
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
-import { FIXTURE_PASSWORD, makeSession, makeUser, resetDb, sessionHashOf, sessionRow, stepUp, stepUpCode } from './helpers/fixtures';
+import {
+	FIXTURE_PASSWORD,
+	makeSession,
+	makeTwoStepDormant,
+	makeUser,
+	resetDb,
+	sessionHashOf,
+	sessionRow,
+	stepUp,
+	stepUpCode,
+	writeRequiredSettings
+} from './helpers/fixtures';
 import { allowOtherTimestampForms } from './helpers/timestamps';
 import { giveFactor, signInFully } from './helpers/two-step';
 
@@ -109,6 +135,7 @@ const setSession = (code: string, values: Partial<typeof sessions.$inferInsert>)
 
 const level = process.env.LOG_LEVEL;
 const cookieSecure = process.env.COOKIE_SECURE;
+const origin = process.env.ORIGIN;
 
 beforeEach(() => {
 	resetDb();
@@ -124,12 +151,14 @@ afterEach(() => {
 	else process.env.LOG_LEVEL = level;
 	if (cookieSecure === undefined) delete process.env.COOKIE_SECURE;
 	else process.env.COOKIE_SECURE = cookieSecure;
+	if (origin === undefined) delete process.env.ORIGIN;
+	else process.env.ORIGIN = origin;
 });
 
 describe('a session, kept as the hash of its code', () => {
 	it('T1: is written as the SHA-256 of the code it returns, found by it, and the stored value is no code', () => {
 		const user = makeUser();
-		const { token } = createSession(user.id);
+		const { token } = createSession(user.id, { twoStep: 1 });
 
 		expect(sqlite.prepare('SELECT typeof(id) AS t, length(id) AS n FROM sessions').all()).toEqual([{ t: 'blob', n: 32 }]);
 		expect(sessionRow(token)?.tokenHash).toEqual(sessionHashOf(token));
@@ -149,8 +178,8 @@ describe('the limits of a session, by the role of its account', () => {
 		const user = makeUser();
 		const chief = makeUser({ role: 'superadmin' });
 
-		const ofUser = createSession(user.id);
-		const ofChief = createSession(chief.id);
+		const ofUser = createSession(user.id, { twoStep: 1 });
+		const ofChief = createSession(chief.id, { twoStep: 1 });
 
 		expect(ofUser).toMatchObject({ createdAt: stamp(new Date(T0)), role: 'user' });
 		expect(ofChief).toMatchObject({ createdAt: stamp(new Date(T0)), role: 'superadmin' });
@@ -161,7 +190,7 @@ describe('the limits of a session, by the role of its account', () => {
 	it('T3: an administrator used at 11 hours slides to 11 hours on; unused for 12 hours and a second after that, it has ended and is left', () => {
 		clockAt(T0);
 		const admin = makeUser({ role: 'admin' });
-		const { token } = createSession(admin.id);
+		const { token } = createSession(admin.id, { twoStep: 1 });
 
 		vi.setSystemTime(T0 + 11 * HOUR);
 		expect(validateSession(token)?.user.id).toBe(admin.id);
@@ -179,7 +208,7 @@ describe('the limits of a session, by the role of its account', () => {
 	it('T4: a user used inside each idle window slides no further than 7 days from the start', () => {
 		clockAt(T0);
 		const user = makeUser();
-		const { token } = createSession(user.id);
+		const { token } = createSession(user.id, { twoStep: 1 });
 
 		for (const at of [2 * DAY, 4 * DAY, 6 * DAY, 6 * DAY + 12 * HOUR]) {
 			vi.setSystemTime(T0 + at);
@@ -191,7 +220,7 @@ describe('the limits of a session, by the role of its account', () => {
 	it('T5: an administrator used every 11 hours has ended at 24 hours and a second, for every reader', () => {
 		clockAt(T0);
 		const admin = makeUser({ role: 'admin' });
-		const { token, createdAt } = createSession(admin.id);
+		const { token, createdAt } = createSession(admin.id, { twoStep: 1 });
 		for (const at of [11 * HOUR, 22 * HOUR]) {
 			vi.setSystemTime(T0 + at);
 			expect(validateSession(token)?.user.id).toBe(admin.id);
@@ -210,7 +239,7 @@ describe('the limits of a session, by the role of its account', () => {
 	])('T6: a user session 30 hours old, with an expiry an hour on, %s', (_what, role, open) => {
 		clockAt(T0);
 		const user = makeUser();
-		const { token } = createSession(user.id);
+		const { token } = createSession(user.id, { twoStep: 1 });
 		vi.setSystemTime(T0 + 30 * HOUR);
 		setSession(token, { expiresAt: stamp(new Date(T0 + 31 * HOUR)) });
 		setRole(user, role);
@@ -220,7 +249,7 @@ describe('the limits of a session, by the role of its account', () => {
 
 	it('T7: a user session made now and its account made an administrator on the host: ended at once, its expiry beyond the new idle limit', () => {
 		const user = makeUser();
-		const { token } = createSession(user.id);
+		const { token } = createSession(user.id, { twoStep: 1 });
 		setRole(user, 'admin');
 
 		const from = lastLogId();
@@ -234,7 +263,7 @@ describe('the limits of a session, by the role of its account', () => {
 	])('T8: a session whose start %s has ended', (_what, startOf) => {
 		allowOtherTimestampForms();
 		const user = makeUser();
-		const { token } = createSession(user.id);
+		const { token } = createSession(user.id, { twoStep: 1 });
 		setSession(token, { createdAt: startOf() });
 
 		const from = lastLogId();
@@ -315,7 +344,7 @@ describe('what changes a session', () => {
 	it('T11: a start that names no moment makes no session: createSession throws and writes nothing', () => {
 		const user = makeUser();
 
-		expect(() => createSession(user.id, { startedAt: 'zzz' })).toThrow();
+		expect(() => createSession(user.id, { twoStep: 1, startedAt: 'zzz' })).toThrow();
 		expect(sessionRows()).toEqual([]);
 	});
 });
@@ -412,7 +441,7 @@ describe('the clean-up of ended sessions', () => {
 describe('endPlainSessions, at every start', () => {
 	it('T13: ends the sessions an older image wrote in plain, leaves those in hash form, says so once, and the next start does nothing', () => {
 		const user = makeUser();
-		const { token } = createSession(user.id);
+		const { token } = createSession(user.id, { twoStep: 1 });
 		sqlite
 			.prepare('INSERT INTO sessions (id, user_id, expires_at, two_step) VALUES (?, ?, ?, 0)')
 			.run('session-of-an-older-image', user.id, stamp(new Date(Date.now() + HOUR)));
@@ -669,11 +698,556 @@ describe('a password the record of account endings says was replaced here (card 
 			recordPasswordReplaced(sqlite, chief.id);
 		});
 
-		expect(() => createSession(ann.id)).toThrow(AccountDisabled);
+		expect(() => createSession(ann.id, { twoStep: 1 })).toThrow(AccountDisabled);
 		expect(sessionRows()).toEqual([]);
 		// Another account, whose hash is not recorded, is let in; and so is the superadmin.
-		expect(() => createSession(bob.id)).not.toThrow();
-		expect(() => createSession(chief.id)).not.toThrow();
+		expect(() => createSession(bob.id, { twoStep: 1 })).not.toThrow();
+		expect(() => createSession(chief.id, { twoStep: 1 })).not.toThrow();
 		expect(sessionRows().map((row) => row.user_id)).toEqual([bob.id, chief.id]);
+	});
+});
+
+// ─── Card 3064, slice S2: two-step sign-in's switch, and the sessions of the compatibility release ───
+
+describe('two-step sign-in dormant, and the sessions the compatibility release kept (card 3064, S2)', () => {
+	/** The moment of the compatibility release in these cases. */
+	const RELEASE = T0;
+	/** The moment of the compatibility release, as migration 0084 writes it. */
+	const released = (at: number) =>
+		sqlite
+			.prepare("INSERT INTO settings (key, value) VALUES ('compatibility_release_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+			.run(stamp(new Date(at)));
+	/**
+	 * A session 0084 kept for `user`, as it leaves one: its code a UUID as live made it, held as its hash, made at the
+	 * release, its expiry capped at 30 days on, `two_step` 0 and marked 1. Answers its code.
+	 */
+	const kept = (user: SessionUser, { expiresAt = stamp(new Date(RELEASE + 30 * DAY)), mark = 1 }: { expiresAt?: string; mark?: number } = {}) => {
+		const code = crypto.randomUUID();
+		sqlite
+			.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at, two_step, kept_at_release) VALUES (?, ?, ?, ?, 0, ?)')
+			.run(sessionHashOf(code), user.id, expiresAt, stamp(new Date(RELEASE)), mark);
+		return code;
+	};
+	/** A `Cookie` header with `code` under the session cookie's name from before card 2775. */
+	const oldName = (code: string) => `${SESSION_COOKIE_NAME}=${code}`;
+	/** GET / through the gate, as a browser's page, with the `Cookie` header `cookie`. */
+	const page = (cookie: string, headers: Record<string, string> = {}) => gate('GET', '/', { headers: { accept: 'text/html', cookie, ...headers } });
+	/** The cookies of the secure name an answer sets. */
+	const secureSet = (res: Response) => res.headers.getSetCookie().filter((cookie) => cookie.startsWith(`${SECURE_SESSION_COOKIE_NAME}=`));
+	/** The cookies of the old name an answer sets: deletions. */
+	const oldSet = (res: Response) => res.headers.getSetCookie().filter((cookie) => cookie.startsWith(`${SESSION_COOKIE_NAME}=`));
+	/** Where an answer sends its caller. */
+	const sentTo = (res: Response) => ({ status: res.status, location: res.headers.get('location') });
+	/** The code a cookie of the secure name sets. */
+	const codeIn = (cookie: string) => cookie.slice(`${SECURE_SESSION_COOKIE_NAME}=`.length).split(';')[0];
+	/** The account the gate's own line for its last answer names. */
+	const lastAnswerBy = () => sqlite.prepare("SELECT user_id FROM system_logs WHERE context = 'HTTP' ORDER BY id DESC LIMIT 1").pluck().get();
+	/** The holder's own password change through the gate, over plain HTTP, the cookie of the name in force there being the plain one. */
+	const ownPasswordChange = (code: string) =>
+		gate('PUT', '/api/account/password', {
+			headers: { cookie: `${SESSION_COOKIE_NAME}=${code}`, ...FROM_THE_PAGE, accept: 'application/json' },
+			body: { currentPassword: FIXTURE_PASSWORD, newPassword: 'another password for the account' }
+		});
+	/** The code of the session a password change's answer sets, under the plain name. */
+	const replacementIn = (res: Response) =>
+		res.headers.getSetCookie().find((cookie) => cookie.startsWith(`${SESSION_COOKIE_NAME}=`))!.slice(`${SESSION_COOKIE_NAME}=`.length).split(';')[0];
+
+	beforeEach(() => {
+		makeTwoStepDormant();
+	});
+
+	describe('the switch', () => {
+		it('T23: twoStepRequired is false with no row, and true with one, whether it names a moment or not', () => {
+			expect(twoStepRequired()).toBe(false);
+			for (const value of ['2026-11-25 10:00:00', 'not a moment', '']) {
+				sqlite
+					.prepare("INSERT INTO settings (key, value) VALUES ('two_step_required_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+					.run(value);
+				expect(twoStepRequired(), JSON.stringify(value)).toBe(true);
+			}
+		});
+	});
+
+	describe('a session made on a password alone', () => {
+		it('T24: dormant, of an account with no factor, opens and slides', () => {
+			clockAt(T0);
+			const user = makeUser();
+			const { token } = createSession(user.id, { twoStep: 0 });
+
+			vi.setSystemTime(T0 + 10 * DAY);
+			expect(validateSession(token)?.user.id).toBe(user.id);
+			expect(sessionRow(token)).toMatchObject({ twoStep: 0, expiresAt: stamp(new Date(T0 + 40 * DAY)) });
+		});
+
+		it('T25: required, is refused and deleted, and said once at WARN', () => {
+			const user = makeUser();
+			const { token } = createSession(user.id, { twoStep: 0 });
+			writeRequiredSettings();
+			const from = lastLogId();
+
+			expect(validateSession(token)).toBeNull();
+			expect(sessionRow(token)).toBeUndefined();
+			expect(linesUnder('AUTH', from).map(({ level, message }) => ({ level, message }))).toEqual([
+				{ level: 'WARN', message: 'A hashed session row with two_step 0 — refused and deleted' }
+			]);
+			expect(lastMeta('A hashed session row with two_step 0', from)).toEqual({ sessionRef: refOf(token), because: 'two-step sign-in is required' });
+		});
+
+		it('T56: dormant, of an account that now holds a factor, is refused and deleted; its two-step session is not', () => {
+			const user = makeUser();
+			const { token } = createSession(user.id, { twoStep: 0 });
+			const twoStep = createSession(user.id, { twoStep: 1 }).token;
+			giveFactor(user);
+			const from = lastLogId();
+
+			expect(validateSession(token)).toBeNull();
+			expect(sessionRow(token)).toBeUndefined();
+			expect(lastMeta('A hashed session row with two_step 0', from)).toEqual({ sessionRef: refOf(token), because: 'the account holds a second factor' });
+			expect(validateSession(twoStep)?.user.id).toBe(user.id);
+		});
+	});
+
+	describe('the dormant limits: 30 days idle and 90 in all, for every role, for a session made on a password alone', () => {
+		it('T26: an administrator’s password-only session idle 29 days opens; one idle 31 days has ended', () => {
+			clockAt(T0);
+			const admin = makeUser({ role: 'admin' });
+			const idle29 = createSession(admin.id, { twoStep: 0 }).token;
+			const idle31 = createSession(admin.id, { twoStep: 0 }).token;
+
+			vi.setSystemTime(T0 + 29 * DAY);
+			expect(validateSession(idle29, { slide: false })?.user.id).toBe(admin.id);
+			vi.setSystemTime(T0 + 31 * DAY);
+			const from = lastLogId();
+			expect(validateSession(idle31)).toBeNull();
+			expect(linesUnder('AUTH', from).map((line) => line.message)).toEqual(['Session validation failed — session expired']);
+		});
+
+		it('T27: a password-only session used every 25 days slides no further than 90 days from its start, and has ended a second after', () => {
+			clockAt(T0);
+			const admin = makeUser({ role: 'admin' });
+			const { token } = createSession(admin.id, { twoStep: 0 });
+			for (const at of [25 * DAY, 50 * DAY, 75 * DAY, 89 * DAY]) {
+				vi.setSystemTime(T0 + at);
+				expect(validateSession(token)?.user.id, `used at ${at / DAY} days`).toBe(admin.id);
+			}
+			expect(sessionRow(token)?.expiresAt).toBe(stamp(new Date(T0 + 90 * DAY)));
+
+			vi.setSystemTime(T0 + 90 * DAY + 1000);
+			expect(validateSession(token)).toBeNull();
+		});
+
+		it('T28: the clean-up keeps a kept session with its expiry 30 days on while dormant, and deletes it once required', () => {
+			clockAt(RELEASE);
+			const admin = makeUser({ role: 'admin' });
+			const code = kept(admin, { expiresAt: stamp(new Date(RELEASE + 30 * DAY)) });
+
+			cleanExpiredSessions();
+			expect(sessionRow(code)).toBeDefined();
+
+			writeRequiredSettings();
+			cleanExpiredSessions();
+			expect(sessionRow(code)).toBeUndefined();
+		});
+
+		it('T29: createSession writes the two_step it is given; dormant, it gives an administrator a password-only session started 3 days ago, and refuses one made with a code, whose limits are the administrator’s whatever the switch', () => {
+			clockAt(T0);
+			const admin = makeUser({ role: 'admin' });
+			const threeDaysAgo = stamp(new Date(T0 - 3 * DAY));
+
+			const passwordOnly = createSession(admin.id, { twoStep: 0 });
+			const twoStep = createSession(admin.id, { twoStep: 1 });
+			const started = createSession(admin.id, { twoStep: 0, startedAt: threeDaysAgo });
+
+			expect(sessionRow(passwordOnly.token)?.twoStep).toBe(0);
+			expect(sessionRow(twoStep.token)).toMatchObject({ twoStep: 1, expiresAt: stamp(new Date(T0 + 12 * HOUR)) });
+			expect(sessionRow(started.token)).toMatchObject({ createdAt: threeDaysAgo, expiresAt: stamp(new Date(T0 + 30 * DAY)), twoStep: 0 });
+			expect(() => createSession(admin.id, { twoStep: 1, startedAt: threeDaysAgo })).toThrow('past its total limit');
+		});
+
+		it('CS-L2: dormant, a session made with a code keeps card 2775’s limits: an administrator’s has ended after 12 hours idle and 24 in all, a user’s after 3 days idle; the clean-up deletes each by them', () => {
+			clockAt(T0);
+			const admin = makeUser({ role: 'admin' });
+			const user = makeUser();
+			const adminIdle = createSession(admin.id, { twoStep: 1 }).token;
+			const adminUsed = createSession(admin.id, { twoStep: 1 }).token;
+			const userIdle = createSession(user.id, { twoStep: 1 }).token;
+			const passwordOnly = createSession(admin.id, { twoStep: 0 }).token;
+			expect(twoStepRequired()).toBe(false);
+
+			vi.setSystemTime(T0 + 11 * HOUR);
+			expect(validateSession(adminUsed)?.user.id).toBe(admin.id);
+			vi.setSystemTime(T0 + 12 * HOUR + 1000);
+			expect(validateSession(adminIdle, { slide: false })).toBeNull();
+			expect(validateSession(adminUsed)?.user.id).toBe(admin.id);
+			vi.setSystemTime(T0 + 24 * HOUR + 1000);
+			expect(validateSession(adminUsed)).toBeNull();
+			vi.setSystemTime(T0 + 3 * DAY + 1000);
+			// Two administrator sessions started 25 hours ago and used an hour ago: the one made with a code is past its 24 hours
+			// in all, the password-only one is not.
+			const now = T0 + 3 * DAY + 1000;
+			const started25h = (twoStep: number) => {
+				const code = crypto.randomUUID();
+				sqlite
+					.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at, two_step) VALUES (?, ?, ?, ?, ?)')
+					.run(sessionHashOf(code), admin.id, stamp(new Date(now + 11 * HOUR)), stamp(new Date(now - 25 * HOUR)), twoStep);
+				return code;
+			};
+			const withCode25h = started25h(1);
+			const passwordOnly25h = started25h(0);
+			cleanExpiredSessions();
+			expect(sessionRow(userIdle)).toBeUndefined();
+			expect(sessionRow(withCode25h)).toBeUndefined();
+			expect(sessionRow(passwordOnly25h)).toBeDefined();
+			// The password-only session, idle all the while, has the dormant limits.
+			expect(validateSession(passwordOnly)?.user.id).toBe(admin.id);
+		});
+
+		it('CS-L3: createSession makes no session on a password alone once two-step sign-in is required, or for an account holding a factor, and writes nothing', () => {
+			const user = makeUser();
+			const holder = makeUser();
+			giveFactor(holder);
+			const before = sessionRows();
+
+			expect(() => createSession(holder.id, { twoStep: 0 })).toThrow('only while two-step sign-in is dormant, for an account with no second factor');
+			writeRequiredSettings();
+			expect(() => createSession(user.id, { twoStep: 0 })).toThrow('only while two-step sign-in is dormant, for an account with no second factor');
+			expect(sessionRows()).toEqual(before);
+			// A session made with a code is made, whatever the switch.
+			expect(() => createSession(holder.id, { twoStep: 1 })).not.toThrow();
+		});
+	});
+
+	describe('the holder’s own password change', () => {
+		// Through the real step-up, the current password alone: an account with no factor while dormant (R6, S3a).
+		it('T30: from a session made on a password alone, gives a session made on a password alone', async () => {
+			delete process.env.COOKIE_SECURE;
+			const user = makeUser();
+			const { token } = createSession(user.id, { twoStep: 0 });
+
+			const res = await ownPasswordChange(token);
+
+			expect(res.status).toBe(200);
+			const replacement = replacementIn(res);
+			expect(sessionRow(token)).toBeUndefined();
+			expect(sessionRow(replacement)).toMatchObject({ userId: user.id, twoStep: 0 });
+		});
+
+		it('T61: from an administrator’s session kept at the release, three days after it, succeeds, keeping the release as its start', async () => {
+			delete process.env.COOKIE_SECURE;
+			clockAt(RELEASE + 3 * DAY);
+			released(RELEASE);
+			const admin = makeUser({ role: 'admin' });
+			const code = kept(admin);
+
+			const res = await ownPasswordChange(code);
+
+			expect(res.status).toBe(200);
+			const replacement = replacementIn(res);
+			expect(sessionRow(code)).toBeUndefined();
+			expect(sessionRow(replacement)).toMatchObject({ userId: admin.id, createdAt: stamp(new Date(RELEASE)), twoStep: 0, keptAtRelease: 0 });
+		});
+	});
+
+	describe('the session cookie’s name from before card 2775, for a kept session', () => {
+		beforeEach(() => {
+			process.env.COOKIE_SECURE = 'true';
+		});
+
+		it('T31: over HTTPS with no cookie of the secure name, a kept session’s code signs in and is swapped: the old row marked 2 for 60 seconds, a new one with a new code, its start and two_step 0; the answer sets the new code under the secure name and deletes the old', async () => {
+			clockAt(RELEASE + 2 * DAY);
+			released(RELEASE);
+			const user = makeUser();
+			const code = kept(user);
+			const from = lastLogId();
+
+			const res = await page(oldName(code));
+
+			expect(res.status).toBe(200);
+			expect(lastAnswerBy()).toBe(user.id);
+			const issued = secureSet(res);
+			expect(issued).toHaveLength(1);
+			const shape = /^__Host-dumpfire_session=([0-9a-f-]{36}); Path=\/; Max-Age=(\d+); HttpOnly; Secure; SameSite=Lax$/.exec(issued[0]);
+			expect(shape, issued[0]).not.toBeNull();
+			const [, fresh, maxAge] = shape!;
+			expect(fresh).not.toBe(code);
+			// To the session's total limit: 90 days from the release.
+			expect(Number(maxAge)).toBe((88 * DAY) / 1000);
+			expect(oldSet(res)[0]).toMatch(/^dumpfire_session=; Path=\/; Max-Age=0; Secure/);
+			expect(sessionRow(code)).toMatchObject({ twoStep: 0, keptAtRelease: 2, expiresAt: stamp(new Date(RELEASE + 2 * DAY + 60 * 1000)) });
+			expect(sessionRow(fresh)).toMatchObject({
+				userId: user.id,
+				createdAt: stamp(new Date(RELEASE)),
+				twoStep: 0,
+				keptAtRelease: 0,
+				expiresAt: stamp(new Date(RELEASE + 32 * DAY))
+			});
+			expect(lastMeta('Session of the old cookie name swapped to a new code under the secure name', from)).toEqual({
+				sessionRef: refOf(code),
+				newSessionRef: refOf(fresh)
+			});
+			// The new code signs in under the secure name.
+			expect((await page(`${SECURE_SESSION_COOKIE_NAME}=${fresh}`)).status).toBe(200);
+		});
+
+		it('T32: refused for a session not marked kept, even one started at the release moment itself: not signed in, nothing written', async () => {
+			clockAt(RELEASE + DAY);
+			released(RELEASE);
+			const user = makeUser();
+			const { token } = createSession(user.id, { twoStep: 0, startedAt: stamp(new Date(RELEASE)) });
+			const before = sessionRow(token);
+			expect(before).toMatchObject({ createdAt: stamp(new Date(RELEASE)), twoStep: 0, keptAtRelease: 0 });
+			const from = lastLogId();
+
+			const res = await page(oldName(token));
+
+			expect(sentTo(res)).toEqual({ status: 303, location: '/login' });
+			expect(secureSet(res)).toEqual([]);
+			expect(sessionRows()).toHaveLength(1);
+			expect(sessionRow(token)).toEqual(before);
+			expect(linesUnder('AUTH', from).map((line) => line.message)).toContain(
+				'Session cookie of the old name names a session not kept at the release — refused'
+			);
+		});
+
+		it('T33: refused once two-step sign-in is required, before the session is looked up', async () => {
+			clockAt(RELEASE + DAY);
+			released(RELEASE);
+			const code = kept(makeUser());
+			writeRequiredSettings();
+			const before = sessionRow(code);
+			const from = lastLogId();
+
+			const res = await page(oldName(code));
+
+			expect(sentTo(res)).toEqual({ status: 303, location: '/login' });
+			expect(secureSet(res)).toEqual([]);
+			expect(sessionRow(code)).toEqual(before);
+			expect(linesUnder('AUTH', from).map((line) => line.message)).toContain(
+				'Session cookie of the old name refused: two-step sign-in is required on this server'
+			);
+		});
+
+		it('T57: within its 60 seconds, the swapped row by the old name is accepted as it is, with no second swap, no slide and no new cookie; after them, refused', async () => {
+			clockAt(RELEASE + DAY);
+			released(RELEASE);
+			const user = makeUser();
+			const code = kept(user);
+			expect(secureSet(await page(oldName(code)))).toHaveLength(1);
+			const swapped = sessionRow(code);
+			expect(swapped?.keptAtRelease).toBe(2);
+
+			// A navigation, which slides an ordinary session, from a tab that sent it before the new cookie arrived.
+			vi.setSystemTime(RELEASE + DAY + 59 * 1000);
+			const again = await page(oldName(code), { 'sec-fetch-mode': 'navigate' });
+			expect(again.status).toBe(200);
+			expect(lastAnswerBy()).toBe(user.id);
+			expect(secureSet(again)).toEqual([]);
+			expect(sessionRow(code)).toEqual(swapped);
+			expect(sessionRows()).toHaveLength(2);
+
+			vi.setSystemTime(RELEASE + DAY + 60 * 1000);
+			const after = await page(oldName(code));
+			expect(sentTo(after)).toEqual({ status: 303, location: '/login' });
+			expect(secureSet(after)).toEqual([]);
+			expect(sessionRows()).toHaveLength(2);
+		});
+
+		it('T58: a sign-out by the old name is answered with its own clearing of the session cookie, and no new code under it', async () => {
+			clockAt(RELEASE + DAY);
+			released(RELEASE);
+			const code = kept(makeUser());
+
+			const res = await signOut(oldName(code));
+
+			expect(res.headers.get('location')).toBe('/login');
+			const secure = secureSet(res);
+			expect(secure).toHaveLength(1);
+			expect(secure[0]).toMatch(/^__Host-dumpfire_session=;.*Max-Age=0/i);
+			expect(oldSet(res)).not.toEqual([]);
+			// The session the swap made is signed out, and the kept row the old name still names with it (F22).
+			expect(sessionRows()).toEqual([]);
+		});
+
+		it('F22: a sign-out by the old name ends the kept session its code names as well: within the 60 seconds the code signs nobody in again', async () => {
+			clockAt(RELEASE + DAY);
+			released(RELEASE);
+			const user = makeUser();
+			const other = makeSession(makeUser());
+			const code = kept(user);
+			const from = lastLogId();
+
+			expect((await signOut(oldName(code))).headers.get('location')).toBe('/login');
+
+			// Both the session the swap made and the swapped row are gone, each said once; another account's is untouched.
+			expect(sessionRow(code)).toBeUndefined();
+			expect(sessionRows().map((row) => row.user_id)).toEqual([sessionRow(other)!.userId]);
+			expect(linesUnder('AUTH', from).filter((line) => line.message.startsWith('Session deleted'))).toHaveLength(2);
+			vi.setSystemTime(RELEASE + DAY + 30 * 1000);
+			const again = await page(oldName(code));
+			expect(sentTo(again)).toEqual({ status: 303, location: '/login' });
+			expect(secureSet(again)).toEqual([]);
+		});
+
+		it('a swapped row’s code (kept_at_release 2) sent under the secure name is not slid: its 60 seconds stay its last', async () => {
+			clockAt(RELEASE + DAY);
+			released(RELEASE);
+			const user = makeUser();
+			const code = kept(user);
+			expect(secureSet(await page(oldName(code)))).toHaveLength(1);
+			const swapped = sessionRow(code);
+			expect(swapped).toMatchObject({ keptAtRelease: 2, expiresAt: stamp(new Date(RELEASE + DAY + 60 * 1000)) });
+
+			// A navigation, which slides an ordinary session, by the secure name.
+			vi.setSystemTime(RELEASE + DAY + 30 * 1000);
+			const res = await page(`${SECURE_SESSION_COOKIE_NAME}=${code}`, { 'sec-fetch-mode': 'navigate' });
+			expect(res.status).toBe(200);
+			expect(lastAnswerBy()).toBe(user.id);
+			expect(sessionRow(code)).toEqual(swapped);
+
+			vi.setSystemTime(RELEASE + DAY + 60 * 1000);
+			expect(sentTo(await page(`${SECURE_SESSION_COOKIE_NAME}=${code}`))).toEqual({ status: 303, location: '/login' });
+		});
+
+		it('CS-M1: a kept session’s code (mark 1) sent under the secure name is swapped as by the old name, never slid; past the 30 days it is refused, nothing written', async () => {
+			clockAt(RELEASE + DAY);
+			released(RELEASE);
+			const user = makeUser();
+			const code = kept(user);
+			const from = lastLogId();
+
+			// A navigation, which slides an ordinary session.
+			const res = await page(`${SECURE_SESSION_COOKIE_NAME}=${code}`, { 'sec-fetch-mode': 'navigate' });
+
+			expect(res.status).toBe(200);
+			expect(lastAnswerBy()).toBe(user.id);
+			const issued = secureSet(res);
+			expect(issued).toHaveLength(1);
+			const fresh = codeIn(issued[0]);
+			expect(fresh).not.toBe(code);
+			expect(sessionRow(code)).toMatchObject({ keptAtRelease: 2, expiresAt: stamp(new Date(RELEASE + DAY + 60 * 1000)) });
+			expect(sessionRow(fresh)).toMatchObject({ userId: user.id, createdAt: stamp(new Date(RELEASE)), twoStep: 0, keptAtRelease: 0 });
+			expect(lastMeta('Session kept at the release, sent under the secure name, swapped to a new code', from)).toEqual({
+				sessionRef: refOf(code),
+				newSessionRef: refOf(fresh)
+			});
+
+			// Another kept session, first sent under the secure name 30 days and a second after the release.
+			vi.setSystemTime(RELEASE + 30 * DAY + 1000);
+			const late = kept(user, { expiresAt: stamp(new Date(RELEASE + 40 * DAY)) });
+			const before = sessionRow(late);
+			const lateFrom = lastLogId();
+			const refused = await page(`${SECURE_SESSION_COOKIE_NAME}=${late}`, { 'sec-fetch-mode': 'navigate' });
+			expect(sentTo(refused)).toEqual({ status: 303, location: '/login' });
+			expect(secureSet(refused)).toEqual([]);
+			expect(sessionRow(late)).toEqual(before);
+			expect(linesUnder('AUTH', lateFrom).map((line) => line.message)).toContain(
+				'Session kept at the release refused: more than 30 days have passed since the compatibility release'
+			);
+		});
+
+		it('CR-L5: the old name is deleted on the answer that swaps it and on one that refuses it, never on an answer that accepted it in its last 60 seconds', async () => {
+			clockAt(RELEASE + DAY);
+			released(RELEASE);
+			const code = kept(makeUser());
+
+			const swap = await page(oldName(code));
+			expect(secureSet(swap)).toHaveLength(1);
+			expect(oldSet(swap)).not.toEqual([]);
+
+			vi.setSystemTime(RELEASE + DAY + 30 * 1000);
+			const within = await page(oldName(code));
+			expect(within.status).toBe(200);
+			expect(secureSet(within)).toEqual([]);
+			expect(oldSet(within)).toEqual([]);
+
+			vi.setSystemTime(RELEASE + DAY + 60 * 1000);
+			const after = await page(oldName(code));
+			expect(sentTo(after)).toEqual({ status: 303, location: '/login' });
+			expect(oldSet(after)).not.toEqual([]);
+		});
+
+		it('T64: refused 30 days and a second after the release, for a kept session still open; 30 days less a second after it, swapped', async () => {
+			released(RELEASE);
+			const user = makeUser();
+			clockAt(RELEASE + 30 * DAY - 1000);
+			const early = kept(user, { expiresAt: stamp(new Date(RELEASE + 40 * DAY)) });
+			expect(secureSet(await page(oldName(early)))).toHaveLength(1);
+
+			vi.setSystemTime(RELEASE + 30 * DAY + 1000);
+			const late = kept(user, { expiresAt: stamp(new Date(RELEASE + 40 * DAY)) });
+			expect(openSessionUser(sessionHashOf(late))?.id).toBe(user.id);
+			const before = sessionRow(late);
+			const from = lastLogId();
+
+			const res = await page(oldName(late));
+
+			expect(sentTo(res)).toEqual({ status: 303, location: '/login' });
+			expect(secureSet(res)).toEqual([]);
+			expect(sessionRow(late)).toEqual(before);
+			expect(linesUnder('AUTH', from).map((line) => line.message)).toContain(
+				'Session cookie of the old name refused: more than 30 days have passed since the compatibility release'
+			);
+		});
+
+		it.each([
+			[
+				'https://dumpfire.elecfron.com',
+				[
+					'dumpfire_session=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax',
+					'dumpfire_session=; Domain=elecfron.com; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax'
+				]
+			],
+			['https://elecfron.com', ['dumpfire_session=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax']]
+		])('T65: with ORIGIN %s, the old name is deleted with no Domain, and with the host’s parent domain where it has one', async (at, deletions) => {
+			process.env.ORIGIN = at;
+
+			const res = await page(oldName(crypto.randomUUID()));
+
+			expect(oldSet(res)).toEqual(deletions);
+		});
+
+		it('T70: a request sending both names is signed in by the secure one and the kept session is not swapped; with a secure one that is no code, nobody is', async () => {
+			clockAt(RELEASE + DAY);
+			released(RELEASE);
+			const ann = makeUser();
+			const bob = makeUser();
+			const code = kept(ann);
+			const before = sessionRow(code);
+			const live = makeSession(bob);
+
+			const both = await page(`${oldName(code)}; ${SECURE_SESSION_COOKIE_NAME}=${live}`);
+			expect(both.status).toBe(200);
+			expect(lastAnswerBy()).toBe(bob.id);
+			expect(secureSet(both)).toEqual([]);
+			expect(sessionRow(code)).toEqual(before);
+
+			const notACode = await page(`${oldName(code)}; ${SECURE_SESSION_COOKIE_NAME}=not-a-code`);
+			expect(sentTo(notACode)).toEqual({ status: 303, location: '/login' });
+			expect(secureSet(notACode)).toEqual([]);
+			expect(sessionRow(code)).toEqual(before);
+		});
+
+		it('T71: the new code is given on a page’s data and on a live stream’s reconnect', async () => {
+			clockAt(RELEASE + DAY);
+			released(RELEASE);
+			const user = makeUser();
+			const forData = kept(user);
+			const forStream = kept(user);
+
+			const data = await gate('GET', '/__data.json', { headers: { cookie: oldName(forData) } });
+			const stream = await gate('GET', '/api/events', { headers: { cookie: oldName(forStream), accept: 'text/event-stream' } });
+			await stream.body!.cancel();
+
+			for (const [res, code] of [
+				[data, forData],
+				[stream, forStream]
+			] as const) {
+				expect(res.status).toBe(200);
+				const issued = secureSet(res);
+				expect(issued, res.url).toHaveLength(1);
+				expect(sessionRow(codeIn(issued[0]))).toMatchObject({ userId: user.id, keptAtRelease: 0 });
+				expect(sessionRow(code)?.keptAtRelease).toBe(2);
+			}
+		});
 	});
 });

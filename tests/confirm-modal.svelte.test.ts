@@ -43,10 +43,12 @@ import {
 	STEP_UP_CODE_SPENT,
 	STEP_UP_FACTOR_UNUSABLE,
 	STEP_UP_MISSING,
+	STEP_UP_MISSING_PASSWORD,
 	STEP_UP_SIGNED_OUT,
 	STEP_UP_WRONG,
 	type StepUpProof
 } from '$lib/step-up-words';
+import { codeAskedHere } from '$lib/code-asked';
 import { CODE, codeFieldIn, proofOf } from './helpers/step-up-code';
 
 // A bare 'svelte' gives the server's runtime, whose flushSync does nothing: the client's, by its path, for the
@@ -60,6 +62,9 @@ vi.mock('svelte', async () => {
 // The page's data, as the layout's load gives it: empty unless a case says (card 2772).
 const pageStub = vi.hoisted(() => ({ data: {} as Record<string, unknown> }));
 vi.mock('$app/state', () => ({ page: pageStub }));
+// The page's data read again (card 3064's code review, CS-L5), recorded.
+const navigation = vi.hoisted(() => ({ invalidateAll: vi.fn(async () => {}) }));
+vi.mock('$app/navigation', () => navigation);
 
 // The browser's `mount`, loaded by its path: a bare 'svelte' gives the server's (see the XP bars' file).
 const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
@@ -72,6 +77,7 @@ let onCancel: Mock<() => void>;
 
 beforeEach(() => {
 	pageStub.data = {};
+	navigation.invalidateAll.mockClear();
 	onConfirm = vi.fn<() => void>();
 	onCancel = vi.fn<() => void>();
 	// The button a page's confirm is opened from, with the focus, as a click or Enter leaves it.
@@ -667,5 +673,132 @@ describe('the confirm dialog says what a wrong answer costs with several authent
 		const target = open({ askPassword: true });
 		expect(weightLine(target)).toBeNull();
 		expect(codeFieldIn(target)!.hasAttribute('aria-describedby')).toBe(false);
+	});
+});
+
+// Card 3064 (S4, U2; R6, R7): while two-step sign-in is dormant, an account with no factor is asked for its password alone.
+describe('the confirm dialog asks for the password alone where no code is asked (card 3064)', () => {
+	it('U2. with codeAsked false: no code field, no switch and no weight line; Confirm on with the password alone, Enter in it confirms, and the proof carries an empty code', async () => {
+		pageStub.data = { codeAsked: false, authenticators: 2 };
+		const asked = heldConfirm();
+		const target = open({ askPassword: true, onConfirm: asked.fn });
+		const field = passwordField(target)!;
+
+		expect(field).not.toBeNull();
+		expect(document.activeElement).toBe(field);
+		expect(codeFieldIn(target)).toBeNull();
+		expect(codeSwitch(target)).toBeNull();
+		expect(target.querySelector('.current-code-weight')).toBeNull();
+		expect([...target.querySelectorAll('label')].map((label) => label.textContent?.trim())).toEqual(['Your password']);
+		expect(confirmButton(target).disabled).toBe(true);
+
+		type(field, 'my-own-password');
+		expect(confirmButton(target).disabled).toBe(false);
+		// Enter in the password confirms: there is no code to move to.
+		expect(enterIn(field).defaultPrevented).toBe(true);
+
+		expect(asked.handed).toEqual([{ currentPassword: 'my-own-password', currentCode: '' }]);
+		expect(field.value).toBe('');
+		asked.answer();
+		await macrotask();
+	});
+
+	it('CS-L5. with codeAsked false, an answer that asks a code (STEP_UP_MISSING) reads the page again, once; the password-alone words, or the same answer where a code is asked already, do not', async () => {
+		for (const [data, answer, reads] of [
+			[{ codeAsked: false }, STEP_UP_MISSING, 1],
+			[{ codeAsked: false }, STEP_UP_MISSING_PASSWORD, 0],
+			[{ codeAsked: false }, STEP_UP_WRONG, 0],
+			[{ codeAsked: true }, STEP_UP_MISSING, 0]
+		] as const) {
+			const said = `${JSON.stringify(data)} ${answer}`;
+			pageStub.data = { ...data };
+			navigation.invalidateAll.mockClear();
+			const asked = heldConfirm();
+			const target = open({ askPassword: true, onConfirm: asked.fn });
+			type(passwordField(target)!, 'my-own-password');
+			if (data.codeAsked) type(codeFieldIn(target)!, CODE);
+			confirmButton(target).click();
+			flushSync();
+			asked.answer(answer);
+			await macrotask();
+			flushSync();
+
+			expect(target.querySelector('[role="alert"]')?.textContent, said).toBe(answer);
+			expect(navigation.invalidateAll, said).toHaveBeenCalledTimes(reads);
+			close();
+		}
+	});
+
+	it('CS-L5. a dialog that showed no field, answered STEP_UP_MISSING where the page says no code is asked, shows the field and reads the page again', async () => {
+		pageStub.data = { codeAsked: false };
+		const asked = heldConfirm();
+		const target = open({ onConfirm: asked.fn });
+		confirmButton(target).click();
+		flushSync();
+		asked.answer(STEP_UP_MISSING);
+		await macrotask();
+		flushSync();
+
+		expect(passwordField(target)).not.toBeNull();
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	it('U2. with codeAsked true, or anything but false, the code is asked as before', () => {
+		for (const data of [{ codeAsked: true }, { codeAsked: 'false' }, {}]) {
+			pageStub.data = data;
+			const target = open({ askPassword: true });
+			type(passwordField(target)!, 'my-own-password');
+
+			expect(codeFieldIn(target), JSON.stringify(data)).not.toBeNull();
+			expect(confirmButton(target).disabled, JSON.stringify(data)).toBe(true);
+			close();
+		}
+	});
+});
+
+// Card 3064 (S4b, F25): the words follow the same rule as the field.
+describe("the words of a confirmation follow the layout's codeAsked, as the field does (card 3064, S4b)", () => {
+	it("F25 codeAskedHere: false only where the page's codeAsked is literally false; anything else, or data that cannot be read, is the code asked", () => {
+		pageStub.data = { codeAsked: false };
+		expect(codeAskedHere()).toBe(false);
+		for (const data of [{ codeAsked: true }, { codeAsked: 'false' }, {}]) {
+			pageStub.data = data;
+			expect(codeAskedHere(), JSON.stringify(data)).toBe(true);
+		}
+		const held = Object.getOwnPropertyDescriptor(pageStub, 'data')!;
+		Object.defineProperty(pageStub, 'data', {
+			configurable: true,
+			get() {
+				throw new Error('no page here');
+			}
+		});
+		try {
+			expect(codeAskedHere()).toBe(true);
+		} finally {
+			Object.defineProperty(pageStub, 'data', held);
+		}
+	});
+
+	it('F25 a dialog that showed no field and is answered the password-alone words shows the field, with no code, and says them', async () => {
+		pageStub.data = { codeAsked: false };
+		const asked = heldConfirm();
+		const target = open({ onConfirm: asked.fn });
+		confirmButton(target).click();
+		flushSync();
+		asked.answer(STEP_UP_MISSING_PASSWORD);
+		await macrotask();
+		flushSync();
+
+		const field = passwordField(target)!;
+		expect(field).not.toBeNull();
+		expect(target.querySelector('[role="alert"]')?.textContent).toBe(STEP_UP_MISSING_PASSWORD);
+		expect(codeFieldIn(target)).toBeNull();
+		type(field, 'my-own-password');
+		expect(confirmButton(target).disabled).toBe(false);
+		confirmButton(target).click();
+		flushSync();
+		expect(asked.handed).toEqual([NO_PROOF, { currentPassword: 'my-own-password', currentCode: '' }]);
+		asked.answer();
+		await macrotask();
 	});
 });

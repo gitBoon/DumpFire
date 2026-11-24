@@ -112,6 +112,7 @@ import {
 	makeTeam,
 	makeUser,
 	makeWebhook,
+	forgetFirstRunFlags,
 	resetDb,
 	shareBoardWithTeam,
 	stepUp
@@ -131,6 +132,8 @@ import {
 import { currentMfaKey, keyFromBytes } from '$lib/server/mfa-key';
 
 beforeEach(resetDb);
+// Each first-run pass in full, as before migration 0084 seeded their flags (card 3064, R23).
+beforeEach(() => forgetFirstRunFlags());
 
 type Hook = ReturnType<typeof makeWebhook>;
 

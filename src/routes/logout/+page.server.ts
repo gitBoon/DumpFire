@@ -3,7 +3,7 @@ import type { Actions, PageServerLoad } from './$types';
 import { eq } from 'drizzle-orm';
 import { deleteSession, clearSessionCookie, endSessionsSent, sessionHashIn } from '$lib/server/auth';
 import { db } from '$lib/server/db';
-import { users } from '$lib/server/db/schema';
+import { sessions, users } from '$lib/server/db/schema';
 import { rememberBrowser } from '$lib/server/known-browsers';
 import { forgetPendingAdd } from '$lib/server/pending-authenticators';
 import { createLogger } from '$lib/server/logger';
@@ -40,9 +40,13 @@ export const actions: Actions = {
 			// signed in since before remembered browsers were, and signed out
 			// before its next sign-in, is not then a stranger. Only for an
 			// open session, which is what `locals.user` is here.
+			// Under the domain of the session it signs out of (card 3064, R3,
+			// R-M9): the password-only one for a session made on a password
+			// alone, which requiring two-step sign-in retires.
 			if (locals.user) {
 				const account = db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, locals.user.id)).get();
-				if (account) rememberBrowser(cookies, locals.user.id, account.passwordHash, url);
+				const held = db.select({ twoStep: sessions.twoStep }).from(sessions).where(eq(sessions.tokenHash, session)).get();
+				if (account && held) rememberBrowser(cookies, locals.user.id, account.passwordHash, url, held.twoStep === 1 ? 1 : 0);
 				// An authenticator the account was adding on its Account page is
 				// forgotten with any sign-out of it (card 2772, D1, S7).
 				forgetPendingAdd(locals.user.id);
@@ -51,7 +55,9 @@ export const actions: Actions = {
 		}
 		// And every session the cookie of the name in force names, each value
 		// in a code's shape, so that a cookie planted beside the real one does
-		// not leave the real session open (CS3).
+		// not leave the real session open (CS3); and, where the name in force is
+		// the secure one, every session the old name's cookie names (card 3064,
+		// F22).
 		endSessionsSent(request, url, 'user logout');
 		// The cookie is cleared whether or not a session was found or ended, by
 		// the name in force, with Path=/ and Secure where cookies are HTTPS-only.

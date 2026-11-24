@@ -13,17 +13,25 @@
  * role as it is at every check (`SESSION_LIMITS`). The code itself goes no
  * further than the gate: `readSessionCookie` is the gate's alone, and from
  * there on a request carries the hash, in `locals.credential`.
+ *
+ * Since the compatibility release (card 3064) two-step sign-in may be dormant
+ * (`twoStepRequired`): until it is required, a session made on a password
+ * alone (`two_step` 0) opens while its account holds no second factor and has
+ * `DORMANT_LIMITS` (a session made with a code keeps `SESSION_LIMITS`, the
+ * code review's CS-L2), and a session the release kept is swapped to a new
+ * code at its first use, by either cookie name (R12 to R14, CS-M1).
  */
 
 import { createHash, randomBytes } from 'node:crypto';
 import { db, sqlite } from './db';
 import { afterCommit, inTransaction } from './db/transaction';
-import { users, sessions, apiKeys, reportSchedules, mfaFactors, mfaRecoveryCodes, type Session, type User } from './db/schema';
+import { users, sessions, settings, apiKeys, reportSchedules, mfaFactors, mfaRecoveryCodes, type Session, type User } from './db/schema';
+import { twoStepRequired } from './two-step-switch';
 import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { error, type Cookies } from '@sveltejs/kit';
 import { getRequestEvent } from '$app/server';
 import { endUnusedInvites } from './invites';
-import { endPendingSignIns, holdsFactor, matchFactors, spendRecoveryCode, spendStep, type FactorMatch } from './mfa-store';
+import { codeAskedOf, endPendingSignIns, holdsFactor, matchFactors, spendRecoveryCode, spendStep, type FactorMatch } from './mfa-store';
 import { raiseSignal } from './sign-in-challenges';
 // A cycle of functions only (webhooks.ts imports `keyEnded`): neither uses the other at module load (card 2923, decision 13).
 import { accountMayHaveRead, holdWebhooksOfSetter, revealedToAccount, type EndingCause } from './webhooks';
@@ -43,7 +51,8 @@ import {
 	STEP_UP_IN_FLIGHT,
 	STEP_UP_MISSING,
 	STEP_UP_NO_FACTOR,
-	STEP_UP_SIGNED_OUT
+	STEP_UP_SIGNED_OUT,
+	stepUpMissing
 } from '$lib/step-up-words';
 import { registerStampFunctions } from './db/timestamps';
 import { pathToLog } from './secret-paths';
@@ -72,6 +81,16 @@ export const SESSION_LIMITS = {
 	user: { idleMs: 3 * 24 * HOUR, totalMs: 7 * 24 * HOUR }
 } as const;
 
+/**
+ * How long a session made on a password alone (`two_step` 0) lasts while
+ * two-step sign-in is dormant (card 3064, R13): 30 days idle, as the version
+ * before two-step sign-in had it, and 90 days in all, for every role. A
+ * session made with a code keeps `SESSION_LIMITS` whatever the switch (the
+ * code review's CS-L2): an account that has set up two-step sign-in has the
+ * limits card 2775 gave it. Constants, as those are.
+ */
+export const DORMANT_LIMITS = { idleMs: 30 * 24 * HOUR, totalMs: 90 * 24 * HOUR } as const;
+
 /** How far ahead a stored moment may be and still be believed: a clock that steps back a little signs nobody out (as known-browsers.ts). */
 const SESSION_CLOCK_GRACE_MS = 60 * 1000;
 
@@ -82,8 +101,20 @@ const SESSION_CLOCK_GRACE_MS = 60 * 1000;
  */
 const SHORTEST_REPLACEMENT_MS = 60 * 1000;
 
-/** The limits of a session of an account with this role: `user`'s for `user`, the administrator's for any other. */
-function sessionLimitsFor(role: string): { idleMs: number; totalMs: number } {
+/**
+ * The limits of a session of an account with this role, made with a code
+ * (`twoStep` 1) or on a password alone (0), by whether two-step sign-in is
+ * `required` (card 3064, R13): `DORMANT_LIMITS` for a password-only session
+ * while it is dormant, for every role; otherwise `user`'s for `user` and the
+ * administrator's for any other, a session made with a code included whatever
+ * the switch (the code review's CS-L2), and any other mark failing short.
+ * Every rule that reads a session's length asks this with the switch read
+ * where it is asked: `findSession` (through `deadlineOf`), the slide
+ * (`nextExpiry`), `createSession`, `replacementStart`, the cookie and
+ * `cleanExpiredSessions`.
+ */
+function sessionLimits(role: string, required: boolean, twoStep: number): { idleMs: number; totalMs: number } {
+	if (!required && twoStep === 0) return DORMANT_LIMITS;
 	return role === 'user' ? SESSION_LIMITS.user : SESSION_LIMITS.administrator;
 }
 
@@ -106,10 +137,12 @@ export const SESSION_NOT_IN_HASH_FORM = "(typeof(id) <> 'blob' OR length(id) <> 
  * than the grace in the future (a clock stepped back far, or a row written by
  * hand), or an expiry further out than the role's idle limit allows (a role
  * raised on the host, where no code runs, or a longer limit written by
- * another image). Null is passed.
+ * another image). Null is passed. The limits are those of `role` with
+ * two-step sign-in `required` or dormant, for a session marked `twoStep`
+ * (card 3064, R13, CS-L2).
  */
-function deadlineOf(role: string, createdAt: string, expiresAt: string, now: number): number | null {
-	const { idleMs, totalMs } = sessionLimitsFor(role);
+function deadlineOf(role: string, required: boolean, twoStep: number, createdAt: string, expiresAt: string, now: number): number | null {
+	const { idleMs, totalMs } = sessionLimits(role, required, twoStep);
 	const started = parseStamp(createdAt)?.getTime();
 	const expires = parseStamp(expiresAt)?.getTime();
 	if (started === undefined || expires === undefined) return null;
@@ -118,9 +151,9 @@ function deadlineOf(role: string, createdAt: string, expiresAt: string, now: num
 	return Math.min(expires, started + totalMs);
 }
 
-/** The expiry a use at `now` gives a session of `role` started at `startedAt`: the idle limit, capped at the total. */
-function nextExpiry(role: string, startedAt: number, now: number): Stamp {
-	const { idleMs, totalMs } = sessionLimitsFor(role);
+/** The expiry a use at `now` gives a session of `role` marked `twoStep` started at `startedAt`: the idle limit, capped at the total, as `sessionLimits` gives them. */
+function nextExpiry(role: string, required: boolean, twoStep: number, startedAt: number, now: number): Stamp {
+	const { idleMs, totalMs } = sessionLimits(role, required, twoStep);
 	return stamp(new Date(Math.min(now + idleMs, startedAt + totalMs)));
 }
 
@@ -176,7 +209,8 @@ export type ProofCode = { kind: 'authenticator'; digits: string } | { kind: 'rec
 export type Proven = {
 	matches: boolean;
 	signedOut: boolean;
-	by: 'authenticator' | 'recovery code' | null;
+	/** `password` for a check made with no code: an account with no factor while two-step sign-in is dormant (card 3064, R6). */
+	by: 'authenticator' | 'recovery code' | 'password' | null;
 	codesLeft: number | null;
 	/** A right password with a wrong code raised the account's signal: the step-up sends the notice (D6). */
 	signalled: boolean;
@@ -296,12 +330,22 @@ export function forgetChecksInFlight(): void {
  * whose stored hash moved in between is refused by `whilePasswordHolds`,
  * which compares nothing again (the code review's S2); the code is spent by
  * then (S4).
+ *
+ * `code` null is a check of the password alone (card 3064, R6), which
+ * `confirmStepUp` asks only of an account with no factor while two-step
+ * sign-in is dormant: step 2b is skipped, the weight is 1, and the step-5
+ * transaction reads the account's factors and the switch again; a factor
+ * added, or two-step sign-in required, since the step-up read them is
+ * answered 400 `STEP_UP_MISSING` with nothing spent or cleared and the
+ * attempt left counted (fail closed). Asked with null for an account that
+ * holds a factor, or while two-step sign-in is required, it is a fault in the
+ * caller, and throws, with nothing counted.
  */
 export async function checkCurrentProof(
 	sessionHash: Buffer,
 	userId: number,
 	password: string,
-	code: ProofCode,
+	code: ProofCode | null,
 	hash: string,
 	where: string
 ): Promise<Proven> {
@@ -327,17 +371,25 @@ export async function checkCurrentProof(
 	// alike: a step boundary passing during the compare does not make a code
 	// that was good when it came a wrong one (card 2771's code review, CS2).
 	const at = Date.now();
-	if (!holdsFactor(userId)) {
+	if (code === null) {
+		// The password alone (card 3064, R6): only for an account with no factor
+		// while two-step sign-in is dormant, which the caller read with nothing
+		// awaited since. Anything else is a fault in the caller.
+		if (holdsFactor(userId) || twoStepRequired()) {
+			throw new Error('A current password was checked with no code for an account that holds a factor, or while two-step sign-in is required.');
+		}
+	} else if (!holdsFactor(userId)) {
 		log.warn(`Password not confirmed for user ${userId} on ${where}: the account has no second factor`, { where }, { userId });
 		error(403, { message: STEP_UP_NO_FACTOR, stepUp: 'no-factor' });
 	}
 	// What one attempt counts (card 2772, D4, S1): an authenticator code is
 	// tried against every authenticator of the account, so it counts one for
-	// each tried; a recovery code counts one. Taken here, before the compare,
-	// and the same whichever part turns out wrong: no answer says which.
+	// each tried; a recovery code counts one, and so does the password alone.
+	// Taken here, before the compare, and the same whichever part turns out
+	// wrong: no answer says which.
 	let weight = 1;
 	let arrived: FactorMatch | null = null;
-	if (code.kind === 'authenticator') {
+	if (code !== null && code.kind === 'authenticator') {
 		arrived = matchFactors(userId, code.digits, at);
 		if (arrived.tried === 0) error(503, { message: STEP_UP_FACTOR_UNUSABLE, stepUp: 'factor-unusable' });
 		if (arrived.matched === null && arrived.spent) error(400, { message: STEP_UP_CODE_SPENT, stepUp: 'code-spent' });
@@ -375,6 +427,14 @@ export async function checkCurrentProof(
 		const now = Date.now();
 		if (!db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(thisSession).get()) return { kind: 'gone' };
 		const held = db.select().from(mfaFactors).where(eq(mfaFactors.userId, userId)).get();
+		if (code === null) {
+			// The password alone (card 3064, R6): a factor added, or two-step
+			// sign-in required, since the step-up read them now asks for a code.
+			// Nothing spent or cleared, the attempt left counted (fail closed).
+			if (held || twoStepRequired()) return { kind: 'code needed' };
+			db.update(sessions).set({ wrongPasswordCount: 0 }).where(thisSession).run();
+			return { kind: 'proven', codesLeft: null };
+		}
 		if (!held) return { kind: 'not spent' };
 		let codesLeft: number | null = null;
 		if (code.kind === 'authenticator') {
@@ -402,11 +462,19 @@ export async function checkCurrentProof(
 	});
 
 	if (proved.kind === 'gone') return signedOut();
+	if (proved.kind === 'code needed') {
+		log.warn(
+			`Password not confirmed for user ${userId} on ${where}: a second factor was added, or two-step sign-in required, while it was checked`,
+			{ where },
+			{ userId }
+		);
+		error(400, { message: STEP_UP_MISSING, stepUp: 'missing' });
+	}
 	if (proved.kind === 'proven') {
 		return {
 			matches: true,
 			signedOut: false,
-			by: code.kind === 'authenticator' ? 'authenticator' : 'recovery code',
+			by: code === null ? 'password' : code.kind === 'authenticator' ? 'authenticator' : 'recovery code',
 			codesLeft: proved.codesLeft,
 			signalled: false
 		};
@@ -426,6 +494,8 @@ export async function checkCurrentProof(
 /** What the transaction of a right password found (card 2771, D4). */
 type Proof =
 	| { kind: 'gone' }
+	/** A check of the password alone that a factor added, or two-step sign-in required, meanwhile now asks a code of (card 3064, R6). */
+	| { kind: 'code needed' }
 	| { kind: 'proven'; codesLeft: number | null }
 	| { kind: 'wrong code'; signalled: boolean }
 	| { kind: 'not spent' };
@@ -567,16 +637,17 @@ export function passwordHeld(userId: number): boolean {
 /**
  * Refused 400 `STEP_UP_MISSING` (`stepUp: 'missing'`) unless `passwordHeld(userId)`
  * (card 2726): the answer a route gives a request that sent no password, which
- * the pages meet by asking for it.
+ * the pages meet by asking for it. Its words say what the step-up asks of the
+ * account (card 3064, F25): `STEP_UP_MISSING_PASSWORD` where no code is.
  */
 export function requirePasswordHeld(userId: number): void {
-	if (!passwordHeld(userId)) error(400, { message: STEP_UP_MISSING, stepUp: 'missing' });
+	if (!passwordHeld(userId)) error(400, { message: stepUpMissing(codeAskedOf(userId)), stepUp: 'missing' });
 }
 
 // ─── Session Management ─────────────────────────────────────────────────────
 
 /** A session as `createSession` makes it: the code for the cookie, and what the cookie's lifetime is computed from. */
-export type NewSession = { token: string; createdAt: Stamp; role: string };
+export type NewSession = { token: string; createdAt: Stamp; role: string; twoStep: 0 | 1 };
 
 /**
  * What `createSession` throws for an account that is disabled (card 2671,
@@ -606,11 +677,27 @@ export class AccountDisabled extends Error {
  * account is disabled (card 2671): its caller answers that as an expired
  * sign-in, the transaction rolled back.
  *
- * The session is marked as made after a second factor (`two_step` 1, card
- * 2769): call this only once the second factor has been checked, or with the
- * code checked in the same request.
+ * `twoStep` is what the session is marked with, and has no default, so that
+ * every caller says (card 3064, R5): 1, made after a second factor (card
+ * 2769), only once the second factor has been checked, or with the code
+ * checked in the same request; 0, made on a password alone while two-step
+ * sign-in is dormant, which `findSession` refuses once it is required or the
+ * account holds a factor. The holder's own password change passes the
+ * replaced session's own mark, so that a password alone never turns a
+ * password-only session into a two-step one. A session on a password alone
+ * is never made once two-step sign-in is required or while the account holds
+ * a factor (the code review's CS-L3): it throws, and nothing is written, as
+ * `findSession` would refuse it at its first use.
+ *
+ * The total limit it is checked against, and the expiry it is given, are the
+ * role's with two-step sign-in as the switch says now, for the `twoStep` it
+ * is made with (`sessionLimits`, card 3064, R13, S-L1, CS-L2).
  */
-export function createSession(userId: number, opts: { startedAt?: Stamp } = {}): NewSession {
+export function createSession(userId: number, opts: { twoStep: 0 | 1; startedAt?: Stamp }): NewSession {
+	if (opts.twoStep !== 0 && opts.twoStep !== 1) throw new Error('A session is made with two_step 0 or 1, said by its caller.');
+	if (opts.twoStep === 0 && (twoStepRequired() || holdsFactor(userId))) {
+		throw new Error('A session on a password alone is made only while two-step sign-in is dormant, for an account with no second factor.');
+	}
 	let createdAt: Stamp;
 	if (opts.startedAt === undefined) {
 		createdAt = stamp();
@@ -641,16 +728,17 @@ export function createSession(userId: number, opts: { startedAt?: Stamp } = {}):
 	}
 	const started = parseStamp(createdAt)!.getTime();
 	const now = Date.now();
-	if (started + sessionLimitsFor(account.role).totalMs <= now) {
+	const required = twoStepRequired();
+	if (started + sessionLimits(account.role, required, opts.twoStep).totalMs <= now) {
 		throw new Error('A session cannot be made past its total limit: its cookie would have no lifetime.');
 	}
 
 	const token = crypto.randomUUID();
 	const hash = sessionTokenHash(token);
-	const expiresAt = nextExpiry(account.role, started, now);
+	const expiresAt = nextExpiry(account.role, required, opts.twoStep, started, now);
 
 	db.insert(sessions)
-		.values({ tokenHash: hash, userId, expiresAt, createdAt, twoStep: 1 })
+		.values({ tokenHash: hash, userId, expiresAt, createdAt, twoStep: opts.twoStep })
 		.run();
 
 	// Said once the session is committed. The logger keeps a line written
@@ -659,27 +747,35 @@ export function createSession(userId: number, opts: { startedAt?: Stamp } = {}):
 	const sessionRef = sessionRefOf(hash);
 	afterCommit(() => log.info(`Session created for user ${userId}`, { sessionRef, expiresAt }, { userId }));
 
-	return { token, createdAt, role: account.role };
+	return { token, createdAt, role: account.role, twoStep: opts.twoStep };
 }
 
-/** What `findSession` found for a hash; an open session with its deadline, in milliseconds. */
+/**
+ * What `findSession` found for a hash; an open session with its deadline, in
+ * milliseconds, and whether two-step sign-in was required when it was asked,
+ * which the slide then uses (card 3064, R13).
+ */
 type FoundSession =
-	| { open: true; session: Session; user: User; deadline: number }
+	| { open: true; session: Session; user: User; deadline: number; required: boolean }
 	| { open: false; why: 'missing' }
-	| { open: false; why: 'expired' | 'orphaned' | 'one-step' | 'disabled'; session: Session };
+	| { open: false; why: 'expired' | 'orphaned' | 'one-step' | 'disabled'; session: Session; required?: boolean };
 
 /**
  * Whether the session with this hash is open: it is there, it was made after
- * a second factor, its account still exists and is not disabled (card 2671),
- * and its deadline has not passed.
+ * a second factor or two-step sign-in is dormant and its account holds no
+ * factor, its account still exists and is not disabled (card 2671), and its
+ * deadline has not passed.
  * If not, which of those it failed.
  *
  * The deadline (card 2775) is the earlier of `expires_at` and `created_at`
- * plus the total limit of the account's role as it is now; a start or an
- * expiry that cannot be believed (`deadlineOf`) has passed. One rule and one
- * refusal, `expired`, for the idle limit and the total alike.
+ * plus the total limit of the account's role as it is now, with two-step
+ * sign-in required or dormant as the switch says now, for the session's own
+ * `two_step` (card 3064, R13, CS-L2); a
+ * start or an expiry that cannot be believed (`deadlineOf`) has passed. One
+ * rule and one refusal, `expired`, for the idle limit and the total alike.
  *
- * Two reads, and nothing written or logged. `validateSession`, `openSession`
+ * The switch is read once, and the factors only for a session made on a
+ * password alone; nothing written or logged. `validateSession`, `openSession`
  * (and through it `openSessionUser`) and `stillAuthenticated` all ask it, so
  * that what counts as an open session is decided in one place.
  */
@@ -690,11 +786,15 @@ function findSession(hash: Buffer): FoundSession {
 		.get();
 	if (!session) return { open: false, why: 'missing' };
 
-	// Made on a password alone (card 2769, decision 24). An older image's
-	// sessions are held in plain and never found here (card 2775), so this is
-	// defence in depth: a hashed row with 0, which no image writes. Refused
-	// whatever its expiry; the gate deletes it.
-	if (session.twoStep !== 1) return { open: false, why: 'one-step', session };
+	// Made on a password alone (`two_step` 0: card 2769, decision 24). Since
+	// the compatibility release (card 3064, R5, S-M1) such a session is made
+	// while two-step sign-in is dormant, and kept by migration 0084 from
+	// before it. Refused whatever its expiry, and deleted by the gate, once
+	// two-step sign-in is required, and whatever the switch once its account
+	// holds a second factor: an account that has set up two-step sign-in ends
+	// the sign-ins that never used it, on every browser.
+	const required = twoStepRequired();
+	if (session.twoStep !== 1 && (required || holdsFactor(session.userId))) return { open: false, why: 'one-step', session, required };
 
 	const user = db.select()
 		.from(users)
@@ -711,10 +811,10 @@ function findSession(hash: Buffer): FoundSession {
 	// review, S2): compared as text, `zzz` or 30 February 2099 sorted after
 	// now, and kept the session open.
 	const now = Date.now();
-	const deadline = deadlineOf(user.role, session.createdAt, session.expiresAt, now);
+	const deadline = deadlineOf(user.role, required, session.twoStep, session.createdAt, session.expiresAt, now);
 	if (deadline === null || deadline <= now) return { open: false, why: 'expired', session };
 
-	return { open: true, session, user, deadline };
+	return { open: true, session, user, deadline, required };
 }
 
 /**
@@ -728,11 +828,40 @@ function findSession(hash: Buffer): FoundSession {
  * (`slidesSession`, card 2775, the code review's CS1). Every other request is
  * checked with every refusal and does
  * not keep the session alive. Each refusal is one line naming the session by
- * `sessionRef`, never by its code.
+ * `sessionRef`, never by its code. A session swapped at the release's old
+ * cookie name (`kept_at_release` 2) is never slid: its last 60 seconds stay
+ * its last, by whichever name its code is sent.
+ *
+ * `oldName` says the code came under the session cookie's name from before
+ * card 2775, where cookies are HTTPS-only (`readSessionCookie`, card 3064,
+ * R14). It is accepted only while two-step sign-in is dormant and before 30
+ * days after the release (`oldNameRefusal`), for a session migration 0084
+ * kept (`two_step` 0, `kept_at_release` 1 or 2) that passes every other rule
+ * of `findSession`; see `keptByOldName`. `reissue` is then the session that
+ * replaced it, whose code the gate sets under the secure name, and the hash
+ * answered is that session's; null for every other answer.
+ *
+ * A session 0084 kept and not yet swapped (`kept_at_release` 1) goes the
+ * same way whichever name its code came under (the code review's CS-M1): by
+ * the secure name too it is refused once `oldNameRefusal` refuses, and is
+ * swapped at its first use, never slid. So every kept code is under the
+ * 30-day window and the one-time swap, wherever a browser sends it.
  */
-export function validateSession(token: string, { slide = true }: { slide?: boolean } = {}): { user: SessionUser; hash: Buffer } | null {
+export function validateSession(
+	token: string,
+	{ slide = true, oldName = false }: { slide?: boolean; oldName?: boolean } = {}
+): { user: SessionUser; hash: Buffer; reissue: NewSession | null } | null {
 	const hash = sessionTokenHash(token);
 	const sessionRef = sessionRefOf(hash);
+	if (oldName) {
+		// Refused before the row is read: the code that travelled under the old
+		// name looks nothing up once the window is closed (card 3064, R14).
+		const refusal = oldNameRefusal(Date.now());
+		if (refusal !== null) {
+			log.info(`Session cookie of the old name refused: ${refusal}`, { sessionRef });
+			return null;
+		}
+	}
 	const found = findSession(hash);
 
 	// Distinguish a deleted/unknown session from a naturally expired one — the
@@ -753,10 +882,11 @@ export function validateSession(token: string, { slide = true }: { slide?: boole
 	}
 
 	if (!found.open && found.why === 'one-step') {
-		// Made without a second factor (card 2769, decision 24): a hashed row
-		// with 0, which no image writes. Deleted here, as an orphan is, so that
-		// it is said once.
-		log.warn('A hashed session row with two_step 0 — refused and deleted', { sessionRef }, { userId: found.session.userId });
+		// Made without a second factor (card 2769, decision 24), and refused:
+		// two-step sign-in is required, or its account now holds a factor (card
+		// 3064, R5, S-M1). Deleted here, as an orphan is, so that it is said once.
+		const because = found.required ? 'two-step sign-in is required' : 'the account holds a second factor';
+		log.warn('A hashed session row with two_step 0 — refused and deleted', { sessionRef, because }, { userId: found.session.userId });
 		db.delete(sessions).where(eq(sessions.tokenHash, hash)).run();
 		return null;
 	}
@@ -776,16 +906,128 @@ export function validateSession(token: string, { slide = true }: { slide?: boole
 		return null;
 	}
 
-	if (slide) {
+	if (oldName) return keptByOldName(found, hash, sessionRef, true);
+
+	if (found.session.keptAtRelease === KEPT_UNUSED) {
+		// A kept code under the secure name (the code review's CS-M1): the same window and the same one-time swap as
+		// by the old name, read now that the row has been found.
+		const refusal = oldNameRefusal(Date.now());
+		if (refusal !== null) {
+			log.info(`Session kept at the release refused: ${refusal}`, { sessionRef }, { userId: found.session.userId });
+			return null;
+		}
+		return keptByOldName(found, hash, sessionRef, false);
+	}
+
+	if (slide && found.session.keptAtRelease !== KEPT_SWAPPED) {
 		// findSession has read the start as a moment.
 		const started = parseStamp(found.session.createdAt)!.getTime();
 		db.update(sessions)
-			.set({ expiresAt: nextExpiry(found.user.role, started, Date.now()) })
+			.set({ expiresAt: nextExpiry(found.user.role, found.required, found.session.twoStep, started, Date.now()) })
 			.where(eq(sessions.tokenHash, hash))
 			.run();
 	}
 
-	return { user: sessionUserOf(found.user), hash };
+	return { user: sessionUserOf(found.user), hash, reissue: null };
+}
+
+/** `sessions.kept_at_release` of a session 0084 kept and nobody has used by the old cookie name since (card 3064, R12). */
+const KEPT_UNUSED = 1;
+/** `sessions.kept_at_release` of such a session once swapped to a new code under the secure name: its last 60 seconds (R14). */
+const KEPT_SWAPPED = 2;
+
+/** How long a kept session's row stays open once swapped, for a parallel tab's request sent before the new cookie arrived (card 3064, R14). */
+export const OLD_NAME_GRACE_MS = 60 * 1000;
+
+/** How long after the release the old cookie name is read at all (card 3064, R14, S-L3). */
+export const OLD_NAME_WINDOW_MS = 30 * 24 * HOUR;
+
+/** The setting migration 0084 writes once, the moment of the compatibility release (card 3064). */
+const COMPATIBILITY_RELEASE_AT = 'compatibility_release_at';
+
+/**
+ * Why a session cookie of the old name is refused at `now` before any row is
+ * read, or null when it may be read (card 3064, R14): two-step sign-in is
+ * required; or no release moment is stored, or one that names none (fail
+ * closed); or 30 days have passed since it.
+ */
+function oldNameRefusal(now: number): string | null {
+	if (twoStepRequired()) return 'two-step sign-in is required on this server';
+	const stored = db.select({ value: settings.value }).from(settings).where(eq(settings.key, COMPATIBILITY_RELEASE_AT)).get()?.value;
+	const release = parseStamp(stored)?.getTime();
+	if (release === undefined) return 'this server holds no moment of the compatibility release';
+	if (now >= release + OLD_NAME_WINDOW_MS) return 'more than 30 days have passed since the compatibility release';
+	return null;
+}
+
+/**
+ * An open session the code of the old cookie name found, past `oldNameRefusal`
+ * (card 3064, R14, S-M2, R-L5):
+ *
+ * - Not one migration 0084 kept (`two_step` 1, or `kept_at_release` 0, however
+ *   it is dated): refused, nothing written. Only a kept session's code ever
+ *   travelled under the old name.
+ * - Mark 1, its first use by the old name: in one transaction, the row marked
+ *   2 with its expiry 60 seconds on, where it is still 1, and a new session
+ *   made for the account with a new code, the same start, `two_step` 0 and the
+ *   dormant expiry (`createSession`). The request goes on as the new session,
+ *   whose code the gate sets under the secure name (`reissue`). Where the mark
+ *   was no longer 1, a parallel request swapped it first, and this one is
+ *   taken as mark 2.
+ * - Mark 2, its next 60 seconds: accepted as the old row's session, never
+ *   slid, never swapped again, and no new cookie. Then it has ended, and the
+ *   five-minute sweep deletes it.
+ *
+ * An account the record of account endings will not give a session (its
+ * password replaced here: `createSession`'s `AccountDisabled`) is refused,
+ * nothing written.
+ *
+ * `byOldName` says which name the code came under: the old one, or the secure
+ * one for a session still marked 1 (the code review's CS-M1), which is swapped
+ * the same way; the log lines say which.
+ */
+function keptByOldName(
+	found: Extract<FoundSession, { open: true }>,
+	hash: Buffer,
+	sessionRef: string,
+	byOldName: boolean
+): { user: SessionUser; hash: Buffer; reissue: NewSession | null } | null {
+	const { session, user } = found;
+	const sentAs = byOldName ? 'Session cookie of the old name' : 'Session cookie of the secure name';
+	if (session.twoStep !== 0 || (session.keptAtRelease !== KEPT_UNUSED && session.keptAtRelease !== KEPT_SWAPPED)) {
+		log.warn(`${sentAs} names a session not kept at the release — refused`, { sessionRef }, { userId: session.userId });
+		return null;
+	}
+	if (session.keptAtRelease === KEPT_UNUSED) {
+		let replacement: NewSession | null;
+		try {
+			replacement = inTransaction(() => {
+				const swapped = db
+					.update(sessions)
+					.set({ keptAtRelease: KEPT_SWAPPED, expiresAt: stamp(new Date(Date.now() + OLD_NAME_GRACE_MS)) })
+					.where(and(eq(sessions.tokenHash, hash), eq(sessions.keptAtRelease, KEPT_UNUSED)))
+					.run().changes;
+				// findSession has read the start as a moment.
+				return swapped === 1 ? createSession(session.userId, { twoStep: 0, startedAt: toStamp(session.createdAt)! }) : null;
+			});
+		} catch (err) {
+			if (!(err instanceof AccountDisabled)) throw err;
+			log.warn(`${sentAs} names a session whose account is given none — refused`, { sessionRef }, { userId: session.userId });
+			return null;
+		}
+		if (replacement !== null) {
+			const newHash = sessionTokenHash(replacement.token);
+			log.info(
+				byOldName
+					? 'Session of the old cookie name swapped to a new code under the secure name'
+					: 'Session kept at the release, sent under the secure name, swapped to a new code',
+				{ sessionRef, newSessionRef: sessionRefOf(newHash) },
+				{ userId: session.userId }
+			);
+			return { user: sessionUserOf(user), hash: newHash, reissue: replacement };
+		}
+	}
+	return { user: sessionUserOf(user), hash, reissue: null };
 }
 
 /** An account's row, as a request's `locals.user` holds it. */
@@ -874,14 +1116,22 @@ export function deleteSession(hash: Buffer, reason = 'unspecified'): void {
  * the total limit. Null when there is none to keep, and the change is
  * refused: no such session, a start that names no moment, or less than a
  * minute left of the total limit of `role`, the account's role now (the code
- * review's CS2), which would hand over a session about to end.
+ * review's CS2), which would hand over a session about to end. The total
+ * limit is the role's with two-step sign-in as the switch says now, for the
+ * replaced session's own `two_step` (card 3064, R13, S-L1, CS-L2): while it
+ * is dormant, a session kept at the release changes its holder's password
+ * days after it.
+ *
+ * With the start, the replaced session's own `two_step` (card 3064, R5),
+ * which the replacement keeps: a password alone never makes a session that
+ * never used a second factor into one that did.
  */
-export function replacementStart(hash: Buffer, role: string, now: number = Date.now()): Stamp | null {
-	const row = db.select({ createdAt: sessions.createdAt }).from(sessions).where(eq(sessions.tokenHash, hash)).get();
+export function replacementStart(hash: Buffer, role: string, now: number = Date.now()): { startedAt: Stamp; twoStep: 0 | 1 } | null {
+	const row = db.select({ createdAt: sessions.createdAt, twoStep: sessions.twoStep }).from(sessions).where(eq(sessions.tokenHash, hash)).get();
 	const started = row ? toStamp(row.createdAt) : null;
-	if (started === null) return null;
-	const left = parseStamp(started)!.getTime() + sessionLimitsFor(role).totalMs - now;
-	return left < SHORTEST_REPLACEMENT_MS ? null : started;
+	if (row === undefined || started === null) return null;
+	const left = parseStamp(started)!.getTime() + sessionLimits(role, twoStepRequired(), row.twoStep).totalMs - now;
+	return left < SHORTEST_REPLACEMENT_MS ? null : { startedAt: started, twoStep: row.twoStep === 1 ? 1 : 0 };
 }
 
 /**
@@ -910,10 +1160,18 @@ export function endOtherSessions(userId: number, keep: Buffer): number {
  * here, so that a planted cookie sent beside the real one does not leave the
  * real session open. Each session ended is one INFO line, by `sessionRef`.
  * Answers how many were ended.
+ *
+ * Where the name in force is the secure one, each value of the name from
+ * before card 2775 too (card 3064, F22): a sign-out by the old name ends the
+ * session the gate swapped it to, and this ends the kept session its code
+ * still names for its last 60 seconds (`keptByOldName`), so that the code
+ * that travelled under the old name signs nobody in after the sign-out.
  */
 export function endSessionsSent(request: Request, url: URL, reason: string): number {
 	let ended = 0;
-	for (const code of cookieValues(request, sessionCookieName(url))) {
+	const inForce = sessionCookieName(url);
+	const names = inForce === SESSION_COOKIE_NAME ? [inForce] : [inForce, SESSION_COOKIE_NAME];
+	for (const code of names.flatMap((name) => cookieValues(request, name))) {
 		if (!SESSION_CODE.test(code)) continue;
 		const hash = sessionTokenHash(code);
 		if (db.select({ userId: sessions.userId }).from(sessions).where(eq(sessions.tokenHash, hash)).get()) ended++;
@@ -1137,29 +1395,43 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; cause
  * (`stamp_of`, which is `toStamp`): deleted by text, `expires_at < now`, a
  * session that names no moment was closed at its next use but never cleared
  * (the second P6 review). The role is read from the account, `user` or any
- * other, as `sessionLimitsFor` reads it. A session held in plain is gone
- * before this runs (`endPlainSessions`, at start). Run at start and then
- * every five minutes (`startSessionSweep`, card 2883).
+ * other, as `sessionLimits` reads it, with two-step sign-in as the switch
+ * says now and the session's own `two_step` (card 3064, R13, F1, CS-L2):
+ * while it is dormant a session made on a password alone has the dormant
+ * limits whatever its role, so that a session kept at the release, with its
+ * expiry 30 days on, is not deleted at the first start; one made with a code
+ * has its role's. A session held in plain is gone before this runs
+ * (`endPlainSessions`, at start). Run at start and then every five minutes
+ * (`startSessionSweep`, card 2883).
  */
 export function cleanExpiredSessions(): void {
 	const nowMs = Date.now();
 	const at = (ms: number) => stamp(new Date(ms));
-	const { administrator, user } = SESSION_LIMITS;
+	const required = twoStepRequired();
+	const administrator = sessionLimits('admin', required, 1);
+	const user = sessionLimits('user', required, 1);
+	const passwordOnly = sessionLimits('user', required, 0);
 	registerStampFunctions(sqlite);
 	const role = '(SELECT role FROM users WHERE users.id = sessions.user_id)';
+	// A password-only session while dormant first, then by the role, as `sessionLimits` decides.
+	const limit = (dormant: string, forUser: string, forAdministrator: string) =>
+		`CASE WHEN @dormant = 1 AND two_step = 0 THEN ${dormant} WHEN ${role} = 'user' THEN ${forUser} ELSE ${forAdministrator} END`;
 	const result = sqlite
 		.prepare(
 			`DELETE FROM sessions
 			 WHERE stamp_of(expires_at) IS NULL OR stamp_of(expires_at) <= @now
 			    OR stamp_of(created_at) IS NULL OR stamp_of(created_at) > @future
-			    OR stamp_of(created_at) <= CASE ${role} WHEN 'user' THEN @userStartCutoff ELSE @administratorStartCutoff END
-			    OR stamp_of(expires_at) > CASE ${role} WHEN 'user' THEN @userExpiryBound ELSE @administratorExpiryBound END`
+			    OR stamp_of(created_at) <= ${limit('@passwordOnlyStartCutoff', '@userStartCutoff', '@administratorStartCutoff')}
+			    OR stamp_of(expires_at) > ${limit('@passwordOnlyExpiryBound', '@userExpiryBound', '@administratorExpiryBound')}`
 		)
 		.run({
 			now: at(nowMs),
 			future: at(nowMs + SESSION_CLOCK_GRACE_MS),
+			dormant: required ? 0 : 1,
+			passwordOnlyStartCutoff: at(nowMs - passwordOnly.totalMs),
 			userStartCutoff: at(nowMs - user.totalMs),
 			administratorStartCutoff: at(nowMs - administrator.totalMs),
+			passwordOnlyExpiryBound: at(nowMs + passwordOnly.idleMs + SESSION_CLOCK_GRACE_MS),
 			userExpiryBound: at(nowMs + user.idleMs + SESSION_CLOCK_GRACE_MS),
 			administratorExpiryBound: at(nowMs + administrator.idleMs + SESSION_CLOCK_GRACE_MS)
 		});
@@ -1254,8 +1526,15 @@ const SESSION_CODE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
  * undefined for none, for two or more (a planted cookie beside the real one),
  * and for anything else (card 2775, decision 11). The gate's alone: from it
  * on, a request carries the session's hash (`locals.credential`).
+ *
+ * The old name (card 3064, R14, S-M2): where cookies are HTTPS-only and the
+ * request sends no cookie of the secure name at all, whatever its value,
+ * exactly one value of the name from before card 2775, in a code's shape, is
+ * answered with `oldName` true. Whether it signs anybody in is
+ * `validateSession`'s to decide. A browser that sends both names is read by
+ * the secure one alone, and nothing is swapped.
  */
-export function readSessionCookie(request: Request, url: URL): string | undefined {
+export function readSessionCookie(request: Request, url: URL): { code: string; oldName: boolean } | undefined {
 	const name = sessionCookieName(url);
 	const sent = cookieValues(request, name);
 	if (sent.length > 1) {
@@ -1266,7 +1545,13 @@ export function readSessionCookie(request: Request, url: URL): string | undefine
 			sessionRefs: sent.map((code) => sessionRefOf(sessionTokenHash(code)))
 		});
 	}
-	return onlyCookieValue(request, name, SESSION_CODE) ?? undefined;
+	const code = onlyCookieValue(request, name, SESSION_CODE);
+	if (code !== null) return { code, oldName: false };
+	if (name === SECURE_SESSION_COOKIE_NAME && sent.length === 0) {
+		const old = onlyCookieValue(request, SESSION_COOKIE_NAME, SESSION_CODE);
+		if (old !== null) return { code: old, oldName: true };
+	}
+	return undefined;
 }
 
 /**
@@ -1291,15 +1576,38 @@ export function slidesSession(request: Request): boolean {
  * this cannot fail once the session is committed (the code review's CM15).
  */
 export function setSessionCookie(cookies: Cookies, session: NewSession, url: URL | null = currentRequestUrl()): void {
-	const ends = parseStamp(session.createdAt)!.getTime() + sessionLimitsFor(session.role).totalMs;
-	const maxAge = Math.max(1, Math.ceil((ends - Date.now()) / 1000));
 	cookies.set(sessionCookieName(url), session.token, {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
 		secure: httpsOnlyCookie(url),
-		maxAge
+		maxAge: cookieMaxAge(session)
 	});
+}
+
+/**
+ * The session cookie's lifetime, in seconds: to the session's total limit,
+ * the role's with two-step sign-in as the switch says now, for the session's
+ * `twoStep` (card 3064, R13, CS-L2), and at least a second.
+ */
+function cookieMaxAge(session: NewSession): number {
+	const ends = parseStamp(session.createdAt)!.getTime() + sessionLimits(session.role, twoStepRequired(), session.twoStep).totalMs;
+	return Math.max(1, Math.ceil((ends - Date.now()) / 1000));
+}
+
+/**
+ * The `Set-Cookie` value that gives the browser the session that replaced a
+ * kept one at the old cookie name (`keptByOldName`, card 3064, R14), under the
+ * secure name, as `setSessionCookie` sets it; or null where `response` already
+ * sets or clears the session cookie itself (a sign-in, the holder's own
+ * password change, a sign-out), whose own cookie stands (S-M2). The gate
+ * appends it to every answer it logs, which never pass through
+ * `event.cookies`: a page, a page's data and a live stream alike.
+ */
+export function sessionCookieReissue(response: Response, session: NewSession, url: URL): string | null {
+	const name = sessionCookieName(url);
+	if (response.headers.getSetCookie().some((cookie) => cookie.startsWith(`${name}=`))) return null;
+	return `${name}=${session.token}; Path=/; Max-Age=${cookieMaxAge(session)}; HttpOnly${httpsOnlyCookie(url) ? '; Secure' : ''}; SameSite=Lax`;
 }
 
 /** Clear the session cookie, by the name in force, with Path=/ and the same Secure: a `__Host-` deletion without them is ignored. */
@@ -1311,15 +1619,44 @@ export function clearSessionCookie(cookies: Cookies, url: URL | null = currentRe
 const PLAIN_SESSION_COOKIE_DELETION = `${SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`;
 
 /**
- * The `Set-Cookie` value that deletes a session cookie of the plain name,
- * when a request where cookies are HTTPS-only still sends one; null
- * otherwise (card 2775, decision 13). It names a session ended at the
- * release, and nothing sets that name there any more. The gate appends it to
- * every answer it logs, its own included, which never pass through
- * `event.cookies`.
+ * The domain a cookie of the old name could have been set for beside this
+ * server (card 3064, R14, S-L3, A45): the host of `ORIGIN` (the request's
+ * where it is not set) less its first label, where it has three or more;
+ * `elecfron.com` for `dumpfire.elecfron.com`. Null for a host of one or two
+ * labels, and for an address: an IP address has no parent domain.
  */
-export function oldSessionCookieDeletion(request: Request, url: URL): string | null {
-	return httpsOnlyCookie(url) && sendsCookie(request, SESSION_COOKIE_NAME) ? PLAIN_SESSION_COOKIE_DELETION : null;
+function oldCookieParentDomain(url: URL): string | null {
+	let host = url.hostname;
+	const origin = process.env.ORIGIN?.trim();
+	if (origin) {
+		try {
+			host = new URL(origin).hostname;
+		} catch {
+			// The adapter refuses to start on an ORIGIN that is no address: the request's host stands.
+		}
+	}
+	if (host.startsWith('[') || /^\d+(\.\d+){3}$/.test(host)) return null;
+	const labels = host.split('.');
+	return labels.length >= 3 ? labels.slice(1).join('.') : null;
+}
+
+/**
+ * The `Set-Cookie` values that delete a session cookie of the plain name,
+ * when a request where cookies are HTTPS-only still sends one; none
+ * otherwise (card 2775, decision 13). Since card 3064 (R14, S-L3) two: with no
+ * `Domain`, as live set it, and with `Domain=` the parent domain of this
+ * server's host (`oldCookieParentDomain`), where it has one, which clears a
+ * cookie of that name another site on that domain could plant. The secure
+ * name is the only one set there; a session kept at the release is read by
+ * the old name only to be swapped to it. The gate appends them to every
+ * answer it logs, its own included, which never pass through `event.cookies`.
+ */
+export function oldSessionCookieDeletion(request: Request, url: URL): string[] {
+	if (!httpsOnlyCookie(url) || !sendsCookie(request, SESSION_COOKIE_NAME)) return [];
+	const parent = oldCookieParentDomain(url);
+	return parent === null
+		? [PLAIN_SESSION_COOKIE_DELETION]
+		: [PLAIN_SESSION_COOKIE_DELETION, `${SESSION_COOKIE_NAME}=; Domain=${parent}; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax`];
 }
 
 // ─── User Queries ────────────────────────────────────────────────────────────

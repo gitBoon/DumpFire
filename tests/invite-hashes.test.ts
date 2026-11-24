@@ -20,26 +20,35 @@
  * (`docs/planning/card-2849-invite-tokens-hashed.md`, section 5), and T10 of
  * the code review (CR1). T4 is in tests/migrations.test.ts, and T5 and T7 in
  * tests/backups.test.ts.
+ *
+ * Card 3064 (slice S3a: T38 and T60): while two-step sign-in is dormant, an
+ * invite of an account with no factor signs its holder in on the password it
+ * sets, with a session made on a password alone (R9).
  */
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { compareSync } from 'bcryptjs';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
-import { inviteTokens, settings } from '$lib/server/db/schema';
+import { inviteTokens, settings, users } from '$lib/server/db/schema';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { issueInvite } from '$lib/server/invites';
+import { KNOWN_BROWSER_SECRET_KEY, knownBrowserCookie } from '$lib/server/known-browsers';
 import { endPlainInvites } from '$lib/server/startup-checks';
 import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.server';
 import { action } from './helpers/actions';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { FIXTURE_PASSWORD, makeSession, makeSmtp, makeUser, resetDb, stepUpCode } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeSession, makeSmtp, makeTwoStepDormant, makeUser, resetDb, sessionRow, stepUpCode } from './helpers/fixtures';
+import { readOpened } from './helpers/reads';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { giveFactor } from './helpers/two-step';
 
 const APP = 'https://kanban.example.test';
 const NEW = 'a new password for the invite';
 const LATER = '2099-01-01 00:00:00';
+const cookieSecure = process.env.COOKIE_SECURE;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** The SHA-256 of `text`, its 32 bytes: the form an invite is kept in. */
@@ -195,6 +204,53 @@ describe('an invite issued and used, in the log', () => {
 			])
 		);
 		for (const line of lines) expect(holdsPieceOf(JSON.stringify(line), token), line.message).toBe(false);
+	});
+});
+
+describe('an invite while two-step sign-in is dormant (card 3064, S3a: T38, T60)', () => {
+	beforeEach(() => {
+		makeTwoStepDormant();
+		delete process.env.COOKIE_SECURE;
+	});
+
+	afterEach(() => {
+		if (cookieSecure === undefined) delete process.env.COOKIE_SECURE;
+		else process.env.COOKIE_SECURE = cookieSecure;
+	});
+
+	it('T38: sets the password and signs in with two_step 0: no challenge, the last sign-in written, the browser remembered under the password-only domain', async () => {
+		const token = inTransaction(() => issueInvite(invitee.id));
+		const from = lastLogId();
+
+		const res = await logging(() => action(`/invite/${token}`, { form: { password: NEW, confirmPassword: NEW } }));
+
+		expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/' });
+		const code = res.cookies[SESSION_COOKIE_NAME].value;
+		expect(sessionRow(code)).toMatchObject({ userId: invitee.id, twoStep: 0 });
+		expect(sqlite.prepare('SELECT COUNT(*) FROM sign_in_challenges').pluck().get()).toBe(0);
+		const account = db.select().from(users).where(eq(users.id, invitee.id)).get()!;
+		expect(compareSync(NEW, account.passwordHash)).toBe(true);
+		expect(account).toMatchObject({ lastSignInAt: expect.any(String), lastSignInFrom: '127.0.0.1', failedCodesSinceSignIn: 0 });
+		expect(db.select({ used: inviteTokens.used }).from(inviteTokens).where(eq(inviteTokens.userId, invitee.id)).all()).toEqual([{ used: true }]);
+		// Remembered under the password-only domain, for the hash just set.
+		const [issuedAt, nonce, mac] = res.cookies[knownBrowserCookie(invitee.id)].value.split('.');
+		const secret = readOpened('settings', KNOWN_BROWSER_SECRET_KEY)!;
+		expect(createHmac('sha256', secret).update(`known-browser:password-only:${invitee.id}:${issuedAt}:${nonce}:${account.passwordHash}`).digest('hex')).toBe(mac);
+		expect(linesUnder('AUTH', from).map((line) => line.message)).toContain(
+			`User "ana" logged in with an invite, no second step: two-step sign-in is not required on this server`
+		);
+	});
+
+	it('T60: for an account that holds a factor, signs nobody in: the dead-link answer, and nothing written (an invite never works for one, card 2773)', async () => {
+		const token = inTransaction(() => issueInvite(invitee.id));
+		giveFactor(invitee);
+		const before = snapshotDb();
+
+		const res = await action(`/invite/${token}`, { form: { password: NEW, confirmPassword: NEW } });
+
+		expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: expect.stringMatching(/^This invite link no longer works\./) } });
+		expect(res.cookies).toEqual({});
+		expectUnchanged(before);
 	});
 });
 

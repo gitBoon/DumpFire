@@ -5,6 +5,8 @@ import { reportSchedules, webhooks } from '$lib/server/db/schema';
 import { twoStepView } from '$lib/server/account-two-step';
 import { webhooksReadableBy } from '$lib/server/webhooks';
 import { settingsSetBy } from '$lib/server/setting-setters';
+import { holdsFactor } from '$lib/server/mfa-store';
+import { twoStepRequired } from '$lib/server/two-step-switch';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const user = locals.user!;
@@ -38,6 +40,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 		reportSchedulesOn: schedules?.count ?? 0,
 		// The Two-step sign-in section and the warning at the top of the page
 		// (card 2772, D10): never a secret, a recovery code or a pending id.
-		twoStep: twoStepView(user.id)
+		twoStep: twoStepView(user.id),
+		// Set up two-step sign-in, offered in that section's place to an account
+		// that holds no factor while two-step sign-in is dormant (card 3064, R8):
+		// the set-up route's own two refusals (`refuseOwnSetUp`), read here.
+		offerTwoStepSetUp: !holdsFactor(user.id) && !twoStepRequired()
 	};
 };

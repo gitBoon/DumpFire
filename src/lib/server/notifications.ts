@@ -40,6 +40,8 @@ import { afterCommit } from './db/transaction';
 import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams, taskRequests } from './db/schema';
 import { eq, and, asc, inArray, isNull } from 'drizzle-orm';
 import { createLogger } from './logger';
+import { codeAskedOf } from './mfa-store';
+import { yourProofInFull } from '$lib/step-up-words';
 import { issueRequestLinkNow, requestReplyUrl } from './request-tokens';
 import { requesterMailAddress } from './request-access';
 import { canViewBoard, type Actor } from './board-access';
@@ -604,6 +606,9 @@ export function securityNoticeSent(userId: number, notice: SecurityNotice, detai
 	if (!owner) return Promise.resolve(false);
 
 	const when = detail.at.toUTCString();
+	// What a confirmation asks of the owner now, by the step-up's own rule (card 3064, F25): the notices that say it
+	// say the password alone for an account with no factor while two-step sign-in is dormant. Read for those two alone.
+	const codeAsked = notice === 'report-schedule-set' || notice === 'report-schedules-running' ? codeAskedOf(userId) : true;
 	const from = detail.address === null ? '' : ` from ${escapeHtml(detail.address)}`;
 	const notYou =
 		'If this was not you, your password is known to someone else: change it straight away, and tell an administrator.';
@@ -727,7 +732,8 @@ export function securityNoticeSent(userId: number, notice: SecurityNotice, detai
 				'The old codes no longer work.',
 			after: notYou
 		},
-		// Card 2751 (D13): confirmed with the password and a code; the schedule's name and addresses are text typed, escaped.
+		// Card 2751 (D13): confirmed with the password and a code, or the password alone where no code is asked (card 3064,
+		// F25); the schedule's name and addresses are text typed, escaped.
 		'report-schedule-set': {
 			subject: change.made ? 'A report schedule was made on your DumpFire account' : 'A report schedule of yours was changed on DumpFire',
 			title: change.made ? 'A report schedule was made' : 'A report schedule was changed',
@@ -735,7 +741,7 @@ export function securityNoticeSent(userId: number, notice: SecurityNotice, detai
 				`A report schedule of yours was ${changedWords} on ${escapeHtml(when)}${from}. ` +
 				'It emails a report of board activity on its timetable, whether or not you are signed in.' +
 				listed('The schedule:', schedules) +
-				'This was confirmed with your password and a code from your authenticator app.',
+				`This was confirmed with ${yourProofInFull(codeAsked)}.`,
 			after: 'If this was not you, someone can confirm changes as you: change your password and tell an administrator.'
 		},
 		// Card 2751 (D14): once, at the first start after the release, to each owner of a schedule that is on.
@@ -746,7 +752,7 @@ export function securityNoticeSent(userId: number, notice: SecurityNotice, detai
 				'These report schedules of yours are on. Each emails a report of board activity on its timetable, whether or not you are signed in.' +
 				listed('Your schedules that are on:', schedules) +
 				'From this release, making a schedule, adding an address to one, turning one on or widening what it reports asks for ' +
-				'your password and a code from your authenticator app. Delete any schedule here you do not recognise, on the Reports page.',
+				`${yourProofInFull(codeAsked)}. Delete any schedule here you do not recognise, on the Reports page.`,
 			after: 'If you do not recognise one of these, delete it, change your password, and tell an administrator.'
 		},
 		// Card 2671 (D16): the one mail a disabled account is sent, and its pair; the administrator's name is text, escaped.

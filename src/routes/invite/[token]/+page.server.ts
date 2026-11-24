@@ -1,19 +1,23 @@
-import { fail } from '@sveltejs/kit';
+import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { db, sqlite } from '$lib/server/db';
 import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { recordPasswordReplaced } from '$lib/server/account-endings';
 import { apiKeys, inviteTokens, reportSchedules, users, webhooks } from '$lib/server/db/schema';
 import { and, eq, count, isNull } from 'drizzle-orm';
-import { endAccountAccess, namingIds } from '$lib/server/auth';
+import { endAccountAccess, namingIds, setSessionCookie } from '$lib/server/auth';
+import { addressOf } from '$lib/server/client-address';
+import { rememberBrowser } from '$lib/server/known-browsers';
+import { holdsFactor } from '$lib/server/mfa-store';
+import { twoStepRequired } from '$lib/server/two-step-switch';
 import { ENDING_IN_MAIL, webhooksReadableBy } from '$lib/server/webhooks';
 import { settingsSetBy } from '$lib/server/setting-setters';
 import { CheckNotMade, LONGEST_PASSWORD, PASSWORD_TOO_LONG, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
 import { createLogger } from '$lib/server/logger';
 import { usableInvite } from '$lib/server/invites';
 import { currentMfaKey } from '$lib/server/mfa-key';
-import { readChallengeToken } from '$lib/server/sign-in-challenges';
-import { NO_MFA_KEY, goToSetUp, issueSetUpChallenge } from '$lib/server/second-step';
+import { deleteChallengeCookie, readChallengeToken } from '$lib/server/sign-in-challenges';
+import { NO_MFA_KEY, finishPasswordSignIn, goToSetUp, issueSetUpChallenge } from '$lib/server/second-step';
 
 const log = createLogger('AUTH');
 
@@ -87,7 +91,7 @@ export const load: PageServerLoad = async ({ params }) => {
 };
 
 export const actions: Actions = {
-	default: async ({ params, request, cookies, platform, url }) => {
+	default: async ({ params, request, cookies, platform, url, getClientAddress }) => {
 		const token = params.token;
 		const invalid = () => fail(400, { error: DEAD_LINK });
 
@@ -139,7 +143,8 @@ export const actions: Actions = {
 		// that uses it, so it cannot be used twice, and the password, the invite,
 		// what setting a password ends and the set-up challenge change together.
 		const previousToken = readChallengeToken(request, url);
-		const setUp = inTransaction(() => {
+		const address = addressOf({ getClientAddress })?.slice(0, 100) ?? null;
+		const done = inTransaction(() => {
 			const invite = usableInvite(token);
 			if (!invite) return null;
 
@@ -190,13 +195,34 @@ export const actions: Actions = {
 				)
 			);
 
+			// While two-step sign-in is dormant, an account that holds no factor
+			// is signed in on the password just set, as the version before
+			// two-step sign-in signed an invitee in (card 3064, R9): the switch
+			// and the factors read here, in this transaction (S-M3).
+			if (!twoStepRequired() && !holdsFactor(invite.userId)) {
+				return { kind: 'signed in' as const, ...finishPasswordSignIn({ id: invite.userId }, address) };
+			}
+
 			// No session: the invite leads on to setting up two-step sign-in
 			// (card 2769), and only that signs in. The challenge is issued
 			// after what setting a password ends, which ends pending sign-ins.
-			return issueSetUpChallenge(invite.userId, passwordHash, previousToken, 'invite');
+			return { kind: 'set up' as const, setUp: issueSetUpChallenge(invite.userId, passwordHash, previousToken, 'invite') };
 		});
-		if (!setUp) return invalid();
+		if (!done) return invalid();
 
-		goToSetUp(cookies, url, setUp, 'an invite');
+		if (done.kind === 'set up') goToSetUp(cookies, url, done.setUp, 'an invite');
+
+		const { session, user } = done;
+		setSessionCookie(cookies, session, url);
+		deleteChallengeCookie(cookies, url);
+		// The new password ended every remembered browser of the account; this
+		// one is remembered for it (card 2194), under the password-only domain,
+		// which requiring two-step sign-in retires (card 3064, R-M9).
+		rememberBrowser(cookies, user.id, user.passwordHash, url, 0);
+		log.info(`User "${user.username}" logged in with an invite, no second step: two-step sign-in is not required on this server`, undefined, {
+			userId: user.id,
+			ip: address
+		});
+		redirect(303, '/');
 	}
 };

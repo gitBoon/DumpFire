@@ -2884,20 +2884,21 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.15.0, with its dated notes newest first, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.15.1, with its dated notes newest first, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.15.0');
+		expect(res.body.info.version).toBe('1.15.1');
 
 		// Card 2761 (E8): every dated note's heading, in the order the description gives them, newest first, in
 		// one list, in place of each note's test counting the notes before it. A new version's note is added at
 		// its head, and nothing else here moves.
 		const note = res.body.info.description as string;
 		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])).toEqual([
+			'**Changed on 2026-11-24 (version 1.15.1), not breaking.**',
 			'**Changed on 2026-11-18 (version 1.15.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.14.0), breaking.**',
 			'**Changed on 2026-11-18 (version 1.13.1).**',
@@ -3005,7 +3006,7 @@ describe('what a route answers, against the schema the document gives for it', (
 			enum: ['active', 'left'],
 			description:
 				'left for someone who has left, or, since 1.15.0, whose address or account came in with a backup whose seal did not verify and was not the one this server held for them (card 3020): they are not mailed about a decision. ' +
-				'Changed on the People page only, and marking someone active asks for the password and a code.'
+				'Changed on the People page only, and marking someone active asks for the password and a code (since 1.15.1, the password alone while two-step sign-in is dormant, for an administrator who has not set it up).'
 		});
 		expect(spec.components.schemas.Webhook.properties.pausedBecause.description).toContain(`"${SWITCHED_OFF_BECAUSE[HELD_FROM_UNSEALED_BACKUP]}"`);
 		expect(spec.components.schemas.Webhook.description).toContain(
@@ -3185,8 +3186,8 @@ describe('what a route answers, against the schema the document gives for it', (
 	it('announces in the 1.13.0 note, breaking, that a disabled account has no access to anything, and holds the document to it (card 2671)', () => {
 		const note = spec.info.description as string;
 		const heading = '**Changed on 2026-11-18 (version 1.13.0), breaking.**';
-		// Fourth of the dated notes, after card 2923's 1.15.0, card 2915's 1.14.0 and card 2910's 1.13.1, and marked breaking.
-		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])[3]).toBe(heading);
+		// Fifth of the dated notes, after card 3064's 1.15.1, card 2923's 1.15.0, card 2915's 1.14.0 and card 2910's 1.13.1, and marked breaking.
+		expect([...note.matchAll(/\*\*Changed on [^*]+\*\*/g)].map((m) => m[0])[4]).toBe(heading);
 		const changes = note.slice(note.indexOf(heading), note.indexOf('**Changed on 2026-11-18 (version 1.12.0), breaking.**'));
 		expect([...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]))).toEqual([1, 2, 3, 4, 5]);
 		for (const words of [
@@ -3229,6 +3230,15 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(webhook.description).toContain(
 			'Since 1.15.0 they also hold one already switched off; every start and every restore, a restore kept apart included, hold one whose setter is disabled or not recorded; ' +
 				'and the first start of 1.15.0, and a restore of a backup made before it, hold every one already switched off with no hold, whoever set it.'
+		);
+		// Card 3064 (D1): an upgraded server applies none of those once-only holds at installation.
+		expect(webhook.description).toContain(
+			'Since 1.15.1 a server upgraded from before 1.15.0 applies none of these once-only holds at installation, nor holds the webhooks whose secret an API key was given before it: ' +
+				'an administrator applies them later as a planned event, with notice, and a restore of a backup made before 1.15.0 does not apply them either.'
+		);
+		expect(webhook.description).toContain(
+			'once its setter has no working API key made before then, where the administrator has applied that rule to it (since 1.15.1 a server upgraded from before 1.11.0 does not at installation, ' +
+				'and its webhooks keep sending until the administrator applies it as a planned event, with notice).'
 		);
 		// Card 2923's code review (S1): every hold gives a new secret, no setter's included.
 		expect(webhook.description).toContain('Since 1.15.0 every webhook switched off for good is given a new secret when switched on, one with no recorded setter included.');
@@ -3625,14 +3635,57 @@ describe('what a route answers, against the schema the document gives for it', (
 		}
 		const bearer = spec.components.securitySchemes.bearerAuth.description as string;
 		expect(bearer.startsWith('API key prefixed with `df_`. Generate one from My Account → API Keys.')).toBe(true);
-		expect(bearer).toContain('has a deadline 60 days after it did');
-		// No date that reads as the release day (code review DOC6): the deadline runs from the installation.
+		// Card 3064 (R22, D1): a deadline only where the administrator has applied one; none at an upgrade.
+		expect(bearer).toBe(
+			'API key prefixed with `df_`. Generate one from My Account → API Keys. ' +
+				'A key made before this server took version 1.8.0 has a deadline where the administrator has applied a deadline, as a planned event with notice (since 1.15.1 none is applied when a server is upgraded), shown beside it under My Account → API Keys: ' +
+				'kept there with Keep this key (the password and a code), it goes on working unchanged; not kept, it is answered 401 "Invalid or expired API key" from its deadline on, and is never revived. ' +
+				'Keys made after the deadline was applied have none.'
+		);
+		// No date that reads as the release day (code review DOC6).
 		expect(bearer).not.toMatch(/\d{4}-\d{2}-\d{2}/);
-		expect(bearer).toContain('Keep this key');
-		expect(bearer).toContain('answered 401 "Invalid or expired API key" from its deadline on, and is never revived');
-		expect(spec.components.responses.Unauthorized.description).toContain('past its deadline');
+		expect(spec.components.responses.Unauthorized.description).toContain(
+			'past its deadline (a key made before version 1.8.0, where the administrator has applied a deadline, and not kept)'
+		);
 		// The historical notes that name an ended key are left as they were written (E8).
 		expect(note).toContain('a write whose key is ended (revoked, expired, or ended by a password reset of its user) while its body is still arriving');
+	});
+
+	// Card 3064 (R22, R-L1, the amendment's shape, D1): the 1.15.1 note word for word: the one-off effects not applied on
+	// an upgraded server, points (1) to (8), everything a client written for 1.3.1 sees change, then "Added with it, not
+	// breaking:", then the closing (9). Cards 3059, 2688 and 2689 each insert a point before the closing one and renumber it.
+	// Its code review (CR-M3): point (5) names the reveal rule (1.15.0 (9)), and the closing point lists the answers that read
+	// differently rather than saying nothing else changed.
+	it('says in the 1.15.1 note what an upgraded server does not apply and everything a 1.3.1 client sees change, word for word (card 3064, D1)', () => {
+		const note = spec.info.description as string;
+		const start = note.indexOf('**Changed on 2026-11-24 (version 1.15.1), not breaking.**');
+		expect(start).toBeGreaterThan(0);
+		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-18 (version 1.15.0), breaking.**'));
+		expect(changes).toBe(
+			'**Changed on 2026-11-24 (version 1.15.1), not breaking.** On a server upgraded from before 1.8.0, the one-off effects of 1.8.0 (a deadline on existing keys), 1.9.1 (4) (the stored images checked), 1.11.0 (9)-(10) and 1.15.0 (1)-(4), (7) and (9) (holds of webhooks set up or read before this version) are not applied at installation: ' +
+				'existing keys keep working with no deadline, and existing webhooks keep sending with their secrets, except those already not delivered (no setter recorded, or a setter who cannot open the board), which are switched off for good. ' +
+				'An administrator may apply the key deadline later as a planned event, with notice. Every rule for what happens from now on is as described. ' +
+				'Everything a client written for 1.3.1 sees change: ' +
+				'(1) every board answer carries productOwnerUserId, the id of a user or null, which PUT /boards/{boardId} takes and keeps when it is left out (1.4.0); ' +
+				'(2) costUsd on token answers is priced anew, past entries included (1.7.1); ' +
+				"(3) a board, card, label, milestone or anything on a board the key's user cannot open is answered 404 in the words a missing one gets, where it was 403; a label not of the card's board is 404, where it was 400; " +
+				"a withheld node of a 409's cycle gives id null and withheld true, and a withheld span of board-history boardId null and withheld true; POST /dependencies/bulk counts only the links whose ends the user can edit (1.10.0, 1.12.0); " +
+				"(4) a webhook whose setter can no longer open its board, and one set or switched on with an API key from this version on whose key then ends, is switched off for good, pausedBecause saying why, and only the board's owner or an administrator switches it on again, with a new secret; " +
+				"DELETE of such a webhook by an editor is 403, and POST of a webhook to its receiver by anyone but the board's owner or an administrator is 409 (1.11.0); " +
+				"(5) a key ends at its expiry's own second (1.8.0 (2)); a disabled account's keys answer 401 and the webhooks it set are switched off (1.13.0); a reset of an account's two-step sign-in ends its keys and switches off the webhooks it set (1.14.0); " +
+				"and the end of an owner's or an administrator's access, or the lowering of its role, from this version on holds the webhooks whose secret it could read (1.15.0 (1), (7)); " +
+				"and a key given a webhook's secret from this version on (by a GET, or by the POST or PUT that set it) is recorded, and when that key is revoked or expires every webhook whose secret it was given is held, and is switched on again only with a new secret (1.15.0 (9)); " +
+				'(6) a webhook secret or url that cannot be opened is never sent; a url that is not well-formed text is 400; a secret beginning dfsealed: is 400 (1.15.0 (5), (6)); ' +
+				'(7) PUT /webhooks/{webhookId} gives secret only where that PUT set or replaced it, and the four answers that can give a secret carry Cache-Control: no-store (1.15.0 (9)); ' +
+				"(8) 409, with nothing written, for a Product Owner or decider whose account's creation time cannot be read on this server, and 503 in place of 500 on a server with no MFA key loaded (1.15.0 (12), (13)). " +
+				'Added with it, not breaking: the People (1.5.0), Decisions (1.6.0) and Attachments (1.7.0) operations, touching=true on GET /milestones (1.9.0), survey questions and cards that wait on a decision (1.15.0 (14), (15)), each as its own note describes. ' +
+				"(9) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry's source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), " +
+				"a 413 for a body declared too large, and every other refusal of an upload before its body is read, carries Connection: close (1.13.1 (3)), and a card's move between milestones it cannot see is refused in words of its own (1.12.0 (3)).\n\n"
+		);
+		// The points in order, the closing one last: a later card inserts its own before it and renumbers it.
+		const points = [...changes.slice(changes.indexOf('sees change: ')).matchAll(/ \((\d)\) [a-zA-Z0-9]/g)].map((m) => Number(m[1]));
+		expect(points).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+		expect(changes.indexOf('Added with it, not breaking:')).toBeLessThan(changes.indexOf('(9) no other operation, field or schema changed'));
 	});
 
 	// Card 2845: a note of its own, for a change of what costUsd answers.

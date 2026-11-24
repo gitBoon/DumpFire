@@ -373,7 +373,7 @@ async function checkSignIn(
 	// The hash checked is the one read before the check: a password set while
 	// it was awaited is found by the issue, which compares it (decision 26).
 	return afterPassword(
-		{ user, checkedHash: user.passwordHash, remembered, address, identity, previousToken, linkToken },
+		{ user, checkedHash: user.passwordHash, remembered, address, countedAs, identity, previousToken, linkToken },
 		cookies,
 		url
 	);

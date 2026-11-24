@@ -31,6 +31,8 @@ vi.mock('$app/navigation', () => ({
 	onNavigate: () => {},
 	beforeNavigate: () => {}
 }));
+// The page's data, as the layout's load gives it (card 3064, R7): none, so that a code is asked beside the password.
+vi.mock('$app/state', () => ({ page: { data: {} } }));
 // A bare 'svelte' gives the server's runtime, whose tick and onDestroy the components cannot use in a browser: the client's, by its path.
 vi.mock('svelte', async () => {
 	const { join } = await import('node:path');

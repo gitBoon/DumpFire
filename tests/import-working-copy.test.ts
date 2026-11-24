@@ -43,7 +43,7 @@ import { reportSchedules, webhooks } from '$lib/server/db/schema';
 import { getSmtpConfig, isSmtpConfigured } from '$lib/server/email';
 import { issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
 import { api, routeMethods } from './helpers/api';
-import { importConfirmation, makeUser, resetDb, startedSinceAlreadyOffHeld } from './helpers/fixtures';
+import { FIRST_RUN_FLAGS, importConfirmation, makeUser, resetDb, startedSinceAlreadyOffHeld } from './helpers/fixtures';
 import { afterEachTimestampCheck } from './helpers/timestamps';
 import { readOpened, readOpenedUrl } from './helpers/reads';
 import { DUMMY_HASH } from '$lib/server/dummy-hash';
@@ -642,18 +642,24 @@ describe('restoring as a working copy', () => {
 		// the copy's password-only set-up stays shut. And the once-only seed's flag, written for a backup holding none
 		// before the keys are left out (card 2995, R3).
 		// No App URL: the backup's seal does not verify (card 3009's code review, FP3).
+		// Card 3064: the backup's release moment and six first-run flags, written by migration 0084, which takes back 0066's
+		// two_step_released_at and 0069's api_key_deadline. And this server's one-shot leave to keep a plain seal key, which a
+		// restore keeps (its code review, CS-M2).
 		expect(Object.keys(settings).sort()).toEqual([
-			'api_key_deadline',
 			'backup_config',
+			'backup_seal_key_keep_once',
+			'compatibility_release_at',
 			'mail_ever_configured_at',
 			'mfa_key_check',
+			'report_schedules_announced',
 			'request_form_secret',
 			'secrets_scrub_pending',
+			'stored_images_rechecked',
 			'theme',
-			'two_step_released_at',
 			'webhook_keys_recorded_at',
 			'webhook_reveals_seeded',
 			'webhooks_already_off_held',
+			'webhooks_before_keys_announced',
 			'webhooks_readable_by_disabled_held'
 		]);
 		expect(JSON.parse(settings['backup_config'])).toEqual(BACKUP_CONFIG_OFF);
@@ -732,6 +738,13 @@ describe('restoring as a working copy', () => {
 		// before the option existed.
 		const live = armedLive();
 		const backup = armedBackup();
+		// Card 3064 (R1, R24): this server's release moment and first-run flags, kept over the backup's; card 2935's moment
+		// the backup's where it holds one (its code review, C3).
+		// And this server's one-shot leave to keep a plain seal key (its code review, CS-M2).
+		const keptKeys = ['compatibility_release_at', 'backup_seal_key_keep_once', ...FIRST_RUN_FLAGS.filter((flag) => flag !== 'webhooks_readable_by_disabled_held')];
+		const isKept = (row: string) => keptKeys.some((key) => row.includes(`"key":"${key}"`));
+		const keptHere = withoutKeysRecorded(withoutFormKey(contentsOf(live).settings)).filter(isKept);
+		expect(keptHere).toHaveLength(6);
 
 		const result = restore(live, backup);
 
@@ -745,8 +758,10 @@ describe('restoring as a working copy', () => {
 			const backedUp = schedulesPaused(table, withoutKeysRecorded(withoutFormKey(contentsOf(backup)[table])), [1, 2]);
 			if (table === 'webhooks') expect(heldAtSetApart(restored)).toEqual(heldUnsealed(backedUp));
 			// And its From Address and From Name not taken, this server having none (card 3029).
-			else if (table === 'settings') expect(restored).toEqual(backedUp.filter((row) => !/"key":"smtp_from_(address|name)"/.test(row)));
-			else expect(restored).toEqual(backedUp);
+			else if (table === 'settings') {
+				expect(restored.filter((row) => !isKept(row))).toEqual(backedUp.filter((row) => !/"key":"smtp_from_(address|name)"/.test(row) && !isKept(row)));
+				expect(restored.filter(isKept)).toEqual(keptHere);
+			} else expect(restored).toEqual(backedUp);
 		}
 		// And its mail, App URL and destination held for review (card 3009, R4).
 		expect(result.unsealedHeld).toEqual({ mail: 1, destinations: 1, appUrl: 1 });
@@ -769,17 +784,23 @@ describe('restoring as a working copy', () => {
 			expect(result.outside).toEqual({ ...SWITCHED_OFF_UNSEALED, backupScheduleWasOn: false, backupDestinations: 0 });
 			// It went on to the mail settings, and the restore is committed; mail set up recorded first (card 2922, C4).
 			expect(Object.keys(settingsIn(live)).sort()).toEqual([
-				'api_key_deadline',
+				// Card 3064: the backup's release moment and first-run flags, written by migration 0084, which takes back
+				// 0066's two_step_released_at and 0069's api_key_deadline; and this server's one-shot leave to keep a plain seal
+				// key (its code review, CS-M2).
+				'backup_seal_key_keep_once',
+				'compatibility_release_at',
 				'mail_ever_configured_at',
 				'mfa_key_check',
+				'report_schedules_announced',
 				'request_form_secret',
 				'secrets_scrub_pending',
+				'stored_images_rechecked',
 				'theme',
-				'two_step_released_at',
 				'webhook_keys_recorded_at',
 				// Card 2995 (R3): the once-only seed's flag, for a backup holding none.
 				'webhook_reveals_seeded',
 				'webhooks_already_off_held',
+				'webhooks_before_keys_announced',
 				// Card 2935 (P12): the restore's own run of the start pass.
 				'webhooks_readable_by_disabled_held'
 			]);
@@ -794,7 +815,19 @@ describe('restoring as a working copy', () => {
 			UPDATE report_schedules SET enabled = 0;
 			UPDATE webhooks SET active = 0;
 			DELETE FROM settings WHERE key NOT IN ('app_url', 'theme', 'webhooks_already_off_held', 'webhooks_readable_by_disabled_held');
+			-- The two flags at the moments startedSinceAlreadyOffHeld gives them, over the ones migration 0084 seeded (card 3064).
+			UPDATE settings SET value = '2026-11-19T00:00:00.000Z' WHERE key = 'webhooks_already_off_held';
+			UPDATE settings SET value = '2026-11-19 00:00:00' WHERE key = 'webhooks_readable_by_disabled_held';
 		`);
+
+		// Card 3064 (R1, R24): this server's release moment and six first-run flags, which migration 0084 wrote here.
+		// And its one-shot leave to keep a plain seal key, kept the same way (its code review, CS-M2).
+		const releaseHere = Object.fromEntries(
+			Object.entries(settingsIn(live)).filter(
+				([key]) => key === 'compatibility_release_at' || key === 'backup_seal_key_keep_once' || FIRST_RUN_FLAGS.includes(key as (typeof FIRST_RUN_FLAGS)[number])
+			)
+		);
+		expect(Object.keys(releaseHere)).toHaveLength(8);
 
 		const result = restoreFromBackup(live, backup, { outside: 'off' });
 
@@ -818,21 +851,23 @@ describe('restoring as a working copy', () => {
 			theme: 'dark',
 			// This server's, written by migration 0071 and kept by a restore (card 2752).
 			webhook_keys_recorded_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
-			// The once-only seed's flag, written for a backup holding none (card 2995, R3).
-			webhook_reveals_seeded: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
-			// The backup's: one made since card 2923's release (its code review, S2).
-			webhooks_already_off_held: '2026-11-19T00:00:00.000Z',
-			// The backup's too: card 2935's pass ran there (P4), so the restore does not run it (P12).
+			// This server's release moment and its first-run flags, kept over the backup's (card 3064, R1, R24): so the
+			// restore runs card 2995's once-only seed no more than the backup's flags would have had it.
+			...releaseHere,
+			// But card 2935's moment, the backup's: its pass ran there (P4), so the restore runs it from there (P12, C3).
 			webhooks_readable_by_disabled_held: '2026-11-19 00:00:00'
 		});
 		expect(readOpened('settings', 'request_form_secret', live)).toMatch(/^v2:[0-9a-f]{64}$/);
 		// The settings as the backup has them, but for this server's 0071 moment, kept (card 2752), and the App URL, removed
 		// as the backup's seal does not verify (card 3009's code review, FP3).
 		const withoutAppUrl = (rows: string[]) => rows.filter((row) => !row.includes('"key":"app_url"'));
+		// And this server's own release settings, kept (card 3064), asked above.
+		const keptHere = Object.keys(releaseHere).filter((key) => key !== 'webhooks_readable_by_disabled_held');
+		const withoutKeptHere = (rows: string[]) => rows.filter((row) => !keptHere.some((key) => row.includes(`"key":"${key}"`)));
 		// And the webhooks held, each having an address (card 3012, R1).
 		for (const table of OUTSIDE_TABLES) {
-			const restored = withoutKeysRecorded(withoutFormKey(contentsOf(live)[table]));
-			const backedUp = withoutAppUrl(withoutFormKey(contentsOf(backup)[table]));
+			const restored = withoutKeptHere(withoutKeysRecorded(withoutFormKey(contentsOf(live)[table])));
+			const backedUp = withoutKeptHere(withoutAppUrl(withoutFormKey(contentsOf(backup)[table])));
 			if (table === 'webhooks') expect(heldAtSetApart(restored)).toEqual(heldUnsealed(backedUp));
 			else expect(restored).toEqual(backedUp);
 		}
@@ -1292,6 +1327,9 @@ describe('through the route', () => {
 		expect(defaultOutside()).toBe('off');
 		process.env.LOG_LEVEL = 'INFO';
 		const backup = armedBackup();
+		// A backup holding neither flag, as one made before migration 0084 (card 3064), which seeds both: the import's
+		// check of the stored images and the restore's once-only seed each write theirs.
+		backup.exec("DELETE FROM settings WHERE key IN ('stored_images_rechecked', 'webhook_reveals_seeded')");
 
 		const { response, logged, size } = await upload('?outside=keep', backup);
 
@@ -1328,8 +1366,17 @@ describe('through the route', () => {
 		// (card 2761, the code review's CS3).
 		// And the flag of the once-only seed of reads made before they were recorded, which the restore runs for a backup
 		// holding none (card 2947, R7).
+		// And no release moment of the compatibility release, as this server holds none (card 3064, R1); and two-step sign-in's
+		// switch, on here (`resetDb`, R23) and so kept on by the restore (R1).
 		const made = (rows: string[]) =>
-			withoutFormKey(rows).filter((row) => !row.includes('"key":"stored_images_rechecked"') && !row.includes('"key":"webhook_reveals_seeded"'));
+			withoutFormKey(rows).filter(
+				(row) =>
+					!row.includes('"key":"stored_images_rechecked"') &&
+					!row.includes('"key":"webhook_reveals_seeded"') &&
+					!row.includes('"key":"compatibility_release_at"') &&
+					!row.includes('"key":"backup_seal_key_keep_once"') &&
+					!row.includes('"key":"two_step_required_at"')
+			);
 		// But for the schedules of bob and of ann, the superadmin given the importer's password, paused: neither is the same
 		// account here, from a backup whose seal does not verify (card 3009, R7; its code review, FP2).
 		// And its webhooks, each with an address held (card 3012, R1).
@@ -1346,6 +1393,11 @@ describe('through the route', () => {
 		expect(contentsOf(sqlite).settings.filter((row) => row.includes('"key":"stored_images_rechecked"'))).toHaveLength(1);
 		expect(contentsOf(backup).settings.filter((row) => row.includes('"key":"webhook_reveals_seeded"'))).toEqual([]);
 		expect(contentsOf(sqlite).settings.filter((row) => row.includes('"key":"webhook_reveals_seeded"'))).toHaveLength(1);
+		expect(contentsOf(backup).settings.filter((row) => row.includes('"key":"compatibility_release_at"'))).toHaveLength(1);
+		expect(contentsOf(sqlite).settings.filter((row) => row.includes('"key":"compatibility_release_at"'))).toEqual([]);
+		// Nor the backup's one-shot leave to keep a plain seal key, this server holding none (its code review, CS-M2).
+		expect(contentsOf(backup).settings.filter((row) => row.includes('"key":"backup_seal_key_keep_once"'))).toHaveLength(1);
+		expect(contentsOf(sqlite).settings.filter((row) => row.includes('"key":"backup_seal_key_keep_once"'))).toEqual([]);
 	});
 
 	// Card 2899 (case 6): the seal's other answer, and the working copy's words.

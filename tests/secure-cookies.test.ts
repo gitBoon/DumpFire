@@ -50,7 +50,7 @@ describe('the remembered-browser cookie', () => {
 		const set: { name: string; options: Record<string, unknown> }[] = [];
 		const cookies = { set: (name: string, _value: string, options: Record<string, unknown>) => set.push({ name, options }) };
 
-		rememberBrowser(cookies as unknown as Cookies, 7, 'a hash', new URL('https://kanban.example.test/login/verify'));
+		rememberBrowser(cookies as unknown as Cookies, 7, 'a hash', new URL('https://kanban.example.test/login/verify'), 1);
 
 		expect(set).toEqual([
 			{

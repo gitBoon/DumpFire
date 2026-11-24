@@ -225,7 +225,7 @@
 {#if confirmState.show}
 	<ConfirmModal
 		title="Delete Board"
-		message={boardDeleteWarning(confirmState.boardName)}
+		message={boardDeleteWarning(confirmState.boardName, data.codeAsked)}
 		confirmText="Delete Board"
 		askPassword
 		onConfirm={(proof: StepUpProof) => deleteBoard(confirmState.boardId, proof)}

@@ -66,6 +66,7 @@ import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { gate } from './helpers/gate';
 import { makeBoard, makeCard, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
+import { allowOtherTimestampForms } from './helpers/timestamps';
 
 let staff: SessionUser;
 let A: BoardFixture;
@@ -359,6 +360,60 @@ describe('a settled request’s links end 90 days after it was settled (card 290
 		const t = linkOf(request.id);
 		settle(request.id, 91);
 
+		expect(await opens(request.id, t)).toBe(404);
+	});
+
+	// Card 3064 (R17): the 90 days run from the compatibility release at the earliest, compared as moments.
+	const releasedDaysAgo = (days: number) =>
+		sqlite.prepare("INSERT INTO settings (key, value) VALUES ('compatibility_release_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(daysAgo(days));
+
+	it('card 3064 T20: a request settled 200 days before the release keeps its link until 90 days after the release', async () => {
+		const request = pendingRequest('rejected');
+		const t = linkOf(request.id);
+
+		releasedDaysAgo(89);
+		settle(request.id, 289);
+		expect(await opens(request.id, t)).toBe(200);
+		releasedDaysAgo(91);
+		settle(request.id, 291);
+		expect(await opens(request.id, t)).toBe(404);
+	});
+
+	it('card 3064 T21: a request settled after the release ends 90 days after its settlement, as before', async () => {
+		const request = pendingRequest('rejected');
+		const t = linkOf(request.id);
+		releasedDaysAgo(200);
+
+		settle(request.id, 89);
+		expect(await opens(request.id, t)).toBe(200);
+		settle(request.id, 91);
+		expect(await opens(request.id, t)).toBe(404);
+	});
+
+	it('card 3064 T73: a request whose card was completed, in ISO form, 200 days before the release keeps its link until 90 days after the release', async () => {
+		allowOtherTimestampForms();
+		const card = makeCard(A.cols['To Do'], { title: 'Please add an export' });
+		const request = pendingRequest('accepted', card.id);
+		const t = linkOf(request.id);
+		settle(request.id, 400);
+		const isoDaysAgo = (days: number) => new Date(Date.now() - days * DAY).toISOString();
+
+		releasedDaysAgo(89);
+		complete(card.id, isoDaysAgo(289));
+		expect(await opens(request.id, t)).toBe(200);
+		releasedDaysAgo(91);
+		complete(card.id, isoDaysAgo(291));
+		expect(await opens(request.id, t)).toBe(404);
+	});
+
+	it('card 3064: a settlement that names no moment has ended the links, with the release moment stored or not (fail closed)', async () => {
+		allowOtherTimestampForms();
+		const request = pendingRequest('rejected');
+		const t = linkOf(request.id);
+		sqlite.prepare("UPDATE task_requests SET resolved_at = 'not a moment' WHERE id = ?").run(request.id);
+
+		expect(await opens(request.id, t)).toBe(404);
+		releasedDaysAgo(10);
 		expect(await opens(request.id, t)).toBe(404);
 	});
 

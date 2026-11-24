@@ -37,7 +37,7 @@
  * code always works, past a pause or the lock: a wrong one counts on the challenge, on `mfa_recovery_wrong` and
  * on the address's sign-in attempts, with no pause of its own (decision 14).
  */
-import { fail, redirect, type ActionFailure, type Cookies } from '@sveltejs/kit';
+import { error, fail, redirect, type ActionFailure, type Cookies } from '@sveltejs/kit';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { apiKeys, boards, mfaRecoveryCodes, users, webhooks, type User } from './db/schema';
@@ -47,6 +47,7 @@ import { AccountDisabled, createSession, keyEnded, setSessionCookie, type NewSes
 import { rememberBrowser } from './known-browsers';
 import { accountKey, countSignInAttempt, forgetWrongSignIns, refundSignInAttempts } from './rate-limit';
 import { currentMfaKey } from './mfa-key';
+import { twoStepRequired } from './two-step-switch';
 import {
 	addTotpFactor,
 	endPendingSignIns,
@@ -194,6 +195,8 @@ export type PasswordAccepted = {
 	remembered: string | null;
 	/** The address as received, for the log; null where there is none. */
 	address: string | null;
+	/** What the address is counted as by sign-in's limits, given back by a password-only sign-in (card 3064, R3). */
+	countedAs: string;
 	/** The name as typed, for the answer. */
 	identity: string;
 	/** The challenge token this browser already holds, if any. */
@@ -222,6 +225,14 @@ const RELEASE_MAIL_EVERY_MS = 24 * 60 * 60 * 1000;
  *   (0) no MFA key loaded: 503, since no set-up could finish (decision 28);
  *   (a) the browser holds a set-up link's cookie for a live link of this
  *       account: an enrol challenge on the link, and `/login/enrol`;
+ *   (a2) two-step sign-in is dormant (`twoStepRequired`, card 3064, R3): the
+ *       account's hash compared again with the one checked (409 `changed`,
+ *       nothing written, S-M3), and then the password signs in on its own
+ *       (`finishPasswordSignIn`, a `two_step` 0 session), as the version
+ *       before two-step sign-in signed everyone in. After the commit the
+ *       session's cookie, the challenge's cookie deleted, the browser
+ *       remembered under the password-only domain, the throttles forgotten
+ *       for a browser not remembered as a second step forgets them, and home;
  *   (b) it may not set up on its password alone (`mayStillEnrolOnPassword`:
  *       not marked `mfa_password_enrol = 1`, the 14 days after the release
  *       over, or a link from anything but the release mail held, decision
@@ -264,8 +275,9 @@ export async function afterPassword(accepted: PasswordAccepted, cookies: Cookies
 
 	type Decided =
 		| { kind: 'issued'; purpose: ChallengePurpose; token: string; shortId: string; fromLink: boolean }
+		| { kind: 'password only'; session: NewSession; user: User }
 		| { kind: 'changed' | 'gone' | 'needs link' | 'no key' | 'mail' };
-	const decided = inTransaction((): Decided => {
+	const decide = (): Decided => {
 		const issue = (purpose: ChallengePurpose, enrolGrant: string | null, enrolmentLinkHash: string | null): Decided => {
 			const issued = issueChallenge({
 				userId: user.id,
@@ -294,6 +306,16 @@ export async function afterPassword(accepted: PasswordAccepted, cookies: Cookies
 		const link = usableEnrolmentLink(accepted.linkToken);
 		if (link !== null && link.userId === user.id) return issue('enrol', 'link', link.tokenHash);
 
+		// (a2) Two-step sign-in dormant (card 3064, R3): the password signs in on its own, the account's hash
+		// compared again in this transaction with the one checked (S-M3), as the issue compares it on every
+		// other branch. The disabled state and the factors were read above, in this transaction.
+		if (!twoStepRequired()) {
+			const account = db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, user.id)).get();
+			if (account === undefined) return { kind: 'gone' };
+			if (account.passwordHash !== checkedHash) return { kind: 'changed' };
+			return { kind: 'password only', ...finishPasswordSignIn(user, address) };
+		}
+
 		// (b) Leave to set up on the password alone.
 		if (!mayStillEnrolOnPassword(user.id)) return { kind: 'needs link' };
 
@@ -301,13 +323,40 @@ export async function afterPassword(accepted: PasswordAccepted, cookies: Cookies
 		// plan's R9): a removal of the mail settings does not open it again.
 		if (!isSmtpConfigured() && !mailEverConfigured()) return issue('enrol', 'password', null);
 		return { kind: 'mail' };
-	});
+	};
+	// An account the record of account endings gives no session (`createSession`'s `AccountDisabled`) is as one
+	// disabled meanwhile: the transaction it was thrown in is rolled back, and nothing is written.
+	let decided: Decided;
+	try {
+		decided = inTransaction(decide);
+	} catch (err) {
+		if (!(err instanceof AccountDisabled)) throw err;
+		decided = { kind: 'gone' };
+	}
 
 	switch (decided.kind) {
 		case 'changed':
 			return changed();
 		case 'gone':
 			return gone();
+		case 'password only': {
+			const { session, user: signedIn } = decided;
+			setSessionCookie(cookies, session, url);
+			deleteChallengeCookie(cookies, url);
+			// Remembered under the password-only domain, which requiring two-step sign-in retires (R-M9).
+			rememberBrowser(cookies, signedIn.id, signedIn.passwordHash, url, 0);
+			log.info(
+				`User "${signedIn.username}" logged in, no second step: two-step sign-in is not required on this server`,
+				{ secondStep: 'none' },
+				{ userId: signedIn.id, ip: address }
+			);
+			// As a second step passed forgets them (`signedInAnswer`, decision 13): the known lane did neither.
+			if (remembered === null) {
+				forgetWrongSignIns(accountKey(signedIn.id));
+				refundSignInAttempts(accepted.countedAs, accountKey(signedIn.id));
+			}
+			redirect(303, '/');
+		}
 		case 'needs link':
 			return needsLink();
 		case 'no key':
@@ -656,7 +705,37 @@ export function finishSignIn(
 		.set({ lastSignInAt: stamp(new Date(now)), lastSignInFrom: address, failedCodesSinceSignIn: 0 })
 		.where(eq(users.id, user.id))
 		.run();
-	return { session: createSession(user.id), user, report };
+	// Made after the code, a recovery code or the enrol's confirm: two-step (card 3064, R5).
+	return { session: createSession(user.id, { twoStep: 1 }), user, report };
+}
+
+/**
+ * A sign-in on a password alone, while two-step sign-in is dormant (card 3064,
+ * R3, R9), inside the caller's transaction, which has read there that the
+ * switch is off and that the account holds no factor and is not disabled, and
+ * has compared or just written its hash: the last sign-in written and the
+ * wrong codes since it set back to 0, as `finishSignIn` writes them, and a
+ * session made with `two_step` 0, which `findSession` refuses once two-step
+ * sign-in is required or the account holds a factor. Asked with the switch on
+ * or a factor held, it is a fault in the caller, and throws, rolling the
+ * transaction back; so does `createSession`, with `AccountDisabled`, for an
+ * account it gives no session. Answers the session and the account as it is.
+ */
+export function finishPasswordSignIn(
+	who: Pick<User, 'id'>,
+	address: string | null,
+	now: number = Date.now()
+): { session: NewSession; user: User } {
+	if (twoStepRequired() || holdsFactor(who.id)) {
+		throw new Error('A sign-in on a password alone was asked while two-step sign-in is required, or of an account that holds a factor.');
+	}
+	db.update(users)
+		.set({ lastSignInAt: stamp(new Date(now)), lastSignInFrom: address, failedCodesSinceSignIn: 0 })
+		.where(eq(users.id, who.id))
+		.run();
+	const user = db.select().from(users).where(eq(users.id, who.id)).get();
+	if (!user) throw new Error('A sign-in on a password alone was asked for an account that is not there.');
+	return { session: createSession(user.id, { twoStep: 0 }), user };
 }
 
 /**
@@ -710,7 +789,8 @@ function signedInAnswer(
 ): VerifyReport {
 	const { session, user, report, lane } = signedIn;
 	setSessionCookie(cookies, session, url);
-	rememberBrowser(cookies, user.id, user.passwordHash, url);
+	// After a second factor: the session is `two_step` 1, and so is the domain (card 3064, R-M9).
+	rememberBrowser(cookies, user.id, user.passwordHash, url, 1);
 	deleteChallengeCookie(cookies, url);
 	log.info(`User "${user.username}" logged in`, { secondStep }, { userId: user.id, ip: from.address });
 	if (lane === 'other') {
@@ -1229,16 +1309,22 @@ export function enrolConfirm(input: EnrolInput, cookies: Cookies, url: URL): Enr
 
 // ─── Setting up after an invite or the first-run set-up ─────────────────────
 
-/** An enrol challenge issued for a password an invite or the first-run set-up has just set. */
+/** An enrol challenge issued for a password an invite or the first-run set-up has just set, or the Account page's set-up has just checked. */
 export type SetUpIssued = { userId: number; token: string; shortId: string };
 
 /**
- * Inside the invite's or the set-up's own transaction, after the password is
- * set (and what setting it ends is ended): an enrol challenge on that
- * password, in the other lane. Refused, it is a fault in the caller, and
- * throws, rolling the transaction back.
+ * Inside the invite's, the set-up's or the Account page's own transaction,
+ * after the password is set (and what setting it ends is ended), or checked
+ * by the step-up of `POST /api/account/two-step/set-up` (grant `account`, card
+ * 3064, R8): an enrol challenge on that password, in the other lane. Refused,
+ * it is a fault in the caller, and throws, rolling the transaction back.
  */
-export function issueSetUpChallenge(userId: number, passwordHash: string, previousToken: string | null, grant: 'invite' | 'setup'): SetUpIssued {
+export function issueSetUpChallenge(
+	userId: number,
+	passwordHash: string,
+	previousToken: string | null,
+	grant: 'invite' | 'setup' | 'account'
+): SetUpIssued {
 	const issued = issueChallenge({ userId, checkedHash: passwordHash, purpose: 'enrol', lane: 'other', previousToken, enrolGrant: grant });
 	if (!issued.issued) throw new Error(`A set-up challenge was refused (${issued.why}) for the password this transaction set.`);
 	return { userId, token: issued.token, shortId: issued.shortId };
@@ -1251,4 +1337,43 @@ export function goToSetUp(cookies: Cookies, url: URL, issued: SetUpIssued, after
 		userId: issued.userId
 	});
 	redirect(303, '/login/enrol');
+}
+
+// ─── Setting up from the Account page while dormant (card 3064, R8) ─────────
+
+/** The 409s of setting up two-step sign-in from the Account page (R8). */
+export const OWN_SET_UP_HELD = 'Two-step sign-in is already set up for this account.';
+export const OWN_SET_UP_REQUIRED = 'Two-step sign-in is required on this server: it is set up when you next sign in.';
+
+/**
+ * Every refusal of setting up two-step sign-in from the Account page while it
+ * is dormant (R8), with nothing written: the account holds a factor (409), two-step sign-in is
+ * required (409: the sign-in's release path sets it up), or no MFA key is
+ * loaded (503, as at sign-in: decision 28). Read only: asked by the route
+ * before the password, and again in its write.
+ */
+export function refuseOwnSetUp(userId: number): void {
+	if (holdsFactor(userId)) error(409, OWN_SET_UP_HELD);
+	if (twoStepRequired()) error(409, OWN_SET_UP_REQUIRED);
+	if (currentMfaKey() === null) error(503, NO_MFA_KEY);
+}
+
+/**
+ * In the route's own transaction, after its step-up checked the password
+ * against `passwordHash` (R8): every refusal asked again (`refuseOwnSetUp`),
+ * then an enrol challenge of grant `account` on that hash, replacing the one
+ * this browser holds, and the caller's session, by its hash, ended, so that
+ * `/login/enrol`, which serves only a browser signed out, serves it. The
+ * enrol pages then run as for any set-up, and their confirm makes a session
+ * with `two_step` 1 (`finishSignIn`). Answers the challenge issued. The
+ * session is the caller's, which the route's `writeAs` has just found open in
+ * this transaction: one not ended is a fault in the caller, and throws,
+ * rolling the transaction back.
+ */
+export function startOwnSetUp(userId: number, passwordHash: string, previousToken: string | null, session: Buffer): SetUpIssued {
+	refuseOwnSetUp(userId);
+	const issued = issueSetUpChallenge(userId, passwordHash, previousToken, 'account');
+	const ended = sqlite.prepare('DELETE FROM sessions WHERE id = ? AND user_id = ?').run(session, userId).changes;
+	if (ended !== 1) throw new Error(`The session of a set-up from the Account page could not be ended (${ended} rows).`);
+	return issued;
 }

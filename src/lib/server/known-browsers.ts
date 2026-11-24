@@ -27,6 +27,11 @@
  * which the rest are treated as from a browser not remembered (R2). So a
  * copied cookie buys five guesses a quarter of an hour, never a volley.
  *
+ * While two-step sign-in is dormant (card 3064), a browser signed in on a
+ * password alone is remembered under a MAC domain of its own, which counts
+ * only until two-step sign-in is required (`rememberBrowser`,
+ * `rememberedNonce`).
+ *
  * The secret is never in a backup and never restored (`withoutSecrets` in
  * backup.ts, `rowsToRestore` in db/restore.ts), so a restore forgets every
  * browser, as it signs everybody out.
@@ -45,6 +50,8 @@ import { currentSigningKeyHex, newSigningKeyText, openStored, sealStored, settin
 import { inTransaction } from './db/transaction';
 import { httpsOnlyCookie } from './auth';
 import { FREE_WRONG_SIGN_INS, wrongSignInsAt } from './rate-limit';
+import { twoStepRequired } from './two-step-switch';
+import { holdsFactor } from './mfa-store';
 import { createLogger } from './logger';
 
 const log = createLogger('AUTH');
@@ -127,16 +134,28 @@ export function resetKnownBrowserSecretCache(): void {
 
 /**
  * The MAC's domain: 2 since two-step sign-in (card 2769, decision 24). A
- * browser is remembered only after a second factor from then on; an older
- * image, which remembers one on a password alone, signs under 1, and every
- * cookie it signs is refused here, even where it made the secret again after
- * migration 0067 deleted it.
+ * browser is remembered under it only after a second factor (a session with
+ * `two_step` 1); an older image, which remembers one on a password alone,
+ * signs under 1, and every cookie it signs is refused here, even where it made
+ * the secret again after migration 0067 deleted it.
  */
 const MAC_DOMAIN = 'known-browser:2';
 
-function macOf(secret: string, userId: number, issuedAt: number, nonce: string, passwordHash: string): string {
+/**
+ * The MAC's domain of a browser remembered on a password alone, while two-step
+ * sign-in is dormant (card 3064, R3, R-M9 with S-L2): a sign-in, an invite's
+ * use, a password change or a sign-out of a session with `two_step` 0. Its
+ * cookie gives the lenient lane exactly as the version before two-step
+ * sign-in gave every browser, and only while two-step sign-in is dormant and
+ * the account holds no factor: once it is required (event E3), or the account
+ * sets up a factor (F24), `rememberedNonce` answers every cookie of this domain
+ * as no cookie, so the lane never outlives dormancy nor a password-only account.
+ */
+const PASSWORD_ONLY_MAC_DOMAIN = 'known-browser:password-only';
+
+function macOf(domain: string, secret: string, userId: number, issuedAt: number, nonce: string, passwordHash: string): string {
 	return createHmac('sha256', secret)
-		.update(`${MAC_DOMAIN}:${userId}:${issuedAt}:${nonce}:${passwordHash}`)
+		.update(`${domain}:${userId}:${issuedAt}:${nonce}:${passwordHash}`)
 		.digest('hex');
 }
 
@@ -149,6 +168,13 @@ function macOf(secret: string, userId: number, issuedAt: number, nonce: string, 
  * session cookie's rule, `httpsOnlyCookie(url)` (card 2850); null outside a
  * request, which leaves it to the environment.
  *
+ * `twoStep` is the `two_step` of the session the browser holds or held, and
+ * has no default, so that every caller says (card 3064, R3, R-M9): 1, signed
+ * under `known-browser:2`; 0, a session made on a password alone while
+ * two-step sign-in is dormant, signed under the password-only domain, which
+ * requiring two-step sign-in retires. Anything else throws: it is a fault in
+ * the caller.
+ *
  * Called after the change is committed, so it never fails the request: a
  * secret that cannot be had is said at WARN, and the browser is not
  * remembered.
@@ -158,8 +184,11 @@ export function rememberBrowser(
 	userId: number,
 	passwordHash: string,
 	url: URL | null,
+	twoStep: 0 | 1,
 	now: number = Date.now()
 ): void {
+	if (twoStep !== 0 && twoStep !== 1) throw new Error('A browser is remembered for a session with two_step 0 or 1, said by its caller.');
+	const domain = twoStep === 1 ? MAC_DOMAIN : PASSWORD_ONLY_MAC_DOMAIN;
 	let secret: string | null;
 	try {
 		secret = knownBrowserSecret(true);
@@ -173,7 +202,7 @@ export function rememberBrowser(
 
 	const issuedAt = Math.floor(now / 1000);
 	const nonce = randomBytes(16).toString('hex');
-	cookies.set(knownBrowserCookie(userId), `${issuedAt}.${nonce}.${macOf(secret, userId, issuedAt, nonce, passwordHash)}`, {
+	cookies.set(knownBrowserCookie(userId), `${issuedAt}.${nonce}.${macOf(domain, secret, userId, issuedAt, nonce, passwordHash)}`, {
 		// Sent to the sign-in page and its form, and nowhere else.
 		path: '/login',
 		httpOnly: true,
@@ -191,6 +220,14 @@ export function rememberBrowser(
  * (compared in constant time), and fewer than five wrong passwords have come
  * from it within 15 minutes of each other. Null otherwise, which is answered
  * as no cookie at all.
+ *
+ * The MAC is that of `known-browser:2`, or, only while two-step sign-in is
+ * dormant (`twoStepRequired`, read here at each call) and the account holds
+ * no factor (`holdsFactor`, F24, as `findSession` refuses such an account's
+ * sessions made on a password alone: S-M1), that of the password-only domain
+ * (card 3064, R3, R-M9): once two-step sign-in is required, or the account
+ * has set up a second factor, a browser remembered on a password alone is no
+ * longer remembered.
  */
 export function rememberedNonce(
 	cookies: Pick<Cookies, 'get'>,
@@ -207,8 +244,9 @@ export function rememberedNonce(
 
 	const secret = knownBrowserSecret(false);
 	if (!secret) return null;
-	const expected = Buffer.from(macOf(secret, user.id, issuedAt, nonce, user.passwordHash), 'hex');
-	if (!timingSafeEqual(expected, Buffer.from(mac, 'hex'))) return null;
+	const sent = Buffer.from(mac, 'hex');
+	const signedUnder = (domain: string) => timingSafeEqual(Buffer.from(macOf(domain, secret, user.id, issuedAt, nonce, user.passwordHash), 'hex'), sent);
+	if (!signedUnder(MAC_DOMAIN) && (twoStepRequired() || holdsFactor(user.id) || !signedUnder(PASSWORD_ONLY_MAC_DOMAIN))) return null;
 
 	if (wrongSignInsAt(`nonce:${nonce}`) >= FREE_WRONG_SIGN_INS) return null;
 	return nonce;

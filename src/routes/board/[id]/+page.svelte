@@ -65,6 +65,7 @@
 	import type { BoardContentsData } from '$lib/board/contents-answer';
 	// A delete that asks for the caller's own password, watched for its refusal of it (card 2701).
 	import { refusalWatch, type StepUpProof } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
 	import { NARROW_WIDTH, OPTION_AGING_DAYS, openingView, optionsAging, readBoardView, readOptionsOpen, resolveListColumn, scrollPastFoldedStrip, viewFromUrl, withViewParams, writeBoardView, writeOptionsOpen, type BoardViewChoice } from '$lib/board/board-view';
 
 	// Components
@@ -894,7 +895,7 @@
 		const holds = (boardState.columns.find((c) => c.id === colId)?.cards.length ?? 0) > 0;
 		showConfirm(
 			'Delete Column',
-			api.columnDeleteWarning(colTitle, holds),
+			api.columnDeleteWarning(colTitle, holds, codeAskedHere()),
 			'Delete Column',
 			async (proof: StepUpProof) => {
 				const started = toasts.navigation();
@@ -1156,7 +1157,7 @@
 		const sbName = cardActions.findSubBoardName(boardId, boardState.columns);
 		showConfirm(
 			'Delete Sub-board',
-			api.boardDeleteWarning(sbName),
+			api.boardDeleteWarning(sbName, codeAskedHere()),
 			'Delete',
 			async (proof: StepUpProof) => {
 				const started = toasts.navigation();
@@ -1192,7 +1193,7 @@
 	 * (slice B3), which closes itself and then calls this.
 	 */
 	function confirmDeleteThisSubBoard() {
-		showConfirm('Delete Sub-board', api.boardDeleteWarning(boardName), 'Delete', async (proof: StepUpProof) => {
+		showConfirm('Delete Sub-board', api.boardDeleteWarning(boardName, codeAskedHere()), 'Delete', async (proof: StepUpProof) => {
 			const parentHref = boardState.breadcrumbs[boardState.breadcrumbs.length - 1]?.href || '/';
 			const started = toasts.navigation();
 			const release = boardState.hold();

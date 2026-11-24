@@ -49,7 +49,8 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { againstOf, DECISION_TEXT_MAX } from '$lib/decision-rules';
 	import { NOT_REACHED_WORDS, NO_OPTIONS_PUT, objectionsUnansweredWords, RESULTS_READ_AGAIN, STALE_REVISION, talksConfirmWords } from '$lib/decision-words';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	let {
 		decisionId,
@@ -148,7 +149,7 @@
 			(early && cutOff.length > 0
 				? ` ${cutOff.length} who have not responded are cut off${notReached > 0 ? `, ${notReached} of them ${NOT_REACHED_WORDS}` : ''}.`
 				: '') +
-			` ${ASKS_FOR_PASSWORD}`
+			` ${asksForPassword(codeAskedHere())}`
 	);
 
 	/** Rule…: the dialog, once the form is complete. */

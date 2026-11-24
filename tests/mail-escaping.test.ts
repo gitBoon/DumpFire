@@ -35,7 +35,8 @@ import * as notifications from '$lib/server/notifications';
 import { initReportScheduler } from '$lib/server/reports';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { addBoardMember, assignCard, makeBoard, makeCard, makeSmtp, makeUser, resetDb, stepUp } from './helpers/fixtures';
+import { addBoardMember, assignCard, makeBoard, makeCard, makeSmtp, makeTwoStepDormant, makeUser, resetDb, stepUp, writeRequiredSettings } from './helpers/fixtures';
+import { giveFactor } from './helpers/two-step';
 
 /** What the stand-in destination's upload fails with: as another server might answer. */
 const UPLOAD_FAILURE = vi.hoisted(() => '<b>refused</b>');
@@ -753,5 +754,44 @@ describe('the mail about a mention (card 2198)', () => {
 		send();
 		await sent.settle();
 		expect(sent.emails.map((mail) => mail.to)).toEqual([named.email]);
+	});
+});
+
+// Card 3064 (S4b, F25): the two report schedule notices say what a confirmation asks of their owner, by the step-up's
+// own rule: the password alone for an account with no factor while two-step sign-in is dormant.
+describe('the report schedule notices say what a confirmation asks of the owner (card 3064, S4b)', () => {
+	const SCHEDULE = [{ name: 'Weekly', covers: 'the board "Plans"', addresses: ['someone@example.test'] }];
+	const RUNNING_ALONE = 'turning one on or widening what it reports asks for your password. Delete any schedule';
+	const RUNNING_CODE = 'turning one on or widening what it reports asks for your password and a code from your authenticator app. Delete any schedule';
+	const SET_ALONE = 'This was confirmed with your password.';
+	const SET_CODE = 'This was confirmed with your password and a code from your authenticator app.';
+
+	/** The HTML of the one notice of each kind sent to `user` now. */
+	async function noticesTo(user: SessionUser): Promise<{ running: string; set: string }> {
+		sent.clear();
+		await notifications.securityNoticeSent(user.id, 'report-schedules-running', { at: new Date(), address: null, schedules: SCHEDULE });
+		await notifications.securityNoticeSent(user.id, 'report-schedule-set', { at: new Date(), address: null, schedules: SCHEDULE, change: { made: true } });
+		expect(sent.emails).toHaveLength(2);
+		return { running: sent.emails[0].html, set: sent.emails[1].html };
+	}
+
+	it('F25 the password alone for an owner with no factor while dormant; the password and a code once they hold one, and for every owner once two-step sign-in is required', async () => {
+		makeTwoStepDormant();
+		const owner = makeUser();
+
+		const alone = await noticesTo(owner);
+		expect(alone.running).toContain(RUNNING_ALONE);
+		expect(alone.set).toContain(SET_ALONE);
+		expect(alone.running + alone.set).not.toContain('a code');
+
+		giveFactor(owner);
+		const held = await noticesTo(owner);
+		expect(held.running).toContain(RUNNING_CODE);
+		expect(held.set).toContain(SET_CODE);
+
+		writeRequiredSettings();
+		const required = await noticesTo(makeUser());
+		expect(required.running).toContain(RUNNING_CODE);
+		expect(required.set).toContain(SET_CODE);
 	});
 });

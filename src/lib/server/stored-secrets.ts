@@ -315,7 +315,8 @@ const SEAL_KEY_SETTING = 'backup_seal_key';
  * 2943, R1 and R8): `v2:` and 64 lower-case hex. Each was stored in plain
  * before card 2898, so every copy of the database made before then holds it;
  * one of any other form is never sealed in place, and is replaced at start
- * (`replaceSigningKeysAtStart`). The form is inside the envelope, bound to the
+ * (`replaceSigningKeysAtStart`), but for the backup seal key held in plain as
+ * 64 lower-case hex, which the first start after migration 0084 alone keeps (card 3064, R20, CS-M2). The form is inside the envelope, bound to the
  * setting's name as before, so nobody without the MFA key can write a key of
  * it: the decision rests on nothing a row written by hand can forge.
  */
@@ -905,7 +906,8 @@ export const sealedTotal = (counts: SealedCounts) => counts.mail + counts.destin
  * every entry whatever its type, a service account's key, each webhook's
  * secret, and the webhook address key. Never the three signing keys of
  * `V2_SIGNING_KEYS` (card 2943, R8): one of those held in plain is replaced by
- * `replaceSigningKeysAtStart`, never sealed in place, and a direct call leaves
+ * `replaceSigningKeysAtStart` (or, the backup seal key of a server from before
+ * the compatibility release, kept there: card 3064, R20), and a direct call leaves
  * it as it is. Empty values and values already sealed
  * are left. A `backup_config` that is not JSON is counted as unreadable and
  * nothing in it is sealed; no text of it is kept (S12). The key check is not
@@ -1187,10 +1189,14 @@ export function replaceUnopenableSigningKeys(database: Database.Database, key: M
 	return replaced;
 }
 
-/** A signing key made anew, and why (card 2943). */
+/**
+ * A signing key made anew, and why (card 2943); or, `kept`, the backup seal
+ * key a server from before the compatibility release held in plain, sealed in
+ * place at start (card 3064, R20).
+ */
 export type SigningKeyMade = {
 	setting: (typeof SIGNING_KEY_SETTINGS)[number];
-	because: 'none' | 'plain' | 'older' | 'unopenable' | 'not trusted at run time';
+	because: 'none' | 'plain' | 'older' | 'unopenable' | 'not trusted at run time' | 'kept';
 };
 
 /** How each reason is said in the record line. */
@@ -1199,8 +1205,27 @@ const MADE_BECAUSE: Record<SigningKeyMade['because'], string> = {
 	plain: 'the one stored was in plain',
 	older: 'the one stored was of an older form',
 	unopenable: "the one stored could not be opened with this server's MFA key",
-	'not trusted at run time': "the one stored was not trusted at run time: in plain, of an older form, or not opening with this server's MFA key"
+	'not trusted at run time': "the one stored was not trusted at run time: in plain, of an older form, or not opening with this server's MFA key",
+	kept: 'kept, sealed in place: the one stored was in plain, as a server from before the compatibility release holds it, and backups sealed with it still verify'
 };
+
+/**
+ * A backup seal key as a server from before the compatibility release stored
+ * it (`106ea45:backup-secrets.ts`, `HEX_32`): 32 bytes as 64 lower-case hex,
+ * in plain. Kept at start, sealed in place as `v2:` and the same 64 hex
+ * (card 3064, R20).
+ */
+const SEAL_KEY_FROM_BEFORE = /^[0-9a-f]{64}$/;
+
+/**
+ * The one-shot leave to keep such a key (the code review's CS-M2): written by
+ * migration 0084 alone, and deleted by the first start after it, in its
+ * transaction, whatever it found. Only that start keeps a plain seal key;
+ * every later one replaces a plain key as card 2943 does, so that a plain key
+ * planted later (a host edit, an older image's import) is never trusted. This
+ * server's own: a restore never brings in a backup's and keeps this server's.
+ */
+export const SEAL_KEY_KEEP_ONCE = 'backup_seal_key_keep_once';
 
 /**
  * At start (card 2943, R1, R5, R8), in the start's transaction and before
@@ -1216,24 +1241,48 @@ const MADE_BECAUSE: Record<SigningKeyMade['because'], string> = {
  * row deleted by hand was. Answers each key made, and why. The caller records
  * the key check first, in the same transaction, and writes the record line
  * (`signingKeysMadeLine`). Opens no transaction.
+ *
+ * But the backup seal key held in plain as exactly 64 lower-case hex, the form
+ * a server from before the compatibility release stored it in, is kept (card
+ * 3064, R20): sealed in place as `v2:` and the same 64 hex, which gives the
+ * same HMAC key as that server's `Buffer.from(stored, 'hex')`, so that the
+ * backups it made keep verifying. Answered `kept`, for the record line; no
+ * record of when it was made is written (`backup_seal_key_made_at` stays
+ * absent: carried over, not made); and the scrub is marked, as the plain text
+ * is in the file's free pages. A later, planned event renews it (E2 in
+ * docs/deployment.md).
+ *
+ * Kept only at the first start after migration 0084, while its one-shot leave
+ * (`SEAL_KEY_KEEP_ONCE`) is stored; the leave is deleted here, in the same
+ * transaction, whatever is found (the code review's CS-M2). At every later
+ * start a plain seal key is made anew (`plain`), as card 2943 has it.
  */
 export function replaceSigningKeysAtStart(database: Database.Database, key: MfaKey): SigningKeyMade[] {
 	const made: { setting: (typeof V2_SIGNING_KEYS)[number]; because: SigningKeyMade['because'] }[] = [];
 	if (!hasColumns(database, 'settings', 'key', 'value')) return made;
+	// The leave is spent by this start, kept or not.
+	const keepOnce = database.prepare('DELETE FROM settings WHERE key = ?').run(SEAL_KEY_KEEP_ONCE).changes > 0;
 	for (const setting of V2_SIGNING_KEYS) {
 		const opened = openStored(settingIn(database, setting), settingAad(setting), key);
 		let because: SigningKeyMade['because'];
+		let text = newSigningKeyText();
 		if (opened.kind === 'empty') {
 			// The two others are made where they are first needed (`writeFormSecret`, `rememberBrowser`).
 			if (setting !== SEAL_KEY_SETTING) continue;
 			because = 'none';
-		} else if (opened.kind === 'plain') because = 'plain';
-		else if (opened.kind === 'opened' && currentSigningKeyHex(opened) === null) because = 'older';
+		} else if (opened.kind === 'plain') {
+			// Card 3064 (R20): the seal key of a server from before the release, kept at the first start after 0084 alone
+			// (CS-M2); any other plain key, and a plain seal key at any later start, made anew.
+			if (keepOnce && setting === SEAL_KEY_SETTING && SEAL_KEY_FROM_BEFORE.test(opened.value)) {
+				because = 'kept';
+				text = `v2:${opened.value}`;
+			} else because = 'plain';
+		} else if (opened.kind === 'opened' && currentSigningKeyHex(opened) === null) because = 'older';
 		else continue;
 		database
 			.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value')
-			.run(setting, sealValue(newSigningKeyText(), settingAad(setting), key));
-		if (setting === SEAL_KEY_SETTING) recordSealKeyMade(database);
+			.run(setting, sealValue(text, settingAad(setting), key));
+		if (setting === SEAL_KEY_SETTING && because !== 'kept') recordSealKeyMade(database);
 		made.push({ setting, because });
 	}
 	if (made.length > 0) markScrubPending(database);
@@ -1248,10 +1297,17 @@ export function replaceSigningKeysAtStart(database: Database.Database, key: MfaK
  * (`replaceSigningKeysAtStart` and `replaceUnopenableSigningKeys` together),
  * or a backup or a sign-in at run time. Worded as a record, true for every
  * reason.
+ *
+ * A key kept and sealed in place (card 3064, R20: the backup seal key of a
+ * server from before the compatibility release) is said in a sentence of its
+ * own, "kept, sealed in place", after those made, and none of the effects of a
+ * key made is said of it: backups sealed with it still verify.
  */
 export function signingKeysMadeLine(made: readonly SigningKeyMade[], where = 'at this start'): string {
-	const each = made.map(({ setting, because }) => `${SIGNING_KEY_WORDS[setting]} (${MADE_BECAUSE[because]})`).join('; ');
-	const settings = new Set<string>(made.map(({ setting }) => setting));
+	const madeNew = made.filter(({ because }) => because !== 'kept');
+	const kept = made.filter(({ because }) => because === 'kept');
+	const each = madeNew.map(({ setting, because }) => `${SIGNING_KEY_WORDS[setting]} (${MADE_BECAUSE[because]})`).join('; ');
+	const settings = new Set<string>(madeNew.map(({ setting }) => setting));
 	const effects = [
 		settings.has(SEAL_KEY_SETTING)
 			? "Backups sealed before now are taken as another server's: a restore of one fills no secret or webhook address, takes no second factors for accounts not on this server, and lists each to enter again."
@@ -1260,7 +1316,12 @@ export function signingKeysMadeLine(made: readonly SigningKeyMade[], where = 'at
 		settings.has('request_form_secret') ? 'Open request forms, decision revisions and comment keys are made again once: a page open now is reloaded.' : '',
 		settings.has(WEBHOOK_ADDRESS_MAC_KEY) ? 'A restore of an older backup fills no webhook address, each listed to enter again.' : ''
 	].filter((effect) => effect !== '');
-	return `Key change recorded: made ${where}, each stored encrypted under the MFA key: ${each}. ${effects.join(' ')}`;
+	const madeWords = `made ${where}, each stored encrypted under the MFA key: ${each}. ${effects.join(' ')}`;
+	if (kept.length === 0) return `Key change recorded: ${madeWords}`;
+	const keptWords =
+		`${where} and stored encrypted under the MFA key: ${kept.map(({ setting }) => `${SIGNING_KEY_WORDS[setting]} (${MADE_BECAUSE.kept})`).join('; ')}. ` +
+		'Copies of the database made before now hold it in plain.';
+	return madeNew.length === 0 ? `Key change recorded: kept ${keptWords}` : `Key change recorded: ${madeWords.trimEnd()} Kept ${keptWords}`;
 }
 
 // ─── A restore ───────────────────────────────────────────────────────────────

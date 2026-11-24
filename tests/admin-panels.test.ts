@@ -61,9 +61,11 @@ import ArchivePanel from '$lib/components/board/ArchivePanel.svelte';
 import TeamsPage from '../src/routes/teams/+page.svelte';
 import { toasts } from '$lib/stores/toast';
 import Toast from '$lib/components/Toast.svelte';
-import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, STEP_UP_CODE_SPENT, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, type StepUpProof } from '$lib/step-up-words';
+import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, STEP_UP_CODE_SPENT, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, STEP_UP_WRONG, type StepUpProof } from '$lib/step-up-words';
 import { CODE, codeFieldIn, proofOf } from './helpers/step-up-code';
-import { readableWebhooksWords, userEnableWarning } from '$lib/api';
+import { purgeDescription, purgeWarning, readableWebhooksWords, resetWarning, userEnableWarning } from '$lib/api';
+// Card 3064 (S4: U3, U5): the Two-step sign-in panel.
+import TwoStepSwitchPanel from '$lib/components/admin/TwoStepSwitchPanel.svelte';
 
 /**
  * What the confirmation of making an administrator a user says of the webhooks whose secret it could read (card
@@ -82,6 +84,10 @@ vi.mock('$app/navigation', () => ({
 	beforeNavigate: vi.fn(),
 	onNavigate: vi.fn()
 }));
+// The page's data, as the layout's load gives it (card 3064, R7): empty unless a case says, so that a code is asked
+// beside the password, as for an account that holds a factor.
+const pageStub = vi.hoisted(() => ({ data: {} as Record<string, unknown> }));
+vi.mock('$app/state', () => ({ page: pageStub }));
 // A bare 'svelte' gives the server's runtime, whose onDestroy the page's Toast cannot use in a browser: the client's, by its path.
 vi.mock('svelte', async () => {
 	const { join } = await import('node:path');
@@ -129,6 +135,7 @@ function held(response: () => Response) {
 beforeEach(() => {
 	sent = [];
 	answer = null;
+	pageStub.data = {};
 	navigation.invalidateAll.mockClear();
 	vi.stubGlobal(
 		'fetch',
@@ -1582,7 +1589,18 @@ const pageData = {
 	boards: [],
 	dbSizeBytes: 0,
 	// Card 2920: the uploads volume, with room.
-	uploadsSpace: { state: 'room', lowBecause: null, freeBytes: 40 * 1024 ** 3, totalBytes: 100 * 1024 ** 3, freeInodes: null, refusedBelowBytes: 1049 * 1024 ** 2 }
+	uploadsSpace: { state: 'room', lowBecause: null, freeBytes: 40 * 1024 ** 3, totalBytes: 100 * 1024 ** 3, freeInodes: null, refusedBelowBytes: 1049 * 1024 ** 2 },
+	// Card 3064: two-step sign-in required, as on HEAD.
+	twoStepSwitch: {
+		required: true,
+		requiredAt: '2026-11-24 09:00:00' as string | null,
+		accountsWithoutFactor: 0,
+		passwordOnlySessions: 0,
+		administratorsWithoutFactor: [] as { id: number; username: string }[],
+		keysWithoutFactor: 0,
+		keysWithoutFactorListed: [] as { id: number; createdAt: string; lastUsedAt: string | null; holder: string; holderId: number }[] | null,
+		mayRequire: true
+	}
 };
 
 // Card 2920: the Database Overview's line for the uploads volume, in each of its three states.
@@ -3418,7 +3436,8 @@ describe('the admin page, mounted with its panels', () => {
 	const asAdministrator = {
 		...asSuperadmin,
 		currentUser: admin,
-		users: [...asSuperadmin.users, { ...admin, apiKeys: null, webhooks: null, reportSchedules: null }]
+		users: [...asSuperadmin.users, { ...admin, apiKeys: null, webhooks: null, reportSchedules: null }],
+		twoStepSwitch: { ...asSuperadmin.twoStepSwitch, keysWithoutFactorListed: null, mayRequire: false }
 	};
 	const mailReads = () => asked('GET /api/admin/smtp').length;
 	const headings = (target: HTMLElement) => [...target.querySelectorAll('h2')].map((heading) => heading.textContent);
@@ -3954,5 +3973,171 @@ describe('the settings held for review on the admin pages, mounted (card 2922, c
 		unmount(drawn!.component);
 		drawn!.target.remove();
 		expect(draw(SettingsHeldBanner, { held: [], superadmin: true }).querySelector('.settings-held-banner')).toBeNull();
+	});
+});
+
+// ─── Card 3064, S4: the Two-step sign-in panel (U3, U5) ──────────────────────
+// What the page's load gives the panel is tests/two-step-switch.test.ts (U3, U5 there): the server's modules load a
+// WebAssembly build through `fetch` under this file's browser environment, which the network guard refuses.
+
+describe('the Two-step sign-in panel, mounted (card 3064, S4)', () => {
+	type SwitchView = (typeof pageData)['twoStepSwitch'];
+	/** The text of `target`, its spaces collapsed. */
+	const textOf = (target: Element) => target.textContent!.replace(/\s+/g, ' ').trim();
+	const requireButton = (target: HTMLElement) => buttonNamed(target, 'Require two-step sign-in');
+	/** Takes the panel drawn away, for the next to be drawn. */
+	const undraw = () => {
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		drawn = null;
+	};
+	/** The key of an account with no factor, as the load lists it to the superadmin. */
+	const KEY = { id: 4, createdAt: '2026-11-20 08:30:00', lastUsedAt: null, holder: 'plain', holderId: 5 };
+	/** Dormant, as the load gives it to the superadmin: an administrator without a factor, and one key. */
+	const dormant: SwitchView = {
+		required: false,
+		requiredAt: null,
+		accountsWithoutFactor: 2,
+		passwordOnlySessions: 1,
+		administratorsWithoutFactor: [{ id: 3, username: 'ada' }],
+		keysWithoutFactor: 1,
+		keysWithoutFactorListed: [KEY],
+		mayRequire: true
+	};
+
+	it('U3. shows "not required", the counts, and the button to the superadmin alone; once required, says so with no button', () => {
+		const forChief = draw(TwoStepSwitchPanel, { twoStepSwitch: dormant, confirm: vi.fn() });
+		expect(textOf(forChief)).toContain(
+			'Two-step sign-in is not required on this server. Accounts that have set up an authenticator app are asked for its code; the others sign in with their password alone.'
+		);
+		expect([...forChief.querySelectorAll('.switch-counts li')].map(textOf)).toEqual([
+			'2 enabled accounts have not set up two-step sign-in.',
+			'1 session is signed in on a password alone: requiring two-step sign-in ends them.'
+		]);
+		expect(requireButton(forChief)).toBeDefined();
+		undraw();
+
+		// An administrator who is not the superadmin: the state and the counts, and no button.
+		const forAda = draw(TwoStepSwitchPanel, { twoStepSwitch: { ...dormant, accountsWithoutFactor: 1, keysWithoutFactorListed: null, mayRequire: false }, confirm: vi.fn() });
+		expect(textOf(forAda)).toContain('Two-step sign-in is not required on this server.');
+		expect([...forAda.querySelectorAll('.switch-counts li')].map(textOf)[0]).toBe('1 enabled account has not set up two-step sign-in.');
+		expect(requireButton(forAda)).toBeUndefined();
+		expect(textOf(forAda)).toContain("Requiring two-step sign-in is the superadmin's.");
+		undraw();
+
+		// Required: the state and its moment, and no button, counts or lists for anyone.
+		const required = { ...dormant, required: true, requiredAt: '2026-12-01 09:00:00' };
+		const forRequired = draw(TwoStepSwitchPanel, { twoStepSwitch: required, confirm: vi.fn() });
+		expect(textOf(forRequired)).toBe(
+			'🛡️ Two-step sign-in Two-step sign-in is required on this server, since 2026-12-01 09:00 UTC. Every account signs in with its password and a code from an authenticator app. It cannot be turned off here.'
+		);
+		expect(requireButton(forRequired)).toBeUndefined();
+	});
+
+	it('U5. lists every administrator without a factor, the button off while any is, saying why; the keys by holder to the superadmin, counted for any other; with none listed, the button asks with the password and a code and sends both', async () => {
+		const confirm = vi.fn();
+		const target = draw(TwoStepSwitchPanel, { twoStepSwitch: dormant, confirm });
+		expect([...target.querySelectorAll('.switch-admins li')].map(textOf)).toEqual(['ada (user 3)']);
+		expect(textOf(target)).toContain('1 API key was made by accounts that have not set up two-step sign-in.');
+		expect([...target.querySelectorAll('.switch-keys li')].map(textOf)).toEqual(['A key of plain (user 5): made 2026-11-20 08:30 UTC, never used']);
+		// Off while an administrator is listed, saying why, tied to it.
+		const button = requireButton(target);
+		expect(button.disabled).toBe(true);
+		const reason = target.querySelector<HTMLElement>(`[id="${button.getAttribute('aria-describedby')}"]`);
+		expect(reason?.textContent).toBe('Each administrator listed above must set up two-step sign-in first.');
+		button.click();
+		expect(confirm).not.toHaveBeenCalled();
+		undraw();
+
+		// An administrator who is not the superadmin is told how many keys, never their names.
+		const forAda = draw(TwoStepSwitchPanel, { twoStepSwitch: { ...dormant, keysWithoutFactorListed: null, mayRequire: false }, confirm: vi.fn() });
+		expect(textOf(forAda)).toContain('1 API key was made by accounts that have not set up two-step sign-in.');
+		expect(textOf(forAda)).not.toContain('A key of plain');
+		expect(forAda.querySelector('.switch-keys')).toBeNull();
+		undraw();
+
+		// Every administrator with a factor: none listed, and the button asks with the password and a code, and sends both.
+		const again = draw(TwoStepSwitchPanel, {
+			twoStepSwitch: { ...dormant, administratorsWithoutFactor: [], keysWithoutFactor: 0, keysWithoutFactorListed: [] },
+			confirm
+		});
+		expect(textOf(again)).toContain('Every administrator has set up two-step sign-in.');
+		expect(textOf(again)).toContain('API keys of accounts without two-step sign-in None.');
+		expect(requireButton(again).disabled).toBe(false);
+		expect(requireButton(again).hasAttribute('aria-describedby')).toBe(false);
+		requireButton(again).click();
+		expect(confirm.mock.calls.map((call) => [call[0], call[3]])).toEqual([['Require two-step sign-in', { askPassword: true }]]);
+		expect(confirm.mock.calls[0][1]).toBe(
+			'Require two-step sign-in on this server? From now on every account signs in with its password and a code from an authenticator app. ' +
+				'The 1 session signed in on a password alone is ended now, and everyone else, you included, signs in again at their next visit. ' +
+				`Accounts that have not set it up are taken through setting it up when they next sign in. This cannot be turned off here. ${ASKS_FOR_PASSWORD}`
+		);
+		answer = (what) => (what === 'POST /api/admin/two-step/require' ? Response.json({ success: true, sessionsEnded: 1, accountsMarked: 1 }) : undefined);
+		await confirm.mock.calls[0][2](proofOf(MINE));
+		await settle();
+		expect(asked('POST /api/admin/two-step/require').map((request) => request.body)).toEqual([{ currentPassword: MINE, currentCode: CODE }]);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	it('CR-L8. a refusal that is not of the password or the code is said in a toast and reads the panel again; one of the password goes back to the dialog and reads nothing', async () => {
+		const confirm = vi.fn();
+		draw(TwoStepSwitchPanel, { twoStepSwitch: { ...dormant, administratorsWithoutFactor: [], keysWithoutFactor: 0, keysWithoutFactorListed: [] }, confirm });
+		requireButton(drawn!.target).click();
+		const send = confirm.mock.calls[0][2] as (proof: unknown) => Promise<string | void>;
+
+		answer = (what) => (what === 'POST /api/admin/two-step/require' ? Response.json({ message: 'Two-step sign-in is already required on this server.' }, { status: 409 }) : undefined);
+		expect(await send(proofOf(MINE))).toBeUndefined();
+		await settle();
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+
+		navigation.invalidateAll.mockClear();
+		answer = (what) => (what === 'POST /api/admin/two-step/require' ? Response.json({ message: STEP_UP_WRONG, stepUp: 'wrong' }, { status: 400 }) : undefined);
+		expect(await send(proofOf(MINE))).toBe(STEP_UP_WRONG);
+		await settle();
+		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+	});
+});
+
+// ─── Card 3064, S4b: what a confirmation asks, said by the layout's codeAsked (F25) ─
+
+describe("the panels say what a confirmation asks by the layout's codeAsked (card 3064, S4b)", () => {
+	it('F25 the danger zone: the password alone where codeAsked is false, beside its buttons and in its confirms; the words with a code otherwise', () => {
+		for (const [data, asked] of [
+			[{ codeAsked: false }, false],
+			[{ codeAsked: true }, true],
+			[{}, true]
+		] as const) {
+			pageStub.data = data;
+			const confirm = vi.fn();
+			const target = draw(DangerZonePanel, { isSuperadmin: true, confirm, resetNotice: null });
+			const said = JSON.stringify(data);
+
+			expect(target.textContent, said).toContain(purgeDescription(asked));
+			expect(target.textContent!.includes('a code from your authenticator app'), said).toBe(asked);
+			buttonNamed(target, 'Purge All').click();
+			buttonNamed(target, 'Reset Everything').click();
+			expect(confirm.mock.calls.map((call) => call[1]), said).toEqual([purgeWarning(asked), resetWarning(asked)]);
+			expect(resetWarning(asked).endsWith(asked ? 'You will be asked for your password and a code from your authenticator app.' : 'You will be asked for your password.'), said).toBe(true);
+			unmount(drawn!.component);
+			drawn!.target.remove();
+			drawn = null;
+		}
+	});
+
+	it("F25 the password dialog on the caller's own account: the current password and a new one where codeAsked is false; the code named between them otherwise", async () => {
+		for (const [data, words] of [
+			[{ codeAsked: false }, 'This is your own account. Enter your current password and a new one.'],
+			[{}, 'This is your own account. Enter your current password, a code from your authenticator app, and a new one.']
+		] as const) {
+			pageStub.data = data;
+			const target = draw(ResetPasswordDialog, { data: pageData });
+			await (drawn!.component as unknown as { openResetDialog: (userId: number) => Promise<void> }).openResetDialog(1);
+			flushSync();
+
+			expect(target.querySelector('.modal-content p')!.textContent, JSON.stringify(data)).toBe(`${words} Your other sessions will be signed out. Your report schedules are paused.`);
+			unmount(drawn!.component);
+			drawn!.target.remove();
+			drawn = null;
+		}
 	});
 });

@@ -66,6 +66,7 @@
  * the rollback.
  */
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { sqlite } from './index';
@@ -2661,6 +2662,41 @@ export function runBackfills(database: Database.Database = sqlite): Backfill {
 	return fill.immediate();
 }
 
+// ─── SHA-256 for the migration files (card 3064) ─────────────────────────────
+
+/** The connections `giveDigestFunctions` has given its two functions. */
+const digestsGiven = new WeakSet<Database.Database>();
+
+/**
+ * The digest of what SQLite passed: text as its UTF-8 bytes (the way
+ * `createHash().update(token)` hashes a token in the application), a BLOB as
+ * its bytes, a number as its text. NULL gives NULL.
+ */
+function digestOf(value: unknown): Buffer | null {
+	if (value === null || value === undefined) return null;
+	const bytes = Buffer.isBuffer(value) ? value : Buffer.from(String(value), 'utf8');
+	return createHash('sha256').update(bytes).digest();
+}
+
+/**
+ * Give `database` the two SHA-256 functions SQLite has not got, which 0084
+ * (card 3064) calls to hash in place the sessions, invites and requester links
+ * it keeps: `sha256_blob(v)`, the digest's 32 bytes as a BLOB (the form of
+ * `sessions.id` and `invite_tokens.token`), and `sha256_hex(v)`, the digest in
+ * 64 lower-case hex (the form of `request_links.token_hash`). Each gives NULL
+ * for NULL, and both are deterministic.
+ *
+ * Once per connection: defining a function again expires every statement the
+ * connection has prepared (`registerStampFunctions`, card 2935's code review,
+ * C8).
+ */
+function giveDigestFunctions(database: Database.Database): void {
+	if (digestsGiven.has(database)) return;
+	database.function('sha256_blob', { deterministic: true }, (value: unknown) => digestOf(value));
+	database.function('sha256_hex', { deterministic: true }, (value: unknown) => digestOf(value)?.toString('hex') ?? null);
+	digestsGiven.add(database);
+}
+
 // ─── The runner ──────────────────────────────────────────────────────────────
 
 /**
@@ -2672,7 +2708,9 @@ export function runBackfills(database: Database.Database = sqlite): Backfill {
  * file is rolled back, no later file is attempted, and the error names the
  * file, the block of SQL that failed, what SQLite said and which files had
  * already been committed. A migration is recorded by its file name, so editing
- * a file that a database has recorded never runs it there again.
+ * a file that a database has recorded never runs it there again. Before the
+ * first file the connection is given `sha256_blob` and `sha256_hex`
+ * (`giveDigestFunctions`), which 0084 calls.
  *
  * Then the six reconciled tables are brought to the model's shape, the
  * backfills are repeated, every timestamp is brought to the stored form, and
@@ -2767,6 +2805,14 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 		recorded = new Set(recordedNames());
 	} catch (err) {
 		halt({ stage: 'reading the migration record', reason: messageOf(err), cause: err });
+	}
+
+	// Before the first file: 0084 calls them (card 3064). On the connection
+	// migrated, which is a test's own where it passes one.
+	try {
+		giveDigestFunctions(database);
+	} catch (err) {
+		halt({ stage: 'giving the connection its SHA-256 functions', reason: messageOf(err), cause: err });
 	}
 
 	for (const file of files) {

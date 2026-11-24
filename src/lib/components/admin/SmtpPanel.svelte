@@ -19,7 +19,8 @@
 	import { answerBody, failureMessage } from '$lib/api';
 	import { NO_ANSWER } from '$lib/admin/send';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	/** Who is signed in: Send Test goes to their address when no other is typed. */
 	let { currentUser }: { currentUser: PageData['currentUser'] } = $props();
@@ -270,7 +271,7 @@
 {#if askingToSave}
 	<ConfirmModal
 		title="Save SMTP Settings"
-		message={`Invites and password resets are sent through this mail server. ${ASKS_FOR_PASSWORD}`}
+		message={`Invites and password resets are sent through this mail server. ${asksForPassword(codeAskedHere())}`}
 		confirmText="Save"
 		confirmDanger={false}
 		askPassword

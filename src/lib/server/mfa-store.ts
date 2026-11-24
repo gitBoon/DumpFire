@@ -39,6 +39,7 @@ import { KeyCheckMismatch, recordKeyCheck } from './stored-secrets';
 import { enrolAad, factorAad, newFactorUid, openSealed, sealWith, sha256Hex, type Sealed } from './mfa-crypto';
 import { TOTP_SECRET_BYTES, matchingStep } from './totp';
 import { canonicalRecoveryCode, recoveryCodeHash } from './recovery-codes';
+import { twoStepRequired } from './two-step-switch';
 
 const log = createLogger('AUTH');
 
@@ -69,6 +70,17 @@ export function readMfaKeyCheck(database: Database.Database): string | null {
  */
 export function holdsFactor(userId: number): boolean {
 	return db.select({ id: mfaFactors.id }).from(mfaFactors).where(eq(mfaFactors.userId, userId)).get() !== undefined;
+}
+
+/**
+ * Whether a confirmation asks the account for a code beside its password
+ * (card 3064, R6): it holds a factor, or two-step sign-in is required. False
+ * only for an account with no factor while it is dormant, which confirms with
+ * its password alone. The step-up's rule, which the layout's `codeAsked` and
+ * the words that say what a confirmation asks for (F25) follow.
+ */
+export function codeAskedOf(userId: number): boolean {
+	return holdsFactor(userId) || twoStepRequired();
 }
 
 /**

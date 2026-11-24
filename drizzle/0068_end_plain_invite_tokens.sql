@@ -1,4 +1,5 @@
--- Every invite token held in plain ended once, for invite tokens stored as hashes (card 2849, 2026-11-16).
+-- Every used invite's token held in plain replaced once, for invite tokens stored as hashes (card 2849, 2026-11-16;
+-- its delete of unused invites taken out by card 3064, 2026-11-24).
 --
 -- From this release an invite's token is kept only as its SHA-256, the
 -- digest's 32 bytes as a BLOB (src/lib/server/invites.ts), and is looked up
@@ -6,26 +7,29 @@
 -- BLOB in it, and never takes a BLOB to equal text. Every row written before
 -- it holds the token as it was mailed. Since card 2769 a working invite also
 -- sets up the account's authenticator, so whoever could read the database
--- file could take the account whole. SQLite has no SHA-256, and hashing the
--- rows in place at start would leave each live token in the file's free
--- pages and its WAL, still working.
+-- file could take the account whole.
 --
--- A one-off change to data, two statements. First, every invite not yet
--- used is deleted, expired or not. Second, every used invite keeps its row,
+-- A one-off change to data, one statement: every used invite keeps its row,
 -- marked used, and its token is replaced by 32 random bytes, a BLOB: the form
--- of a hash, and the hash of nothing. A used invite
--- works for nothing, but no row is to hold a token as it was mailed.
+-- of a hash, and the hash of nothing. A used invite works for nothing, but no
+-- row is to hold a token as it was mailed.
 --
--- What people see: an invite sent before the deploy and not yet used no
--- longer works; its link shows the page for a link that no longer works. An
--- administrator sends again, from User Management, the ones still wanted:
--- docs/deployment.md lists them before the deploy, which is the only time
--- they can be listed. Accounts, sessions, API keys, enrolment links and
--- requesters' links are untouched.
+-- As written for card 2849 this file also deleted every invite not yet used.
+-- Card 3064, the compatibility release, took that statement out before the
+-- file ever ran on live: it ran before 0084, and so would have deleted, on
+-- live, the invites 0084 keeps. 0084 hashes each unused invite in place,
+-- with a SHA-256 the migration runner provides, and the start's scrub takes
+-- the plain token out of the file's free pages and its WAL before the server
+-- listens. A database that ran this file in its earlier form lost its unused
+-- invites then.
+--
+-- What people see: nothing. An invite sent before the deploy and not yet
+-- used works as it did (0084). Accounts, sessions, API keys, enrolment links
+-- and requesters' links are untouched.
 --
 -- Harmless where it finds nothing: a new database has no invites. Declared
--- to the rehearsal in tests/rehearsal/one-offs.ts, which then expects
--- `invite_tokens` to lose its unused rows.
+-- to the rehearsal in tests/rehearsal/one-offs.ts as a one-off that keeps its
+-- rows (keepsRows on invite_tokens: every used invite's token replaced).
 --
 -- Runs once. The runner records this file by name and never runs it again.
 -- An invite an older image writes after going back is ended at start-up
@@ -41,6 +45,4 @@
 -- this one ran is another matter: it holds the invites that were waiting
 -- then, as mailed, and they work again on the older image.
 
-DELETE FROM `invite_tokens` WHERE `used` = 0;
---> statement-breakpoint
 UPDATE `invite_tokens` SET `token` = randomblob(32) WHERE `used` <> 0;

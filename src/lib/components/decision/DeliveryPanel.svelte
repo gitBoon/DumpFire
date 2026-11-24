@@ -43,7 +43,8 @@
 	import type { PageData } from '../../../routes/decisions/[id]/edit/$types';
 	import { failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	type Participant = PageData['participants'][number];
 	/** What the server offers the administrator on a participant's row: an administrator's alone. */
@@ -157,10 +158,10 @@
 	const confirmTitle = (a: Asking) => (a.action === 'attach' ? 'Attach account' : a.action === 'clear' ? 'Clear account' : "Use the directory's address");
 	function confirmMessage(a: Asking): string {
 		if (a.action === 'attach') {
-			return `${a.name} will be reached through the account the people directory holds for them, and their personal link ends. ${ASKS_FOR_PASSWORD}`;
+			return `${a.name} will be reached through the account the people directory holds for them, and their personal link ends. ${asksForPassword(codeAskedHere())}`;
 		}
-		if (a.action === 'clear') return `${a.name}'s account is cleared from this decision: they are reached by a personal link from now on. ${ASKS_FOR_PASSWORD}`;
-		return `${a.name}'s address on this decision becomes ${a.address}, the one the people directory holds. Their personal link ends; nothing is sent. ${ASKS_FOR_PASSWORD}`;
+		if (a.action === 'clear') return `${a.name}'s account is cleared from this decision: they are reached by a personal link from now on. ${asksForPassword(codeAskedHere())}`;
+		return `${a.name}'s address on this decision becomes ${a.address}, the one the people directory holds. Their personal link ends; nothing is sent. ${asksForPassword(codeAskedHere())}`;
 	}
 
 	/**

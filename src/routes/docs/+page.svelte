@@ -3,6 +3,8 @@
 	import { page } from '$app/stores';
 	import { answerFile, curlSample, formatDescription, powershellSample, pythonSample, typeLabel, type Sample } from '$lib/docs-format';
 	import { drawnColour } from '$lib/colours';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { stepUpWrong, yourProof } from '$lib/step-up-words';
 
 	type Schema = { type?: string | string[]; properties?: Record<string, any>; items?: any; $ref?: string; enum?: string[]; required?: string[]; description?: string; format?: string; default?: any; maxLength?: number };
 	type Param = { name: string; in: string; required?: boolean; schema?: Schema; description?: string };
@@ -18,6 +20,8 @@
 	let expandedEndpoint = $state('');
 	let activeCodeTab: Record<string, string> = $state({});
 	let sidebarOpen = $state(false);
+	/** Whether a confirmation asks the reader for a code (card 3064, F25): the steps below say what it asks of them. */
+	let codeAsked = $derived(codeAskedHere());
 
 	const METHOD_COLORS: Record<string, string> = {
 		get: '#10b981',
@@ -301,11 +305,11 @@
 								<li>Navigate to <strong>My Account</strong> (⚙️)</li>
 								<li>Scroll to the <strong>🔑 API Keys</strong> section</li>
 								<li>Enter a descriptive name (e.g. "CI Pipeline", "n8n Automation")</li>
-								<li>Enter your current password and the code from your authenticator app (or one of your recovery codes). A wrong one is refused with "Your password or code was not right. Nothing was changed." The third wrong answer from one signed-in browser, counted with every other action that asks for your password, signs that browser out: sign in again. With two or three authenticators on your account, a wrong answer with an authenticator code counts once for each, so fewer sign it out; the dialog says so before you send.</li>
+								<li>Enter your current password{#if codeAsked} and the code from your authenticator app (or one of your recovery codes){/if}. A wrong one is refused with "{stepUpWrong(codeAsked)}" The third wrong answer from one signed-in browser, counted with every other action that asks for your password, signs that browser out: sign in again.{#if codeAsked} With two or three authenticators on your account, a wrong answer with an authenticator code counts once for each, so fewer sign it out; the dialog says so before you send.{/if}</li>
 								<li>Click <strong>Generate Key</strong></li>
 								<li><strong>Copy the key immediately</strong> — it is only displayed once</li>
 							</ol>
-							<p>A key is made only there, by the account's holder, with the password and a code: the API itself has no route that makes a key. An account has at most ten.</p>
+							<p>A key is made only there, by the account's holder, with {codeAsked ? 'the password and a code' : 'the password'}: the API itself has no route that makes a key. An account has at most ten.</p>
 							<div class="info-callout">
 								<span class="callout-icon">💡</span>
 								<p>API keys inherit the permissions of the user who created them. A regular user can only access boards they have edit/view access to. Admin users have global access.</p>
@@ -319,7 +323,7 @@
 								<li>An administrator's reset of your password ends them all</li>
 								<li>An invite link used to set your password ends them all</li>
 							</ul>
-							<p>A key made before two-step sign-in has a deadline 60 days after the release that brought it: keep it on your Account page, with your password and a code, or it ends then. <strong>My Account → API Keys</strong> shows the date beside each such key, with <strong>Keep this key</strong>; keeping it leaves the key itself unchanged. A key past its deadline cannot be kept: generate a new one.</p>
+							<p>A key made before two-step sign-in has a deadline 60 days after the release that brought it: keep it on your Account page, with {yourProof(codeAsked)}, or it ends then. <strong>My Account → API Keys</strong> shows the date beside each such key, with <strong>Keep this key</strong>; keeping it leaves the key itself unchanged. A key past its deadline cannot be kept: generate a new one.</p>
 							<p>A key that has ended is answered <code>401</code> with <code>Invalid or expired API key</code>, as a revoked one is, and whatever uses it stops until it is given a new key. Before an administrator resets the password of an account a script runs on, the reset dialog says how many keys it has.</p>
 						</div>
 					</section>

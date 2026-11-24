@@ -32,13 +32,15 @@ import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
 import { allowOtherTimestampForms } from './helpers/timestamps';
-import { addBoardMember, makeApiKeyRow, makeBoard, makeSession, makeSmtp, makeUser, makeWebhook, resetDb, startedSinceAlreadyOffHeld } from './helpers/fixtures';
+import { addBoardMember, forgetFirstRunFlags, makeApiKeyRow, makeBoard, makeSession, makeSmtp, makeUser, makeWebhook, resetDb, startedSinceAlreadyOffHeld } from './helpers/fixtures';
 import Database from 'better-sqlite3';
 import { generateBackupData } from '$lib/server/backup';
 import { restoreFromBackup } from '$lib/server/db/restore';
 import { sealPlainSecrets } from '$lib/server/stored-secrets';
 
 beforeEach(resetDb);
+// Each first-run pass in full, as before migration 0084 seeded their flags (card 3064, R23).
+beforeEach(() => forgetFirstRunFlags());
 
 let sent: Effects;
 let level: string | undefined;

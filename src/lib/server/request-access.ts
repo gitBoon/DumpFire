@@ -14,12 +14,12 @@
 import { error } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
 import { db } from './db';
-import { cards, taskRequests, teamMembers, users, type TaskRequest } from './db/schema';
+import { cards, settings, taskRequests, teamMembers, users, type TaskRequest } from './db/schema';
 import { isAdmin } from './board-access';
 import type { SessionUser } from './auth';
 import { inTransaction } from './db/transaction';
 import { issueRequestLink, requestIdOfLink, type RequestLinkSource } from './request-tokens';
-import { stamp } from '$lib/timestamps';
+import { parseStamp, stamp } from '$lib/timestamps';
 
 /**
  * How long a request may sit unconfirmed. The form clears older ones as it
@@ -78,12 +78,31 @@ function settledAt(request: Pick<TaskRequest, 'status' | 'resolvedAt' | 'resolve
 }
 
 /**
+ * The moment of the compatibility release (card 3064), written once by
+ * migration 0084 and kept by a restore as this server's.
+ */
+const COMPATIBILITY_RELEASE_AT = 'compatibility_release_at';
+
+/** The moment of the compatibility release, or null where it is not stored or names no moment. */
+function releaseMoment(): Date | null {
+	return parseStamp(db.select({ value: settings.value }).from(settings).where(eq(settings.key, COMPATIBILITY_RELEASE_AT)).get()?.value);
+}
+
+/**
  * True when a request's links open nothing and no new one is issued for it:
  * an unconfirmed request that has lapsed (`hasLapsed`, card 2243), or one
  * settled more than `SETTLED_LINK_DAYS` ago (card 2902). The one rule for the
  * link check, the new-link ask and the link that ask issues. A link of such a
  * request is answered as one that is not there; its row stays in
  * `request_links` until the request is deleted, opening nothing.
+ *
+ * Card 3064 (R17): the 90 days are counted from the later of the settlement
+ * and the compatibility release, so that a request settled long before the
+ * release keeps its links for 90 days after it; one settled since is
+ * unaffected, and so is every request where no release moment is stored. Each
+ * is read as the moment it names (`parseStamp`), never compared as text: a
+ * `completed_at` in ISO form is read right. A settlement that names no moment
+ * has ended its links (the safe side), as an unreadable expiry has.
  */
 export function linkEnded(
 	request: Pick<TaskRequest, 'status' | 'createdAt' | 'resolvedAt' | 'resolvedCardId'>,
@@ -91,7 +110,12 @@ export function linkEnded(
 ): boolean {
 	if (hasLapsed(request, now)) return true;
 	const settled = settledAt(request);
-	return settled !== null && settled < settledCutoff(now);
+	if (settled === null) return false;
+	const moment = parseStamp(settled);
+	if (moment === null) return true;
+	const release = releaseMoment();
+	const from = release !== null && release.getTime() > moment.getTime() ? release : moment;
+	return stamp(from) < settledCutoff(now);
 }
 
 /**

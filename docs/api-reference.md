@@ -1,10 +1,13 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.168
+version: 1.170
 status: As-Built
-date: 2026-11-23
+date: 2026-11-24
 tags:
+  - card-3064
+  - compatibility-release
+  - openapi-1-15-1
   - card-2687
   - decision-waits
   - card-2684
@@ -78,7 +81,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "Objections and requests to talk (card 2684) are a person's, never a key's: no v1 operation raises, replies to or reads one, the summary is unchanged, and GET …/record leaves the four flag events out; no new point in 1.15.0. Point (14) of 1.15.0, decisions may ask survey questions: surveyQuestions in the content (kept when a PATCH does not send it, [] removes them), the refusal survey_incomplete, the response kind answered, answers and survey figures on the summary, never answered with a key (card 2683). Point (13) of 1.15.0, webhooks a restore brings back switched off with three new pausedBecause sentences, and the import's outboundKept and recordsNotTaken.outboundChanges (card 3004). A restore keeps decision roles as recorded: the import's accessKept and accessAsHere fields, and point (12)'s 409 for a Product Owner or decider whose account time does not read (card 3033). The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "OpenAPI 1.15.1, not breaking (card 3064, the compatibility release): on a server upgraded from before 1.8.0 the one-off effects of 1.8.0, 1.9.1 (4), 1.11.0 (9)-(10) and 1.15.0 (1)-(4), (7) and (9) are not applied at installation, a key has a deadline only where the administrator has applied one, the list of everything a client written for 1.3.1 sees change, and a key made or confirmed with the password alone by an account with no authenticator while two-step sign-in is dormant. Objections and requests to talk (card 2684) are a person's, never a key's: no v1 operation raises, replies to or reads one, the summary is unchanged, and GET …/record leaves the four flag events out; no new point in 1.15.0. Point (14) of 1.15.0, decisions may ask survey questions: surveyQuestions in the content (kept when a PATCH does not send it, [] removes them), the refusal survey_incomplete, the response kind answered, answers and survey figures on the summary, never answered with a key (card 2683). Point (13) of 1.15.0, webhooks a restore brings back switched off with three new pausedBecause sentences, and the import's outboundKept and recordsNotTaken.outboundChanges (card 3004). A restore keeps decision roles as recorded: the import's accessKept and accessAsHere fields, and point (12)'s 409 for a Product Owner or decider whose account time does not read (card 3033). The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -107,6 +110,12 @@ against the rate limit.
    your recovery codes, by **Use a recovery code instead**) → **Generate Key**
 3. Copy the key immediately — it is shown **once only**
 
+While two-step sign-in is dormant on a server (card 3064: until the superadmin requires it), an
+account that holds no authenticator signs in with its password alone and makes a key with its
+current password alone: the code is asked only of an account that holds an authenticator, and of
+every account once two-step sign-in is required (see
+[Two-Step Sign-In: Dormant Until Required](authentication-security.md#two-step-sign-in-dormant-until-required-card-3064)).
+
 Keys inherit the permissions of the user who created them. A key is made only there, by the
 account's holder, with the password and a code; the API has no route that makes one, and an
 account has at most ten. A wrong password or a wrong code is refused with `Your password or
@@ -129,8 +138,14 @@ that ends keys:
 | An administrator resets it | All end |
 | An invite link is used to set it | All end |
 
-**A key made before two-step sign-in has a deadline** (card 2772, migration 0069): 60 days
-after the release that brought it, the same moment for every such key. **My Account → API
+**A key has a deadline only where the administrator has applied a deadline** (card 3064, OpenAPI
+1.15.1). Migration 0069 gave every key that existed at card 2772's release a deadline 60 days after
+it, but migration 0084 takes it back in the same start, so a server upgraded from before 1.8.0
+applies none at installation, and a new server has none either. The administrator applies one later
+as a planned event (E4, within 60 days of requiring two-step sign-in), with notice to every key
+holder, to the keys that exist then (see
+[The Compatibility Release](deployment.md#the-compatibility-release-card-3064)). Where one is applied
+(card 2772), it is the same moment for every such key. **My Account → API
 Keys** shows the date beside it, "⚠️ Made before two-step sign-in: stops working on *date
 time* UTC unless you keep it", with **Keep this key**: with your password and a code it clears
 the deadline and leaves the key itself unchanged. A key not kept ends at its deadline, and one
@@ -424,6 +439,79 @@ moment as `YYYY-MM-DD HH:MM:SS` in UTC, and the web application's own routes and
 exports answer that form; the API turns it into ISO 8601 as it answers. Until 2026-10-14
 some fields were answered in that form, which names no zone, and the same field could be in
 either.
+
+### Changes on 2026-11-24: version 1.15.1, the compatibility release (card 3064)
+
+**Not breaking; the description only.** OpenAPI is now `1.15.1`. No operation, field, status code
+or schema changes against 1.15.0, and behaviour is only relaxed, never tightened. Everything built
+since live's `106ea45` (API 1.3.1) is released together, and the release's first start changes
+nothing a key holder or a webhook receiver can see beyond a short outage.
+
+On a server upgraded from before 1.8.0, the one-off effects of 1.8.0 (a deadline on existing
+keys), 1.9.1 (4) (every stored image checked once), 1.11.0 (9)-(10) and 1.15.0 (1)-(4), (7) and
+(9) (holds of webhooks set up or read before this version) are **not applied at installation**:
+existing keys keep working with no deadline, and existing webhooks keep sending with their
+secrets, except those already not delivered (no setter recorded, or a setter who cannot open the
+board), which are switched off for good. An administrator may apply the key deadline later as a
+planned event, with notice. Every rule for what happens from now on is as each note describes.
+
+```mermaid
+flowchart LR
+    L["Live: API 1.3.1<br/>migration 0060"] --> S["First start of 1.15.1:<br/>0061 to 0084"]
+    S --> K["Keys: kept, no deadline"]
+    S --> W["Webhooks: keep sending, same secret<br/>(those already not delivered: switched off)"]
+    S --> R["Rules for changes from now on:<br/>as 1.8.0 to 1.15.0 describe"]
+    K -. "E4, planned, with notice" .-> D["A deadline applied"]
+```
+
+Everything a client written for 1.3.1 sees change:
+
+1. Every board answer carries `productOwnerUserId`, the id of a user or null, which
+   `PUT /boards/{boardId}` takes and keeps when it is left out (1.4.0).
+2. `costUsd` on token answers is priced anew, past entries included (1.7.1).
+3. A board, card, label, milestone or anything on a board the key's user cannot open is answered
+   `404` in the words a missing one gets, where it was `403`; a label not of the card's board is
+   `404`, where it was `400`; a withheld node of a `409`'s cycle gives `id` null and `withheld`
+   true, and a withheld span of board-history `boardId` null and `withheld` true;
+   `POST /dependencies/bulk` counts only the links whose ends the user can edit (1.10.0, 1.12.0).
+4. A webhook whose setter can no longer open its board, and one set or switched on with an API
+   key from this version on whose key then ends, is switched off for good, `pausedBecause` saying
+   why, and only the board's owner or an administrator switches it on again, with a new secret;
+   `DELETE` of such a webhook by an editor is `403`, and `POST` of a webhook to its receiver by
+   anyone but the board's owner or an administrator is `409` (1.11.0).
+5. A key ends at its expiry's own second (1.8.0 (2)); a disabled account's keys answer `401` and
+   the webhooks it set are switched off (1.13.0); a reset of an account's two-step sign-in ends
+   its keys and switches off the webhooks it set (1.14.0); and the end of an owner's or an
+   administrator's access, or the lowering of its role, from this version on holds the webhooks
+   whose secret it could read (1.15.0 (1), (7)); and a key given a webhook's secret from this
+   version on (by a `GET`, or by the `POST` or `PUT` that set it) is recorded, and when that key is
+   revoked or expires every webhook whose secret it was given is held, and is switched on again only
+   with a new secret (1.15.0 (9)).
+6. A webhook secret or url that cannot be opened is never sent; a url that is not well-formed text
+   is `400`; a secret beginning `dfsealed:` is `400` (1.15.0 (5), (6)).
+7. `PUT /webhooks/{webhookId}` gives `secret` only where that PUT set or replaced it, and the four
+   answers that can give a secret carry `Cache-Control: no-store` (1.15.0 (9)).
+8. `409`, with nothing written, for a Product Owner or decider whose account's creation time
+   cannot be read on this server, and `503` in place of `500` on a server with no MFA key loaded
+   (1.15.0 (12), (13)).
+
+Added with it, not breaking: the People (1.5.0), Decisions (1.6.0) and Attachments (1.7.0)
+operations, `touching=true` on `GET /milestones` (1.9.0), survey questions and cards that wait on
+a decision (1.15.0 (14), (15)), each as its own note describes.
+
+9. No other operation, field or schema changed; beside those, a few answers read differently: an
+   audit entry's `source` may be `system` (1.7.0), a disabled user named as an assignee or a Product
+   Owner is `400` (1.13.0 (2)), a `413` for a body declared too large, and every other refusal of an
+   upload before its body is read, carries `Connection: close` (1.13.1 (3)), and a card's move
+   between milestones it cannot see is refused in words of its own (1.12.0 (3)).
+
+The key's description (`bearerAuth`) now says a key has a deadline only where the administrator
+has applied one. Outside `/api/v1`, a key is made, and kept, with the current password alone by an
+account with no authenticator while two-step sign-in is dormant (see
+[Generating a Key](#generating-a-key)). The later planned events (stored images checked, the
+backup seal key renewed, two-step sign-in required, the key deadline, image retention, the oldest
+webhooks re-keyed) are each announced before they happen; see
+[The Compatibility Release](deployment.md#the-compatibility-release-card-3064).
 
 ### Changes on 2026-11-23: cards waiting on a decision in the plan (card 2687)
 
@@ -1024,7 +1112,9 @@ changed" is now (10).** No operation or schema changes.
   given when its access ends with its keys. Switching it on gives it a new secret, as point (1) says.
 - Once, at the first start of 1.15.0, every key used before it counts as given the secret of each
   webhook with a secret its account can read or set, made before the key's last use; the webhooks
-  of keys already ended are held then.
+  of keys already ended are held then. (Since 1.15.1, card 3064: not at installation on an
+  upgraded server; only reads from then on are recorded until the administrator runs this seed at
+  a planned event, E4.)
 - `pausedBecause`'s `setter access ended` sentence names the key and says to treat the old secret as
   exposed and change it at the receiver now. The owners' mail says the same.
 
@@ -1104,7 +1194,10 @@ Now:
    webhook already switched off with no hold, whoever set it, once: at the first start of 1.15.0,
    and in a restore of a backup made before it (one whose settings lack
    `webhooks_already_off_held`); and one whose setter is disabled or not recorded, at every start
-   and in every restore, a restore kept apart included. `pausedBecause` gives the sentence where
+   and in every restore, a restore kept apart included. (Since 1.15.1, card 3064: the once-only
+   hold is not applied at installation, which records `webhooks_already_off_held`, and a restore
+   keeps this server's; the administrator applies it at a planned event, E6. The every-start hold
+   of one whose setter is disabled or not recorded still runs.) `pausedBecause` gives the sentence where
    it was `null`; switching it on gives it a new secret and refuses a `secret` sent with it
    (`400`); only the board's owner or an administrator deletes it (an editor's `DELETE` is `403`)
    or makes a webhook to its receiver on that board (`409`).
@@ -1342,7 +1435,9 @@ release:
    before this version: its board's owners are mailed once, at the first start, with the
    earliest date each will stop (later if that account keeps or replaces a key from before this
    version), and re-saving it with a key (`PUT` with `{"active": false}`, then
-   `{"active": true}`) binds it to that key.
+   `{"active": true}`) binds it to that key. (Since 1.15.1, card 3064: on an upgraded server a
+   webhook made before keys were recorded is marked as set with no key, so no key's end stops it
+   and nobody is mailed, until the administrator restores the rule at a planned event, E4.)
 10. Of such a webhook `pausedBecause` says "This was switched off because the API key that set
     it up ended: …", and what to do; switching it on again, as in 5, records the caller's key and
     answers a new `secret`. A `PUT` or `DELETE` of one that is on and held now records the hold
@@ -1458,6 +1553,9 @@ key sees do:
   stored again without it, and its `sizeBytes` is the smaller size; one refused by the check
   (not the image its type names, animated, too large, or malformed) is kept as it was and
   answered with `mimeType` `application/octet-stream`, and is only ever downloaded as such.
+  (Since 1.15.1, card 3064: not at installation on an upgraded server, nor at an import while the
+  server holds its `stored_images_rechecked` flag; the administrator runs the check at a planned
+  event, E1.)
 
 Internal routes, stricter, not breaking: `POST /api/cards/:id/attachments`, the card window's
 upload, holds a file declared as `image/png`, `image/jpeg`, `image/gif` or `image/webp` to the
@@ -1538,7 +1636,10 @@ from its deadline on, as an expired key is.
 - **Which keys.** Migration 0069 gives every key that exists when it runs, with no expiry or
   one later than the deadline, a deadline: the moment the migration ran plus 60 days, the same
   for every key (`settings.api_key_deadline`). A key that expires before then anyway, and every
-  key made after the release, has none. A key's own `expiresAt` is never changed.
+  key made after the release, has none. A key's own `expiresAt` is never changed. **Since 1.15.1
+  (card 3064)** migration 0084 takes that deadline and the setting back in the same start, so no
+  key has a deadline until the administrator applies one at a planned event (E4), with notice: see
+  [When a Key Ends](#when-a-key-ends).
 - **Keeping a key.** Its holder presses **Keep this key** beside it on **My Account → API
   Keys**, with their password and a code: the deadline is cleared and the key itself (its value,
   prefix and expiry) is unchanged, so nothing that uses it needs a change. A key past its

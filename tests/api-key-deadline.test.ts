@@ -8,7 +8,8 @@
  * this key, which clears it with the password and a code (T13), and its
  * refusals, in the guard and at the write (T14); and the restore, which gives
  * a backup made before 0069 this server's deadline (T15) and leaves one made
- * since as it is (T16).
+ * since as it is (T16). With no deadline here, the restore gives none (card
+ * 3064, R18: its T18, in tests/backups.test.ts).
  *
  * Against the application's own in-memory database, emptied before each
  * test, on a frozen clock that a test moves itself. `checkPassword` is stood
@@ -42,7 +43,6 @@ import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { apiKeys, sessions, settings } from '$lib/server/db/schema';
-import { restoreFromBackup } from '$lib/server/db/restore';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
@@ -303,11 +303,12 @@ describe('a restore and the deadline (card 2772, S11, E12)', () => {
 	/** This server's API key deadline, as the settings hold it now. */
 	const deadlineSetting = () => db.select().from(settings).where(eq(settings.key, 'api_key_deadline')).get()?.value ?? null;
 
-	it('T15. a backup made before 0069: its key with no expiry and its key whose expiry is later than the deadline, in another form, get this server’s deadline, compared as moments; the setting is this server’s; 2 in the answer and its sentence; with no setting here, the keys end at once', async () => {
+	// Card 3064 (R18): with no deadline here, the keys keep none, as this server's own do (its T18, in tests/backups.test.ts).
+	it('T15. a backup made before 0069: its key with no expiry and its key whose expiry is later than the deadline, in another form, get this server’s deadline, compared as moments; the setting is this server’s; 2 in the answer and its sentence', async () => {
 		const chief = makeUser({ role: 'superadmin' });
 		const here = '2030-06-15 12:00:00';
 		db.insert(settings).values({ key: 'api_key_deadline', value: here }).run();
-		const none = makeApiKey(chief, 'No expiry');
+		makeApiKey(chief, 'No expiry');
 		makeApiKey(chief, 'Years away');
 		makeApiKey(chief, 'Same day, earlier');
 		const backup = backupBefore0069();
@@ -327,21 +328,6 @@ describe('a restore and the deadline (card 2772, S11, E12)', () => {
 		expect(deadlineSetting()).toBe(here);
 		expect(res.body).toMatchObject({ apiKeyDeadlines: 2, apiKeyDeadline: `${here.slice(0, 16)} UTC` });
 		expect(res.body.message).toContain(`2 API key(s) from before two-step sign-in were given this server's deadline, ${here.slice(0, 16)} UTC.`);
-
-		// With no deadline here, the restore's own moment: such keys, each of which ends after it, end at once.
-		db.delete(settings).where(eq(settings.key, 'api_key_deadline')).run();
-		const result = restoreFromBackup(sqlite, backup);
-
-		expect(result.apiKeyDeadlines).toBe(3);
-		const now = stamp();
-		expect(keysNow().map(({ name, deadlineAt }) => ({ name, deadlineAt }))).toEqual([
-			{ name: 'No expiry', deadlineAt: now },
-			{ name: 'Same day, earlier', deadlineAt: now },
-			{ name: 'Years away', deadlineAt: now }
-		]);
-		expect(deadlineSetting()).toBe(now);
-		const ended = await meWithKey(none);
-		expect({ status: ended.status, body: await ended.json() }).toEqual({ status: 401, body: EXPIRED });
 	});
 
 	it('T16. a backup made since 0069 is restored as it is: a kept key stays kept, 0 in the answer, and no sentence', async () => {

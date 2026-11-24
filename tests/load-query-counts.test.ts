@@ -46,7 +46,7 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
 import { defaultOutside } from '$lib/server/db/restore';
 import { activityLog, boardCategories, boards, cards, categories, columns, taskRequests, teamMembers, tokenUsage, users, type Card } from '$lib/server/db/schema';
 import { boardCategoriesFor, boardCategoryRule, recentActivityFor, subBoardsFor } from '$lib/server/list-access';
@@ -113,8 +113,10 @@ describe('the admin page’s load (card 2297)', () => {
 		expect(large).toBe(small);
 		// A fixed handful: the boards, three counts, the users, the teams and their members, and
 		// who set which setting (card 2397's review: one read of every setter row, and where there
-		// are any, one each of the mail settings, the App URL and the destinations, for all accounts).
-		expect(small).toBeLessThanOrEqual(8);
+		// are any, one each of the mail settings, the App URL and the destinations, for all accounts); and the
+		// Two-step sign-in panel's three (card 3064: its state and two counts in one, the administrators without
+		// a factor, and the keys of accounts without one, which read the record of keys ended only for a key listed).
+		expect(small).toBeLessThanOrEqual(11);
 	});
 
 	it('answers what it did: each board’s three counts, and each team’s members in the order of their ids', async () => {
@@ -199,7 +201,19 @@ describe('the admin page’s load (card 2297)', () => {
 				freeInodes: null,
 				refusedBelowBytes: UPLOAD_SPACE_FLOOR_BYTES + LARGEST_UPLOAD_BYTES
 			},
-			importOutsideDefault: defaultOutside()
+			importOutsideDefault: defaultOutside(),
+			// Card 3064: the Two-step sign-in panel, as tests/setup.ts leaves it required; nobody holds a factor, and
+			// the caller is an administrator, not the superadmin.
+			twoStepSwitch: {
+				required: true,
+				requiredAt: sqlite.prepare("SELECT value FROM settings WHERE key = 'two_step_required_at'").pluck().get(),
+				accountsWithoutFactor: 3,
+				passwordOnlySessions: 0,
+				administratorsWithoutFactor: [{ id: admin.id, username: 'admin' }],
+				keysWithoutFactor: 0,
+				keysWithoutFactorListed: null,
+				mayRequire: false
+			}
 		};
 		expect(JSON.stringify(data)).toBe(JSON.stringify(expected));
 	});

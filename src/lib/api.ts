@@ -5,7 +5,7 @@
  * boilerplate (headers, JSON.stringify, method) from component code.
  * Each function returns the fetch Response or parsed JSON as appropriate.
  */
-import { ASKS_FOR_PASSWORD, type StepUpProof } from './step-up-words';
+import { asksForPassword, type StepUpProof } from './step-up-words';
 
 // ─── Internal Helpers ────────────────────────────────────────────────────────
 
@@ -156,15 +156,16 @@ export function cardDeleteWarning(title: string): string {
 /**
  * What goes with a column: every card in it, deleted for good and not
  * archived. `asks`: it holds a card the page can see, so the delete asks for
- * the password (card 2701, decision 18), and says so.
+ * the password (card 2701, decision 18), and says so: with a code unless
+ * `codeAsked` is false (card 3064, F25), the layout's.
  */
-export function columnDeleteWarning(title: string, asks = false): string {
-	return `Delete "${title}" and every card in it? The cards are deleted for good, not archived, each with its subtasks, comments and dependency links and with every sub-board under it. ${TRASH_SENTENCE}${asks ? ` ${ASKS_FOR_PASSWORD}` : ''}`;
+export function columnDeleteWarning(title: string, asks = false, codeAsked: boolean = true): string {
+	return `Delete "${title}" and every card in it? The cards are deleted for good, not archived, each with its subtasks, comments and dependency links and with every sub-board under it. ${TRASH_SENTENCE}${asks ? ` ${asksForPassword(codeAsked)}` : ''}`;
 }
 
-/** What goes with a board or a sub-board, and what stays. Its delete asks for the password (card 2701). */
-export function boardDeleteWarning(name: string): string {
-	return `Permanently delete "${name}"? Everything on it goes: its columns and cards, every sub-board under it, and any report schedules for it. Cards on other boards that were in one of its milestones stay, in no milestone. Its card categories stay, with no board. ${TRASH_SENTENCE} ${ASKS_FOR_PASSWORD}`;
+/** What goes with a board or a sub-board, and what stays. Its delete asks for the password (card 2701), and a code unless `codeAsked` is false (card 3064, F25). */
+export function boardDeleteWarning(name: string, codeAsked: boolean = true): string {
+	return `Permanently delete "${name}"? Everything on it goes: its columns and cards, every sub-board under it, and any report schedules for it. Cards on other boards that were in one of its milestones stay, in no milestone. Its card categories stay, with no board. ${TRASH_SENTENCE} ${asksForPassword(codeAsked)}`;
 }
 
 /**
@@ -205,15 +206,19 @@ export function leftMilestoneNotice(body: Record<string, unknown> | null): strin
 
 const PURGE_TAKES = `Each goes with its subtasks, comments and dependency links, and with every sub-board under it and everything on it. ${TRASH_SENTENCE}`;
 
-/** What goes when every archived card is purged. The purge asks for the password (card 2701). */
-export const PURGE_WARNING = `Permanently delete every archived card on every board? ${PURGE_TAKES} ${ASKS_FOR_PASSWORD}`;
+/** What goes when every archived card is purged. The purge asks for the password (card 2701), and a code unless `codeAsked` is false (card 3064, F25). */
+export function purgeWarning(codeAsked: boolean = true): string {
+	return `Permanently delete every archived card on every board? ${PURGE_TAKES} ${asksForPassword(codeAsked)}`;
+}
 
 /** The same, as the description beside the button. */
-export const PURGE_DESCRIPTION = `Permanently deletes every archived card on every board. ${PURGE_TAKES} ${ASKS_FOR_PASSWORD}`;
+export function purgeDescription(codeAsked: boolean = true): string {
+	return `Permanently deletes every archived card on every board. ${PURGE_TAKES} ${asksForPassword(codeAsked)}`;
+}
 
-/** What goes when a board's cards are cleared, and what stays. The clear asks for the password (card 2701). */
-export function clearCardsWarning(boardName: string): string {
-	return `Permanently delete every card on "${boardName}", archived ones included? Each goes with its subtasks, comments and dependency links, and with every sub-board under it and everything on it. The board, its columns and its categories are kept. ${TRASH_SENTENCE} ${ASKS_FOR_PASSWORD}`;
+/** What goes when a board's cards are cleared, and what stays. The clear asks for the password (card 2701), and a code unless `codeAsked` is false (card 3064, F25). */
+export function clearCardsWarning(boardName: string, codeAsked: boolean = true): string {
+	return `Permanently delete every card on "${boardName}", archived ones included? Each goes with its subtasks, comments and dependency links, and with every sub-board under it and everything on it. The board, its columns and its categories are kept. ${TRASH_SENTENCE} ${asksForPassword(codeAsked)}`;
 }
 
 /**
@@ -386,8 +391,9 @@ export function userEnableWarning(username: string, administrator = false): stri
 	);
 }
 
-/** What a reset clears and what it keeps (`api/admin/reset`). */
-export const RESET_WARNING = `This clears everything: every board, card, user, team and setting. Only the system log and the backup history are kept. ${TRASH_SENTENCE} Ids are not reused, so new boards and cards are numbered on from the old ones. You will be signed out and will set DumpFire up from scratch. ${ASKS_FOR_PASSWORD}`;
+/** What a reset clears and what it keeps (`api/admin/reset`), and what it asks: a code unless `codeAsked` is false (card 3064, F25). */
+export const resetWarning = (codeAsked: boolean = true): string =>
+	`This clears everything: every board, card, user, team and setting. Only the system log and the backup history are kept. ${TRASH_SENTENCE} Ids are not reused, so new boards and cards are numbered on from the old ones. You will be signed out and will set DumpFire up from scratch. ${asksForPassword(codeAsked)}`;
 
 // ─── Cards ───────────────────────────────────────────────────────────────────
 

@@ -24,7 +24,7 @@ import { sweepEndedKeyReveals } from '$lib/server/startup-checks';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { api } from './helpers/api';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
-import { addBoardMember, makeApiKeyRow, makeBoard, makeSession, makeUser, makeWebhook, resetDb, startedSinceAlreadyOffHeld, stepUp } from './helpers/fixtures';
+import { addBoardMember, forgetFirstRunFlags, makeApiKeyRow, makeBoard, makeSession, makeUser, makeWebhook, resetDb, startedSinceAlreadyOffHeld, stepUp } from './helpers/fixtures';
 
 const record = (id: number, hash: string, because = 'revoked') =>
 	sqlite
@@ -45,6 +45,8 @@ const v1 = async (key: string) => (await gate('GET', '/api/v1/me', { headers: { 
 let level: string | undefined;
 beforeEach(() => {
 	resetDb();
+	// Each first-run pass in full, as before migration 0084 seeded their flags (card 3064, R23).
+	forgetFirstRunFlags();
 	resetAllRateLimits();
 	// The lines a start writes are WARN and INFO, which the tests' LOG_LEVEL drops.
 	level = process.env.LOG_LEVEL;

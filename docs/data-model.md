@@ -1,10 +1,14 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.108
+version: 1.110
 status: As-Built
-date: 2026-11-23
+date: 2026-11-24
 tags:
+  - card-3064
+  - compatibility-release
+  - migration-0084
+  - two-step-dormant
   - card-2687
   - decision-waits
   - card-2684
@@ -86,7 +90,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "decision_flags, a participant's objections and requests to talk and the decider's replies, settled once, read tolerantly, never released, and DECISION_PLACE_NAMERS, the one list of tables that name a decision place, migration 0083 (card 2684). decision_survey_questions and decision_responses.answers, a decision's survey questions kept as options are and the answers given with a response, read tolerantly and never released, migration 0082 (card 2683). outbound_changes, the append-only record of every change of where this server sends: its seven kinds, keyed digests, three indexes, writers and readers, migration 0081 (card 3004). access_changes' four decision kinds (decision, decision_decider, decision_participant, decision_account) and its index on changed_at, migration 0080 (card 3033). access_changes, the append-only record of every change of board, team and person access by identity, its kinds, words, indexes, writers, readers and once-only seed (migration 0079, card 3002); Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
+description: "The compatibility release, migration 0084 (card 3064): sessions, unused invites and requester tokens held in plain hashed in place (sessions.kept_at_release, request_links rows of source mail dated at the release), 0069's deadlines and 0066's release moment and marks taken back, webhooks.set_with_key 0 for pre-release webhooks, compatibility_release_at and the six first-run flags seeded, the two SQL digest functions the runner gives it, the one statement taken out of each of 0067, 0068 and 0070, and the two-step switch two_step_required_at with what a restore and Reset Everything keep of these settings. decision_flags, a participant's objections and requests to talk and the decider's replies, settled once, read tolerantly, never released, and DECISION_PLACE_NAMERS, the one list of tables that name a decision place, migration 0083 (card 2684). decision_survey_questions and decision_responses.answers, a decision's survey questions kept as options are and the answers given with a response, read tolerantly and never released, migration 0082 (card 2683). outbound_changes, the append-only record of every change of where this server sends: its seven kinds, keyed digests, three indexes, writers and readers, migration 0081 (card 3004). access_changes' four decision kinds (decision, decision_decider, decision_participant, decision_account) and its index on changed_at, migration 0080 (card 3033). access_changes, the append-only record of every change of board, team and person access by identity, its kinds, words, indexes, writers, readers and once-only seed (migration 0079, card 3002); Complete database schema documentation with ER diagram, table descriptions, migration 0078's task_requests mail hold and release columns, people.status and people_changes source 'restore' written by an unsealed restore (card 3020), webhooks.held_because's unsealed-restore value and notification_prefs.email_all written false by an unsealed restore (card 3012), settings.installation_id and setting_holds' unsealed-restore reason (card 3009), account_endings' password word with the fingerprint of the hash replaced and the rule's load leaving it out (card 2997), relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), why and when a webhook was switched off for good and the key that set it, with the webhook_keys_recorded_at setting (migration 0071, cards 2752 and 2893; read since card 2893: a webhook switched off when that key ends, and the webhooks_before_keys_announced setting), a disabled account and who disabled it, with a delete only of a disabled one and a restore keeping this server's disabled accounts disabled (migration 0072, card 2671), a webhook already switched off held when its setter's access ends and the webhooks_already_off_held setting (card 2923, no migration), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -116,10 +120,11 @@ erDiagram
     sessions {
         text id PK "declared TEXT; holds the 32-byte SHA-256 of the session's code, as a BLOB (card 2775)"
         int user_id FK
-        text expires_at "the idle limit: now + 12 h (3 days for a user), never past the total limit"
-        text created_at "starts the total limit: 24 h (7 days for a user)"
+        text expires_at "the idle limit: now + 30 days while two-step is dormant, 12 h (3 days for a user) once required, never past the total limit"
+        text created_at "starts the total limit: 90 days while dormant, 24 h (7 days for a user) once required"
         int wrong_password_count "0062: NOT NULL DEFAULT 0; 3 ends the session"
-        int two_step "0066: NOT NULL DEFAULT 0; 1 made after a second factor"
+        int two_step "0066: NOT NULL DEFAULT 0; 1 made after a second factor, 0 on a password alone (dormant only)"
+        int kept_at_release "0084: NOT NULL DEFAULT 0; 1 kept by 0084, 2 swapped (60 s left)"
     }
 
     invite_tokens {
@@ -152,7 +157,7 @@ erDiagram
         text last_used_at
         text expires_at
         text created_at
-        text deadline_at "0069: keep by, null once kept"
+        text deadline_at "0069: keep by, null once kept; every one cleared by 0084 until E4"
     }
 
     board_categories {
@@ -369,7 +374,7 @@ erDiagram
         text description
         text priority
         text status
-        text access_token "retired (0070): always NULL"
+        text access_token "retired: always NULL, moved into request_links by 0084"
         text business_value
         int resolved_by FK
         int resolved_card_id FK
@@ -411,7 +416,7 @@ erDiagram
         text held_because "0071: why switched off for good"
         text held_at "0071"
         int set_by_key FK "0071, card 2893"
-        int set_with_key "0071, card 2893"
+        int set_with_key "0071, card 2893; 0084 sets NULL to 0"
         text receiver "0073, card 2928: plain origin beside the sealed url"
     }
 
@@ -1775,8 +1780,12 @@ erDiagram
 
 Card 2769 turns two-step sign-in on (2026-11-13). `0066_add_mfa_password_enrol.sql` adds four
 columns and one setting, and gives a mark to the accounts that may set up on their password;
-`0067_end_sessions_for_two_step.sql` ends every session and the remembered-browser secret. How
-they are used is in [Two-Step Sign-In](authentication-security.md#two-step-sign-in-card-2769).
+`0067_end_sessions_for_two_step.sql` deletes the remembered-browser secret. **Since card 3064
+(2026-11-24) 0067 no longer deletes every session** (its `DELETE FROM sessions` was taken out),
+and migration 0084, in the same start, takes back 0066's setting and marks: two-step sign-in is
+**dormant** until the superadmin requires it, which writes `settings.two_step_required_at` (see
+[The compatibility release](#the-compatibility-release-migration-0084-card-3064)). How they are
+used is in [Two-Step Sign-In](authentication-security.md#two-step-sign-in-card-2769).
 
 ```mermaid
 erDiagram
@@ -1796,19 +1805,22 @@ erDiagram
         text enrolment_link_hash "0066: the link it came from, no foreign key"
     }
     settings {
-        text two_step_released_at "0066: a row, the moment 0066 ran; starts the 14 days"
+        text two_step_released_at "0066 wrote it, 0084 deletes it, E3 writes it again; starts the 14 days"
+        text two_step_required_at "card 3064: the switch, absent while dormant"
     }
 ```
 
 | Column or row | What it holds | Written by |
 |---|---|---|
-| `users.mfa_password_enrol` | 1 when the account may set up its authenticator on its password alone, honoured only where no mail host is configured, within 14 days of `two_step_released_at`, and while the account holds no enrolment link but release-mail ones (the accepted risk R1) | 0066: 1 for every account with no second factor and no enrolment link row, expired or not. Set to 0 by an enrolment's confirm, `resetTwoStep()`, `scripts/mfa-reset.mjs`, by a restore for every account not this server's, and by a working-copy restore for every account (`switchOffOutside()` in `src/lib/server/db/restore.ts`). 0 for every account made since, the superadmin at set-up included |
-| `sessions.two_step` | 1 when the session was made after a second factor | `createSession()` writes 1. 0066 left every session there at 0, and an older image, which writes no value, leaves 0. Since card 2775 an older image's row is also in plain (see below), which this image never finds and `endPlainSessions()` deletes at start; `findSession()` still refuses a hashed row with any other value and `validateSession()` deletes it, as defence in depth |
+| `users.mfa_password_enrol` | 1 when the account may set up its authenticator on its password alone, honoured only where no mail host is configured, within 14 days of `two_step_released_at`, and while the account holds no enrolment link but release-mail ones (the accepted risk R1) | 0066: 1 for every account with no second factor and no enrolment link row, expired or not; **0084 sets every one back to 0**, and requiring two-step sign-in (`requireTwoStep()` in `src/lib/server/two-step-switch.ts`, event E3) writes 0066's mark again. Set to 0 by an enrolment's confirm, `resetTwoStep()`, `scripts/mfa-reset.mjs`, by a restore for every account not this server's, and by a working-copy restore for every account (`switchOffOutside()` in `src/lib/server/db/restore.ts`). 0 for every account made since, the superadmin at set-up included |
+| `sessions.two_step` | 1 when the session was made after a second factor; 0 when it was made on a password alone, which only a dormant server does (card 3064) | `createSession(userId, { twoStep })` writes the value given (card 3064): 1 from `finishSignIn()`, 0 from `finishPasswordSignIn()` (a sign-in or an invite with no second factor while dormant), and the replaced session's own value on a change of one's own password. 0066 left every session there at 0, and 0084 keeps them so. `findSession()` refuses a row with `two_step` other than 1 once two-step sign-in is required, or whenever its account holds a second factor, and `validateSession()` deletes it; requiring two-step sign-in deletes every such row at once. An older image's row is also in plain (see below), which this image never finds and `endPlainSessions()` deletes at start |
+| `sessions.kept_at_release` | 1 for a session migration 0084 kept and nobody has used by the old cookie name since; 2 for such a session once swapped to a new code under the secure name, its last 60 seconds; 0 for every other (card 3064) | 0084 (the column, `DEFAULT 0 NOT NULL`, and 1 on every row it hashed). The gate's swap (`auth.ts`, `KEPT_UNUSED` 1 → `KEPT_SWAPPED` 2, `expires_at` now + 60 s, in one `UPDATE … WHERE kept_at_release = 1`) and a new row with a new code, `kept_at_release` 0. Read only to accept the cookie name from before the release, `dumpfire_session`, within 30 days of `compatibility_release_at`, while two-step sign-in is dormant |
 | `sessions.id` | The SHA-256 of the session's code, 32 bytes, a BLOB, in the column that kept its name and declared `TEXT` (card 2775). Never the code itself | `createSession()` (`sessionTokenHash()`); looked up by `findSession()` through the model's `tokenHash` property |
-| `sessions.created_at` | When the session was made; it starts the total limit (24 hours for an administrator, 7 days for a user). Already `NOT NULL DEFAULT (datetime('now'))`, so no column was added | `createSession()`; kept by a password change's replacement session |
+| `sessions.created_at` | When the session was made; it starts the total limit (90 days for every role while two-step sign-in is dormant; once required, 24 hours for an administrator, 7 days for a user: `sessionLimits(role, required)` in `src/lib/server/auth.ts`). Already `NOT NULL DEFAULT (datetime('now'))`, so no column was added | `createSession()`; kept by a password change's replacement session and by the swap of a kept session; **0084 sets it to the release moment** for every session it keeps |
 | `sign_in_challenges.enrol_grant` | What lets an enrol challenge set up a factor: `password`, `link`, `invite` or `setup`. NULL on a verify challenge | `issueChallenge()` |
 | `sign_in_challenges.enrolment_link_hash` | The SHA-256 of the enrolment link an enrol challenge came from, taken with the factor at confirm | `issueChallenge()`, for a link challenge |
-| `settings.two_step_released_at` | The moment 0066 ran, in the stored form of a moment. A missing or unreadable value is read as the 14 days over | 0066 (`INSERT … ON CONFLICT DO NOTHING`). Restored as any setting, so a backup made before 0066 restores with none |
+| `settings.two_step_released_at` | The moment two-step sign-in was required, in the stored form of a moment; it starts the 14 days. A missing or unreadable value is read as the 14 days over | 0066 wrote it; **0084 deletes it** (card 3064). `requireTwoStep()` writes it again at E3 (`ON CONFLICT DO UPDATE`). A restore takes it from the side whose switch is on, and drops it where neither is; **Reset Everything** writes it back where the switch was on (`TWO_STEP_KEPT` in `src/routes/api/admin/reset/+server.ts`). Present with no switch, every start logs a `CRITICAL` line (`twoStepTurnedOff()`) |
+| `settings.two_step_required_at` | **The switch** (card 3064): absent, two-step sign-in is dormant; present, whatever its value, required (one that names no moment still counts) | Only `POST /api/admin/two-step/require` writes it (`requireTwoStep()`, a plain `INSERT`, so a second press fails). Nothing in the application deletes it. A restore keeps it where this server has it, and takes the backup's where only the backup has it, so a restore turns it on, never off; Reset Everything writes it back. Read by `twoStepRequired()`, one primary-key read each call |
 
 - **No foreign key and no `*_at` column** among the four columns, so no index and no
   timestamp conversion is added. `users` and `sessions` are not reconciled tables: 0066 alone
@@ -1825,8 +1837,9 @@ its name and its declared type (`text PRIMARY KEY NOT NULL`); the model's proper
 `tokenHash`, declared with the same custom type as `invite_tokens.token` (`bytesInText`, moved
 above `users` in `schema.ts`). Every session is written as the 32-byte SHA-256 of its code, a
 BLOB, which SQLite never takes to equal text, so an older image comparing the column with a
-cookie never matches a stored hash. Migration 0067 ends every session at the release, so every
-row from then on is in hash form; `endPlainSessions()` deletes any other row at every start,
+cookie never matches a stored hash. Migration 0084 (card 3064) hashes every session still in plain
+in place, with SQLite functions the migration runner gives it, so every row from then on is in
+hash form (0067 no longer ends them); `endPlainSessions()` deletes any other row at every start,
 before the clean-up, which runs at start and every five minutes (card 2883), whatever an older
 image wrote. `sessions` is still not a reconciled table
 (`expected-schema.ts` is unchanged), no table has a foreign key to `sessions.id`, and a backup
@@ -1890,11 +1903,13 @@ erDiagram
   and a rebuild copies the BLOB values as they are. A rename to `token_hash` was not made: the
   previous image skips reconciliation on a database that records a file it lacks, and would then
   find no `token` column, so its invite page, both invite routes and every backup would fail.
-- **What 0068 did once** (`0068_end_plain_invite_tokens.sql`): every unused invite deleted, and
-  every used invite's token replaced by `randomblob(32)`. Every invite waiting at the release
-  stops working and is sent again; no row keeps a token as it was mailed. Hashing the rows in
-  place was not possible (SQLite has no SHA-256) and would have left each live token in the
-  file's free pages.
+- **What 0068 does once** (`0068_end_plain_invite_tokens.sql`): every used invite's token
+  replaced by `randomblob(32)`. **Until card 3064 it also deleted every unused invite**; that
+  statement was taken out, and migration 0084, in the same start, hashes every unused invite still
+  in plain in place (`sha256_blob`, a function the migration runner gives the connection), so an
+  invite waiting at the release keeps working with the link already mailed. The plain token
+  0084 overwrote is scrubbed from the file's free pages and WAL before the server listens
+  (`scrubStoredSecrets()` in `src/lib/server/startup-checks.ts`).
 - **The start-up sweep** (`endPlainInvites()` in `src/lib/server/startup-checks.ts`, called from
   `hooks.server.ts` after the migrations). In one transaction it deletes every unused row not in
   hash form, and gives every used row not in hash form 32 random bytes, as 0068 does. Such a row
@@ -1955,7 +1970,7 @@ itself over it.
 | `held_because` | text, NULL | `switchOffHeld` (card 2752), `endAccountAccess` and `deleteUser` (the code review's CS4), `scripts/mfa-reset.mjs` in its own SQL (card 2915), and `holdUnheldOfGoneSetters` (card 2923: the first start of its release and a restore); carried by a restore (`carryHolds`, `fillSecretGaps`); cleared by `PUT /api/v1/webhooks/{id}` switching it on | Why the webhook was switched off for good: `'setter cannot open'`, `'no setter'`, `'setter access ended'` (a password reset, a two-step reset (card 2915), an invite used, the holder's own change that ends their keys, or the account disabled or deleted; since card 2923 also one already off when that happened, or found off with its setter disabled or not recorded), or card 2893's `'key ended'`, or, since card 3012, `'restored from a backup whose seal did not verify'` (`holdUnsealedWebhooks`: every webhook with an address restored from an unsealed backup, overriding the file's reason, with `secret` emptied; a switch-on gives a new secret). NULL for one that is on, and for one switched off without a hold (a `PUT`, a restore kept apart or a working copy) until its setter's access ends |
 | `held_at` | text, NULL | with `held_because` | The moment, in the stored form (`YYYY-MM-DD HH:MM:SS`, UTC) |
 | `set_by_key` | integer, NULL, `REFERENCES api_keys(id) ON DELETE SET NULL`, `idx_webhooks_set_by_key` | both v1 writers, with `set_by` (`keyOfWrite`, card 2893): the create, and a `PUT` that changes the address or secret or switches it on; a change of events alone keeps it | The API key that last set the address or secret, or switched the webhook on. Read by `holdOf`: gone, ended (`keyEnded`) or another account's holds it, `'key ended'`; counted for each key by `GET /api/account/api-keys` (`webhooks`) |
-| `set_with_key` | integer, NULL (0/1) | with `set_by_key` | 1: written with a credential, a key's id in `set_by_key` or none (a session), which holds it; 0: written with no credential at all, only a test's call; NULL: set before keys were recorded, held once the setter has no working key made before `webhook_keys_recorded_at`. `set_with_key = 1 AND set_by_key IS NULL` reads "its key was deleted, or it was not set with a key" |
+| `set_with_key` | integer, NULL (0/1) | with `set_by_key` | 1: written with a credential, a key's id in `set_by_key` or none (a session), which holds it; 0: written with no credential at all, only a test's call, and, since card 3064, every webhook set before keys were recorded, which migration 0084 moved from NULL to 0, so that no key's ending stops it until E4 sets it back; NULL: set before keys were recorded (on a database that has not run 0084, or after E4), held once the setter has no working key made before `webhook_keys_recorded_at`. `set_with_key = 1 AND set_by_key IS NULL` reads "its key was deleted, or it was not set with a key" |
 | `url` (card 2928) | text, NOT NULL | both v1 writers (sealed), the start's sweep (`sealPlainSecrets`), a restore (`sealedForRestore`, `fillAddressGaps`) | The delivery address, sealed under the MFA key, bound to `id`, `board_id` and `receiver` (`webhookUrlAad`); read only through `openedUrl`. `''` for one a backup left out and a restore could not fill, to be entered again with `PUT` |
 | `receiver` | text, NOT NULL, DEFAULT `''` (migration 0073, card 2928) | with every address; recomputed from a plain one (the start's sweep, a restore), never taken from the row or the backup then; kept from a backup where its `url` is `''` or an envelope, whose seal binds it | The address's scheme, host and port (`receiverOf`); `''` for one that is no http or https URL. In no answer. Read by the held-off rule, the host a line, mail, two-step list or `scripts/mfa-reset.mjs` names, and a backup's copy |
 
@@ -2508,8 +2523,14 @@ new link the requester asks for; earlier links go on working within the caps bel
 until its request is deleted (cascade), and **opens nothing once its request has been settled 90
 days** (card 2902): declined, from `task_requests.resolved_at`; accepted, from its card's
 `cards.completed_at` (null again when the card is reopened), or from `resolved_at` when
-`resolved_card_id` is null (the card deleted). The rule is `linkEnded()` in
-`src/lib/server/request-access.ts`, and it adds no column. The code is
+`resolved_card_id` is null (the card deleted). Since card 3064 the 90 days run from the later of
+the settlement and `compatibility_release_at`, both read as moments, so a request settled long
+before the compatibility release keeps its link for 90 days after it. The rule is `linkEnded()` in
+`src/lib/server/request-access.ts`, and it adds no column. **Migration 0084 (card 3064) moves each
+request's token still held in `task_requests.access_token` into `request_links`** as its
+`sha256_hex`, `source` `mail`, `created_at` the release moment, and empties the column, so a link
+mailed before the release opens the request unchanged; it is one of the request's mail links, and
+pruned like the others once 20 newer mail links exist. The code is
 `src/lib/server/request-tokens.ts`; why, and what happens at the release and on going back, is
 in [Requester Links Stored as Hashes](authentication-security.md#requester-links-stored-as-hashes-card-2870).
 
@@ -2519,7 +2540,7 @@ erDiagram
     task_requests {
         int id PK
         text status "unverified, pending, accepted or rejected"
-        text access_token "retired by 0070: always NULL, unique index kept"
+        text access_token "retired: always NULL, unique index kept; 0084 moved what it held"
     }
     request_links {
         int id PK "AUTOINCREMENT: the trim keeps the highest ids"
@@ -2533,7 +2554,7 @@ erDiagram
 | Column | What is stored | How it is protected, and who writes it |
 |---|---|---|
 | `id` | `integer PRIMARY KEY AUTOINCREMENT` | Orders the links of a request: the trim keeps the highest ids |
-| `token_hash` | `sha256Hex(token)`: 64 lower-case hex characters, of the token exactly as given (32 random bytes as 64 hex characters), nothing trimmed or folded | `NOT NULL`, unique (`request_links_token_hash_unique`). Never the token. Written only by `issueRequestLink()` |
+| `token_hash` | `sha256Hex(token)`: 64 lower-case hex characters, of the token exactly as given (32 random bytes as 64 hex characters), nothing trimmed or folded | `NOT NULL`, unique (`request_links_token_hash_unique`). Never the token. Written by `issueRequestLink()`, and once by migration 0084 for each token a request held in plain (card 3064) |
 | `request_id` | The request the link opens | `NOT NULL`, `ON DELETE CASCADE` to `task_requests`, `idx_request_links_request_id` (card 2106's rule): deleting a request, or the form's clean-up of an unconfirmed one, takes its links |
 | `source` | `mail` (the confirmation, a team reply, a progress mail) or `ask` (a new link asked for from the page a dead link opens) | `NOT NULL`. Each kind is trimmed only among its own |
 | `created_at` | When the link was issued | `datetime('now')`; one of the 79 `*_at` columns the timestamp normalisation knows (`tests/timestamps.test.ts`) |
@@ -2575,6 +2596,133 @@ erDiagram
   Everything** deletes the table with every other.
 - **Not a reconciled table**, and no published route reads it. `expected-schema.ts` holds the
   table and its two indexes.
+
+### The compatibility release (migration 0084, card 3064)
+
+Card 3064 (2026-11-24) lets a server that has none of 0061 to 0083 (production at `106ea45`,
+migration 0060) take them all in one start **without signing anybody out, ending any invite or
+requester link, giving any API key a deadline, or stopping or re-keying any webhook**. Three
+unreleased files each lost the one statement that destroyed on such a server what nothing later
+could put back, and a new file, `drizzle/0084_compatibility_release.sql`, takes back in the same
+start the data lines of 0066, 0069 and 0071. Each protection so held back is applied later as a
+planned event (E1 to E6, in
+[The Compatibility Release](deployment.md#the-compatibility-release-card-3064)).
+
+| File | Taken out by card 3064 | Kept |
+|---|---|---|
+| `0067_end_sessions_for_two_step.sql` | `DELETE FROM sessions` | The delete of `known_browser_secret`: remembered browsers are forgotten once |
+| `0068_end_plain_invite_tokens.sql` | `DELETE FROM invite_tokens WHERE used = 0` | Every used invite's token replaced by `randomblob(32)` |
+| `0070_add_request_links.sql` | `UPDATE task_requests SET access_token = NULL` | The table `request_links` and its two indexes |
+
+`0066`, `0069` and `0071` to `0083` are untouched. The runner records files by name, so a
+database that already ran the old 0067, 0068 or 0070 (the development server) never runs them
+again; 0084 then finds nothing in plain there, and only writes the settings and takes back the
+deadlines, marks and release moment.
+
+**What 0084 does, in order** (fourteen statements):
+
+1. `settings.compatibility_release_at` = `datetime('now')`, `ON CONFLICT DO NOTHING`: **the release
+   moment**. Kept sessions are dated from it, the old cookie name is read for 30 days after it,
+   and a requester link's 90 days run from it at the earliest.
+2. `ALTER TABLE sessions ADD COLUMN kept_at_release integer DEFAULT 0 NOT NULL`.
+3. **Sessions**: every row whose `id` is not a 32-byte BLOB gets `id = sha256_blob(id)`,
+   `kept_at_release = 1`, `created_at` = the release moment, and `expires_at` capped at 30 days
+   from now in the stored form (an ISO-form expiry read as the moment it names; one naming no
+   moment left, for the start's clean-up to delete). Their `two_step` stays 0.
+4. **Invites**: every unused invite whose token is not a 32-byte BLOB gets `sha256_blob(token)`.
+5. **Requester links**: one `request_links` row (`sha256_hex(access_token)`, `source` `mail`,
+   `created_at` the release moment) for each request with a non-empty `access_token`, in id order;
+6. then every `access_token` set to NULL.
+7. **API keys**: every `api_keys.deadline_at` set to NULL;
+8. and the `api_key_deadline` setting deleted. No key has a deadline until E4.
+9. **Two-step sign-in**: `two_step_released_at` deleted;
+10. and every `users.mfa_password_enrol` set to 0.
+11. **Webhooks**: `set_with_key` set to 0 where it is NULL, so that no webhook from before the
+    release is switched off when its setter's keys from before the release end (card 2893's rule)
+    until E4 restores the rule for them.
+12. **The six first-run flags**, each `datetime('now')`, `ON CONFLICT DO NOTHING`, so that each
+    first-run pass takes its steady state at this start: `webhooks_already_off_held` (card 2923),
+    `webhooks_readable_by_disabled_held` (2935), `webhook_reveals_seeded` (2947),
+    `webhooks_before_keys_announced` (2893), `report_schedules_announced` (2751) and
+    `stored_images_rechecked` (2761).
+13. **The one-shot leave to keep the backup seal key**, `backup_seal_key_keep_once` =
+    `datetime('now')`, `ON CONFLICT DO NOTHING` (the code review's CS-M2): the start that follows
+    keeps a seal key held in plain as 64 hex, sealed in place, and deletes the leave in the same
+    transaction, kept or not (`replaceSigningKeysAtStart()`); every later start makes a plain key
+    anew, as card 2943 does.
+14. **The scrub's marker**, `secrets_scrub_pending` as an ISO time of this run
+    (`strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`), `ON CONFLICT DO NOTHING` (CS-L4): the start takes it as
+    set by itself and scrubs before the server listens, whatever else it seals.
+
+Steps 13 and 14 were added by the code review before 0084 reached any server but test databases
+and perhaps a developer's own; a development database whose server applied 0084 before then has
+neither, which is accepted (it holds no plain seal key from live, and its start marks its own scrub).
+
+SQLite has no SHA-256: `runMigrations()` gives the connection it migrates two deterministic
+functions before the first file (`giveDigestFunctions()` in `src/lib/server/db/migrate.ts`),
+`sha256_blob(text)`, the 32-byte digest as a BLOB, and `sha256_hex(text)`, 64 lower-case hex
+characters, each NULL for NULL; the run stops if they cannot be given. Only 0084 calls them. The
+plain text the `UPDATE`s overwrite is scrubbed from the file's free pages and WAL at the same
+start, before the server listens (`scrubStoredSecrets()`), which now writes an `INFO` line when it
+does.
+
+```mermaid
+flowchart TD
+    S["sessions, id in plain"] -->|"sha256_blob, kept_at_release 1,<br/>created_at = release, expiry capped at 30 days"| SH["sessions, id a 32-byte BLOB"]
+    I["invite_tokens, unused, token in plain"] -->|"sha256_blob"| IH["invite_tokens, token a 32-byte BLOB"]
+    T["task_requests.access_token"] -->|"sha256_hex, source mail,<br/>created_at = release"| RL["request_links"]
+    T -->|"then NULL"| TN["task_requests.access_token NULL"]
+    K["api_keys.deadline_at (0069)"] -->|"NULL"| KN["no deadline until E4"]
+    ST1["settings: api_key_deadline,<br/>two_step_released_at"] -->|"deleted"| GONE["absent until E4 and E3"]
+    U["users.mfa_password_enrol (0066)"] -->|"0"| U0["no leave until E3"]
+    W["webhooks.set_with_key NULL"] -->|"0"| W0["no key rule until E4"]
+    NEW["settings, written once"] --> F["compatibility_release_at<br/>and the six first-run flags"]
+    NEW --> LV["backup_seal_key_keep_once:<br/>spent by the next start"]
+    NEW --> SC["secrets_scrub_pending:<br/>scrubbed before the server listens"]
+```
+
+```mermaid
+erDiagram
+    sessions {
+        blob id PK "SHA-256 of the code; 0084 hashed the plain ones"
+        int two_step "0 for a kept session"
+        int kept_at_release "0084: 1 kept, 2 swapped, 0 other"
+        text created_at "the release moment for a kept session"
+    }
+    settings {
+        text compatibility_release_at "0084: the release moment, written once"
+        text two_step_required_at "the switch: absent dormant, present required"
+        text first_run_flags "six rows, seeded by 0084"
+        text backup_seal_key_keep_once "0084: the one-shot leave, spent by the next start"
+    }
+    task_requests ||--o{ request_links : "0084: one mail link per plain token"
+```
+
+**The settings of the compatibility release, and what a restore and Reset Everything do with them.**
+
+| Setting | Written by | A restore | Reset Everything |
+|---|---|---|---|
+| `two_step_required_at` | `POST /api/admin/two-step/require` alone (E3) | On, never off: this server's where it has one; the backup's where only the backup has one (with `two_step_released_at`, or the restore's moment), and a `CRITICAL` line after the commit; absent where neither has it | Written back where it was on |
+| `two_step_released_at` | Deleted by 0084; written by E3 | From the side whose switch is on; dropped where neither is | Written back where the switch was on |
+| `compatibility_release_at` | 0084, once | This server's, or none where it has none | Deleted with every setting |
+| `backup_seal_key_keep_once` | 0084, once; deleted by the next start, kept or not | This server's, or none where it has none: never the backup's | Deleted with every setting |
+| The six first-run flags | 0084, once each; a first-run pass writes its own where it is absent | This server's where it holds them, the backup's where it does not; but `webhooks_readable_by_disabled_held` is the backup's wherever the backup holds one, so that the restore's own run of card 2935's pass covers the backup's disables from the backup's moment | Deleted with every setting |
+
+The restore's step is `keepReleaseSettings()` in `src/lib/server/db/restore.ts`, in the
+restore's transaction, before any of its steps that read these settings. So a restore of a
+backup made before the release does not run again the passes the release held back. Sessions
+are never restored, so `kept_at_release` needs nothing there.
+
+**Declared to the rehearsal** (`tests/rehearsal/one-offs.ts`): `keepsRows` on `sessions`,
+`invite_tokens`, `task_requests`, `api_keys`, `users` and `webhooks`, and `settings` losing the two
+rows taken back (the nine it writes take no row). 0067 now declares only the remembered-browser secret, 0068 is `keepsRows`, and
+0070 declares nothing. `schema.ts` has `keptAtRelease` on `sessions`, and `expected-schema.ts` was
+generated again.
+
+**Runs once**, and would not survive a second run ("duplicate column" is tolerated only in older
+files). **Going back** to an image from before it: that image cannot read a hashed session,
+invite or link and ignores the column, so the way back after the first start is the cold copy
+taken before it (see [Deployment](deployment.md#the-compatibility-release-card-3064)).
 
 ## Cascade Behaviour
 
@@ -4399,9 +4547,10 @@ count at any other start means some write does not.
 
 A migration file may hold a one-off change to stored data as well as structure, as 0053
 ends every session once, 0054 every invite not yet used, 0055 gives every task request
-a new link, 0068 ends every invite not yet used again and replaces every used invite's
-token, 0069 gives every API key made before it a deadline, and 0070 ends every task request's
-link held in plain. Such a statement comes after the structural ones, under a header
+a new link, 0068 replaces every used invite's token, 0069 gives every API key made before it a
+deadline, and 0084 (card 3064) hashes in place every session, invite and requester link held in
+plain and takes back 0066's, 0069's and 0071's data lines (until card 3064, 0067 also ended every
+session, 0068 every invite not yet used and 0070 every requester link held in plain). Such a statement comes after the structural ones, under a header
 comment that says what it changes, why, that it runs once on each database and what people
 will see; it does nothing harmful on an empty table; and it is declared, by file and table,
 in `tests/rehearsal/one-offs.ts`, so that the rehearsal reports the loss as expected. One
@@ -4444,7 +4593,10 @@ key file: see
 
 **Migrations 0066 and 0067 turn two-step sign-in on** (card 2769, 2026-11-13). They are two
 files because the rehearsal's guard refuses a `keepsRows` file that loses rows, and the release
-both marks accounts and ends sessions.
+both marked accounts and ended sessions. **Since card 3064 (2026-11-24)** 0067 no longer ends
+sessions, and 0084, in the same start, deletes 0066's setting and zeroes its marks: two-step
+sign-in arrives dormant (see
+[The compatibility release](#the-compatibility-release-migration-0084-card-3064)).
 
 - **`0066_add_mfa_password_enrol.sql`**, six statements, one per block, no `IF NOT EXISTS`:
   `users.mfa_password_enrol` and `sessions.two_step` (both `integer DEFAULT 0 NOT NULL`),
@@ -4458,28 +4610,28 @@ both marks accounts and ends sessions.
   before it restores to (no setting, so the window closed, and every flag 0 but this server's
   own accounts'), and what going back to an older image does (the columns and the setting kept
   and unread; that image's sessions and cookies refused when this one runs again).
-- **`0067_end_sessions_for_two_step.sql`**, two statements: `DELETE FROM sessions` and `DELETE
-  FROM settings WHERE key = 'known_browser_secret'`. Declared twice in
-  `tests/rehearsal/one-offs.ts`, for `sessions` and for `settings`. Its header says every
-  session there was made on a password alone, that API keys, invites, enrolment links and
-  requesters' links are untouched, that everybody is signed out once, and that nothing repeats
-  it at start-up or after a restore.
+- **`0067_end_sessions_for_two_step.sql`**, one statement since card 3064: `DELETE FROM settings
+  WHERE key = 'known_browser_secret'` (its `DELETE FROM sessions` was taken out). Declared once in
+  `tests/rehearsal/one-offs.ts`, for `settings`. Remembered browsers are forgotten once; sessions
+  are kept, and 0084 hashes them in place.
 
-A rehearsal of a run that applies both notes three things: `settings` has one row more (the
-setting), `users` had `mfa_password_enrol` set in its rows by 0066, and the declared losses of
-`sessions` and of the secret's row. See
+A rehearsal of a run that applies 0066 to 0084 notes `users` had `mfa_password_enrol` set in its
+rows by 0066 (and set back by 0084), and the declared loss of the secret's row. Before card 3064
+it also noted the loss of every session. See
 [Every Session and Remembered Browser Ended Once, by Migration 0067](authentication-security.md#every-session-and-remembered-browser-ended-once-by-migration-0067).
 
-**Migration 0068 ends every invite held in plain** (card 2849, 2026-11-16), in the same release
+**Migration 0068 replaces every used invite's token** (card 2849, 2026-11-16), in the same release
 as 0066 and 0067: two-step sign-in is not released without it. From this release an invite's
 token is kept only as its SHA-256 digest, a 32-byte BLOB (see
-[Invites](#invites-invite_tokens-migration-0068)).
+[Invites](#invites-invite_tokens-migration-0068)). **Until card 3064 it also deleted every unused
+invite**; that statement was taken out, and 0084 hashes them in place instead, so the rest of this
+paragraph, about invites ended, describes the file as it was.
 
-- **`0068_end_plain_invite_tokens.sql`**, two statements and no structure: `DELETE FROM
-  invite_tokens WHERE used = 0`, then `UPDATE invite_tokens SET token = randomblob(32) WHERE
-  used <> 0`. Declared once in `tests/rehearsal/one-offs.ts`,
-  for `invite_tokens`, without `keepsRows`, because it loses rows as well as rewriting them
-  ("every unused invite deleted and every used invite's token replaced"). Its header says why
+- **`0068_end_plain_invite_tokens.sql`**, one statement and no structure since card 3064: `UPDATE
+  invite_tokens SET token = randomblob(32) WHERE used <> 0` (it was preceded by `DELETE FROM
+  invite_tokens WHERE used = 0`). Declared once in `tests/rehearsal/one-offs.ts`,
+  for `invite_tokens`, now with `keepsRows` ("every used invite's token replaced"). Before card
+  3064 its header said why it ended unused invites
   (a working invite now also sets up the account's authenticator, and hashing in place would
   leave each live token in the file's free pages and WAL), what people see (an invite sent
   before the deploy and not yet used shows the page for a link that no longer works, and is sent
@@ -4490,15 +4642,18 @@ token is kept only as its SHA-256 digest, a 32-byte BLOB (see
   the file made before 0068 ran holds the invites waiting then, which work again there (see
   [The Release That Turns On Two-Step Sign-In](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769)).
 
-A rehearsal of a run that applies 0068 over a database with unused invites notes
-`invite_tokens had N row(s) and has M: every unused invite deleted and every used invite's token
-replaced by 0068_end_plain_invite_tokens.sql, a one-off declared in tests/rehearsal/one-offs.ts`.
-Where a run applies 0054 as well, the note names 0054, the first of the two to run.
+Before card 3064, a rehearsal of a run that applied 0068 over a database with unused invites
+noted `invite_tokens had N row(s) and has M: every unused invite deleted and every used invite's
+token replaced by 0068_end_plain_invite_tokens.sql, …`. Now it loses no row, and the rehearsal
+notes the rewrite. Where a run applies 0054 as well, the note names 0054, the first to run.
 
 **Migration 0069 gives every API key made before two-step sign-in a deadline** (card 2772,
 built 2026-11-17). Until two-step sign-in a key was made on a password alone; from this release
 each key that exists then must be kept by its holder, with the password and a code, within 60
-days, or it stops working.
+days, or it stops working. **Since card 3064, 0084 takes the deadline back in the same start**
+(every `deadline_at` NULL, the setting deleted): no key has a deadline until the administrator
+applies one as a planned event (E4), with 0069's `INSERT` and `UPDATE` run on the host. What
+follows describes the column and the setting as they are then.
 
 - **`0069_add_api_key_deadline.sql`**, four statements: `ALTER TABLE api_keys ADD COLUMN
   deadline_at text`; `INSERT INTO settings (key, value) VALUES ('api_key_deadline',
@@ -4525,11 +4680,14 @@ days, or it stops working.
   (`HISTORY` in `mfa-backup.ts`). Not a foreign key, no index. The second new `*_at` column:
   78 in all (`tests/timestamps.test.ts`). An older image keeps it unread and compares on
   `security_banner_at` alone.
-- **`settings.api_key_deadline`**: the release's moment plus 60 days, written once. Kept across
-  a restore: this server's value is read before the restore clears `settings`, and a backup made
-  before 0069 has 0069's `UPDATE` repeated with it inside the restore's transaction (expiries
-  compared through `stamp_of`), the setting written back where the backup held none, and the
-  restore's own moment used where this server holds no readable deadline. **Reset Everything**
+- **`settings.api_key_deadline`**: the release's moment plus 60 days, written once; deleted by
+  0084 (card 3064) until E4 writes it again. Kept across a restore: this server's value is read
+  before the restore clears `settings`, and a backup made before 0069 has 0069's `UPDATE` repeated
+  with it inside the restore's transaction (expiries compared through `stamp_of`), the setting
+  written back where the backup held none. Where this server holds **no** deadline (since card
+  3064) the step is skipped and the restored keys keep none; where its deadline names no moment,
+  the restore's own moment is used, failing closed, with a `CRITICAL` line
+  (`API_KEY_DEADLINE_UNREADABLE`). **Reset Everything**
   empties `api_keys` and `settings`: no key is left to need a deadline, and new keys get none.
 - Declared in `tests/rehearsal/one-offs.ts` for `api_keys`, with `keepsRows` ("deadline_at set
   for every key with no expiry or one later than the deadline"). It runs once; an older image
@@ -4556,25 +4714,23 @@ erDiagram
     }
 ```
 
-**Migration 0070 keeps a requester's links only as hashes, and ends every link held in plain**
-(card 2870, built 2026-11-17). Until this release each task request had one token, kept in
-plain in `task_requests.access_token`; whoever could read the database file could read every
-request thread and post into it as the requester, and the links never expired.
+**Migration 0070 keeps a requester's links only as hashes** (card 2870, built 2026-11-17). Until
+this release each task request had one token, kept in plain in `task_requests.access_token`;
+whoever could read the database file could read every request thread and post into it as the
+requester, and the links never expired.
 
-- **`0070_add_request_links.sql`**, four statements: `CREATE TABLE request_links` (`id`
-  autoincrement, `token_hash` text, `request_id` integer with its foreign key to `task_requests`
-  `ON DELETE cascade`, `source` text, `created_at` text default `datetime('now')`, every column
-  `NOT NULL`); `CREATE UNIQUE INDEX request_links_token_hash_unique`; `CREATE INDEX
-  idx_request_links_request_id`; and, last, `UPDATE task_requests SET access_token = NULL`. No
-  `IF NOT EXISTS`, as 0063. The table and indexes are exactly as `expected-schema.ts` prints them.
-- **Every link mailed before the deploy is ended, once**: the column is emptied and the new table
-  starts empty. Hashing in place would leave each token in the file's free pages and WAL, still
-  working, and SQLite has no SHA-256. Requests and their messages are untouched.
-- Declared in `tests/rehearsal/one-offs.ts` for `task_requests`, with `keepsRows` ("every
-  access_token ended"), so the rehearsal notes `task_requests: every access_token ended in its N
-  row(s) by 0070_add_request_links.sql, a one-off declared in tests/rehearsal/one-offs.ts` and
-  excuses no loss. A run that applies
-  0055 as well names 0055 in the note, the first declared file it applied.
+- **`0070_add_request_links.sql`**, three statements since card 3064: `CREATE TABLE request_links`
+  (`id` autoincrement, `token_hash` text, `request_id` integer with its foreign key to
+  `task_requests` `ON DELETE cascade`, `source` text, `created_at` text default `datetime('now')`,
+  every column `NOT NULL`); `CREATE UNIQUE INDEX request_links_token_hash_unique`; and `CREATE
+  INDEX idx_request_links_request_id`. No `IF NOT EXISTS`, as 0063. The table and indexes are
+  exactly as `expected-schema.ts` prints them.
+- **Until card 3064 it ended every link mailed before the deploy** with a last statement, `UPDATE
+  task_requests SET access_token = NULL`. That statement was taken out: 0084, in the same start,
+  moves each token into `request_links` as its hash (with the SHA-256 the migration runner now
+  gives it) and then empties the column, and the scrub before listening removes the plain text,
+  so a link mailed before the release keeps working. Requests and their messages are untouched.
+- Declares nothing to the rehearsal now; 0084 declares `task_requests` with `keepsRows`.
 - It runs once. Plain tokens an older image writes after going back are emptied at the next start
   by `endPlainRequestLinks()`, which then ends every link (see
   [Requester links](#requester-links-request_links-migration-0070)). Going back needs no step,
@@ -4584,9 +4740,9 @@ request thread and post into it as the requester, and the links never expired.
 
 ```mermaid
 erDiagram
-    task_requests ||--o{ request_links : "0070: starts empty"
+    task_requests ||--o{ request_links : "0070: starts empty, 0084 fills one per token"
     task_requests {
-        text access_token "0070: every value set to NULL, column and unique index kept"
+        text access_token "0084: every value moved, then NULL; column and unique index kept"
     }
     request_links {
         text token_hash UK "SHA-256 hex"
@@ -4608,6 +4764,9 @@ board was held at each delivery and sent again once the setter could open the bo
   its board's owners are mailed where the schedulers run. With `set_with_key` NULL, each is held
   once its setter has no working key made before the file ran (card 2893); the first start tells
   the owners of those still sent the earliest date each will stop (`webhooks_before_keys_announced`).
+  **Since card 3064, 0084 sets every such NULL to 0 and seeds that announcement's flag in the same
+  start**, so no webhook from before the release is stopped by its setter's keys, and nobody is
+  mailed, until E4 sets them back to NULL and deletes the flag.
 - Declares nothing to the rehearsal: it takes and rewrites no row, and the rehearsal notes the
   new settings row as `settings had N row(s) and has N+1: a migration put the others there`.
 - It runs once. Going back to an older image needs no step: its schema check reports the
@@ -4634,6 +4793,14 @@ board was held at each delivery and sent again once the setter could open the bo
   disabled account could sign in there; the step to take first is in
   [Deployment](deployment.md#the-release-that-disables-accounts-and-deletes-only-a-disabled-one-card-2671).
   See [A disabled account](#a-disabled-account-migration-0072).
+
+**Migration 0084 is the compatibility release** (card 3064, built 2026-11-24): one column,
+`sessions.kept_at_release`, and data. It hashes in place the sessions, unused invites and
+requester tokens still in plain, takes back 0066's, 0069's and 0071's data lines, writes
+`compatibility_release_at` and seeds the six first-run flags, with three statements taken out of
+0067, 0068 and 0070. Its twelve statements, its two SQL functions, its declarations and what a
+restore does with its settings are in
+[The compatibility release](#the-compatibility-release-migration-0084-card-3064).
 
 ### Two Lineages Share 0001 to 0005
 

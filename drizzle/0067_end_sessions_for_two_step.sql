@@ -1,13 +1,16 @@
--- Every session ended once, and every remembered browser forgotten, for two-step sign-in (card 2769, 2026-11-13).
+-- Every remembered browser forgotten once, for two-step sign-in (card 2769,
+-- 2026-11-13; its session delete taken out by card 3064, 2026-11-24).
 --
--- From this release a session is made only after a second factor. Every
--- session there now was made on a password alone, so every one is deleted,
--- and none goes on predating its account's second factor. 0066 has already
--- marked each of them two_step 0, which this image refuses anyway; this
--- deletes the rows outright.
+-- As written for card 2769 this file also deleted every session. Card 3064,
+-- the compatibility release, took that statement out before the file ever
+-- ran on live: it ran before 0084, and so would have deleted, on live, the
+-- sessions 0084 keeps. Every session there now is kept by 0084 (hashed in
+-- place and marked kept_at_release), two_step 0 as 0066 left it, and opens
+-- only while two-step sign-in is dormant. A database that ran this file in
+-- its earlier form lost its sessions then, and holds none in plain since.
 --
 -- The remembered-browser secret (the setting known_browser_secret) is
--- deleted too. A browser that signed in before this release was remembered
+-- deleted. A browser that signed in before this release was remembered
 -- on a password alone, and a remembered browser gets the more lenient lane
 -- of sign-in throttling, which must now be reached only after a second
 -- factor. With the secret gone, every cookie signed with it is refused, and
@@ -15,18 +18,16 @@
 -- new MAC domain (src/lib/server/known-browsers.ts), so a cookie an older
 -- image signs is refused as well.
 --
--- API keys, invites, enrolment links and requesters' links are untouched.
+-- Sessions, API keys, invites, enrolment links and requesters' links are
+-- untouched.
 --
 -- Declared to the rehearsal in tests/rehearsal/one-offs.ts, which then
--- expects `sessions` to lose its rows and `settings` the secret's.
+-- expects `settings` to lose the secret's row.
 --
--- What people see: everybody is signed out once, on the start that applies
--- this file, and every browser is asked for the second step as a new one.
+-- What people see: nobody is signed out; a browser remembered before this
+-- file is treated as a new one by sign-in throttling, once.
 --
 -- Runs once. The runner records this file by name and never runs it again,
--- and nothing repeats the deletes at start-up or after a restore: a restore
--- brings in no session.
+-- and nothing repeats the delete at start-up or after a restore.
 
-DELETE FROM `sessions`;
---> statement-breakpoint
 DELETE FROM `settings` WHERE `key` = 'known_browser_secret';

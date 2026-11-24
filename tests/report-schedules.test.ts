@@ -43,7 +43,7 @@ import {
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { makeBoard, makeSmtp, makeUser, resetDb, stepUp, type BoardFixture } from './helpers/fixtures';
+import { forgetFirstRunFlags, makeBoard, makeSmtp, makeUser, resetDb, stepUp, type BoardFixture } from './helpers/fixtures';
 
 /** The process zones every zone answer is checked under. */
 const PROCESS_ZONES = ['UTC', 'Europe/London', 'America/New_York'];
@@ -176,6 +176,8 @@ let sent: Effects;
 
 beforeEach(() => {
 	resetDb();
+	// Each first-run pass in full, as before migration 0084 seeded their flags (card 3064, R23).
+	forgetFirstRunFlags();
 	resetAllRateLimits();
 	makeSmtp();
 	owner = makeUser();

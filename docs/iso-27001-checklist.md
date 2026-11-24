@@ -1,18 +1,20 @@
 ---
 title: "ISO 27001 Checklist: Method"
 category: Compliance
-version: 1.0
+version: 1.2
 status: Living
-date: 2026-11-17
+date: 2026-11-24
 tags:
   - card-2670
+  - card-3064
+  - accepted-risks
   - iso-27001
   - compliance
   - annex-a
   - statement-of-applicability
   - admin
   - checklist
-description: "How DumpFire's ISO/IEC 27001:2022 checklist page (/admin/iso-27001) is built and kept: what it is and is not, the three applicabilities and five statuses and the rules the tests hold them to, why its one source is server-only, and how a card that closes a gap updates it. The per-control statuses are on the page, never in this document."
+description: "How DumpFire's ISO/IEC 27001:2022 checklist page (/admin/iso-27001) is built and kept: what it is and is not, the three applicabilities and five statuses and the rules the tests hold them to, why its one source is server-only, and how a card that closes a gap updates it; the ten accepted risks of the compatibility release (card 3064, R7 to R16), the fields each carries and the items that name them. The per-control statuses are on the page, never in this document."
 ---
 
 # ISO 27001 Checklist: Method
@@ -207,7 +209,9 @@ classDiagram
    risk's path and anchor resolve.
 
 The other six cover `summarise` keeping the two sides apart, each of the load's three outcomes,
-the page's two summary blocks drawn apart, and each filter. The tests cannot read prose: whether
+the page's two summary blocks drawn apart, and each filter. Cards since have added cases that pin
+what an item says and cites (for example card 3064's D2: the ten accepted risks of the
+compatibility release, each once, under its item, with a row in the register). The tests cannot read prose: whether
 a "met" is really met is checked by the code review of every card that changes the module, row
 by row against its evidence (plan D13).
 
@@ -245,6 +249,51 @@ sequenceDiagram
     Test-->>Card: refs, values, evidence and gap rules hold
     Card->>Rev: every changed status against its evidence
     Rev-->>Card: no met it cannot confirm
+```
+
+## Accepted Risks of the Compatibility Release (Card 3064)
+
+The compatibility release takes everything built since `106ea45` to production with the
+disruptive changes held back: two-step sign-in dormant, no API key deadline, no once-only hold
+or re-key of existing webhooks, the backup seal key kept, no rewrite of stored images. Each
+protection it waives is **one accepted risk, R7 to R16**, until a planned later event closes it
+(E1 to E6, in [Deployment](deployment.md#the-compatibility-release-card-3064)). An auditor reads
+each as a decision with a bound, not as a gap.
+
+- **Where they are written.** Each is a row of
+  [Accepted Risks](authentication-security.md#accepted-risks), with every field below.
+- **Where they are named.** In the `accepted` list of the item whose protection it waives, with
+  that path and anchor, so the page shows it beside the item. Each such item is `partly-met`
+  and says in its own words what is open.
+- **The fields of each row**: the protection waived and its card; the threat; the count, taken
+  read-only on the live server before the release (runbook check P-new-3); who could hold the
+  secret; the compensating controls; the treatment event and its target date (counted from the
+  release day R); the owner, the superadmin as system owner; and the review, monthly and at its
+  event.
+- **Closing one.** The card of its event removes the entry from the item's `accepted` and the
+  row from the register (or marks it closed with the date), and, once nothing is left open on
+  the item, sets it `met` as for a gap card.
+
+| Risk | Protection waived (card) | Named under | Treatment, target |
+|---|---|---|---|
+| R7 | Webhooks made before setters were recorded re-keyed (2935) | A.5.14 Information transfer | E6, R + 90 |
+| R8 | The backup seal key renewed (2943) | A.8.24 Use of cryptography | E2, R + 30 |
+| R9 | Reads of webhook secrets before the release recorded (2947) | A.5.14 Information transfer | E4, within 60 days of E3 |
+| R10 | Pre-release webhooks stop with their setter's older keys (2893) | A.5.14 Information transfer | E4, within 60 days of E3 |
+| R11 | Every already-off webhook held once (2923) | A.5.14 Information transfer | E6, R + 90 |
+| R12 | Hidden data taken out of stored images (2761) | A.5.34 Privacy and protection of PII | E1, R + 60 |
+| R13 | Owners told of their report schedules (2751) | A.5.14 Information transfer | Closed at the release by an administrator confirming each schedule; reviewed at E3 |
+| R14 | Plain session ids, invite and requester tokens gone from every copy (2775, 2849, 2870) | A.8.13 Information backup | The cold copy shredded at go/no-go + 14 days |
+| R15 | The `__Host-` cookie only, and no session on a password alone (2775, 2769); with it the residual login CSRF by an old-name cookie planted for the parent domain, once per kept session (the code review's CS-L1) | A.8.5 Secure authentication | R + 30 (the old cookie name), E3 (password-only sessions) |
+| R16 | Keys and webhooks made on a password alone end with two-step sign-in (2772) | A.8.5 Secure authentication | E4, within 60 days of E3 |
+
+```mermaid
+flowchart LR
+    Rel["Compatibility release<br/>(card 3064)"] --> Risk["Accepted risk R7 to R16<br/>row in authentication-security.md"]
+    Risk --> Item["Named in the item's accepted list<br/>item partly-met"]
+    Item --> Page["/admin/iso-27001 shows it"]
+    Risk --> Event["Planned event E1 to E6<br/>its own card and notice"]
+    Event --> Close["Entry removed, row closed<br/>item met once nothing is open"]
 ```
 
 ## Related

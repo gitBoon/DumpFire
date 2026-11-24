@@ -50,7 +50,11 @@ export function giveAuthenticator(user: Pick<SessionUser, 'id'>, label = 'Spare 
 	return { factorId: id, secret };
 }
 
-/** Record the release that turned on two-step sign-in as having run at `at` (now by default): the 14 days start then. */
+/**
+ * Record the release that turned on two-step sign-in as having run at `at` (now by default): the 14 days start then.
+ * Since card 3064 that is the superadmin's requiring it (event E3), which writes the switch beside the moment; the
+ * switch is already there, as `resetDb` writes it back (R23, F19), and a restore keeps both as this server's (R1).
+ */
 export function openReleaseWindow(at: Date = new Date()): void {
 	db.insert(settings)
 		.values({ key: 'two_step_released_at', value: stamp(at) })

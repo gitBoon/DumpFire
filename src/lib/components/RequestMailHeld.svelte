@@ -39,7 +39,8 @@
 	import ConfirmModal from './ConfirmModal.svelte';
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import { asciiShown, printable } from '$lib/printable';
-	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, type StepUpProof } from '$lib/step-up-words';
 
 	let {
 		held = null,
@@ -63,7 +64,7 @@
 		return (
 			`Mail to ${shownAddress(request)} is held: this request came in with a backup whose seal did not verify. ${card} ` +
 			'Release it only if you recognise the address and the card. Its requester is then mailed progress, replies and the completion report. ' +
-			ASKS_FOR_PASSWORD
+			asksForPassword(codeAskedHere())
 		);
 	}
 

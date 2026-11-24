@@ -27,6 +27,8 @@
 	import DangerZonePanel from '$lib/components/admin/DangerZonePanel.svelte';
 	// Card 2922: the one list of the settings held for the superadmin's review.
 	import SettingsHeldPanel from '$lib/components/admin/SettingsHeldPanel.svelte';
+	// Card 3064 (R10): whether two-step sign-in is required, and the superadmin's switch to require it.
+	import TwoStepSwitchPanel from '$lib/components/admin/TwoStepSwitchPanel.svelte';
 	import { HELD_POINTER, type HeldSetting } from '$lib/settings-held';
 	import SettingsHeldBanner from '$lib/components/SettingsHeldBanner.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
@@ -157,6 +159,9 @@
 		<!-- Card 2922: the settings held for review, every administrator's to read, the superadmin's to keep or remove.
 		     A Keep or a Remove draws the panels that show the setting again. -->
 		<SettingsHeldPanel {confirm} bind:held={settingsHeld} onChanged={(setting) => (setting.startsWith('backup_destination:') ? destinationsRead++ : mailRead++)} />
+
+		<!-- Card 3064 (R10): two-step sign-in, every administrator's to read, the superadmin's to require. -->
+		<TwoStepSwitchPanel twoStepSwitch={data.twoStepSwitch} {confirm} />
 
 		<!-- The App URL: shown to every administrator since card 2395, set by the superadmin alone since card 2847. Drawn again once the mail settings or the App URL an account had set are removed with it (card 2397). -->
 		<!-- Card 2922 (R7): a pointer to the list while the App URL is held. -->

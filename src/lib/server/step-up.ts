@@ -62,6 +62,7 @@ import { error, type Cookies } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { users } from './db/schema';
+import { codeAskedOf } from './mfa-store';
 import { passwordReplacedHere } from './account-endings';
 import { DUMMY_HASH } from './dummy-hash';
 import { getRequestEvent } from '$app/server';
@@ -89,7 +90,11 @@ import {
 	STEP_UP_NO_FACTOR,
 	STEP_UP_NO_PASSWORD,
 	STEP_UP_SIGNED_OUT,
-	STEP_UP_WRONG
+	STEP_UP_WRONG,
+	STEP_UP_MISSING_PASSWORD,
+	STEP_UP_WRONG_PASSWORD,
+	stepUpMissing,
+	stepUpWrong
 } from '$lib/step-up-words';
 
 const log = createLogger('AUTH');
@@ -102,8 +107,9 @@ const log = createLogger('AUTH');
  * `STEP_UP_CODE_FIELD`, the code's (card 2771); `STEP_UP_MISSING`, no current
  * password or no code, an empty one or one that is not text;
  * `STEP_UP_CODE_MALFORMED`, a code in neither form; `STEP_UP_WRONG`, a wrong
- * password or code; `STEP_UP_NO_PASSWORD`, an account whose stored hash is no
- * bcrypt hash (decision 9: none exists today); `STEP_UP_IN_FLIGHT`,
+ * password or code; `STEP_UP_MISSING_PASSWORD` and `STEP_UP_WRONG_PASSWORD`,
+ * the same where no code is asked (card 3064, F25); `STEP_UP_NO_PASSWORD`,
+ * an account whose stored hash is no bcrypt hash (decision 9: none exists today); `STEP_UP_IN_FLIGHT`,
  * `STEP_UP_SIGNED_OUT`, `STEP_UP_NO_FACTOR`, `STEP_UP_FACTOR_UNUSABLE` and
  * `STEP_UP_CODE_SPENT`, auth.ts's;
  * `CONFIRMATION_REFUSED`, an import whose confirmation is missing, unknown,
@@ -126,7 +132,9 @@ export {
 	STEP_UP_NO_FACTOR,
 	STEP_UP_NO_PASSWORD,
 	STEP_UP_SIGNED_OUT,
-	STEP_UP_WRONG
+	STEP_UP_WRONG,
+	STEP_UP_MISSING_PASSWORD,
+	STEP_UP_WRONG_PASSWORD
 };
 
 /**
@@ -220,6 +228,12 @@ export const STEP_UP_ACTIONS = Object.freeze({
 	'DELETE /api/account/two-step/authenticators/[id]': "Removes an authenticator, and ends the account's other sessions",
 	'POST /api/account/two-step/recovery-codes': "Replaces the account's recovery codes, each of which signs in in place of a code",
 	'DELETE /api/account/two-step/banner': "Clears the warning that someone entered the account's password with a wrong code",
+	// Card 3064 (R8, S-L7): setting up two-step sign-in while it is dormant, which ends the session and opens the set-up.
+	'POST /api/account/two-step/set-up':
+		"Begins setting up two-step sign-in for the account: ends this session and opens the set-up of a second factor that signs in as the account",
+	// Card 3064 (R10, S-L7): two-step sign-in required for everyone, one way: no route turns it off.
+	'POST /api/admin/two-step/require':
+		'Requires two-step sign-in on this server for good: ends every session made on a password alone, and shortens every session',
 	// Card 2751 (D1, D2): what mails board activity out, on a timetable that outlives the session, or once.
 	'POST /api/report-schedules': 'Makes a report schedule: board activity mailed to the addresses it names on a timetable, after this session has ended',
 	'PUT /api/report-schedules/[id]':
@@ -254,7 +268,12 @@ type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
  *       the most any password may be set to: card 2888), or 400
  *       `STEP_UP_MISSING`. Then `currentCode` (card 2771, D1): text, or 400
  *       `STEP_UP_MISSING`; in one of the two forms (`readStepUpCode`), or 400
- *       `STEP_UP_CODE_MALFORMED`. Nothing is counted.
+ *       `STEP_UP_CODE_MALFORMED`. Nothing is counted. The code is read only
+ *       where the account holds a factor or two-step sign-in is required
+ *       (card 3064, R6): otherwise the password alone is asked, a code sent
+ *       is ignored, and the check is made with none. Missing and wrong are
+ *       said by the same rule (F25): `STEP_UP_MISSING_PASSWORD` and
+ *       `STEP_UP_WRONG_PASSWORD` where no code is asked.
  *   (c) the session the gate let the request in with (its hash, from
  *       `locals.credential`), or 401; and the account's hash, which must be a
  *       bcrypt hash, or 403 `STEP_UP_NO_PASSWORD` with a WARN line. Nothing
@@ -266,7 +285,7 @@ type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
  *       signed out, or 429 (`checkCurrentProof`, `refuseWrongPassword`). A
  *       right password with a wrong code that raised the owner's banner sends
  *       the `wrong-code` notice (D6).
- *   (e) an INFO line naming who confirmed, with which code, and for what; for
+ *   (e) an INFO line naming who confirmed, with which code (or none), and for what; for
  *       a recovery code, a WARN line with the codes left and the
  *       `recovery-code-used` notice (D12, D13).
  *
@@ -285,21 +304,31 @@ export async function confirmStepUp<U>(
 
 	// Missing, empty or not text carries its code; too long is said in the
 	// reader's own words, as every length limit is (card 2218).
+	// Whether a code is asked (card 3064, R6): the account holds a factor, or
+	// two-step sign-in is required. The refusals say what was asked by it (F25).
+	const codeAsked = codeAskedOf(caller.id);
 	const sent = Object.hasOwn(body, STEP_UP_FIELD) ? body[STEP_UP_FIELD] : undefined;
 	if (typeof sent !== 'string' || sent === '') {
-		error(400, { message: STEP_UP_MISSING, stepUp: 'missing' });
+		error(400, { message: stepUpMissing(codeAsked), stepUp: 'missing' });
 	}
 	const password = readText(body, STEP_UP_FIELD, { required: true, min: 1, max: LONGEST_PASSWORD });
 
 	// The code, read straight after (card 2771, D1 and D2): missing, empty or
 	// not text, and then one in neither form, refused before anything is
-	// counted or the session read.
-	const typed = Object.hasOwn(body, STEP_UP_CODE_FIELD) ? body[STEP_UP_CODE_FIELD] : undefined;
-	if (typeof typed !== 'string' || typed === '') {
-		error(400, { message: STEP_UP_MISSING, stepUp: 'missing' });
+	// counted or the session read. Read only where it is asked (card 3064,
+	// R6). An account with no factor while two-step sign-in is dormant
+	// confirms with its password alone, and any code it sends is ignored; the
+	// check reads the factors and the switch again as it commits
+	// (`checkCurrentProof`).
+	let code: ProofCode | null = null;
+	if (codeAsked) {
+		const typed = Object.hasOwn(body, STEP_UP_CODE_FIELD) ? body[STEP_UP_CODE_FIELD] : undefined;
+		if (typeof typed !== 'string' || typed === '') {
+			error(400, { message: STEP_UP_MISSING, stepUp: 'missing' });
+		}
+		code = readStepUpCode(typed);
+		if (code === null) error(400, { message: STEP_UP_CODE_MALFORMED, stepUp: 'code-malformed' });
 	}
-	const code = readStepUpCode(typed);
-	if (code === null) error(400, { message: STEP_UP_CODE_MALFORMED, stepUp: 'code-malformed' });
 
 	// The session the gate let the request in with, as its hash (card 2775).
 	const session = sessionHashIn(locals.credential);
@@ -330,13 +359,20 @@ export async function confirmStepUp<U>(
 	// Committed by now: the owner told of a right password with a wrong code,
 	// as at sign-in, whatever the answer (card 2771, D6). Never awaited.
 	if (proven.signalled) sendSecurityNotice(caller.id, 'wrong-code', { at: new Date(), address: requestAddress(), confirming: true });
-	refuseWrongPassword(cookies, proven, STEP_UP_WRONG);
+	// Wrong said by what was asked (card 3064, F25): the password alone where no code was read.
+	refuseWrongPassword(cookies, proven, stepUpWrong(code !== null));
 
 	if (proven.by === 'recovery code') {
 		const left = proven.codesLeft ?? 0;
 		log.info(`Password and a recovery code confirmed by ${caller.username} (ID: ${caller.id}) for ${action}`, { action }, { userId: caller.id });
 		log.warn(`A recovery code confirmed ${action} for ${caller.username} (ID: ${caller.id}): ${left} left`, { action }, { userId: caller.id });
 		sendSecurityNotice(caller.id, 'recovery-code-used', { at: new Date(), address: requestAddress(), codesLeft: left, confirming: true });
+	} else if (proven.by === 'password') {
+		log.info(
+			`Password confirmed by ${caller.username} (ID: ${caller.id}) for ${action}, no code: two-step sign-in is not required on this server`,
+			{ action },
+			{ userId: caller.id }
+		);
 	} else {
 		log.info(`Password and code confirmed by ${caller.username} (ID: ${caller.id}) for ${action}`, { action }, { userId: caller.id });
 	}

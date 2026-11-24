@@ -31,11 +31,12 @@ import { eq } from 'drizzle-orm';
 import { currentMfaKey, keyFromBytes, type MfaKey } from '$lib/server/mfa-key';
 import { sealWith } from '$lib/server/mfa-crypto';
 import { destinationPlace, mailChanges, mailConnection, sealKeyHere, secretsToEnter } from '$lib/server/backup-secrets';
-import { INSTALLATION_ID_REPLACED, sealStoredSecretsAtStart } from '$lib/server/startup-checks';
+import { INSTALLATION_ID_REPLACED, SCRUBBED_LINE, scrubStoredSecrets, sealStoredSecretsAtStart } from '$lib/server/startup-checks';
 import { maskSecretsInLog } from '$lib/server/secret-paths';
 import { generateBackupData } from '$lib/server/backup';
 import {
 	BACKUP_SEAL_KEY_MADE_AT,
+	SEAL_KEY_KEEP_ONCE,
 	SECRETS_SCRUB_PENDING,
 	forgetStoredSecrets,
 	storedSecretsAtStart,
@@ -581,11 +582,13 @@ describe('the start step: signing keys and the scrub', () => {
 	/** The CRITICAL key-change record lines among `lines`, as the system log keeps them (R6). */
 	const recordLines = (lines: string[]) => lines.filter((line) => line.startsWith('[CRITICAL] [STARTUP] Key change recorded'));
 
+	// Card 3064 (T17): one held in plain as 64 lower-case hex is kept, sealed in place (T16 below); any other plain form is
+	// still made anew.
 	it.each([
-		{ row: 'with no record', record: null },
-		{ row: 'with a well-formed record, which is no input (R1)', record: '2026-11-01T00:00:00.000Z' }
-	])('50: a backup seal key held in plain is made anew at start $row: sealed, of the current form, a new record, and one CRITICAL record line holding no value (card 2943)', ({ record }) => {
-		const old = 'ab'.repeat(32);
+		{ row: 'of 64 upper-case hex, with no record', old: 'AB'.repeat(32), record: null },
+		{ row: 'of 63 hex, with a well-formed record, which is no input (R1)', old: 'a'.repeat(63), record: '2026-11-01T00:00:00.000Z' },
+		{ row: "of 'v2:' and 64 hex, in plain, with no record", old: `v2:${'ab'.repeat(32)}`, record: null }
+	])('50, card 3064 T17: a backup seal key held in plain $row is made anew at start: sealed, of the current form, a new record, and one CRITICAL record line holding no value (card 2943)', ({ old, record }) => {
 		putSetting(SEAL_KEY, old);
 		if (record !== null) putSetting(BACKUP_SEAL_KEY_MADE_AT, record);
 
@@ -638,18 +641,24 @@ describe('the start step: signing keys and the scrub', () => {
 		expect(setting(SECRETS_SCRUB_PENDING)).toMatch(AN_ISO_TIME);
 	});
 
-	it("53: production's first start: the three signing keys and the mail password in plain, no record: each key made anew once and none sealed in place, the mail password sealed, the Sealed line counting no signing key, one record line naming the three (R7(a))", () => {
+	it("53: production's first start: the three signing keys and the mail password in plain, no record: the two others made anew once and none sealed in place, the seal key of 64 hex kept, sealed in place (card 3064, R20), the mail password sealed, the Sealed line counting no signing key, one record line naming the three (R7(a))", () => {
 		putSetting('smtp_host', 'mail.example.test');
 		putSetting('smtp_user', 'sender');
 		putSetting('smtp_pass', 'mail password 53');
 		const old = { [SEAL_KEY]: 'ab'.repeat(32), [KNOWN_BROWSER_SECRET_KEY]: 'bc'.repeat(32), request_form_secret: 'cd'.repeat(32) };
 		for (const [name, value] of Object.entries(old)) putSetting(name, value);
+		// The first start after migration 0084, which leaves its one-shot leave (the code review's CS-M2).
+		putSetting(SEAL_KEY_KEEP_ONCE, '2026-11-24 09:00:00');
 
 		const lines = start();
 
+		expect(setting(SEAL_KEY_KEEP_ONCE)).toBeUndefined();
+
 		for (const [name, value] of Object.entries(old)) {
 			expect(readOpened('settings', name), name).toMatch(CURRENT_FORM);
-			expect(readOpened('settings', name), name).not.toContain(value);
+			// The seal key kept as it was, the others made anew (card 3064, R20).
+			if (name === SEAL_KEY) expect(readOpened('settings', name), name).toBe(`v2:${value}`);
+			else expect(readOpened('settings', name), name).not.toContain(value);
 		}
 		expect(readOpened('settings', 'smtp_pass')).toBe('mail password 53');
 		const sealedLines = lines.filter((line) => line.includes('[WARN] [STARTUP] Sealed '));
@@ -659,17 +668,120 @@ describe('the start step: signing keys and the scrub', () => {
 		const said = recordLines(lines);
 		expect(said).toHaveLength(1);
 		for (const words of [
-			'the backup seal key (the one stored was in plain)',
 			'the remembered-browser key (the one stored was in plain)',
 			'the request-form key (the one stored was in plain)',
-			// A straight apostrophe (C5).
-			"Backups sealed before now are taken as another server's"
+			'Kept at this start and stored encrypted under the MFA key: the backup seal key (kept, sealed in place:'
 		]) {
 			expect(said[0]).toContain(words);
 		}
+		// Backups sealed with the kept key still verify: nothing says otherwise.
+		expect(said[0]).not.toContain("Backups sealed before now are taken as another server's");
 		const stored = Object.keys(old).map((name) => setting(name));
 		start();
 		expect(Object.keys(old).map((name) => setting(name))).toEqual(stored);
+	});
+
+	it('card 3064 T16: a backup seal key held in plain as 64 lower-case hex is sealed in place as v2: and it, with no record of when it was made; the scrub is marked; the record line says it was kept and names no value; a second start keeps it and says nothing', () => {
+		const old = 'e1'.repeat(32);
+		putSetting(SEAL_KEY, old);
+		sqlite.prepare('DELETE FROM settings WHERE key = ?').run(SECRETS_SCRUB_PENDING);
+		const keyBefore = sealKeyHere(sqlite);
+		expect(keyBefore).toBeNull();
+		// The first start after migration 0084, which leaves its one-shot leave (the code review's CS-M2).
+		putSetting(SEAL_KEY_KEEP_ONCE, '2026-11-24 09:00:00');
+
+		expect(sqlite.transaction(() => replaceSigningKeysAtStart(sqlite, key()))()).toEqual([{ setting: SEAL_KEY, because: 'kept' }]);
+
+		expect(setting(SEAL_KEY_KEEP_ONCE)).toBeUndefined();
+		expect(isSealed(setting(SEAL_KEY))).toBe(true);
+		expect(readOpened('settings', SEAL_KEY)).toBe(`v2:${old}`);
+		expect(setting(BACKUP_SEAL_KEY_MADE_AT)).toBeUndefined();
+		expect(setting(SECRETS_SCRUB_PENDING)).toMatch(AN_ISO_TIME);
+		// The key a backup is sealed with is the same 32 bytes a server from before the release used.
+		expect(sealKeyHere(sqlite)?.key).toBe(old);
+
+		// Through the start: one record line saying it was kept, none of a key made, and no value.
+		putSetting(SEAL_KEY, old);
+		putSetting(SEAL_KEY_KEEP_ONCE, '2026-11-24 09:00:00');
+		const lines = start();
+		expect(readOpened('settings', SEAL_KEY)).toBe(`v2:${old}`);
+		expect(setting(BACKUP_SEAL_KEY_MADE_AT)).toBeUndefined();
+		expect(recordLines(lines)).toEqual([
+			expect.stringContaining(
+				'Key change recorded: kept at this start and stored encrypted under the MFA key: the backup seal key (kept, sealed in place: the one stored was in plain'
+			)
+		]);
+		expect(recordLines(lines)[0]).not.toContain('made at this start');
+		expect(lines.filter((line) => line.includes(old.slice(0, 16)))).toEqual([]);
+		const stored = setting(SEAL_KEY);
+		expect(recordLines(start())).toEqual([]);
+		expect(setting(SEAL_KEY)).toBe(stored);
+	});
+
+	it('CS-M2: the seal key is kept once: the first start after 0084 keeps a plain 64-hex key and spends the leave; a plain 64-hex key planted after it is made anew at the next start, with its record, as card 2943 has it', () => {
+		const first = 'e2'.repeat(32);
+		putSetting(SEAL_KEY, first);
+		putSetting(SEAL_KEY_KEEP_ONCE, '2026-11-24 09:00:00');
+
+		const kept = start();
+
+		expect(readOpened('settings', SEAL_KEY)).toBe(`v2:${first}`);
+		expect(setting(SEAL_KEY_KEEP_ONCE)).toBeUndefined();
+		expect(recordLines(kept)).toEqual([expect.stringContaining('the backup seal key (kept, sealed in place:')]);
+
+		// A plain key of the same form, planted later (a host edit, an older image's import).
+		const planted = 'f3'.repeat(32);
+		putSetting(SEAL_KEY, planted);
+		const later = start();
+
+		const now = readOpened('settings', SEAL_KEY)!;
+		expect(now).toMatch(CURRENT_FORM);
+		expect(now).not.toContain(planted);
+		expect(setting(BACKUP_SEAL_KEY_MADE_AT)).toMatch(AN_ISO_TIME);
+		expect(recordLines(later)).toEqual([expect.stringContaining('the backup seal key (the one stored was in plain)')]);
+		expect(later.filter((line) => line.includes(planted.slice(0, 16)))).toEqual([]);
+	});
+
+	it('CS-M2: the leave is spent by the first start whatever it finds: with a seal key already sealed, nothing is made and the leave is gone', () => {
+		start();
+		const stored = setting(SEAL_KEY);
+		putSetting(SEAL_KEY_KEEP_ONCE, '2026-11-24 09:00:00');
+
+		expect(sqlite.transaction(() => replaceSigningKeysAtStart(sqlite, key()))()).toEqual([]);
+
+		expect(setting(SEAL_KEY_KEEP_ONCE)).toBeUndefined();
+		expect(setting(SEAL_KEY)).toBe(stored);
+	});
+
+	it('card 3064 T66: the scrub writes its one success line under STARTUP when it cleared a pending marker, and nothing when none was pending', () => {
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'INFO';
+		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+		try {
+			const scrubbed = (lines: string[]) => lines.filter((line) => line.includes('Scrubbed the old plain text'));
+			putSetting(SECRETS_SCRUB_PENDING, new Date().toISOString());
+
+			let done = false;
+			const lines = linesOf(() => {
+				done = scrubStoredSecrets(sqlite);
+			});
+
+			expect(done).toBe(true);
+			expect(setting(SECRETS_SCRUB_PENDING)).toBeUndefined();
+			expect(scrubbed(lines)).toEqual([`[INFO] [STARTUP] ${SCRUBBED_LINE} `]);
+			expect(SCRUBBED_LINE).toBe('Scrubbed the old plain text from the database file (checkpoint, VACUUM, checkpoint)');
+
+			// None pending: done, and nothing said.
+			const again = linesOf(() => {
+				done = scrubStoredSecrets(sqlite);
+			});
+			expect(done).toBe(true);
+			expect(scrubbed(again)).toEqual([]);
+		} finally {
+			log.mockRestore();
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
 	});
 
 	it("54: a sealed seal key that does not open, with no record: made anew once, of the current form with its record, said once, in the CRITICAL record with the reason that it did not open (R4, R7(d); the fix pass's C4)", () => {
@@ -1068,7 +1180,7 @@ describe('the two signing keys, stored sealed', () => {
 	/** The cookie a remember sets for `user`, as `rememberBrowser` writes it. */
 	function remembered(user: { id: number }, passwordHash: string): { name: string; value: string } {
 		let made: { name: string; value: string } | undefined;
-		rememberBrowser({ set: (name: string, value: string) => (made = { name, value }) } as unknown as Cookies, user.id, passwordHash, null);
+		rememberBrowser({ set: (name: string, value: string) => (made = { name, value }) } as unknown as Cookies, user.id, passwordHash, null, 1);
 		return made!;
 	}
 	const sending = (cookie: { name: string; value: string }) => ({ get: (name: string) => (name === cookie.name ? cookie.value : undefined) });

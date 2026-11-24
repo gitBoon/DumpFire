@@ -155,7 +155,7 @@ beforeEach(() => {
 	// browser is remembered, a write of its own after the request's
 	// transaction, and then kept in memory (card 2194). Made here, so that
 	// each request's writes are its own whichever test runs first.
-	rememberBrowser({ set: () => {} } as unknown as Cookies, 0, '', null);
+	rememberBrowser({ set: () => {} } as unknown as Cookies, 0, '', null, 1);
 	bcrypt.inTransaction.length = 0;
 	bcrypt.afterCompare = undefined;
 	bcrypt.compared = 0;
@@ -173,7 +173,7 @@ const remembers = (cookie: { name: string; value: string }, id: number) =>
 /** A cookie that remembers a browser for `user`'s account as it is now. */
 function rememberedFor(user: SessionUser): { name: string; value: string } {
 	let made: { name: string; value: string } | undefined;
-	rememberBrowser({ set: (name: string, value: string) => (made = { name, value }) } as unknown as Cookies, user.id, hashOf(user.id), null);
+	rememberBrowser({ set: (name: string, value: string) => (made = { name, value }) } as unknown as Cookies, user.id, hashOf(user.id), null, 1);
 	return made!;
 }
 
@@ -483,7 +483,7 @@ describe('PUT /api/account/password', () => {
 		// The remembered-browser key a running server has once any browser was remembered: made here, so that the
 		// request's own writes are the ones failed in turn. Its first making is after the commit and never fails the
 		// request (rememberBrowser); a cache kept across tests hid it until resetDb forgot it (card 2943's fix pass, C11).
-		rememberBrowser({ set: () => {} } as unknown as Cookies, other.id, 'any hash', null);
+		rememberBrowser({ set: () => {} } as unknown as Cookies, other.id, 'any hash', null, 1);
 		return { me, other };
 	};
 

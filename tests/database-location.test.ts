@@ -45,7 +45,7 @@ import {
 	reportNewDatabase,
 	reportOtherDatabase
 } from '$lib/server/startup-checks';
-import { makeUser, resetDb } from './helpers/fixtures';
+import { forgetFirstRunFlags, makeUser, resetDb } from './helpers/fixtures';
 
 /** A file system as the guard sees it: a size for each file, 'dir' for a folder, or an error code. */
 type Disk = Record<string, number | 'dir' | 'EACCES'>;
@@ -86,6 +86,9 @@ const refusalOf = (answer: ReturnType<typeof databaseLocation>): string => {
 };
 
 const LEGACY = '/app/dumpfire.db';
+
+// Each first-run pass in full, as before migration 0084 seeded their flags (card 3064, R23).
+beforeEach(() => forgetFirstRunFlags());
 
 describe('the database about to be opened', () => {
 	it('is not looked at when it is in memory', () => {

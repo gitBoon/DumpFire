@@ -19,6 +19,11 @@
  * may make a session, the secret's text and its QR code. The set-up page
  * itself is tests/two-step-enrol.test.ts.
  *
+ * Then sign-in while two-step sign-in is dormant (card 3064, slice S3a: T34
+ * to T37, T59, T62 and T63 of `docs/planning/card-3064-compatibility-release.md`,
+ * section 9, and slice S3b's two of F24, ruled 2026-11-24, in its section
+ * 13): every other case runs with it required (`resetDb`, R23).
+ *
  * Against the application's own in-memory database, emptied before each test.
  * The form actions are called directly (`action()`), but for the gate's own
  * rules (T40, T41).
@@ -50,12 +55,13 @@ import {
 import { resetAllRateLimits, signInWait } from '$lib/server/rate-limit';
 import { recordPasswordReplaced } from '$lib/server/account-endings';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
-import { resetTwoStep, spendStep } from '$lib/server/mfa-store';
+import { issueEnrolmentLink, resetTwoStep, spendStep } from '$lib/server/mfa-store';
 import { newRecoveryCodes } from '$lib/server/recovery-codes';
 import { stepAt } from '$lib/server/totp';
 import {
 	CHALLENGE_COOKIE,
 	CHALLENGE_SWEEP_EVERY_MS,
+	ENROL_LINK_COOKIE,
 	SECURE_CHALLENGE_COOKIE,
 	codePause,
 	startChallengeSweep,
@@ -84,8 +90,23 @@ import { parseStamp, stamp } from '$lib/timestamps';
 import { action, pageLoad } from './helpers/actions';
 import { readOpened } from './helpers/reads';
 import { effects, type Effects } from './helpers/effects';
-import { gate } from './helpers/gate';
-import { FIXTURE_PASSWORD, fixtureHashOf, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, makeWebhook, resetDb, sessionHashOf, sessionRow } from './helpers/fixtures';
+import { FROM_THE_PAGE, gate } from './helpers/gate';
+import {
+	FIXTURE_PASSWORD,
+	fixtureHashOf,
+	makeApiKey,
+	makeBoard,
+	makeSession,
+	makeSmtp,
+	makeTwoStepDormant,
+	makeUser,
+	makeWebhook,
+	resetDb,
+	sessionHashOf,
+	sessionRow,
+	stepUpCode,
+	writeRequiredSettings
+} from './helpers/fixtures';
 import { VERIFY_AT, codeFor, giveAuthenticator, giveFactor, openReleaseWindow, passwordStep, signInFully, verify, wrongCodeFor, type GivenFactor } from './helpers/two-step';
 
 /** Run while the password is being checked (T42): a password set meanwhile. */
@@ -175,7 +196,7 @@ describe('sessions made without a second factor (decision 24)', () => {
 		const user = makeUser();
 
 		// What createSession makes: two_step 1, and open.
-		const made = createSession(user.id).token;
+		const made = createSession(user.id, { twoStep: 1 }).token;
 		expect(sessionRow(made)?.twoStep).toBe(1);
 		expect(validateSession(made)?.user.id).toBe(user.id);
 
@@ -214,7 +235,7 @@ describe('remembered browsers (decision 24)', () => {
 
 		// This image's cookie, which also makes the secret.
 		let value = '';
-		rememberBrowser({ set: (_name: string, v: string) => (value = v) } as never, user.id, user.passwordHash, null);
+		rememberBrowser({ set: (_name: string, v: string) => (value = v) } as never, user.id, user.passwordHash, null, 1);
 		const sending = (cookie: string) => ({ get: (name: string) => (name === knownBrowserCookie(user.id) ? cookie : undefined) });
 		const [issuedAt, nonce] = value.split('.');
 		expect(rememberedNonce(sending(value), user)).toBe(nonce);
@@ -1229,7 +1250,7 @@ describe('the second step (slice 2)', () => {
 	it('card 2671, case 14: createSession refuses a disabled account; the verify that reaches it is the expired words, rolled back, the challenge left', async () => {
 		const gone = makeUser();
 		disable(gone.id);
-		expect(() => inTransaction(() => createSession(gone.id))).toThrow(AccountDisabled);
+		expect(() => inTransaction(() => createSession(gone.id, { twoStep: 1 }))).toThrow(AccountDisabled);
 		expect(sessionsOf(gone.id)).toEqual([]);
 
 		const { challenge } = await passwordStep(user);
@@ -1486,6 +1507,256 @@ describe('the second step (slice 2)', () => {
 	});
 });
 
+// ─── Card 3064, S3a: sign-in while two-step sign-in is dormant ───────────────
+
+describe('sign-in while two-step sign-in is dormant (card 3064, S3a)', () => {
+	/** The account's row as stored. */
+	const rowOf = (id: number) => db.select().from(users).where(eq(users.id, id)).get()!;
+	const challenges = () => sqlite.prepare('SELECT * FROM sign_in_challenges ORDER BY rowid').all() as ChallengeRow[];
+	const sessionsOf = (userId: number) => db.select().from(sessions).where(eq(sessions.userId, userId)).all();
+	/** The AUTH lines kept in the system log, in order. */
+	const authLines = () => sqlite.prepare("SELECT level, message FROM system_logs WHERE context = 'AUTH' ORDER BY id").all() as { level: string; message: string }[];
+	const disable = (id: number) => db.update(users).set({ disabledAt: stamp() }).where(eq(users.id, id)).run();
+
+	/**
+	 * The MAC domain a remembered-browser cookie's value was signed under for the account `id` whose hash is
+	 * `passwordHash`, by the secret as stored: `known-browser:2`, `known-browser:password-only`, or null for neither.
+	 */
+	function domainOf(value: string, id: number, passwordHash: string): string | null {
+		const [issuedAt, nonce, mac] = value.split('.');
+		const secret = readOpened('settings', KNOWN_BROWSER_SECRET_KEY)!;
+		for (const domain of ['known-browser:2', 'known-browser:password-only']) {
+			if (createHmac('sha256', secret).update(`${domain}:${id}:${issuedAt}:${nonce}:${passwordHash}`).digest('hex') === mac) return domain;
+		}
+		return null;
+	}
+
+	/** The value of the remembered-browser cookie of the account `id` an answer through the gate sets, if any. */
+	const knownSetBy = (res: Response, id: number) =>
+		res.headers
+			.getSetCookie()
+			.find((cookie) => cookie.startsWith(`${knownBrowserCookie(id)}=`))
+			?.slice(`${knownBrowserCookie(id)}=`.length)
+			.split(';')[0];
+
+	beforeEach(() => {
+		makeTwoStepDormant();
+		resetAllRateLimits();
+		delete process.env.COOKIE_SECURE;
+		process.env.LOG_LEVEL = 'INFO';
+		for (const method of ['log', 'info', 'warn', 'error'] as const) vi.spyOn(console, method).mockImplementation(() => {});
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date());
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		duringCheck.run = null;
+		resetAllRateLimits();
+	});
+
+	it('T34: no factor: the password signs in, two_step 0, the last sign-in written, no challenge, the browser remembered under the password-only domain, the throttles forgotten', async () => {
+		const user = makeUser();
+		for (let i = 0; i < 5; i++) await passwordStep(user, { password: 'not the password', ip: A });
+		expect(signInWait(`user:${user.id}`)).toBe(1000);
+
+		const { res, challenge } = await passwordStep(user, { ip: A });
+
+		expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/' });
+		expect(challenge).toBeUndefined();
+		expect(challenges()).toEqual([]);
+		const token = res.cookies[SESSION_COOKIE_NAME].value;
+		expect(sessionRow(token)).toMatchObject({ userId: user.id, twoStep: 0, keptAtRelease: 0 });
+		expect(rowOf(user.id)).toMatchObject({ lastSignInAt: stamp(), lastSignInFrom: A, failedCodesSinceSignIn: 0 });
+		const known = res.cookies[knownBrowserCookie(user.id)];
+		expect(known.options).toMatchObject({ path: '/login', httpOnly: true, sameSite: 'strict' });
+		expect(domainOf(known.value, user.id, fixtureHashOf(user))).toBe('known-browser:password-only');
+		expect(res.deletedCookies).toContain(CHALLENGE_COOKIE);
+		// Forgotten, as a second step passed forgets them: the account's wait and the address's attempts.
+		expect(signInWait(`user:${user.id}`)).toBe(0);
+		const answers: number[] = [];
+		for (let i = 0; i < 5; i++) answers.push((await action('/login', { form: { identity: `nobody-${i}`, password: 'x' }, ip: A })).status);
+		expect(answers).toEqual([400, 400, 400, 400, 400]);
+		expect(authLines()).toContainEqual({
+			level: 'INFO',
+			message: `User "${user.username}" logged in, no second step: two-step sign-in is not required on this server`
+		});
+		// The session opens while dormant.
+		expect(validateSession(token)?.user.id).toBe(user.id);
+	});
+
+	it('T35: a factor held: a verify challenge and no session; the right code then signs in with two_step 1, remembered under known-browser:2', async () => {
+		const user = makeUser();
+		const factor = giveFactor(user);
+
+		const { res, challenge } = await passwordStep(user);
+
+		expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/verify' });
+		expect(challenges()).toEqual([expect.objectContaining({ token_hash: tokenHashOf(challenge!), purpose: 'verify' })]);
+		expect(res.cookies[SESSION_COOKIE_NAME]).toBeUndefined();
+		expect(sessionsOf(user.id)).toEqual([]);
+
+		const signedIn = await verify(challenge, { code: codeFor(factor.secret) });
+		const token = signedIn.cookies[sessionCookieName(VERIFY_AT)].value;
+		expect(sessionRow(token)).toMatchObject({ userId: user.id, twoStep: 1 });
+		expect(domainOf(signedIn.cookies[knownBrowserCookie(user.id)].value, user.id, fixtureHashOf(user))).toBe('known-browser:2');
+	});
+
+	it('T36: no factor, with a live set-up link cookie of the account: an enrol challenge on the link, and no session', async () => {
+		const user = makeUser();
+		const link = inTransaction(() => issueEnrolmentLink(user.id, 'a test'));
+
+		const { res, challenge } = await passwordStep(user, { cookies: { [ENROL_LINK_COOKIE]: link } });
+
+		expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
+		expect(challenges()).toEqual([
+			expect.objectContaining({ token_hash: tokenHashOf(challenge!), purpose: 'enrol', enrol_grant: 'link', enrolment_link_hash: tokenHashOf(link) })
+		]);
+		expect(res.cookies[SESSION_COOKIE_NAME]).toBeUndefined();
+		expect(sessionsOf(user.id)).toEqual([]);
+		expect(rowOf(user.id).lastSignInAt).toBeNull();
+	});
+
+	it('T37: no factor, disabled while the password was checked: the expired words, no session, nothing written', async () => {
+		const user = makeUser();
+		duringCheck.run = () => disable(user.id);
+
+		const { res } = await passwordStep(user);
+
+		expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: SIGN_IN_EXPIRED } });
+		expect(res.cookies).toEqual({});
+		expect(sessionsOf(user.id)).toEqual([]);
+		expect(challenges()).toEqual([]);
+		expect(rowOf(user.id).lastSignInAt).toBeNull();
+	});
+
+	it('T59: no factor, the password changed while it was checked: 409, no session, nothing written', async () => {
+		const user = makeUser();
+		duringCheck.run = () => db.update(users).set({ passwordHash: fixtureHashOf(makeUser()) }).where(eq(users.id, user.id)).run();
+
+		const { res } = await passwordStep(user);
+
+		expect(res).toMatchObject({ type: 'failure', status: 409, data: { error: PASSWORD_CHANGED_DURING_SIGN_IN } });
+		expect(res.cookies).toEqual({});
+		expect(sessionsOf(user.id)).toEqual([]);
+		expect(challenges()).toEqual([]);
+		expect(rowOf(user.id)).toMatchObject({ lastSignInAt: null, lastSignInFrom: null });
+		expect(authLines()).toContainEqual({
+			level: 'WARN',
+			message: `Password accepted for "${user.username}" (user ${user.id}) from IP 127.0.0.1, no second step: the password was changed while it was checked`
+		});
+	});
+
+	/** The cookies `rememberBrowser` signs for the account under each domain: on a password alone (0) and after a second factor (1). */
+	function rememberedBoth(user: { id: number }, passwordHash: string): { passwordOnly: string; twoStep: string } {
+		let passwordOnly = '';
+		rememberBrowser({ set: (_name: string, value: string) => (passwordOnly = value) } as never, user.id, passwordHash, null, 0);
+		let twoStep = '';
+		rememberBrowser({ set: (_name: string, value: string) => (twoStep = value) } as never, user.id, passwordHash, null, 1);
+		return { passwordOnly, twoStep };
+	}
+
+	/** The lane of the newest challenge. */
+	const laneOfLast = () => (sqlite.prepare('SELECT lane FROM sign_in_challenges ORDER BY rowid DESC LIMIT 1').get() as { lane: string }).lane;
+
+	// Changed in S3b (F24): of an account that holds no factor, whose sign-in with a set-up link's cookie shows the lane.
+	it('T62: a cookie remembered under the password-only domain gives the known lane while dormant, and is answered as no cookie once required', async () => {
+		const user = makeUser();
+		const account = { id: user.id, passwordHash: fixtureHashOf(user) };
+		const { passwordOnly, twoStep } = rememberedBoth(user, account.passwordHash);
+		const sending = (value: string) => ({ get: (name: string) => (name === knownBrowserCookie(user.id) ? value : undefined) });
+		// A set-up link's cookie, so that the password step opens a challenge in the lane it was checked in.
+		const link = inTransaction(() => issueEnrolmentLink(user.id, 'a test'));
+		const signIn = () => passwordStep(user, { cookies: { [knownBrowserCookie(user.id)]: passwordOnly, [ENROL_LINK_COOKIE]: link } });
+
+		expect(rememberedNonce(sending(passwordOnly), account)).toBe(passwordOnly.split('.')[1]);
+		expect((await signIn()).res).toMatchObject({ type: 'redirect', location: '/login/enrol' });
+		expect(laneOfLast()).toBe('known');
+
+		writeRequiredSettings();
+
+		expect(rememberedNonce(sending(passwordOnly), account)).toBeNull();
+		expect((await signIn()).res).toMatchObject({ type: 'redirect', location: '/login/enrol' });
+		expect(laneOfLast()).toBe('other');
+		// A browser remembered after a second factor still is.
+		expect(rememberedNonce(sending(twoStep), account)).toBe(twoStep.split('.')[1]);
+	});
+
+	it('F24: dormant, a cookie remembered under the password-only domain is answered as no cookie once its account holds a factor; one remembered after a second factor still gives the known lane', async () => {
+		const user = makeUser();
+		const account = { id: user.id, passwordHash: fixtureHashOf(user) };
+		const { passwordOnly, twoStep } = rememberedBoth(user, account.passwordHash);
+		const sending = (value: string) => ({ get: (name: string) => (name === knownBrowserCookie(user.id) ? value : undefined) });
+		expect(rememberedNonce(sending(passwordOnly), account)).toBe(passwordOnly.split('.')[1]);
+
+		// The account sets up two-step sign-in (R8, on another browser): still dormant.
+		giveFactor(user);
+
+		expect(rememberedNonce(sending(passwordOnly), account)).toBeNull();
+		await passwordStep(user, { cookies: { [knownBrowserCookie(user.id)]: passwordOnly } });
+		expect(laneOfLast()).toBe('other');
+		expect(rememberedNonce(sending(twoStep), account)).toBe(twoStep.split('.')[1]);
+		await passwordStep(user, { cookies: { [knownBrowserCookie(user.id)]: twoStep } });
+		expect(laneOfLast()).toBe('known');
+	});
+
+	it('F24: dormant, no factor, the record of account endings refuses the session (AccountDisabled from createSession): the password-only sign-in answers as expired, no session, nothing written', async () => {
+		const user = makeUser();
+		// Recorded as replaced here while the password was checked: the hash the sign-in then compares is the same, and
+		// `createSession` refuses it (card 2997, decision 7).
+		duringCheck.run = () => inTransaction(() => recordPasswordReplaced(sqlite, user.id));
+
+		const { res } = await passwordStep(user);
+
+		expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: SIGN_IN_EXPIRED } });
+		expect(res.cookies).toEqual({});
+		expect(sessionsOf(user.id)).toEqual([]);
+		expect(challenges()).toEqual([]);
+		expect(rowOf(user.id)).toMatchObject({ lastSignInAt: null, lastSignInFrom: null });
+		expect(authLines()).toContainEqual({
+			level: 'WARN',
+			message: `Password accepted for "${user.username}" (user ${user.id}) from IP 127.0.0.1, no second step: the account was deleted or disabled while its password was checked`
+		});
+		expect(authLines().some((line) => line.message.includes('logged in, no second step'))).toBe(false);
+	});
+
+	it('T63: the own password change and the sign-out remember under the domain of the session they come from', async () => {
+		const passwordOnly = makeUser();
+		const withFactor = makeUser();
+		const headersOf = (code: string) => ({ cookie: `${SESSION_COOKIE_NAME}=${code}`, ...FROM_THE_PAGE, accept: 'application/json' });
+		const hashOf = (id: number) => rowOf(id).passwordHash;
+		const signOut = (code: string) =>
+			gate('POST', '/logout', {
+				headers: { 'content-type': 'application/x-www-form-urlencoded', ...FROM_THE_PAGE, origin: 'http://localhost', accept: 'text/html', cookie: `${SESSION_COOKIE_NAME}=${code}` },
+				body: ''
+			});
+
+		// The own password change: from a session made on a password alone, with the password alone (R6).
+		const changedAlone = await gate('PUT', '/api/account/password', {
+			headers: headersOf(createSession(passwordOnly.id, { twoStep: 0 }).token),
+			body: { currentPassword: FIXTURE_PASSWORD, newPassword: 'another password for the account' }
+		});
+		expect(changedAlone.status).toBe(200);
+		expect(domainOf(knownSetBy(changedAlone, passwordOnly.id)!, passwordOnly.id, hashOf(passwordOnly.id))).toBe('known-browser:password-only');
+
+		// From a session made after a second factor, with a code.
+		const code = stepUpCode(withFactor);
+		const changedWithCode = await gate('PUT', '/api/account/password', {
+			headers: headersOf(createSession(withFactor.id, { twoStep: 1 }).token),
+			body: { currentPassword: FIXTURE_PASSWORD, currentCode: code, newPassword: 'another password for the account' }
+		});
+		expect(changedWithCode.status).toBe(200);
+		expect(domainOf(knownSetBy(changedWithCode, withFactor.id)!, withFactor.id, hashOf(withFactor.id))).toBe('known-browser:2');
+
+		// The sign-out, of each.
+		const outAlone = await signOut(createSession(passwordOnly.id, { twoStep: 0 }).token);
+		expect(outAlone.headers.get('location')).toBe('/login');
+		expect(domainOf(knownSetBy(outAlone, passwordOnly.id)!, passwordOnly.id, hashOf(passwordOnly.id))).toBe('known-browser:password-only');
+		const outWithCode = await signOut(createSession(withFactor.id, { twoStep: 1 }).token);
+		expect(domainOf(knownSetBy(outWithCode, withFactor.id)!, withFactor.id, hashOf(withFactor.id))).toBe('known-browser:2');
+	});
+});
+
 // ─── Slice 3: the set-up page's pieces ───────────────────────────────────────
 
 describe('what setting up is built from (slice 3)', () => {
@@ -1507,7 +1778,13 @@ describe('what setting up is built from (slice 3)', () => {
 		};
 		walk('src');
 
-		expect([...new Set(callers)].sort()).toEqual(['src/lib/server/second-step.ts', 'src/routes/api/account/password/+server.ts']);
+		// And, since card 3064 (R14), auth.ts's swap of a session kept at the release, read by the old cookie name, for a
+		// new code with the kept session's start and `two_step` 0.
+		expect([...new Set(callers)].sort()).toEqual([
+			'src/lib/server/auth.ts',
+			'src/lib/server/second-step.ts',
+			'src/routes/api/account/password/+server.ts'
+		]);
 	});
 
 	it('T46: base32 meets RFC 4648; the otpauth text keeps a space and a colon in a name; the secret is shown in groups of four', () => {

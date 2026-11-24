@@ -1,5 +1,5 @@
 /**
- * startup-checks.ts — sixteen things about an installation that are said in the
+ * startup-checks.ts — seventeen things about an installation that are said in the
  * system log when the server starts, because nothing else would say them.
  *
  * None stops the server and none changes anything. They are looked for by
@@ -44,7 +44,10 @@
  * names, or is no plain web address (card 2847 and its code review): links
  * go to the configured address instead. The sixteenth is a stored App URL in
  * use that the superadmin is not recorded as having set (its code review,
- * CS2): an administrator could save it until card 2847.
+ * CS2): an administrator could save it until card 2847. The seventeenth, at
+ * CRITICAL, is two-step sign-in's release moment held with no switch (card
+ * 3064, R11): it was required here and is not now, which only a host edit or
+ * a restore gone wrong does.
  *
  * And two that do stop the server, after the migrations and before it
  * listens: `refuseUserlessBesideAnother`, when the database in use has no
@@ -186,6 +189,7 @@ import {
 } from './mfa-key';
 import { factorAad, openSealed, sealWith } from './mfa-crypto';
 import { readMfaKeyCheck } from './mfa-store';
+import { TWO_STEP_TURNED_OFF, twoStepTurnedOff } from './two-step-switch';
 import {
 	PROCESS_STARTED_AT,
 	SECRETS_SCRUB_PENDING,
@@ -918,7 +922,10 @@ export const INSTALLATION_ID_REPLACED =
  * where one is in plain or of the form before `v2:` (and the seal key where
  * none is stored), never sealed in place (`replaceSigningKeysAtStart`), with
  * one CRITICAL key-change record line after the commit, which names a key
- * replaced because it did not open too (its fix pass, C4). A second instance
+ * replaced because it did not open too (its fix pass, C4). Card 3064 (R20):
+ * but the backup seal key held in plain as 64 lower-case hex, as a server from
+ * before the compatibility release holds it, is kept, sealed in place, and the
+ * same record line says so. A second instance
  * started meanwhile waits on the IMMEDIATE transaction for better-sqlite3's
  * default busy timeout (5 seconds; none is set): within it, it finds nothing
  * left to make; past it, the transaction fails and the start is refused.
@@ -962,8 +969,9 @@ export function sealStoredSecretsAtStart(
 				const normalisedNow = normaliseServiceAccounts(database);
 				if (normalisedNow.length > 0) markScrubPending(database);
 				// Card 2943 (R1, R5, R8): the three signing keys every older copy holds, made anew where one is in
-				// plain or of an older form, and the backup seal key where there is none; never sealed in place. Before
-				// the sweep, which leaves them. Marks the scrub itself; no first sealing.
+				// plain or of an older form, and the backup seal key where there is none; never sealed in place, but for a
+				// seal key of 64 hex from before the compatibility release (card 3064, R20). Before the sweep, which leaves
+				// them. Marks the scrub itself; no first sealing.
 				const madeNow = replaceSigningKeysAtStart(database, key);
 				// Card 3009 (R6): this installation's id, made once and kept, in the same transaction; every backup carries it.
 				// One not of its form (a host's edit) is made anew, said CRITICAL after the commit (its code review, FP13).
@@ -1106,10 +1114,20 @@ export function retryScrubInBackground(scrub: () => boolean): void {
 }
 
 /**
+ * What the scrub says when it has cleared a pending marker (card 3064, R21,
+ * S-L5): the release's first start must say it before the server listens, as
+ * the proof that the plain text migration 0084 overwrote has left the file.
+ */
+export const SCRUBBED_LINE = 'Scrubbed the old plain text from the database file (checkpoint, VACUUM, checkpoint)';
+
+/**
  * The scrub of decision 14 (S6), while `secrets_scrub_pending` is set: a
  * checkpoint that empties the WAL, a `VACUUM` that rewrites every page, and a
  * checkpoint again; the marker cleared only when all three succeed. Answers
  * whether it is done. Never throws.
+ *
+ * Once it has cleared a marker, one INFO line under STARTUP says so
+ * (`SCRUBBED_LINE`, card 3064, R21); with none pending it says nothing.
  */
 export function scrubStoredSecrets(database: Database.Database = sqlite): boolean {
 	try {
@@ -1124,6 +1142,12 @@ export function scrubStoredSecrets(database: Database.Database = sqlite): boolea
 		database.prepare('DELETE FROM settings WHERE key = ?').run(SECRETS_SCRUB_PENDING);
 		// The marker's own delete is in the log again: emptied once more, best effort.
 		checkpointTruncate(database);
+		// Card 3064 (R21): said once done, in a try of its own, so that a line lost never reads as the scrub failing.
+		try {
+			log.info(SCRUBBED_LINE);
+		} catch {
+			// The scrub is done; only its line was lost.
+		}
 		return true;
 	} catch (err) {
 		try {
@@ -2780,7 +2804,21 @@ export function reportPlainOriginBehindHttps(isDev: boolean = dev, origin: strin
 }
 
 /**
- * Say all sixteen, if they are so. Called once, from hooks.server.ts, as the
+ * One CRITICAL line at every start that finds two-step sign-in's release
+ * moment (`two_step_released_at`) and not its switch (card 3064, R11, S-L7,
+ * decision 51): two-step sign-in was required here and is not now. Nothing in
+ * the application turns it off, so only a host edit or a restore gone wrong
+ * leaves that state, and it must not go unnoticed. Kept for good, as every
+ * CRITICAL line is (card 2899). Returns whether it was said.
+ */
+export function reportTwoStepTurnedOff(): boolean {
+	if (!twoStepTurnedOff(sqlite)) return false;
+	log.critical(TWO_STEP_TURNED_OFF);
+	return true;
+}
+
+/**
+ * Say all seventeen, if they are so. Called once, from hooks.server.ts, as the
  * server loads.
  *
  * It never throws, whatever goes wrong in looking: a fault here must not be
@@ -2806,7 +2844,8 @@ export function reportInstallation(): void {
 		reportUnconfirmedHostKeys,
 		() => (plainOriginSaid = reportPlainOriginBehindHttps()),
 		() => reportAppUrlNotUsed(plainOriginSaid),
-		reportAppUrlSetByOther
+		reportAppUrlSetByOther,
+		reportTwoStepTurnedOff
 	]) {
 		try {
 			check();

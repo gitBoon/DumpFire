@@ -71,6 +71,7 @@ import {
 	makeSubBoard,
 	makeSubtask,
 	makeTeam,
+	makeTwoStepDormant,
 	makeUser,
 	makeWebhook,
 	resetDb,
@@ -464,9 +465,10 @@ describe('POST /api/admin/reset', () => {
 				]);
 
 				// Everything is cleared, the users among them: they used to stay.
-				// Settings hold three rows: the form signing key, made again as the reset commits (card 2750),
-				// sealed, the key check recorded with it (card 2898, S2), and the scrub marked pending (its code review, S1).
-				for (const table of cleared()) expect(count(table), table).toBe(table === 'settings' ? 3 : 0);
+				// Settings hold four rows: two-step sign-in's switch, written back (card 3064, F3), the form signing key,
+				// made again as the reset commits (card 2750), sealed, the key check recorded with it (card 2898, S2), and
+				// the scrub marked pending (its code review, S1).
+				for (const table of cleared()) expect(count(table), table).toBe(table === 'settings' ? 4 : 0);
 
 				// The backup history is as it was, and so is the line that was in
 				// the system log.
@@ -556,7 +558,10 @@ describe('POST /api/admin/reset', () => {
 			expect.stringMatching(/^INSERT OR IGNORE INTO api_key_revocations \(key_id, key_hash, revoked_at, revoked_because\) SELECT id, key_hash, @at, @because FROM api_keys WHERE 1 = 1 /),
 			'DELETE FROM api_keys WHERE 1 = 1 RETURNING id'
 		]);
-		expect(run.writes.slice(STEP_UP_WRITES.length + 6, -3).sort()).toEqual(
+		// After the clear, two-step sign-in's switch written back, before the form key (card 3064, F3): the reset is asked
+		// with it on, as every suite is (R23), and the release moment is not held here.
+		expect(run.writes.at(-4)).toBe('INSERT INTO settings (key, value) VALUES (?, ?)');
+		expect(run.writes.slice(STEP_UP_WRITES.length + 6, -4).sort()).toEqual(
 			cleared()
 				.map((table) => `DELETE FROM "${table}"`)
 				.sort()
@@ -689,6 +694,42 @@ describe('POST /api/admin/reset', () => {
 		expect(marker?.value).not.toBe('2026-01-01T00:00:00.000Z');
 	});
 
+	it('T49 (card 3064, F3): with two-step sign-in required, writes its switch and its release moment back, as they were; with it dormant, leaves neither', async () => {
+		const twoStep = () =>
+			sqlite.prepare("SELECT key, value FROM settings WHERE key IN ('two_step_required_at', 'two_step_released_at') ORDER BY key").all();
+		const released = { key: 'two_step_released_at', value: '2026-11-24 09:00:00' };
+		const required = { key: 'two_step_required_at', value: '2026-11-25 10:30:00' };
+
+		// Required: both kept, with their own values.
+		const e = everything();
+		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?), (?, ?)').run(released.key, released.value, required.key, required.value);
+		expect((await reset(e)).status).toBe(200);
+		expect(twoStep()).toEqual([released, required]);
+
+		// Dormant: neither, though the release moment was held.
+		resetDb();
+		const dormant = everything();
+		makeTwoStepDormant();
+		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(released.key, released.value);
+		expect((await reset(dormant)).status).toBe(200);
+		expect(twoStep()).toEqual([]);
+	});
+
+	// Card 3064, S4: ruled 2026-11-24 from S3b's cases found missing.
+	it('S4 (card 3064, F3): with two-step sign-in required and no release moment held, writes the switch back alone, as it was', async () => {
+		const twoStep = () =>
+			sqlite.prepare("SELECT key, value FROM settings WHERE key IN ('two_step_required_at', 'two_step_released_at') ORDER BY key").all();
+		const required = { key: 'two_step_required_at', value: '2026-11-25 10:30:00' };
+		const e = everything();
+		sqlite.prepare("DELETE FROM settings WHERE key = 'two_step_released_at'").run();
+		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(required.key, required.value);
+		expect(twoStep()).toEqual([required]);
+
+		expect((await reset(e)).status).toBe(200);
+
+		expect(twoStep()).toEqual([required]);
+	});
+
 	it('forgets the key the public request form signs with, so a form token made before it is refused after it', async () => {
 		const e = everything();
 		// As a process that has just started: nothing cached by an earlier test.
@@ -702,8 +743,9 @@ describe('POST /api/admin/reset', () => {
 		// The key was a setting and went with the rest. The copy of it in memory
 		// used to stay, and went on accepting this token. A new one is made as
 		// the reset commits (card 2750), sealed, with the key check it records
-		// (card 2898), and the scrub marked pending (its code review, S1): the only settings.
-		const only = [{ key: 'mfa_key_check' }, { key: 'request_form_secret' }, { key: 'secrets_scrub_pending' }];
+		// (card 2898), and the scrub marked pending (its code review, S1): the only settings, with two-step sign-in's switch
+		// written back (card 3064, F3).
+		const only = [{ key: 'mfa_key_check' }, { key: 'request_form_secret' }, { key: 'secrets_scrub_pending' }, { key: 'two_step_required_at' }];
 		expect(sqlite.prepare('SELECT key FROM settings ORDER BY key').all()).toEqual(only);
 		expect(verifyFormToken(before)).toBe(false);
 
@@ -730,9 +772,9 @@ describe('POST /api/admin/reset', () => {
 		expect(res.status).toBe(200);
 		expect(res.body).toMatchObject({ success: true, redirect: '/setup', trash: { moved: 3, missing: 0 } });
 		expect(res.body.trash.failed).toEqual([expect.stringMatching(/^card \d+, "\.\.\/outside\.txt": /)]);
-		// Settings hold three rows: the form signing key, made again as the reset commits (card 2750), the key check (card 2898)
-		// and the scrub marked pending (its code review, S1).
-		for (const table of cleared()) expect(count(table), table).toBe(table === 'settings' ? 3 : 0);
+		// Settings hold four rows: two-step sign-in's switch, written back (card 3064, F3), the form signing key, made again
+		// as the reset commits (card 2750), the key check (card 2898) and the scrub marked pending (its code review, S1).
+		for (const table of cleared()) expect(count(table), table).toBe(table === 'settings' ? 4 : 0);
 		expect(logLines().at(-1)?.message).toMatch(
 			/3 attachment file\(s\) moved to the trash, and 1 could not be moved and are where they were: card \d+, "\.\.\/outside\.txt"/
 		);

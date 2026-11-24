@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.96
+version: 1.97
 status: As-Built
-date: 2026-11-23
+date: 2026-11-24
 tags:
+  - card-3064
+  - two-step-dormant
   - card-2687
   - decision-waits
   - card-2686
@@ -37,7 +39,7 @@ tags:
   - two-step-sign-in
   - authenticators
   - api-key-deadline
-description: "Non-technical overview of all DumpFire features for stakeholders, managers, and end users"
+description: "Non-technical overview of all DumpFire features for stakeholders, managers, and end users, with two-step sign-in not required until the superadmin requires it and no API key deadline until one is applied (card 3064)"
 ---
 
 # DumpFire — Feature Overview
@@ -784,25 +786,27 @@ Three habits keep the figures honest (the whole feature, with its rules, is in [
 
 ### Two-Step Sign-In
 
-From 13 November 2026 (card 2769), **every account signs in in two steps**: the password, then a six-digit code from an authenticator app on the person's phone. There is no way to switch it off, for anyone.
+Since card 2769, **an account that has set up two-step sign-in signs in in two steps**: the password, then a six-digit code from an authenticator app on the person's phone. Since the compatibility release (card 3064), **two-step sign-in is not required until the superadmin requires it**: until then an account with no authenticator signs in on its password alone, as before, and is asked for its password alone before the actions that ask again; anyone can set it up beforehand with **Set up two-step sign-in** on **My Account**, and from then on is asked for a code. Once the superadmin requires it (with every administrator set up first), every account signs in in two steps, and nothing in the application switches it off. See [Two-Step Sign-In, Not Required Until the Superadmin Requires It](admin-guide.md#two-step-sign-in-not-required-until-the-superadmin-requires-it-card-3064).
 
 - **Setting it up** — the first time, the person scans a QR code with their app, types the code it shows, and saves ten recovery codes. Each recovery code works once, for when the phone is lost
 - **Wrong codes** — five in a row pause code entry for 15 minutes, and longer each time after, up to a lock at thirty; a recovery code always works
 - **Told when something is wrong** — the owner is emailed when two-step sign-in is set up, when a recovery code is used, when codes are paused or locked, when someone gets the password right but the code wrong, and when an authenticator is added or removed or new recovery codes are made. After such a thing the next sign-in shows what happened, with the account's API keys and webhooks to check, and a warning stays at the top of **My Account** until its holder clears it with **That was me** (password and a code) or changes their password
 - **Several authenticators** (card 2772, since this server took that release) — **My Account → 🛡️ Two-step sign-in** lists your authenticators, each with when it was added and last used, and lets you add one (up to three: a main phone, a spare, a new phone), remove one (never the last: add the new one first; removing one signs your other browsers out), and make a new set of ten recovery codes, shown once. A code from any of your authenticators works. Each wrong code counts once for each authenticator that can be checked on the server, so codes are no easier to guess: with two, three wrong codes in a row pause code entry and two wrong answers at a confirmation sign the browser out, and the confirmation dialog says so before you send (it counts every authenticator you hold, so it never says less than is counted)
 - **A lost phone** — now self-service while you still have a recovery code: sign in with a recovery code, add your new phone on My Account, remove the lost one, then make new recovery codes and change your password. Without a recovery code, an administrator resets the account's two-step sign-in and hands the person a set-up link themselves; the superadmin's is reset on the server. The reset pauses the account's report schedules (card 2894), ends the account's API keys and switches off the webhooks it set up (card 2915: a key skips the second factor, so one made by whoever had the phone would outlive the reset), and the administrator is told how many of each, with the day each was made, to pass on; the person's email names each, and they make new keys once their new authenticator is set up. On the server the superadmin's reset can keep the keys when told to
-- **API keys made before two-step sign-in** (card 2772) — each key that existed on the day of that release gets a deadline 60 days later, shown beside it on My Account with **Keep this key**: keeping it, with your password and a code, leaves the key itself unchanged. A key not kept stops working on that date. Keys made since have no deadline
+- **API keys made before two-step sign-in** (card 2772) — on a server upgraded in the compatibility release (card 3064) no key has a deadline until the administrator applies one, as a planned event with notice. Then each key that exists that day gets a deadline, shown beside it on My Account with **Keep this key**: keeping it, with your password and a code, leaves the key itself unchanged. A key not kept stops working on that date. Keys made since have no deadline
 
 ```mermaid
 flowchart LR
     P["Password"] --> F{"Authenticator<br/>set up?"}
     F -->|"yes"| C["Code from the app,<br/>or a recovery code"]
-    F -->|"no"| S["Scan the QR code,<br/>type a code,<br/>save ten recovery codes"]
+    F -->|"no"| R{"Required by<br/>the superadmin?"}
+    R -->|"yes"| S["Scan the QR code,<br/>type a code,<br/>save ten recovery codes"]
+    R -->|"not yet"| In
     C --> In["Signed in"]
     S --> In
 ```
 
-On the day it was turned on everyone was signed out once and set it up at their next sign-in.
+On the day the superadmin requires it, everyone signs in again once, and whoever has not set it up does so at their next sign-in. The compatibility release itself signs nobody out.
 
 ## Administration
 

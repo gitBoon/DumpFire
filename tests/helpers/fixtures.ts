@@ -147,6 +147,12 @@ export function resetDb(): void {
 	} finally {
 		sqlite.pragma('foreign_keys = ON');
 	}
+	// The settings tests/setup.ts writes back after the migrations, written
+	// back here too (card 3064, R23, F19): each suite tests the server as it is
+	// once two-step sign-in is required and API keys have their deadline
+	// (events E3 and E4). A suite of the dormant state deletes the switch in
+	// its own `beforeEach`, after this.
+	writeRequiredSettings();
 	seq = 0;
 	fixtureAccounts = 0;
 	fixtureHashes.clear();
@@ -176,6 +182,24 @@ export function resetDb(): void {
 	// And the remembered-browser key held in memory, which the wipe deleted
 	// (card 2943's fix pass, C11): each test starts as a server does.
 	resetKnownBrowserSecretCache();
+}
+
+/**
+ * The settings migration 0084 takes back and tests/setup.ts writes back (card 3064, R23): `two_step_released_at` now and
+ * `api_key_deadline` 60 days on, as 0066 and 0069 wrote them on a fresh database, and two-step sign-in's switch, so that
+ * two-step sign-in is required. Written by `resetDb` after its wipe (F19).
+ */
+export function writeRequiredSettings(): void {
+	sqlite.exec(`
+		INSERT INTO settings (key, value) VALUES
+			('two_step_required_at', datetime('now'))
+		ON CONFLICT (key) DO NOTHING;
+	`);
+}
+
+/** Two-step sign-in dormant, as the compatibility release leaves it until the superadmin requires it (card 3064, R1): the switch deleted. */
+export function makeTwoStepDormant(): void {
+	sqlite.prepare("DELETE FROM settings WHERE key = 'two_step_required_at'").run();
 }
 
 export type Role = 'user' | 'admin' | 'superadmin';
@@ -327,7 +351,7 @@ export function makeApiKeyRow(user: SessionUser, opts: { expiresAt?: string } = 
  * `api()` turns the cookie into the credential the gate would record.
  */
 export function makeSession(user: SessionUser): string {
-	return createSession(user.id).token;
+	return createSession(user.id, { twoStep: 1 }).token;
 }
 
 /**
@@ -810,6 +834,27 @@ export function makeSmtp(): void {
 export function startedSinceAlreadyOffHeld(database: { prepare(source: string): { run(...args: unknown[]): unknown } } = sqlite): void {
 	database.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('webhooks_already_off_held', '2026-11-19T00:00:00.000Z')").run();
 	database.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('webhooks_readable_by_disabled_held', '2026-11-19 00:00:00')").run();
+}
+
+/**
+ * The six first-run flags migration 0084 seeds (card 3064, R19), so that each first-run pass takes its steady state at
+ * the start of the compatibility release.
+ */
+export const FIRST_RUN_FLAGS = [
+	'webhooks_already_off_held',
+	'webhooks_readable_by_disabled_held',
+	'webhook_reveals_seeded',
+	'webhooks_before_keys_announced',
+	'report_schedules_announced',
+	'stored_images_rechecked'
+] as const;
+
+/**
+ * The six first-run flags taken off `database`, as a server that has never started holds it: a suite of a first-run
+ * pass calls it in a `beforeEach`, so that each pass runs there in full, as before 0084 seeded them (card 3064, R23).
+ */
+export function forgetFirstRunFlags(database: { prepare(source: string): { run(...args: unknown[]): unknown } } = sqlite): void {
+	database.prepare(`DELETE FROM settings WHERE key IN (${FIRST_RUN_FLAGS.map(() => '?').join(', ')})`).run(...FIRST_RUN_FLAGS);
 }
 
 /** A person in the directory (card 2674): active, with no account and no job title unless told otherwise. */

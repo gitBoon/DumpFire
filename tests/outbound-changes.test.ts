@@ -27,7 +27,7 @@ import { HELD_DELETED_HERE, HELD_REMOVED_HERE, HELD_REPOINTED_HERE } from '$lib/
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { effects } from './helpers/effects';
-import { makeApiKeyRow, makeBoard, makeSmtp, makeUser, makeWebhook, resetDb, stepUp } from './helpers/fixtures';
+import { forgetFirstRunFlags, makeApiKeyRow, makeBoard, makeSmtp, makeUser, makeWebhook, resetDb, stepUp } from './helpers/fixtures';
 import { runMigrations } from '$lib/server/db/migrate';
 import { OUTBOUND_CHANGE_HELD_SQL } from '$lib/server/db/restore';
 import { currentMfaKey, keyFromBytes } from '$lib/server/mfa-key';
@@ -69,6 +69,9 @@ function migratedDb(): Database.Database {
 	runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 	return database;
 }
+
+// Each first-run pass in full, as before migration 0084 seeded their flags (card 3064, R23).
+beforeEach(() => forgetFirstRunFlags());
 
 afterEach(() => {
 	for (const database of opened.splice(0)) database.close();

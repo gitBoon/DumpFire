@@ -68,7 +68,8 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { CLOSES_HELP, closesField, type Refusal, type Warning } from '$lib/decision-readiness';
 	import { openForInput } from '$lib/decision-rules';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	type Actions = PageData['actions'];
 	type Summary = NonNullable<PageData['republishSummary']>;
@@ -366,12 +367,12 @@
 	);
 	const withdrawMessage = $derived(
 		actions.withdrawAsks
-			? `"${title}" ends for good, and every participant is mailed your reason. ${ASKS_FOR_PASSWORD}`
+			? `"${title}" ends for good, and every participant is mailed your reason. ${asksForPassword(codeAskedHere())}`
 			: `"${title}" is withdrawn. It was never opened, so nobody is told.`
 	);
 	const deleteMessage = $derived(
 		actions.deleteAsks
-			? `"${title}" and its record (every version, response and event) are deleted for good. ${ASKS_FOR_PASSWORD}`
+			? `"${title}" and its record (every version, response and event) are deleted for good. ${asksForPassword(codeAskedHere())}`
 			: `The draft "${title}" is deleted. It was never opened, so it holds no record.`
 	);
 

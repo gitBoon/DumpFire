@@ -37,7 +37,8 @@
 	import { destTypeLabels, type BackupHistoryEntry, type DestType } from '$lib/admin/format';
 	import { toasts } from '$lib/stores/toast';
 	import { driveScopeIsNarrow } from '$lib/drive-scope';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import BackupHistory from './BackupHistory.svelte';
 	import DestinationForm from './DestinationForm.svelte';
 	import GDriveConnectModal from './GDriveConnectModal.svelte';
@@ -445,7 +446,7 @@
 		if (!addable()) return;
 		confirm(
 			'Add Destination',
-			`Add "${destName.trim()}" to the backup destinations? Every backup from now on is sent to it. ${ASKS_FOR_PASSWORD}`,
+			`Add "${destName.trim()}" to the backup destinations? Every backup from now on is sent to it. ${asksForPassword(codeAskedHere())}`,
 			(proof: StepUpProof) => addDestination(proof),
 			{ askPassword: true }
 		);
@@ -477,7 +478,7 @@
 		if (!editingDest || !destName.trim()) return;
 		confirm(
 			'Save Destination',
-			`Save the changes to "${editingDest}"? Every backup from now on is sent as it is saved. ${ASKS_FOR_PASSWORD}`,
+			`Save the changes to "${editingDest}"? Every backup from now on is sent as it is saved. ${asksForPassword(codeAskedHere())}`,
 			(proof: StepUpProof) => updateDestination(proof),
 			{ askPassword: true }
 		);
@@ -629,7 +630,7 @@
 		if (!key) return;
 		confirm(
 			'Confirm Host Key',
-			`Save "${name}" with this host key? Backups are sent only to a server that shows it. ${ASKS_FOR_PASSWORD}`,
+			`Save "${name}" with this host key? Backups are sent only to a server that shows it. ${asksForPassword(codeAskedHere())}`,
 			(proof: StepUpProof) => confirmHostKey(name, key, proof),
 			{ askPassword: true }
 		);
@@ -669,7 +670,7 @@
 	function askRunNow() {
 		confirm(
 			'Run Backup Now',
-			`Send a copy of the whole database to every destination now? ${ASKS_FOR_PASSWORD}`,
+			`Send a copy of the whole database to every destination now? ${asksForPassword(codeAskedHere())}`,
 			(proof: StepUpProof) => runManualBackup(proof),
 			{ askPassword: true }
 		);
@@ -823,7 +824,7 @@
 						<!-- Off while a save is on its way, as + Add Destination is (the card 2305 review). -->
 						<button class="btn-ghost btn-xs" disabled={backupSaving} onclick={() => startEditDestination(dest)}>✏️ Edit</button>
 						<!-- Off while the destinations are being saved: a second removal sent before the first was answered was put back wrongly when the first was refused. The superadmin's alone (card 2398): aria-disabled for an administrator, saying why when pressed. -->
-						<button class="btn-ghost btn-xs danger" disabled={backupSaving} aria-disabled={isSuperadmin ? undefined : 'true'} title={isSuperadmin ? undefined : 'Removing a destination needs the superadmin'} onclick={() => (isSuperadmin ? confirm('Remove Destination', `Remove "${dest.name}" from backup destinations? ${ASKS_FOR_PASSWORD}`, async (proof: StepUpProof) => removeDestination(dest.name, proof), { askPassword: true }) : sayRule())}>🗑️</button>
+						<button class="btn-ghost btn-xs danger" disabled={backupSaving} aria-disabled={isSuperadmin ? undefined : 'true'} title={isSuperadmin ? undefined : 'Removing a destination needs the superadmin'} onclick={() => (isSuperadmin ? confirm('Remove Destination', `Remove "${dest.name}" from backup destinations? ${asksForPassword(codeAskedHere())}`, async (proof: StepUpProof) => removeDestination(dest.name, proof), { askPassword: true }) : sayRule())}>🗑️</button>
 					</div>
 				</div>
 				<div class="dest-card-detail">

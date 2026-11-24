@@ -43,15 +43,29 @@
   recovery-code mode a wrong answer counts one, and the line goes. A dialog
   mounted with no page data reads 0, and shows none.
 
+  While two-step sign-in is dormant, an account with no second factor is
+  asked for its password alone (card 3064, R6, R7): with the layout's
+  `codeAsked` false, the code field, its switch and the weight line are not
+  drawn, Enter in the password is `onEnter`, and `code` stays bound, empty.
+  Anything but `false`, a dialog mounted with no page data among them, asks
+  for the code: the server's rule is the guard, and the field only follows it.
+  Where the server answers `STEP_UP_MISSING` (it asks a code) while the page
+  says none is asked (two-step sign-in required, or a factor set up, since the
+  page was loaded), the page's data is read again (`invalidateAll`), so that
+  the code field appears and the person is not left with a dialog that cannot
+  be answered (card 3064's code review, CS-L5). The app's confirm dialog
+  mounts this field on every such answer, so it is covered here too.
+
   The password and the code are the parent's, bound in `value` and `code`:
   held there alone, never in a toast or in storage, and cleared once sent
   (decision 12). `code` has no default, so a dialog that does not bind it is
   refused by `svelte-check` (card 2770, UX2).
 -->
 <script lang="ts">
-	import { flushSync } from 'svelte';
+	import { flushSync, untrack } from 'svelte';
+	import { invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
-	import { passwordKeptAfter, STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
+	import { passwordKeptAfter, STEP_UP_MISSING, STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
 
 	let {
 		value = $bindable(''),
@@ -106,12 +120,26 @@
 	});
 
 	/**
+	 * Whether a code is asked for beside the password, from the layout's load
+	 * (card 3064, R7): false only where the page's data says so; asked where it
+	 * cannot be read.
+	 */
+	let codeAsked = $derived.by(() => {
+		try {
+			return page.data?.codeAsked !== false;
+		} catch {
+			return true;
+		}
+	});
+
+	/**
 	 * What one wrong answer costs here, said before sending (card 2772, D4,
 	 * E2): an authenticator code counts one for each authenticator, and three
-	 * sign the browser out. Null with one, and for a recovery code.
+	 * sign the browser out. Null with one, for a recovery code, and with no
+	 * code asked (card 3064).
 	 */
 	let weightLine = $derived(
-		recovery || authenticators < 2
+		!codeAsked || recovery || authenticators < 2
 			? null
 			: authenticators === 2
 				? 'You have 2 authenticators, so each wrong answer here counts twice: two wrong answers sign this browser out.'
@@ -151,13 +179,19 @@
 	// the code, where the password is kept.
 	$effect(() => {
 		if (refusal === null || ended) return;
-		if (keepsPassword) codeInput?.focus();
+		if (keepsPassword && codeInput) codeInput.focus();
 		else input?.focus();
+	});
+
+	// The server asks a code the page did not know of (card 3064's code review,
+	// CS-L5): the page's data read again, which draws the code field.
+	$effect(() => {
+		if (refusal === STEP_UP_MISSING && !codeAsked) untrack(() => void invalidateAll().catch(() => {}));
 	});
 
 	function passwordKeydown(e: KeyboardEvent) {
 		if (e.key !== 'Enter') return;
-		if (code.trim() === '') {
+		if (codeAsked && code.trim() === '') {
 			e.preventDefault();
 			codeInput?.focus();
 			return;
@@ -202,29 +236,32 @@
 		aria-describedby={refusal !== null ? refusalId : undefined}
 		onkeydown={passwordKeydown}
 	/>
-	<label for={codeId}>{recovery ? 'Recovery code' : 'Code from your authenticator app'}</label>
-	<input
-		id={codeId}
-		type="text"
-		class="form-input"
-		inputmode={recovery ? 'text' : 'numeric'}
-		autocomplete={recovery ? 'off' : 'one-time-code'}
-		autocapitalize={recovery ? 'characters' : undefined}
-		autocorrect={recovery ? 'off' : undefined}
-		spellcheck={recovery ? 'false' : undefined}
-		maxlength={recovery ? undefined : 7}
-		placeholder={recovery ? 'XXXX-XXXX-XXXX-XXXX' : '123456'}
-		bind:value={code}
-		bind:this={codeInput}
-		disabled={disabled || ended}
-		{readonly}
-		aria-invalid={refusal !== null ? 'true' : undefined}
-		aria-describedby={codeDescribedBy}
-		onkeydown={codeKeydown}
-	/>
-	<button type="button" class="code-switch" onclick={switchMode} disabled={disabled || readonly || ended}>
-		{recovery ? 'Use a code from your authenticator app instead' : 'Use a recovery code instead'}
-	</button>
+	<!-- The code, only where it is asked for (card 3064, R7). -->
+	{#if codeAsked}
+		<label for={codeId}>{recovery ? 'Recovery code' : 'Code from your authenticator app'}</label>
+		<input
+			id={codeId}
+			type="text"
+			class="form-input"
+			inputmode={recovery ? 'text' : 'numeric'}
+			autocomplete={recovery ? 'off' : 'one-time-code'}
+			autocapitalize={recovery ? 'characters' : undefined}
+			autocorrect={recovery ? 'off' : undefined}
+			spellcheck={recovery ? 'false' : undefined}
+			maxlength={recovery ? undefined : 7}
+			placeholder={recovery ? 'XXXX-XXXX-XXXX-XXXX' : '123456'}
+			bind:value={code}
+			bind:this={codeInput}
+			disabled={disabled || ended}
+			{readonly}
+			aria-invalid={refusal !== null ? 'true' : undefined}
+			aria-describedby={codeDescribedBy}
+			onkeydown={codeKeydown}
+		/>
+		<button type="button" class="code-switch" onclick={switchMode} disabled={disabled || readonly || ended}>
+			{recovery ? 'Use a code from your authenticator app instead' : 'Use a recovery code instead'}
+		</button>
+	{/if}
 	{#if weightLine !== null}
 		<p class="current-code-weight" id={weightId}>{weightLine}</p>
 	{/if}

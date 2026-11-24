@@ -21,7 +21,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { sentAsking, showToast } from '$lib/admin/send';
-	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, type StepUpProof } from '$lib/step-up-words';
 	import { heldIsPlural, heldListWhy, heldPlaceWords, heldSetByWords, heldSettingName, heldSettingNameWithin, type HeldSetting } from '$lib/settings-held';
 
 	/**
@@ -78,10 +79,10 @@
 		const savedAgain = plural ? 'the same settings saved again are held again' : 'the same setting saved again is held again';
 		const message =
 			action === 'keep'
-				? `Keep ${name} in use as ${plural ? 'they are' : 'it is'} now: ${where}. Nothing changes but the hold. ${ASKS_FOR_PASSWORD}`
+				? `Keep ${name} in use as ${plural ? 'they are' : 'it is'} now: ${where}. Nothing changes but the hold. ${asksForPassword(codeAskedHere())}`
 				: setting.kind === 'mail' || setting.kind === 'app_url'
-					? `Remove ${name} (${where}). ${ENDS_EVERY_MAILED_LINK} The hold stays, so ${savedAgain}. ${ASKS_FOR_PASSWORD}`
-					: `Remove ${name} (${where}). The hold stays, so ${savedAgain}. ${ASKS_FOR_PASSWORD}`;
+					? `Remove ${name} (${where}). ${ENDS_EVERY_MAILED_LINK} The hold stays, so ${savedAgain}. ${asksForPassword(codeAskedHere())}`
+					: `Remove ${name} (${where}). The hold stays, so ${savedAgain}. ${asksForPassword(codeAskedHere())}`;
 		confirm(
 			action === 'keep' ? 'Keep held setting' : 'Remove held setting',
 			message,

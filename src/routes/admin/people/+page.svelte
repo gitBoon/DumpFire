@@ -38,7 +38,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { answerBody } from '$lib/api';
 	import { sent, sentAsking, showToast } from '$lib/admin/send';
-	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
+	import { asksForPassword, type StepUpProof } from '$lib/step-up-words';
 	import { asciiShown, printable } from '$lib/printable';
 	// Card 2922 (R7): the superadmin's banner while a setting is held for review.
 	import SettingsHeldBanner from '$lib/components/SettingsHeldBanner.svelte';
@@ -127,7 +127,7 @@
 			message:
 				`Mark ${name} active? Their decision mail and personal links go to ${asciiShown(person.email)} again. ` +
 				'Check it is their address before you do. ' +
-				ASKS_FOR_PASSWORD,
+				asksForPassword(data.codeAsked),
 			confirmText: 'Mark active',
 			confirmDanger: true,
 			askPassword: true,
@@ -166,7 +166,7 @@
 			'Their group memberships go with them and their personal decision links stop working. ' +
 			'Decision records keep what they recorded of them (name, address, job title and groups), and the system log and backups still hold their name. ' +
 			'Mark left keeps them in the directory and can be undone. ' +
-			ASKS_FOR_PASSWORD
+			asksForPassword(data.codeAsked)
 		);
 	}
 

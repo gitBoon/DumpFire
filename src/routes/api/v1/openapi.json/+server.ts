@@ -48,7 +48,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.15.0',
+		version: '1.15.1',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -56,6 +56,25 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-24 (version 1.15.1), not breaking.** On a server upgraded from before 1.8.0, the one-off effects of 1.8.0 (a deadline on existing keys), 1.9.1 (4) (the stored images checked), 1.11.0 (9)-(10) and 1.15.0 (1)-(4), (7) and (9) (holds of webhooks set up or read before this version) are not applied at installation: ' +
+			'existing keys keep working with no deadline, and existing webhooks keep sending with their secrets, except those already not delivered (no setter recorded, or a setter who cannot open the board), which are switched off for good. ' +
+			'An administrator may apply the key deadline later as a planned event, with notice. Every rule for what happens from now on is as described. ' +
+			'Everything a client written for 1.3.1 sees change: ' +
+			'(1) every board answer carries productOwnerUserId, the id of a user or null, which PUT /boards/{boardId} takes and keeps when it is left out (1.4.0); ' +
+			'(2) costUsd on token answers is priced anew, past entries included (1.7.1); ' +
+			'(3) a board, card, label, milestone or anything on a board the key\'s user cannot open is answered 404 in the words a missing one gets, where it was 403; a label not of the card\'s board is 404, where it was 400; ' +
+			'a withheld node of a 409\'s cycle gives id null and withheld true, and a withheld span of board-history boardId null and withheld true; POST /dependencies/bulk counts only the links whose ends the user can edit (1.10.0, 1.12.0); ' +
+			'(4) a webhook whose setter can no longer open its board, and one set or switched on with an API key from this version on whose key then ends, is switched off for good, pausedBecause saying why, and only the board\'s owner or an administrator switches it on again, with a new secret; ' +
+			'DELETE of such a webhook by an editor is 403, and POST of a webhook to its receiver by anyone but the board\'s owner or an administrator is 409 (1.11.0); ' +
+			'(5) a key ends at its expiry\'s own second (1.8.0 (2)); a disabled account\'s keys answer 401 and the webhooks it set are switched off (1.13.0); a reset of an account\'s two-step sign-in ends its keys and switches off the webhooks it set (1.14.0); ' +
+			'and the end of an owner\'s or an administrator\'s access, or the lowering of its role, from this version on holds the webhooks whose secret it could read (1.15.0 (1), (7)); ' +
+			'and a key given a webhook\'s secret from this version on (by a GET, or by the POST or PUT that set it) is recorded, and when that key is revoked or expires every webhook whose secret it was given is held, and is switched on again only with a new secret (1.15.0 (9)); ' +
+			'(6) a webhook secret or url that cannot be opened is never sent; a url that is not well-formed text is 400; a secret beginning dfsealed: is 400 (1.15.0 (5), (6)); ' +
+			'(7) PUT /webhooks/{webhookId} gives secret only where that PUT set or replaced it, and the four answers that can give a secret carry Cache-Control: no-store (1.15.0 (9)); ' +
+			'(8) 409, with nothing written, for a Product Owner or decider whose account\'s creation time cannot be read on this server, and 503 in place of 500 on a server with no MFA key loaded (1.15.0 (12), (13)). ' +
+			'Added with it, not breaking: the People (1.5.0), Decisions (1.6.0) and Attachments (1.7.0) operations, touching=true on GET /milestones (1.9.0), survey questions and cards that wait on a decision (1.15.0 (14), (15)), each as its own note describes. ' +
+			'(9) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry\'s source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), ' +
+			'a 413 for a body declared too large, and every other refusal of an upload before its body is read, carries Connection: close (1.13.1 (3)), and a card\'s move between milestones it cannot see is refused in words of its own (1.12.0 (3)).\n\n' +
 			'**Changed on 2026-11-18 (version 1.15.0), breaking.** Ending an account\'s access also holds the webhooks it set that were switched off without a hold, and mails the board\'s owners (card 2923); ending an owner\'s or administrator\'s access, or lowering its role, holds every webhook whose secret it could read (card 2935): ' +
 			'(1) a webhook switched off without a hold (by PUT, or by a restore kept apart) whose setter then has their password reset, has their two-step sign-in reset (on the server\'s host, unless run with --keep-api-keys), uses an invite, ends their keys on their own password change, is disabled or is deleted is held as setter access ended; ' +
 			'so is every webhook already switched off without a hold, whoever set it, once, at the first start of this version and in a restore of a backup made before it, and one whose setter is disabled or not recorded at every start and in every restore, a restore kept apart included: ' +
@@ -665,9 +684,9 @@ const spec = {
 				scheme: 'bearer',
 				description:
 					'API key prefixed with `df_`. Generate one from My Account → API Keys. ' +
-					'A key made before this server took version 1.8.0 has a deadline 60 days after it did, shown beside it under My Account → API Keys: ' +
+					'A key made before this server took version 1.8.0 has a deadline where the administrator has applied a deadline, as a planned event with notice (since 1.15.1 none is applied when a server is upgraded), shown beside it under My Account → API Keys: ' +
 					'kept there with Keep this key (the password and a code), it goes on working unchanged; not kept, it is answered 401 "Invalid or expired API key" from its deadline on, and is never revived. ' +
-					'Keys made since have no deadline.'
+					'Keys made after the deadline was applied have none.'
 			}
 		},
 		schemas: {
@@ -1072,10 +1091,12 @@ const spec = {
 					'A password reset, a two-step reset (since 1.14.0), an invite used, a disabled account (since 1.13.0) and a deleted account record theirs too (setter access ended). ' +
 					'Since 1.15.0 the same endings of a board owner\'s or an administrator\'s access, and the lowering of its role, hold every webhook whose secret it could read and can no longer, that has a secret, whoever set it (card 2935). ' +
 					'Since 1.15.0 they also hold one already switched off; every start and every restore, a restore kept apart included, hold one whose setter is disabled or not recorded; and the first start of 1.15.0, and a restore of a backup made before it, hold every one already switched off with no hold, whoever set it. ' +
+					'Since 1.15.1 a server upgraded from before 1.15.0 applies none of these once-only holds at installation, nor holds the webhooks whose secret an API key was given before it: an administrator applies them later as a planned event, with notice, and a restore of a backup made before 1.15.0 does not apply them either. ' +
 					'Since 1.15.0 every webhook switched off for good is given a new secret when switched on, one with no recorded setter included. ' +
 					'Since 1.15.0 every API key given its secret is recorded, and the webhook is held as setter access ended when that key is revoked, expires or passes its deadline, or its account\'s access ends (card 2947). ' +
 					'It is switched off for good too when the API key that created it, last set its url or secret, or switched it on ends (since 1.11.0, card 2893): revoked, expired, past its deadline, deleted, or not its setter\'s; ' +
-					'one set with no API key is switched off at its next event, and one made before 1.11.0, which records no key, once its setter has no working API key made before then. ' +
+					'one set with no API key is switched off at its next event, and one made before 1.11.0, which records no key, once its setter has no working API key made before then, ' +
+					'where the administrator has applied that rule to it (since 1.15.1 a server upgraded from before 1.11.0 does not at installation, and its webhooks keep sending until the administrator applies it as a planned event, with notice). ' +
 					'Switched on again, it is given a new secret in that answer, and records the caller\'s key. While one is switched off this way, a webhook to its receiver (scheme, host and port) on the board is made, and it is deleted, only by the board owner or an administrator. ' +
 					'The board\'s owners are mailed when one is switched off this way, and when someone else makes a webhook on the board.',
 				properties: {
@@ -1601,7 +1622,7 @@ const spec = {
 						enum: ['active', 'left'],
 						description:
 							'left for someone who has left, or, since 1.15.0, whose address or account came in with a backup whose seal did not verify and was not the one this server held for them (card 3020): they are not mailed about a decision. ' +
-							'Changed on the People page only, and marking someone active asks for the password and a code.'
+							'Changed on the People page only, and marking someone active asks for the password and a code (since 1.15.1, the password alone while two-step sign-in is dormant, for an administrator who has not set it up).'
 					},
 					leftAt: { type: ['string', 'null'], format: 'date-time', description: 'When they were marked left; null while active' },
 					createdBy: { type: ['integer', 'null'], description: 'The administrator who added the person, or null once that account has been deleted' },
@@ -3618,7 +3639,7 @@ const spec = {
 				}
 			},
 			Unauthorized: {
-				description: 'No Authorization header, one that is not "Bearer <key>", or a key that is unknown, revoked, expired or past its deadline (a key made before version 1.8.0 and not kept), or one of an account that is disabled (since 1.13.0)',
+				description: 'No Authorization header, one that is not "Bearer <key>", or a key that is unknown, revoked, expired or past its deadline (a key made before version 1.8.0, where the administrator has applied a deadline, and not kept), or one of an account that is disabled (since 1.13.0)',
 				content: {
 					'application/json': {
 						schema: { $ref: '#/components/schemas/Error' },

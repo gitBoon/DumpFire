@@ -26,7 +26,9 @@
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
 	import { toasts } from '$lib/stores/toast';
+	import { page } from '$app/state';
 	import { passwordKeptAfter, proofTyped, stepUpRefusal } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
 
 	/** What the admin page's load gave it, passed on as it is: the accounts and who is signed in. */
 	let { data }: { data: PageData } = $props();
@@ -138,7 +140,7 @@
 
 	async function resetPassword() {
 		if (!resetPasswordUserId || !resetPasswordValue || resetPasswordValue.length < 8) return;
-		if (!proofTyped(resetPasswordCurrent, resetCodeCurrent)) return;
+		if (!proofTyped(resetPasswordCurrent, resetCodeCurrent, page.data.codeAsked)) return;
 		const started = toasts.navigation();
 		// Sent, and cleared from the dialog: typed again after a refusal.
 		const currentPassword = resetPasswordCurrent;
@@ -223,7 +225,8 @@
 			<h2>🔑 {resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}</h2>
 			{#if resettingOwnPassword}
 				<!-- Their own account: the password they have is asked for, as on the Account page. -->
-				<p>This is your own account. Enter your current password, a code from your authenticator app, and a new one. Your other sessions will be signed out. Your report schedules are paused.</p>
+				<!-- The code named only where it is asked (card 3064, F25), as the field below shows it. -->
+				<p>This is your own account. Enter your current password{codeAskedHere() ? ', a code from your authenticator app,' : ''} and a new one. Your other sessions will be signed out. Your report schedules are paused.</p>
 				<!-- Sent with no endApiKeys, so the keys are kept. The Account page offers the choice. -->
 				<p>Your API keys and the webhooks you set up keep working. To end the keys and switch off those webhooks too, change your password on the <a href="/account">Account page</a>.</p>
 				<CurrentPasswordField label="Current password" bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} onEnter={toNewPassword} />
@@ -255,7 +258,7 @@
 			<input type="password" placeholder="New password (min 8 chars)" aria-label="New password" bind:value={resetPasswordValue} bind:this={newPasswordInput} class="form-input" style="width: 100%; margin: 0 0 var(--space-md);" autocomplete="new-password" />
 			<div class="modal-actions">
 				<button class="btn-ghost" bind:this={cancelButton} onclick={() => { resetPasswordUserId = null; resetPasswordCurrent = ''; resetCodeCurrent = ''; resetRefusal = null; }}>Cancel</button>
-				<button class="btn-primary" onclick={resetPassword} disabled={resetPasswordValue.length < 8 || !proofTyped(resetPasswordCurrent, resetCodeCurrent)}>{resettingOwnPassword ? 'Change Password' : 'Reset Password'}</button>
+				<button class="btn-primary" onclick={resetPassword} disabled={resetPasswordValue.length < 8 || !proofTyped(resetPasswordCurrent, resetCodeCurrent, page.data.codeAsked)}>{resettingOwnPassword ? 'Change Password' : 'Reset Password'}</button>
 			</div>
 		</div>
 	</div>

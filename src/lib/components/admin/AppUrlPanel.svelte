@@ -29,7 +29,8 @@
 <script lang="ts">
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, type StepUpProof } from '$lib/step-up-words';
 
 	let {
 		isSuperadmin = false,
@@ -173,7 +174,7 @@
 {#if askingToSave}
 	<ConfirmModal
 		title="Save App URL"
-		message={`Every link in an invite and a password reset begins with the App URL. ${ASKS_FOR_PASSWORD}`}
+		message={`Every link in an invite and a password reset begins with the App URL. ${asksForPassword(codeAskedHere())}`}
 		confirmText="Save"
 		confirmDanger={false}
 		askPassword

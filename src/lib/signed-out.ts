@@ -107,3 +107,21 @@ export function watchForSignOut(fetch: Fetch, page: WatchedPage): Fetch {
 		return response;
 	};
 }
+
+/**
+ * `next`, where it is a path of this site that a page may send the browser
+ * to, read against `origin` (the page's `location.origin`); null for anything
+ * else (card 3064's code review, CR-L7). Decided by what the browser itself
+ * would make of it: a path that starts with `/` but that the URL parser reads
+ * as another host (`//host`, `/\host`, or a tab or a line break inside it,
+ * which the parser drops) is no path of this site. Nothing is reached for in
+ * the browser, so that the tests can call it.
+ */
+export function pathOfThisSite(next: unknown, origin: string): string | null {
+	if (typeof next !== 'string' || !next.startsWith('/')) return null;
+	try {
+		return new URL(next, origin).origin === new URL(origin).origin ? next : null;
+	} catch {
+		return null;
+	}
+}

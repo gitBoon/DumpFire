@@ -57,7 +57,9 @@
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { toasts } from '$lib/stores/toast';
-	import { ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { page } from '$app/state';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import ResetPasswordDialog from './ResetPasswordDialog.svelte';
 
 	let {
@@ -153,7 +155,7 @@
 	const INVITE_REFUSED = 'This account uses two-step sign-in. Reset it first, then send the invite';
 
 	async function createUser() {
-		if (!newUsername.trim() || !newEmail.trim() || !proofTyped(newUserCurrentPassword, newUserCurrentCode)) return;
+		if (!newUsername.trim() || !newEmail.trim() || !proofTyped(newUserCurrentPassword, newUserCurrentCode, page.data.codeAsked)) return;
 		// Password required if non-empty, must be 8+ chars
 		if (newPassword && newPassword.length < 8) {
 			showToast('Password must be at least 8 characters', 'error');
@@ -388,7 +390,7 @@
 		const ask = (said: string) =>
 			confirm('Change Role', said, (proof: StepUpProof) => changeUserRole(userId, username, proof), { askPassword: true });
 		if (role !== 'user') {
-			ask(`Make ${username} ${role === 'admin' ? 'an administrator' : `a ${role}`}? ${ASKS_FOR_PASSWORD}`);
+			ask(`Make ${username} ${role === 'admin' ? 'an administrator' : `a ${role}`}? ${asksForPassword(codeAskedHere())}`);
 			return;
 		}
 		markAsking(userId, true);
@@ -401,11 +403,11 @@
 		// Card 2935 (P2): an administrator made a user could read every webhook's secret; those it can no longer read go.
 		const readable = isAdministrator(userId) ? ` ${DEMOTION_HOLDS}` : '';
 		if (held === null) {
-			ask(`Make ${username} a user?${readable} ${ASKS_FOR_PASSWORD}`);
+			ask(`Make ${username} a user?${readable} ${asksForPassword(codeAskedHere())}`);
 			return;
 		}
 		const said = held === 'unread' ? SETTINGS_UNREAD : `This removes what they set: ${settingsWords(held)}.`;
-		ask(`Make ${username} a user? ${said}${readable} ${ASKS_FOR_PASSWORD}`);
+		ask(`Make ${username} a user? ${said}${readable} ${asksForPassword(codeAskedHere())}`);
 	}
 
 	/**
@@ -519,8 +521,8 @@
 	/** The delete's confirmation: the warning of every delete, then what of the settings the account set would go with it (card 2397's review), as read just now. */
 	function deleteWarning(userId: number, username: string, held: SettingsGone | null | 'unread'): string {
 		const warning = userDeleteWarning(username, soleOwnerOf(userId));
-		if (held === 'unread') return `${warning} ${SETTINGS_UNREAD} ${ASKS_FOR_PASSWORD}`;
-		return held === null ? `${warning} ${ASKS_FOR_PASSWORD}` : `${warning} What they set goes too: ${settingsWords(held)}. ${ASKS_FOR_PASSWORD}`;
+		if (held === 'unread') return `${warning} ${SETTINGS_UNREAD} ${asksForPassword(codeAskedHere())}`;
+		return held === null ? `${warning} ${asksForPassword(codeAskedHere())}` : `${warning} What they set goes too: ${settingsWords(held)}. ${asksForPassword(codeAskedHere())}`;
 	}
 
 	/** 🗑️ pressed: what the account holds is read first (the second review), then the page's confirm asks, for the caller's password too (card 2701), and Confirm deletes. */
@@ -558,7 +560,7 @@
 		const failureAddress = data.users.find((u) => u.id === userId)?.failureAddress === true;
 		confirm(
 			'Disable User',
-			`${userDisableWarning(username, soleOwnerOf(userId), held, failureAddress, isAdministrator(userId))} ${ASKS_FOR_PASSWORD}`,
+			`${userDisableWarning(username, soleOwnerOf(userId), held, failureAddress, isAdministrator(userId))} ${asksForPassword(codeAskedHere())}`,
 			(proof: StepUpProof) => disableUser(userId, username, proof),
 			{ askPassword: true }
 		);
@@ -606,7 +608,7 @@
 
 	/** ✅ pressed (card 2671): the page's confirm lists what comes back and what does not, and asks for the caller's password; Confirm enables. */
 	function askEnableUser(userId: number, username: string) {
-		confirm('Enable User', `${userEnableWarning(username, isAdministrator(userId))} ${ASKS_FOR_PASSWORD}`, (proof: StepUpProof) => enableUser(userId, username, proof), {
+		confirm('Enable User', `${userEnableWarning(username, isAdministrator(userId))} ${asksForPassword(codeAskedHere())}`, (proof: StepUpProof) => enableUser(userId, username, proof), {
 			askPassword: true
 		});
 	}
@@ -640,7 +642,7 @@
 			// Card 3012 (R8): the address it goes to, which a restore may have taken from a file, each character outside printable
 			// ASCII shown as its code point, and the name with none that could turn it round or hide part of it (its code
 			// review, FP3).
-			`Send ${printable(username)} a new invite, to ${asciiShown(data.users.find((u) => u.id === userId)?.email ?? '')}? Whoever opens its link sets the account's password, and an invite sent earlier stops working.${inviteHeldWords(settingsOf(userId))} ${ASKS_FOR_PASSWORD}`,
+			`Send ${printable(username)} a new invite, to ${asciiShown(data.users.find((u) => u.id === userId)?.email ?? '')}? Whoever opens its link sets the account's password, and an invite sent earlier stops working.${inviteHeldWords(settingsOf(userId))} ${asksForPassword(codeAskedHere())}`,
 			(proof: StepUpProof) => resendInvite(userId, proof, control),
 			{ askPassword: true }
 		);
@@ -705,7 +707,7 @@
 		if (inviteInFlight !== null || inviteLink !== null) return;
 		confirm(
 			'Reset Two-Step Sign-In',
-			`Reset ${username}'s two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their API keys end, the webhooks they set up are switched off, their report schedules are paused, and you are given a link, once, to pass on to them yourself. Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret.${readableWebhooksWords(isAdministrator(userId))}${heldOnEndingWords(settingsOf(userId))} ${ASKS_FOR_PASSWORD}`,
+			`Reset ${username}'s two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, their API keys end, the webhooks they set up are switched off, their report schedules are paused, and you are given a link, once, to pass on to them yourself. Their boards' owners are mailed about the webhooks, and about any already switched off, which can now be switched on only with a new secret.${readableWebhooksWords(isAdministrator(userId))}${heldOnEndingWords(settingsOf(userId))} ${asksForPassword(codeAskedHere())}`,
 			(proof: StepUpProof) => resetTwoStepOf(userId, username, proof, control),
 			{ askPassword: true }
 		);
@@ -770,14 +772,14 @@
 			</div>
 			<!-- The caller's own, which making an account asks for again (card 2701), with the server's refusal of it. -->
 			<CurrentPasswordField bind:value={newUserCurrentPassword} bind:code={newUserCurrentCode} refusal={newUserRefusal} onEnter={createUser} />
-			<p class="form-hint">{ASKS_FOR_PASSWORD} Making an account asks for yours, so that a browser left signed in cannot.</p>
+			<p class="form-hint">{asksForPassword(codeAskedHere())} Making an account asks for yours, so that a browser left signed in cannot.</p>
 			<div class="form-row">
 				<EmojiPicker value={newUserEmoji} onSelect={(e) => (newUserEmoji = e)} />
 				<select bind:value={newUserRole} class="form-input">
 					<option value="user">User</option>
 					{#if isSuperadmin}<option value="admin">Admin</option>{/if}
 				</select>
-				<button class="btn-primary btn-sm" onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !proofTyped(newUserCurrentPassword, newUserCurrentCode)}>
+				<button class="btn-primary btn-sm" onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !proofTyped(newUserCurrentPassword, newUserCurrentCode, page.data.codeAsked)}>
 					{creatingUser ? 'Creating...' : 'Create'}
 				</button>
 				<button class="btn-ghost btn-sm" onclick={() => { showCreateUser = false; newUserCurrentPassword = ''; newUserCurrentCode = ''; newUserRefusal = null; }}>Cancel</button>

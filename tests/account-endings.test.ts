@@ -61,6 +61,7 @@ import {
 	makeUser,
 	makeWebhook,
 	newFixtureHash,
+	forgetFirstRunFlags,
 	resetDb,
 	startedSinceAlreadyOffHeld,
 	stepUp,
@@ -89,6 +90,8 @@ const ruled = (asked: AccountToRule, options: Parameters<typeof accountRulings>[
 let level: string | undefined;
 beforeEach(() => {
 	resetDb();
+	// Each first-run pass in full, as before migration 0084 seeded their flags (card 3064, R23).
+	forgetFirstRunFlags();
 	resetAllRateLimits();
 	level = process.env.LOG_LEVEL;
 });
@@ -315,14 +318,14 @@ describe('(m): the gates refuse an account the record names as deleted (R16)', (
 		row(ann.id, created, 'deleted');
 
 		expect(deletedHere(sqlite, { id: ann.id, createdAt: created, role: 'user', passwordHash: fixtureHashOf(ann) })).toBe(true);
-		expect(() => createSession(ann.id)).toThrow(AccountDisabled);
+		expect(() => createSession(ann.id, { twoStep: 1 })).toThrow(AccountDisabled);
 		expect(await v1(annKey.key)).toBe(401);
-		expect(() => createSession(bob.id)).not.toThrow();
+		expect(() => createSession(bob.id, { twoStep: 1 })).not.toThrow();
 		expect(await v1(bobKey.key)).toBe(200);
 
 		// By its fingerprint alone, under another id and time.
 		sqlite.prepare("INSERT INTO account_endings (user_id, account_created, ending, credential, ended_at) VALUES (900, '2025-01-01 09:00:00', 'deleted', ?, '2026-11-20 09:00:00')").run(credentialOf(fixtureHashOf(bob)));
-		expect(() => createSession(bob.id)).toThrow(AccountDisabled);
+		expect(() => createSession(bob.id, { twoStep: 1 })).toThrow(AccountDisabled);
 		expect(await v1(bobKey.key)).toBe(401);
 	});
 });
@@ -377,7 +380,7 @@ describe('the writers record every ending (card 2996, slice 3)', () => {
 		expect(result.errors).toEqual([]);
 		expect(result.accountsKept).toMatchObject({ deleted: 1 });
 		expect(userOf(x.id)).toMatchObject({ passwordHash: DUMMY_HASH, disabledBy: chief.id });
-		expect(() => createSession(x.id)).toThrow(AccountDisabled);
+		expect(() => createSession(x.id, { twoStep: 1 })).toThrow(AccountDisabled);
 	});
 
 	it('test 30: a role change through PUT /api/users/{id} records the role after, a raise and a lowering; a username, an emoji or the role it has records nothing', async () => {
@@ -1127,7 +1130,7 @@ describe('the writers record every password they replace (card 2997, S2)', () =>
 		expect(now.passwordHash).toBe(reset);
 		expect(compareSync(NEW_PASSWORD, now.passwordHash)).toBe(true);
 		expect(passwordReplacedHere(sqlite, { id: ann.id, createdAt: createdOf(ann.id), role: 'user', passwordHash: now.passwordHash })).toBe(false);
-		expect(() => createSession(ann.id)).not.toThrow();
+		expect(() => createSession(ann.id, { twoStep: 1 })).not.toThrow();
 		// The old one does not: neither against the hash held, nor as the backup's hash, which the record names.
 		expect(compareSync(FIXTURE_PASSWORD, now.passwordHash)).toBe(false);
 		expect(passwordReplacedHere(sqlite, { id: ann.id, createdAt: createdOf(ann.id), role: 'user', passwordHash: old })).toBe(true);

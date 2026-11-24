@@ -30,7 +30,9 @@ const log = createLogger('AUTH');
 /**
  * PUT — Change own password. Asks for the current password and a code again
  * (`currentPassword`, `currentCode`: card 2771, D7), through the step-up that
- * every listed action asks with (step-up.ts): the wrong ones counted on the
+ * every listed action asks with (step-up.ts; the password alone for an
+ * account with no factor while two-step sign-in is dormant, card 3064, R6):
+ * the wrong ones counted on the
  * session that sent them, the third ending it. The change also clears the
  * warning that someone else entered the password, which asks for it, and
  * forgets an authenticator being added with the old one (card 2772, D1, D6).
@@ -87,7 +89,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 	// awaited, and a session can end meanwhile. Asked before the sessions end
 	// below, the session this request came by among them; nothing in this
 	// request asks it after that, when it has gone.
-	const { accountId, newSession, apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused, settingsHeld } = await whilePasswordHolds(userId, hash, () =>
+	const { accountId, twoStep, newSession, apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused, settingsHeld } = await whilePasswordHolds(userId, hash, () =>
 		writeAs(locals, (caller) => {
 			const me = requireUser(caller);
 			const userId = me.id;
@@ -96,9 +98,11 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 			// that a password alone does not restart the total limit (card
 			// 2775, decision 7). A start that cannot be read, or less than a
 			// minute left of the total limit (the code review's CS2), is
-			// refused before anything is written, and no session is made.
-			const startedAt = replacementStart(session, me.role);
-			if (startedAt === null) error(401, 'Not authenticated');
+			// refused before anything is written, and no session is made. It
+			// keeps the replaced session's own `two_step` too (card 3064, R5): a
+			// session made on a password alone is replaced by one that is.
+			const replaced = replacementStart(session, me.role);
+			if (replaced === null) error(401, 'Not authenticated');
 
 			// Update password. The warning that someone else entered the old one
 			// goes with it, all three of its columns (card 2772, D6, A16, and the
@@ -149,10 +153,11 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 			);
 
 			// Create a fresh session so the current user stays logged in, with
-			// the start of the one it replaces.
+			// the start and the `two_step` of the one it replaces.
 			return {
 				accountId: userId,
-				newSession: createSession(userId, { startedAt }),
+				twoStep: replaced.twoStep,
+				newSession: createSession(userId, { twoStep: replaced.twoStep, startedAt: replaced.startedAt }),
 				apiKeysEnded: ended.apiKeys,
 				webhooksSwitchedOff: ended.webhooks,
 				// Card 2935: the webhooks of others whose secret the account could read, held with its keys.
@@ -165,8 +170,10 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 
 	setSessionCookie(cookies, newSession, url);
 	// The new hash ended every remembered browser of the account; this one,
-	// which made the change, is remembered again (card 2194).
-	rememberBrowser(cookies, accountId, newHash, url);
+	// which made the change, is remembered again (card 2194), under the domain
+	// of the session it came from: the password-only one for a session made on
+	// a password alone (card 3064, R3, R-M9).
+	rememberBrowser(cookies, accountId, newHash, url, twoStep);
 
 	return json({ success: true, apiKeysEnded, webhooksSwitchedOff, readableWebhooksHeld, reportSchedulesPaused, settingsHeld });
 };

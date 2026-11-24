@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { page } from '$app/state';
 	import { keepTab, takeFocus } from '$lib/dialog-focus';
-	import { NO_ANSWER_TRY_AGAIN, NO_PROOF, passwordKeptAfter, proofTyped, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, type StepUpProof } from '$lib/step-up-words';
+	import { isStepUpMissing, NO_ANSWER_TRY_AGAIN, NO_PROOF, passwordKeptAfter, proofTyped, STEP_UP_SIGNED_OUT, type StepUpProof } from '$lib/step-up-words';
 	import CurrentPasswordField from './CurrentPasswordField.svelte';
 
 	let {
@@ -72,8 +73,19 @@
 	 * in, and the page goes to sign in (`$lib/signed-out.ts`).
 	 */
 	let ended = $derived(refusal === STEP_UP_SIGNED_OUT);
-	/** Both the password and a code that is not blank are typed (card 2770, S1). */
-	let typed = $derived(proofTyped(password, code));
+	/**
+	 * Both the password and a code that is not blank are typed (card 2770, S1);
+	 * the password alone where the layout says no code is asked (card 3064,
+	 * R7), as `CurrentPasswordField` then shows no code field. Asked where the
+	 * page's data cannot be read.
+	 */
+	let typed = $derived.by(() => {
+		try {
+			return proofTyped(password, code, page.data.codeAsked);
+		} catch {
+			return proofTyped(password, code);
+		}
+	});
 
 	// Cancel takes the focus as the dialog opens, so Enter straight after it
 	// cancels rather than pressing the page's button behind it again; or the
@@ -133,7 +145,10 @@
 		if (typeof answer !== 'string') return;
 		refusal = answer;
 		password = passwordKeptAfter(answer, proof.currentPassword);
-		if (answer === STEP_UP_MISSING) toldToAsk = true;
+		// Either words of no password (card 3064, F25): the server says what it asks of the account. The field, shown
+		// from then on, reads the page again where the server asks a code the page did not know of (its code review,
+		// CS-L5), which draws the code field and makes Confirm wait for a code.
+		if (isStepUpMissing(answer)) toldToAsk = true;
 	}
 </script>
 

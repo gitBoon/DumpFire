@@ -198,3 +198,24 @@ if (missing.length > 0) {
 		`${missing.length} migration(s) did not apply to a fresh database: ${missing.join(', ')}`
 	);
 }
+
+// Card 3064 (R23): 0084, the compatibility release, takes back the settings
+// 0066 and 0069 write, and two-step sign-in is dormant until the superadmin
+// requires it. Every suite but the ones that say otherwise tests the server as
+// it is once two-step sign-in is required and API keys have their deadline
+// (events E3 and E4), which is what each suite was written for: so the two
+// settings are written back as 0066 and 0069 wrote them on a fresh database,
+// and the switch is written. A suite about the dormant state deletes the
+// switch in its own `beforeEach`; one about a first-run pass deletes the six
+// flags 0084 seeds. And the database is as the first start after 0084 leaves
+// it (its code review, CS-M2 and CS-L4): 0084's one-shot leave to keep a plain
+// seal key spent, and its scrub marker scrubbed. A suite about that start
+// builds its own database (tests/compatibility-release.test.ts).
+sqlite.exec(`
+	INSERT INTO settings (key, value) VALUES
+		('two_step_released_at', datetime('now')),
+		('api_key_deadline', datetime('now', '+60 days')),
+		('two_step_required_at', datetime('now'))
+	ON CONFLICT (key) DO NOTHING;
+	DELETE FROM settings WHERE key IN ('backup_seal_key_keep_once', 'secrets_scrub_pending');
+`);

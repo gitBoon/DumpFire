@@ -12,9 +12,10 @@
 -->
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
-	import { PURGE_DESCRIPTION, PURGE_WARNING, RESET_WARNING, failureMessage } from '$lib/api';
+	import { failureMessage, purgeDescription, purgeWarning, resetWarning } from '$lib/api';
 	import { sent, sentAsking, showToast } from '$lib/admin/send';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	let {
 		isSuperadmin,
@@ -133,9 +134,9 @@
 		<div class="danger-item">
 			<div>
 				<strong>Purge Archived Cards</strong>
-				<p>{PURGE_DESCRIPTION}</p>
+				<p>{purgeDescription(codeAskedHere())}</p>
 			</div>
-			<button class="btn-outline" onclick={() => confirm('Purge Archived Cards', PURGE_WARNING, purgeArchivedCards, { askPassword: true })} disabled={purgingArchived}>
+			<button class="btn-outline" onclick={() => confirm('Purge Archived Cards', purgeWarning(codeAskedHere()), purgeArchivedCards, { askPassword: true })} disabled={purgingArchived}>
 				{purgingArchived ? 'Purging...' : 'Purge All'}
 			</button>
 		</div>
@@ -151,9 +152,9 @@
 		<div class="danger-item">
 			<div>
 				<strong>Reset All XP</strong>
-				<p>Resets everyone's XP back to 0. Leaderboard will be cleared. This cannot be undone. {ASKS_FOR_PASSWORD}</p>
+				<p>Resets everyone's XP back to 0. Leaderboard will be cleared. This cannot be undone. {asksForPassword(codeAskedHere())}</p>
 			</div>
-			<button class="btn-outline" onclick={() => confirm('Reset All XP', `This will set every user's XP to 0. The leaderboard will be completely cleared. Are you sure? ${ASKS_FOR_PASSWORD}`, resetAllXp, { askPassword: true })}>
+			<button class="btn-outline" onclick={() => confirm('Reset All XP', `This will set every user's XP to 0. The leaderboard will be completely cleared. Are you sure? ${asksForPassword(codeAskedHere())}`, resetAllXp, { askPassword: true })}>
 				Reset XP
 			</button>
 		</div>
@@ -162,9 +163,9 @@
 		<div class="danger-item">
 			<div>
 				<strong>Reset Everything</strong>
-				<p>Deletes ALL data including boards, users, teams, and sessions. The system log and the backup history are kept. You will be redirected to initial setup. {ASKS_FOR_PASSWORD}</p>
+				<p>Deletes ALL data including boards, users, teams, and sessions. The system log and the backup history are kept. You will be redirected to initial setup. {asksForPassword(codeAskedHere())}</p>
 			</div>
-			<button class="btn-danger-solid" onclick={() => confirm('Reset Everything', RESET_WARNING, resetDatabase, { askPassword: true })}>
+			<button class="btn-danger-solid" onclick={() => confirm('Reset Everything', resetWarning(codeAskedHere()), resetDatabase, { askPassword: true })}>
 				Reset Everything
 			</button>
 		</div>

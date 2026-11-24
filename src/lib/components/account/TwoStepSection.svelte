@@ -25,7 +25,8 @@
 	import { beforeNavigate, invalidateAll } from '$app/navigation';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { failureMessage } from '$lib/api';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { codeAskedHere } from '$lib/code-asked';
+	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import { parseStamp } from '$lib/timestamps';
 
 	/** What the Account page loads for the section (card 2772, D10). */
@@ -196,7 +197,7 @@
 		return (
 			`Remove ${factor.label} (added ${moment(factor.createdAt)})? Every other browser signed in to your account will be signed out. ` +
 			'If the device was lost, also change your password, and check the API keys and webhooks below: revoke any you do not recognise. ' +
-			`${keys} ${hooks} ${ASKS_FOR_PASSWORD}`
+			`${keys} ${hooks} ${asksForPassword(codeAskedHere())}`
 		);
 	}
 
@@ -419,7 +420,7 @@
 {#if askingToAdd}
 	<ConfirmModal
 		title="Add an authenticator"
-		message={`Add an authenticator named “${newLabel.trim()}”? It will sign in to your account as your phone does. ${ASKS_FOR_PASSWORD}`}
+		message={`Add an authenticator named “${newLabel.trim()}”? It will sign in to your account as your phone does. ${asksForPassword(codeAskedHere())}`}
 		confirmText="Continue"
 		confirmDanger={false}
 		askPassword
@@ -443,7 +444,7 @@
 {#if askingForCodes}
 	<ConfirmModal
 		title="Make new recovery codes"
-		message={`Make ten new recovery codes? The ones you have now stop working. ${ASKS_FOR_PASSWORD}`}
+		message={`Make ten new recovery codes? The ones you have now stop working. ${asksForPassword(codeAskedHere())}`}
 		confirmText="Make new codes"
 		confirmDanger={false}
 		askPassword

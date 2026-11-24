@@ -27,7 +27,7 @@ import { checkImage } from '$lib/server/image-check';
 import { recheckStoredImages, STORED_IMAGES_RECHECK_FAILURES, STORED_IMAGES_RECHECKED } from '$lib/server/image-recheck';
 import { be32, bytes, phoneExif, phoneJpeg, png, pngChunk } from './helpers/image-bytes';
 import { api } from './helpers/api';
-import { importConfirmation, makeAttachment, makeBoard, makeCard, makeUser, resetDb, testUploadsDir } from './helpers/fixtures';
+import { forgetFirstRunFlags, importConfirmation, makeAttachment, makeBoard, makeCard, makeUser, resetDb, testUploadsDir } from './helpers/fixtures';
 
 let owner: SessionUser;
 let card: Card;
@@ -35,6 +35,8 @@ const tempDirs: string[] = [];
 
 beforeEach(() => {
 	resetDb();
+	// Each first-run pass in full, as before migration 0084 seeded their flags (card 3064, R23).
+	forgetFirstRunFlags();
 	owner = makeUser({ username: 'owner' });
 	card = makeCard(makeBoard({ owner, name: 'A' }).cols['To Do'], { title: 'Has images' });
 });
@@ -278,12 +280,14 @@ describe('the one-off check, after the code review (card 2761, CS1 to CS4)', () 
 		expect(flag()).toBeDefined();
 	});
 
-	it('19. checks the images of an imported backup at once, as a start does, the restore having replaced the flag (CS3)', { timeout: 60_000 }, async () => {
+	// Card 3064 (R24): a server that holds the flag keeps it across a restore, and the import then checks nothing (its T55,
+	// in tests/backups.test.ts); here the server holds none, as one that has not had its first start since the release.
+	it('19. checks the images of an imported backup at once, as a start does, where neither the backup nor this server holds the flag (CS3)', { timeout: 60_000 }, async () => {
 		const admin = makeUser({ role: 'superadmin' });
 		const photo = makeAttachment(card, { name: 'photo.png', mimeType: 'image/png', content: withText() });
-		// A backup made before the release: no flag in it. The running database has been checked.
+		// A backup made before the release: no flag in it, nor in the running database.
 		const backup = sqlite.serialize();
-		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(STORED_IMAGES_RECHECKED, '2026-11-17T00:00:00.000Z');
+		expect(flag()).toBeUndefined();
 		// The import route writes two files in the working directory: give it one of its own.
 		const dir = mkdtempSync(join(tmpdir(), 'dumpfire-import-'));
 		tempDirs.push(dir);

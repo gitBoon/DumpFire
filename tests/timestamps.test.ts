@@ -545,7 +545,7 @@ describe('what the server modules write', () => {
 		const milestone = makeMilestone({ board, cards: [card], createdBy: owner });
 
 		// A session made and slid, an API key used, an invite issued.
-		const token = createSession(owner.id).token;
+		const token = createSession(owner.id, { twoStep: 1 }).token;
 		expect(validateSession(token)).not.toBeNull();
 		makeApiKey(owner);
 		markApiKeyUsed(db.select().from(apiKeys).get()!.id);
@@ -585,7 +585,7 @@ describe('what the server modules write', () => {
 describe('the comparisons of table B keep their answer on the boundary day', () => {
 	it('a session that expires later today is open, and is not cleared as expired', () => {
 		const owner = makeUser();
-		const token = createSession(owner.id).token;
+		const token = createSession(owner.id, { twoStep: 1 }).token;
 		const later = stamp(new Date(Date.now() + 60 * 60 * 1000));
 		db.update(sessions).set({ expiresAt: later }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 
@@ -596,7 +596,7 @@ describe('the comparisons of table B keep their answer on the boundary day', () 
 
 	it('a session that expired a second ago is closed', () => {
 		const owner = makeUser();
-		const token = createSession(owner.id).token;
+		const token = createSession(owner.id, { twoStep: 1 }).token;
 		db.update(sessions).set({ expiresAt: stamp(new Date(Date.now() - 1000)) }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -633,7 +633,7 @@ describe('the comparisons of table B keep their answer on the boundary day', () 
 		vi.setSystemTime(new Date('2026-10-14T10:00:00Z'));
 		allowOtherTimestampForms();
 		for (const expiresAt of ['zzz', '2099-02-30 08:00:00', '2099-10-14 24:00:00', '2026-10-14T09:00:00.000Z']) {
-			const token = createSession(owner.id).token;
+			const token = createSession(owner.id, { twoStep: 1 }).token;
 			db.update(sessions).set({ expiresAt }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 			expect(validateSession(token), `session ${expiresAt}`).toBeNull();
 
@@ -648,7 +648,7 @@ describe('the comparisons of table B keep their answer on the boundary day', () 
 
 		// One that names a moment still to come is still open, in either form.
 		for (const expiresAt of ['2026-10-14 11:00:00', '2026-10-14T11:00:00.000Z']) {
-			const token = createSession(owner.id).token;
+			const token = createSession(owner.id, { twoStep: 1 }).token;
 			db.update(sessions).set({ expiresAt }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 			db.update(apiKeys).set({ expiresAt }).run();
 			const invite = inTransaction(() => issueInvite(owner.id));
@@ -677,7 +677,7 @@ describe('the comparisons of table B keep their answer on the boundary day', () 
 		const open = ['2026-10-14 11:00:00', '2026-10-14T11:00:00.000Z', '2026-10-16'];
 		const tokens = new Map<string, string>();
 		for (const expiresAt of [...closed, ...open]) {
-			const token = createSession(owner.id).token;
+			const token = createSession(owner.id, { twoStep: 1 }).token;
 			db.update(sessions).set({ expiresAt }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 			tokens.set(token, expiresAt);
 		}

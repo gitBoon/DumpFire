@@ -8,9 +8,11 @@ import {
 	oldSessionCookieDeletion,
 	openSessionUser,
 	readSessionCookie,
+	sessionCookieReissue,
 	sessionTokenHash,
 	slidesSession,
-	startSessionSweep
+	startSessionSweep,
+	type NewSession
 } from '$lib/server/auth';
 import { startSchedulers } from '$lib/server/schedulers';
 import { json, text, type Handle, type HandleServerError, type RequestEvent } from '@sveltejs/kit';
@@ -411,6 +413,23 @@ function routedPath(event: RequestEvent): string | null {
 type ResolveFn = Parameters<Handle>[0]['resolve'];
 
 /**
+ * The session that replaced one kept at the release, read by the old cookie
+ * name (card 3064, R14), by the request it was read for: set by
+ * handleRequest, and given the browser by `handle` on whatever answer it logs.
+ */
+const reissued = new WeakMap<RequestEvent, NewSession>();
+
+/**
+ * The requests a session kept at the release was accepted for by the old
+ * cookie name in its last 60 seconds, swapped already and given no new code
+ * (card 3064, R14). Their answers do not delete the old name (the code
+ * review's CR-L5): that cookie is still the browser's only session cookie
+ * until the answer that swapped it arrives, and it is deleted with that
+ * answer. Every other answer to a request that sends it deletes it.
+ */
+const keptByOldNameUnswapped = new WeakSet<RequestEvent>();
+
+/**
  * Auth guards + routing rules. Wrapped by `handle` below for request logging.
  *
  * `path` is the path as the router sees it, which `handle` works out once:
@@ -523,11 +542,17 @@ async function handleRequest(event: RequestEvent, resolve: ResolveFn, path: stri
 	// The code goes no further than here. Only the holder's own use slides the
 	// session: a navigation, or a write, which has passed the check above
 	// (the code review's CS1). A page's own reads are checked and slide nothing.
-	const token = readSessionCookie(event.request, event.url);
-	const found = token === undefined ? null : validateSession(token, { slide: slidesSession(event.request) });
+	// A session kept at the release may come by the cookie name from before
+	// card 2775, while two-step sign-in is dormant and for 30 days after the
+	// release, and is swapped at its first use to a new session, which the
+	// request goes on as and the answer gives the browser (card 3064, R14).
+	const sent = readSessionCookie(event.request, event.url);
+	const found = sent === undefined ? null : validateSession(sent.code, { slide: slidesSession(event.request), oldName: sent.oldName });
 	event.locals.user = found?.user ?? null;
 	// The session the account was found by, as its hash, as the key is kept above.
 	event.locals.credential = found ? { kind: 'session', hash: found.hash } : null;
+	if (found?.reissue) reissued.set(event, found.reissue);
+	else if (found !== null && sent?.oldName) keptByOldNameUnswapped.add(event);
 
 	// Decided on the route's id, which a path that is no route has not got.
 	const routeId = event.route.id;
@@ -721,7 +746,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 	// a read that writes nothing and slides no expiry (`openSessionUser`):
 	// whose session a forged write rode on is what an investigation asks.
 	const seen = refusalSeen(response);
-	const sentCode = seen === undefined ? undefined : readSessionCookie(event.request, event.url);
+	const sentCode = seen === undefined ? undefined : readSessionCookie(event.request, event.url)?.code;
 	const userId =
 		seen === undefined
 			? (event.locals.user?.id ?? null)
@@ -734,13 +759,26 @@ export const handle: Handle = async ({ event, resolve }) => {
 	else if (status >= 400) log.warn(line, meta, fields);
 	else log.info(line, meta, fields);
 
+	// A session kept at the release and read by the old cookie name was
+	// swapped to a new session: its code is given the browser under the secure
+	// name, unless this answer sets or clears the session cookie itself (card
+	// 3064, R14, S-M2). The gate's own answers never pass through
+	// `event.cookies`, so the header is added here, where every logged answer
+	// passes: a page, a page's data and a live stream alike.
+	const replacement = reissued.get(event);
+	if (replacement !== undefined) {
+		const cookie = sessionCookieReissue(response, replacement, event.url);
+		if (cookie !== null) response.headers.append('set-cookie', cookie);
+	}
+
 	// A session cookie of the plain name, sent where cookies are HTTPS-only,
-	// names a session ended at the release: deleted on this answer, whoever
-	// made it (card 2775, decision 13). The gate's own answers never pass
-	// through `event.cookies`, so the header is added here, where every logged
-	// answer passes.
-	const oldCookie = oldSessionCookieDeletion(event.request, event.url);
-	if (oldCookie !== null) response.headers.append('set-cookie', oldCookie);
+	// is deleted on this answer, whoever made it (card 2775, decision 13): with
+	// no Domain, and with this server's parent domain (card 3064, R14, S-L3).
+	// But not on an answer that accepted it as a kept session in its last 60
+	// seconds, swapped already: the swap's own answer deletes it (CR-L5).
+	if (!keptByOldNameUnswapped.has(event)) {
+		for (const deletion of oldSessionCookieDeletion(event.request, event.url)) response.headers.append('set-cookie', deletion);
+	}
 
 	// A remote call's route is the one its caller named in a header (see
 	// noRemoteFunctions), so it is headed as no route at all: naming a page

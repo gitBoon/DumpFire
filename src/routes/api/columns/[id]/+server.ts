@@ -3,7 +3,9 @@ import { whilePasswordHolds } from '$lib/server/auth';
 import { columnDeleteGuard, deleteColumnFor, updateColumn } from '$lib/server/columns';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
-import { STEP_UP_MISSING, confirmStepUp } from '$lib/server/step-up';
+import { codeAskedOf } from '$lib/server/mfa-store';
+import { confirmStepUp } from '$lib/server/step-up';
+import { stepUpMissing } from '$lib/step-up-words';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -69,7 +71,8 @@ export const DELETE: RequestHandler = async ({ params, request, locals, cookies 
 		// the column since is not deleted without the password: refused, and
 		// nothing written.
 		writeAs(locals, (caller) => {
-			if (columnDeleteGuard(caller, { columnId: id }).held > 0) error(400, { message: STEP_UP_MISSING, stepUp: 'missing' });
+			// Said by what the step-up would ask of the caller (card 3064, F25).
+			if (columnDeleteGuard(caller, { columnId: id }).held > 0) error(400, { message: stepUpMissing(codeAskedOf(requireUser(caller).id)), stepUp: 'missing' });
 			deleteColumnFor(caller, { columnId: id }, null, { source: 'ui' });
 		});
 		return json({ success: true });

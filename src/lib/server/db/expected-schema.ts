@@ -793,6 +793,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\t`created_at` text DEFAULT (datetime('now')) NOT NULL,",
 		"\t`wrong_password_count` integer DEFAULT 0 NOT NULL,",
 		"\t`two_step` integer DEFAULT 0 NOT NULL,",
+		"\t`kept_at_release` integer DEFAULT 0 NOT NULL,",
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),

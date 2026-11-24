@@ -76,6 +76,7 @@ import {
 	makeTeam,
 	makeUser,
 	makeWebhook,
+	forgetFirstRunFlags,
 	resetDb,
 	type BoardFixture
 } from './helpers/fixtures';
@@ -84,6 +85,8 @@ import { DECISION_SERVICE, handlersOf as exportedHandlers, SERVICE_HELPERS, SERV
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 beforeEach(resetDb);
+// Each first-run pass in full, as before migration 0084 seeded their flags (card 3064, R23).
+beforeEach(() => forgetFirstRunFlags());
 
 // ─── The rule, read from the source ─────────────────────────────────────────
 
@@ -677,6 +680,9 @@ const CURRENT_PASSWORD = [
 	'src/routes/api/account/two-step/authenticators/[id]/+server.ts DELETE',
 	'src/routes/api/account/two-step/recovery-codes/+server.ts POST',
 	'src/routes/api/account/two-step/banner/+server.ts DELETE',
+	// Card 3064 (R8, R10): setting up two-step sign-in while it is dormant, and requiring it.
+	'src/routes/api/account/two-step/set-up/+server.ts POST',
+	'src/routes/api/admin/two-step/require/+server.ts POST',
 	// Card 2701, slice 1: the admin actions that ask for it again (confirmStepUp).
 	'src/routes/api/admin/reset/+server.ts POST',
 	'src/routes/api/admin/purge-archived/+server.ts POST',
@@ -1630,6 +1636,9 @@ describe('every write handler asks who the caller is at the write (card 2253)', 
 			'src/routes/api/account/two-step/authenticators/confirm/+server.ts POST',
 			'src/routes/api/account/two-step/recovery-codes/+server.ts POST',
 			'src/routes/api/account/two-step/banner/+server.ts DELETE',
+			// Card 3064 (R8, R10): setting up two-step sign-in while it is dormant, and requiring it.
+			'src/routes/api/account/two-step/set-up/+server.ts POST',
+			'src/routes/api/admin/two-step/require/+server.ts POST',
 			'src/routes/api/account/email/+server.ts PUT',
 			'src/routes/api/account/emoji/+server.ts PUT',
 			'src/routes/api/account/notifications/+server.ts PUT',
