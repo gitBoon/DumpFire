@@ -1192,6 +1192,7 @@ const MIRRORS: Record<string, Mirror> = {
 			labelIds: 'the ids of its labels',
 			assignees: 'who it is assigned to',
 			isBlocked: 'whether anything it waits on is unfinished',
+			waitingOnDecisions: 'the open decisions it waits on that the key\'s user may view (card 3059)',
 			blockedBy: 'what it waits on',
 			blocks: 'and what waits on it'
 		}
@@ -2136,7 +2137,8 @@ describe('what a route answers, against the schema the document gives for it', (
 		const one = await api('GET', `/api/v1/cards/${second.id}/dependencies?direction=blocks`, { user: admin });
 		expect(keysOf(one.body)).toEqual(propertiesOf(schema).filter((key) => key !== 'blockedBy'));
 		expect(keysOf(one.body.blocks[0])).toEqual(propertiesOf(deref(schema.properties.blocks).items));
-		expect(schema.required).toEqual(['cardId', 'isBlocked']);
+		// Card 3059 (R8): waitingOnDecisions is always sent, whatever direction.
+		expect(schema.required).toEqual(['cardId', 'isBlocked', 'waitingOnDecisions']);
 	});
 
 	it('POST /cards/{cardId}/dependencies: a link that is made, one that is already there, and one that would close a loop', async () => {
@@ -3653,7 +3655,8 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// Card 3064 (R22, R-L1, the amendment's shape, D1): the 1.15.1 note word for word: the one-off effects not applied on
 	// an upgraded server, points (1) to (8), everything a client written for 1.3.1 sees change, then "Added with it, not
-	// breaking:", then the closing (9). Cards 3059, 2688 and 2689 each insert a point before the closing one and renumber it.
+	// breaking:", then the closing point. Cards 3059, 2688 and 2689 each insert a point before the closing one and renumber it:
+	// card 3059's is (9), and the closing one (10).
 	// Its code review (CR-M3): point (5) names the reveal rule (1.15.0 (9)), and the closing point lists the answers that read
 	// differently rather than saying nothing else changed.
 	it('says in the 1.15.1 note what an upgraded server does not apply and everything a 1.3.1 client sees change, word for word (card 3064, D1)', () => {
@@ -3679,13 +3682,18 @@ describe('what a route answers, against the schema the document gives for it', (
 				'(7) PUT /webhooks/{webhookId} gives secret only where that PUT set or replaced it, and the four answers that can give a secret carry Cache-Control: no-store (1.15.0 (9)); ' +
 				"(8) 409, with nothing written, for a Product Owner or decider whose account's creation time cannot be read on this server, and 503 in place of 500 on a server with no MFA key loaded (1.15.0 (12), (13)). " +
 				'Added with it, not breaking: the People (1.5.0), Decisions (1.6.0) and Attachments (1.7.0) operations, touching=true on GET /milestones (1.9.0), survey questions and cards that wait on a decision (1.15.0 (14), (15)), each as its own note describes. ' +
-				"(9) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry's source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), " +
+				// Card 3059 (R8, E6): its point, inserted before the closing one, which is renumbered (10).
+				"(9) GET /cards/{cardId} and GET /cards/{cardId}/dependencies give waitingOnDecisions, the decisions the card waits on while each is open or awaiting a ruling and the key's user may view it, and [] for a card that is complete or an option (card 3059); " +
+				'isBlocked and blockedBy are unchanged and still count dependencies alone, so a card is free to start when isBlocked is false and waitingOnDecisions is empty; ' +
+				'keys of two users may be given different lists for one card, and both answers carry Cache-Control: no-store; ' +
+				"(10) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry's source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), " +
 				"a 413 for a body declared too large, and every other refusal of an upload before its body is read, carries Connection: close (1.13.1 (3)), and a card's move between milestones it cannot see is refused in words of its own (1.12.0 (3)).\n\n"
 		);
 		// The points in order, the closing one last: a later card inserts its own before it and renumbers it.
-		const points = [...changes.slice(changes.indexOf('sees change: ')).matchAll(/ \((\d)\) [a-zA-Z0-9]/g)].map((m) => Number(m[1]));
-		expect(points).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
-		expect(changes.indexOf('Added with it, not breaking:')).toBeLessThan(changes.indexOf('(9) no other operation, field or schema changed'));
+		const points = [...changes.slice(changes.indexOf('sees change: ')).matchAll(/ \((\d+)\) [a-zA-Z0-9]/g)].map((m) => Number(m[1]));
+		expect(points).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+		expect(changes.indexOf('Added with it, not breaking:')).toBeLessThan(changes.indexOf('(9) GET /cards/{cardId} and GET /cards/{cardId}/dependencies give waitingOnDecisions'));
+		expect(changes.indexOf('(9) GET /cards/{cardId}')).toBeLessThan(changes.indexOf('(10) no other operation, field or schema changed'));
 	});
 
 	// Card 2845: a note of its own, for a change of what costUsd answers.
@@ -3799,6 +3807,30 @@ describe('what a route answers, against the schema the document gives for it', (
 		const audit = OPS.find((op) => op.name === 'GET /api/v1/audit-log')!.entry.description as string;
 		expect(audit).toContain('write thirteen actions');
 		expect(audit).toContain("decision_card_relation_changed on the decision's board, naming no card");
+	});
+
+	// Card 3059, W5 (R7, R8): the two card reads give the open decisions a card waits on, additive; isBlocked keeps its
+	// meaning and says where the decisions are; the subtask answers and the dependency POST's answer are as they were.
+	it('gives CardDetail and CardDependencies a required waitingOnDecisions of PlanDecisionWait, and leaves the subtask and POST answers alone (card 3059 W5)', () => {
+		const schemas = spec.components.schemas;
+		for (const name of ['CardDetail', 'CardDependencies']) {
+			const schema = schemas[name];
+			expect(schema.properties.waitingOnDecisions, name).toMatchObject({ type: 'array', items: { $ref: '#/components/schemas/PlanDecisionWait' } });
+			expect(schema.properties.waitingOnDecisions.description, name).toContain(
+				"The decisions the card waits on, each open or awaiting a ruling and one the key's user may view; [] for none, and for a card that is archived, complete or an option"
+			);
+			expect(schema.required, name).toContain('waitingOnDecisions');
+			expect(schema.properties.isBlocked.description, name).toBe(
+				'true when at least one thing the card waits on is not finished: an unfinished dependency in blockedBy; a decision the card waits on is in waitingOnDecisions, not here'
+			);
+		}
+		// The review's E-L2: an archived card is given [] as well.
+		expect(schemas.PlanDecisionWait.description).toContain('which list it for a card that is not archived, not complete and not an option');
+		expect(schemas.SubtaskDependencies.properties).not.toHaveProperty('waitingOnDecisions');
+		expect(schemas.SubtaskDependencies.properties.isBlocked.description).toBe('true when at least one thing the subtask waits on is not finished');
+		const post = answerSchema('POST /api/v1/cards/{cardId}/dependencies', 201);
+		expect(Object.keys(post.properties)).toEqual(['blocked', 'blocker', 'isBlocked']);
+		expect(post.properties.isBlocked.description).toBe('Whether the card in the path is blocked now');
 	});
 
 	it('announces the people and groups operations, the refused keys and no addresses in the 1.5.0 note (card 2681)', () => {

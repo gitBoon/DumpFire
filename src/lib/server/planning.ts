@@ -567,6 +567,37 @@ export function getBlockedStateForCards(cardIds: number[], viewer: Actor, access
 	return out;
 }
 
+/**
+ * The decisions that hold each of a set of cards, for `viewer` (card 3059,
+ * R2): what the board, All Tasks and All To Do show beside the open blockers
+ * of `getBlockedStateForCards`, and the v1 card reads give as
+ * `waitingOnDecisions`. 2687's rule, unchanged: a link marked `waits` to a
+ * decision shown open or awaiting its ruling, that `viewer` may view, on a
+ * card on a board `viewer` can open, which `decisionWaitsFor` checks itself;
+ * and only a card that is not archived, not complete and not an option (R3),
+ * as the plan holds a member card. Subtasks carry nothing here.
+ *
+ * Per viewer, per request: nothing it answers is kept or shared. A card that
+ * nothing holds is absent, as in `blockedState`, so the payload grows with
+ * what is held, not with the board. With no wait on any card asked it costs
+ * one query per `IDS_AT_ONCE` cards; with one, the boards and decisions that
+ * `decisionWaitsFor` reads, and then the held cards' columns and boards (R10).
+ */
+export function getDecisionWaitsForCards(cardIds: number[], viewer: Actor): Record<number, PlanDecisionWait[]> {
+	const waits = decisionWaitsFor(viewer, cardIds);
+	if (waits.size === 0) return {};
+
+	// The held cards alone, read again for where they are: archived dropped, then complete cards and options (R3).
+	const held = loadPlanNodes([...waits.keys()].map((id) => nodeKey('card', id)));
+	const out: Record<number, PlanDecisionWait[]> = {};
+	for (const [cardId, list] of waits) {
+		const node = held.get(nodeKey('card', cardId));
+		if (!node || node.isComplete || node.isOption) continue;
+		out[cardId] = list;
+	}
+	return out;
+}
+
 /** Open blockers for every live card on one board, as `viewer` is given them. */
 export function getBoardBlockedState(boardId: number, viewer: Actor, accessible?: number[] | null): Record<number, PlanNode[]> {
 	const boardColumns = db

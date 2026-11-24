@@ -266,7 +266,7 @@ function contentsOf(kind: 'delivery' | 'ideas', columns: ColumnType[]): BoardCon
 	return {
 		board: { id: 1, name: 'Roadmap', emoji: '📋', parentCardId: null, kind },
 		breadcrumbs: [], columns, categories: [], labels: [], linkableBoards: [], canEdit: true, canManage: true,
-		userBoardRole: 'owner', boardUsers: [], blockedState: {}, cardTokens: {}, boardTokenSummary: null, milestones: []
+		userBoardRole: 'owner', boardUsers: [], blockedState: {}, decisionWaits: {}, cardTokens: {}, boardTokenSummary: null, milestones: []
 	};
 }
 

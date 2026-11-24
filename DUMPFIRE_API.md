@@ -270,7 +270,10 @@ Everything a client written for 1.3.1 sees change:
 7. `PUT /webhooks/{webhookId}` gives `secret` only where that `PUT` set or replaced it, and the four answers that can give a secret carry `Cache-Control: no-store` (1.15.0 (9)).
 8. `409`, with nothing written, for a Product Owner or decider whose account's creation time cannot be read on this server, and `503` in place of `500` on a server with no MFA key loaded (1.15.0 (12), (13)).
 
-Added with it, not breaking: the People (1.5.0), Decisions (1.6.0) and Attachments (1.7.0) operations, `touching=true` on `GET /milestones` (1.9.0), survey questions and cards that wait on a decision (1.15.0 (14), (15)), each as its own note describes. Nothing else changed: no other operation, field or schema.
+Added with it, not breaking: the People (1.5.0), Decisions (1.6.0) and Attachments (1.7.0) operations, `touching=true` on `GET /milestones` (1.9.0), survey questions and cards that wait on a decision (1.15.0 (14), (15)), each as its own note describes.
+
+9. `GET /cards/{cardId}` and `GET /cards/{cardId}/dependencies` give `waitingOnDecisions`, the decisions the card waits on while each is open or awaiting a ruling and the key's user may view it, and `[]` for a card that is complete or an option (card 3059); `isBlocked` and `blockedBy` are unchanged and still count dependencies alone, so **a card is free to start when `isBlocked` is false and `waitingOnDecisions` is empty**; keys of two users may be given different lists for one card, and both answers carry `Cache-Control: no-store`. See [Dependencies](#dependencies).
+10. Nothing else changed: no other operation, field or schema.
 
 ### Changes on 2026-11-23
 
@@ -1824,6 +1827,7 @@ GET /api/v1/cards/{cardId}/dependencies
 {
   "cardId": 1559,
   "isBlocked": true,
+  "waitingOnDecisions": [],
   "blockedBy": [
     {
       "id": 12,
@@ -1851,8 +1855,32 @@ of: for a subtask it is the subtask's id, and `parentCardId` is the card it belo
 subtask when it is ticked. With `direction=blocked-by` the answer has no `blocks`, and with
 `direction=blocks` no `blockedBy`; any other value is a `400`. Work that has been archived or
 deleted is not listed. `GET /api/v1/cards/{cardId}`
-also returns `isBlocked`, `blockedBy` and `blocks`, so a planning client needs only one
-request per card.
+also returns `isBlocked`, `waitingOnDecisions`, `blockedBy` and `blocks`, so a planning client
+needs only one request per card.
+
+**`isBlocked` counts dependencies alone; `waitingOnDecisions` names the decisions** (since
+1.15.1, card 3059). `isBlocked` is true when an unfinished dependency is in `blockedBy`, as it
+always was. `waitingOnDecisions`, on both reads and whatever `direction`, lists each decision the
+card is marked as waiting on while it is open or awaiting a ruling and the key's user may view
+it, as `{ "id", "title", "shownStatus": "open" | "awaiting_ruling", "closesAt" }`; it is `[]`
+for none, and for a card that is archived, complete or an option. **A card is free to start when
+`isBlocked` is false and `waitingOnDecisions` is empty.** Keys of two users may be given
+different lists for one card, so both answers carry `Cache-Control: no-store`. The decisions are
+read only after the card is found and checked (and, on the dependency read, `direction`), so a
+`404` or `400` reads none. The `POST` and `DELETE` answers and the subtask routes do not carry
+it.
+
+```json
+{
+  "cardId": 1559,
+  "isBlocked": false,
+  "waitingOnDecisions": [
+    { "id": 41, "title": "Which host do we move to?", "shownStatus": "open", "closesAt": "2026-12-01T17:00:00.000Z" }
+  ],
+  "blockedBy": [],
+  "blocks": []
+}
+```
 
 **An end on a board the key's user cannot open is withheld** (since 2026-10-14). It is
 still listed, so that a card waiting on it is still blocked, and the link can still be

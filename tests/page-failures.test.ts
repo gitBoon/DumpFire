@@ -122,7 +122,7 @@ import {
 import { MOST_FAILURES, TOAST_MS, toasts } from '$lib/stores/toast';
 import type { CardType, ColumnType } from '$lib/types';
 import { isOptionsColumn, isUpstreamColumn } from '$lib/column-role';
-import { isCardBlocked, subBoardIncompleteCount } from '$lib/utils/card-utils';
+import { isCardBlocked, isCompleteColumn, subBoardIncompleteCount } from '$lib/utils/card-utils';
 import { makeUser, resetDb } from './helpers/fixtures';
 import { CODE } from './helpers/step-up-code';
 
@@ -5739,6 +5739,7 @@ describe('bulk priority, archive and move through the board state, src/lib/board
 			userBoardRole: 'owner',
 			boardUsers: [],
 			blockedState: {},
+			decisionWaits: {},
 			cardTokens: {},
 			boardTokenSummary: null,
 			milestones: []
@@ -8651,6 +8652,86 @@ describe('the board page draws from its board state and reads the board alone (c
 		expect(page).toMatch(/<CardModal\b(?:(?!\/>)[\s\S])*\{attachmentsTold\}(?:(?!\/>)[\s\S])*\/>/);
 	});
 
+	// Card 3059, U6 (R9): a decision event on the board's stream re-reads the
+	// board, so a card a decision on this board holds or frees is drawn as the
+	// viewer is given it; the page hands every update but `access` to `refresh`.
+	it('hands a decision event on the board’s stream to onUpdate as { type: \'decision\' }, whatever it carries', () => {
+		const listeners = new Map<string, (e: { data: string }) => void>();
+		vi.stubGlobal(
+			'EventSource',
+			class {
+				onopen: (() => void) | null = null;
+				onerror: (() => void) | null = null;
+				addEventListener(type: string, listener: (e: { data: string }) => void) {
+					listeners.set(type, listener);
+				}
+				close() {}
+			}
+		);
+		vi.stubGlobal('document', { visibilityState: 'visible', addEventListener: () => {}, removeEventListener: () => {} });
+		const told: unknown[] = [];
+		try {
+			const close = connectSSE(7, { onUpdate: (event) => told.push(event), onCelebrate: () => {} });
+			listeners.get('decision')!({ data: JSON.stringify({ decisionId: 4, status: 'ruled', boardId: 7 }) });
+			listeners.get('decision')!({ data: 'not JSON' });
+			close();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+		expect(told).toEqual([{ type: 'decision' }, { type: 'decision' }]);
+	});
+
+	// Card 3059, the review's E-M1: the still-blocked warning, run as written,
+	// names a decision that holds the card as well as its open blockers, and
+	// says nothing for a card neither holds.
+	it('warns of a card started while a decision or a blocker still holds it, naming each, and not of one neither holds (card 3059, E-M1)', () => {
+		const said: unknown[][] = [];
+		const blockers: Record<number, { id: number }[]> = {};
+		const waits: Record<number, { title: string }[]> = {};
+		const warnIfStillBlocked = new Function(
+			'isCompleteColumn', 'blockersFor', 'waitsFor', 'toasts',
+			`${runnable(board(), ['warnIfStillBlocked'])}\nreturn warnIfStillBlocked;`
+		)(
+			isCompleteColumn,
+			(cardId: number) => blockers[cardId] ?? [],
+			(cardId: number) => waits[cardId] ?? [],
+			{ add: (...args: unknown[]) => said.push(args) }
+		) as (card: { id: number; title: string }, toColumnName: string) => void;
+
+		waits[5] = [{ title: 'X' }];
+		warnIfStillBlocked({ id: 5, title: 'Ship it' }, 'In Progress');
+		blockers[6] = [{ id: 12 }];
+		waits[6] = [{ title: 'X' }];
+		warnIfStillBlocked({ id: 6, title: 'Test it' }, 'In Progress');
+		warnIfStillBlocked({ id: 7, title: 'Free' }, 'In Progress');
+		expect(said).toEqual([
+			['"Ship it" is still waiting on decision "X" — moved to In Progress anyway', 'warning'],
+			['"Test it" is still blocked by #12 and decision "X" — moved to In Progress anyway', 'warning']
+		]);
+	});
+
+	// Card 3059, the review's E-M1: what holds a card is its open blockers and
+	// the decisions it waits on, on the Kanban face, in the list view, for Hide
+	// blocked, and for All To Do's Blocked chip.
+	it('counts a decision that holds a card on both board views, for Hide blocked and on All To Do’s chip (card 3059, E-M1)', () => {
+		const tree = board();
+		expect(flat(functionNamed(tree, 'heldCount').body!)).toBe('{ return blockersFor(cardId).length + waitsFor(cardId).length; }');
+		expect(flat(functionNamed(tree, 'passesBlockedFilter').body!)).toBe('{ return !hideBlocked || heldCount(cardId) === 0; }');
+		const page = readFileSync(join(ROOT, PAGE), 'utf8');
+		const tagOf = (name: string) => {
+			const opened = page.slice(page.indexOf(`<${name}`));
+			return opened.slice(0, opened.indexOf('/>')).replace(/\s+/g, ' ');
+		};
+		expect(tagOf('KanbanCardBody')).toContain('blockerCount={heldCount}');
+		expect(tagOf('ColumnListView')).toContain('blockerCount={heldCount}');
+
+		const todo = readFileSync(join(ROOT, 'src/routes/todo/+page.svelte'), 'utf8').replace(/\s+/g, ' ');
+		expect(todo).toContain('const heldCount = (cardId: number) => blockersFor(cardId).length + waitsFor(cardId).length;');
+		expect(todo).toContain('{@const held = heldCount(card.id)}');
+		expect(todo).toContain('{#if held > 0} <span class="blocked-badge" title={blockerTooltip(card.id)}>');
+		expect(todo).toContain('Blocked{#if held > 1}&nbsp;({held}){/if}');
+	});
+
 	it('holds the reads from a drag’s first move, before the columns change, until the move’s answer, let go in a finally', () => {
 		const tree = board();
 		// One hold per drag, taken at its first move, before the columns change;
@@ -9082,6 +9163,7 @@ describe('the board page draws from its board state and reads the board alone (c
 				userBoardRole: 'owner',
 				boardUsers: [],
 				blockedState: {},
+				decisionWaits: {},
 				cardTokens: {},
 				boardTokenSummary: null,
 				milestones: []

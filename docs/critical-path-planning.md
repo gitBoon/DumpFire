@@ -1,9 +1,9 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.27
+version: 1.28
 status: As-Built
-date: 2026-11-23
+date: 2026-11-24
 tags:
   - planning
   - dependencies
@@ -15,7 +15,8 @@ tags:
   - upstream
   - decisions
   - card-2687
-description: "How DumpFire derives critical path, next-actionable work and blocked state from two recorded facts (and, since card 2687, cards marked as waiting on a decision), and where the planning view sits relative to the Kanban board"
+  - card-3059
+description: "How DumpFire derives critical path, next-actionable work and blocked state from two recorded facts (and, since card 2687, cards marked as waiting on a decision, which since card 3059 also show Blocked on board faces, All Tasks, All To Do and the v1 card reads), and where the planning view sits relative to the Kanban board"
 ---
 
 # Critical-Path Planning
@@ -553,11 +554,77 @@ new one, because the plan mail shares one work summary between recipients.
   be passed to people who may not.
 - **The plan-created mail**: see [When a plan appears](#when-a-plan-appears-people-are-told).
 
-Not changed (card 3059 will take them): the board face's Blocked chip, the To Do page's
-Startable filter, a card's `isBlocked` and `blockedBy` in card answers
-(`getBlockedStateForCards`), dependency validation and unblock notices. When a decision is ruled
-no "Unblocked" comment is written on its waiting cards: it would reach card readers who may not
-view the decision. The plan page has no live channel, so a ruling shows on its next read.
+Not changed: dependency validation and unblock notices. When a decision is ruled no "Unblocked"
+comment is written on its waiting cards: it would reach card readers who may not view the
+decision, and the "Unblocked" comment a held card gets when its last dependency finishes still
+says "nothing is blocking this card now" for the same reason (one shared comment cannot name a
+decision for some readers and not others). The plan page has no live channel, so a ruling shows
+on its next read.
+
+### Outside the plan: board faces, All Tasks, All To Do and the v1 card reads (card 3059)
+
+Since card 3059 a wait holds a card everywhere people pick work from, by the same rule as the
+plan: a `waits` link to a decision shown open or awaiting its ruling, that the viewer may view,
+on a card on a board the viewer can open that is **not archived, not complete and not an
+option**. `getDecisionWaitsForCards(cardIds, viewer)` in `planning.ts`, beside
+`getBlockedStateForCards`, asks `decisionWaitsFor` (so the callers' pin on that checked read is
+unchanged), then reads the held cards alone again (`loadPlanNodes`, archived dropped) and keeps
+a card only when it is not complete and not an option. A card nothing holds is absent from its
+answer, as in `blockedState`, so the payload grows with what is held, not with the board.
+
+| Where | What it reads | What changes for a held card |
+|---|---|---|
+| Board page (Kanban face and list view) | `decisionWaits` from `readBoardContents`, on the load and on `GET /api/boards/{id}/contents`; the page's `heldCount` (blockers plus decisions) and `blockerTooltip` | The Blocked chip shows and counts it ("Blocked (2)" for one blocker and one decision); the column counts and Hide blocked count it; dragging it to a working column warns `"<card>" is still waiting on decision "<title>" — moved to <column> anyway` (or `…still blocked by #12 and decision "<title>"…` with blockers too) |
+| All Tasks | `decisionWaits` from `readCrossBoardCards`; `heldCount` on the page and in `AllTaskCard` | The chip, its count and Hide blocked, as on the board |
+| All To Do | `decisionWaits` from `readCrossBoardCards`, in `TodoContext`; `isBlocked(card, ctx)` in `todo-table.ts` | The Startable filter leaves it out, the Blocked filter keeps it, the Blocked sort puts it with the blocked cards; the chip as above |
+| `GET /api/v1/cards/{cardId}` and `GET /api/v1/cards/{cardId}/dependencies` | `getDecisionWaitsForCards([cardId], key's user)` | `waitingOnDecisions: PlanDecisionWait[]`, `[]` when none (and for an archived or complete card or an option). `isBlocked` and `blockedBy` are **unchanged** and count dependencies alone, so a card is free to start when `isBlocked` is false **and** `waitingOnDecisions` is empty |
+
+The chip's tooltip is joined by `heldTooltip(blockerLines, waits)` in `$lib/decision-words.ts`,
+the one rule all three pages call with their own blocker lines: nothing for neither; "Blocked
+by", each blocker, then a line per decision for both; and for a card held by decisions alone
+**the decision lines alone**, with no "Blocked by". Each decision line is
+`decisionWaitLine(wait)`: `Waiting on decision "<title>" (Open)` or `(Awaiting ruling)`, the
+PDF's words with a capital. Only the title and shown status are shown; the chip is not a link
+(the card window, one click away, lists the decision with its link). Both headers' Hide blocked
+read "Hide cards that are still waiting on another card or a decision".
+
+The v1 reads ask for the decisions **last**: the card read after `requireCard(…, 'view')`, the
+dependency read after `readWorkDependencies` (which checks the card) and the `direction` check,
+so a key that cannot open the card (404) or sends a bad `direction` (400) causes no decision read
+at all. The dependency POST and DELETE answers, the subtask dependency answers and the internal
+dependency routes behind the card window are unchanged.
+
+Because these pages and answers now differ from one person to the next, `/board/[id]`, `/todo`,
+`/all` (each page and its `__data.json`) and the two v1 card reads are on `ROUTE_HEADERS` with
+`Cache-Control: no-store` and `X-Robots-Tag: noindex, nofollow`; the contents route was already
+`private, no-store`. No live event carries the state: the board page re-reads on its own board's
+`decision` event (`sse.ts` hands it to `onUpdate` as `{ type: 'decision' }`), All To Do
+(`connectLiveRefresh` with `events: ['update', 'xp-update', 'decision']`) and All Tasks (a
+`decision` listener that schedules the re-read) on any `decision` event `/api/events` forwards to
+them. A wait marked from the decision page, or a decision on another board, shows on the next
+read: any update on that board, a return to the tab, or a reload.
+
+```mermaid
+flowchart LR
+    L["decision_card_links<br/>relation = waits"] --> DW["decisionWaitsFor(viewer, cardIds)<br/>(decision-cards.ts, 2687)<br/>card's board open? decision viewable?<br/>open or awaiting ruling?"]
+    DW --> G["getDecisionWaitsForCards(cardIds, viewer)<br/>(planning.ts, 3059)<br/>drops archived, complete cards and options"]
+    G --> BC["readBoardContents(user)<br/>decisionWaits beside blockedState"]
+    G --> CB["readCrossBoardCards(user)<br/>decisionWaits beside blockedState"]
+    G --> V1["GET /api/v1/cards/{id}<br/>GET /api/v1/cards/{id}/dependencies<br/>waitingOnDecisions (additive), no-store<br/>asked after the card check and direction"]
+    BC --> BP["board page and list view (no-store):<br/>chip, tooltip, Hide blocked, toast"]
+    BC --> CR["GET /api/boards/{id}/contents<br/>private, no-store"]
+    CB --> AT["All Tasks (no-store): chip, Hide blocked"]
+    CB --> TD["All To Do (no-store): Startable / Blocked,<br/>sort, chip"]
+    E["live events: markers only<br/>(update, decision)"] -. "re-read, per viewer" .-> BP
+    E -. "re-read, per viewer" .-> AT
+    E -. "re-read, per viewer" .-> TD
+```
+
+A viewer who may not view the decision sees the card as its dependencies alone place it: no
+chip, no count, Startable in To Do, `waitingOnDecisions: []`, and nothing of the decision in the
+page's data. A page where some card waits makes about ten more reads than one where none does,
+so someone timing their own loads could tell that some card on it waits, never which card or
+decision; this was accepted rather than padding every load.
 
 ### Marking a card as waiting
 
@@ -964,15 +1031,19 @@ The board picks up exactly three things:
   blocker on a board the reader cannot open is listed by its number and "A card on a board
   you cannot open" (card 2129): the card is still blocked, and nothing of the other board is
   shown. Amber, not red — On Hold already owns red, and *waiting* must stay distinguishable
-  from *stopped*.
+  from *stopped*. Since card 3059 the chip also shows, and counts, an open decision the
+  reader may view that holds the card, its tooltip adding `Waiting on decision "<title>"
+  (Open)`; a card held by a decision alone shows the decision lines alone (see
+  [Outside the plan](#outside-the-plan-board-faces-all-tasks-all-to-do-and-the-v1-card-reads-card-3059)).
 - A **milestone** chip linking through to the planning view.
 - A **Hide blocked** filter, which also adjusts the per-column counts so a filtered column
-  reads `3/12` rather than silently under-reporting.
+  reads `3/12` rather than silently under-reporting. It hides a card a decision holds too.
 
 Blocked state is computed once per board by `getBoardBlockedState(boardId, viewer)` and
 shipped with the page payload — one query for the whole board rather than one request per
 card face. All Tasks does the same over every card it shows with
-`getBlockedStateForCards(ids, viewer)`. The card window's dependency rows draw a withheld
+`getBlockedStateForCards(ids, viewer)`. Beside it, `getDecisionWaitsForCards(ids, viewer)`
+gives the decisions that hold each card (card 3059). The card window's dependency rows draw a withheld
 end with no link and no board or column line; its ✕ still removes the link, by the other
 end's id.
 

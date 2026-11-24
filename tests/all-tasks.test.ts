@@ -837,6 +837,8 @@ describe('the All Tasks answer, pinned (card 2240)', () => {
 			'columns',
 			'completedCards',
 			'completedLimit',
+			// Card 3059 (R4): the open decisions that hold a card, for this caller.
+			'decisionWaits',
 			'hasMoreCompleted',
 			'labels',
 			'milestoneNames',

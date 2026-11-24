@@ -16,6 +16,7 @@
 import type { Fetch } from '$lib/signed-out';
 import type { BoardKind } from '$lib/column-role';
 import type { CategoryType, ColumnType, LabelType, MilestoneType } from '$lib/types';
+import type { PlanDecisionWait } from '$lib/plan-table';
 
 /** One board above this one, as the breadcrumbs show it. */
 export type BreadcrumbType = { label: string; emoji: string; href: string | null; title?: string };
@@ -49,6 +50,8 @@ export type BoardContentsData = {
 	userBoardRole: string;
 	boardUsers: { id: number; username: string; emoji: string | null }[];
 	blockedState: Record<number, BoardBlockerType[]>;
+	/** The open decisions that hold a card, those the viewer may view (card 3059): a card nothing holds is absent. */
+	decisionWaits: Record<number, PlanDecisionWait[]>;
 	cardTokens: Record<number, { tokens: number; costUsd: number | null }>;
 	boardTokenSummary: { total: number; entries: number; costUsd: number | null; unpricedTokens: number } | null;
 	milestones: MilestoneType[];

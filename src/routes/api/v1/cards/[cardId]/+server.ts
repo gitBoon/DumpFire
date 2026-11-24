@@ -3,7 +3,7 @@ import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { columns, subtasks, cardLabels, cardAssignees, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { getCardDependencies } from '$lib/server/planning';
+import { getCardDependencies, getDecisionWaitsForCards } from '$lib/server/planning';
 import { removeCard, updateCard } from '$lib/server/cards';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
 import { pathId, readBody } from '$lib/server/request-body';
@@ -20,7 +20,9 @@ const NO_EDIT = "No edit access to this card's board";
 /**
  * GET /api/v1/cards/:cardId — Get a single card with subtasks and assignees.
  * 404 `Card not found` for a card that is not there, and for one on a board
- * the key's user cannot open alike (card 2719).
+ * the key's user cannot open alike (card 2719). Answered `Cache-Control:
+ * no-store` (`ROUTE_HEADERS`, card 3059, R12): `waitingOnDecisions` names
+ * decisions for the key's user alone.
  */
 export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
@@ -60,8 +62,13 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
 	// Dependency state ships with the card so a planning caller never has to
 	// make a second request just to know whether this card is startable. An end
-	// on a board the key's user cannot open is withheld (card 2129).
+	// on a board the key's user cannot open is withheld (card 2129). `isBlocked`
+	// counts dependencies alone; the open decisions the card waits on, those the
+	// key's user may view, are `waitingOnDecisions` (card 3059, R7), so a client
+	// needs both to know the card is free to start: `isBlocked` false and
+	// `waitingOnDecisions` empty. Asked only here, after the card's own check.
 	const deps = getCardDependencies(cardId, locals.user);
+	const waitingOnDecisions = getDecisionWaitsForCards([cardId], locals.user)[cardId] ?? [];
 
 	return json({
 		...card,
@@ -71,6 +78,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		labelIds: labelRows.map(r => r.labelId),
 		assignees: assigneeRows,
 		isBlocked: deps.isBlocked,
+		waitingOnDecisions,
 		// `kind` and `parentCardId` matter: without them "#32" is ambiguous between
 		// card 32 and subtask 32, and a client cannot link to the right thing.
 		blockedBy: deps.blockedBy.map(d => ({

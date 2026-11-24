@@ -66,7 +66,8 @@ export interface SSECallbacks {
 	/**
 	 * Called when the board may have changed: with what an 'update' event
 	 * said, so the page can tell the access event from the rest (card 2280,
-	 * slice B2a), and with null for a reconnect and a return to the tab.
+	 * slice B2a), with `{ type: 'decision' }` for a decision event on the
+	 * board (card 3059), and with null for a reconnect and a return to the tab.
 	 */
 	onUpdate: (event: BoardEvent | null) => void;
 	/** Called when the server pushes a 'celebrate' event (card completed). */
@@ -110,6 +111,13 @@ export function connectSSE(boardId: number, callbacks: SSECallbacks): () => void
 
 		eventSource.addEventListener('xp-update', () => {
 			callbacks.onXpUpdate?.();
+		});
+
+		// A decision on this board was opened, closed, ruled or withdrawn (card
+		// 3059, R9): a card it holds may be Blocked or free now, so the board is
+		// read again, as the viewer. The event carries no state of its own.
+		eventSource.addEventListener('decision', () => {
+			callbacks.onUpdate({ type: 'decision' });
 		});
 	}
 

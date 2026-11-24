@@ -478,6 +478,7 @@ describe('the board’s card window, src/lib/board/card-window.svelte.ts (card 2
 				userBoardRole: 'owner',
 				boardUsers: [],
 				blockedState: {},
+				decisionWaits: {},
 				cardTokens: {},
 				boardTokenSummary: null,
 				milestones: [],

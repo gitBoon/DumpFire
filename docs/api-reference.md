@@ -1,10 +1,12 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.170
+version: 1.172
 status: As-Built
 date: 2026-11-24
 tags:
+  - card-3059
+  - waiting-on-decisions
   - card-3064
   - compatibility-release
   - openapi-1-15-1
@@ -81,7 +83,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "OpenAPI 1.15.1, not breaking (card 3064, the compatibility release): on a server upgraded from before 1.8.0 the one-off effects of 1.8.0, 1.9.1 (4), 1.11.0 (9)-(10) and 1.15.0 (1)-(4), (7) and (9) are not applied at installation, a key has a deadline only where the administrator has applied one, the list of everything a client written for 1.3.1 sees change, and a key made or confirmed with the password alone by an account with no authenticator while two-step sign-in is dormant. Objections and requests to talk (card 2684) are a person's, never a key's: no v1 operation raises, replies to or reads one, the summary is unchanged, and GET …/record leaves the four flag events out; no new point in 1.15.0. Point (14) of 1.15.0, decisions may ask survey questions: surveyQuestions in the content (kept when a PATCH does not send it, [] removes them), the refusal survey_incomplete, the response kind answered, answers and survey figures on the summary, never answered with a key (card 2683). Point (13) of 1.15.0, webhooks a restore brings back switched off with three new pausedBecause sentences, and the import's outboundKept and recordsNotTaken.outboundChanges (card 3004). A restore keeps decision roles as recorded: the import's accessKept and accessAsHere fields, and point (12)'s 409 for a Product Owner or decider whose account time does not read (card 3033). The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "OpenAPI 1.15.1, not breaking (card 3064, the compatibility release): on a server upgraded from before 1.8.0 the one-off effects of 1.8.0, 1.9.1 (4), 1.11.0 (9)-(10) and 1.15.0 (1)-(4), (7) and (9) are not applied at installation, a key has a deadline only where the administrator has applied one, the list of everything a client written for 1.3.1 sees change, and a key made or confirmed with the password alone by an account with no authenticator while two-step sign-in is dormant; point (9), card 3059: GET /cards/{cardId} and GET /cards/{cardId}/dependencies give waitingOnDecisions, isBlocked unchanged, both answered no-store. Objections and requests to talk (card 2684) are a person's, never a key's: no v1 operation raises, replies to or reads one, the summary is unchanged, and GET …/record leaves the four flag events out; no new point in 1.15.0. Point (14) of 1.15.0, decisions may ask survey questions: surveyQuestions in the content (kept when a PATCH does not send it, [] removes them), the refusal survey_incomplete, the response kind answered, answers and survey figures on the summary, never answered with a key (card 2683). Point (13) of 1.15.0, webhooks a restore brings back switched off with three new pausedBecause sentences, and the import's outboundKept and recordsNotTaken.outboundChanges (card 3004). A restore keeps decision roles as recorded: the import's accessKept and accessAsHere fields, and point (12)'s 409 for a Product Owner or decider whose account time does not read (card 3033). The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -442,8 +444,9 @@ either.
 
 ### Changes on 2026-11-24: version 1.15.1, the compatibility release (card 3064)
 
-**Not breaking; the description only.** OpenAPI is now `1.15.1`. No operation, field, status code
-or schema changes against 1.15.0, and behaviour is only relaxed, never tightened. Everything built
+**Not breaking.** OpenAPI is now `1.15.1`. No operation, status code or existing field changes
+against 1.15.0, and behaviour is only relaxed, never tightened; the one addition is point 9's
+`waitingOnDecisions` on the two card reads (card 3059), a new field a client may ignore. Everything built
 since live's `106ea45` (API 1.3.1) is released together, and the release's first start changes
 nothing a key holder or a webhook receiver can see beyond a short outage.
 
@@ -499,11 +502,18 @@ Added with it, not breaking: the People (1.5.0), Decisions (1.6.0) and Attachmen
 operations, `touching=true` on `GET /milestones` (1.9.0), survey questions and cards that wait on
 a decision (1.15.0 (14), (15)), each as its own note describes.
 
-9. No other operation, field or schema changed; beside those, a few answers read differently: an
-   audit entry's `source` may be `system` (1.7.0), a disabled user named as an assignee or a Product
-   Owner is `400` (1.13.0 (2)), a `413` for a body declared too large, and every other refusal of an
-   upload before its body is read, carries `Connection: close` (1.13.1 (3)), and a card's move
-   between milestones it cannot see is refused in words of its own (1.12.0 (3)).
+9. `GET /cards/{cardId}` and `GET /cards/{cardId}/dependencies` give `waitingOnDecisions`, the
+   decisions the card waits on while each is open or awaiting a ruling and the key's user may
+   view it, and `[]` for a card that is complete or an option (card 3059); `isBlocked` and
+   `blockedBy` are unchanged and still count dependencies alone, so a card is free to start when
+   `isBlocked` is false and `waitingOnDecisions` is empty; keys of two users may be given
+   different lists for one card, and both answers carry `Cache-Control: no-store`.
+
+10. No other operation, field or schema changed; beside those, a few answers read differently: an
+    audit entry's `source` may be `system` (1.7.0), a disabled user named as an assignee or a Product
+    Owner is `400` (1.13.0 (2)), a `413` for a body declared too large, and every other refusal of an
+    upload before its body is read, carries `Connection: close` (1.13.1 (3)), and a card's move
+    between milestones it cannot see is refused in words of its own (1.12.0 (3)).
 
 The key's description (`bearerAuth`) now says a key has a deadline only where the administrator
 has applied one. Outside `/api/v1`, a key is made, and kept, with the current password alone by an
@@ -5177,7 +5187,22 @@ option, `committedAt` and `committedBy` `null`.
 
 #### `GET /api/v1/cards/:cardId`
 
-Get a card with subtasks (ordered by position, then id), labels, and assignees.
+Get a card with subtasks (ordered by position, then id), labels, and assignees, and what it
+waits on and what waits on it (`isBlocked`, `blockedBy`, `blocks`, as under
+[Dependencies](#dependencies)).
+
+`waitingOnDecisions` (since 1.15.1, card 3059) lists the decisions the card waits on, each a
+`PlanDecisionWait` (`id`, `title`, `shownStatus` `open` or `awaiting_ruling`, `closesAt`): only
+decisions linked to the card as `waits`, open or awaiting a ruling, that the key's user may view.
+It is `[]` when there are none, and for a card that is archived, complete or an option.
+`isBlocked` and `blockedBy` are unchanged and count unfinished dependencies alone, so **a card is
+free to start when `isBlocked` is false and `waitingOnDecisions` is empty**. Keys of two users
+may be given different lists for one card, so the answer carries `Cache-Control: no-store`. The
+headers are set by route, not by method: `/api/v1/cards/:cardId` sends `Cache-Control: no-store`
+and `X-Robots-Tag: noindex, nofollow` on every method (`GET`, `PUT` and `DELETE`), as
+`/api/v1/cards/:cardId/dependencies` does on its `GET`, `POST` and `DELETE`. The
+decisions are read only after the card's own check: a key that cannot open the card gets the
+`404` and causes no decision read.
 
 #### `PUT /api/v1/cards/:cardId`
 
@@ -5675,6 +5700,7 @@ the card's board. Work that has been archived or deleted is not listed.
 {
   "cardId": 10,
   "isBlocked": true,
+  "waitingOnDecisions": [],
   "blockedBy": [
     {
       "id": 7,
@@ -5699,6 +5725,15 @@ the card's board. Work that has been archived or deleted is not listed.
 `id` is the id of the link. `kind` says what `cardId` is the id of: for a subtask it is the
 subtask's id, and `parentCardId` is the card it belongs to. `resolved` is true once that work
 is finished.
+
+`isBlocked` is true when an unfinished dependency is in `blockedBy`; a decision the card waits on
+is not counted there but listed in `waitingOnDecisions` (since 1.15.1, card 3059), given whatever
+`direction`, exactly as on `GET /cards/:cardId`: the open decisions the key's user may view, `[]`
+for none. The answer carries `Cache-Control: no-store`, and the decisions are read only after
+the card is found and checked and `direction` is read, so a `404` or `400` reads none. The
+headers are the route's, set on every method: the `POST` and `DELETE` answers below carry
+`Cache-Control: no-store` and `X-Robots-Tag: noindex, nofollow` too, as every method of
+`/api/v1/cards/:cardId` does; the subtask routes do not.
 
 An end on a board the key's user cannot open is **withheld** (card 2129). It is still
 listed, so that the card is still blocked by it and the link can still be removed by its id:

@@ -260,7 +260,7 @@
 				tabindex="-1"
 				aria-checked={hideBlocked}
 				onclick={() => (hideBlocked = !hideBlocked)}
-				title="Hide cards that are still waiting on another card"
+				title="Hide cards that are still waiting on another card or a decision"
 			>
 				<svg width="13" height="13" viewBox="0 0 10 10" fill="none" aria-hidden="true">
 					<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>

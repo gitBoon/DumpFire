@@ -579,6 +579,7 @@ function contents(columns: ColumnType[] = board(), extra: Partial<BoardContentsD
 		userBoardRole: 'owner',
 		boardUsers: [{ id: 1, username: 'owner', emoji: '👤' }],
 		blockedState: {},
+		decisionWaits: {},
 		cardTokens: {},
 		boardTokenSummary: null,
 		milestones: [],
@@ -626,6 +627,27 @@ describe('the contents answer, and the board state that takes it', () => {
 		expect(ids(state.columns)[1]).toEqual([20, [4]]);
 		// And a rename by someone else follows.
 		expect(state.board.name).toBe('Renamed');
+	});
+
+	// Card 3059, U5: the open decisions that hold a card, read beside `blockedState`.
+	it('takes the decisions that hold a card from the load and from a refresh, and empties them on a refusal', async () => {
+		const wait = { id: 5, title: 'Pick a vendor', shownStatus: 'open' as const, closesAt: null };
+		const { state } = stateWith([async () => answer(200, contents(board(), { decisionWaits: { 2: [wait] } })), async () => answer(403, { message: 'No' })]);
+		states.push(state);
+		expect(state.decisionWaits).toEqual({});
+
+		state.refresh();
+		await vi.advanceTimersByTimeAsync(300);
+		expect(state.decisionWaits).toEqual({ 2: [wait] });
+
+		state.refresh();
+		await vi.advanceTimersByTimeAsync(300);
+		expect(state.refused).toBe(true);
+		expect(state.decisionWaits).toEqual({});
+
+		// Given the board again by the load: its own, and nothing kept from before.
+		state.take(contents(board(), { decisionWaits: { 3: [wait] } }));
+		expect(state.decisionWaits).toEqual({ 3: [wait] });
 	});
 
 	it('decides "refused" on 401, 403 and 404: the state is emptied and the refusal page asked for once', async () => {

@@ -48,6 +48,8 @@
 	// The still-blocked warning keeps its own test of the title (warnIfStillBlocked).
 	import { isOptionsColumn, isOptionsTitle, isTodoColumnTitle, isUpstreamColumn, optionsSuffix } from '$lib/column-role';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
+	// The Blocked chip's tooltip, as All Tasks and All To Do join it (card 3059).
+	import { heldTooltip } from '$lib/decision-words';
 
 	// Board-specific modules
 	import * as api from '$lib/api';
@@ -996,7 +998,8 @@
 	}
 
 	/**
-	 * Warn when a card that still has open blockers is started anyway.
+	 * Warn when a card that still has open blockers, or an open decision that
+	 * holds it (card 3059), is started anyway.
 	 *
 	 * Deliberately a toast after the fact rather than a modal that blocks the
 	 * drop: the card says moving a blocked card to In Progress stays allowed, and
@@ -1008,11 +1011,13 @@
 		if (isCompleteColumn({ title: toColumnName } as ColumnType)) return;
 		if (toColumnName.toLowerCase() === 'to do') return;
 		const open = blockersFor(card.id);
-		if (open.length === 0) return;
-		toasts.add(
-			`"${card.title}" is still blocked by ${open.map((b) => `#${b.id}`).join(', ')} — moved to ${toColumnName} anyway`,
-			'warning'
-		);
+		const decisions = waitsFor(card.id).map((wait) => `decision "${wait.title}"`).join(', ');
+		if (open.length === 0 && decisions === '') return;
+		const why =
+			open.length === 0
+				? `is still waiting on ${decisions}`
+				: `is still blocked by ${open.map((b) => `#${b.id}`).join(', ')}${decisions === '' ? '' : ` and ${decisions}`}`;
+		toasts.add(`"${card.title}" ${why} — moved to ${toColumnName} anyway`, 'warning');
 	}
 
 	// ─── Dropdown & Context Menu ─────────────────────────────────────────────
@@ -1246,33 +1251,51 @@
 	}
 
 	/**
+	 * The open decisions that hold a card, those this viewer may view, or an
+	 * empty list (card 3059, R5): read by the board loader beside
+	 * `dependencyBlockers`, for this viewer alone.
+	 */
+	function waitsFor(cardId: number) {
+		return boardState.decisionWaits[cardId] ?? [];
+	}
+
+	/**
+	 * What holds a card: its open blockers and the decisions it waits on (card
+	 * 3059). The Blocked chip on its face and in the list view, the column
+	 * counts and Hide blocked all count this.
+	 */
+	function heldCount(cardId: number): number {
+		return blockersFor(cardId).length + waitsFor(cardId).length;
+	}
+
+	/**
 	 * Tooltip for the Blocked chip. "Blocked" on its own tells you to stop but
 	 * not what to go and do, so every blocker is listed with the column it is
 	 * sitting in, and its board when the blocker lives on a different one. A
 	 * blocker on a board the viewer cannot open is its number and the text in
-	 * place of its title, with no column or board (card 2129).
+	 * place of its title, with no column or board (card 2129). Then a line for
+	 * each decision that holds the card, or those lines alone for a card held
+	 * by decisions alone (card 3059, `heldTooltip`).
 	 */
 	function blockerTooltip(cardId: number): string {
-		const open = blockersFor(cardId);
-		if (open.length === 0) return '';
-		return ['Blocked by']
-			.concat(
-				open.map((b) =>
-					b.withheld
-						? `#${b.id} ${b.title}`
-						: `#${b.id} ${b.title} — ${b.columnTitle}` + (b.boardId !== data.board.id ? ` (${b.boardName})` : '')
-				)
-			)
-			.join('\n');
+		return heldTooltip(
+			blockersFor(cardId).map((b) =>
+				b.withheld
+					? `#${b.id} ${b.title}`
+					: `#${b.id} ${b.title} — ${b.columnTitle}` + (b.boardId !== data.board.id ? ` (${b.boardName})` : '')
+			),
+			waitsFor(cardId)
+		);
 	}
 
 	/**
 	 * A card is hidden by the blocked filter only when something is genuinely
 	 * still blocking it — a completed blocker has already dropped out of
-	 * dependencyBlockers server-side, so this never hides startable work.
+	 * dependencyBlockers server-side, and a ruled decision out of the
+	 * decisions that hold it (card 3059), so this never hides startable work.
 	 */
 	function passesBlockedFilter(cardId: number): boolean {
-		return !hideBlocked || blockersFor(cardId).length === 0;
+		return !hideBlocked || heldCount(cardId) === 0;
 	}
 
 	// ─── List View (card 2079) ───────────────────────────────────────────────
@@ -1943,7 +1966,7 @@
 		columns={boardState.columns}
 		categories={boardState.categories}
 		filter={{ search: searchQuery, assigneeId: filterAssigneeId, hideBlocked }}
-		blockerCount={(cardId) => blockersFor(cardId).length}
+		blockerCount={heldCount}
 		{blockerTooltip}
 		{milestoneNameById}
 		{cardTokens}
@@ -2090,7 +2113,7 @@
 									isOnHold={isOnHoldColumn(column.title)}
 									categories={boardState.categories}
 									labels={boardState.labels}
-									{blockersFor}
+									blockerCount={heldCount}
 									{blockerTooltip}
 									{milestoneNameById}
 									{cardTokens}

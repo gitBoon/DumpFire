@@ -109,6 +109,11 @@
 				// Ignore parse errors
 			}
 		});
+
+		// A decision was opened, closed, ruled or withdrawn on a board this
+		// caller can open (card 3059, R9): a card it holds may be Blocked or free
+		// now, so the page is read again, as the viewer, with the burst.
+		eventSource.addEventListener('decision', () => liveRefresh.schedule());
 	}
 
 	/**
@@ -186,6 +191,14 @@
 		return dependencyBlockers[cardId] ?? [];
 	}
 
+	/**
+	 * What holds a card: its open blockers and the open decisions it waits on
+	 * that this viewer may view (card 3059, R5), as its Blocked chip counts it.
+	 */
+	function heldCount(cardId: number): number {
+		return blockersFor(cardId).length + (data.decisionWaits[cardId]?.length ?? 0);
+	}
+
 	const bucketColors: Record<string, string> = { 'To Do': '#6366f1', 'On Hold': '#ef4444', 'In Progress': '#f59e0b', 'Complete': '#10b981' };
 
 	/**
@@ -205,7 +218,7 @@
 	function matchesFilters(card: any): boolean {
 		// Folded in here rather than at the render site so a column's count, which
 		// reads the cards this lets through, cannot misreport a filtered bucket.
-		if (hideBlocked && blockersFor(card.id).length > 0) return false;
+		if (hideBlocked && heldCount(card.id) > 0) return false;
 		if (!inBoardFilter(card.boardId, boardFilter, boardPlaces)) return false;
 		if (!searchQuery.trim()) return true;
 		const q = searchQuery.trim().toLowerCase();

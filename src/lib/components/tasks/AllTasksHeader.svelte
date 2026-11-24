@@ -54,7 +54,7 @@
 		boardFilter: string;
 		/** The page's: what is typed in the search. */
 		searchQuery: string;
-		/** The page's: whether cards still waiting on another card are hidden. */
+		/** The page's: whether cards still waiting on another card or a decision are hidden. */
 		hideBlocked: boolean;
 	} = $props();
 
@@ -187,7 +187,7 @@
 			{/snippet}
 			<div class="hm-label" id={showId}>Show</div>
 			<div role="group" aria-labelledby={showId}>
-				<button class="hm-item" role="menuitemcheckbox" tabindex="-1" aria-checked={hideBlocked} onclick={() => (hideBlocked = !hideBlocked)} title="Hide cards that are still waiting on another card">
+				<button class="hm-item" role="menuitemcheckbox" tabindex="-1" aria-checked={hideBlocked} onclick={() => (hideBlocked = !hideBlocked)} title="Hide cards that are still waiting on another card or a decision">
 					<span class="hm-icon" aria-hidden="true">
 						<svg width="13" height="13" viewBox="0 0 10 10" fill="none">
 							<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>

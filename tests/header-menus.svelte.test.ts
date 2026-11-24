@@ -585,7 +585,7 @@ describe('the board header (card 2466)', () => {
 		const button = target.querySelector<HTMLButtonElement>('#board-filter-btn')!;
 		const menu = await openByClick(button, 'Filter');
 		const hide = itemNamed(menu, 'Hide blocked');
-		expect(hide.getAttribute('title')).toBe('Hide cards that are still waiting on another card');
+		expect(hide.getAttribute('title')).toBe('Hide cards that are still waiting on another card or a decision');
 		expect(hide.getAttribute('aria-checked')).toBe('false');
 		hide.click();
 		flushSync();
@@ -872,7 +872,7 @@ describe('the All Tasks header (card 2472)', () => {
 		const show = itemsOf(groupNamed(menu, 'Show'));
 		expect(show.map(textOf)).toEqual(['Hide blocked', '📋 Activity Log', '📊 Statistics', '🗄️ Archived Cards']);
 		expect(show.every((item) => item.getAttribute('role') === 'menuitemcheckbox' && item.getAttribute('aria-checked') === 'false')).toBe(true);
-		expect(itemNamed(menu, 'Hide blocked').getAttribute('title')).toBe('Hide cards that are still waiting on another card');
+		expect(itemNamed(menu, 'Hide blocked').getAttribute('title')).toBe('Hide cards that are still waiting on another card or a decision');
 		expect(itemNamed(menu, '📊 Statistics').getAttribute('title')).toBe('Statistics (the chosen board alone, not its sub-boards)');
 		const csv = itemsOf(groupNamed(menu, 'Export'));
 		expect(csv.map((item) => [textOf(item), item.getAttribute('href'), item.hasAttribute('download')])).toEqual([['Export to CSV', '/api/cards/export/csv?boardId=3', true]]);

@@ -19,7 +19,6 @@
 -->
 <script lang="ts">
 	import type { CardType, CategoryType, LabelType } from '$lib/types';
-	import type { BoardBlockerType } from '$lib/board/contents-answer';
 	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, formatDueDate, showsNewBadge } from '$lib/utils/date-utils';
 	import { subtaskProgress, getCategoryById, getLabelById, getPriorityLabel } from '$lib/utils/card-utils';
 	import { isCoverValue } from '$lib/colours';
@@ -33,7 +32,7 @@
 		isOnHold,
 		categories,
 		labels,
-		blockersFor,
+		blockerCount,
 		blockerTooltip,
 		milestoneNameById,
 		cardTokens,
@@ -54,8 +53,9 @@
 		isOnHold: boolean;
 		categories: CategoryType[];
 		labels: LabelType[];
-		/** Open blockers of a card, by its id. */
-		blockersFor: (cardId: number) => BoardBlockerType[];
+		/** What holds a card, by its id: its open blockers and the open decisions it waits on (card 3059), as the list view counts it. */
+		blockerCount: (cardId: number) => number;
+		/** The chip's tooltip, by card id: the page's, naming each blocker and decision. */
 		blockerTooltip: (cardId: number) => string;
 		milestoneNameById: Map<number, string>;
 		cardTokens: Record<number, { tokens: number; costUsd: number | null }>;
@@ -127,14 +127,14 @@
 	</div>
 {/if}
 <div class="card-meta">
-	{#if blockersFor(card.id).length > 0}
-		{@const blockers = blockersFor(card.id)}
+	{#if blockerCount(card.id) > 0}
+		{@const held = blockerCount(card.id)}
 		<span class="blocked-badge" title={blockerTooltip(card.id)}>
 			<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
 				<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
 				<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
 			</svg>
-			Blocked{#if blockers.length > 1}&nbsp;({blockers.length}){/if}
+			Blocked{#if held > 1}&nbsp;({held}){/if}
 		</span>
 	{/if}
 	{#if card.milestoneId && milestoneNameById.get(card.milestoneId)}

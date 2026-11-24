@@ -14,7 +14,8 @@
  *   - each board's place in the tree from `placeBoards`, naming no board above
  *     it that the caller cannot open (card 1990);
  *   - each card's open blockers, one on a board the caller cannot open
- *     withheld (card 2129);
+ *     withheld (card 2129), and the open decisions that hold it, only those
+ *     the caller may view (card 3059);
  *   - the names of the cards' milestones the caller may open, and of no
  *     other (card 2257): a card still carries its milestone's id;
  *   - a request origin by the requester's name, never their address.
@@ -24,7 +25,7 @@ import { boards, columns, cards, subtasks, labels, cardLabels, cardAssignees, us
 import { asc, inArray, isNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds, type Actor } from '$lib/server/board-access';
 import { boardCategoriesFor, cardCategoriesFor } from '$lib/server/list-access';
-import { getBlockedStateForCards } from '$lib/server/planning';
+import { getBlockedStateForCards, getDecisionWaitsForCards } from '$lib/server/planning';
 import { milestoneNamesForCards } from '$lib/server/milestones';
 import { boardAncestry } from '$lib/server/board-tree';
 import { placeBoards } from '$lib/board-tree';
@@ -169,6 +170,9 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 	// and a milestone the caller cannot open is not named (card 2257), each
 	// goal checked against the boards read above (card 2400).
 	const blockedState = getBlockedStateForCards(cardIds, user, accessibleIds);
+	// And the decisions that hold a card (card 3059, R4): those this caller may
+	// view, on a card not complete and not an option; a card nothing holds is absent.
+	const decisionWaits = getDecisionWaitsForCards(cardIds, user);
 	const milestoneNames = milestoneNamesForCards(user, cardIds, accessibleIds);
 
 	return {
@@ -197,6 +201,7 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 		/** Every user, by id, name and emoji as stored (null when none was chosen). */
 		users: allUsers,
 		blockedState,
+		decisionWaits,
 		milestoneNames
 	};
 }

@@ -124,6 +124,8 @@ const KEYS = [
 	'cardTokens',
 	'categories',
 	'columns',
+	// Card 3059 (R4): the open decisions that hold a card, for this caller.
+	'decisionWaits',
 	'labels',
 	'linkableBoards',
 	'milestones',

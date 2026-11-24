@@ -73,7 +73,10 @@ const spec = {
 			'(7) PUT /webhooks/{webhookId} gives secret only where that PUT set or replaced it, and the four answers that can give a secret carry Cache-Control: no-store (1.15.0 (9)); ' +
 			'(8) 409, with nothing written, for a Product Owner or decider whose account\'s creation time cannot be read on this server, and 503 in place of 500 on a server with no MFA key loaded (1.15.0 (12), (13)). ' +
 			'Added with it, not breaking: the People (1.5.0), Decisions (1.6.0) and Attachments (1.7.0) operations, touching=true on GET /milestones (1.9.0), survey questions and cards that wait on a decision (1.15.0 (14), (15)), each as its own note describes. ' +
-			'(9) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry\'s source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), ' +
+			'(9) GET /cards/{cardId} and GET /cards/{cardId}/dependencies give waitingOnDecisions, the decisions the card waits on while each is open or awaiting a ruling and the key\'s user may view it, and [] for a card that is complete or an option (card 3059); ' +
+			'isBlocked and blockedBy are unchanged and still count dependencies alone, so a card is free to start when isBlocked is false and waitingOnDecisions is empty; ' +
+			'keys of two users may be given different lists for one card, and both answers carry Cache-Control: no-store; ' +
+			'(10) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry\'s source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), ' +
 			'a 413 for a body declared too large, and every other refusal of an upload before its body is read, carries Connection: close (1.13.1 (3)), and a card\'s move between milestones it cannot see is refused in words of its own (1.12.0 (3)).\n\n' +
 			'**Changed on 2026-11-18 (version 1.15.0), breaking.** Ending an account\'s access also holds the webhooks it set that were switched off without a hold, and mails the board\'s owners (card 2923); ending an owner\'s or administrator\'s access, or lowering its role, holds every webhook whose secret it could read (card 2935): ' +
 			'(1) a webhook switched off without a hold (by PUT, or by a restore kept apart) whose setter then has their password reset, has their two-step sign-in reset (on the server\'s host, unless run with --keep-api-keys), uses an invite, ends their keys on their own password change, is disabled or is deleted is held as setter access ended; ' +
@@ -1247,7 +1250,18 @@ const spec = {
 				description: 'What a card waits on and what waits on it.',
 				properties: {
 					cardId: { type: 'integer' },
-					isBlocked: { type: 'boolean', description: 'true when at least one thing the card waits on is not finished' },
+					isBlocked: {
+						type: 'boolean',
+						description:
+							'true when at least one thing the card waits on is not finished: an unfinished dependency in blockedBy; a decision the card waits on is in waitingOnDecisions, not here'
+					},
+					waitingOnDecisions: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/PlanDecisionWait' },
+						description:
+							'The decisions the card waits on, each open or awaiting a ruling and one the key\'s user may view; [] for none, and for a card that is archived, complete or an option (since 1.15.1, card 3059). ' +
+							'Given whatever direction. The card is free to start when isBlocked is false and this is empty.'
+					},
 					blockedBy: {
 						type: 'array',
 						items: { $ref: '#/components/schemas/Dependency' },
@@ -1259,7 +1273,7 @@ const spec = {
 						description: 'What waits on this card. Left out when `direction=blocked-by`.'
 					}
 				},
-				required: ['cardId', 'isBlocked']
+				required: ['cardId', 'isBlocked', 'waitingOnDecisions']
 			},
 			DependencyConflict: {
 				type: 'object',
@@ -2390,6 +2404,7 @@ const spec = {
 				type: 'object',
 				description:
 					'A decision that holds a piece of work in a milestone\'s plan (since 1.15.0, card 2687): one the key\'s user may view, linked to the card as waits, shown open or awaiting a ruling. ' +
+					'Since 1.15.1 (card 3059) also a card\'s waitingOnDecisions on GET /cards/{cardId} and GET /cards/{cardId}/dependencies, which list it for a card that is not archived, not complete and not an option, and are answered Cache-Control: no-store since keys of two users may be given different lists. ' +
 					'Only its title, status and closing time: never who takes part or what they said.',
 				properties: {
 					id: { type: 'integer' },
@@ -2511,7 +2526,18 @@ const spec = {
 					subtasks: { type: 'array', items: { $ref: '#/components/schemas/Subtask' }, description: 'Ordered by position, then id (item 73)' },
 					labelIds: { type: 'array', items: { type: 'integer' } },
 					assignees: { type: 'array', items: { $ref: '#/components/schemas/Assignee' } },
-					isBlocked: { type: 'boolean', description: 'true when at least one thing the card waits on is not finished' },
+					isBlocked: {
+						type: 'boolean',
+						description:
+							'true when at least one thing the card waits on is not finished: an unfinished dependency in blockedBy; a decision the card waits on is in waitingOnDecisions, not here'
+					},
+					waitingOnDecisions: {
+						type: 'array',
+						items: { $ref: '#/components/schemas/PlanDecisionWait' },
+						description:
+							'The decisions the card waits on, each open or awaiting a ruling and one the key\'s user may view; [] for none, and for a card that is archived, complete or an option (since 1.15.1, card 3059). ' +
+							'The card is free to start when isBlocked is false and this is empty.'
+					},
 					blockedBy: { type: 'array', items: { $ref: '#/components/schemas/LinkedWork' }, description: 'What the card waits on' },
 					blocks: { type: 'array', items: { $ref: '#/components/schemas/LinkedWork' }, description: 'What waits on the card' }
 				},
@@ -2519,7 +2545,7 @@ const spec = {
 					'id', 'columnId', 'categoryId', 'title', 'description', 'position', 'priority', 'colorTag', 'dueDate', 'onHoldNote',
 					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'committedAt', 'committedBy', 'discardedAt', 'discardedBy', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
 					'milestoneId', 'createdBy', 'summary', 'theme', 'customerImpact', 'closeReason', 'releaseState', 'createdAt', 'updatedAt',
-					'boardId', 'columnTitle', 'subtasks', 'labelIds', 'assignees', 'isBlocked', 'blockedBy', 'blocks'
+					'boardId', 'columnTitle', 'subtasks', 'labelIds', 'assignees', 'isBlocked', 'waitingOnDecisions', 'blockedBy', 'blocks'
 				]
 			},
 			Comment: {
@@ -4694,7 +4720,9 @@ const spec = {
 				summary: 'Get a single card',
 				description:
 					'Returns the card with the board and column it is on, its subtasks (ordered by position, then id), label IDs and assignees, and what it waits on and what waits on it, ' +
-					'so that whether it can be started is known without a second request. An archived card is returned like any other.',
+					'so that whether it can be started is known without a second request. An archived card is returned like any other. ' +
+					'isBlocked counts unfinished dependencies alone; waitingOnDecisions (since 1.15.1, card 3059) lists the open decisions the card waits on that the key\'s user may view, [] for an archived or complete card or an option, ' +
+					'so the card is free to start when isBlocked is false and waitingOnDecisions is empty. Answered Cache-Control: no-store: keys of two users may be given different lists for one card.',
 				operationId: 'getCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				responses: {
@@ -6121,7 +6149,9 @@ const spec = {
 				summary: 'List card dependencies',
 				description:
 					'Returns what this card waits on (`blockedBy`) and what waits on it (`blocks`), with whether it is blocked now. Either can be a card or a subtask, on this board or another. ' +
-					'Work that has been archived or deleted is not listed.',
+					'Work that has been archived or deleted is not listed. ' +
+					'isBlocked counts unfinished dependencies alone; waitingOnDecisions (since 1.15.1, card 3059), given whatever direction, lists the open decisions the card waits on that the key\'s user may view, ' +
+					'so the card is free to start when isBlocked is false and waitingOnDecisions is empty. Answered Cache-Control: no-store: keys of two users may be given different lists for one card.',
 				operationId: 'listDependencies',
 				parameters: [
 					{ $ref: '#/components/parameters/cardId' },
@@ -6141,6 +6171,7 @@ const spec = {
 								example: {
 									cardId: 10,
 									isBlocked: true,
+									waitingOnDecisions: [],
 									blockedBy: [
 										{
 											id: 7,

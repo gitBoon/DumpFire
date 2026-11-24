@@ -22,7 +22,7 @@ import { isOptionsColumn } from '$lib/column-role';
 import { optionsSince } from './upstream';
 import { error } from '@sveltejs/kit';
 import { getAccessibleBoardIds, roleOnBoard, type Actor } from './board-access';
-import { getBoardBlockedState, WITHHELD_BOARD_NAME } from './planning';
+import { getBoardBlockedState, getDecisionWaitsForCards, WITHHELD_BOARD_NAME } from './planning';
 import { getCardTokenTotals, getBoardTokenTotals } from './tokens';
 import { milestonesForBoard } from './milestones';
 import { linkableBoards, MAX_SUB_BOARD_DEPTH } from './sub-boards';
@@ -319,6 +319,10 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 	// chip costs one query for the board rather than one request per card face.
 	// A blocker on a board the caller cannot open is withheld (card 2129).
 	const blockedState = getBoardBlockedState(boardId, user, accessible);
+	// And the decisions that hold a card, beside it (card 3059, R4): those this
+	// caller may view, on a card not complete and not an option. Per caller and
+	// per request, as everything here is; a card nothing holds is absent.
+	const decisionWaits = getDecisionWaitsForCards(cardIds, user);
 
 	// Cost per card, one query for the board rather than one per card face.
 	// Cards absent from the map have nothing recorded, which the face renders as
@@ -346,6 +350,7 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 		userBoardRole,
 		boardUsers,
 		blockedState,
+		decisionWaits,
 		cardTokens,
 		boardTokenSummary,
 		milestones: milestonesForBoard(user, boardId, accessible)

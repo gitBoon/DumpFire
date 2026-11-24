@@ -2769,13 +2769,20 @@ describe('the security headers', () => {
 			// Card 2680 (decision 24): the register, a person's record and a decision's record, each page and its data.
 			'/decisions',
 			'/decisions/people/[personId]',
-			'/decisions/[id]/record'
+			'/decisions/[id]/record',
+			// Card 3059 (R12): the board, All Tasks and All To Do, each page and its data, and the two v1 card reads, which
+			// name the open decisions that hold a card for one person.
+			'/board/[id]',
+			'/todo',
+			'/all',
+			'/api/v1/cards/[cardId]',
+			'/api/v1/cards/[cardId]/dependencies'
 		]) {
 			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(UNPUBLISHED);
 			const cached = secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60', 'X-Robots-Tag': 'all' } }), routeId);
 			expect(theseOf(cached), `${routeId}, cached`).toEqual(UNPUBLISHED);
 		}
-		expect(theseOf(secured(new Response('x'), '/board/[id]'))).toEqual(UNCHANGED);
+		expect(theseOf(secured(new Response('x'), '/reports'))).toEqual(UNCHANGED);
 		expect(theseOf(secured(new Response('x'), null))).toEqual(UNCHANGED);
 	});
 
@@ -3171,7 +3178,8 @@ describe('a redirect the gate gives', () => {
 		expect(await shown(await gate('GET', '/admin/__data.json', { headers: asUser }))).toEqual(
 			await shown(redirect_json_response({ status: 303, location: '/' }))
 		);
-		expect(await shown(await gate('GET', '/board/1/__data.json'))).toEqual(
+		// Not the board page's data: its route sets its own `Cache-Control: no-store` over every answer (card 3059, R12).
+		expect(await shown(await gate('GET', '/reports/__data.json'))).toEqual(
 			await shown(redirect_json_response({ status: 303, location: '/login' }))
 		);
 	});

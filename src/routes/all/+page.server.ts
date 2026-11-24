@@ -15,7 +15,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// The boards the caller can open, their columns and every live card on
 	// them, read as All To Do reads them (card 2240).
 	const { boards: allBoards, columns: allColumns, upstreamColumnIds, cards: crossBoardCards, labels: allLabels, categories: allCategories,
-		boardCategories: allBoardCategories, users: allUsers, blockedState, milestoneNames } = readCrossBoardCards(user);
+		boardCategories: allBoardCategories, users: allUsers, blockedState, decisionWaits, milestoneNames } = readCrossBoardCards(user);
 
 	/**
 	 * The key of the bucket of every upstream column, an Options column or any
@@ -161,6 +161,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		boards: allBoards,
 		buckets: grouped,
 		blockedState,
+		// The open decisions that hold a card, for this caller alone (card 3059).
+		decisionWaits,
 		milestoneNames,
 		categories: allCategories,
 		boardCategories: allBoardCategories,

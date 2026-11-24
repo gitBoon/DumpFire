@@ -100,7 +100,7 @@ const data = () => ({
 		{ title: 'Complete', cards: [] }
 	],
 	blockedState: { 8: [{ id: 7, title: 'Plan', columnTitle: 'To Do', boardName: 'Website', boardId: 3, withheld: false }] },
-	milestoneNames: {}, categories: [], boardCategories: [], labels: [],
+	decisionWaits: {}, milestoneNames: {}, categories: [], boardCategories: [], labels: [],
 	columns: [
 		{ id: 11, boardId: 3, title: 'To Do', position: 0 },
 		{ id: 21, boardId: 4, title: 'To Do', position: 0 },
@@ -203,7 +203,7 @@ function ticked(target: HTMLElement) {
 }
 
 /** Hands the page's live stream an event, as the server sends one. */
-function streamSends(type: 'update' | 'celebrate', body: unknown) {
+function streamSends(type: 'update' | 'celebrate' | 'decision', body: unknown) {
 	const listeners: Record<string, (e: MessageEvent) => void> = {};
 	stream.listen!({ addEventListener: (name: string, run: (e: MessageEvent) => void) => (listeners[name] = run) } as unknown as EventSource);
 	listeners[type](new MessageEvent(type, { data: JSON.stringify(body) }));
@@ -670,6 +670,32 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		expect(cardTitles(target)).toEqual(['#7 Plan']);
 	});
 
+	// Card 3059, U3: a card an open decision holds is Blocked as one with an
+	// open blocker is, its chip counting both, its tooltip naming the decision,
+	// and the decision's line alone for a card the decision alone holds (E-L1).
+	it('shows the Blocked chip on a card a decision holds, names the decision in its tooltip, and hides it under Hide blocked', () => {
+		const wait = { id: 5, title: 'Pick a vendor', shownStatus: 'open', closesAt: null };
+		// Plan (7) is held by the decision alone; Ship (8) by Plan and the decision; Spare (9) by nothing.
+		const target = draw({
+			buckets: [{ title: 'To Do', cards: [...data().buckets[0].cards, card(9, 'Spare')] }, { title: 'Complete', cards: [] }],
+			decisionWaits: { 7: [wait], 8: [wait] }
+		});
+		const chipOf = (title: string) => cardNamed(target, title).querySelector('.blocked-badge');
+		const chipText = (title: string) => chipOf(title)?.textContent!.replace(/\s+/g, ' ').trim() ?? null;
+
+		expect(chipText('Plan')).toBe('Blocked');
+		expect(chipOf('Plan')!.getAttribute('title')).toBe('Waiting on decision "Pick a vendor" (Open)');
+		expect(chipText('Ship')).toBe('Blocked (2)');
+		expect(chipOf('Ship')!.getAttribute('title')).toBe('Blocked by\n#7 Plan — Website / To Do\nWaiting on decision "Pick a vendor" (Open)');
+		expect(chipText('Spare')).toBeNull();
+
+		buttonNamed(target, 'More').click();
+		flushSync();
+		buttonNamed(menuOf(target, 'More')!, 'Hide blocked').click();
+		flushSync();
+		expect(cardTitles(target)).toEqual(['#9 Spare']);
+	});
+
 	it('shows a live event of the page’s stream in the live toasts, a completion in the fireworks, and reads the open Activity Log again', async () => {
 		const target = draw();
 		fromMoreMenu(target, '📋 Activity Log');
@@ -740,6 +766,19 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 			await vi.advanceTimersByTimeAsync(60);
 			expect(reReads()).toEqual({ page: 1, activity: 1 });
 			await vi.advanceTimersByTimeAsync(2000);
+			expect(reReads()).toEqual({ page: 1, activity: 1 });
+		});
+
+		// Card 3059, U7 (R9): a decision ruled or withdrawn on a board this
+		// caller can open may free a card it held, or one opened hold it.
+		it('reads the page again after a decision event, with no toast', async () => {
+			await withTheActivityLogOpen();
+
+			streamSends('decision', { decisionId: 4, status: 'ruled', boardId: 3 });
+			expect(document.querySelector('.live-toast')).toBeNull();
+			await vi.advanceTimersByTimeAsync(200);
+			expect(reReads()).toEqual({ page: 0, activity: 0 });
+			await vi.advanceTimersByTimeAsync(60);
 			expect(reReads()).toEqual({ page: 1, activity: 1 });
 		});
 	});

@@ -2132,10 +2132,13 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		const links = await pair(`/api/cards/${s.first.id}/dependencies`, `/api/v1/cards/${s.first.id}/dependencies`);
 		expect(links.internal.blockedBy).toHaveLength(1);
 		const bare = (ends: Record<string, unknown>[]) => ends.map(({ id: _id, createdByUserId: _by, createdAt: _at, ...end }) => end);
-		expect({ ...links.v1, blockedBy: bare(links.v1.blockedBy), blocks: bare(links.v1.blocks) }).toEqual(links.internal);
+		// And v1 alone adds the open decisions the card waits on (card 3059, R7), here none.
+		const { waitingOnDecisions, ...v1Links } = links.v1;
+		expect(waitingOnDecisions).toEqual([]);
+		expect({ ...v1Links, blockedBy: bare(links.v1.blockedBy), blocks: bare(links.v1.blocks) }).toEqual(links.internal);
 		expect(links.v1.blockedBy[0]).toMatchObject({ id: 1, createdByUserId: s.owner.id, createdAt: '<stamp>' });
 		const onlyBlocks = await api('GET', `/api/v1/cards/${s.first.id}/dependencies?direction=blocks`, viewer);
-		expect(Object.keys(onlyBlocks.body)).toEqual(['cardId', 'isBlocked', 'blocks']);
+		expect(Object.keys(onlyBlocks.body)).toEqual(['cardId', 'isBlocked', 'waitingOnDecisions', 'blocks']);
 		// A subtask's, the same in both.
 		const subtaskLinks = await pair('/api/subtasks/1/dependencies', '/api/v1/subtasks/1/dependencies');
 		expect(subtaskLinks.internal.blockedBy).toHaveLength(1);

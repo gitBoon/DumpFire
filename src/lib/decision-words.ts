@@ -445,6 +445,33 @@ export const STATUS_WORDS: Readonly<Record<string, string>> = {
 	withdrawn: 'Withdrawn'
 };
 
+/**
+ * A decision that holds a card, as a page's Blocked chip names it (card 3059,
+ * R5): its title and shown status alone (card 2687, R11), and no closing time,
+ * to keep the tooltip short. `PlanDecisionWait` (`$lib/plan-table`) has both.
+ */
+export type HeldBy = { title: string; shownStatus: string };
+
+/**
+ * One line of the Blocked chip's tooltip for a decision that holds the card
+ * (card 3059, R5): `Waiting on decision "<title>" (Open)`, the plan PDF's words
+ * (`milestone-report.ts`) with a capital.
+ */
+export const decisionWaitLine = (wait: HeldBy) =>
+	`Waiting on decision "${wait.title}" (${STATUS_WORDS[wait.shownStatus] ?? wait.shownStatus})`;
+
+/**
+ * The Blocked chip's tooltip on the board, its list view, All Tasks and All To
+ * Do (card 3059, R5, E-L1): the one joining rule, each page wording its own
+ * blocker lines. Nothing for neither; with blockers, "Blocked by", their lines,
+ * then a line per decision; with decisions alone, their lines alone.
+ */
+export function heldTooltip(blockerLines: readonly string[], waits: readonly HeldBy[]): string {
+	const decisions = waits.map(decisionWaitLine);
+	if (blockerLines.length === 0) return decisions.join('\n');
+	return ['Blocked by', ...blockerLines, ...decisions].join('\n');
+}
+
 /** A stored moment as a page shows it, to the minute, in UTC; `unset` where there is none. */
 export const shownMoment = (at: string | null, unset: string) => (at === null ? unset : `${at.slice(0, 16)} UTC`);
 

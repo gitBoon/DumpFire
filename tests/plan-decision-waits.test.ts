@@ -12,18 +12,36 @@
  * merged into P4; P11 is in tests/bulk-endpoints.test.ts, P12 and P13 in
  * tests/openapi-document.test.ts), and P14, ruled in its section 13, added
  * with slice S2.
+ *
+ * Card 3059 (slice S1) adds W1 to W4: the same wait on the board's contents,
+ * All Tasks, All To Do and the two v1 card reads.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import PDFDocument from 'pdfkit';
 import { db } from '$lib/server/db';
-import type { Credential, SessionUser } from '$lib/server/auth';
-import { apiKeys, decisionCardLinks, type Board, type Card, type Column, type Decision } from '$lib/server/db/schema';
+import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
+import { apiKeys, boards, decisionCardLinks, type Board, type Card, type Column, type Decision } from '$lib/server/db/schema';
 import { DECISION_TITLE_MAX } from '$lib/decision-rules';
+import { decisionWaitLine, heldTooltip } from '$lib/decision-words';
+import { decisionWaitsFor } from '$lib/server/decision-cards';
+import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { generateMilestonePdf } from '$lib/server/milestone-report';
-import { getMilestoneSummary, withDecisionWaits, workSummary, type MilestoneNode, type MilestoneSummary } from '$lib/server/planning';
+import {
+	getDecisionWaitsForCards,
+	getMilestoneSummary,
+	withDecisionWaits,
+	workSummary,
+	type MilestoneNode,
+	type MilestoneSummary
+} from '$lib/server/planning';
+import { pageLoad } from './helpers/actions';
 import { api } from './helpers/api';
+import { gate, gateRoutes } from './helpers/gate';
 import { pdfText } from './helpers/pdf';
+import { readBudget } from './helpers/reads';
 import {
 	addBoardMember,
 	makeApiKey,
@@ -34,6 +52,7 @@ import {
 	makeDependency,
 	makeMilestone,
 	makeParticipant,
+	makeSession,
 	makeSubtask,
 	makeUser,
 	resetDb
@@ -403,6 +422,231 @@ describe('a card waiting on a decision in the plan (card 2687)', () => {
 		expect(work).toEqual(before);
 		// And a second recipient handed the same summary is given their own: nothing of the first's waits.
 		expect(JSON.stringify(withDecisionWaits(work, reader))).not.toContain(TITLE);
+	});
+});
+
+/**
+ * Card 3059, slice S1: the same wait, outside the plan. The board's contents,
+ * All Tasks and All To Do carry `decisionWaits` beside `blockedState`, and the
+ * two v1 card reads `waitingOnDecisions`, each for its caller alone; the v1
+ * reads ask for it only after the card's own checks. Cases W1 to W4 of
+ * `docs/planning/card-3059-waits-on-board-faces.md`, section 9 (W5 is in
+ * tests/openapi-document.test.ts).
+ */
+describe('a card waiting on a decision on the board, All Tasks, All To Do and the v1 card reads (card 3059)', () => {
+	/** A title no other text in an answer holds, and an id no other number in one does (W2, W3: E-M4). */
+	const MARK = 'DW3059-TITLE-MARK';
+	const MARK_ID = 30593059;
+
+	/** The decision on board B with the marker, which the participant may view and the reader may not. */
+	function marked(): Decision {
+		const d = makeDecision({ id: MARK_ID, board: B, status: 'open', closesAt: FUTURE, openedAt: OPENED, title: MARK });
+		makeParticipant(d, { userId: participant.id });
+		return d;
+	}
+
+	/** A card in board A's To Do waiting on the marked decision, and blocked by another card on A. */
+	function heldOnA(): { held: Card; blocker: Card; d: Decision } {
+		const d = marked();
+		const blocker = makeCard(todoA, { title: 'Blocker' });
+		const held = makeCard(todoA, { title: 'Held' });
+		makeDependency({ blocked: held, blocker });
+		makeCardLink(d, held, { relation: 'waits' });
+		return { held, blocker, d };
+	}
+
+	it('W1: getDecisionWaitsForCards gives an open card its decision, a card in Complete and an option nothing, and leaves out a card with none', () => {
+		const held = makeCard(todoA, { title: 'Held' });
+		const free = makeCard(todoA, { title: 'Free' });
+		makeCardLink(decision, held, { relation: 'waits' });
+		expect(getDecisionWaitsForCards([held.id, free.id], participant)).toEqual({ [held.id]: [projection(decision)] });
+
+		const optionsBoard = makeBoard({ owner, name: 'Board O', options: true });
+		const ideasBoard = makeBoard({ owner, name: 'Board I' });
+		db.update(boards).set({ kind: 'ideas' }).where(eq(boards.id, ideasBoard.board.id)).run();
+		for (const made of [optionsBoard, ideasBoard]) addBoardMember(made.board, participant, 'viewer');
+		for (const [name, column] of [
+			['in Complete', doneA],
+			['an option, in an Options column', optionsBoard.cols['Options']],
+			['an option, on an ideas board', ideasBoard.cols['To Do']]
+		] as [string, Column][]) {
+			const card = makeCard(column, { title: name });
+			makeCardLink(decision, card, { relation: 'waits' });
+			// The plan's checked read holds it: only where it is lets it go (R3).
+			expect(decisionWaitsFor(participant, [card.id]).get(card.id), name).toEqual([projection(decision)]);
+			expect(getDecisionWaitsForCards([card.id, held.id], participant), name).toEqual({ [held.id]: [projection(decision)] });
+		}
+	});
+
+	it('W2: the board’s contents give the participant the decision that holds the card, and the reader exactly {} and no trace of it; blockedState is the same for both', async () => {
+		const { held, d } = heldOnA();
+		const read = async (user: SessionUser) => {
+			const res = await api('GET', `/api/boards/${A.id}/contents`, { user });
+			expect(res.status).toBe(200);
+			return res.body;
+		};
+		const forParticipant = await read(participant);
+		const forReader = await read(reader);
+
+		expect(forParticipant.decisionWaits).toEqual({ [held.id]: [projection(d)] });
+		expect(forReader.decisionWaits).toEqual({});
+		const text = JSON.stringify(forReader);
+		expect(text).not.toContain(MARK);
+		expect(text).not.toContain(String(MARK_ID));
+		expect(forReader.blockedState[held.id]).toHaveLength(1);
+		expect(forReader.blockedState).toEqual(forParticipant.blockedState);
+	});
+
+	it.each(['/todo', '/all'])('W3: %s gives the participant the decision that holds the card, and the reader exactly {} and no trace of it', async (path) => {
+		const { held, d } = heldOnA();
+		const read = async (user: SessionUser) => {
+			const res = await pageLoad(path, { user });
+			expect(res.type).toBe('data');
+			return res.type === 'data' ? res.data : null;
+		};
+		const forParticipant = await read(participant);
+		const forReader = await read(reader);
+
+		expect(forParticipant.decisionWaits).toEqual({ [held.id]: [projection(d)] });
+		expect(forReader.decisionWaits).toEqual({});
+		const text = JSON.stringify(forReader);
+		expect(text).not.toContain(MARK);
+		expect(text).not.toContain(String(MARK_ID));
+	});
+
+	it.each([
+		['GET /cards/{cardId}', ''],
+		['GET /cards/{cardId}/dependencies?direction=blocks', '/dependencies?direction=blocks']
+	])('W4: %s gives waitingOnDecisions to the key that may view the decision and [] to the other, isBlocked false for both; asked only after the card and direction checks', async (_name, tail) => {
+		const d = marked();
+		const held = makeCard(todoA, { title: 'Held' });
+		makeCardLink(d, held, { relation: 'waits' });
+		const onB = makeCard(todoB, { title: 'On B' });
+		makeCardLink(d, onB, { relation: 'waits' });
+		const participantKey = keyCredential(participant);
+		const readerKey = keyCredential(reader);
+		// Under /api/v1/ a stored moment is given in ISO 8601 (v1-json.ts).
+		const answered = { ...projection(d), closesAt: '2099-01-01T12:00:00.000Z' };
+
+		const forParticipant = await api('GET', `/api/v1/cards/${held.id}${tail}`, { user: participant, credential: participantKey });
+		const forReader = await api('GET', `/api/v1/cards/${held.id}${tail}`, { user: reader, credential: readerKey });
+		expect([forParticipant.status, forReader.status]).toEqual([200, 200]);
+		expect(forParticipant.body.waitingOnDecisions).toEqual([answered]);
+		expect(forReader.body.waitingOnDecisions).toEqual([]);
+		expect([forParticipant.body.isBlocked, forReader.body.isBlocked]).toEqual([false, false]);
+		expect(JSON.stringify(forReader.body)).not.toContain(MARK);
+
+		// S-L3: a key that cannot open the card, and a bad direction, are refused before any decision is read.
+		const budget = readBudget(100_000);
+		let refused;
+		let badDirection;
+		try {
+			refused = await api('GET', `/api/v1/cards/${onB.id}${tail}`, { user: reader, credential: readerKey });
+			badDirection = await api('GET', `/api/v1/cards/${held.id}/dependencies?direction=sideways`, { user: participant, credential: participantKey });
+		} finally {
+			budget.restore();
+		}
+		expect([refused.status, refused.body.message]).toEqual([404, 'Card not found']);
+		expect(badDirection.status).toBe(400);
+		expect(budget.sources.length).toBeGreaterThan(0);
+		expect(budget.sources.filter((source) => /"decision_card_links"|"decisions"/.test(source))).toEqual([]);
+	});
+});
+
+/**
+ * Card 3059, slice S2: the words a page's Blocked chip uses for a decision
+ * that holds a card (U2), the one joining rule its three tooltips share and
+ * that each builds its text through it (U8), and two cases ruled into S2 from
+ * S1's as-built: an archived card's v1 read (W6) and `no-store` on the five
+ * routes through the real gate (W7).
+ */
+describe('the words of a card a decision holds, and the v1 reads through the gate (card 3059, S2)', () => {
+	const ROOT = process.cwd();
+	const source = (file: string) => readFileSync(join(ROOT, file), 'utf8');
+	/** A function's text, from its declaration to the closing brace at its own indent. */
+	const functionText = (text: string, head: string) => {
+		const start = text.indexOf(head);
+		expect(start, head).toBeGreaterThanOrEqual(0);
+		const indent = /\n(\t*)[^\n]*$/.exec(text.slice(0, start + 1))?.[1] ?? '';
+		const end = text.indexOf(`\n${indent}}`, start);
+		return text.slice(start, end + indent.length + 2);
+	};
+
+	it.each([
+		['open', 'Waiting on decision "Pick a vendor" (Open)'],
+		['awaiting_ruling', 'Waiting on decision "Pick a vendor" (Awaiting ruling)']
+	])('U2: decisionWaitLine words a decision shown %s', (shownStatus, words) => {
+		expect(decisionWaitLine({ title: 'Pick a vendor', shownStatus })).toBe(words);
+	});
+
+	it('U8: heldTooltip gives nothing for neither, the decision lines alone for decisions alone, and "Blocked by", the blocker lines and the decision lines for both; each page’s tooltip is built through it', () => {
+		const open = { title: 'Pick a vendor', shownStatus: 'open' };
+		const awaiting = { title: 'Name it', shownStatus: 'awaiting_ruling' };
+		expect(heldTooltip([], [])).toBe('');
+		expect(heldTooltip([], [open, awaiting])).toBe('Waiting on decision "Pick a vendor" (Open)\nWaiting on decision "Name it" (Awaiting ruling)');
+		expect(heldTooltip(['#3 Plan — To Do'], [])).toBe('Blocked by\n#3 Plan — To Do');
+		expect(heldTooltip(['#3 Plan — To Do', '#4 Ship — Doing'], [open])).toBe(
+			'Blocked by\n#3 Plan — To Do\n#4 Ship — Doing\nWaiting on decision "Pick a vendor" (Open)'
+		);
+
+		// The board page (its Kanban face and list view), All Tasks' card and All To Do: none stops at "no blocker".
+		for (const file of ['src/routes/board/[id]/+page.svelte', 'src/lib/components/tasks/AllTaskCard.svelte', 'src/routes/todo/+page.svelte']) {
+			const tooltip = functionText(source(file), 'function blockerTooltip(cardId: number): string {');
+			expect(tooltip, file).toMatch(/^function blockerTooltip\(cardId: number\): string \{\s*return heldTooltip\(/);
+			expect(tooltip, file).toMatch(/waitsFor\(cardId\)\s*\);\s*\}$/);
+			expect(tooltip, file).not.toContain("return ''");
+			expect(tooltip, file).not.toContain('Blocked by');
+		}
+	});
+
+	it('W6: an archived card waiting on an open decision is given waitingOnDecisions [] by both v1 reads, as a complete card is', async () => {
+		const held = makeCard(todoA, { title: 'Held', archivedAt: '2026-11-01 09:00:00' });
+		makeCardLink(decision, held, { relation: 'waits' });
+		const key = keyCredential(participant);
+		// The checked read holds it: only that the card is archived lets it go (R2).
+		expect(decisionWaitsFor(participant, [held.id]).get(held.id)).toEqual([projection(decision)]);
+
+		for (const tail of ['', '/dependencies']) {
+			const res = await api('GET', `/api/v1/cards/${held.id}${tail}`, { user: participant, credential: key });
+			expect(res.status, tail).toBe(200);
+			expect(res.body.waitingOnDecisions, tail).toEqual([]);
+		}
+		expect(getDecisionWaitsForCards([held.id], participant)).toEqual({});
+	});
+
+	describe('W7: through the gate', () => {
+		beforeAll(async () => {
+			await gateRoutes();
+		}, 30_000);
+
+		it('answers the board page, All Tasks, All To Do (each page and its data) and both v1 card reads no-store and noindex, the participant’s answers naming the decision', async () => {
+			resetAllRateLimits();
+			const held = makeCard(todoA, { title: 'Held' });
+			makeCardLink(decision, held, { relation: 'waits' });
+			const asParticipant = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(participant)}` };
+			const withKey = { authorization: `Bearer ${makeApiKey(participant)}` };
+			const headed = (res: Response) => ({ cache: res.headers.get('cache-control'), robots: res.headers.get('x-robots-tag') });
+			const UNPUBLISHED = { cache: 'no-store', robots: 'noindex, nofollow' };
+
+			for (const path of [`/board/${A.id}`, '/todo', '/all']) {
+				for (const [what, at, accept] of [
+					['page', path, 'text/html'],
+					['data', `${path}/__data.json`, 'application/json']
+				]) {
+					const res = await gate('GET', at, { headers: { ...asParticipant, accept } });
+					const body = await res.text();
+					expect(res.status, `${path} ${what}`).toBe(200);
+					expect(headed(res), `${path} ${what}`).toEqual(UNPUBLISHED);
+					if (what === 'data') expect(body, `${path} ${what}`).toContain(TITLE);
+				}
+			}
+			for (const path of [`/api/v1/cards/${held.id}`, `/api/v1/cards/${held.id}/dependencies`]) {
+				const res = await gate('GET', path, { headers: withKey });
+				expect(res.status, path).toBe(200);
+				expect(headed(res), path).toEqual(UNPUBLISHED);
+				expect((await res.json()).waitingOnDecisions.map((wait: { id: number }) => wait.id), path).toEqual([decision.id]);
+			}
+		});
 	});
 });
 

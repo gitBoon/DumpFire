@@ -16,7 +16,8 @@
  *   - assignee: `me` is whoever is viewing, so a shared link means "mine" to
  *     whoever opens it; `none` is unassigned;
  *   - milestone: an id, or `none`;
- *   - state: `blocked` has an open blocker, `startable` has none;
+ *   - state: `blocked` has an open blocker or an open decision that holds it
+ *     (card 3059), `startable` has neither;
  *   - search: `matchesSearch`, as the board and its list view search.
  */
 import { boardPlaces, inBoardFilter, type BoardLink, type BoardPlace } from '$lib/board-tree';
@@ -103,6 +104,8 @@ export type TodoContext = {
 	labelNames: ReadonlyMap<number, string>;
 	/** Open blockers by card id, as the load sends `blockedState`: a card with none is absent. */
 	blockedState: Readonly<Record<number, readonly unknown[]>>;
+	/** The open decisions that hold a card, by card id, as the load sends `decisionWaits` (card 3059): a card none holds is absent. */
+	decisionWaits: Readonly<Record<number, readonly unknown[]>>;
 	milestoneNames: Readonly<Record<number, string>>;
 	/** Who is viewing: what `assignee=me` means. */
 	viewerId: number;
@@ -115,6 +118,7 @@ export function todoContext(
 		categories: readonly { id: number; name: string }[];
 		labels: readonly { id: number; name: string }[];
 		blockedState: Readonly<Record<number, readonly unknown[]>>;
+		decisionWaits: Readonly<Record<number, readonly unknown[]>>;
 		milestoneNames: Readonly<Record<number, string>>;
 	},
 	viewerId: number
@@ -125,6 +129,7 @@ export function todoContext(
 		categoryNames: new Map(data.categories.map((c) => [c.id, c.name])),
 		labelNames: new Map(data.labels.map((l) => [l.id, l.name])),
 		blockedState: data.blockedState,
+		decisionWaits: data.decisionWaits,
 		milestoneNames: data.milestoneNames,
 		viewerId
 	};
@@ -246,9 +251,14 @@ export function isFiltering(filters: TodoFilters): boolean {
 	);
 }
 
-/** True if the card is blocked: it has an open blocker, as the Blocked chip shows. */
-export function isBlocked(card: Pick<TodoCard, 'id'>, ctx: Pick<TodoContext, 'blockedState'>): boolean {
-	return (ctx.blockedState[card.id]?.length ?? 0) > 0;
+/**
+ * True if the card is blocked: it has an open blocker, or an open decision
+ * the viewer may view holds it (card 3059, R5), as the Blocked chip shows. The
+ * Startable filter leaves it out, the Blocked filter keeps it, and the Blocked
+ * sort puts it with the blocked cards.
+ */
+export function isBlocked(card: Pick<TodoCard, 'id'>, ctx: Pick<TodoContext, 'blockedState' | 'decisionWaits'>): boolean {
+	return (ctx.blockedState[card.id]?.length ?? 0) + (ctx.decisionWaits[card.id]?.length ?? 0) > 0;
 }
 
 /** True if the card passes the board filter alone: what the other filters' choices are drawn from. */

@@ -307,6 +307,12 @@ const UNPUBLISHED_HEADERS: readonly [name: string, value: string][] = [
  * each participant beside their response, and the ruling's and the release's
  * answers (card 2679).
  *
+ * The board page, All Tasks and All To Do, and `GET /api/v1/cards/{cardId}`
+ * and its `/dependencies`, name the open decisions that hold a card to the
+ * person who may view them, and differ from one person to the next: cached
+ * and indexed nowhere (card 3059, R12). The route id covers every method of
+ * the two v1 routes, which is harmless for their writes.
+ *
  * `/invite/[token]`'s address holds an invite, which sets its account's
  * password, so its page, its data and its form's answers are kept out of
  * search and of every cache, and name only the origin (card 2698): its page
@@ -380,7 +386,14 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	// Card 2680 (decision 24): the register, a person's record of what they were asked and said, and a decision's record.
 	['/decisions', UNPUBLISHED_HEADERS],
 	['/decisions/people/[personId]', UNPUBLISHED_HEADERS],
-	['/decisions/[id]/record', UNPUBLISHED_HEADERS]
+	['/decisions/[id]/record', UNPUBLISHED_HEADERS],
+	// Card 3059 (R12, S-L1): the board, All Tasks and All To Do (each page and its data) and the two v1 card reads name
+	// the open decisions that hold a card, for one person alone.
+	['/board/[id]', UNPUBLISHED_HEADERS],
+	['/todo', UNPUBLISHED_HEADERS],
+	['/all', UNPUBLISHED_HEADERS],
+	['/api/v1/cards/[cardId]', UNPUBLISHED_HEADERS],
+	['/api/v1/cards/[cardId]/dependencies', UNPUBLISHED_HEADERS]
 ]);
 
 /**

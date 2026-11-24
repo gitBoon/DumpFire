@@ -182,7 +182,7 @@ const allTasksData = (card: typeof row = row) => ({
 	cardTokens: {}, allTokenSummary: null,
 	boards: [{ id: 3, name: 'Website', emoji: '📋', parentCardId: null, parentBoardId: null, categoryId: null }],
 	buckets: [{ title: 'To Do', cards: [{ ...card }] }, { title: 'Complete', cards: [] }],
-	blockedState: {}, milestoneNames: {}, categories: [], boardCategories: [], labels: [],
+	blockedState: {}, decisionWaits: {}, milestoneNames: {}, categories: [], boardCategories: [], labels: [],
 	columns: [{ id: 11, boardId: 3, title: 'To Do', position: 0 }],
 	allUsers: [], totalCards: 1, completedCards: 0, hasMoreCompleted: false, totalCompletedCount: 0, completedLimit: 50
 });
@@ -192,7 +192,7 @@ const todoData = (card: typeof row = row) => ({
 	user: { id: 1, username: 'alice', role: 'user' },
 	boards: [{ id: 3, name: 'Website', emoji: '📋', parentCardId: null, parentBoardId: null, categoryId: null, hasTodo: true }],
 	cards: [{ ...card }],
-	blockedState: {}, milestoneNames: {}, categories: [], boardCategories: [], labels: [], allUsers: []
+	blockedState: {}, decisionWaits: {}, milestoneNames: {}, categories: [], boardCategories: [], labels: [], allUsers: []
 });
 
 /** A card as the plan's graph has it. */

@@ -713,10 +713,13 @@ describe('the board page’s load with an Options column (milestone 22)', () => 
 		expect(one).toBe(ordinary + 2);
 		expect(ten).toBe(one);
 		expect(empty).toBe(await readsOf(0, false));
-		// The pin, as it reads now: 32 for the board with no options.
+		// The pin, as it reads now: 33 for the board with no options.
 		expect(one).toBeLessThanOrEqual(BOARD_WITH_OPTIONS_READS);
 	});
 });
 
-/** The most reads the board page's load makes for its owner, on a board whose Options column holds a card (B7). */
-const BOARD_WITH_OPTIONS_READS = 34;
+/**
+ * The most reads the board page's load makes for its owner, on a board whose Options column holds a card (B7). 34 → 35
+ * (card 3059): the read of the cards' links to decisions, which finds none here.
+ */
+const BOARD_WITH_OPTIONS_READS = 35;

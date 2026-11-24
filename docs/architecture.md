@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.154
+version: 1.155
 status: As-Built
-date: 2026-11-23
+date: 2026-11-24
 tags:
+  - card-3059
+  - decision-waits-on-faces
   - card-2687
   - decision-waits
   - card-2686
@@ -71,7 +73,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "The group breakdown (card 2686): groupBreakdownOf in decision-results.ts, the current round per group from each participant's snapshot names, on readResults alone, never in the summary or a release, drawn by GroupBreakdown.svelte. Objections and requests to talk (card 2684): decision-flag-writes.ts (raise signed in or by link, the decider's reply), the ruling's two new refusals, the results revision over flags, who sees them (a change of decider included), the pages, the shared notice, cap and rest helpers, and the one list of tables that name a decision place. Decision survey questions (card 2683): rows plus words, survey-only decisions, any change but help asks everyone again, the answered kind, the tolerant answers reader, results per version and never released. The restore's outbound steps (seedOutbound, carryOutboundChanges, applyOutboundSchedules, applyOutboundSettings, applyOutboundWebhooks, holdResetSettersIn) and the sweep's outbound seed and pass (card 3004). The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "A wait on an open decision on board faces, All Tasks, All To Do and the v1 card reads (card 3059): getDecisionWaitsForCards beside getBlockedStateForCards, decisionWaits per viewer, heldTooltip, waitingOnDecisions asked after the card checks, no-store on five routes, two live listeners. The group breakdown (card 2686): groupBreakdownOf in decision-results.ts, the current round per group from each participant's snapshot names, on readResults alone, never in the summary or a release, drawn by GroupBreakdown.svelte. Objections and requests to talk (card 2684): decision-flag-writes.ts (raise signed in or by link, the decider's reply), the ruling's two new refusals, the results revision over flags, who sees them (a change of decider included), the pages, the shared notice, cap and rest helpers, and the one list of tables that name a decision place. Decision survey questions (card 2683): rows plus words, survey-only decisions, any change but help asks everyone again, the answered kind, the tolerant answers reader, results per version and never released. The restore's outbound steps (seedOutbound, carryOutboundChanges, applyOutboundSchedules, applyOutboundSettings, applyOutboundWebhooks, holdResetSettersIn) and the sweep's outbound seed and pass (card 3004). The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -244,7 +246,7 @@ All Tasks and All To Do (card 2240) read their cards through one reader,
 the caller can open, their columns, the unarchived cards on the columns `inColumn` lets through
 (all of them for All Tasks; for All To Do, those whose title counts as To Do, `countsAsToDo`,
 and that are not upstream), enriched once, with the category rules of card 2128, the sub-board
-places of card 1990 and the withheld blockers of card 2129. So the two pages give a caller the same boards and the same
+places of card 1990, the withheld blockers of card 2129 and, beside them, the open decisions that hold a card and that the caller may view (`decisionWaits`, card 3059). So the two pages give a caller the same boards and the same
 cards, and All To Do lists exactly All Tasks' To Do bucket. Which titles count as To Do across
 boards is one rule in `src/lib/column-role.ts` (card 2474): `countsAsToDo(title)` takes "To Do" and
 "Todo" and the wider list reports always counted (`WIDER_TODO_TITLES`: To-Do, Backlog, Inbox, Not
@@ -1204,7 +1206,7 @@ sequenceDiagram
 
 | Module | What it holds | Used by |
 |---|---|---|
-| `board-state.svelte.ts` (new) | `class BoardState`, a `$state` field for each key of the contents (`board`, `breadcrumbs`, `columns`, `categories`, `labels`, `linkableBoards`, `canEdit`, `canManage`, `userBoardRole`, `boardUsers`, `blockedState`, `cardTokens`, `boardTokenSummary`, `milestones`), with `columnSorts` and `refused`. `new BoardState(data, { invalidate, fetch?, ...timing })`; `take(data)`; `setSort(columnId, sort)`; `refresh()`; `refreshNow()` (no 250 ms wait, awaitable, still held; the sub-board link and delete); `accessChanged()`; `hold(options?)`, `holds`, `inFlight`; `write`, `writeCard`, `writeColumn`; `dispose()`. Types `WriteResult` (`{ ok: true, res, answer }` or `{ ok: false, failure }`), `WriteWords` (`refused`, `noAnswer`) | The board page; `bulk-actions.ts` (`BoardWriter`); `card-window.svelte.ts` (`CardWindowBoard`) |
+| `board-state.svelte.ts` (new) | `class BoardState`, a `$state` field for each key of the contents (`board`, `breadcrumbs`, `columns`, `categories`, `labels`, `linkableBoards`, `canEdit`, `canManage`, `userBoardRole`, `boardUsers`, `blockedState`, `decisionWaits` (card 3059), `cardTokens`, `boardTokenSummary`, `milestones`), with `columnSorts` and `refused`. `new BoardState(data, { invalidate, fetch?, ...timing })`; `take(data)`; `setSort(columnId, sort)`; `refresh()`; `refreshNow()` (no 250 ms wait, awaitable, still held; the sub-board link and delete); `accessChanged()`; `hold(options?)`, `holds`, `inFlight`; `write`, `writeCard`, `writeColumn`; `dispose()`. Types `WriteResult` (`{ ok: true, res, answer }` or `{ ok: false, failure }`), `WriteWords` (`refused`, `noAnswer`) | The board page; `bulk-actions.ts` (`BoardWriter`); `card-window.svelte.ts` (`CardWindowBoard`) |
 | `refresh-schedule.ts` (new) | `refreshSchedule(run, timing?)`: `schedule()`, `now()`, `access()`, `hold(options?)` returning a `Release` (counted once, with `released`), `settled()`, `holds`, `inFlight`, `dispose()`. `REFRESH_DELAY_MS` 250, `REFRESH_MAX_WAIT_MS` 1,000, `HOLD_WATCHDOG_MS` 30,000, `BULK_HOLD_MS` five minutes; `HoldOptions` `{ watchdog?, watchdogMs? }`. Plain TypeScript on the page's own timers, so the tests run it with fake ones | `BoardState`; the page imports `BULK_HOLD_MS` and `Release` |
 | `board-patches.ts` (new) | Pure functions on the columns, each `(columns, …) → { columns, undo(current) }`: `patchCard`, `moveCards` (sets `columnId` and `position`), `insertCard`, `removeCard`, `patchColumn`, `insertColumn`, `removeColumn`, `reorderColumns`. And `patchCardStill`, `patchColumnStill` (an answer put only on a field that still shows what its write set), `answeredFields(answer, fields)`, `copyColumns`, `withCurrentCards(columns, current, dragged)`, `undoDrag(current, before, dragged)`. Nothing given is changed; a column or card not touched is handed back as the same object | `BoardState`, the page, `bulk-actions.ts`, `card-window.svelte.ts` |
 | `contents-answer.ts` (new) | `contentsVerdict(status)`: 2xx `apply`, `401`, `403` or `404` `refused`, anything else or no answer `keep`. `askForContents(boardId, fetch)`, which never throws, asks with `cache: 'no-store'`, and takes a success that is not the contents (a proxy's page) as `keep`. `type BoardContentsData`, the page's view of the reader's answer (the server's type is not imported into the page), `BreadcrumbType`, `BoardBlockerType` | `BoardState`, the page |
@@ -2717,6 +2719,9 @@ any boardless decision are current on navigation, a return to the tab, or a reco
 no-store`, `X-Robots-Tag: noindex, nofollow`): `/decisions`, `/decisions/people/[personId]`,
 `/decisions/[id]/record`, `/api/cards/[id]/decisions` and `/api/decisions/[id]/cards/[cardId]`. The
 three pages also carry `<meta name="robots" content="noindex">`.
+Card 3059 adds five more, for pages and answers that name the decisions holding a card for one
+person: `/board/[id]`, `/todo`, `/all`, `/api/v1/cards/[cardId]` and
+`/api/v1/cards/[cardId]/dependencies` (see [the same wait on board faces](#the-same-wait-on-board-faces-all-tasks-all-to-do-and-the-v1-card-reads-card-3059)).
 
 ### Survey questions (card 2683)
 
@@ -3391,7 +3396,49 @@ flowchart TD
 | Pages | `plan-table.ts` gives a row `decisions` and the state Blocked; `plan-graph.ts`'s `nodeState` is `blocked` for a node with waits; `WorkTable`, `DependencyGraph` and `CriticalPathPanel` draw it (see the planning document) |
 | PDF (`milestone-report.ts`) | State Blocked; each decision under its entry as `waiting on decision "<title>" (<status>)`; the intro sized to its text; `DECISIONS_NAMED_LINE` at the end |
 
-Board faces, To Do's Startable filter and a card's `isBlocked` in card answers (`getBlockedStateForCards`) do not read waits: card 3059.
+#### The same wait on board faces, All Tasks, All To Do and the v1 card reads (card 3059)
+
+Card 3059 (plan `docs/planning/card-3059-waits-on-board-faces.md`, no migration) shows a card a wait holds as Blocked wherever people pick work from, by 2687's rule, and gives the two v1 card reads an additive list. `isBlocked` keeps its meaning (an unfinished dependency).
+
+| Piece | What it does |
+|---|---|
+| `getDecisionWaitsForCards(cardIds, viewer)` (`planning.ts`) | Beside `getBlockedStateForCards`. Asks `decisionWaitsFor(viewer, cardIds)` (the checked read, its callers' pin unchanged); when it answers any card, reads those cards alone again (`loadPlanNodes`, archived dropped) and keeps a card that is not complete and not an option. Answers `Record<cardId, PlanDecisionWait[]>`, a card nothing holds absent |
+| `readBoardContents` (`board-contents.ts`), `readCrossBoardCards` (`cross-board-cards.ts`) | Each gives `decisionWaits` beside `blockedState`, for its caller, per request; the To Do and All Tasks loads pass it on |
+| `BoardState.decisionWaits` (`board-state.svelte.ts`), `BoardContentsData.decisionWaits` (`contents-answer.ts`) | Taken from the load and from every contents answer; emptied with the rest on a refused read |
+| `decisionWaitLine(wait)`, `heldTooltip(blockerLines, waits)` (`$lib/decision-words.ts`) | `Waiting on decision "<title>" (<STATUS_WORDS[shownStatus]>)`; the one joining rule of the three tooltips: `''` for neither, "Blocked by", the blocker lines and the decision lines for both, the decision lines alone for decisions alone |
+| Board page | `waitsFor(cardId)`, `heldCount(cardId)` (blockers plus decisions); the Kanban face (`KanbanCardBody` now takes `blockerCount: (cardId) => number`, as `ColumnListView` does), the list view, the column counts and Hide blocked read `heldCount`; `blockerTooltip` goes through `heldTooltip`; `warnIfStillBlocked` names the decisions after the blockers, or alone |
+| All Tasks (`all/+page.svelte`, `AllTaskCard.svelte`) | Hide blocked and the chip count `data.decisionWaits[card.id]` too; the tooltip through `heldTooltip` |
+| All To Do (`todo-table.ts`, `todo/+page.svelte`) | `TodoContext.decisionWaits`; `isBlocked(card, ctx)` is true for an open blocker or a hold, so Startable leaves the card out, Blocked keeps it and the Blocked sort groups it; the chip and tooltip as above |
+| `GET /api/v1/cards/{cardId}`, `GET /api/v1/cards/{cardId}/dependencies` | `waitingOnDecisions: getDecisionWaitsForCards([cardId], locals.user)[cardId] ?? []`, always sent, after `isBlocked`; asked only after `requireCard(…, 'view')`, and after `readWorkDependencies` and the `direction` check, so a 404 or 400 reads no decision |
+| `ROUTE_HEADERS` (`gate-answers.ts`) | `/board/[id]`, `/todo`, `/all`, `/api/v1/cards/[cardId]` and `/api/v1/cards/[cardId]/dependencies` carry `UNPUBLISHED_HEADERS` |
+
+**Per viewer, not shared.** Both readers run per request and per caller; the contents route is `private, no-store` and the five routes above `no-store`; no live event, webhook or cache carries blocked state (events are markers that make a page read again as its viewer). A viewer who may not view the decision is given `decisionWaits` without the card and `waitingOnDecisions: []`: the card is placed by its dependencies alone.
+
+**Live re-reads, no new event.** The board page's stream (`connectSSE` in `src/lib/board/sse.ts`) also listens to `decision`, which a board's stream carries for a decision on that board, and calls `onUpdate({ type: 'decision' })`, which the page sends to `refresh`. All To Do passes `connectLiveRefresh(…, { events: ['update', 'xp-update', 'decision'] })`; All Tasks puts a `decision` listener on its stream that schedules the burst's re-read. A wait marked from the decision page (`linkCard` emits nothing), or a decision on another board, shows on the next read.
+
+**Cost.** A load with no wait on its cards makes one more query per 500 cards (the links, by `idx_decision_card_links_card_id`); where some card waits, about ten more (the caller's and the cards' boards, the visibility scope and query, the held cards' columns and boards), so the board page and the cross-board loads read the caller's boards up to twice more on such a load. `tests/load-access-reads.test.ts` re-pinned its 23 loader pins "re-pinned (3059)" with one more read each; `tests/load-query-counts.test.ts` the board at 35.
+
+```mermaid
+sequenceDiagram
+    actor P as Participant (may view decision D)
+    actor R as Reader of board B (may not view D)
+    participant L as readBoardContents
+    participant G as getDecisionWaitsForCards
+    participant W as decisionWaitsFor
+    P->>L: GET /board/B (own request)
+    L->>G: cards of B, viewer P
+    G->>W: viewer P
+    W-->>G: card 12 waits on D (Open)
+    G-->>L: { 12: [D] }
+    L-->>P: blockedState, decisionWaits { 12: [D] } (no-store)
+    R->>L: GET /board/B (own request)
+    L->>G: cards of B, viewer R
+    G->>W: viewer R
+    W-->>G: nothing (D not viewable)
+    G-->>L: {}
+    L-->>R: blockedState, decisionWaits {}: card 12 placed by its dependencies
+    Note over L: a decision event on board B carries ids only,<br/>and each page re-reads as itself
+```
 
 ### The card window off the board
 

@@ -39,6 +39,7 @@
 	import { connectLiveRefresh } from '$lib/live-refresh';
 	import { attachmentsChanged, commentsChanged } from '$lib/board/sse';
 	import { drawnColour } from '$lib/colours';
+	import { heldTooltip } from '$lib/decision-words';
 	import {
 		dropUnknownChoices,
 		filterChoices,
@@ -236,7 +237,9 @@
 		closeLive = connectLiveRefresh(() => invalidateAll(), (event) => {
 			if (commentsChanged(event, cardWindow.cardId)) commentsTold++;
 			if (attachmentsChanged(event, cardWindow.cardId)) attachmentsTold++;
-		});
+		}, { events: ['update', 'xp-update', 'decision'] });
+		// The `decision` event too, any this caller is sent (card 3059, R9): a
+		// card a decision holds may be Blocked or Startable now.
 		tickInterval = setInterval(() => { tick++; }, 60000);
 	});
 
@@ -267,17 +270,24 @@
 	const blockersFor = (cardId: number) =>
 		(data.blockedState[cardId] ?? []) as { id: number; title: string; columnTitle: string; boardName: string; withheld: boolean }[];
 
+	/** The open decisions that hold a card, those this viewer may view (card 3059, R5): a card nothing holds is absent. */
+	const waitsFor = (cardId: number) => data.decisionWaits[cardId] ?? [];
+
+	/** What holds a card: its open blockers and the decisions it waits on, as `isBlocked` counts it (card 3059). */
+	const heldCount = (cardId: number) => blockersFor(cardId).length + waitsFor(cardId).length;
+
 	/**
 	 * The Blocked chip's tooltip, as All Tasks words it: each blocker with its
 	 * board and column, or its number and the text in place of its title when
-	 * it is on a board the viewer cannot open (card 2129).
+	 * it is on a board the viewer cannot open (card 2129); then a line for
+	 * each decision that holds the card, or those lines alone (card 3059,
+	 * `heldTooltip`).
 	 */
 	function blockerTooltip(cardId: number): string {
-		const open = blockersFor(cardId);
-		if (open.length === 0) return '';
-		return ['Blocked by']
-			.concat(open.map((b) => (b.withheld ? `#${b.id} ${b.title}` : `#${b.id} ${b.title} — ${b.boardName} / ${b.columnTitle}`)))
-			.join('\n');
+		return heldTooltip(
+			blockersFor(cardId).map((b) => (b.withheld ? `#${b.id} ${b.title}` : `#${b.id} ${b.title} — ${b.boardName} / ${b.columnTitle}`)),
+			waitsFor(cardId)
+		);
 	}
 
 	// ─── Card Editing ────────────────────────────────────────────────────
@@ -573,7 +583,7 @@
 					{#each rows as card (card.id)}
 						{@const category = card.categoryId !== null ? categoryById.get(card.categoryId) : undefined}
 						{@const progress = subtaskProgress(card as unknown as CardType)}
-						{@const blockers = blockersFor(card.id)}
+						{@const held = heldCount(card.id)}
 						{@const milestoneName = card.milestoneId !== null ? data.milestoneNames[card.milestoneId] : undefined}
 						<!-- The title is the row's button; a click anywhere else on the row does the same. -->
 						<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -632,13 +642,13 @@
 								{/if}
 							</td>
 							<td class="c-blocked" class:is-empty={!isBlocked(card, ctx)}>
-								{#if blockers.length > 0}
+								{#if held > 0}
 									<span class="blocked-badge" title={blockerTooltip(card.id)}>
 										<svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
 											<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
 											<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
 										</svg>
-										Blocked{#if blockers.length > 1}&nbsp;({blockers.length}){/if}
+										Blocked{#if held > 1}&nbsp;({held}){/if}
 									</span>
 								{/if}
 							</td>

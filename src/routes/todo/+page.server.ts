@@ -35,6 +35,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		boards: read.boards.map((b) => ({ ...b, hasTodo: withTodo.has(b.id) })),
 		cards: read.cards,
 		blockedState: read.blockedState,
+		// The open decisions that hold a card, for this caller alone (card 3059).
+		decisionWaits: read.decisionWaits,
 		milestoneNames: read.milestoneNames,
 		categories: read.categories,
 		boardCategories: read.boardCategories,

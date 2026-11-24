@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
+import { getDecisionWaitsForCards } from '$lib/server/planning';
 import { cycleAnswer } from '$lib/server/dependency-refusals';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
@@ -29,6 +30,11 @@ const NO_EDIT = "No edit access to this card's board";
  * id, who made it and when (`withLinkDetails`). The card is looked for and the
  * caller checked (404, for a card on a board they cannot open too: card 2719)
  * before `direction` is read (400).
+ *
+ * `isBlocked` counts dependencies alone; `waitingOnDecisions` lists the open
+ * decisions the card waits on that the key's user may view (card 3059, R7),
+ * read only once both checks have passed. Answered `Cache-Control: no-store`
+ * (`ROUTE_HEADERS`, R12).
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
@@ -42,9 +48,15 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 		throw error(400, 'direction must be one of: blocked-by, blocks, both');
 	}
 
+	// The open decisions the card waits on, those the key's user may view (card
+	// 3059, R7), whatever `direction`. Asked last (S-L3): a key that cannot open
+	// the card (404) or a bad `direction` (400) causes no decision read at all.
+	const waitingOnDecisions = getDecisionWaitsForCards([cardId], locals.user)[cardId] ?? [];
+
 	return json({
 		cardId,
 		isBlocked: links.isBlocked,
+		waitingOnDecisions,
 		...(direction !== 'blocks' ? { blockedBy: links.blockedBy } : {}),
 		...(direction !== 'blocked-by' ? { blocks: links.blocks } : {})
 	});

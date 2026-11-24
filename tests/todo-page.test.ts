@@ -40,6 +40,7 @@ import {
 	filterChoices,
 	filtersFromUrl,
 	filtersToUrl,
+	isBlocked,
 	isFiltering,
 	keepKnownFilters,
 	knownBoardFilters,
@@ -154,6 +155,7 @@ const DATA = {
 		{ id: 202, name: 'later' }
 	],
 	blockedState: { 12: [{ kind: 'card', id: 99 }] } as Record<number, unknown[]>,
+	decisionWaits: {} as Record<number, unknown[]>,
 	milestoneNames: { 50: 'Beta', 51: 'Alpha' } as Record<number, string>
 };
 const CTX = todoContext(DATA, VIEWER);
@@ -424,6 +426,26 @@ describe('sortTodoRows() (test 5)', () => {
 	});
 });
 
+// Card 3059, U1 (`docs/planning/card-3059-waits-on-board-faces.md`, section 9).
+describe('a card an open decision holds, with no blocker (card 3059, U1)', () => {
+	it('is blocked: out of Startable, in Blocked, and sorted with the blocked cards', () => {
+		made = 20;
+		const held = row({ title: 'Held', priority: 'low' }); // 21, held by a decision alone
+		const free = row({ title: 'Free', priority: 'critical' });
+		const ctx = todoContext({ ...DATA, decisionWaits: { [held.id]: [{ id: 5, title: 'Pick a vendor', shownStatus: 'open', closesAt: null }] } }, VIEWER);
+		expect(ctx.blockedState[held.id]).toBeUndefined();
+
+		expect(isBlocked(held, ctx)).toBe(true);
+		expect(isBlocked(free, ctx)).toBe(false);
+		const passing = (over: Partial<TodoFilters>) => [held, free].filter((c) => passesTodoFilters(c, filters(over), ctx)).map((c) => c.id);
+		expect(passing({ state: 'startable' })).toEqual([free.id]);
+		expect(passing({ state: 'blocked' })).toEqual([held.id]);
+		// Blocked first, ascending, though the free card is the more urgent.
+		expect(sortTodoRows([free, held], 'blocked', 'asc', ctx).map((c) => c.id)).toEqual([held.id, free.id]);
+		expect(sortTodoRows([held, free], 'blocked', 'desc', ctx).map((c) => c.id)).toEqual([free.id, held.id]);
+	});
+});
+
 describe('filterChoices() and dropUnknownChoices() (test 6)', () => {
 	it('draws the choices from the cards the board filter lets in, each name once', () => {
 		const pat = { id: 8, username: 'pat', emoji: null };
@@ -547,7 +569,8 @@ describe('the load, as a board’s owner (test 7)', () => {
 			columnTitle: 'To Do'
 		});
 		// What the page is sent, and no more: no columns, no token figures, no completed cards.
-		expect(Object.keys(data).sort()).toEqual(['allUsers', 'blockedState', 'boardCategories', 'boards', 'cards', 'categories', 'labels', 'milestoneNames']);
+		// Card 3059 (R4): with the open decisions that hold a card, for this caller.
+		expect(Object.keys(data).sort()).toEqual(['allUsers', 'blockedState', 'boardCategories', 'boards', 'cards', 'categories', 'decisionWaits', 'labels', 'milestoneNames']);
 		expect(data.boards).toEqual([{ id: board.id, name: 'Work', emoji: '📋', kind: 'delivery', parentId: null, hiddenAbove: false, filterCategoryId: null, hasTodo: true }]);
 		expect(data.labels.map((l: any) => l.id)).toEqual([label.id]);
 		expect(data.allUsers).toEqual(expect.arrayContaining([{ id: helper.id, username: 'helper', emoji: '👤' }]));
@@ -784,9 +807,11 @@ describe('the page, src/routes/todo/+page.svelte, read from its source (test 15)
 		// and each gap, tells the open card window whether its comments
 		// changed (card 2282): `connectLiveRefresh`'s calls of `onEvent` are
 		// held in `tests/card-window-comments.svelte.test.ts`. And its files
-		// (card 2337), as `attachmentsChanged` says.
+		// (card 2337), as `attachmentsChanged` says. And on a `decision` event
+		// as well as the default two (card 3059, E8): a card a decision holds
+		// may be Blocked or Startable now.
 		expect(script).toMatch(
-			/onMount\(\(\) => \{\s*closeLive = connectLiveRefresh\(\(\) => invalidateAll\(\), \(event\) => \{\s*if \(commentsChanged\(event, cardWindow\.cardId\)\) commentsTold\+\+;\s*if \(attachmentsChanged\(event, cardWindow\.cardId\)\) attachmentsTold\+\+;\s*\}\);/
+			/onMount\(\(\) => \{\s*closeLive = connectLiveRefresh\(\(\) => invalidateAll\(\), \(event\) => \{\s*if \(commentsChanged\(event, cardWindow\.cardId\)\) commentsTold\+\+;\s*if \(attachmentsChanged\(event, cardWindow\.cardId\)\) attachmentsTold\+\+;\s*\}, \{ events: \['update', 'xp-update', 'decision'\] \}\);/
 		);
 		expect(source).toMatch(/<CardModal\b(?:(?!\/>)[\s\S])*\{commentsTold\}(?:(?!\/>)[\s\S])*\/>/);
 		expect(source).toMatch(/<CardModal\b(?:(?!\/>)[\s\S])*\{attachmentsTold\}(?:(?!\/>)[\s\S])*\/>/);

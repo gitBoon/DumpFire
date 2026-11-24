@@ -29,6 +29,7 @@ import KanbanCardBody from '$lib/components/board/KanbanCardBody.svelte';
 import CardListRow from '$lib/components/board/CardListRow.svelte';
 import AllTaskCard from '$lib/components/tasks/AllTaskCard.svelte';
 import { showsNewBadge } from '$lib/utils/date-utils';
+import { heldTooltip } from '$lib/decision-words';
 import type { CardType } from '$lib/types';
 
 // The browser's `mount`, loaded by its path: a bare 'svelte' gives the server's (see the XP bars' file).
@@ -97,14 +98,18 @@ function counter() {
 	return clock;
 }
 
+/** What holds a card, as the board page hands it to both views: its count and the chip's tooltip (card 3059). */
+type Held = { count: number; tooltip: string };
+const NOT_HELD: Held = { count: 0, tooltip: '' };
+
 /** Mounts the board's card body for `c`, reading `clock.tick`. */
-function drawCard(c: CardType, completed: boolean, clock: { tick: number }): HTMLElement {
+function drawCard(c: CardType, completed: boolean, clock: { tick: number }, held: Held = NOT_HELD): HTMLElement {
 	const target = place();
 	const component = mount(KanbanCardBody, {
 		target,
 		props: {
 			card: c, isComplete: completed, isOnHold: false, categories: [], labels: [],
-			blockersFor: () => [], blockerTooltip: () => '', milestoneNameById: new Map(), cardTokens: {},
+			blockerCount: () => held.count, blockerTooltip: () => held.tooltip, milestoneNameById: new Map(), cardTokens: {},
 			get tick() { return clock.tick; },
 			selectionMode: false, selected: false, editing: false, editValue: '',
 			onStartEdit: noop, onSaveEdit: noop, onEditKeydown: noop, onCyclePriority: noop
@@ -115,12 +120,12 @@ function drawCard(c: CardType, completed: boolean, clock: { tick: number }): HTM
 }
 
 /** Mounts the list view's row for `c`, reading `clock.tick`. */
-function drawRow(c: CardType, completed: boolean, clock: { tick: number }): HTMLElement {
+function drawRow(c: CardType, completed: boolean, clock: { tick: number }, held: Held = NOT_HELD): HTMLElement {
 	const target = place();
 	const component = mount(CardListRow, {
 		target,
 		props: {
-			card: c, onHold: false, completed, categories: [], blockerCount: 0, blockerTooltip: '',
+			card: c, onHold: false, completed, categories: [], blockerCount: held.count, blockerTooltip: held.tooltip,
 			milestoneName: null, tokens: undefined,
 			get tick() { return clock.tick; },
 			selected: false, selectionMode: false, onOpen: noop, onContextMenu: noop
@@ -200,7 +205,7 @@ describe('the badge on All Tasks', () => {
 		const component = mount(AllTaskCard, {
 			target,
 			props: {
-				data: { categories: [], labels: [], cardTokens: {}, milestoneNames: {} } as never,
+				data: { categories: [], labels: [], cardTokens: {}, milestoneNames: {}, decisionWaits: {} } as never,
 				card: { ...card(createdAt), boardId: 1, boardName: 'Board', boardEmoji: '📋' } as never,
 				bucket: { title: bucketTitle, cards: [] } as never,
 				get tick() { return clock.tick; },
@@ -229,4 +234,37 @@ describe('the badge on All Tasks', () => {
 		flushSync();
 		expect(badge()).toBe(null);
 	});
+});
+
+/**
+ * Card 3059, U4: the Blocked chip on the board's card and on the list view's
+ * row counts what the page hands it, blockers and decisions alike, and shows
+ * the page's tooltip as it is: a card held by a decision alone says so and
+ * nothing of "Blocked by" (E-L1).
+ */
+describe('the Blocked chip, on the board and in the list (card 3059, U4)', () => {
+	const decision = { title: 'Pick a vendor', shownStatus: 'open' };
+	const cases: [string, Held, string | null, string | null][] = [
+		['nothing holds it', NOT_HELD, null, null],
+		['a decision alone holds it', { count: 1, tooltip: heldTooltip([], [decision]) }, 'Blocked', 'Waiting on decision "Pick a vendor" (Open)'],
+		[
+			'a blocker and a decision hold it',
+			{ count: 2, tooltip: heldTooltip(['#3 Plan — To Do'], [decision]) },
+			'Blocked (2)',
+			'Blocked by\n#3 Plan — To Do\nWaiting on decision "Pick a vendor" (Open)'
+		]
+	];
+	const views: [string, (c: CardType, clock: { tick: number }, held: Held) => HTMLElement, string][] = [
+		['the Kanban face', (c, clock, held) => drawCard(c, false, clock, held), '.blocked-badge'],
+		['the list row', (c, clock, held) => drawRow(c, false, clock, held), '.chip-blocked']
+	];
+	for (const [view, draw, chip] of views) {
+		it.each(cases)(`${view}: %s`, (_name, held, text, title) => {
+			const target = draw(card(minutesAgo(60)), counter(), held);
+			flushSync();
+			const shown = target.querySelector(chip);
+			expect(shown?.textContent?.replace(/\s+/g, ' ').trim() ?? null).toBe(text);
+			expect(shown?.getAttribute('title') ?? null).toBe(title);
+		});
+	}
 });

@@ -57,6 +57,8 @@ export class BoardState {
 	userBoardRole = $state('');
 	boardUsers = $state<BoardContentsData['boardUsers']>([]);
 	blockedState = $state<Record<number, BoardBlockerType[]>>({});
+	/** The open decisions that hold a card, for this viewer (card 3059): read beside `blockedState`. */
+	decisionWaits = $state<BoardContentsData['decisionWaits']>({});
 	cardTokens = $state<BoardContentsData['cardTokens']>({});
 	boardTokenSummary = $state<BoardContentsData['boardTokenSummary']>(null);
 	milestones = $state<MilestoneType[]>([]);
@@ -101,6 +103,7 @@ export class BoardState {
 		this.userBoardRole = data.userBoardRole;
 		this.boardUsers = data.boardUsers;
 		this.blockedState = data.blockedState ?? {};
+		this.decisionWaits = data.decisionWaits ?? {};
 		this.cardTokens = data.cardTokens ?? {};
 		this.boardTokenSummary = data.boardTokenSummary ?? null;
 		this.milestones = data.milestones ?? [];
@@ -260,6 +263,7 @@ export class BoardState {
 		this.userBoardRole = '';
 		this.boardUsers = [];
 		this.blockedState = {};
+		this.decisionWaits = {};
 		this.cardTokens = {};
 		this.boardTokenSummary = null;
 		this.milestones = [];
