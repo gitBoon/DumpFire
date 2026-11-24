@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.110
+version: 1.111
 status: As-Built
 date: 2026-11-24
 tags:
+  - card-2689
+  - decision-webhooks
   - card-3064
   - compatibility-release
   - migration-0084
@@ -1011,7 +1013,8 @@ migration**: every field is a 0061 column, and the new event details are JSON.
   `againstResponses`, the cut-off names and the notice outcomes are shown to the decider and
   administrators alone (the results page) and, since card 2680, on the record view
   (`/decisions/[id]/record`), which only administrators and the decider (with board edit while
-  the board exists) may read; card 2689 (webhooks) is bound to keep it so.
+  the board exists) may read; card 2689's decision webhooks keep it so: their `data` is the
+  decision's id, title and status alone, and no record event is an activity action that sends one.
 - **The timestamp column count stays 62**: no new column.
 
 **The record as card 2680 reads it.** The record view lists every `decision_events` row of a

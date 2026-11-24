@@ -74,6 +74,7 @@ import { disableAccount } from '$lib/server/account-disable';
 import { deleteUser } from '$lib/server/deletes';
 import { escapeHtml } from '$lib/escape-html';
 import { ACTIONS, logActivity } from '$lib/server/logActivity';
+import { EVENT_KINDS } from '$lib/server/decision-record';
 import {
 	deliver,
 	deliveryResultFor,
@@ -106,6 +107,7 @@ import {
 	makeApiKeyRow,
 	makeBoard,
 	makeCard,
+	makeDecision,
 	makeMilestone,
 	makeSession,
 	makeSmtp,
@@ -1947,15 +1949,20 @@ describe('which action sends which event, and what each move sends (card 2278)',
 	});
 	afterEach(() => sent.restore());
 
+	// Card 2689 (L1): the webhook names every event, since an empty list hears no decision event (R6), and every entry
+	// carries a decision's projection, since a decision event is sent from it alone (R10): only the map decides.
 	it('sends each action its event, and every other action none, by either spelling: the whole map', async () => {
-		const { board } = makeBoard({ owner: makeUser() });
-		makeWebhook(board);
+		const owner = makeUser();
+		const { board } = makeBoard({ owner });
+		makeWebhook(board, { events: [...WEBHOOK_EVENTS] });
+		const decision = makeDecision({ board, author: owner, decider: owner, status: 'open' });
+		const projection = { id: decision.id, title: decision.title, status: 'open' as const, supersededById: decision.id };
 
 		const heard: Record<string, string | null> = {};
 		for (const action of Object.values(ACTIONS)) {
 			for (const spelling of [action, `api:${action}`]) {
 				sent.clear();
-				logActivity({ boardId: board.id, action: spelling, detail: spelling });
+				logActivity({ boardId: board.id, action: spelling, detail: spelling, decision: projection });
 				await sent.settle();
 				const events = sent.webhooks.map((w) => w.event);
 				expect(events.length, spelling).toBeLessThanOrEqual(1);
@@ -2023,18 +2030,19 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			// A card put in a goal or taken out (card 2343).
 			milestone_card_added: 'milestone.card_added',
 			milestone_card_removed: 'milestone.card_removed',
-			// A decision's lifecycle (card 2675, decision 22): no event; decision webhooks are card 2689.
-			decision_opened: null,
+			// A decision's lifecycle (card 2675, decision 22; card 2689, R1): opened and withdrawn send their decision events;
+			// a re-publish, a close, an extension and a delete none.
+			decision_opened: 'decision.opened',
 			decision_republished: null,
 			decision_closed: null,
 			decision_extended: null,
-			decision_withdrawn: null,
+			decision_withdrawn: 'decision.withdrawn',
 			decision_deleted: null,
-			// Card 2679 (decision 17): none yet; card 2689 maps them.
-			decision_ruled: null,
-			decision_superseded: null,
+			// Card 2679 (decision 17; card 2689, R1, R2): the ruling and the old decision superseded; a release of results none.
+			decision_ruled: 'decision.ruled',
+			decision_superseded: 'decision.superseded',
 			decision_results_released: null,
-			// Card 2680 (decision 22): none; decision webhooks are card 2689's.
+			// Card 2680 (decision 22): none; on the card's board, whose readers may not view the decision (card 2689, R4).
 			decision_card_linked: null,
 			decision_card_unlinked: null,
 			decision_card_link_deleted: null,
@@ -5152,5 +5160,143 @@ describe("a webhook's address, written sealed (card 2928)", () => {
 		expect(made.body.message).toBe('Webhook url must be well-formed text: it holds a character that is broken in half.');
 		expect(JSON.stringify(made.body)).not.toContain('half-');
 		expectUnchanged(before, 'after a refusal');
+	});
+});
+
+// ─── Card 2689 ───────────────────────────────────────────────────────────
+
+describe('decision events: named-only, from the projection alone, and never a record entry (card 2689)', () => {
+	let sent: Effects;
+	beforeEach(() => {
+		sent = effects();
+		forgetDeliveries();
+	});
+	afterEach(() => sent.restore());
+
+	const DECISION_EVENTS = ['decision.opened', 'decision.ruled', 'decision.withdrawn', 'decision.superseded'];
+
+	/** A board of an owner's with an open decision on it, which the owner, every fixture webhook's setter, may view. */
+	function scene() {
+		const owner = makeUser({ username: 'owner' });
+		const { board, cols } = makeBoard({ owner });
+		const decision = makeDecision({ board, author: owner, decider: owner, status: 'open', title: 'Budget for Q3' });
+		return { owner, board, cols, decision };
+	}
+
+	it('W1: a decision event is sent only to a webhook that names it, and an empty list still hears every card event (R6)', async () => {
+		const { board, cols, decision } = scene();
+		const empty = makeWebhook(board, { url: 'https://hooks.example.test/empty' });
+		const cards = makeWebhook(board, { url: 'https://hooks.example.test/cards', events: ['card.created'] });
+		makeWebhook(board, { url: 'https://hooks.example.test/ruled', events: ['decision.ruled'] });
+
+		dispatchWebhook(board.id, 'decision.ruled', { decisionId: decision.id, action: 'decision_ruled', source: 'ui', title: decision.title, status: 'ruled' });
+		await sent.settle();
+
+		expect(sent.webhooks.map((d) => [d.url.split('/').pop(), d.event])).toEqual([['ruled', 'decision.ruled']]);
+		// Not asked for, so not an attempt: nothing recorded for either.
+		expect(deliveryResultFor(empty)).toBeNull();
+		expect(deliveryResultFor(cards)).toBeNull();
+
+		sent.clear();
+		const card = makeCard(cols['To Do'], { title: 'New' });
+		logActivity({ boardId: board.id, cardId: card.id, action: ACTIONS.cardCreated, detail: '"New"' });
+		await sent.settle();
+		expect(sent.webhooks.map((d) => [d.url.split('/').pop(), d.event])).toEqual([
+			['empty', 'card.created'],
+			['cards', 'card.created']
+		]);
+	});
+
+	// Card 2689's code review (S-L3): a list that cannot be read names no event, so a decision event is not an attempt.
+	it('S-L3: a webhook whose stored events cannot be read records nothing and logs nothing for a decision event, and still does for a card event', async () => {
+		const { board, decision } = scene();
+		const unreadable = storedAs(makeWebhook(board), '5');
+
+		dispatchWebhook(board.id, 'decision.ruled', { decisionId: decision.id, action: 'decision_ruled', source: 'ui', title: decision.title, status: 'ruled' });
+		await sent.settle();
+
+		expect(sent.webhooks).toEqual([]);
+		expect(deliveryResultFor(unreadable)).toBeNull();
+		expect(lines('WARN')).toEqual([]);
+		expect(lines('ERROR')).toEqual([]);
+
+		dispatchWebhook(board.id, 'card.created', { cardId: 1 });
+		await sent.settle();
+		expect(deliveryResultFor(unreadable)).toMatchObject({ event: 'card.created', outcome: 'not-sent' });
+		expect(lines('WARN')).toEqual([`Webhook ${unreadable.id} on board ${board.id} not sent: its events are not a list`]);
+	});
+
+	it("L2: a decision event's data is exactly the decision's id, the action, the source, the title and the status, never the entry's name or detail; decision.superseded adds what replaced it (R5)", async () => {
+		const { owner, board, decision } = scene();
+		const newer = makeDecision({ board, author: owner, decider: owner, status: 'ruled' });
+		makeWebhook(board, { events: DECISION_EVENTS });
+		const cases = [
+			['decision_opened', 'decision.opened', 'open'],
+			['decision_ruled', 'decision.ruled', 'ruled'],
+			['decision_withdrawn', 'decision.withdrawn', 'withdrawn'],
+			['decision_superseded', 'decision.superseded', 'superseded']
+		] as const;
+
+		for (const [action, event, status] of cases) {
+			for (const spelling of [action, `api:${action}`]) {
+				sent.clear();
+				logActivity({
+					boardId: board.id,
+					action: spelling,
+					detail: '"Budget for Q3" by NAMEMARK',
+					userId: owner.id,
+					userName: 'NAMEMARK',
+					// Every entry says what replaced it: only decision.superseded may carry it.
+					decision: { id: decision.id, title: 'Budget for Q3', status, supersededById: newer.id }
+				});
+				await sent.settle();
+
+				expect(sent.webhooks.map((d) => d.event), spelling).toEqual([event]);
+				const { body } = sent.webhooks[0];
+				expect(Object.keys(body), spelling).toEqual(['event', 'timestamp', 'boardId', 'data']);
+				expect(body.data, spelling).toEqual({
+					decisionId: decision.id,
+					action,
+					source: spelling === action ? 'ui' : 'api',
+					title: 'Budget for Q3',
+					status,
+					...(event === 'decision.superseded' ? { supersededByDecisionId: newer.id } : {})
+				});
+				expect(JSON.stringify(body), spelling).not.toContain('NAMEMARK');
+			}
+		}
+	});
+
+	it.each(['decision_opened', 'decision_ruled', 'decision_withdrawn', 'decision_superseded'])(
+		'L3: %s with no decision projection sends nothing, by either spelling, and is still written (R10)',
+		async (action) => {
+			const { board } = scene();
+			const hooks = [makeWebhook(board, { events: [...WEBHOOK_EVENTS] }), makeWebhook(board)];
+
+			for (const spelling of [action, `api:${action}`]) logActivity({ boardId: board.id, action: spelling, detail: '"Budget for Q3"', userName: 'owner' });
+			await sent.settle();
+
+			expect(sent.webhooks).toEqual([]);
+			// Not dispatched at all: not even an attempt that `deliver`'s own view check then refused.
+			for (const hook of hooks) expect(deliveryResultFor(hook), `${hook.id}`).toBeNull();
+			expect(db.select().from(activityLog).all().map((row) => row.action)).toEqual([action, `api:${action}`]);
+		}
+	);
+
+	it("L4: no kind of a decision's record, logged as an activity action by either spelling, sends any event (R12)", async () => {
+		const { board, decision } = scene();
+		makeWebhook(board, { events: [...WEBHOOK_EVENTS] });
+		makeWebhook(board);
+		// Card 2688's entry among them.
+		expect(EVENT_KINDS).toContain('record_exported');
+
+		for (const kind of EVENT_KINDS) {
+			for (const spelling of [kind, `api:${kind}`]) {
+				logActivity({ boardId: board.id, action: spelling, detail: spelling, decision: { id: decision.id, title: decision.title, status: 'open' } });
+			}
+		}
+		await sent.settle();
+
+		expect(sent.webhooks).toEqual([]);
 	});
 });

@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.179
+version: 1.180
 status: As-Built
 date: 2026-11-24
 tags:
+  - card-2689
+  - decision-webhooks
   - card-2688
   - decision-pdf-export
   - card-3059
@@ -9412,7 +9414,7 @@ ruling followed the most chosen option. This cannot be undone." (`RELEASE_INFERE
 `ruled` event's `early` and `againstResponses`, the `cut_off` events and `concern_raised` are
 `DECIDER_ONLY_EVENTS`. Card 2680 shows them on the record view, behind `record` alone (with
 `early`, `againstResponses` and the cut-off as stored, and never on a person's own record); card
-2689 (webhooks) is bound never to send them. Card 2738's `reached` on each `cut_off`, the
+2689's decision webhooks do not send them: webhooks come from activity actions alone, and no record event is one ([Decision Webhooks](#decision-webhooks-card-2689)). Card 2738's `reached` on each `cut_off`, the
 results page's `notResponded[].reached` and the ruling's `cutOffReached` are read and shown
 only where the cut-off already is: the record view behind `record`, the results page and the v1
 summary behind `results`. The participant and edit pages carry neither key (case 36). Its code
@@ -9577,7 +9579,7 @@ are `DECIDER_ONLY_EVENTS`: their detail holds each notice's outcome (which would
 account's mail preference), the asker, and a discarded draft. Card 2680 shows them behind
 `record` alone (the record view), with the notice outcomes dropped; a participant's own question
 is on their own person record from the question rows (`questionViewOf`), never from the events.
-Card 2689 is bound never to send them.
+Card 2689's decision webhooks do not send them: webhooks come from activity actions alone, and no record event is one ([Decision Webhooks](#decision-webhooks-card-2689)).
 
 **The rules card 2682 keeps** (decision 16). v1 has `GET` and `POST
 /api/v1/decisions/{id}/questions` and `POST …/questions/{qid}/answer` (card 2682), each only
@@ -10172,6 +10174,49 @@ flowchart TD
     EN --> PDF
 ```
 
+### Decision Webhooks (card 2689)
+
+Four webhook events tell other systems that a decision on a board was opened, ruled, withdrawn
+or superseded by a later ruling (`decision.opened`, `decision.ruled`, `decision.withdrawn`,
+`decision.superseded`). Each is a piece of a decision leaving the server, to an address a board
+editor chose, so what it says and to whom are held to these rules. The flow and the payload are
+in [Decision Events](notifications-email.md#decision-events-card-2689).
+
+| Rule | What holds it |
+|---|---|
+| **Only a webhook that names the event hears it.** An empty `events` list keeps meaning every card and goal event, so no webhook made before these events receives one until its list names it | `NAMED_ONLY_EVENTS`, the empty-list branch of `dispatchWebhook` (`src/lib/server/webhooks.ts`) |
+| **The decision's own board alone.** Every reader of that board may view the decision once it is opened (`boardReader` in `decision-access.ts`); never the board of a linked card, whose readers may not (card 2680, decisions 18 and 22), never a participant, never another board | The entry is written on the home board only; the card-link entries send nothing |
+| **No draft, no boardless decision.** A draft is the board owner's alone (`DRAFT_VIEWERS`), and a decision whose board was deleted has no webhooks to tell | Neither writes an activity entry, so neither can send |
+| **The setter may view the decision, asked again at sending.** After the hold (`holdOf`: the setter can open the board, the key has not ended), `deliver` asks `visibleDecisionIdsOf(setter, [decisionId])` once per setter per event, cached as `decision:<decisionId>:<setter>`. Today that agrees with the hold; it is asked so that a later change to either rule fails closed. Refused, or a check that throws: not sent, `lastDelivery` "Not sent: its setter may not view this decision", one `WARN` an hour, the webhook left on for its other events | `setterMayView` in `webhooks.ts` |
+| **An allowlisted payload.** `data` is `decisionId`, `action`, `source`, `title` and `status` (the shown status after the act), and `supersededByDecisionId` on `decision.superseded` alone (the replacing decision is on the same board). Never the entry's `user` or `detail` | `decisionWebhookOf` (`decision-write-shared.ts`) and `logActivity`; an entry mapped to a decision event with no projection sends nothing (fail closed) |
+| **Never a name, a count or what was decided.** No actor, decider, author, participant or asker; no option, reason or condition; no `early`, `againstResponses`, cut-off or concern (`DECIDER_ONLY_EVENTS`); no count; no survey answer or survey figure (card 2683); no objection, request to talk, reason, reply or flag figure (card 2684); no group figure (card 2686) | The allowlist above |
+| **No moment.** `closesAt` is in no decision event, `decision.opened` included | A receiver holding the closing time could set it beside the `timestamp` of `decision.ruled` and tell an early ruling, which card 2679's decision 26 keeps to the decider and administrators |
+| **Record entries are never sent.** Webhooks come from activity actions alone, and no `decision_events` kind (`record_exported` among them) is one | `ACTION_TO_EVENT` in `logActivity.ts`, pinned by tests/webhooks.test.ts (L4) |
+
+**The early ruling, in full.** The board's activity feed already shows each of its readers the
+moment of the ruled entry, and the closing time whenever one is extended (`"<title>": closes
+<time> UTC`), and the decision's page shows its closing time while it is open; so a reader of
+the board, the webhook's setter among them, can already set the one beside the other. The
+envelope's `timestamp` is the ruling's moment, so a receiver that learned the closing time some
+other way (its own key's read while the decision was open, a person) can tell an early ruling.
+That residual is accepted, as decision 26 accepted it for anyone who remembers the closing time:
+hiding the moment would mean delaying the event, which defeats it.
+
+**No order promised.** Each webhook's `POST` is sent on its own; a ruling's `decision.ruled` and
+the `decision.superseded` it causes may arrive either way round. Each event carries the status it
+reports, so a receiver never needs the order.
+
+```mermaid
+flowchart LR
+    E["decision.* entry on the home board"] --> N{"events names it?"}
+    N -- "no, or an empty list" --> X["not sent"]
+    N -- "yes" --> H{"holdOf: setter can open the board,<br/>key not ended?"}
+    H -- "no" --> HO["switched off for good"]
+    H -- "yes" --> V{"visibleDecisionIdsOf(setter, [id])"}
+    V -- "no, or it threw" --> NV["not sent, webhook left on"]
+    V -- "yes" --> P["POST: decisionId, action, source,<br/>title, status (+ supersededByDecisionId)"]
+```
+
 ### Who is mailed
 
 One rule, `reachOf`, decides every record-bearing mail, re-send and link. A person who is gone
@@ -10746,6 +10791,13 @@ a session reaches only switch webhooks off. Pages show webhooks only as counts (
 shows how many you set that are on), and no page lists or edits one. The source check that keeps every other writer
 out, and what a future webhook screen must ask, are in
 [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701).
+
+**Decision events are named-only and held to the setter's view** (card 2689). The four
+`decision.*` events are sent only to a webhook whose `events` list names them: an empty list is
+every card and goal event and no decision event, so no webhook made before them receives one.
+Each is sent only while the webhook's setter may view the decision, asked at each event after the
+hold; a setter who may not is not sent it, and the webhook stays on for its other events. See
+[Decision Webhooks](#decision-webhooks-card-2689).
 
 ```mermaid
 sequenceDiagram
@@ -12752,7 +12804,8 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/lib/server/logger.ts` | The system log: the console, `system_logs` and the live feed, from one `emit()`; `printable()`, which puts a space in place of every control character of a line, so that a name holding a line break cannot split it (card 2214), and `UNPRINTABLE`, the class it replaces, every format character (`\p{Cf}`) among it, which a decision's title is refused for holding (card 2675) |
 | `src/lib/server/decision-access.ts` | Who may do what to a decision (card 2675): `decisionAccess()`, `DECISION_RULES`, `DRAFT_VIEWERS` and `mayDo()`, which also asks that a write resting on authorship, the decider's role or board ownership come from someone who can edit the board now; `requireDecision()` in `route-guards.ts` asks it, `404` for a decision the caller may not view |
 | `src/lib/server/decision-links.ts` | A decision's personal links (card 2675): `issueLink()`, `revokeLinks()`, `participantForLink()`, the one place a link is checked, and `reachOf()` and `mayHoldLink()`, who is mailed and who may hold a link, and `mailedLinkOf()` (card 2721), whether a mail with no link may point a holder at their latest email's |
-| `src/lib/server/decision-register.ts` | The register, a person's record and the record view (card 2680): `visibleWhere` (the register held to `requireDecision(…, 'view')`), `visibleDecisionIdsOf()`, `registerQueryOf()` (the filters by allow-list), the person record's three audiences with its scope read first, and `recordEntryOf()`, which builds each event's detail from `RECORD_DETAIL` alone |
+| `src/lib/server/decision-visibility.ts` | Who may view which decisions, one SQL predicate (card 2680, moved here by card 2689 so that `webhooks.ts` can ask it at sending without an import loop): `visibleWhere` (the register held to `requireDecision(…, 'view')`), `scopeOf()` and `visibleDecisionIdsOf()`, re-exported by `decision-register.ts` |
+| `src/lib/server/decision-register.ts` | The register, a person's record and the record view (card 2680): `visibleWhere` and `visibleDecisionIdsOf()` read from `decision-visibility.ts`, `registerQueryOf()` (the filters by allow-list), the person record's three audiences with its scope read first, and `recordEntryOf()`, which builds each event's detail from `RECORD_DETAIL` alone |
 | `src/lib/server/decision-cards.ts` | What is read of card-decision links (card 2680): `linkedCardsFor()` (cards on boards the viewer can open), `readCardDecisions()` (decisions the viewer may view), and `decisionLinksOfCardsUnchecked()`, which checks no access and whose callers a test pins |
 | `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]`, `/decision-link/[token]` (card 2675) and `/enrol/[token]` (card 2773), written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start (since card 2849 by those paths alone: there is no invite token in the database to look for), and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
 | `src/lib/server/mfa-key.ts` | The key that protects authenticator secrets (card 2768): `loadMfaKey()` and the cached `mfaKeyLoad()` and `currentMfaKey()`, read at the first call and never at import; `productionRules()`; the key file's checks, its atomic making outside production, and whether it is inside the database's folder; `keyFromBytes()`, the AES key, key id and key check; `mfaStartVerdict()`, with `reseal` for a change of key; `loadPreviousMfaKey()`, the old key named by `MFA_KEY_FILE_PREVIOUS`, never kept (card 2773). See [Second-Factor Secrets at Rest](#second-factor-secrets-at-rest-card-2768) and [Changing the Key at Start](#changing-the-key-at-start) |

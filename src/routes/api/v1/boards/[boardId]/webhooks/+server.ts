@@ -91,7 +91,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		// One that looks sealed is refused (card 2898, S9): it would be taken for one.
 		if (looksSealed(secret)) throw error(400, TYPED_SECRET_LOOKS_SEALED);
 		// Each name trimmed: the wrapper sends "card.created, card.moved" split
-		// on the commas. An empty list, or none, is every event.
+		// on the commas. An empty list, or none, is every event but the four
+		// decision events, which are sent only to a webhook that names them
+		// (card 2689, R6, R9).
 		const events = readChoices(body, 'events', { from: WEBHOOK_EVENTS, trim: true });
 
 		refuseWebhookOverCap(boardId);

@@ -225,7 +225,7 @@ Every operation reads each field it uses by the field's type and range, and refu
 | `coverUrl` | A colour written `#rrggbb`, or one of the eight preset gradients exactly as the card window offers them and [Update a Card](#update-a-card) lists them, or `null`; `''` is read as `null` | `coverUrl must be a colour written #rrggbb, one of the preset gradients, or null` |
 | A milestone's `status` | `open` or `closed` | `status must be open or closed` |
 | `archivedAt` on `PUT /cards/:cardId` | `null`, which restores the card, and nothing else | `archivedAt may only be null, which restores the card. Archive a card with DELETE /cards/{cardId}` |
-| A webhook's `url`, `secret`, `events` | An `http` or `https` address of at most 2,048 characters, trimmed, not inside the network as written and with no user name or password (see [Webhooks](#webhooks)); text of at most 256; a list of the ten event names, each trimmed, where `[]` is every event | `url must be an http or https address`, `Webhook url points inside the network: 127.0.0.1 is a loopback address`, `Webhook url must not carry a user name or password`, `events must be a list` |
+| A webhook's `url`, `secret`, `events` | An `http` or `https` address of at most 2,048 characters, trimmed, not inside the network as written and with no user name or password (see [Webhooks](#webhooks)); text of at most 256; a list of the fourteen event names, each trimmed, where `[]` is every event but the four decision events (card 2689) | `url must be an http or https address`, `Webhook url points inside the network: 127.0.0.1 is a loopback address`, `Webhook url must not carry a user name or password`, `events must be a list` |
 | The reporting fields (`summary`, `theme`, `customerImpact`, `closeReason`, `releaseState`) | Each in its own vocabulary, as before, or `null` to clear it | `theme must be one of: ...` |
 
 `null` clears a field only where the field can be empty: a due or target date, a category, the cover, a milestone, a milestone's board, a parent card, the reporting fields. Anywhere else `null` is a value of the wrong type, and a `400`.
@@ -274,7 +274,8 @@ Added with it, not breaking: the People (1.5.0), Decisions (1.6.0) and Attachmen
 
 9. `GET /cards/{cardId}` and `GET /cards/{cardId}/dependencies` give `waitingOnDecisions`, the decisions the card waits on while each is open or awaiting a ruling and the key's user may view it, and `[]` for a card that is complete or an option (card 3059); `isBlocked` and `blockedBy` are unchanged and still count dependencies alone, so **a card is free to start when `isBlocked` is false and `waitingOnDecisions` is empty**; keys of two users may be given different lists for one card, and both answers carry `Cache-Control: no-store`. See [Dependencies](#dependencies).
 10. `GET /decisions/{decisionId}/record` may give entries of a new kind, `record_exported`, written when the decider or an administrator downloads the decision's full record as a PDF on its page (card 2688), naming no participant, with detail `{}` and `versionNumber` the version exported; the PDF itself is not offered to an API key. See [Decisions](#decisions).
-11. Nothing else changed: no other operation, field or schema.
+11. Four webhook events are new, `decision.opened`, `decision.ruled`, `decision.withdrawn` and `decision.superseded` (card 2689), sent to the decision's own board while the webhook's setter may view the decision, each with `data.decisionId`, `data.action`, `data.source`, `data.title` and `data.status` (and `data.supersededByDecisionId` for `decision.superseded`), never a name, count, option, reason or moment, and in no guaranteed order; they are sent only to a webhook whose `events` list names them: an empty list is still every event but these four, so no existing webhook receives them; `POST /boards/{boardId}/webhooks` and `PUT /webhooks/{webhookId}` take the four in `events`. See [Webhooks](#webhooks).
+12. Nothing else changed: no other operation, field or schema.
 
 ### Changes on 2026-11-23
 
@@ -2986,11 +2987,12 @@ same words as one that is not there (card 2911).
 
 A webhook sends each event of its board that it asks for (`card.created`, `card.updated`,
 `card.moved`, `card.completed`, `card.deleted`, `comment.added`, `milestone.card_added`,
-`milestone.card_removed`, `card.committed`, `card.discarded`) to its `url` as a `POST`, after
-the change is committed, signed with its `secret`. An empty `events` list, or none, is every event. What is sent, and how a receiver checks the
+`milestone.card_removed`, `card.committed`, `card.discarded`, and since 1.15.1 `decision.opened`,
+`decision.ruled`, `decision.withdrawn` and `decision.superseded`) to its `url` as a `POST`, after
+the change is committed, signed with its `secret`. An empty `events` list, or none, is every event but the four decision events, which are sent only to a webhook that names them. What is sent, and how a receiver checks the
 signature: [Notifications & Email](docs/notifications-email.md#webhooks).
 
-There are ten events. `card.moved` is every column change but a completion and a commitment,
+There are fourteen events. `card.moved` is every column change but a completion and a commitment,
 told apart by `data.action`: a move within the board (`card_moved`), a card moved out of a
 Complete column (`card_reopened`), a move to another board, sent to the board it left
 (`card_moved_away`) and to the board it joined (`card_moved_in`), each with its own board's
@@ -3004,6 +3006,33 @@ for `card.moved` and not `card.committed` does not hear it; across boards each b
 its own `card.moved` (`card_sent`, `card_moved_in`), and the board it joins `card.committed`
 after it. Ask for `card.moved`, `card.completed` and
 `card.committed` to hear every column change.
+
+**Decision events** (since 1.15.1, card 2689): `decision.opened`, `decision.ruled`,
+`decision.withdrawn` and `decision.superseded`, a decision on the board opened, ruled, withdrawn,
+or replaced by a later ruling (`decision.superseded` is sent for the earlier decision, only when the
+ruling marks it superseded, which it does only when its ruler may supersede it). **They are
+sent only to a webhook whose `events` list names them**: an empty list, or none, is every event
+but these four, so no webhook made before them receives one until its list names them. Each goes
+to the decision's own board alone (never the board of a card linked to it; nothing for a draft or
+a decision whose board was deleted), and only while the webhook's setter may view the decision,
+asked at each event; if not, it is not sent (`lastDelivery` "Not sent: its setter may not view
+this decision") and the webhook stays on for its other events. Its `data` is exactly
+`decisionId`, `action` (`decision_opened`, `decision_ruled`, `decision_withdrawn` or
+`decision_superseded`), `source`, `title` and `status` (`open`, `ruled`, `withdrawn` or
+`superseded`), and for `decision.superseded` `supersededByDecisionId`, the decision whose ruling
+replaced it. No `cardId`, `user` or `detail`, and never a name, count, option, reason or moment:
+read the decision with your key for more. No order is guaranteed between events, a ruling's
+`decision.ruled` and the `decision.superseded` it causes included: use `data.status` and
+`timestamp`.
+
+```json
+{
+  "event": "decision.superseded",
+  "timestamp": "2026-11-24T10:00:00.000Z",
+  "boardId": 6,
+  "data": { "decisionId": 30, "action": "decision_superseded", "source": "ui", "title": "Budget for Q2", "status": "superseded", "supersededByDecisionId": 41 }
+}
+```
 
 An option sent on to another board (milestone 22, card 2463), by `POST /cards/:cardId/send` or
 by any move of a card in an upstream column to another board, sends the board it left

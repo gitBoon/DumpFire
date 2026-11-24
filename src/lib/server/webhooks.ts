@@ -56,6 +56,7 @@ import { createHash, createHmac } from 'crypto';
 import { createLogger } from './logger';
 import { deadlinePassed, keyEnded, keyExpired } from './auth';
 import { canViewBoard, getBoardRole, roleOnBoard, type Actor } from './board-access';
+import { visibleDecisionIdsOf } from './decision-visibility';
 import { notifyWebhooksSwitchedOff } from './notifications';
 import { onTheWire } from './v1-json';
 import { addressRefusal, guardedLookup, hostOf, receiverOf } from './webhook-address';
@@ -1581,6 +1582,10 @@ export function webhookShareNotes(board: Pick<Board, 'id' | 'createdBy' | 'isPub
  * one, across the commitment point (milestone 22, card 2460).
  * `card.discarded` is an option dropped: a card archived or deleted from an
  * upstream column (milestone 22, card 2461).
+ * The four `decision.*` are a decision opened, ruled, withdrawn or
+ * superseded (card 2689), sent to the decision's own board, named-only
+ * (`NAMED_ONLY_EVENTS`), and only while the webhook's setter may view the
+ * decision (`deliver`).
  */
 export type WebhookEvent =
 	| 'card.created'
@@ -1592,12 +1597,17 @@ export type WebhookEvent =
 	| 'milestone.card_added'
 	| 'milestone.card_removed'
 	| 'card.committed'
-	| 'card.discarded';
+	| 'card.discarded'
+	| 'decision.opened'
+	| 'decision.ruled'
+	| 'decision.withdrawn'
+	| 'decision.superseded';
 
 /**
  * Every event a webhook can ask for, as the two routes that save one read
  * `events`. A new one goes at the end. A webhook with an empty list is sent
- * every event, so a new event reaches those unasked: announce it.
+ * every event but the named-only ones, so a new event that is not named-only
+ * reaches those unasked: announce it.
  */
 export const WEBHOOK_EVENTS: readonly WebhookEvent[] = [
 	'card.created',
@@ -1609,8 +1619,25 @@ export const WEBHOOK_EVENTS: readonly WebhookEvent[] = [
 	'milestone.card_added',
 	'milestone.card_removed',
 	'card.committed',
-	'card.discarded'
+	'card.discarded',
+	'decision.opened',
+	'decision.ruled',
+	'decision.withdrawn',
+	'decision.superseded'
 ];
+
+/**
+ * The events sent only to a webhook whose list names them (card 2689, R6):
+ * an empty list stays every card and goal event, so no webhook made before
+ * them is sent one. Each is a decision event, whose `data` names a decision
+ * and no card, and which `deliver` sends only while the setter may view it.
+ */
+export const NAMED_ONLY_EVENTS: ReadonlySet<WebhookEvent> = new Set<WebhookEvent>([
+	'decision.opened',
+	'decision.ruled',
+	'decision.withdrawn',
+	'decision.superseded'
+]);
 
 /**
  * A webhook's stored `events` as a list, for an update to compare what it is
@@ -1696,8 +1723,12 @@ const WARN_AGAIN_AFTER_MS = 60 * 60 * 1000;
 /** At most this many webhook and kind pairs are remembered; past it the oldest is forgotten. */
 export const WARNINGS_REMEMBERED = 10_000;
 
-/** The kinds of WARN about one webhook, each held to its own hour. */
-type WarnKind = 'refused as written' | 'resolves inside' | 'redirect' | 'events not a list';
+/**
+ * The kinds of line about one webhook, each held to its own hour: every one a
+ * WARN but `decision view failed`, the ERROR of a view check that could not be
+ * told (card 2689, E-L9).
+ */
+type WarnKind = 'refused as written' | 'resolves inside' | 'redirect' | 'events not a list' | 'decision not viewable' | 'decision view failed';
 
 /**
  * Each webhook and kind of WARN written, with when and how many like it were
@@ -1720,8 +1751,12 @@ const warned = new Map<string, { at: number; notLogged: number }>();
  * refused one wrote a line each time: a busy board with a stopped receiver
  * filled the system log, which keeps 50,000 rows, and pushed out what else
  * it held.
+ *
+ * `level` is `error` for the one ERROR held to the hour, a decision view check
+ * that could not be told (card 2689, E-L9): it fails at every decision event
+ * of the board while whatever broke it stays broken.
  */
-function warnHourly(hookId: number, kind: WarnKind, line: string): void {
+function warnHourly(hookId: number, kind: WarnKind, line: string, level: 'warn' | 'error' = 'warn'): void {
 	const now = Date.now();
 	const key = `${hookId} ${kind}`;
 	const last = warned.get(key);
@@ -1733,7 +1768,7 @@ function warnHourly(hookId: number, kind: WarnKind, line: string): void {
 	while (warned.size >= WARNINGS_REMEMBERED) warned.delete(warned.keys().next().value as string);
 	warned.set(key, { at: now, notLogged: 0 });
 	const missed = last?.notLogged ?? 0;
-	log.warn(missed > 0 ? `${line} (${missed} more like this since the last such line were not logged)` : line);
+	log[level](missed > 0 ? `${line} (${missed} more like this since the last such line were not logged)` : line);
 }
 
 /** Forget every WARN written, as a restart does. For tests: each starts as a server does. */
@@ -1882,7 +1917,9 @@ export function deliveryReason(err: { code?: unknown }, timeoutMs: number): stri
 }
 
 /** What a webhook refused before any request is recorded as, by why it was refused. */
-const NOT_SENT: Record<Refusal['kind'] | 'events' | Hold | 'secret' | 'address' | 'no address', string> = {
+const NOT_SENT: Record<Refusal['kind'] | 'events' | Hold | 'secret' | 'address' | 'no address' | 'decision', string> = {
+	// Card 2689 (R7): a decision event whose decision the setter may not view, or could not be asked.
+	decision: 'Not sent: its setter may not view this decision',
 	// Card 2898 (S4): a stored secret that does not open with this server's key.
 	secret: 'Not sent: its signing secret cannot be opened',
 	// Card 2928: a stored address that does not open, and one a backup left out.
@@ -1959,6 +1996,52 @@ const ADDRESS_UNOPENABLE = "its address cannot be opened with this server's MFA 
 const NO_ADDRESS = 'it has no address';
 
 /**
+ * Whether the webhook's setter may view the decision (card 2689, R7, S-M1):
+ * `visibleDecisionIdsOf`, the one rule every list filtered by `view` uses,
+ * with the setter read as `holdOf` reads them. Anyone who can open a board
+ * may view every decision on it that is not a draft, and a draft sends
+ * nothing, so today this agrees with the hold; it is asked so that a later
+ * change to either rule cannot send a decision to someone who may not view
+ * it. Cached in the dispatch's map as `decision:<decisionId>:<setter>`, so
+ * one event asks once per setter. False, never true, for no setter, no
+ * decision id and a check that fails.
+ *
+ * The decision must also be on the webhook's own board (card 2689, S-L1),
+ * read with the setter in the one statement and cached under the same key
+ * (every webhook of one dispatch is of one board): a decision event sent to
+ * any other board, a linked card's among them, is not sent, whoever set it.
+ * A check that throws is an ERROR at most once an hour for the webhook
+ * (`warnHourly`, E-L9).
+ */
+function setterMayView(hook: Webhook, decisionId: number | undefined, cache: Map<string, boolean>): boolean {
+	if (hook.setBy === null || typeof decisionId !== 'number' || !Number.isSafeInteger(decisionId) || decisionId < 1) return false;
+	const key = `decision:${decisionId}:${hook.setBy}`;
+	let may = cache.get(key);
+	if (may === undefined) {
+		try {
+			const row = sqlite
+				.prepare('SELECT u.id, u.role, u.disabled_at AS disabledAt, d.board_id AS decisionBoardId FROM users u LEFT JOIN decisions d ON d.id = ? WHERE u.id = ?')
+				.get(decisionId, hook.setBy) as (Actor & { decisionBoardId: number | null }) | undefined;
+			if (row === undefined || row.decisionBoardId !== hook.boardId) may = false;
+			else {
+				const { decisionBoardId: _board, ...setter } = row;
+				may = visibleDecisionIdsOf(setter, [decisionId]).has(decisionId);
+			}
+		} catch (err) {
+			warnHourly(
+				hook.id,
+				'decision view failed',
+				`Webhook ${hook.id} on board ${hook.boardId}: whether its setter may view decision ${decisionId} could not be told, so it was not sent: ${(err as Error)?.message ?? err}`,
+				'error'
+			);
+			may = false;
+		}
+		cache.set(key, may);
+	}
+	return may;
+}
+
+/**
  * Send one webhook its event, or say in the system log why it was not sent.
  *
  * Held first, before the address is judged, when its setter cannot open the
@@ -1989,7 +2072,9 @@ const NO_ADDRESS = 'it has no address';
  *   - an error or the timeout after it: nothing, for the webhook was delivered
  *
  * Each WARN about one webhook for one kind of reason is written at most once
- * an hour (`warnHourly`); the ERRORs are written each time.
+ * an hour (`warnHourly`); the ERRORs are written each time, but the decision
+ * view check's that could not be told, held to the hour as well (card 2689,
+ * E-L9).
  *
  * Each attempt records one result (card 2178), at the first of: the refusal
  * before any request, the guarded lookup's refusal, the status line, an error
@@ -2008,6 +2093,15 @@ const NO_ADDRESS = 'it has no address';
  * own, a delivery is a dispatch of its own, made now. So is `holds`, the
  * dispatch's answer to whether each setter can open the board (card 2325);
  * called on its own, a delivery asks afresh.
+ *
+ * A decision event (card 2689, R7) is asked one more question after the hold,
+ * so that a held webhook is still switched off as for any event: whether the
+ * setter may view the decision `decisionId`, and whether it is on the
+ * webhook's own board (`setterMayView`, S-L1). If not, or if that cannot be
+ * told, it is not sent, "Not sent: its setter may not view
+ * this decision", with one WARN an hour naming the webhook and the decision
+ * by id; the webhook is neither switched off nor held, and is still sent
+ * card events.
  */
 export function deliver(
 	hook: Webhook,
@@ -2015,7 +2109,8 @@ export function deliver(
 	body: string,
 	timeoutMs: number = DELIVERY_TIMEOUT_MS,
 	dispatch: Dispatch = nextDispatch(new Date().toISOString()),
-	holds: Map<string, boolean> = new Map()
+	holds: Map<string, boolean> = new Map(),
+	decisionId?: number
 ): void {
 	const which = `Webhook ${hook.id} on board ${hook.boardId}`;
 	const notSent = (kind: WarnKind, reason: string) => warnHourly(hook.id, kind, `${which} not sent: ${reason}`);
@@ -2049,6 +2144,13 @@ export function deliver(
 		if (switched) {
 			tellSwitchedOff([switchedOff(hook, hold)], 'found when an event was sent', { mail: true });
 		}
+		return;
+	}
+
+	// A decision event (card 2689, R7, S-M1): only while its setter may view the decision, fail closed.
+	if (NAMED_ONLY_EVENTS.has(event) && !setterMayView(hook, decisionId, holds)) {
+		warnHourly(hook.id, 'decision not viewable', `${which} not sent: its setter may not view decision ${decisionId ?? 'unnamed'}`);
+		record(notSentResult('decision'));
 		return;
 	}
 
@@ -2191,7 +2293,12 @@ export function deliver(
  * webhook after it on the board was sent nothing.
  *
  * One `holds` map for the event, passed to each `deliver` (card 2325): whether
- * each setter can open the board is asked once per setter per event.
+ * each setter can open the board is asked once per setter per event, and for
+ * a decision event whether each may view the decision (card 2689, R7).
+ *
+ * A webhook with an empty list is not sent a named-only event (card 2689,
+ * R6): it hears a decision event only once its list names it. Each webhook's
+ * POST is sent on its own, so no order of arrival is promised between events.
  */
 export function dispatchWebhook(
 	boardId: number,
@@ -2229,22 +2336,27 @@ export function dispatchWebhook(
 	}
 
 	const holds = new Map<string, boolean>();
+	// A decision event's decision, for `deliver`'s view check (card 2689, R7); none for any other event.
+	const decisionId = NAMED_ONLY_EVENTS.has(event) && typeof payload.decisionId === 'number' ? payload.decisionId : undefined;
 	for (const hook of hooks) {
 		try {
-			// A list, or the webhook is not sent: an empty one is every event.
-			// Anything else was never what a caller could ask for: a number or
-			// an object used to be sent every event, and a string matched by
-			// substring.
+			// A list, or the webhook is not sent: an empty one is every event
+			// but the named-only ones (card 2689, R6). Anything else was never
+			// what a caller could ask for: a number or an object used to be
+			// sent every event, and a string matched by substring.
 			const events = storedEvents(hook.events);
 			if (events === undefined) {
+				// A list that cannot be read names no event, so a named-only one is
+				// not an attempt: nothing recorded, nothing logged (card 2689, S-L3).
+				if (NAMED_ONLY_EVENTS.has(event)) continue;
 				warnHourly(hook.id, 'events not a list', `Webhook ${hook.id} on board ${hook.boardId} not sent: its events are not a list`);
 				recordDelivery(hook, dispatch, event, notSentResult('events'));
 				continue;
 			}
 			// An event it does not ask for is not an attempt: nothing is recorded.
-			if (events.length > 0 && !events.includes(event)) continue;
+			if (events.length === 0 ? NAMED_ONLY_EVENTS.has(event) : !events.includes(event)) continue;
 
-			deliver(hook, event, body, DELIVERY_TIMEOUT_MS, dispatch, holds);
+			deliver(hook, event, body, DELIVERY_TIMEOUT_MS, dispatch, holds, decisionId);
 		} catch (err) {
 			log.error(`Webhook ${hook.id} on board ${hook.boardId} could not be sent`, err);
 		}

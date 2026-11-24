@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.157
+version: 1.159
 status: As-Built
 date: 2026-11-24
 tags:
+  - card-2689
+  - decision-webhooks
   - card-2688
   - decision-pdf-export
   - card-3059
@@ -1697,7 +1699,7 @@ sequenceDiagram
 | `respondToDecision`, `respondByLink` (card 2677) | A participant's response, signed in or by a personal link. See [The participant page](#the-participant-page) |
 | `recordSeen`, `recordSeenByLink` (card 2677) | A participant recorded as having seen a version. See [The participant page](#the-participant-page) |
 
-**Activity and live events.** The six actions `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn` and `decision_deleted` are written only for a decision that has been opened and whose board is there, with no card, `actorOf(caller)`, `source: sourceOf(opts)` (the route's word or the credential, card 2682's D7), and a detail of the quoted title and the lifecycle words alone: never a count, a name, a reason or a change note. Each call writes its `action: ACTIONS.decisionX` at its own site, as `tests/activity-twins.test.ts` requires; `decisionEntry` builds the rest. There is no `decision_created`, and none of the six sends a webhook (card 2689). On the same six steps and conditions the service sends `emit(boardId, 'decision', { decisionId, status, boardId })`, `status` the shown one: a named event that the register and a board's list of decisions listen for (card 2680), each re-reading through the one 250 ms debounce; the board itself does not ([Real-Time Updates via SSE](#real-time-updates-via-sse), [The register, records and card links](#the-register-records-and-card-links)). Card 2680 adds three actions, each written on the **card's** board with its `cardId` through `decisionEntry`'s optional last argument: `decision_card_linked` and `decision_card_unlinked` (detail "a decision") and `decision_card_link_deleted` (detail "a linked decision was deleted", one per linked card, written by `deleteDecision` before the delete cascades the links). None names the decision's id or title, which the card's board's readers may not be allowed to view; none has a live event, a mail or a webhook.
+**Activity and live events.** The six actions `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn` and `decision_deleted` are written only for a decision that has been opened and whose board is there, with no card, `actorOf(caller)`, `source: sourceOf(opts)` (the route's word or the credential, card 2682's D7), and a detail of the quoted title and the lifecycle words alone: never a count, a name, a reason or a change note. Each call writes its `action: ACTIONS.decisionX` at its own site, as `tests/activity-twins.test.ts` requires; `decisionEntry` builds the rest. There is no `decision_created`. `decision_opened` and `decision_withdrawn` send `decision.opened` and `decision.withdrawn` to the webhooks of the decision's board that name them, with `decision: decisionWebhookOf(row, now)` on the entry; the other four send none ([Decision webhooks](#decision-webhooks-card-2689)). On the same six steps and conditions the service sends `emit(boardId, 'decision', { decisionId, status, boardId })`, `status` the shown one: a named event that the register and a board's list of decisions listen for (card 2680), each re-reading through the one 250 ms debounce; the board itself does not ([Real-Time Updates via SSE](#real-time-updates-via-sse), [The register, records and card links](#the-register-records-and-card-links)). Card 2680 adds three actions, each written on the **card's** board with its `cardId` through `decisionEntry`'s optional last argument: `decision_card_linked` and `decision_card_unlinked` (detail "a decision") and `decision_card_link_deleted` (detail "a linked decision was deleted", one per linked card, written by `deleteDecision` before the delete cascades the links). None names the decision's id or title, which the card's board's readers may not be allowed to view; none has a live event, a mail or a webhook.
 
 **Outside the decision modules.** `people.ts` ends a person's links on Mark left, a link, an unlink, a new address and a delete, through `revokeLinks` ([How the directory clears links](#the-people-directory-page)). `deleteUser` in `deletes.ts`, which deletes only a disabled account (card 2671), marks every person linked to the account left (`status`, `left_at`) before the account goes, ends their links through the same `revokeLinks` with the reason `left`, by the deleting administrator, and writes one `PEOPLE` line per person with no address, inside the delete's own transaction (the code review's S4). `restoreFromBackup` records `link_revoked { reason: 'restore' }` for each participant holding a link on a decision that is not a draft, empties every hash, counts them into `RestoreResult.decisionLinksCleared`, gives no default to a NULL in a decision table (F8), and fails, rolled back, when any row of `decisions` or a `decision_*` table could not be copied (see [Data Model](data-model.md#decision-records-migration-0061)). `SECRET_IN_PATH` in `secret-paths.ts` holds `{ routeId: '/decision-link/[token]', before: '/decision-link/' }`, so the gate's line, `maskMailText`, `mailStatus().lastFailure`, backups and the start-up sweep write `/decision-link/[token]`.
 
@@ -2193,12 +2195,16 @@ stateDiagram-v2
   that no file under `src/routes/api/v1/` imports a ruling, release or concern function.
 - **Activity and live events.** `decision_ruled`, `decision_superseded` (on the old decision,
   only when superseded) and `decision_results_released`, each `"<title>"` alone and only while
-  the board exists, and `emit(boardId, 'decision', …)` beside each. None in the webhook map yet.
+  the board exists, and `emit(boardId, 'decision', …)` beside each. `decision_ruled` and
+  `decision_superseded` send `decision.ruled` and `decision.superseded` (the latter with
+  `supersededByDecisionId`), named-only; `decision_results_released` sends none (card 2689,
+  [Decision webhooks](#decision-webhooks-card-2689)).
 - **The decider-only details** (`DECIDER_ONLY_EVENTS = ['ruled', 'cut_off',
   'concern_raised']`): "against", "early", the cut-off names and the concern outcomes are shown
   on the results page alone. **A binding rule on cards 2680 and 2689**: the record view (card
   2680, built) shows them behind `record` (`['admin', 'decider']`) alone and never on a person's
-  own record; webhooks (card 2689) never carry them.
+  own record; card 2689's webhooks never carry them: their `data` is an allowlist of the
+  decision's id, title and status.
 - **What can be worked out** (decision 26). Nothing current gives both moments once ruled:
   `DecisionPageData` holds no `ruledAt` and gives `closesAt` null, `decisionAnswer` gives
   `closesAt` only to an administrator, and `readBoardDecisions` gives none. "Against" can still
@@ -3299,6 +3305,98 @@ sequenceDiagram
 | `src/routes/api/decisions/[id]/pdf/+server.ts` | the route |
 | `src/lib/components/decision/DecisionExport.svelte` | the two buttons |
 | `src/lib/decision-words.ts` | the refusals, the band, the closing lines, the cut and ceiling lines, `exportsSpentWords`, `exportLateWords`, `responsesHeldWords` |
+
+### Decision webhooks (card 2689)
+
+Four webhook events are sent from four decision activity entries, on the decision's own board,
+after the commit, as every webhook is: `decision_opened` → `decision.opened`, `decision_ruled` →
+`decision.ruled`, `decision_withdrawn` → `decision.withdrawn` and `decision_superseded` →
+`decision.superseded` (`ACTION_TO_EVENT` in `src/lib/server/logActivity.ts`). No other decision
+action has an event: a re-publish, a close, an extension, a release of results and a delete
+change nothing a dependent system acts on (or follow a withdrawal that was sent), and the
+card-link entries are on the card's board, whose readers may not view the decision.
+
+**The projection.** `ActivityEntry` gains `decision?: ActivityDecision` (`{ id, title, status,
+supersededById? }`), filled by `decisionWebhookOf(row, now, supersededById?)` in
+`src/lib/server/decision-write-shared.ts` at the four call sites (`openDecision` and
+`withdrawDecision` in `decision-lifecycle-writes.ts`; `ruleDecision`, for the ruled decision and
+the superseded one, in `decision-ruling-writes.ts`). `status` is `decisionStatus(row, now)`, the
+shown status after the act. The projection is not stored: the activity row is written exactly as
+before. For a decision event `logActivity` builds `data` from it alone, field by field
+(`decisionId`, `action`, `source`, `title`, `status`, and `supersededByDecisionId` on
+`decision.superseded` only), never from the entry's `detail` or `userName`; an entry mapped to a
+decision event with no projection sends nothing (fail closed). Every other event keeps its
+payload and ignores the field.
+
+**Named-only.** `NAMED_ONLY_EVENTS` in `src/lib/server/webhooks.ts` holds the four. In
+`dispatchWebhook` an empty `events` list is every event that is not named-only, so a webhook
+hears a decision event only once its list names it, and nothing changes for any webhook made
+before. `WebhookEvent` and `WEBHOOK_EVENTS` gain the four at the end, so the two write routes
+take them in `events` and the 400 for an unknown event names fourteen.
+
+**The view check in `deliver`.** `dispatchWebhook` hands `deliver` the decision's id from the
+payload as a new last argument (none for any other event). For a named-only event, after the
+hold (`holdOf`, so a held webhook is still switched off as for any event), `setterMayView` reads
+the setter as `holdOf` does, and in the same statement the decision's `board_id`, and asks
+`visibleDecisionIdsOf(setter, [decisionId])`, once per setter per event, cached in the dispatch's
+`holds` map as `decision:<decisionId>:<setter>`. A decision on any board but the webhook's own
+(code review S-L1: a decision event dispatched to a linked card's board, whose setter decides the
+decision, is not sent), a setter who may not view it, no setter, no decision id, or a check that
+throws: not sent, `lastDelivery` "Not sent: its setter may not view this decision", one `WARN` an
+hour (`warnHourly`, kind `decision not viewable`) naming the webhook, its board and the decision
+by id; the webhook is neither switched off nor held. A check that throws also writes an `ERROR`,
+held to one an hour for the webhook as well (`warnHourly` at level `error`, kind `decision view
+failed`, E-L9). A webhook whose stored `events` is not a list is skipped for a named-only event
+with nothing recorded or logged (S-L3). `ruleDecision` names the replacing decision in
+`supersededById` only when it is on the superseded one's board (S-L2). `visibleDecisionIdsOf`, with `visibleWhere`, `scopeOf` and
+`oneLiveRowWhere`, moved unchanged from `decision-register.ts` (which re-exports it) to
+`decision-visibility.ts`: imported from `decision-register.ts`, it closed an import loop
+(`decision-register` → `route-guards` → `list-access` → `card-completion` → `upstream` →
+`logActivity` → `webhooks`), and `upstream.ts` reads `ACTIONS` at its top level, so loading
+`logActivity.ts` first broke the load. `decision-visibility.ts` imports nothing that reaches
+`logActivity.ts`, `webhooks.ts` or `route-guards.ts`, and tests/decision-webhooks.test.ts walks
+its runtime imports to hold it so (E-L5).
+
+**Webhooks come from activity actions alone.** A decision's record events (`EVENT_KINDS` in
+`decision-record.ts`, card 2688's `record_exported` among them) are never activity actions that
+send one; tests/webhooks.test.ts logs every kind by both spellings to a webhook naming every
+event and expects nothing (L4), so a later name clash fails a test rather than sending a record
+event out. No order between events is promised: each webhook's `POST` is sent on its own.
+
+```mermaid
+classDiagram
+    class ActivityEntry {
+      boardId
+      action
+      detail
+      userName
+      decision?: ActivityDecision
+    }
+    class ActivityDecision {
+      id
+      title
+      status: ShownStatus
+      supersededById?
+    }
+    class logActivity {
+      ACTION_TO_EVENT
+      decisionPayload(event, action, source, decision)
+    }
+    class webhooks {
+      WEBHOOK_EVENTS (14)
+      NAMED_ONLY_EVENTS (4)
+      dispatchWebhook(boardId, event, payload)
+      deliver(..., holds, decisionId?)
+      setterMayView(hook, decisionId, holds)
+    }
+    class decisionRegister {
+      visibleDecisionIdsOf(actor, ids)
+    }
+    ActivityEntry --> ActivityDecision
+    logActivity ..> ActivityEntry : reads
+    logActivity ..> webhooks : afterCommit dispatch
+    webhooks ..> decisionRegister : view check
+```
 
 ### Decisions through API v1 (card 2682)
 

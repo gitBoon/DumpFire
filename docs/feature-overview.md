@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.99
+version: 1.100
 status: As-Built
 date: 2026-11-24
 tags:
+  - card-2689
+  - decision-webhooks
   - card-2688
   - decision-pdf-export
   - card-3059
@@ -571,6 +573,38 @@ sequenceDiagram
     S-->>P: mail: your objection was answered (no text)
     D->>S: Rule (ticking any talk still open)
     S-->>D: ruled, objections and answers stay on the record
+```
+
+#### Telling other systems about a decision
+
+A board's webhooks can tell other systems when a decision on the board is opened, ruled,
+withdrawn or replaced by a later ruling (card 2689), so that work waiting on it elsewhere can
+start as soon as it is settled.
+
+- **How a webhook asks** — add `decision.opened`, `decision.ruled`, `decision.withdrawn` and
+  `decision.superseded` (any of them) to its list of events with your API key. A webhook whose
+  list is empty, which hears every card and goal event, hears none of these, so nothing changes
+  for a webhook made before them
+- **Where they go** — to the webhooks of the decision's own board only, never to the board of a
+  card linked to it; nothing is sent for a draft, or for a decision whose board was deleted
+- **What they say** — which decision (its number and title), what happened, whether it was done
+  on the page or through the API, and its status now; a supersede also names the decision that
+  replaced it. Never a person's name, what was chosen or why, a count, the closing time, a survey
+  answer, an objection, a request to talk or a figure by group. A receiver that needs more reads
+  the decision with its own API key
+- **Who it is sent for** — only while the person who set the webhook up may view the decision,
+  asked again as each event is sent; if not, that event is not sent and the webhook carries on
+  with its other events
+- **In any order** — each event carries the decision's status, so a receiver never relies on the
+  order they arrive in
+
+```mermaid
+flowchart LR
+    D["A decision opened, ruled,<br/>withdrawn or superseded"] --> W{"A webhook on its board<br/>lists that event?"}
+    W -->|"no (or an empty list)"| N["Nothing sent"]
+    W -->|"yes"| V{"Its setter may<br/>view the decision?"}
+    V -->|"no"| N2["Not sent; the webhook stays on"]
+    V -->|"yes"| S["Sent: number, title, what happened, status"]
 ```
 
 #### Decisions through the API

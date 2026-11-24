@@ -154,6 +154,8 @@ const TEST_FILES = [
 	// Card 2679, slice 2a: the results page, the ruling form and the release, in the page.
 	'decision-ruling.svelte.test.ts',
 	'decision-service.test.ts',
+	// Card 2689: the four decision webhook events end to end: named-only, the home board alone, the allowlisted payload and the setter's view.
+	'decision-webhooks.test.ts',
 	// Card 2682: decisions under API v1, and what a key may never do to one, by the credential as well as the route's word.
 	'decisions-api.test.ts',
 	'deletes-no-parent-key.test.ts',

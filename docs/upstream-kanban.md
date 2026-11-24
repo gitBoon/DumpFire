@@ -1,10 +1,12 @@
 ---
 title: "Upstream Kanban: Options, the Commitment Point and Ideas Boards"
 category: Workflow
-version: 1.2
+version: 1.3
 status: As-Built
-date: 2026-11-18
+date: 2026-11-24
 tags:
+  - card-2689
+  - decision-webhooks
   - card-2671
   - upstream
   - downstream
@@ -415,7 +417,9 @@ Within one board a move out of upstream sends `card.committed` **instead of** `c
 receiver that lists only `card.moved` no longer hears it, as one without `card.completed` hears
 no completion. Across boards each board is sent its own `card.moved` (`card_sent`,
 `card_moved_in`), and the board it joins `card.committed` too. A webhook with an empty event list
-receives everything, the two new events included. There are ten events.
+receives everything, the two new events included. There are fourteen events since card 2689
+added four decision events, which an empty list does not receive: a webhook hears them only once
+its list names them.
 
 ### The upstream figures
 

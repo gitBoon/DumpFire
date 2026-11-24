@@ -71,7 +71,7 @@ import {
 	webhooks
 } from '$lib/server/db/schema';
 import { MAX_TOKENS_PER_ENTRY } from '$lib/server/tokens';
-import { SWITCHED_OFF_BECAUSE } from '$lib/server/webhooks';
+import { NAMED_ONLY_EVENTS, SWITCHED_OFF_BECAUSE, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import { HELD_DELETED_HERE, HELD_FROM_UNSEALED_BACKUP, HELD_NOT_RECORDED, HELD_REPOINTED_HERE } from '$lib/settings-held';
 import { stamp } from '$lib/timestamps';
 import { api as call, routeMethods, routePatterns, type ApiOptions, type ApiResult } from './helpers/api';
@@ -3574,7 +3574,26 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(stats.properties.avgCycleTimeDays.description).not.toMatch(/^Mean days from creation/);
 		// The webhook's prose (the S2 review's C5, the S5a review's "For S6").
 		const webhook = spec.components.schemas.Webhook.description as string;
-		expect(webhook).toContain('There are ten events');
+		// Card 2689 (O1): fourteen since 1.15.1, the four decision events last.
+		expect(webhook).toContain('There are fourteen events');
+		expect(webhook).toContain('card.discarded, decision.opened, decision.ruled, decision.withdrawn and decision.superseded.');
+		expect(webhook).toContain('**They are sent only to a webhook whose events list names them**: an empty list, or none, is every event but these four');
+		// Card 2689's code review (E-L7): the decision events are not among those an empty list receives.
+		expect(webhook).toContain(
+			'A webhook with an empty events list receives every event but the four decision events; the two milestone events, card.committed and card.discarded are among those it receives.'
+		);
+		expect(webhook).not.toContain('card.committed and card.discarded among them');
+		// S-L4: decision.superseded only when the ruling marks the earlier decision superseded.
+		expect(webhook).toContain(
+			'(decision.superseded, sent for the earlier decision only when the ruling that replaces it marks it superseded, which it does only when its ruler may supersede it)'
+		);
+		expect(webhook).toContain("A decision event is sent only while the webhook's setter may view the decision");
+		expect(webhook).toContain('"Not sent: its setter may not view this decision"');
+		expect(webhook).toContain('Its data is exactly data.decisionId, data.action (decision_opened, decision_ruled, decision_withdrawn or decision_superseded), data.source (ui or api), data.title and data.status');
+		expect(webhook).toContain('and for decision.superseded data.supersededByDecisionId');
+		expect(webhook).toContain('never a name, count, option, reason or moment');
+		expect(webhook).toContain('Events are not guaranteed to arrive in any order');
+		expect(webhook).not.toContain('the four newest among them');
 		expect(webhook).toContain('card.moved is every column change but a completion and a commitment');
 		expect(webhook).toContain('card_returned_to_options');
 		expect(webhook).toContain('card_sent');
@@ -3590,7 +3609,7 @@ describe('what a route answers, against the schema the document gives for it', (
 		// kind among them, and since 1.4.0 (card 2673) productOwnerUserId after it.
 		expect(spec.paths['/api/v1/boards/{boardId}'].put.description).toContain('Updatable fields: name, emoji, categoryId, isPublic, kind, productOwnerUserId.');
 		for (const [path, method] of [['/api/v1/boards/{boardId}/webhooks', 'post'], ['/api/v1/webhooks/{webhookId}', 'put']] as const) {
-			expect(spec.paths[path][method].responses['400'].description, path).toContain('one of the ten');
+			expect(spec.paths[path][method].responses['400'].description, path).toContain('one of the fourteen');
 		}
 		// The new filters and the new route, each with what it reads.
 		const kind = spec.paths['/api/v1/boards'].get.parameters.find((p: Json) => p.name === 'kind');
@@ -3600,6 +3619,17 @@ describe('what a route answers, against the schema the document gives for it', (
 		const upstream = spec.paths['/api/v1/boards/{boardId}/upstream'].get;
 		expect(upstream.parameters.map((p: Json) => deref(p).name)).toEqual(['boardId', 'days']);
 		expect(upstream.responses['200'].content['application/json'].schema.properties.committedAll.description).toContain('credited to the board it is on now');
+	});
+
+	// Card 2689's code review (E-L6): the named-only events are the decision events, no more and no fewer, and the
+	// Webhook description's named-only sentence names each, so a fifth added to either is caught here.
+	it('holds NAMED_ONLY_EVENTS to the decision events of WEBHOOK_EVENTS, each named in the Webhook named-only sentence (card 2689, E-L6)', () => {
+		expect([...NAMED_ONLY_EVENTS]).toEqual(WEBHOOK_EVENTS.filter((event) => event.startsWith('decision.')));
+		const webhook = spec.components.schemas.Webhook.description as string;
+		const from = webhook.indexOf('**They are sent only to a webhook whose events list names them**');
+		expect(from).toBeGreaterThan(0);
+		const sentence = webhook.slice(from, webhook.indexOf('. ', from));
+		for (const event of NAMED_ONLY_EVENTS) expect(sentence, event).toContain(event);
 	});
 
 	it('announces the corrections of 2026-10-27 as version 1.3.1, in the note after 1.4.0’s, the activity report’s created bucket among them (card 2480)', () => {
@@ -3658,7 +3688,7 @@ describe('what a route answers, against the schema the document gives for it', (
 	// Card 3064 (R22, R-L1, the amendment's shape, D1): the 1.15.1 note word for word: the one-off effects not applied on
 	// an upgraded server, points (1) to (8), everything a client written for 1.3.1 sees change, then "Added with it, not
 	// breaking:", then the closing point. Cards 3059, 2688 and 2689 each insert a point before the closing one and renumber it:
-	// card 3059's is (9), card 2688's (10), and the closing one (11).
+	// card 3059's is (9), card 2688's (10), card 2689's (11), and the closing one (12).
 	// Its code review (CR-M3): point (5) names the reveal rule (1.15.0 (9)), and the closing point lists the answers that read
 	// differently rather than saying nothing else changed.
 	it('says in the 1.15.1 note what an upgraded server does not apply and everything a 1.3.1 client sees change, word for word (card 3064, D1)', () => {
@@ -3691,15 +3721,23 @@ describe('what a route answers, against the schema the document gives for it', (
 				// Card 2688 (R16): its point, inserted before the closing one, which is renumbered (11).
 				"(10) GET /decisions/{decisionId}/record may give entries of a new kind, record_exported, written when the decider or an administrator downloads the decision's full record as a PDF on its page (card 2688), " +
 				'naming no participant, with detail {} and versionNumber the version exported; the PDF itself is not offered to an API key; ' +
-				"(11) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry's source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), " +
-				"a 413 for a body declared too large, and every other refusal of an upload before its body is read, carries Connection: close (1.13.1 (3)), and a card's move between milestones it cannot see is refused in words of its own (1.12.0 (3)).\n\n"
+				// Card 2689 (R11, O1): its point, inserted before the closing one, which is renumbered (12).
+				"(11) four webhook events are new, decision.opened, decision.ruled, decision.withdrawn and decision.superseded (card 2689), sent to the decision's own board while the webhook's setter may view the decision, " +
+				'each with data.decisionId, data.action, data.source, data.title and data.status (and data.supersededByDecisionId for decision.superseded), never a name, count, option, reason or moment, and in no guaranteed order; ' +
+				'they are sent only to a webhook whose events list names them: an empty list is still every event but these four, so no existing webhook receives them; ' +
+				'POST /boards/{boardId}/webhooks and PUT /webhooks/{webhookId} take the four in events; ' +
+				"(12) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry's source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), " +
+				// Card 2689's code review (E-L8): the 400 for an unknown webhook event names fourteen.
+				"a 413 for a body declared too large, and every other refusal of an upload before its body is read, carries Connection: close (1.13.1 (3)), a card's move between milestones it cannot see is refused in words of its own (1.12.0 (3)), " +
+				'and the 400 for a webhook event that is not one of them names fourteen events where it named ten (card 2689).\n\n'
 		);
 		// The points in order, the closing one last: a later card inserts its own before it and renumbers it.
 		const points = [...changes.slice(changes.indexOf('sees change: ')).matchAll(/ \((\d+)\) [a-zA-Z0-9]/g)].map((m) => Number(m[1]));
-		expect(points).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+		expect(points).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
 		expect(changes.indexOf('Added with it, not breaking:')).toBeLessThan(changes.indexOf('(9) GET /cards/{cardId} and GET /cards/{cardId}/dependencies give waitingOnDecisions'));
 		expect(changes.indexOf('(9) GET /cards/{cardId}')).toBeLessThan(changes.indexOf('(10) GET /decisions/{decisionId}/record may give entries of a new kind, record_exported'));
-		expect(changes.indexOf('(10) GET /decisions/{decisionId}/record')).toBeLessThan(changes.indexOf('(11) no other operation, field or schema changed'));
+		expect(changes.indexOf('(10) GET /decisions/{decisionId}/record')).toBeLessThan(changes.indexOf('(11) four webhook events are new'));
+		expect(changes.indexOf('(11) four webhook events are new')).toBeLessThan(changes.indexOf('(12) no other operation, field or schema changed'));
 	});
 
 	// Card 2845: a note of its own, for a change of what costUsd answers.

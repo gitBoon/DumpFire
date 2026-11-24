@@ -71,6 +71,7 @@ import { inWrite, type ServiceOptions } from './write-as';
 import {
 	dayBefore,
 	decisionEntry,
+	decisionWebhookOf,
 	heldAsks,
 	keyed,
 	MAIL_ACT,
@@ -220,7 +221,7 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
 
 	// `refusalsOf` refused a decision whose board is gone (`no_board`), so it is there.
 	const boardId = decision.boardId!;
-	logActivity({ action: ACTIONS.decisionOpened, ...decisionEntry(boardId, `"${opened.title}"`, user, opts) });
+	logActivity({ action: ACTIONS.decisionOpened, ...decisionEntry(boardId, `"${opened.title}"`, user, opts), decision: decisionWebhookOf(opened, now) });
 	emit(boardId, 'decision', { decisionId: opened.id, status: decisionStatus(opened, now), boardId });
 	return opened;
 }
@@ -510,7 +511,7 @@ export function withdrawDecision(caller: SessionUser | null, at: { decisionId: n
 
 	queueRecordMails(row, 'withdrawn', { by, reason });
 	if (row.boardId !== null) {
-		logActivity({ action: ACTIONS.decisionWithdrawn, ...decisionEntry(row.boardId, `"${row.title}"`, user, opts) });
+		logActivity({ action: ACTIONS.decisionWithdrawn, ...decisionEntry(row.boardId, `"${row.title}"`, user, opts), decision: decisionWebhookOf(row, now) });
 		emit(row.boardId, 'decision', { decisionId: row.id, status: decisionStatus(row, now), boardId: row.boardId });
 	}
 	return row;

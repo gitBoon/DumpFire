@@ -1,10 +1,12 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.95
+version: 1.97
 status: As-Built
-date: 2026-11-23
+date: 2026-11-24
 tags:
+  - card-2689
+  - decision-webhooks
   - card-2684
   - objections
   - need-to-talk
@@ -1155,7 +1157,7 @@ names another participant.
 **Survey questions (card 2683).** A decision may ask survey questions, or be a survey alone. No
 mail is added or changed for them but the ruling's words: answering a survey is a response and
 mails nobody, and no mail carries a survey question's answer, a written answer or a survey figure
-(card 2689's webhooks are bound to the same). Where the version ruled on put no options to a vote,
+(nor does any decision webhook, card 2689: its `data` is the decision's id, title and status alone). Where the version ruled on put no options to a vote,
 `ruleDecision` passes `ruling.noOptions` and the ruling mail says "Ruled: No options were put to a
 vote" in place of "None of these", followed by the reason recording the decider's conclusion and
 any conditions, as the banner and the results page say.
@@ -2967,6 +2969,7 @@ slow receiver queues, and each delivery still has its whole 10 seconds once it i
 | `not-sent` | `null` | `Not sent: the account that set it up can no longer open this board` | Held: its setter cannot open the board (card 2325), and switched off for good at that event (card 2752) | Delete it unless you recognise the address; to keep it, switch it on with your key, which gives it a new secret ([Who May Change a Webhook](#who-may-change-a-webhook)) |
 | `not-sent` | `null` | `Not sent: the API key that set it up has ended` | Held: its key was revoked, expired, passed its deadline, was deleted or is another account's, or (one set up before keys were recorded) its setter has no working key from then; switched off for good at that event (card 2893) | Switch it on with your own key, which records your key and gives it a new secret, and give the receiver the new secret; or delete it |
 | `not-sent` | `null` | `Not sent: nobody is recorded as having set it up` | Held: it has no setter (card 2325), and switched off for good at that event (card 2752) | Delete it unless you recognise the address; to keep it, switch it on and set a new secret |
+| `not-sent` | `null` | `Not sent: its setter may not view this decision` | A decision event whose decision the account that set the webhook up may not view, or whose view could not be asked (card 2689); the webhook stays on and is still sent its other events | Have it set up again by someone who may view the board's decisions, or take the decision events out of its `events` |
 
 **A reason is fixed words.** One of the sentences above and nothing else: never the address,
 its path or query, a user name, a password, the secret, an address a name resolved to, or
@@ -3037,20 +3040,22 @@ sequenceDiagram
     participant S as DumpFire
     participant W as Webhook Endpoint
 
-    S->>S: Card event occurs and its activity entry is written
+    S->>S: Card or decision event occurs and its activity entry is written
     S->>S: The transaction commits
-    S->>S: Check board webhooks
+    S->>S: Check board webhooks: an empty list is every event but the four decision events (card 2689)
     S->>S: deliver: can the setter open the board? (once per setter per event)
-    alt the setter can open it
+    alt no setter, or the setter cannot open it
+        S->>S: not sent: lastDelivery not-sent, one WARN an hour, switched off for good
+    else a decision event, and the setter may not view the decision (once per setter per event)
+        S->>S: not sent: lastDelivery not-sent, one WARN an hour, the webhook left on
+    else the setter can open it (and, for a decision event, may view the decision)
         S->>W: POST with JSON payload
         Note over W: Verify signature
         W-->>S: 200 OK
-    else no setter, or the setter cannot open it
-        S->>S: not sent: lastDelivery not-sent, one WARN an hour
     end
 ```
 
-A webhook is dispatched by the activity entry for the action, once that entry is committed. Each card moved to another column of its board is one entry, so at most one delivery to each of the board's webhooks (a move to another board is two or three entries across the two boards, made one card at a time: see the table below): a drag and drop, `PUT /api/cards/reorder`, moves at most 100 cards to another column (card 2209), and names each card at most once, so one request sends at most 100 deliveries to each webhook. A request that would move more, or that names a card twice, is refused whole, `400`, with nothing moved or sent: a card named over and over, to and fro between two columns, was once a real move for every entry. The delivery is not awaited and not retried. One that cannot be made, or gets no status line within 10 seconds, is logged at `ERROR`, naming the host and port and never the path. A redirect is logged, and not followed; an answer of 500 from a receiver is not logged as a failure, and is told to the board's owner in the webhook's `lastDelivery` instead, with every other outcome (card 2178, [Last Delivery](#last-delivery)). The board's webhooks are read once, and the body built once, for each event: every webhook of one event is sent the same body and timestamp, signed for each, and each webhook is handled on its own, so a row that cannot be sent stops no other (card 2145). See [Where a Webhook May Send](#where-a-webhook-may-send). Before anything else, `deliver` asks whether the webhook is held (card 2325): see the next section.
+A webhook is dispatched by the activity entry for the action, once that entry is committed. Each card moved to another column of its board is one entry, so at most one delivery to each of the board's webhooks (a move to another board is two or three entries across the two boards, made one card at a time: see the table below): a drag and drop, `PUT /api/cards/reorder`, moves at most 100 cards to another column (card 2209), and names each card at most once, so one request sends at most 100 deliveries to each webhook. A request that would move more, or that names a card twice, is refused whole, `400`, with nothing moved or sent: a card named over and over, to and fro between two columns, was once a real move for every entry. The delivery is not awaited and not retried. One that cannot be made, or gets no status line within 10 seconds, is logged at `ERROR`, naming the host and port and never the path. A redirect is logged, and not followed; an answer of 500 from a receiver is not logged as a failure, and is told to the board's owner in the webhook's `lastDelivery` instead, with every other outcome (card 2178, [Last Delivery](#last-delivery)). The board's webhooks are read once, and the body built once, for each event: every webhook of one event is sent the same body and timestamp, signed for each, and each webhook is handled on its own, so a row that cannot be sent stops no other (card 2145). See [Where a Webhook May Send](#where-a-webhook-may-send). Before anything else, `deliver` asks whether the webhook is held (card 2325): see the next section. For a decision event it then asks whether the setter may view the decision (card 2689): see [Decision Events](#decision-events-card-2689).
 
 ### When Nobody Who Can Open the Board Set It Up
 
@@ -3466,13 +3471,20 @@ sequenceDiagram
 | `comment.added` | `comment_added` |
 | `milestone.card_added` | `milestone_card_added`: a card put in a goal, by any route or page (card 2343, since 2026-10-21) |
 | `milestone.card_removed` | `milestone_card_removed`: a card taken out of a goal, by any route or page (card 2343, since 2026-10-21), and a card that leaves a goal because of another change: moved to another board, its goal deleted, deleted itself, or released when its goal's board was deleted (card 2381, since 2026-10-21) |
+| `decision.opened` | `decision_opened`: a decision opened, on its own board; **named-only** (card 2689, below) |
+| `decision.ruled` | `decision_ruled`: a decision ruled, on its own board; named-only |
+| `decision.withdrawn` | `decision_withdrawn`: a decision that had been opened withdrawn, on its own board; named-only |
+| `decision.superseded` | `decision_superseded`: an earlier ruled decision replaced by the ruling of a later one, sent for the earlier one, on its own board, only when the ruling marks it superseded (its ruler may supersede it); named-only |
 
 **A webhook whose `events` list is empty is sent every event, so one made before 2026-10-21
 receives the two `milestone.*` events from that deploy on** (card 2343): list the events wanted
 to receive neither. **The same holds for `card.committed`** (milestone 22): a webhook with an
 empty list receives it from the deploy that adds it, and one that lists only `card.moved` does
 not, as it does not receive `card.completed`. **And for `card.discarded`** (card 2461): a
-webhook with an empty list receives it from the deploy that adds it.
+webhook with an empty list receives it from the deploy that adds it. **The four decision events
+are the exception** (card 2689): they are sent only to a webhook whose `events` list names them,
+so an empty list is still every card and goal event, and no webhook made before them receives
+one until its list names it.
 
 No other entry sends one. A comment edited (`comment_edited`) or deleted (`comment_deleted`,
 recorded since card 2283) sends no webhook: an empty `events` list means every event, so a new
@@ -3663,6 +3675,124 @@ What is not sent:
 - **Deleting a column sends no event for the column, and no `card.deleted` for its cards.** Neither does purging archived cards, clearing a board's cards or deleting a board, and none of them sends `card.discarded` for an option among the cards (milestone 22, decision M22-9). A board's webhooks are deleted with the board. Since 2026-10-21 a card among them that was in a goal sends `milestone.card_removed`, `… (card deleted)`, while its board stays, and a card elsewhere released from a deleted board's goal sends one to its own board (card 2381, above). Open pages are told of each by a live update: see [Event Types](#event-types).
 - **A goal deleted sends no event of its own**; each card it releases sends `milestone.card_removed`, `… (milestone deleted)` (card 2381).
 
+### Decision Events (card 2689)
+
+When a decision is opened, ruled, withdrawn or replaced by a later ruling, other systems can be
+told, so that work waiting on it can start as soon as it is settled. Four events are sent, each
+from the decision's activity entry on **its own board** (`decisions.board_id`), once the write
+that made it commits:
+
+| Event | Sent when | `data.status` |
+|---|---|---|
+| `decision.opened` | `openDecision` opens a draft (`decision_opened`) | `open` |
+| `decision.ruled` | `ruleDecision` rules an open or closed decision (`decision_ruled`) | `ruled` |
+| `decision.withdrawn` | `withdrawDecision` withdraws a decision that had been opened (`decision_withdrawn`) | `withdrawn` |
+| `decision.superseded` | `ruleDecision` rules a decision that supersedes an earlier ruled one and marks that one superseded, which it does only when the ruler may supersede it (`decision_superseded`, for the earlier one); a ruler who may not leaves it ruled, and only `decision.ruled` is sent | `superseded` |
+
+**Named-only.** A decision event is sent only to a webhook whose `events` list names it
+(`NAMED_ONLY_EVENTS` in `src/lib/server/webhooks.ts`). An empty list, which has always meant
+"every event", keeps meaning every card and goal event; so on the day these ship no existing
+receiver is sent anything new, and a receiver that wants decisions asks for them with
+`POST /api/v1/boards/{boardId}/webhooks` or `PUT /api/v1/webhooks/{webhookId}`, naming them in
+`events` like any other event. Changing `events` keeps the webhook's setter and key.
+
+**The home board only.** The event goes to the webhooks of the decision's own board, whose every
+reader may already view the decision once it is opened. Never to the board of a card linked to
+the decision (whose readers may not view it, card 2680), never to a participant, never to
+another board. Nothing is sent for a draft (only the board's owner may view one), nor for a
+decision whose board was deleted: neither writes an activity entry. A re-publish, a close for
+input, an extension, a release of results, a delete and the card-link entries send no event.
+
+**What it says, from an allowlist.** `data` is built field by field from the entry's decision
+projection (`decisionWebhookOf` in `src/lib/server/decision-write-shared.ts`), never from the
+entry's `detail` or name:
+
+```json
+{
+  "event": "decision.ruled",
+  "timestamp": "2026-11-24T10:00:00.000Z",
+  "boardId": 6,
+  "data": { "decisionId": 41, "action": "decision_ruled", "source": "ui", "title": "Budget for Q3", "status": "ruled" }
+}
+```
+
+`decision.superseded` alone adds `supersededByDecisionId`, the decision whose ruling replaced
+it, and only when that decision is on the same board (`ruleDecision` passes it to
+`decisionWebhookOf` only then, card 2689's code review S-L2). There is no `cardId`, `user` or `detail`. An event never carries a name
+(not the decider, the author, a participant or whoever acted), the option chosen, the reason or
+the conditions, a count, the closing time or any other moment, a survey answer or figure, an
+objection or request to talk, their reasons or replies, or a group figure (the binding notes of
+cards 2683, 2684 and 2686). A receiver that needs more reads the decision with its own API key,
+which applies that key's own access. An entry mapped to a decision event that carries no
+projection sends nothing (fail closed), never the card payload with `user` and `detail`.
+
+**The setter's view, asked again at sending.** After the hold check above, `deliver` asks
+whether the webhook's setter may view the decision (`visibleDecisionIdsOf`, the rule every list
+filtered by `view` uses), once per setter per event, cached in the dispatch's map under
+`decision:<decisionId>:<setter>`. Today anyone who can open the board may view every decision on
+it that is not a draft, so the two agree; the check is there so that a later change to either
+rule cannot send a decision to someone who may not view it. The same read, in the one statement
+and under the same key, asks whether the decision is on the webhook's own board (`setterMayView`,
+the code review's S-L1): a decision event dispatched to any other board, a linked card's among
+them, is not sent, even where the setter is the decision's decider. If the setter may not, or the
+check fails, the webhook is **not sent** that event: `lastDelivery` reads `Not sent: its setter may
+not view this decision`, one `WARN` an hour names the webhook, its board and the decision by id,
+and the webhook is neither switched off nor held: it is still sent its card events. A check that
+fails (it throws) also writes one `ERROR`, at most once an hour for the webhook, held to the hour
+as the `WARN`s are (`warnHourly`, E-L9): it would fail at every decision event of the board while
+whatever broke it stays broken.
+
+A webhook whose stored `events` cannot be read as a list (card 2145) names no event, so a decision
+event is not an attempt for it: nothing is recorded in `lastDelivery` and nothing is logged
+(S-L3); a card or goal event still records `Not sent` and its hourly `WARN`, as before.
+
+**No order promised.** Each webhook's `POST` is sent on its own, so events may arrive in any
+order: a ruling that supersedes an earlier decision sends `decision.ruled` and then
+`decision.superseded`, and either may arrive first. A receiver uses each event's `data.status`
+and the envelope's `timestamp`, or reads the decision, never the order of arrival.
+
+**Record entries are never sent.** Webhooks come from activity actions alone (`ACTION_TO_EVENT`
+in `src/lib/server/logActivity.ts`): no kind of a decision's record (`decision_events`, card
+2688's `record_exported` among them) is an activity action that sends one, and a test pins it.
+
+```mermaid
+flowchart TD
+    A["Decision act committed<br/>(open, rule, withdraw, supersede)"] --> B{"Home board still there?<br/>(and not a draft)"}
+    B -- no --> X["No entry, no event"]
+    B -- yes --> E["logActivity on the home board<br/>with the decision projection"]
+    E --> P{"Projection present?"}
+    P -- no --> X2["Nothing sent (fail closed)"]
+    P -- yes --> D["dispatchWebhook(home board, decision.*, allowlisted data)"]
+    D --> W{"Each active webhook<br/>of the home board: events"}
+    W -- "empty list" --> N["Not sent: named-only<br/>(card and goal events unchanged)"]
+    W -- "does not name it" --> N2["Not sent"]
+    W -- "names the event" --> H{"holdOf: setter can open the board<br/>and key not ended?"}
+    H -- "held" --> HO["Switched off, as for any event"]
+    H -- "yes" --> V{"Setter may view the decision?<br/>once per setter per event"}
+    V -- "no, or the check failed" --> NV["Not sent: its setter may not view this decision<br/>(left on)"]
+    V -- "yes" --> S["POST, signed,<br/>X-DumpFire-Event: decision.*"]
+    L["Boards of linked cards"] -. "never" .-> X
+```
+
+```mermaid
+sequenceDiagram
+    actor Dc as Decider (page)
+    participant R as ruleDecision
+    participant L as logActivity
+    participant Q as afterCommit
+    participant W as dispatchWebhook (home board)
+    participant Rx as Receiver (names decision.*)
+    Dc->>R: rule decision 41 (supersedes 30)
+    R->>L: decision_ruled, decision {41, title, ruled}
+    R->>L: decision_superseded, decision {30, old title, superseded, supersededBy 41}
+    R-->>Dc: committed
+    Q->>W: decision.ruled {decisionId 41, title, status ruled}
+    W->>Rx: POST (signed)
+    Q->>W: decision.superseded {decisionId 30, title, status superseded, supersededByDecisionId 41}
+    W->>Rx: POST (signed)
+    Note over W,Rx: a webhook with an empty list hears neither,<br/>no name, option, reason, count or moment is in either,<br/>and the two POSTs may arrive in either order
+```
+
 ## Key Implementation Files
 
 | File | Purpose |
@@ -3679,7 +3809,7 @@ What is not sent:
 | `src/lib/server/webhooks.ts` | Webhook dispatch on board events: `dispatchWebhook()`, each webhook in its own `try` (card 2145); `deliver()` on the webhooks' own agents (card 2161), its `WARN`s one line per webhook and kind of refusal per hour; `refusalAsWritten()` and `activeWebhooksRefused()`, for delivery and the start-up line; `presentWebhook()`, with `lastDelivery`; each webhook's last result held in memory, `deliveryResultFor()`, `forgetDelivery()` and `deliveryReason()` (card 2178); `MAX_WEBHOOKS_PER_BOARD`, `refuseWebhookOverCap()` and `boardsOverWebhookCap()` (card 2201) |
 | `src/lib/server/webhook-address.ts` | Where a webhook may send (card 2161): `insideReason()`, `addressRefusal()`, `allowInside()` and `parseAllowInside()` for `WEBHOOK_ALLOW_INSIDE`, `guardedLookup()`, `readWebhookUrl()` |
 | `src/lib/server/startup-checks.ts` | Among its thirteen start-up lines, the ignored entries of `WEBHOOK_ALLOW_INSIDE`, the boards over the webhook cap, and the webhooks that are on and refused as written; and `announceReportSchedules()` (card 2751), once at the first start after that card, the `report-schedules-running` notices |
-| `src/lib/server/logActivity.ts` | Writes the activity entry and queues the webhook for it: `ACTION_TO_EVENT`, which entry sends which event (the two `milestone.*` since card 2343). `WebhookEvent` and `WEBHOOK_EVENTS`, the events a webhook may ask for, are in `webhooks.ts` |
+| `src/lib/server/logActivity.ts` | Writes the activity entry and queues the webhook for it: `ACTION_TO_EVENT`, which entry sends which event (the two `milestone.*` since card 2343; the four `decision.*` since card 2689, their `data` from the entry's `decision` projection alone, or nothing without one). `WebhookEvent`, `WEBHOOK_EVENTS` and `NAMED_ONLY_EVENTS`, the events a webhook may ask for and those an empty list does not hear, are in `webhooks.ts`, with `deliver`'s view check for a decision event |
 | `src/lib/server/milestones.ts`, `src/lib/server/deletes.ts` | `logCardInOrOut()`, a card put in a goal or taken out (card 2343); `logCardLeftGoal()`, a card that leaves one because of another change, called by the move, the goal delete and `recordLeftGoals()` in the deletes (card 2381). `archiveCard()` and `deleteCard()` in `deletes.ts` write `card_discarded` for an option archived or deleted (milestone 22, card 2461) |
 | `src/lib/server/db/transaction.ts` | `afterCommit()`: holds every notification until the write it reports is committed |
 | `src/lib/server/mentions.ts` | Extract @mentions from comment text: `parseMentions()` through `findMentions`, against every account's username, then `notifyMention()` for each account found |

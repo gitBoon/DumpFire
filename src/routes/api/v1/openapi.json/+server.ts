@@ -78,8 +78,13 @@ const spec = {
 			'keys of two users may be given different lists for one card, and both answers carry Cache-Control: no-store; ' +
 			'(10) GET /decisions/{decisionId}/record may give entries of a new kind, record_exported, written when the decider or an administrator downloads the decision\'s full record as a PDF on its page (card 2688), ' +
 			'naming no participant, with detail {} and versionNumber the version exported; the PDF itself is not offered to an API key; ' +
-			'(11) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry\'s source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), ' +
-			'a 413 for a body declared too large, and every other refusal of an upload before its body is read, carries Connection: close (1.13.1 (3)), and a card\'s move between milestones it cannot see is refused in words of its own (1.12.0 (3)).\n\n' +
+			"(11) four webhook events are new, decision.opened, decision.ruled, decision.withdrawn and decision.superseded (card 2689), sent to the decision's own board while the webhook's setter may view the decision, " +
+			'each with data.decisionId, data.action, data.source, data.title and data.status (and data.supersededByDecisionId for decision.superseded), never a name, count, option, reason or moment, and in no guaranteed order; ' +
+			'they are sent only to a webhook whose events list names them: an empty list is still every event but these four, so no existing webhook receives them; ' +
+			'POST /boards/{boardId}/webhooks and PUT /webhooks/{webhookId} take the four in events; ' +
+			'(12) no other operation, field or schema changed; beside those, a few answers read differently: an audit entry\'s source may be system (1.7.0), a disabled user named as an assignee or a Product Owner is 400 (1.13.0 (2)), ' +
+			'a 413 for a body declared too large, and every other refusal of an upload before its body is read, carries Connection: close (1.13.1 (3)), a card\'s move between milestones it cannot see is refused in words of its own (1.12.0 (3)), ' +
+			'and the 400 for a webhook event that is not one of them names fourteen events where it named ten (card 2689).\n\n' +
 			'**Changed on 2026-11-18 (version 1.15.0), breaking.** Ending an account\'s access also holds the webhooks it set that were switched off without a hold, and mails the board\'s owners (card 2923); ending an owner\'s or administrator\'s access, or lowering its role, holds every webhook whose secret it could read (card 2935): ' +
 			'(1) a webhook switched off without a hold (by PUT, or by a restore kept apart) whose setter then has their password reset, has their two-step sign-in reset (on the server\'s host, unless run with --keep-api-keys), uses an invite, ends their keys on their own password change, is disabled or is deleted is held as setter access ended; ' +
 			'so is every webhook already switched off without a hold, whoever set it, once, at the first start of this version and in a restore of a backup made before it, and one whose setter is disabled or not recorded at every start and in every restore, a restore kept apart included: ' +
@@ -1079,7 +1084,8 @@ const spec = {
 					'and the names localhost, *.localhost, a name with no dot, *.local, *.internal and *.home.arpa, are refused when the webhook is created or its url changed; ' +
 					'a name is judged again at each delivery by every address it resolves to, and a delivery to one that resolves inside is not made. Redirects are not followed, ' +
 					'and an address with a user name or password is refused. The server\'s operator may let named receivers inside the network be sent to. A board has at most 10 webhooks. ' +
-					'There are ten events: card.created, card.updated, card.moved, card.completed, card.deleted, comment.added, milestone.card_added, milestone.card_removed, card.committed and card.discarded. ' +
+					'There are fourteen events: card.created, card.updated, card.moved, card.completed, card.deleted, comment.added, milestone.card_added, milestone.card_removed, card.committed, card.discarded, ' +
+					'decision.opened, decision.ruled, decision.withdrawn and decision.superseded. ' +
 					'card.moved is every column change but a completion and a commitment, told apart by data.action: card_moved, card_reopened (out of a Complete column), card_moved_away and card_moved_in (to another board, each sent to its own board with its own entry, which names neither board), ' +
 					'card_returned_to_options (since 2026-10-26: a committed card moved back into an upstream column, a board\'s Options column or any column of an ideas board; the one card.moved of a move from Complete into Options, whose card_reopened entry sends none) ' +
 					'and card_sent (since 2026-10-26: an option sent, or moved, to another board, on the board it left, in place of card_moved_away). ' +
@@ -1087,7 +1093,15 @@ const spec = {
 					'so a webhook that lists card.moved and not card.committed does not hear it; across boards each board is sent its own card.moved (card_sent to the board it left, card_moved_in to the board it joins), and the board it joins card.committed after it; a move from a committed column of another board into upstream sends the board it joins two card.moved, card_moved_in and card_returned_to_options. ' +
 					'card.committed (since 2026-10-26) is a card committed out of upstream, by any route, a Send to To Do included, with data.action card_committed; card.discarded (since 2026-10-26) is an option archived or deleted, ' +
 					'with data.action card_discarded, sent before card.deleted, with the card\'s id, for a delete. Archiving any other card sends nothing. ' +
-					'milestone.card_added and milestone.card_removed (since 2026-10-21, item 102) are a card put in a milestone or taken out, sent to the card\'s board. A webhook with an empty events list receives every event, the four newest among them. ' +
+					'milestone.card_added and milestone.card_removed (since 2026-10-21, item 102) are a card put in a milestone or taken out, sent to the card\'s board. A webhook with an empty events list receives every event but the four decision events; the two milestone events, card.committed and card.discarded are among those it receives. ' +
+					'The four decision events (since 1.15.1, card 2689) are a decision opened, ruled, withdrawn, or superseded by a later ruling (decision.superseded, sent for the earlier decision only when the ruling that replaces it marks it superseded, which it does only when its ruler may supersede it), ' +
+					'each sent only to the webhooks of the decision\'s own board, never to the board of a card linked to it, and nothing is sent for a draft or for a decision whose board was deleted. ' +
+					'**They are sent only to a webhook whose events list names them**: an empty list, or none, is every event but these four (decision.opened, decision.ruled, decision.withdrawn and decision.superseded), so a webhook made before them receives none until its list names them. ' +
+					'A decision event is sent only while the webhook\'s setter may view the decision, asked at each event; if not, it is not sent (lastDelivery "Not sent: its setter may not view this decision") and the webhook stays on for its other events. ' +
+					'Its data is exactly data.decisionId, data.action (decision_opened, decision_ruled, decision_withdrawn or decision_superseded), data.source (ui or api), data.title and data.status, the decision\'s status after the act (open, ruled, withdrawn or superseded), ' +
+					'and for decision.superseded data.supersededByDecisionId, the decision whose ruling replaced it, on the same board. ' +
+					'It has no data.cardId, data.user or data.detail, and never a name, count, option, reason or moment (no closing time, no survey answer, objection, request to talk or group figure): read the decision with an API key for more. ' +
+					'Events are not guaranteed to arrive in any order, a ruling\'s decision.ruled and the decision.superseded it causes included: use data.status and timestamp. ' +
 					'Who it is sent for (since 2026-10-20): a webhook is sent only while the account that set it up, the one that created it or last set its url or secret or switched it on, can open the board, asked at each event with that account\'s role as it is then. ' +
 					'One whose setter cannot, or that has no recorded setter (one made before setters were recorded on 2026-10-18/19), is switched off for good (since 1.11.0): active becomes false, ' +
 					'at the change that takes the access away, at every start of the server, after every restore, and at its next event where none of those saw it, and pausedBecause says why. ' +
@@ -1145,13 +1159,14 @@ const spec = {
 									'delivered: the receiver answered 2xx. answered: it answered any other status, a redirect included, which is not followed. ' +
 									'no-answer: no status came: the name was not found, the certificate could not be checked, or the receiver could not be reached or did not answer in time. ' +
 									'not-sent: no request was made: the address is inside the network, carries a user name or password, or is not http or https, or the webhook\'s events are not a list, ' +
-									'or (since 2026-10-20) the webhook is held because the account that set it up can no longer open the board or nobody is recorded as having set it up, or (since 1.11.0) the API key that set it up has ended, and (since 1.11.0) is switched off for good at that event.'
+									'or (since 2026-10-20) the webhook is held because the account that set it up can no longer open the board or nobody is recorded as having set it up, or (since 1.11.0) the API key that set it up has ended, and (since 1.11.0) is switched off for good at that event; ' +
+									'or (since 1.15.1) a decision event whose decision the account that set it up may not view, which leaves the webhook on.'
 							},
 							status: { type: ['integer', 'null'], description: 'The status the receiver answered; null when it answered none' },
 							reason: {
 								type: 'string',
 								description:
-									'One of a fixed set of sentences, e.g. "The receiver answered 500", "Not sent: the address is inside the network", "Not sent: the account that set it up can no longer open this board", "Not sent: nobody is recorded as having set it up" or (since 1.11.0) "Not sent: the API key that set it up has ended". It never holds the address, its path or query, the secret, or an address a name resolved to. ' +
+									'One of a fixed set of sentences, e.g. "The receiver answered 500", "Not sent: the address is inside the network", "Not sent: the account that set it up can no longer open this board", "Not sent: nobody is recorded as having set it up" or (since 1.11.0) "Not sent: the API key that set it up has ended", or (since 1.15.1) "Not sent: its setter may not view this decision". It never holds the address, its path or query, the secret, or an address a name resolved to. ' +
 									'A closed port, a filtered one and a receiver that does not answer read alike: "The receiver could not be reached, or did not answer within 10 seconds", recorded no sooner than the 10 seconds after the delivery was given its connection, whenever it failed. ' +
 									'The 10 seconds count from that connection, not from a wait behind the 20 connections already open to one receiver. The system log, which administrators read, keeps the error itself.'
 							}
@@ -7127,7 +7142,7 @@ const spec = {
 								properties: {
 									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'Webhook delivery URL: an http or https address' },
 									secret: { type: 'string', maxLength: 256, description: 'Shared secret for HMAC verification' },
-									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed', 'card.discarded'] }, description: 'Event types to subscribe to, each trimmed of spaces at either end, among the ten. An empty list, or none, is every event, the two milestone events among them (item 102), and card.committed and card.discarded (since 2026-10-26). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' }
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed', 'card.discarded', 'decision.opened', 'decision.ruled', 'decision.withdrawn', 'decision.superseded'] }, description: 'Event types to subscribe to, each trimmed of spaces at either end, among the fourteen. An empty list, or none, is every event but the four decision events, which are sent only to a webhook that names them (since 1.15.1, card 2689), and includes the two milestone events (item 102), and card.committed and card.discarded (since 2026-10-26). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' }
 								}
 							},
 							example: { url: 'https://example.com/webhook', secret: 'my-secret', events: ['card.created', 'card.moved'] }
@@ -7142,7 +7157,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'No url, a url that is not an http or https address, one that points inside the network as written ("Webhook url points inside the network: 127.0.0.1 is a loopback address"), one that carries a user name or password, a secret over 256 characters, an event that is not one of the ten, boardId not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was created.',
+						description: 'No url, a url that is not an http or https address, one that points inside the network as written ("Webhook url points inside the network: 127.0.0.1 is a loopback address"), one that carries a user name or password, a secret over 256 characters, an event that is not one of the fourteen, boardId not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was created.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'URL is required' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -7247,7 +7262,7 @@ const spec = {
 								properties: {
 									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'An http or https address' },
 									secret: { type: 'string', maxLength: 256 },
-									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed', 'card.discarded'] }, description: 'Each trimmed of spaces at either end, among the ten. An empty list is every event, the two milestone events among them (item 102), and card.committed and card.discarded (since 2026-10-26). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' },
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed', 'card.discarded', 'decision.opened', 'decision.ruled', 'decision.withdrawn', 'decision.superseded'] }, description: 'Each trimmed of spaces at either end, among the fourteen. An empty list is every event but the four decision events, which are sent only to a webhook that names them (since 1.15.1, card 2689), and includes the two milestone events (item 102), and card.committed and card.discarded (since 2026-10-26). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' },
 									active: { type: 'boolean' }
 								}
 							},
@@ -7263,7 +7278,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'None of the four fields was sent, a field that is not what it may hold (a url that is not an http or https address, one that points inside the network as written, one that carries a user name or password, a secret over 256 characters, an event that is not one of the ten, active that is not true or false), a secret sent with the switch-on that gives a new one (since 1.11.0), webhookId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'None of the four fields was sent, a field that is not what it may hold (a url that is not an http or https address, one that points inside the network as written, one that carries a user name or password, a secret over 256 characters, an event that is not one of the fourteen, active that is not true or false), a secret sent with the switch-on that gives a new one (since 1.11.0), webhookId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },

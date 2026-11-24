@@ -59,6 +59,7 @@ import { inWrite, type ServiceOptions } from './write-as';
 import {
 	COMMENT_MAX,
 	decisionEntry,
+	decisionWebhookOf,
 	deciderNoticeOf,
 	keyed,
 	MOST_PARTICIPANTS,
@@ -213,7 +214,7 @@ export function ruleDecision(caller: SessionUser | null, at: { decisionId: numbe
 	});
 
 	if (row.boardId !== null) {
-		logActivity({ action: ACTIONS.decisionRuled, ...decisionEntry(row.boardId, `"${row.title}"`, user, opts) });
+		logActivity({ action: ACTIONS.decisionRuled, ...decisionEntry(row.boardId, `"${row.title}"`, user, opts), decision: decisionWebhookOf(row, now) });
 		emit(row.boardId, 'decision', { decisionId: row.id, status: decisionStatus(row, now), boardId: row.boardId });
 	}
 
@@ -221,7 +222,12 @@ export function ruleDecision(caller: SessionUser | null, at: { decisionId: numbe
 		const superseded = db.update(decisions).set({ status: 'superseded', updatedAt: now }).where(eq(decisions.id, old.id)).returning().get();
 		appendEvent({ decisionId: old.id, kind: 'superseded', detail: { byDecisionId: decision.id } }, by);
 		if (superseded.boardId !== null) {
-			logActivity({ action: ACTIONS.decisionSuperseded, ...decisionEntry(superseded.boardId, `"${superseded.title}"`, user, opts) });
+			logActivity({
+				action: ACTIONS.decisionSuperseded,
+				...decisionEntry(superseded.boardId, `"${superseded.title}"`, user, opts),
+				// Card 2689 (S-L2): what replaced it is named only when on the same board, whose webhooks this is sent to.
+				decision: decisionWebhookOf(superseded, now, row.boardId === superseded.boardId ? decision.id : undefined)
+			});
 			emit(superseded.boardId, 'decision', { decisionId: superseded.id, status: decisionStatus(superseded, now), boardId: superseded.boardId });
 		}
 	}

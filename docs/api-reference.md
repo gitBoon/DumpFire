@@ -1,10 +1,12 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.173
+version: 1.175
 status: As-Built
 date: 2026-11-24
 tags:
+  - card-2689
+  - decision-webhooks
   - card-2688
   - record-exported
   - card-3059
@@ -85,7 +87,7 @@ tags:
   - card-2719
   - not-found-not-forbidden
   - card-2762
-description: "OpenAPI 1.15.1 point (10): a decision record may give record_exported, a full record downloaded as a PDF on its page, no PDF to a key (card 2688). OpenAPI 1.15.1, not breaking (card 3064, the compatibility release): on a server upgraded from before 1.8.0 the one-off effects of 1.8.0, 1.9.1 (4), 1.11.0 (9)-(10) and 1.15.0 (1)-(4), (7) and (9) are not applied at installation, a key has a deadline only where the administrator has applied one, the list of everything a client written for 1.3.1 sees change, and a key made or confirmed with the password alone by an account with no authenticator while two-step sign-in is dormant; point (9), card 3059: GET /cards/{cardId} and GET /cards/{cardId}/dependencies give waitingOnDecisions, isBlocked unchanged, both answered no-store. Objections and requests to talk (card 2684) are a person's, never a key's: no v1 operation raises, replies to or reads one, the summary is unchanged, and GET …/record leaves the four flag events out; no new point in 1.15.0. Point (14) of 1.15.0, decisions may ask survey questions: surveyQuestions in the content (kept when a PATCH does not send it, [] removes them), the refusal survey_incomplete, the response kind answered, answers and survey figures on the summary, never answered with a key (card 2683). Point (13) of 1.15.0, webhooks a restore brings back switched off with three new pausedBecause sentences, and the import's outboundKept and recordsNotTaken.outboundChanges (card 3004). A restore keeps decision roles as recorded: the import's accessKept and accessAsHere fields, and point (12)'s 409 for a Product Owner or decider whose account time does not read (card 3033). The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "OpenAPI 1.15.1 point (11): four decision webhook events, decision.opened, decision.ruled, decision.withdrawn and decision.superseded, sent only to a webhook that names them, to the decision's own board while its setter may view the decision, with an allowlisted data (card 2689). OpenAPI 1.15.1 point (10): a decision record may give record_exported, a full record downloaded as a PDF on its page, no PDF to a key (card 2688). OpenAPI 1.15.1, not breaking (card 3064, the compatibility release): on a server upgraded from before 1.8.0 the one-off effects of 1.8.0, 1.9.1 (4), 1.11.0 (9)-(10) and 1.15.0 (1)-(4), (7) and (9) are not applied at installation, a key has a deadline only where the administrator has applied one, the list of everything a client written for 1.3.1 sees change, and a key made or confirmed with the password alone by an account with no authenticator while two-step sign-in is dormant; point (9), card 3059: GET /cards/{cardId} and GET /cards/{cardId}/dependencies give waitingOnDecisions, isBlocked unchanged, both answered no-store. Objections and requests to talk (card 2684) are a person's, never a key's: no v1 operation raises, replies to or reads one, the summary is unchanged, and GET …/record leaves the four flag events out; no new point in 1.15.0. Point (14) of 1.15.0, decisions may ask survey questions: surveyQuestions in the content (kept when a PATCH does not send it, [] removes them), the refusal survey_incomplete, the response kind answered, answers and survey figures on the summary, never answered with a key (card 2683). Point (13) of 1.15.0, webhooks a restore brings back switched off with three new pausedBecause sentences, and the import's outboundKept and recordsNotTaken.outboundChanges (card 3004). A restore keeps decision roles as recorded: the import's accessKept and accessAsHere fields, and point (12)'s 409 for a Product Owner or decider whose account time does not read (card 3033). The import answering accessKept, accessAsHere and recordsNotTaken.accessChanges with no /api/v1 change (card 3002), The import answering recordsNotTaken and accountStateAsHere with no /api/v1 change (card 3013), an unsealed import's unsealedReach.mailFrom and the From handed over as a name and an address (card 3029), REST API reference for DumpFire's external v1 API: authentication, point (11) of 1.15.0 and Person.status for people marked left by an unsealed restore, GET and POST /api/requests/held, mailHeld, the reply's mailed and Mark active's step-up (card 3020), point (10) of 1.15.0 holding a webhook from an unsealed backup and the import answering unsealedReach (card 3012), the import answering passwordsKept.unsealed, superadminGivenYours and unsealedHeld with no /api/v1 change (card 3009), the import answering passwordsKept with no /api/v1 change (card 2997), ending an account's access also holding the webhooks it set that were already switched off without a hold, and the boards' owners mailed (card 2923, OpenAPI 1.15.0, breaking), a two-step reset ending the account's keys and switching off its webhooks (card 2915, OpenAPI 1.14.0, breaking), every upload counted against a key's user's hour and day whatever the file and only so many at once, a 429 before the body closing the connection (card 2910, OpenAPI 1.13.1, not breaking), with the card window's stricter upload, a disabled account with no access to anything, its key 401 and the account refused as one without the board, breaking, OpenAPI 1.13.0, with the internal disable and enable routes and a delete only of a disabled account (card 2671), the internal task request routes answering a signed-in caller who cannot read a request 404 Request not found (card 2914), a milestone the key's user cannot see answered 404 Milestone not found and the goal a card is in refused in words of its own, breaking, OpenAPI 1.12.0 (card 2911), the internal password change and two-step reset pausing report schedules and answering reportSchedulesPaused (card 2894), a webhook switched off for good when the API key that set it up ends and key rotation (card 2893), a webhook whose setter loses the board switched off for good, switched on again only by the board's owner or an administrator with a new secret, and a create at its address refused to anyone else (card 2752, breaking, OpenAPI 1.11.0), a board, card or anything on a board the key's user cannot open answered 404 as one that is not there, where it was 403 (card 2719, breaking, OpenAPI 1.10.0), and a card asked first under its own address, so any attachment id under a card the key's user cannot open is Card not found (card 2762, in the same release), the image upload's allowances shared with the card window and a JPEG's orientation kept (card 2761, OpenAPI 1.9.1), the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -301,7 +303,7 @@ number or an id is read.
 | `coverUrl` | A colour written `#rrggbb`, or one of the eight preset gradients exactly as [`PUT /api/v1/cards/:cardId`](#put-apiv1cardscardid) lists them, or `null`; `''` is read as `null` | `coverUrl must be a colour written #rrggbb, one of the preset gradients, or null` |
 | A milestone's `status` | `open` or `closed` | `status must be open or closed` |
 | `archivedAt` on `PUT /cards/:cardId` | `null`, which restores the card, and nothing else | `archivedAt may only be null, which restores the card. Archive a card with DELETE /cards/{cardId}` |
-| A webhook's `url`, `secret`, `events` | An `http` or `https` address of at most 2,048 characters, trimmed, not inside the network as written and with no user name or password (see [Webhooks](#webhooks)); text of at most 256; a list of the ten event names, each trimmed, where `[]` is every event | `url must be an http or https address`, `Webhook url points inside the network: 127.0.0.1 is a loopback address`, `Webhook url must not carry a user name or password`, `events must be a list` |
+| A webhook's `url`, `secret`, `events` | An `http` or `https` address of at most 2,048 characters, trimmed, not inside the network as written and with no user name or password (see [Webhooks](#webhooks)); text of at most 256; a list of the fourteen event names, each trimmed, where `[]` is every event but the four decision events (card 2689) | `url must be an http or https address`, `Webhook url points inside the network: 127.0.0.1 is a loopback address`, `Webhook url must not carry a user name or password`, `events must be a list` |
 | The reporting fields (`summary`, `theme`, `customerImpact`, `closeReason`, `releaseState`) | Each in its own vocabulary, as before, or `null` to clear it | `theme must be one of: ...` |
 
 `null` clears a field only where the field can be empty: a due or target date, a category,
@@ -447,8 +449,10 @@ either.
 ### Changes on 2026-11-24: version 1.15.1, the compatibility release (card 3064)
 
 **Not breaking.** OpenAPI is now `1.15.1`. No operation, status code or existing field changes
-against 1.15.0, and behaviour is only relaxed, never tightened; the one addition is point 9's
-`waitingOnDecisions` on the two card reads (card 3059), a new field a client may ignore. Everything built
+against 1.15.0, and behaviour is only relaxed, never tightened; the additions are point 9's
+`waitingOnDecisions` on the two card reads (card 3059), a new field a client may ignore, point
+10's `record_exported` record entry (card 2688), and point 11's four decision webhook events
+(card 2689), which a webhook hears only once its `events` list names them. Everything built
 since live's `106ea45` (API 1.3.1) is released together, and the release's first start changes
 nothing a key holder or a webhook receiver can see beyond a short outage.
 
@@ -516,11 +520,22 @@ a decision (1.15.0 (14), (15)), each as its own note describes.
     its page (card 2688), naming no participant, with detail `{}` and `versionNumber` the version
     exported; the PDF itself is not offered to an API key.
 
-11. No other operation, field or schema changed; beside those, a few answers read differently: an
+11. Four webhook events are new, `decision.opened`, `decision.ruled`, `decision.withdrawn` and
+    `decision.superseded` (card 2689), sent to the decision's own board while the webhook's
+    setter may view the decision, each with `data.decisionId`, `data.action`, `data.source`,
+    `data.title` and `data.status` (and `data.supersededByDecisionId` for `decision.superseded`),
+    never a name, count, option, reason or moment, and in no guaranteed order; they are sent only
+    to a webhook whose `events` list names them: an empty list is still every event but these
+    four, so no existing webhook receives them; `POST /boards/{boardId}/webhooks` and
+    `PUT /webhooks/{webhookId}` take the four in `events`.
+
+12. No other operation, field or schema changed; beside those, a few answers read differently: an
     audit entry's `source` may be `system` (1.7.0), a disabled user named as an assignee or a Product
     Owner is `400` (1.13.0 (2)), a `413` for a body declared too large, and every other refusal of an
-    upload before its body is read, carries `Connection: close` (1.13.1 (3)), and a card's move
-    between milestones it cannot see is refused in words of its own (1.12.0 (3)).
+    upload before its body is read, carries `Connection: close` (1.13.1 (3)), a card's move
+    between milestones it cannot see is refused in words of its own (1.12.0 (3)), and the `400`
+    for a webhook event that is not one of them names fourteen events where it named ten (card
+    2689).
 
 The key's description (`bearerAuth`) now says a key has a deadline only where the administrator
 has applied one. Outside `/api/v1`, a key is made, and kept, with the current password alone by an
@@ -4738,7 +4753,9 @@ the step, never a count, a name or a reason: `decision_opened`, `decision_republ
 linked, naming no decision, `decision_card_linked`, `decision_card_unlinked` and
 `decision_card_link_deleted`; and, since `1.15.0` (card 2687), `decision_card_relation_changed`
 on the decision's board, naming no card, detail "a card", where a link's relation is changed
-(none where the decision's board is deleted). None sends a webhook. Through a key (card 2682)
+(none where the decision's board is deleted). `decision_opened`, `decision_ruled`,
+`decision_withdrawn` and `decision_superseded` send their named-only decision events (card 2689);
+the rest send none. Through a key (card 2682)
 only Extend and the card links write one, stored as `api:decision_extended`,
 `api:decision_card_linked`, `api:decision_card_unlinked` and `api:decision_card_relation_changed`
 and given here canonical, with `source` `api`; drafting, editing, a draft's withdrawal and
@@ -6522,9 +6539,12 @@ flowchart LR
     Q -->|"no: gone with it"| N["nothing written or sent"]
 ```
 
-There are ten events: `card.created`, `card.updated`, `card.moved`, `card.completed`,
+There are fourteen events: `card.created`, `card.updated`, `card.moved`, `card.completed`,
 `card.deleted`, `comment.added`, `milestone.card_added`, `milestone.card_removed`,
-`card.committed` and `card.discarded`; a webhook with an empty `events` list is sent every one.
+`card.committed`, `card.discarded`, and since 1.15.1 `decision.opened`, `decision.ruled`,
+`decision.withdrawn` and `decision.superseded`; a webhook with an empty `events` list is sent
+every one but the four decision events, which are sent only to a webhook that names them
+([Decision events](#webhooks), below).
 `card.moved` is every column change but a completion and a commitment, told apart by
 `data.action`:
 
@@ -6577,6 +6597,49 @@ flowchart LR
     X["delete a live option"] --> D2["card_discarded → card.discarded,<br/>then card_deleted → card.deleted"]
     Y["delete an archived card"] --> E["card_deleted → card.deleted"]
     W["archive unfinished committed work"] --> N["card_abandoned: no event"]
+```
+
+**Decision events** (since 1.15.1, card 2689). `decision.opened`, `decision.ruled`,
+`decision.withdrawn` and `decision.superseded` tell a receiver that a decision on the board was
+opened, ruled, withdrawn, or replaced by a later ruling (`decision.superseded`, sent for the
+earlier decision only when the ruling that replaces it marks it superseded, which it does only
+when its ruler may supersede it).
+
+- **Only a webhook that names them hears them.** An empty `events` list, or none, is every event
+  but these four, so no webhook made before them receives one; add them to `events` with
+  `POST /boards/{boardId}/webhooks` or `PUT /webhooks/{webhookId}` like any other event (a change
+  of `events` keeps the webhook's setter and key).
+- **The decision's own board alone**: never the board of a card linked to it, and nothing for a
+  draft or for a decision whose board was deleted.
+- **Only while the webhook's setter may view the decision**, asked at each event after the
+  setter's access to the board; if not, it is not sent (`lastDelivery` "Not sent: its setter may
+  not view this decision") and the webhook stays on for its other events.
+- **Its `data` is exactly** `decisionId`, `action` (`decision_opened`, `decision_ruled`,
+  `decision_withdrawn` or `decision_superseded`), `source` (`ui` or `api`), `title` and `status`
+  (the decision's status after the act: `open`, `ruled`, `withdrawn` or `superseded`), and for
+  `decision.superseded` `supersededByDecisionId`, the decision whose ruling replaced it, on the same
+  board. No `cardId`, `user` or `detail`; never a name, count, option, reason or moment (no
+  closing time, survey answer, objection, request to talk or group figure). Read the decision
+  with your key for more.
+- **No order is guaranteed** between events, a ruling's `decision.ruled` and the
+  `decision.superseded` it causes included: use `data.status` and `timestamp`.
+
+```json
+{
+  "event": "decision.ruled",
+  "timestamp": "2026-11-24T10:00:00.000Z",
+  "boardId": 6,
+  "data": { "decisionId": 41, "action": "decision_ruled", "source": "ui", "title": "Budget for Q3", "status": "ruled" }
+}
+```
+
+```mermaid
+flowchart LR
+    A["open, rule, withdraw,<br/>supersede"] --> B{"webhook on the decision's<br/>board names the event?"}
+    B -->|"no, or events []"| N["not sent"]
+    B -->|"yes"| S{"setter can open the board,<br/>and may view the decision?"}
+    S -->|"no"| NS["not sent (lastDelivery says why)"]
+    S -->|"yes"| P["POST: decisionId, action, source,<br/>title, status"]
 ```
 
 | Route | Does | Needs | Answers |

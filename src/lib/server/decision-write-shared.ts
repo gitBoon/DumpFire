@@ -62,7 +62,8 @@ import { mailedLinkOf, participantForLink, reachOf, type Reach } from './decisio
 import { CALLER_MAIL_DAILY_CAP, DAY_MS, dailyCapFrom, decisionLinkBase, type HoldReason, later, mailRestOf, RECORD_MAIL_MIN_MINUTES } from './decision-mail';
 import { isSmtpConfigured } from './email';
 import { shouldNotifyUser } from './notifications';
-import { actorOf } from './logActivity';
+import { actorOf, type ActivityDecision } from './logActivity';
+import { decisionStatus } from './decision-status';
 import { takeAllowance } from './rate-limit';
 import { DECISION_TEXT_MAX } from '$lib/decision-rules';
 import { DEAD_DECISION_LINK, NO_LONGER_REACHED, STALE_REVISION } from '$lib/decision-words';
@@ -409,4 +410,15 @@ export function dayBefore(): Stamp {
  */
 export function decisionEntry(boardId: number, detail: string, user: SessionUser, opts: ServiceOptions, cardId: number | null = null) {
 	return { boardId, cardId, detail, source: sourceOf(opts), ...actorOf(user) };
+}
+
+/**
+ * What a decision event says of its decision (card 2689, R5, R10), for the
+ * entry of the four acts that send one: its id, its title, its shown status
+ * at `now`, and on a supersede the id of the decision that replaced it. Never
+ * a name, a count, an option, a reason or a moment: `logActivity` builds the
+ * payload from this alone, and sends nothing for an entry without it.
+ */
+export function decisionWebhookOf(row: Pick<Decision, 'id' | 'title' | 'status' | 'closesAt'>, now: Stamp, supersededById?: number): ActivityDecision {
+	return { id: row.id, title: row.title, status: decisionStatus(row, now), ...(supersededById === undefined ? {} : { supersededById }) };
 }

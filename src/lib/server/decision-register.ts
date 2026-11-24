@@ -9,7 +9,8 @@
  * through, worked out in one SQL predicate (`visibleWhere`), and held to it
  * by tests/decision-register.test.ts, case 3. `visibleDecisionIdsOf` is built
  * on it for every other list that must filter decisions by `view` (the card
- * window's, card 2687's plan view). A board is named by its current name and
+ * window's, card 2687's plan view, card 2689's webhooks at sending). Both live
+ * in decision-visibility.ts since card 2689, re-exported here. A board is named by its current name and
  * id only to a caller who can open it; anyone else is given the name it had
  * when the decision was made, with no id (S1), and a board filter naming a
  * board the caller cannot open matches nothing, as an id of no board does
@@ -54,7 +55,8 @@ import {
 	type DecisionResponse
 } from './db/schema';
 import type { SessionUser } from './auth';
-import { editableBoardIds, getAccessibleBoardIds, isAdmin, isDisabledActor, ownedBoardIds, type Actor } from './board-access';
+import { isAdmin } from './board-access';
+import { oneLiveRowWhere, scopeOf, visibleDecisionIdsOf, visibleWhere, type Scope } from './decision-visibility';
 import { flagsOfParticipants } from './decision-flags';
 import { questionsOfParticipations } from './decision-questions';
 import {
@@ -185,79 +187,10 @@ function needleOf(params: URLSearchParams, name: string, max: number, mode: 'pag
 
 // ─── Who sees which decisions (decision 1) ───────────────────────────────────
 
-/**
- * What the caller's visibility is made from, read once: every board for an
- * administrator (null); otherwise the boards they can open, own and edit now.
- */
-type Scope = { admin: true } | { admin: false; accessible: Set<number>; owned: Set<number>; editable: Set<number> };
-
-function scopeOf(user: Actor): Scope {
-	if (isAdmin(user)) return { admin: true };
-	return {
-		admin: false,
-		accessible: new Set(getAccessibleBoardIds(user) ?? []),
-		owned: ownedBoardIds(user) ?? new Set(),
-		editable: editableBoardIds(user) ?? new Set()
-	};
-}
-
-/** The decisions on which the account holds exactly one live participant row: `decisionAccess`'s participant role (decision 29). */
-function oneLiveRowWhere(userId: number): SQL {
-	return inArray(
-		decisions.id,
-		db
-			.select({ id: decisionParticipants.decisionId })
-			.from(decisionParticipants)
-			.where(and(eq(decisionParticipants.userId, userId), isNull(decisionParticipants.removedAt)))
-			.groupBy(decisionParticipants.decisionId)
-			.having(sql`count(*) = 1`)
-	);
-}
-
-/**
- * `mayDo(decisionAccess(user, d), 'view', d)` as one condition on
- * `decisions` (decision 1): nothing for an administrator; otherwise the
- * caller's own decisions as author or decider; one that is not a draft on a
- * board they can open now, or holding exactly one live participant row of
- * theirs; and a draft on a board they own. The board-edit rule never limits
- * `view`.
- */
-function visibleWhere(user: Actor, scope: Scope): SQL | undefined {
-	if (scope.admin) return undefined;
-	return or(
-		eq(decisions.authorUserId, user.id),
-		eq(decisions.deciderUserId, user.id),
-		and(ne(decisions.status, 'draft'), or(inArray(decisions.boardId, [...scope.accessible]), oneLiveRowWhere(user.id))),
-		and(eq(decisions.status, 'draft'), inArray(decisions.boardId, [...scope.owned]))
-	);
-}
-
-/**
- * The ids among `ids` of the decisions `user` may view (decision 1): one
- * query per `IDS_AT_ONCE`, by `visibleWhere`, and never `decisionAccess` per
- * row. For every list that must filter decisions by `view`.
- *
- * Card 2687 (E-M1, S-L1): it takes any `Actor`, as the plan's viewer is one,
- * and answers 401 to none, as it did. A disabled account, an administrator's
- * included, may view no decision (card 2671's rule): it is given the empty
- * set before its role is asked.
- */
-export function visibleDecisionIdsOf(user: Actor | null | undefined, ids: readonly number[]): Set<number> {
-	if (!user) error(401, 'Not authenticated');
-	if (isDisabledActor(user)) return new Set();
-	const visible = visibleWhere(user, scopeOf(user));
-	const unique = [...new Set(ids)];
-	const found = new Set<number>();
-	for (let from = 0; from < unique.length; from += IDS_AT_ONCE) {
-		const rows = db
-			.select({ id: decisions.id })
-			.from(decisions)
-			.where(and(inArray(decisions.id, unique.slice(from, from + IDS_AT_ONCE)), visible))
-			.all();
-		for (const row of rows) found.add(row.id);
-	}
-	return found;
-}
+// `Scope`, `scopeOf`, `oneLiveRowWhere`, `visibleWhere` and `visibleDecisionIdsOf` are in decision-visibility.ts (card
+// 2689), so that webhooks.ts can ask the one rule at sending without an import loop; `visibleDecisionIdsOf` is
+// re-exported here for its callers.
+export { visibleDecisionIdsOf };
 
 /**
  * The decisions the caller decides and may read the record of now (decision

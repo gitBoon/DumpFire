@@ -210,7 +210,8 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		if (secretChanged) updates.secret = sealedFor(secret);
 		else if (urlChanged && (stored.kind === 'opened' || stored.kind === 'plain')) updates.secret = sealedFor(stored.value);
 		else if (secret !== undefined) updates.secret = hook.secret;
-		// Each name trimmed; an empty list is every event.
+		// Each name trimmed; an empty list is every event but the four decision
+		// events, which are sent only to a webhook that names them (card 2689, R6, R9).
 		const events = readChoices(body, 'events', { from: WEBHOOK_EVENTS, trim: true, keep: storedEvents(hook.events) });
 		if (events !== undefined) updates.events = JSON.stringify(events);
 		if (active !== undefined) updates.active = active;

@@ -24,7 +24,8 @@ import { inArray, sql, type SQL } from 'drizzle-orm';
 import { db } from './db';
 import { activityLog } from './db/schema';
 import { afterCommit } from './db/transaction';
-import { dispatchWebhook, type WebhookEvent } from './webhooks';
+import { dispatchWebhook, NAMED_ONLY_EVENTS, type WebhookEvent } from './webhooks';
+import type { ShownStatus } from '$lib/decision-view-types';
 
 /**
  * Where an action originated: the web application, the API, or DumpFire
@@ -113,7 +114,16 @@ export const ACTIONS = {
 	// A decision's lifecycle (card 2675, decision 21): written only for a
 	// decision that has been opened and whose board still exists, with no card,
 	// and each detail the title and the step, never a count, a name or a
-	// reason. None sends a webhook: decision webhooks are card 2689's.
+	// reason. Card 2689 (R1, R5, R6, R10): four send a webhook, to the
+	// decision's own board, only to a webhook that names the event, and with a
+	// payload built from the entry's `decision` projection alone, never its
+	// detail or name: decision_opened, decision_ruled, decision_withdrawn and
+	// decision_superseded. The rest send none: a re-publish, a close for input
+	// and an extension change nothing a dependent system acts on; a delete
+	// follows a withdrawal, which was sent; a release of results is a step
+	// beside the totals, kept away from anything that reads as a figure; and
+	// the card-link entries are on the card's board, whose readers may not
+	// view the decision.
 	decisionOpened: 'decision_opened',
 	decisionRepublished: 'decision_republished',
 	decisionClosed: 'decision_closed',
@@ -180,7 +190,19 @@ export interface ActivityEntry {
 	 * card 2463).
 	 */
 	createdAt?: string;
+	/**
+	 * What a decision event says of its decision (card 2689, R5, R10): its id,
+	 * its title and its shown status after the act, and on a supersede the id
+	 * of the decision that replaced it, on the same board. Filled by
+	 * `decisionWebhookOf` at the four entries that send a decision event; not
+	 * stored. An entry mapped to a decision event without it sends nothing.
+	 * Ignored for every other event.
+	 */
+	decision?: ActivityDecision;
 }
+
+/** A decision as its webhook event names it (card 2689, R5): never a name, a count, an option, a reason or a moment. */
+export type ActivityDecision = { id: number; title: string; status: ShownStatus; supersededById?: number };
 
 /** Strip the historic `api:` prefix to get the canonical action name. */
 export function canonicalAction(action: string): string {
@@ -271,6 +293,14 @@ export function readSource(row: { action: string; source?: string | null }): Act
  * joins hears its `card_moved_in`, and `card.committed` if it was sent to
  * To Do. A board converted to an ideas board sends nothing, as a column
  * converted to the Options column did, before card 2527.
+ *
+ * A decision opened, ruled, withdrawn or superseded sends its decision event
+ * (card 2689, R1) from its entry on the decision's own board, never a linked
+ * card's: named-only (`NAMED_ONLY_EVENTS`), so a webhook with an empty list
+ * does not hear it, and with `data` built from the entry's `decision` alone
+ * (R5). Webhooks come from activity actions alone (R12): no kind of a
+ * decision's record (`EVENT_KINDS`, `record_exported` among them) is a key
+ * here, so no record entry is ever sent (tests/webhooks.test.ts, L4).
  */
 const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_created: 'card.created',
@@ -287,8 +317,25 @@ const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_updated: 'card.updated',
 	comment_added: 'comment.added',
 	milestone_card_added: 'milestone.card_added',
-	milestone_card_removed: 'milestone.card_removed'
+	milestone_card_removed: 'milestone.card_removed',
+	decision_opened: 'decision.opened',
+	decision_ruled: 'decision.ruled',
+	decision_withdrawn: 'decision.withdrawn',
+	decision_superseded: 'decision.superseded'
 };
+
+/**
+ * A decision event's `data` (card 2689, R5), field by field from the entry's
+ * projection, or null to send nothing for an entry with none (R10, fail
+ * closed). Never the entry's `detail` or `userName`, and nothing else of the
+ * decision; `supersededByDecisionId` on `decision.superseded` alone.
+ */
+function decisionPayload(event: WebhookEvent, canonical: string, source: ActivitySource, decision: ActivityDecision | undefined) {
+	if (decision === undefined) return null;
+	const payload: Record<string, unknown> = { decisionId: decision.id, action: canonical, source, title: decision.title, status: decision.status };
+	if (event === 'decision.superseded' && decision.supersededById !== undefined) payload.supersededByDecisionId = decision.supersededById;
+	return payload;
+}
 
 export function logActivity(entry: ActivityEntry): void {
 	const canonical = canonicalAction(entry.action);
@@ -324,13 +371,17 @@ export function logActivity(entry: ActivityEntry): void {
 	// announced the others.
 	const event = entry.webhook === false ? undefined : ACTION_TO_EVENT[canonical];
 	if (event) {
-		const payload = {
-			cardId: entry.cardId ?? entry.webhookCardId ?? null,
-			action: canonical,
-			source,
-			detail: entry.detail || '',
-			user: entry.userName || ''
-		};
+		// A decision event (card 2689): its own payload, or nothing at all, never the one below with `user` and `detail`.
+		const payload = NAMED_ONLY_EVENTS.has(event)
+			? decisionPayload(event, canonical, source, entry.decision)
+			: {
+					cardId: entry.cardId ?? entry.webhookCardId ?? null,
+					action: canonical,
+					source,
+					detail: entry.detail || '',
+					user: entry.userName || ''
+				};
+		if (payload === null) return;
 		const boardId = entry.boardId;
 		afterCommit(() => dispatchWebhook(boardId, event, payload));
 	}

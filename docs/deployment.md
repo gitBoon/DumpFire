@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.166
+version: 1.168
 status: As-Built
 date: 2026-11-24
 tags:
+  - card-2689
+  - decision-webhooks
   - card-2688
   - decision-pdf-export
   - card-3059
@@ -6297,7 +6299,7 @@ and P-new-3 again on release morning (L2).
 | P3 | `q "SELECT timestamp, message FROM system_logs WHERE level = 'CRITICAL' ORDER BY id"` and `q "SELECT id, username, email, role, created_at FROM users WHERE role IN ('superadmin','admin') ORDER BY role, id"` | Every CRITICAL line one you recognise; every administrator one you know, each `email` a mailbox that person reads | Anything unknown: treat the server as compromised, change every secret at its service, do not deploy |
 | P-new-1 | **Compose facts.** In the old checkout: `git -C /home/itsupport/DumpFire status --porcelain --ignored` and `ls -la /home/itsupport/DumpFire`; `docker compose -p dumpfire config` (run in that folder); `docker volume ls \| grep dumpfire`; `docker inspect dumpfire -f '{{.Config.Image}} {{.Image}}'`; `gpg --version` | Only `?? docker-compose.yml` untracked (any other Compose input, such as an `.env` file, is copied in L1); `config` shows `ORIGIN` and the volume `dumpfire_dumpfire-data`; that volume alone; the image ID for L1; gpg answers (the cold copy uses it) | A second DumpFire volume, or no gpg |
 | P-new-2 | **App URL.** `q "SELECT value FROM settings WHERE key = 'app_url'"` | Empty, or on `https://dumpfire.elecfron.com`: `APP_URL` stays unset and mailed links do not move (owner check 2026-11-24: `https://dumpfire.elecfron.com`). On another origin: set `APP_URL` to it only if that is the address people use | |
-| P-new-3 | **What will be kept, counted** (the queries below) | The counts for the notices and for accepted risks R7 to R16 ([Accepted Risks](authentication-security.md#accepted-risks)); every enabled report schedule confirmed by an administrator (R13) | `created_at` that names no moment above 0 in any table (ask before going on) |
+| P-new-3 | **What will be kept, counted** (the queries below) | The counts for the notices and for accepted risks R7 to R16 ([Accepted Risks](authentication-security.md#accepted-risks)); every enabled report schedule confirmed by an administrator (R13) | `created_at` that names no moment above 0 in any table (ask before going on); a webhook whose `events` names a decision event (card 2689: it would start receiving them; the owner decides its list first) |
 | P-new-4 | **What is in front of nginx.** `docker logs --tail 20 nginx-proxy 2>/dev/null`; once N1 is in, `docker exec nginx-proxy grep -n 'X-Forwarded-For' /etc/nginx/conf.d/default.conf` | Callers' own addresses (10.1.10.x on the office network) and `"-"` for an arriving `X-Forwarded-For`: nothing in front of nginx, so `XFF_DEPTH=1` (owner check 2026-11-24). The DumpFire block's line reads `proxy_set_header X-Forwarded-For $remote_addr;` | A CDN's ranges (Cloudflare's 104.16.0.0/12, 172.64.0.0/13 and the like): then `XFF_DEPTH=2` with `$proxy_add_x_forwarded_for`, both in one change |
 | P8 | Admin → 📧 Email / SMTP: a test mail to the superadmin's address and to each administrator's from P3 | Each arrives: the first start mails board owners about webhooks it switches off, and E3 later depends on mail | |
 | P16 | `docker exec $c df -h /app/data`; `docker exec $c ls -l /app/data/dumpfire.db /app/data/dumpfire.db-wal` | Free space above 1 GB + 2 × the database + 25 MB, or uploads are refused from the first start (2920) | |
@@ -6313,6 +6315,9 @@ q "SELECT (SELECT COUNT(*) FROM sessions) AS sessions, (SELECT COUNT(*) FROM inv
 q "SELECT COUNT(*) AS api_keys, SUM(expires_at IS NULL) AS no_expiry, SUM(last_used_at IS NOT NULL) AS used FROM api_keys"
 # Webhooks by state. active 0 with no_setter 1 is exactly what L6's 2923 line holds (R11 is active 0 with a setter; R10 is every row).
 q "SELECT active, set_by IS NULL AS no_setter, secret <> '' AS has_secret, COUNT(*) AS n FROM webhooks GROUP BY 1, 2, 3"
+# Card 2689: a webhook whose events already name a decision event would start receiving them at the release.
+# Expect no rows; for any row, the owner decides its list before going on.
+q "SELECT id, board_id, active, events FROM webhooks WHERE events LIKE '%decision%'"
 # Made before 0056 with a secret (R7): compare the two by eye. The runner's created_at is milliseconds since 1970; a
 # webhook's created_at is datetime text, YYYY-MM-DD HH:MM:SS in UTC (convert the first with date -u -d @<ms / 1000>).
 q "SELECT created_at FROM __drizzle_migrations WHERE hash = '0056_add_webhook_set_by.sql'"
@@ -10664,7 +10669,7 @@ waitingOnDecisions; isBlocked is unchanged."
 ### The Release That Exports a Decision as a PDF (Card 2688)
 
 **Ships in the same release**, since `106ea45` (production), after cards 3064 and 3059 and before
-2689. **No migration** (the export entry is a `decision_events` row of a new `kind`, a text column
+2689 ([The Release That Sends Decision Webhooks](#the-release-that-sends-decision-webhooks-card-2689)). **No migration** (the export entry is a `decision_events` row of a new `kind`, a text column
 with no constraint), nothing to set, no start-up step, no key or webhook touched, so the runbook
 gains no step. The v1 OpenAPI document stays `1.15.1` (unreleased); its note gains **point (10)**,
 after card 3059's (9), and "nothing else changed" is now **(11)**. Live holds no decision before
@@ -10704,6 +10709,66 @@ decider.
 **Release note.** "A decision's page now offers a shareable PDF copy of the decision and its ruling,
 and the decider and administrators a private PDF of the full record. Taking the full record is
 noted on the decision's record."
+
+### The Release That Sends Decision Webhooks (Card 2689)
+
+**Ships in the same release**, since `106ea45` (production; live runs its twin `5478f58`,
+migration 0060), the last of milestone 36's cards built, after 3064, 3059 and 2688. Decision
+webhooks arrive with decisions themselves: live holds no decision before the release, so the
+first decision event can only follow the first decision opened there. **No migration**
+(`webhooks.events` is a JSON text list checked in code), nothing to set, no start-up step, no key
+or webhook touched, so the runbook gains no step beyond one read-only query in P-new-3:
+
+```bash
+# Card 2689: a webhook whose events already name a decision event would start receiving them. Expect no rows.
+q "SELECT id, board_id, active, events FROM webhooks WHERE events LIKE '%decision%'"
+```
+
+A row there would start receiving decision events at the release: the owner decides before it
+whether to change that webhook's list. Lists have been checked against the allowed names for a
+long time, so only a row stored before that check could hold one.
+
+The v1 OpenAPI document stays `1.15.1` (unreleased); its note gains **point (11)**, after card
+2688's (10), and the closing point is now **(12)**.
+
+```mermaid
+flowchart LR
+    Rel["release: no migration,<br/>no start-up step"] --> Pre["P-new-3: webhooks whose events<br/>name a decision event? expect none"]
+    Rel --> Old["existing webhooks:<br/>an empty list hears no decision event"]
+    Rel --> New["a webhook that names decision.*<br/>hears its home board's decisions"]
+    New --> Check["only while its setter<br/>may view the decision"]
+    Rel --> Back{"going back to an image<br/>without 2689?"}
+    Back -->|"nothing to run"| Gone["no decision event sent;<br/>a stored list naming one is never matched"]
+```
+
+**What changes.** A board's webhook can ask for four new events, `decision.opened`,
+`decision.ruled`, `decision.withdrawn` and `decision.superseded`, by naming them in its `events`.
+Each is sent to the decision's own board alone, only while the webhook's setter may view the
+decision, and says the decision's id, title and status, the act and whether it came from a page or
+the API: never a name, a count, an option, a reason or a moment. A webhook with an empty `events`
+list is sent nothing new.
+
+**For API key holders** (from 1.15.1's point (11)): the four events are taken in `events` by
+`POST /api/v1/boards/{boardId}/webhooks` and `PUT /api/v1/webhooks/{webhookId}`; an empty list is
+still every event but these four, so no existing webhook receives them; each carries
+`data.decisionId`, `data.action`, `data.source`, `data.title` and `data.status` (and
+`data.supersededByDecisionId` for `decision.superseded`), in no guaranteed order. Nothing a client
+sends is answered differently, but an `events` list naming the new four, refused before, is taken,
+and the `400` for an event that is not one of them names fourteen events where it named ten (point
+(12)).
+
+**Going back to an image without card 2689.** Nothing to undo: an older image sends no decision
+event; a stored list naming one is read by its exact match and never matched; a `PUT` there that
+sends such a list is refused `400` by the older list, and one that sends the stored list back is
+taken. A receiver that asked only for decision events hears nothing until rolled forward.
+
+Hands-on checks: the plan's (`docs/planning/card-2689-decision-webhooks.md`), with a test receiver
+that records what it is sent.
+
+**Release note.** "Boards can now tell other systems when a decision is opened, ruled, withdrawn or
+superseded. Existing webhooks are unchanged: a webhook hears these events only when they are added
+to its list of events. Each event names the decision and its status, never a person, a count or
+what was decided."
 
 ## Changing the Schema
 
