@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.168
+version: 1.169
 status: As-Built
-date: 2026-11-24
+date: 2026-11-25
 tags:
   - card-2689
   - decision-webhooks
@@ -6300,7 +6300,7 @@ and P-new-3 again on release morning (L2).
 | P-new-1 | **Compose facts.** In the old checkout: `git -C /home/itsupport/DumpFire status --porcelain --ignored` and `ls -la /home/itsupport/DumpFire`; `docker compose -p dumpfire config` (run in that folder); `docker volume ls \| grep dumpfire`; `docker inspect dumpfire -f '{{.Config.Image}} {{.Image}}'`; `gpg --version` | Only `?? docker-compose.yml` untracked (any other Compose input, such as an `.env` file, is copied in L1); `config` shows `ORIGIN` and the volume `dumpfire_dumpfire-data`; that volume alone; the image ID for L1; gpg answers (the cold copy uses it) | A second DumpFire volume, or no gpg |
 | P-new-2 | **App URL.** `q "SELECT value FROM settings WHERE key = 'app_url'"` | Empty, or on `https://dumpfire.elecfron.com`: `APP_URL` stays unset and mailed links do not move (owner check 2026-11-24: `https://dumpfire.elecfron.com`). On another origin: set `APP_URL` to it only if that is the address people use | |
 | P-new-3 | **What will be kept, counted** (the queries below) | The counts for the notices and for accepted risks R7 to R16 ([Accepted Risks](authentication-security.md#accepted-risks)); every enabled report schedule confirmed by an administrator (R13) | `created_at` that names no moment above 0 in any table (ask before going on); a webhook whose `events` names a decision event (card 2689: it would start receiving them; the owner decides its list first) |
-| P-new-4 | **What is in front of nginx.** `docker logs --tail 20 nginx-proxy 2>/dev/null`; once N1 is in, `docker exec nginx-proxy grep -n 'X-Forwarded-For' /etc/nginx/conf.d/default.conf` | Callers' own addresses (10.1.10.x on the office network) and `"-"` for an arriving `X-Forwarded-For`: nothing in front of nginx, so `XFF_DEPTH=1` (owner check 2026-11-24). The DumpFire block's line reads `proxy_set_header X-Forwarded-For $remote_addr;` | A CDN's ranges (Cloudflare's 104.16.0.0/12, 172.64.0.0/13 and the like): then `XFF_DEPTH=2` with `$proxy_add_x_forwarded_for`, both in one change |
+| P-new-4 | **What is in front of nginx.** `docker logs --tail 500 nginx-proxy 2>/dev/null \| awk '{ print $1 }' \| sort \| uniq -c` (every line's first field, `$remote_addr`, DumpFire's included); `docker logs --tail 500 nginx-proxy 2>/dev/null \| awk -F'"' 'NF == 9 { print $8 }' \| sort \| uniq -c` (the arriving `X-Forwarded-For`, read from the lines in nginx:alpine's `main` format, below); once N1 is in, `docker exec nginx-proxy grep -n 'X-Forwarded-For' /etc/nginx/conf.d/default.conf` | Every first field a caller's own address (10.1.10.x on the office network, or a remote caller you know), never a CDN's or another proxy's: nothing in front of nginx, so `XFF_DEPTH=1` (owner check 2026-11-24). **With N3 in, DumpFire's own lines carry no `X-Forwarded-For` field**: `dumpfire_masked`, like `combined`, ends with the Referer and the user agent, so the `"-"` near the end of a DumpFire line is the Referer. Only lines in nginx:alpine's default `main` format end with `"$http_x_forwarded_for"`: the catch-all redirect's (`http://` to any name), Yeastar's and Merview's, and DumpFire's own before N3 was in. The second command prints that last field of those lines alone: `-` on each, none arriving. The `grep` prints **three** lines: the DumpFire block's, line 73 of the tested file, `proxy_set_header X-Forwarded-For $remote_addr;`, and Yeastar's and Merview's (114 and 141), `$proxy_add_x_forwarded_for`, which are theirs and stay as they are | A CDN's ranges (Cloudflare's 104.16.0.0/12, 172.64.0.0/13 and the like): then `XFF_DEPTH=2` with `$proxy_add_x_forwarded_for`, both in one change |
 | P8 | Admin → 📧 Email / SMTP: a test mail to the superadmin's address and to each administrator's from P3 | Each arrives: the first start mails board owners about webhooks it switches off, and E3 later depends on mail | |
 | P16 | `docker exec $c df -h /app/data`; `docker exec $c ls -l /app/data/dumpfire.db /app/data/dumpfire.db-wal` | Free space above 1 GB + 2 × the database + 25 MB, or uploads are refused from the first start (2920) | |
 | P17 | `q "SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name='api_keys'),0), coalesce((SELECT max(id) FROM api_keys),0)) - (SELECT COUNT(*) FROM api_keys) AS key_seed_rows"`; the same with `users` | Both far under 1,000,000, or the start halts at 0076 or 0077 | Either at or above 1,000,000 |
@@ -6318,12 +6318,35 @@ q "SELECT active, set_by IS NULL AS no_setter, secret <> '' AS has_secret, COUNT
 # Card 2689: a webhook whose events already name a decision event would start receiving them at the release.
 # Expect no rows; for any row, the owner decides its list before going on.
 q "SELECT id, board_id, active, events FROM webhooks WHERE events LIKE '%decision%'"
-# Made before 0056 with a secret (R7): compare the two by eye. The runner's created_at is milliseconds since 1970; a
-# webhook's created_at is datetime text, YYYY-MM-DD HH:MM:SS in UTC (convert the first with date -u -d @<ms / 1000>).
+# Made before 0056 with a secret (R7): compare the two by eye, in whichever form the first is. A webhook's created_at
+# is datetime text, YYYY-MM-DD HH:MM:SS in UTC. On a database 106ea45 built, the runner's created_at is datetime text
+# in the same form (the local rehearsal read 2026-11-24 22:00:08), so the two compare as they are. Check which form
+# live's is: only if it is a number is it milliseconds since 1970, read with date -u -d @<ms / 1000>.
 q "SELECT created_at FROM __drizzle_migrations WHERE hash = '0056_add_webhook_set_by.sql'"
 q "SELECT id, board_id, created_at FROM webhooks WHERE secret <> '' ORDER BY created_at"
 # On, with no setter or a setter who cannot open the board: the only ones the first start switches off
-# (106ea45 already delivers none of them), their boards' owners mailed once: the two queries of 2752.
+# (106ea45 already delivers none of them), their boards' owners mailed once. The two queries of 2752, exactly as
+# its section gives them (The Release That Switches Off a Webhook Whose Setter Loses the Board):
+# On, with no recorded setter, or a setter that names no account (the code review's CR6):
+# each is switched off at the first start.
+q "SELECT w.id, w.board_id, b.name AS board
+FROM webhooks w JOIN boards b ON b.id = w.board_id
+WHERE w.active = 1
+  AND (w.set_by IS NULL OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = w.set_by))
+ORDER BY w.board_id, w.id;"
+# On, with a setter who is no administrator, did not make the board, is not on its member
+# list, is in no team it is shared with, on a board that is not public: each is switched off too.
+q "SELECT w.id, w.board_id, b.name AS board, u.username AS setter
+FROM webhooks w JOIN boards b ON b.id = w.board_id JOIN users u ON u.id = w.set_by
+WHERE w.active = 1
+  AND u.role NOT IN ('admin', 'superadmin')
+  AND (b.created_by IS NULL OR b.created_by <> u.id)
+  AND b.is_public = 0
+  AND NOT EXISTS (SELECT 1 FROM board_members m WHERE m.board_id = b.id AND m.user_id = u.id)
+  AND NOT EXISTS (SELECT 1 FROM board_teams bt JOIN team_members tm ON tm.team_id = bt.team_id
+                  WHERE bt.board_id = b.id AND tm.user_id = u.id)
+ORDER BY w.board_id, w.id;"
+# Keep both lists from L2's run: L6 and the notice to board owners are checked against them.
 # The signing keys' lengths, never their values: 64 and hex for the seal key means L6 says "kept, sealed
 # in place"; no row means "none was stored"; anything else is made anew ("the one stored was in plain").
 q "SELECT key, length(value) AS len, value NOT GLOB '*[^0-9a-f]*' AS hex FROM settings WHERE key IN ('backup_seal_key', 'request_form_secret', 'known_browser_secret')"
@@ -6377,6 +6400,18 @@ then `r1/dumpfire.db`, owned by uid 1000, outside the repository), and kept secr
 
 Then delete the copy and the rehearsal key (`sudo rm -f rehearsal_mfa_key`).
 
+**R-local, the rehearsal on fabricated data, passed** (2026-11-24, `106ea45` → `4cf4a82`). 106ea45's own
+image, run as live runs it (Compose, root, `nginx:alpine` in front with N1 to N3), was given its rows over
+HTTPS through nginx by 106ea45 itself; then every host command of this section, L0 to L9, was run against
+it, with the rollback after L5 (the cold copy) and coming forward again. The first run passed 194 checks;
+its one failure was this section's P-new-4 expectation, corrected above. The second, unattended, passed
+157. Its other corrections are in this section too: P-new-3's comments and 2752's two queries written
+out, L6's SFTP host key line, L7's seal check and the old copy moved aside before coming forward again.
+It cannot prove what only live has: live's data size and its first-start time (3 s there, on a small
+database: R-prod gives live's), and real mail, real webhook receivers and real backup destinations
+(every one there was fabricated, so L7's seal is checked on live). A later release commit is rehearsed
+again the same way.
+
 **Notices** (two working days before; a quiet weekday morning, not a Friday):
 
 1. **API key holders** (the DumpFire tracking key of every project among them): the outage window; that
@@ -6402,7 +6437,7 @@ Then delete the copy and the rehearsal key (`sudo rm -f rehearsal_mfa_key`).
    afterwards**; nobody is signed out; a confirm dialog asks the password where it asked nothing before;
    anyone may set up two-step sign-in from their Account page beforehand (Set up two-step sign-in), and
    is asked for its code from then on.
-3. **Board owners** whose webhooks the two 2752 queries list: switched off at the release, one mail
+3. **Board owners** whose webhooks the two 2752 queries of P-new-3 list: switched off at the release, one mail
    each, and how to switch each on again.
 
 **nginx N1 to N3, already applied** on a quiet day before (2026-11-24 kit, tested on `nginx:alpine`
@@ -6655,7 +6690,7 @@ the file right.
 | L5 | Start | `docker compose -p dumpfire up -d dumpfire`: the container recreated from the new image with the file above, on `dumpfire_edge` and `dumpfire_default` alone. Watch `docker logs -f dumpfire`. **On any failure** (the container exits or restarts, a stop line of L6, an error naming the key, or no `Listening on` within R-prod's measured time plus half, at least two minutes): `docker compose -p dumpfire stop dumpfire` **at once**, so that `restart: unless-stopped` starts nothing again on a half-migrated file, then [Rolling Back](#rolling-back-to-106ea45), with the cold copy |
 | L5b | nginx | Once `Listening on` is in `docker logs dumpfire`: `docker exec nginx-proxy nginx -t && docker exec nginx-proxy nginx -s reload`. Harmless with N1's resolver; needed if N1 was not done, because a static `proxy_pass` keeps the old address and answers 502 |
 | L6 | Read the log | The first-start lines below |
-| L7 | First backup | Admin → Scheduled Backups → ▶ Run Now: sealed with the kept seal key. A backup made by 106ea45 still previews as sealed |
+| L7 | First backup | Admin → Scheduled Backups → ▶ Run Now: sealed with the kept seal key. A backup made by 106ea45 still previews as sealed. An SFTP destination fails until its host key is confirmed (L6). **Run Now cannot prove the kept seal key in the local rehearsal**, where every destination was fabricated and failed: the owner checks one copy's seal after the release, below |
 | L8 | Reload | Tell everyone to reload every open tab; the release notice |
 | L9 | Live checks | Below |
 
@@ -6750,9 +6785,10 @@ docker logs dumpfire 2>&1 | grep -E '\[(ERROR|CRITICAL)\]'      # only the key-c
 | The sealing line: `Sealed N stored secret(s) held in plain (the mail password, D destination field(s), W webhook secret(s), A webhook address(es), …)` | 2898, 2928 |
 | `Rewrote the service account JSON of N backup destination(s) …`, only where P15 found a service account | 2939 |
 | `[CRITICAL] [STARTUP] Key change recorded: …` naming the request-form key made anew and the backup seal key as P-new-3's length says: **"kept, sealed in place: the one stored was in plain, as a server from before the compatibility release holds it, and backups sealed with it still verify"** for 64 hex; "(none was stored)" where 106ea45 never made a backup copy; "(the one stored was in plain)" for any other form. No remembered-browser key (0067 deletes it) | 2943, 3064 |
-| 2752's sweep: switched off, with one mail to each board's owners, **only** the webhooks the two 2752 queries listed | 2752 |
+| 2752's sweep: switched off, with one mail to each board's owners, **only** the webhooks the two 2752 queries listed at L2. Both are written out in full in P-new-3's block ("On, with no recorded setter, or a setter that names no account" and "On, with a setter who is no administrator, did not make the board, is not on its member list, is in no team it is shared with, on a board that is not public"); compare these lines with L2's two lists, not with a run now, which finds them already off | 2752 |
 | `N webhook(s) already switched off, whose setter is disabled or not recorded, are now held (found when the server started): …` with N exactly P-new-3's count of `active 0, no_setter 1`, or no such line for 0. They deliver nothing now; switched on, each gets a new secret | 2923 |
 | `The record of where this server sends was started (once, card 3004): …` | 3004 |
+| `[WARN] [STARTUP] N SFTP backup destination(s) have no confirmed host key, and nothing is sent to them until one is confirmed: "…"`, wherever an SFTP backup destination exists: 106ea45 confirms no host key, so this line names every one, at this start and at each start after until its key is confirmed. **Not a stop line**: confirm each key after L9, the same day (checks 130 to 133 of [An SFTP Destination's Host Key](#an-sftp-destinations-host-key-confirmed-and-checked-at-every-connect)); until then each backup, L7's Run Now included, fails it and mails the failure | 2250 |
 | **`Scrubbed the old plain text from the database file (checkpoint, VACUUM, checkpoint)`**, before `Listening on`. **Required: missing, it is a stop line**: the plain text 0084 overwrote may still be in the file | 3064 |
 | `Listening on` | |
 
@@ -6768,6 +6804,25 @@ Each of these is a **stop line** (the release meant it not to happen; L5's failu
 - `Two-step sign-in was required on this server and is not now`;
 - `[CRITICAL] [AUTH]` naming the key file, `No database was at`, `in the container's own file system`,
   `none of them is an enabled superadmin`.
+
+**L7, the seal checked after the release (owner).** The local rehearsal could not show that Run Now seals
+with the kept key: every destination there was fabricated and failed. So, on live, once L7's Run Now has
+reached at least one destination:
+
+1. The seal key kept, not made anew (P-new-3's `q`, read-only; the new image has `better-sqlite3` too):
+   `q "SELECT key, substr(value, 1, 9) AS form FROM settings WHERE key IN ('backup_seal_key', 'backup_seal_key_made_at')"`.
+   Expect one row, `backup_seal_key` reading `dfsealed:`, and **no** `backup_seal_key_made_at` row: a key
+   made anew records its moment there, the kept one does not
+   ([The Release That Makes the Signing Keys Anew](#the-release-that-makes-the-signing-keys-anew-card-2943)).
+   With L6's `Key change recorded` line saying "kept, sealed in place", backups made by 106ea45 still
+   verify.
+2. One copy sealed: download L7's copy (`dumpfire-backup-<time>-manual.db`) from a destination it reached,
+   or take Admin → Export Backup, save it in the repository folder on a workstation as `dumpfire-export.db`
+   and run check 22's command on it from that folder
+   ([The Update That Brings Migration 0055](#the-update-that-brings-migration-0055-secrets-out-of-backups-and-request-mail-to-the-accounts-address)).
+   Expect `sealed: true`, `seal key in it: false`, and every secret flag `false`. Delete the file afterwards.
+
+Neither restores anything: a restore is never tried on production to prove a seal.
 
 **L9, live checks** (the superadmin, one administrator, one ordinary test account, one existing API
 key, a test webhook to a receiver you control, your mailbox):
@@ -6814,7 +6869,7 @@ flowchart TD
     B2 --> B3["Decrypt the cold copy into it,<br/>no stray dumpfire-data volume"]
     B3 --> B4["dumpfire:rollback tagged dumpfire-dumpfire,<br/>old checkout: compose up -d --no-build"]
     B4 --> B5["nginx -s reload,<br/>tell everyone what was lost"]
-    B5 --> Fwd["Before coming forward again (either way):<br/>1. docker tag dumpfire:candidate dumpfire-dumpfire (or rebuild)<br/>2. a new cold copy (L3, L4)<br/>3. then chown 1000 (L4)"]
+    B5 --> Fwd["Before coming forward again (either way):<br/>1. docker tag dumpfire:candidate dumpfire-dumpfire (or rebuild)<br/>2. the old copy moved aside, a new cold copy (L3, L4),<br/>then the old one shredded<br/>3. then chown 1000 (L4)"]
 ```
 
 **Before L5** (L3 or L4 done, the new image never started): nothing on the volume changed but its
@@ -6831,9 +6886,24 @@ docker exec nginx-proxy nginx -s reload
 1. `docker tag dumpfire:candidate dumpfire-dumpfire` (or `docker compose -p dumpfire build` in the new
    checkout): the way back tagged `dumpfire-dumpfire` as 106ea45's image, and `up -d` in the new
    checkout would otherwise start 106ea45 again with the new compose file.
-2. A **new** cold copy (L3, then L4's copy and read-back): 106ea45 has written to the volume since the
-   last one, and the new copy is now the way back. Shred the old one once the new one has read back
-   (accepted risk R14), and give the new one the old one's name so that the commands above still hold.
+2. A **new** cold copy: 106ea45 has written to the volume since the last one, and the new copy is now
+   the way back. L4 writes it with `gpg --yes` to the old copy's name, which would overwrite the old copy
+   before the new one has read back, so move the old one aside first:
+
+   ```bash
+   sudo mv /root/dumpfire-cold/dumpfire-data-0060.tar.gpg /root/dumpfire-cold/dumpfire-data-0060.tar.gpg.old
+   ```
+
+   Then L3, then L4's copy and read-back as written: the new copy takes the old one's name, so the
+   commands above still hold. Only once L4's three lines are said (`cold copy written`, `cold copy reads
+   back to its end`, `cold copy matches the volume`), shred the old one (accepted risk R14):
+
+   ```bash
+   sudo shred -u /root/dumpfire-cold/dumpfire-data-0060.tar.gpg.old
+   ```
+
+   Until then the `.old` copy is still the way back; if the new one does not read back, take it again
+   as L4 says.
 3. Then the chown (L4): 106ea45 writes as root.
 
 **After L5 started, whatever happened**: the cold copy.
@@ -6857,8 +6927,9 @@ docker exec nginx-proxy nginx -s reload
   mount the key and join `dumpfire_edge` alone.
 - What is lost: every sign-in, invite, requester link, key, webhook change and upload made since the
   swap, and any authenticator set up since. Tell everyone.
-- **Before coming forward again**: `docker tag dumpfire:candidate dumpfire-dumpfire` (or rebuild), then a
-  new cold copy (L3, L4), then the chown (L4), as **Coming forward again** above says.
+- **Before coming forward again**: `docker tag dumpfire:candidate dumpfire-dumpfire` (or rebuild), then the
+  old copy moved aside and a new cold copy (L3, L4), the old one shredded once the new one reads back, then
+  the chown (L4), as **Coming forward again** above says.
 
 Keep `/home/itsupport/DumpFire-5478f58` and the `dumpfire:rollback` tag until the release is known good.
 Then retire the folder (rename it, do not delete it) and leave the tag, which the update script below
