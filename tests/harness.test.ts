@@ -289,6 +289,9 @@ const TEST_FILES = [
 	'upstream-api.test.ts',
 	// Milestone 22, slice S4b: the same on the screens (Stats panel, flow diagram, dashboard, All Tasks, goals, reports).
 	'upstream-screens.svelte.test.ts',
+	// Card 3074: the UI kit's tokens in app.css and its CSS kept to .ui- classes; and its components, mounted.
+	'ui-kit.test.ts',
+	'ui-kit.svelte.test.ts',
 	'uploads-sweep.test.ts',
 	'uploads.test.ts',
 	// Card 2920: uploads refused 507 when the uploads volume is nearly full, or its free space cannot be read.

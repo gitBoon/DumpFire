@@ -75,6 +75,56 @@
 	--font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
+/* === UI kit tokens (card 3074) ===
+   The semantic names of the shared kit in src/lib/components/ui/, each read
+   from a token above, so every theme block sets them by setting those: no
+   theme block names one. Nothing outside the kit reads them, so the board
+   view draws exactly as before. Every text colour on every kit surface,
+   and the focus ring and a field's edge, meet WCAG AA in all 17 themes
+   (tests/ui-kit.test.ts works each pair out). */
+:root {
+	--ui-background: var(--bg-deep);
+	--ui-surface: var(--bg-surface);
+	--ui-card: var(--bg-surface);
+	--ui-muted: var(--bg-hover);
+	--ui-foreground: var(--text-primary);
+	--ui-muted-foreground: var(--text-secondary);
+	--ui-subtle-foreground: var(--text-tertiary);
+	--ui-border: color-mix(in srgb, var(--text-primary) 12%, transparent);
+	--ui-input: color-mix(in srgb, var(--text-primary) 60%, transparent);
+	--ui-primary: color-mix(in srgb, var(--accent-indigo) 90%, #000);
+	--ui-primary-hover: color-mix(in srgb, var(--accent-indigo) 78%, #000);
+	--ui-primary-foreground: #fff;
+	--ui-ring: color-mix(in srgb, var(--accent-indigo) 40%, var(--text-primary));
+	--ui-destructive: var(--accent-rose);
+	--ui-success: var(--accent-emerald);
+	--ui-warning: var(--accent-amber);
+	--ui-info: var(--accent-cyan);
+	--ui-radius: 0.5rem;
+	--ui-radius-sm: 0.375rem;
+	--ui-radius-lg: 0.75rem;
+	--ui-shadow-sm: var(--shadow-sm);
+	--ui-shadow: var(--shadow-md);
+	--ui-content-max: 1600px;
+	--ui-reading-max: 72rem;
+	--ui-rail: 20rem;
+}
+
+/* The themes whose indigo is light: dark words on it, a lighter hover. On
+   :root[data-theme], which outranks the theme blocks below and is not one. */
+:root[data-theme="solarized"],
+:root[data-theme="cappuccino"],
+:root[data-theme="ocean"],
+:root[data-theme="sunset"],
+:root[data-theme="nord"],
+:root[data-theme="dracula"],
+:root[data-theme="monokai"],
+:root[data-theme="hacker"] {
+	--ui-primary: var(--accent-indigo);
+	--ui-primary-hover: color-mix(in srgb, var(--accent-indigo) 88%, #fff);
+	--ui-primary-foreground: #0b0b14;
+}
+
 /* === Dark Theme === */
 html[data-theme="dark"] {
 	--bg-deep: #06060f;

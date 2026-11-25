@@ -1,0 +1,130 @@
+/*
+ * The UI kit's form fields (card 3074): classes, so a page's own <input>,
+ * <textarea> and <select>, with their ids, names and bindings, take the
+ * kit's look by adding one. Imported by PageShell, so every page in the
+ * shell has them. Every selector here starts with a .ui- class: nothing
+ * else on a page, the board view's fields among them, is touched.
+ *
+ * Each beats app.css's `input, textarea` and `input:focus` rules on
+ * specificity (one class, and a class with a pseudo-class).
+ */
+
+.ui-label {
+	display: inline-block;
+	font-size: 0.875rem;
+	font-weight: 500;
+	line-height: 1.25;
+	color: var(--ui-foreground);
+}
+
+.ui-hint {
+	font-size: 0.8125rem;
+	line-height: 1.4;
+	color: var(--ui-muted-foreground);
+}
+
+.ui-input,
+.ui-textarea,
+.ui-select {
+	display: block;
+	width: 100%;
+	min-width: 0;
+	border: 1px solid var(--ui-input);
+	border-radius: var(--ui-radius);
+	background: var(--ui-background);
+	color: var(--ui-foreground);
+	font-family: var(--font-family);
+	font-size: 0.875rem;
+	line-height: 1.5;
+	box-shadow: var(--ui-shadow-sm);
+	transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.ui-input,
+.ui-select {
+	height: 2.5rem;
+	padding: 0 0.75rem;
+}
+
+.ui-textarea {
+	min-height: 5rem;
+	padding: 0.5rem 0.75rem;
+	resize: vertical;
+}
+
+.ui-select {
+	appearance: none;
+	-webkit-appearance: none;
+	padding-right: 2.25rem;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right 0.75rem center;
+	background-size: 1rem;
+	cursor: pointer;
+}
+
+.ui-input::placeholder,
+.ui-textarea::placeholder {
+	color: var(--ui-muted-foreground);
+}
+
+.ui-input:hover,
+.ui-textarea:hover,
+.ui-select:hover {
+	border-color: color-mix(in srgb, var(--ui-foreground) 75%, transparent);
+}
+
+/* app.css's own glow on a focused input is not drawn: the ring is the kit's. */
+.ui-input:focus,
+.ui-textarea:focus,
+.ui-select:focus {
+	border-color: var(--ui-input);
+	box-shadow: var(--ui-shadow-sm);
+}
+
+.ui-input:focus-visible,
+.ui-textarea:focus-visible,
+.ui-select:focus-visible {
+	outline: 2px solid var(--ui-ring);
+	outline-offset: 2px;
+}
+
+.ui-input[aria-invalid='true'],
+.ui-textarea[aria-invalid='true'],
+.ui-select[aria-invalid='true'] {
+	border-color: var(--ui-destructive);
+}
+
+.ui-input[aria-invalid='true']:focus,
+.ui-textarea[aria-invalid='true']:focus,
+.ui-select[aria-invalid='true']:focus {
+	border-color: var(--ui-destructive);
+}
+
+.ui-input:disabled,
+.ui-textarea:disabled,
+.ui-select:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* A touch screen: a phone zooms into a field whose text is under 16px, and a finger needs 44px. */
+@media (pointer: coarse) {
+	.ui-input,
+	.ui-textarea,
+	.ui-select {
+		font-size: 16px;
+	}
+	.ui-input,
+	.ui-select {
+		height: 2.75rem;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.ui-input,
+	.ui-textarea,
+	.ui-select {
+		transition: none;
+	}
+}
