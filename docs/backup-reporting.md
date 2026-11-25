@@ -1,10 +1,14 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.70
+version: 1.72
 status: As-Built
-date: 2026-11-21
+date: 2026-11-25
 tags:
+  - card-3080
+  - backup-retry
+  - resumable-upload
+  - plain-failures
   - card-3004
   - card-3031
   - card-3033
@@ -58,7 +62,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "A restore never sends the next backup to a destination removed here: the record, the restore's outbound steps, a backup_config that is not text, and outboundKept (card 3004, card 3031). What a restore brings in of decisions and its counts: places removed, made informed and accounts taken off, deciders cleared, decisions ended, and an unsealed backup's decisions kept as here or brought in inert (card 3033). A restore never brings back board, team or person access removed, lowered or made private here: access_changes carried from a sealed backup only, an unsealed backup's same-here accounts given exactly this server's access, the record's caps with the guess only where not held here, and the counts accessKept and accessAsHere (card 3002). An unsealed import restored as it is keeping this server's mail From (card 3029), Scheduled backup system with multi-destination support, an unsealed import holding the requester mail of requests it did not hold as they are and marking left the people it did not hold (holdUnsealedRequestMail, switchOffUnsealedPeople, card 3020, and its L9 cost), an unsealed import holding every webhook with an address, pausing schedules and keeping emails, choices and notifyEmail as here (unsealedReach, card 3012), the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "Card 3080's fix pass: a Drive chunk answered 308 that holds nothing more is a stall, resumed and capped; Run Now's first pass ends its waits 45 s after the start; the settings asked before every Drive request; Keep Last asks the hold first; one S3 attempt a try. A destination tried up to three times after a failure that passes, Google Drive uploaded by a resumable session in 8 MiB chunks, Run Now answering after the first tries, and every failure one plain, secret-masked sentence (card 3080). A restore never sends the next backup to a destination removed here: the record, the restore's outbound steps, a backup_config that is not text, and outboundKept (card 3004, card 3031). What a restore brings in of decisions and its counts: places removed, made informed and accounts taken off, deciders cleared, decisions ended, and an unsealed backup's decisions kept as here or brought in inert (card 3033). A restore never brings back board, team or person access removed, lowered or made private here: access_changes carried from a sealed backup only, an unsealed backup's same-here accounts given exactly this server's access, the record's caps with the guess only where not held here, and the counts accessKept and accessAsHere (card 3002). An unsealed import restored as it is keeping this server's mail From (card 3029), Scheduled backup system with multi-destination support, an unsealed import holding the requester mail of requests it did not hold as they are and marking left the people it did not hold (holdUnsealedRequestMail, switchOffUnsealedPeople, card 3020, and its L9 cost), an unsealed import holding every webhook with an address, pausing schedules and keeping emails, choices and notifyEmail as here (unsealedReach, card 3012), the installation id in every backup and an unsealed import taking no password or key for accounts not the same here and holding its mail, App URL and destinations (card 3009), a restore that never brings back a password replaced here and counts what it kept out of use (card 2997), retention problems (a listing or delete that failed or took over 60 seconds) on the run's Backup History row, its answer and its mail, and OneDrive addressed by Graph's app-only rules through a user or drive ID (card 2941), a Google Drive service account that signs in with a JWT built from its key file alone, its JSON read by one rule at the save, at every start and in a restore, and a Test that runs only a saved destination (card 2939), a restore that keeps this server's disabled accounts disabled (card 2671), a restore that keeps this server's system log and brings none of the backup's lines in (card 2899), a restore that switches off for good each restored webhook whose setter cannot open its board, a backup made before migration 0071 included, and keeps this server's webhook_keys_recorded_at (card 2752), what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -80,7 +84,7 @@ flowchart TD
 
     Upload --> SFTP["SFTP Server\nssh2-sftp-client"]
     Upload --> S3["Amazon S3\nAWS SDK"]
-    Upload --> GDrive["Google Drive\ngoogleapis"]
+    Upload --> GDrive["Google Drive\nresumable session (card 3080)"]
     Upload --> OneDrive["OneDrive\nMicrosoft Graph"]
 
     SFTP --> LogResult["Log to backup_log"]
@@ -89,6 +93,8 @@ flowchart TD
     OneDrive --> LogResult
 
     LogResult --> Retention["Retention cleanup\nDelete oldest files of this run's kind\n(scheduled, or Run Now)"]
+    Upload -->|"a failure that passes\n(card 3080)"| Again["Tried again: 30 s, then 60 s\n(or Retry-After, up to 2 min)"]
+    Again --> Upload
     LogResult -->|"Failed"| NotifyEmail["Send failure email\nif configured"]
     Retention -->|"not reached, listing or delete failed,\na call past 60 s, 5 min in all, or held\n(card 2941)"| Problem["Problem on the success row,\nthe answer's note, and the mail\n(Needs Attention)"]
     Problem --> NotifyEmail
@@ -717,7 +723,9 @@ time to an hour later than the server's clock (`scheduledRunSince()`). So:
   time made is ordinary after a restart.
 
 **A run that failed at every destination is tried again 15 minutes later, at most three
-times** (card 2415). For every schedule (`BACKUP_RETRY_DELAY`, `BACKUP_RETRIES`). It waited for the
+times** (card 2415). Since card 3080 a run counts as failed at a destination only after that
+destination's own tries within the run ([A Destination Tried Again](#a-destination-tried-again-card-3080)):
+up to three, about 30 s and 60 s apart, for a failure that passes. This run-level try is unchanged. For every schedule (`BACKUP_RETRY_DELAY`, `BACKUP_RETRIES`). It waited for the
 schedule's next run, an hour to a week, while a restart tried again at once. A run whose copy of
 the database could not be made fails each destination it was to try (card 2416, [A Copy That
 Cannot Be Made](#a-copy-that-cannot-be-made)), so it counts as failed everywhere, and not as
@@ -1244,7 +1252,15 @@ flowchart LR
 ```
 
 Each destination implements three operations:
-- **upload** — Push a backup buffer with a timestamped filename
+- **upload** — Push a backup buffer with a timestamped filename: one call for SFTP (`put`), S3
+  (one `PutObject`) and OneDrive (one `PUT`, with Graph's own retries off,
+  `RetryHandlerOptions(0, 0)`, beside the redirect option, card 3080); Google Drive through a
+  resumable session ([Google Drive: a Resumable Upload](#google-drive-a-resumable-upload-card-3080)).
+  `upload(data, filename, guard)` takes the run's hold check, which Google Drive asks before each
+  request. SFTP, S3 and OneDrive also answer `uploadedAlready(filename, size)` and
+  `overwritesByName`, for a try again. S3's upload and check make one SDK attempt each (`maxAttempts: 1`,
+  card 3080's fix pass, L), since the run's own tries wait and look for the copy first; Keep Last
+  and Test keep the SDK's three
 - **list** — List existing backups for retention cleanup: every provider keeps only names
   `COPY_NAME` matches, `dumpfire-backup-<time to the second or millisecond>[-manual].db`, the
   names `copyName` gives (card 2941, R5); a listing that fails throws, never an empty folder.
@@ -1280,7 +1296,7 @@ flowchart TD
     Addr -->|"no drive"| NotSet["ONEDRIVE_DRIVE_NOT_SET\n(no token asked)"]
     Addr -->|"drive or folder refused"| Refused["the refusal words\n(no token asked)"]
     Addr -->|"ok"| Token["ClientSecretCredential.getToken"]
-    Token --> Graph["Graph request\nRedirectHandlerOptions(0, never)"]
+    Token --> Graph["Graph request\nRedirectHandlerOptions(0, never)\n(upload and check: RetryHandlerOptions(0, 0) too)"]
     Graph -->|"list: @odata.nextLink"| Pin{"https, graph.microsoft.com,\nno port, no user info,\n/v1.0/, no backslash?"}
     Pin -->|"yes, page ≤ 100"| Graph
     Pin -->|"no"| Stop["throw: listing stopped"]
@@ -1300,7 +1316,10 @@ flowchart TD
   the first `:` or `/`, so `https://graph.microsoft.com:x@elsewhere/` would be given its bearer
   token. No request follows a redirect. Any failure throws: it answered an empty folder, and
   retention removed nothing with nothing said. The sign-in's own failure (an `AADSTS…` error
-  from `ClientSecretCredential`) is capped at 300 characters as Graph's words are (C4).
+  from `ClientSecretCredential`) is capped at 300 characters as Graph's words are (C4). Since card
+  3080 the error thrown keeps Graph's `statusCode`, `code`, `headers` (and so its Retry-After),
+  `requestId` and `name` beside the capped message, so the run can tell a failure that passes; it
+  was a new `Error` with the words alone.
 - **Test** reads the drive (`GET {base}?$select=id,driveType,owner`), then the folder: found
   ("Connected to <owner>'s OneDrive (drive business); folder "…" found"), not there yet ("… will be
   made by the first backup"), or a file (a failure). It makes nothing. Graph's words are capped at
@@ -1436,6 +1455,10 @@ sequenceDiagram
   either sign-in method, and says when it cannot reach it; with no Folder ID it answers as
   before.
 - A failed Connect is one `ERROR` line, `Google Drive Connect failed for destination "…": …`.
+  Since card 3080 its text, the `WARN` line of a folder that cannot be reached and the answers are
+  one plain sentence (`plainFailure`, `what: 'connect'`), masked with the destination as stored,
+  the client secret, the tokens Google gave and the code; the `ERROR` line's meta is the facts
+  alone (`logFacts`). A Connect is never tried again.
 - Every line of the Connect is filed under the account that pressed it (`user_id`), and writes
   the destination's name as the backup settings' lines do (`quotedName()`, each `\` and `"`
   escaped): the refusal of a state (card 2251), the folder not reached, the made folder not
@@ -1740,8 +1763,21 @@ deletes failed after a good upload showed ✅, sent no mail and filled unnoticed
 - **Held while older copies are removed:** the destination is asked again before each delete
   (`destinationHeldNow`), and a hold written meanwhile stops it: `Keep Last was not fully applied:
   <n> of <m> older copies were not removed. <the held sentence>` (C3).
-- **The far end's message is capped at 300 characters** (`cappedMessage`), and escaped where it
-  is put in the mail.
+- **Keep Last asks the hold first** (card 3080's fix pass, D): `cleanupRetention` asks
+  `destinationHeldWordsNow` before the destination is made or listed, so a hold written during the
+  upload lists nothing (`Keep Last was not applied: <held words>`, on the row and the note, not the
+  mail).
+- **The far end's message is one plain sentence** (card 3080, `plainFailure`, `what` `listing` or
+  `delete`): `Google Drive answered 502, a temporary error at Google Drive` in place of Google's
+  web page, at most 300 characters, and escaped where it is put in the mail. Nothing of Keep Last
+  is tried again. Its `ERROR` lines are `Retention cleanup failed for <name>: <sentence>.` and
+  `Retention cleanup: failed to delete <file>: <sentence>.`, their meta the facts alone
+  (`{ status, code, reason, requestId, tries }`); before, the error itself was the meta, its
+  message and stack. The far end's own words go to one `DEBUG` line (`rawForLog`), masked and
+  capped at 2,000 characters, which is written only at `LOG_LEVEL=DEBUG`.
+- **A later try's note** (card 3080): where the upload needed a later try, its ⚠️ note is on the
+  row from the insert, and a Keep Last problem is written before it, `<problem>. <note>`; the
+  answer's `note` lists the problem first too.
 - **The run's success row is inserted where it always was**, before retention, since the
   scheduler counts from its `created_at`; a problem then sets its `error`
   (`UPDATE … SET error = ? WHERE id = ?`, by `logBackup`'s `lastInsertRowid`). The status stays
@@ -1928,6 +1964,181 @@ flowchart TD
     Ret --> Ok["result: success<br/>(no mail, no try again)"]
 ```
 
+### A Destination Tried Again (Card 3080)
+
+On 2026-11-25 live's hourly Google Drive backups of about 33 MB, which had taken 3 seconds every
+hour, failed twice: Google gave up after 32 and 22 seconds with its "502, please try again in 30
+seconds" page. DumpFire tried once and put the whole page into the mail, Backup History and the
+log. Since card 3080 `runBackup()` tries each destination **up to three times** when it fails in a
+way that passes, and says every failure in one sentence.
+
+**What passes** (`failureOf()` in `src/lib/server/backup-failure.ts`), read from each library's
+structured fields, then from a few library phrases, never from other message text:
+
+| Passes | Does not pass |
+|---|---|
+| HTTP 408, 429, 500, 502, 503, 504; Drive 403 `rateLimitExceeded` or `userRateLimitExceeded`; S3 400 `RequestTimeout` | Every other status: 401, 403 (a full drive, the daily or sharing limits), 404, 413, 501, 505, 507 |
+| `ECONNREFUSED`; `ENETUNREACH`, `EHOSTUNREACH`; Graph's fetch that failed before any answer (`statusCode` -1, `code` `TypeError`) | A refused sign-in: SFTP's `All configured authentication methods failed`, Drive's `invalid_grant`, any 401, `ClientSecretCredential`'s `AuthenticationError` |
+| `ECONNRESET`, `EPIPE`, `ECONNABORTED`, `ERR_STREAM_PREMATURE_CLOSE`, `UND_ERR_SOCKET`, SFTP `ERR_NOT_CONNECTED`, SFTP's `Unexpected end event` and `Unexpected close event` | `ENOTFOUND` |
+| `ETIMEDOUT`, a `TimeoutError`, undici's three timeouts, SFTP's handshake timeout and `No response from server`; `EAI_AGAIN` | DumpFire's own errors: a host key refused or not confirmed, credentials not entered, a hold, a change, a check that did not answer |
+
+**How** (section 4.3 of the plan):
+
+```mermaid
+flowchart TD
+    A["Run starts: copy made"] --> P1["Pass 1, each destination in order"]
+    P1 --> H0{"Held? (sync, then nothing awaited)"}
+    H0 -->|held| HF["failed(): held words"]
+    H0 -->|no| U1["Try 1: upload(buffer, filename, guard)"]
+    U1 -->|ok| S1["Success row"]
+    U1 -->|permanent| F1["failed(): sentence"]
+    U1 -->|temporary| Q["Queued for pass 2"]
+    P1 --> RN{"Run Now?"}
+    RN -->|yes| ANS["Answer now: queued ones<br/>failed + retrying: true"]
+    RN -->|no| P2
+    ANS -.->|background, same run| P2
+    P2["Pass 2, each queued destination"] --> W["Wait 30 s / 60 s or Retry-After (1 s to 120 s)"]
+    W --> C{"Settings entry unchanged<br/>and notTried null? (R-C)"}
+    C -->|changed| CF["failed(): changed while waiting"]
+    C -->|same| H1{"Held? (sync)"}
+    H1 -->|held| HF2["failed(): held while waiting"]
+    H1 -->|no| K{"uploadedAlready? (SFTP, S3, OneDrive)<br/>in RETENTION_CALL_MS"}
+    K -->|found whole| FW["Success; ⚠️ arrived-in-full note"]
+    K -->|"not there, failed, no answer"| H2{"Held? (sync)"}
+    H2 -->|held| HF2
+    H2 -->|no| U2["Try n: upload(...)"]
+    U2 -->|ok| S2["Success; ⚠️ nth-try note"]
+    U2 -->|temporary, n < 3| W
+    U2 -->|"permanent, or n = 3"| F2["failed(): sentence; tried n times"]
+    P2 --> M["End of run: one failure mail"]
+```
+
+- **Two passes**: every destination's first try in order, then the tries again of those that
+  failed in a passing way, in order. One destination object serves every try of a destination in
+  the run, so Google Drive's session survives from one try to the next.
+- **The waits** (`UPLOAD_RETRY_WAITS_MS`): 30 s after the 1st try, 60 s after the 2nd. A
+  Retry-After of a whole number of seconds from 1 replaces it, capped at 120 s
+  (`RETRY_AFTER_CAP_MS`); a date, 0, a negative number or words are ignored. Each wait is on the
+  global `setTimeout`. Before each wait, one `WARN`: `Backup try 1 of 3 failed: <name> → <sentence>.
+  Trying again in 30 s.`
+- **The settings, read again** before each try again (`getBackupConfig()`): a destination no
+  longer there, changed in any field (secrets opened, the host key, the service account JSON, the
+  refresh token and `unopenable` included), or one `notTried()` would refuse now, is not tried
+  again: `<last error> on the 1st try; not tried again: the destination was removed or changed
+  meanwhile.` The run never adopts a changed entry.
+- **The hold** (card 2922) is asked synchronously immediately before every call that reaches the
+  destination: before the 1st try, before the check, before each upload after it, and inside
+  Google Drive's session before every request. A hold written while it waited: `<last error> on
+  the 1st try; not tried again: <the held words>`; one written between a session's requests in the
+  1st try: the held words alone, as a hold before it.
+- **The check** (`uploadedAlready(filename, size)`, SFTP, S3, OneDrive), within
+  `RETENTION_CALL_MS` (60 s): SFTP `stat`s the file with the host key pinned; S3 lists the exact
+  key as its prefix with `MaxKeys` 1 (no `HeadObject`, and Keep Last's own list untouched); OneDrive
+  asks the item's `size,file` with Graph's retries off. Found at the full size: a success with
+  ⚠️ `S3 answered 503, but the copy had arrived in full; it was not sent again`. Not there, a failure
+  or no answer: the copy is sent again, which replaces any shorter file by name. A name DumpFire
+  does not make is refused. Google Drive has no check: its session's own status says.
+- **Notes**: a success on a later try is ⚠️ `Uploaded on the 2nd try, after Google Drive answered
+  502` (`… on the 3rd try, after Google Drive answered 503 on the 2nd` after several), written on
+  the row at the insert; Keep Last's problem, where there is one, is written before it. A resume
+  within one Google Drive try is said on the success line alone. **A recovery sends no mail.**
+- **A failure** is `failed()` with the sentence and a full stop: `Google Drive answered 502, a
+  temporary error at Google Drive; tried 3 times.` (`, resuming 4 times in all` where a Drive
+  session resumed). The `ERROR` line `Backup failed: <name> → <sentence>` carries the facts as its
+  meta, `{ status, code, reason, requestId, tries }`, never the error, its config, headers or
+  stack; one `DEBUG` line carries the far end's message, status, code, name and request id, masked
+  and capped at 2,000 characters.
+- **Time on the row** is the whole of it, waits included.
+- **A scheduled run awaits both passes**, as it awaited the whole run. Worst case per destination:
+  two waits of at most 120 s and two more tries; an hourly schedule's next run is still due after
+  it. The run-level try 15 minutes later (card 2415) is unchanged.
+
+**The sentence** (`plainFailure()`, the first rule that fits, with no full stop; callers add it):
+DumpFire's own words kept whole (a host key refused, credentials not entered); a refused sign-in
+in its own sentence (`Google Drive refused the sign-in: the connection has expired or was
+withdrawn; press Connect on the destination again`); a passing status, `S3 answered 503
+(SlowDown), a temporary error at Amazon S3`; one that does not pass, `Google Drive refused the
+upload with 403: The user's Drive storage quota has been exceeded` (the far end's reason kept to
+200 characters, cut with `…`); a network fault by its group, `The connection to the SFTP server
+at nas:22 dropped during the upload, a temporary network error`; anything else its cleaned words.
+**Cleaned** means: HTML anywhere in the text, in any case, drops the whole text; a JSON body's
+`message`, `error_description` or `error` is read; tags are removed and white space run together;
+and every secret is masked (`masked()`): each stored secret of the destination of 8 characters or
+more (as it is, URL-encoded and JSON-escaped, a service account's private key included), and the
+patterns `Bearer …`, `ya29.…`, `1//…`, a JWT, `upload_id=…`, `X-Amz-Signature=…`,
+`X-Amz-Credential=…`, `access_token=…`, `X-Amz-Security-Token=…`, `Signature=…`, `sig=…`,
+`tempauth=…` (the fix pass, H), a PEM block and a password in a URL. The text is masked before its
+tags are removed and again after (F), so a secret holding `<…>` is masked whole. Azure AD's
+`AuthenticationError` answering 429 or a 5xx passes (Microsoft's sign-in busy, not refusing; I);
+any other refused sign-in does not. An SFTP password under 8 characters is
+not masked by its value. A Test and a Connect say their failures in the same words, at once, and
+are never tried again.
+
+### Google Drive: a Resumable Upload (Card 3080)
+
+`files.create` with media is always one multipart request (`googleapis-common` sends
+`uploadType=multipart` whenever there is metadata), and gaxios does not retry a POST: a 502 after
+30 seconds cost the whole copy. `GDriveDestination.upload()` now opens a **resumable session**
+through the signed-in auth client's own `request()` (the OAuth2 client or the service account's
+JWT, from `getAuth()`, which `getDrive()` now builds on), every request with `retry: false`.
+
+```mermaid
+sequenceDiagram
+    participant D as GDriveDestination
+    participant G as Google Drive
+    Note over D: guard() before every request
+    D->>G: POST upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,size,md5Checksum<br/>JSON {name, parents:[folderId]}, X-Upload-Content-Type, X-Upload-Content-Length
+    G-->>D: 200, Location: session URI (held in memory only)
+    loop each 8 MiB chunk
+        D->>G: PUT session, Content-Range bytes a-b/total
+        G-->>D: 308 Range bytes=0-n (progress) or 200/201 (complete)
+    end
+    Note over D,G: a chunk answered 5xx, or the connection dropped
+    D->>G: PUT session, empty, Content-Range bytes */total
+    alt 200 or 201
+        G-->>D: complete: the copy arrived in full
+    else 308 with Range bytes=0-n
+        G-->>D: resume from n+1
+    else 308 without Range
+        G-->>D: resume from 0
+    else 404 or 410
+        G-->>D: session gone: new session from 0, same try
+    end
+```
+
+- **Chunks** of 8 MiB (`DRIVE_CHUNK`, 32 × 256 KiB); the next starts after the byte Google's
+  `Range` confirms. The session's address must be under
+  `https://www.googleapis.com/upload/drive/v3/files`, or nothing is sent to it
+  (`DriveSessionElsewhere`, not tried again; the address is said nowhere).
+- **A chunk answered 308 that holds nothing past where it began is a stall** (the fix pass, A,
+  `DriveStalled`): resumed as a fault that passes, with the same waits and the same cap, so a
+  session answering 308 with no or the same `Range` never loops without a wait; at the cap the try
+  ends as passing and the session is kept.
+- **Complete** (2xx): the answer's `size` and `md5Checksum` must be the copy's, else DumpFire's own
+  `Google Drive stored a file of a different size or content`, not tried again. An answer naming the
+  file's `id` but not its size or checksum has them read by id (`files.get`, `size,md5Checksum`,
+  the hold asked first; K). The session is kept until the file is checked.
+- **The hold and the settings** are asked before every request (`guard`, the fix pass, C): a
+  destination held, removed, changed in any field or one `notTried` would refuse now, is sent
+  nothing more; in the 1st try its row says `The destination was removed or changed meanwhile.`
+  (or the held words).
+- **A resume** follows a chunk answered with a passing fault, or a session gone (404, 410): a wait
+  of 1, 2, 4, 8, then 16 s (`DRIVE_RESUME_WAITS_MS`, or a Retry-After up to 120 s), then the
+  session's status. **A resume is not a try.** At most 5 resumes in a row without progress
+  (`DRIVE_RESUMES`; Google holding more bytes resets the count): the 5th ends the try as a failure
+  that passes, with its fault. The plan's "at most 31 s" of waits a try is superseded: a stall
+  counts as a resume (A), a Retry-After replaces the 1 to 16 s waits (up to 120 s each), and a ▶
+  Run Now's first try stops waiting at its deadline (B). The success line's "at x of y MB" is what
+  Google confirmed at the resume's status (M). A fault that does not pass ends the try at
+  once; a POST that fails leaves nothing at Google, and the next try opens a session.
+- **Across tries** the session is kept on the destination object for the run: a later try begins
+  with its status, not a POST, so a try that ended without knowing whether its last chunk landed
+  never makes a second file. The address is held in memory only, never logged; its `upload_id` is
+  masked if a library's words carry it.
+- **The success line** says a resume: `Backup succeeded: Drive → <file> (…) after resuming twice
+  (Google Drive answered 502 at 24.0 of 32.8 MB)`. No ⚠️ for a resume within one try.
+- Folder making (`makeDumpfireFolder`), the listing and the deletes keep `drive.files.*`.
+
 ### The Run Now Toast
 
 What ▶ Run Now's toast says (card 2417, 2026-10-22; `runManualBackup` in
@@ -1939,17 +2150,37 @@ What ▶ Run Now's toast says (card 2417, 2026-10-22; `runManualBackup` in
 | every one a success, some with a `note` | the same, with `<destination>: <note>` for each before the rule, as a warning that stays until closed |
 | any failed | `F of N backup(s) failed: <destination>: <reason>; <destination>: <reason>.`, any notes after it, as an error that stays until closed |
 
-It said only `F of N backup(s) failed`, the reasons in Backup History alone. A reason is whatever
-the destination's server answered and the toast is 360 px wide, so each name and reason is put on
+It said only `F of N backup(s) failed`, the reasons in Backup History alone. A reason is one plain
+sentence (card 3080) and the toast is 360 px wide, so each name and reason is put on
 one line (white space run together), a name cut to 60 characters and a reason to 160 with `…`, and
 at most three destinations are named, the rest as `and N more (see Backup History)`. The toast
 draws its message as text, so markup in a name or a reason is shown as written, never drawn.
+
+**Run Now answers after each destination's first try** (card 3080, R-D). Live's nginx waits 60 s
+for an answer (no `proxy_read_timeout` in DumpFire's server block), so `runBackup(…, 'manual')`
+resolves after pass 1. A destination to be tried again is `status: 'failed'`, `retrying: true`,
+with the message `Try 1 of 3 failed, trying again in 30 s: <sentence>. Backup History will show how
+it ends.`, which the toast shows as it shows any failure (the "trying again" part leads, inside its
+160 characters). The tries again run in the background in the same run, their rows and the run's
+one mail following when they end; a rejection there is caught and logged as an `ERROR` with the
+facts alone, and the mail is sent once whatever happened (the fix pass, G). A try again that throws
+a fault of DumpFire's own is written as that destination's failed row, and the next destination is
+still tried.
+
+**The first pass has a deadline** (the fix pass, B): `RUN_NOW_FIRST_PASS_MS`, 45 s from the run's
+start, inside nginx's 60. A Google Drive try that resumes stops where its next wait would cross it
+and ends with its fault, which passes, the session kept; the try again in the background begins
+with the session's status and sends only what Google does not hold, so no second file is made. A
+first try's single request that itself takes past 60 s (a large copy to a slow destination) still
+meets the proxy's limit. A scheduled run has no deadline. A process
+stopped meanwhile loses the remaining tries, and that destination has no row for the run. The
+answer keeps its shape: `retrying` is the one optional field added. No Svelte file changed.
 
 ### Failure Notifications
 
 Only the superadmin switches the failure mail off or changes who receives it, since card 2408 (2026-10-22); switching it on is every administrator's (see Backup Configuration above).
 
-If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is sent to the configured address with the error details, a destination not tried for want of its credentials included. The destination's name and type and the error text, which is whatever the destination's server answered, are escaped where they are put into the mail, so markup in them is shown as text and never drawn (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
+If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is sent to the configured address with the error details, a destination not tried for want of its credentials included. The error text is one plain sentence since card 3080 (`plainFailure`: no HTML page, every secret masked, at most 300 characters), not whatever the destination's server answered. A destination that recovered on a later try, or whose copy was found whole, is in no mail. The destination's name and type and the error text are escaped where they are put into the mail, so markup in them is shown as text and never drawn (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
 
 The mail says which kind of run failed (card 2413, 2026-10-22): **Scheduled Backup Failed**, "A scheduled backup to *name* (*type*) failed." for a scheduled run, and **Run Now Backup Failed**, "A backup made by ▶ Run Now to *name* (*type*) failed." for a Run Now. It said "scheduled" for both. The subject, `⚠️ DumpFire Backup Failed`, is the same for both.
 
@@ -2494,10 +2725,11 @@ Individual card reports can be generated for completion notifications. These inc
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `src/lib/server/backup.ts` | ~570 | Backup scheduling, data generation (`withoutSecrets()`: no session, no unused invite, no key remembered browsers are signed with, no request link or form key, no secret, and sealed), upload orchestration (`runBackup()`, which does not try a destination without its credentials) |
+| `src/lib/server/backup.ts` | ~1,460 | Backup scheduling, data generation (`withoutSecrets()`: no session, no unused invite, no key remembered browsers are signed with, no request link or form key, no secret, and sealed), upload orchestration (`runBackup()`, which does not try a destination without its credentials, and since card 3080 tries one again in two passes) |
 | `src/lib/server/backup-secrets.ts` | ~1,400 | What a backup leaves out because it is a secret (card 2169), and what the admin routes mask and keep (cards 2187 and 2190: `SECRET_MASK`, `maskDestination()`, `keepMaskedSecrets()`, `keepMailPassword()`): `clearSecrets()`, `readSecretsHere()` and `fillSecretGaps()` for a restore, `credentialsMissing()`, `secretsToEnter()` for the start-up line, and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
 | `src/lib/server/image-retention.ts` | ~230 | Image retention (card 2754): `retentionDays()` reads `IMAGE_RETENTION_DAYS`, `expireClosedCardImages()` moves at most `MOST_EXPIRED_A_RUN` (200) images of closed cards to the trash with an `attachment_expired` entry by `RETENTION_ACTOR` (DumpFire), `isExpiredCard()` for the v1 upload's `409`; called first by `sweepUploads()` in `uploads-sweep.ts` |
-| `src/lib/server/backup-destinations.ts` | ~1,100 | SFTP, S3, Google Drive, OneDrive destination implementations; `readDestination()`; `reachFolder()` and `makeDumpfireFolder()` for Google Drive (card 2188); the SFTP host key's verifier and pin, the first look, and `HostKeyNotConfirmed`, `HostKeyMismatch`, `HostKeyTypeNotOffered` and `HostKeySignatureFailed` (card 2250); `COPY_NAME`, `cappedMessage`, Google Drive's delete by listed ID, OneDrive by Graph's app-only addresses and `legacyUnmoved` (card 2941) |
+| `src/lib/server/backup-failure.ts` | ~520 | Card 3080: `failureOf()` (whether a failure passes, and its status, code, reason, request id and Retry-After), `plainFailure()` and `briefFailure()` (the one sentence), `masked()`, `logFacts()` (the ERROR meta), `rawForLog()` (the DEBUG meta), `retryWaitMs()`, `withStop()`; `HeldMeanwhile`, `ChangedMeanwhile`; `UPLOAD_TRIES`, `UPLOAD_RETRY_WAITS_MS`, `RETRY_AFTER_CAP_MS`, `REASON_MAX`, `RAW_LOG_MAX`. Imports neither `backup.ts` nor `backup-destinations.ts` |
+| `src/lib/server/backup-destinations.ts` | ~1,430 | SFTP, S3, Google Drive, OneDrive destination implementations; `readDestination()`; `reachFolder()` and `makeDumpfireFolder()` for Google Drive (card 2188); the SFTP host key's verifier and pin, the first look, and `HostKeyNotConfirmed`, `HostKeyMismatch`, `HostKeyTypeNotOffered` and `HostKeySignatureFailed` (card 2250); `COPY_NAME`, `cappedMessage`, Google Drive's delete by listed ID, OneDrive by Graph's app-only addresses and `legacyUnmoved` (card 2941); Google Drive's resumable session (`DRIVE_CHUNK`, `DRIVE_RESUMES`, `DriveStoredOtherwise`, `getAuth()`), `uploadedAlready()` for SFTP, S3 and OneDrive, and OneDrive's retries off (card 3080) |
 | `src/lib/server/onedrive-address.ts` | ~150 | A leaf (card 2941): a OneDrive `drive`'s three forms (`driveForm`, `savedDrive`, `driveSet`), the folder path rule (`folderSegments`), the Graph addresses (`driveBase`, `itemPath`), and the next-page pin (`nextPageUrl`), asked at save and at use |
 | `src/lib/server/ssh-host-key.ts` | ~160 | An SFTP destination's host key, read, stored and checked (card 2250): `readHostKey()`, `confirmedHostKey()`, `fingerprintOf()`, `typeOf()`, `pinFor()`, `serverKeyFile()`, `HOST_KEY_NOT_CONFIRMED` and `HOST_KEY_REFUSAL`; it connects to nothing |
 | `src/lib/drive-scope.ts` | ~40 | `DRIVE_FILE_SCOPE`, `driveScopeIsNarrow()` and `dumpfireFolderName()`, read by the server and the admin page (card 2188) |

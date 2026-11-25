@@ -34,6 +34,7 @@ import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
 import { whilePasswordHolds } from '$lib/server/auth';
 import { destinationHeldNow, destinationHeldWordsNow, getBackupConfig, saveBackupConfig } from '$lib/server/backup';
 import { makeDumpfireFolder, reachFolder } from '$lib/server/backup-destinations';
+import { logFacts, plainFailure, withStop } from '$lib/server/backup-failure';
 import { quotedName } from '$lib/server/backup-secrets';
 import { afterCommit } from '$lib/server/db/transaction';
 import { startConnect, takeConnect } from '$lib/server/gdrive-connect';
@@ -243,6 +244,10 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	const connectedBefore = !!dest.refreshToken;
 
 	const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, REDIRECT_URI);
+	/** The tokens Google gave, once it has: masked in any failure said (card 3080). */
+	let given: { refresh_token?: string | null; access_token?: string | null; id_token?: string | null } = {};
+	/** What a failure is masked with (card 3080, R-I): the destination as stored, the client secret used, and the tokens. */
+	const maskWith = () => [dest, { type: 'gdrive', clientSecret }, given.refresh_token ?? '', given.access_token ?? '', given.id_token ?? '', code];
 	/** The folder this Connect made, until it is saved: deleted again if it is not. */
 	let made: { id: string; name: string } | null = null;
 	let drive: drive_v3.Drive | null = null;
@@ -255,8 +260,8 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 			await drive.files.delete({ fileId: made.id, supportsAllDrives: true });
 		} catch (err: any) {
 			log.warn(
-				`Could not delete the folder ${made.id} made for destination ${quotedName(destName)} by a Connect that was not saved: ${err?.message ?? err}`,
-				undefined,
+				`Could not delete the folder ${made.id} made for destination ${quotedName(destName)} by a Connect that was not saved: ${withStop(plainFailure(maskWith(), err, { what: 'delete' }))}`,
+				logFacts(maskWith(), err),
 				byCaller
 			);
 		}
@@ -264,6 +269,7 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 
 	try {
 		const { tokens } = await oauth2Client.getToken({ code, codeVerifier: started.verifier });
+		given = tokens;
 		if (!tokens.refresh_token) {
 			return json({ success: false, message: 'No refresh token received. Try revoking app access at https://myaccount.google.com/permissions and reconnecting.' });
 		}
@@ -271,9 +277,9 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 		drive = google.drive({ version: 'v3', auth: oauth2Client });
 
 		if (folderId) {
-			const reached = await reachFolder(drive, folderId);
+			const reached = await reachFolder(drive, folderId, maskWith(), 'connect');
 			if (!reached.reached) {
-				log.warn(`Connect of destination ${quotedName(destName)} refused: Google Drive cannot reach its folder ${folderId}: ${reached.reason}`, undefined, byCaller);
+				log.warn(`Connect of destination ${quotedName(destName)} refused: Google Drive cannot reach its folder ${folderId}: ${withStop(reached.reason)}`, undefined, byCaller);
 				const wide = connectedBefore && !driveScopeIsNarrow(dest.grantedScope);
 				const kept = connectedBefore ? 'Nothing was changed: the destination keeps the connection it had.' : 'Nothing was changed.';
 				return json({ success: false, message: `${CANNOT_REACH} ${kept} ${wide ? REMEDY_WIDE : REMEDY_NARROW}` });
@@ -342,7 +348,10 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 		// longer an administrator, while Google answered. That refusal is the
 		// answer, as it is anywhere else, and not a failed Connect.
 		if (isHttpError(err)) throw err;
-		log.error(`Google Drive Connect failed for destination ${quotedName(destName)}: ${err.message}`, undefined, byCaller);
-		return json({ success: false, message: err.message || 'Failed to exchange auth code' });
+		// One plain sentence (card 3080, P9), masked with the destination as stored, the client secret used and any
+		// token Google gave; the ERROR line carries the facts alone, never the error.
+		const said = withStop(plainFailure(maskWith(), err, { what: 'connect' }));
+		log.error(`Google Drive Connect failed for destination ${quotedName(destName)}: ${said}`, logFacts(maskWith(), err), byCaller);
+		return json({ success: false, message: said });
 	}
 };

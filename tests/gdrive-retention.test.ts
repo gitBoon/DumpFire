@@ -53,10 +53,12 @@
  * success with a note: retention runs, no failure mail, no try again.
  */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { RETENTION_CALL_MS, getBackupConfig, initBackupScheduler, lastScheduledBackupAt, runBackup, saveBackupConfig } from '$lib/server/backup';
+import { createHash } from 'node:crypto';
+import { RETENTION_CALL_MS, destinationHeldWordsNow, getBackupConfig, initBackupScheduler, lastScheduledBackupAt, runBackup, saveBackupConfig } from '$lib/server/backup';
 import {
 	COPY_NAME,
 	GDRIVE_NOT_LISTED,
+	DRIVE_RESUMES,
 	GDriveDestination,
 	S3Destination,
 	S3_MAX_PAGES,
@@ -67,6 +69,7 @@ import {
 	type SftpDestinationConfig
 } from '$lib/server/backup-destinations';
 import { DeleteObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
+import { failureOf } from '$lib/server/backup-failure';
 import SftpClient from 'ssh2-sftp-client';
 import { destinationPlace } from '$lib/server/backup-secrets';
 import { DESTINATION_HELD, SETTER_ACCESS_ENDED, placeKey } from '$lib/server/setting-holds';
@@ -96,13 +99,15 @@ function confirmedFrom(user: SessionUser) {
 /** A file in the folder, and what the account may do to it. */
 type DriveFile = { id: string; name: string; canDelete: boolean; canTrash: boolean };
 
-const { folder, files, sftp } = vi.hoisted(() => {
+const { folder, files, sftp, session } = vi.hoisted(() => {
 	const folder: DriveFile[] = [];
 	const files = {
 		list: vi.fn(),
 		delete: vi.fn(),
 		update: vi.fn(),
-		create: vi.fn()
+		create: vi.fn(),
+		// The size and checksum read by id where a session's completion names neither (card 3080's fix pass, K).
+		get: vi.fn()
 	};
 	/**
 	 * The SFTP stand-in's own folder, what it was asked to delete, whether its
@@ -122,7 +127,17 @@ const { folder, files, sftp } = vi.hoisted(() => {
 		deleteHangs: false,
 		onDelete: null as null | ((filename: string) => void)
 	};
-	return { folder, files, sftp };
+	/**
+	 * Google Drive's resumable upload, stood in for (card 3080): every request the signed-in client sends through
+	 * `request()`, recorded, and answered by `handle` (below) as Google does unless `answer` answers first.
+	 */
+	const session = {
+		requests: [] as SessionRequest[],
+		answer: null as null | ((request: SessionRequest, index: number) => SessionAnswer | Error | undefined),
+		sessions: new Map<string, { name: string; total: number; bytes: Buffer; held: number; done: boolean; id: string }>(),
+		handle: null as null | ((opts: Record<string, any>) => Promise<unknown>)
+	};
+	return { folder, files, sftp, session };
 });
 
 vi.mock('googleapis', () => ({
@@ -130,6 +145,10 @@ vi.mock('googleapis', () => ({
 		auth: {
 			OAuth2: class {
 				setCredentials() {}
+				// The upload's session (card 3080) goes through the signed-in client.
+				request(opts: Record<string, any>) {
+					return session.handle!(opts);
+				}
 			},
 			GoogleAuth: class {}
 		},
@@ -172,6 +191,75 @@ vi.mock('$lib/server/backup-destinations', async (importOriginal) => {
 				: real.createDestination(config)
 	};
 });
+
+/** One request the signed-in Google client was asked to send (card 3080): what the stand-in session records. */
+type SessionRequest = { method: string; url: string; headers: Record<string, string>; bytes: number; data: unknown; retry: unknown; validateStatus?: (status: number) => boolean };
+/** A stand-in answer: a status, headers and a body. */
+type SessionAnswer = { status: number; headers?: Record<string, string>; data?: unknown };
+
+/** Google's upload address. */
+const UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
+
+/** Build an error as gaxios throws one for an answer `validateStatus` refused. */
+function gaxiosError(answer: SessionAnswer): Error {
+	const data = answer.data ?? '';
+	const message = typeof data === 'string' ? data : (data as { error?: { message?: string } })?.error?.message ?? 'Request failed';
+	const reason = typeof data === 'object' ? (data as { error?: { errors?: { reason?: string }[] } })?.error?.errors?.[0]?.reason : undefined;
+	return Object.assign(new Error(message, reason ? { cause: { errors: [{ reason, message }] } } : undefined), {
+		name: 'GaxiosError',
+		status: answer.status,
+		response: { status: answer.status, headers: new Headers(answer.headers ?? {}), data }
+	});
+}
+
+/** The stand-in's own answer to `request`, as Google answers: see `session`. */
+function asGoogle(request: SessionRequest): SessionAnswer {
+	if (request.method === 'POST') {
+		const body = JSON.parse(String(request.data));
+		const uri = `${UPLOAD}?uploadType=resumable&upload_id=SESSION-${session.sessions.size + 1}`;
+		session.sessions.set(uri, { name: body.name, total: Number(request.headers['X-Upload-Content-Length']), bytes: Buffer.alloc(0), held: 0, done: false, id: '' });
+		return { status: 200, headers: { location: uri } };
+	}
+	const open = session.sessions.get(request.url);
+	if (!open) return { status: 404, data: 'Not Found' };
+	const range = /^bytes (?:(\d+)-(\d+)|\*)\/(\d+)$/.exec(request.headers['Content-Range']);
+	if (range && range[1] !== undefined) {
+		const first = Number(range[1]);
+		const chunk = request.data as Buffer;
+		if (first <= open.held) {
+			open.bytes = Buffer.concat([open.bytes.subarray(0, first), chunk]);
+			open.held = open.bytes.length;
+		}
+	}
+	if (open.held === open.total && !open.done) {
+		open.done = true;
+		open.id = `id-new-${folder.length}`;
+		folder.push({ id: open.id, name: open.name, canDelete: true, canTrash: true });
+	}
+	if (open.done) {
+		return { status: 200, data: { id: open.id, size: String(open.total), md5Checksum: createHash('md5').update(open.bytes).digest('hex') } };
+	}
+	return { status: 308, headers: open.held > 0 ? { range: `bytes=0-${open.held - 1}` } : {} };
+}
+
+session.handle = async (opts: Record<string, any>) => {
+	const request: SessionRequest = {
+		method: opts.method ?? 'GET',
+		url: String(opts.url),
+		headers: { ...(opts.headers ?? {}) },
+		bytes: Buffer.isBuffer(opts.data) ? opts.data.length : 0,
+		data: opts.data,
+		retry: opts.retry,
+		validateStatus: opts.validateStatus
+	};
+	const index = session.requests.push(request) - 1;
+	const scripted = session.answer?.(request, index);
+	if (scripted instanceof Error) throw scripted;
+	const answer = scripted ?? asGoogle(request);
+	const accepted = opts.validateStatus ? opts.validateStatus(answer.status) : answer.status >= 200 && answer.status < 300;
+	if (!accepted) throw gaxiosError(answer);
+	return { status: answer.status, headers: new Headers(answer.headers ?? {}), data: answer.data ?? '' };
+};
 
 const GDRIVE: DestinationConfig = {
 	type: 'gdrive',
@@ -231,6 +319,9 @@ beforeEach(() => {
 	sftp.deleteCalls = [];
 	sftp.deleteHangs = false;
 	sftp.onDelete = null;
+	session.requests = [];
+	session.answer = null;
+	session.sessions.clear();
 	// The tests run at LOG_LEVEL=ERROR; the warning is what is looked for.
 	logLevel = process.env.LOG_LEVEL;
 	process.env.LOG_LEVEL = 'WARN';
@@ -270,6 +361,7 @@ beforeEach(() => {
 		if (i < 0 || !folder[i].canDelete) throw Object.assign(new Error(`File not found: ${fileId}`), { code: 404 });
 		folder.splice(i, 1);
 	});
+	files.get.mockReset();
 	files.update.mockReset().mockImplementation(async ({ fileId }: { fileId: string }) => {
 		const i = folder.findIndex((f) => f.id === fileId);
 		if (i < 0 || !folder[i].canTrash) throw Object.assign(new Error(`File not found: ${fileId}`), { code: 404 });
@@ -372,9 +464,14 @@ describe('Google Drive retention', () => {
 		expect(files.delete).not.toHaveBeenCalled();
 		const errors = backupLines().filter((l) => l.level === 'ERROR');
 		expect(errors).toHaveLength(1);
-		expect(errors[0].message).toBe('Retention cleanup failed for GoogleDriveTest');
-		expect(sqlite.prepare("SELECT meta FROM system_logs WHERE level = 'ERROR'").get()).toMatchObject({
-			meta: expect.stringContaining('more than 100 pages')
+		// The sentence on the line, the facts alone as its meta (card 3080, R-G).
+		expect(errors[0].message).toBe('Retention cleanup failed for GoogleDriveTest: Google Drive listing of the backup folder went on for more than 100 pages.');
+		expect(JSON.parse((sqlite.prepare("SELECT meta FROM system_logs WHERE level = 'ERROR'").get() as { meta: string }).meta)).toEqual({
+			status: null,
+			code: null,
+			reason: null,
+			requestId: null,
+			tries: 1
 		});
 		// And on the run's row, a success (card 2941).
 		expect(sqlite.prepare('SELECT status, error FROM backup_log').get()).toEqual({
@@ -412,7 +509,7 @@ describe('Google Drive retention', () => {
 		// And on the run's row, a success (card 2941).
 		expect(sqlite.prepare('SELECT status, error FROM backup_log').get()).toEqual({
 			status: 'success',
-			error: `Keep Last was not fully applied: 1 of 3 older copies could not be removed (first: ${failing.name}: Internal Error)`
+			error: `Keep Last was not fully applied: 1 of 3 older copies could not be removed (first: ${failing.name}: Google Drive answered 500, a temporary error at Google Drive)`
 		});
 	});
 
@@ -434,7 +531,8 @@ describe('Google Drive retention', () => {
 		expect(files.list).toHaveBeenCalledTimes(1);
 		// copyName's names are what COPY_NAME matches, a Run Now's too.
 		await runBackup(undefined, 'manual');
-		const made = files.create.mock.calls.map((c) => c[0].requestBody.name as string);
+		// The names the upload's sessions were opened for (card 3080: a resumable session, not files.create).
+		const made = session.requests.filter((r) => r.method === 'POST').map((r) => JSON.parse(String(r.data)).name as string);
 		expect(made).toHaveLength(2);
 		for (const name of made) expect(name).toMatch(COPY_NAME);
 
@@ -1291,7 +1389,7 @@ describe('What retention could not do is in Backup History, the answer and the m
 		expect(results).toEqual([expect.objectContaining({ destination: 'Offsite', status: 'success', note: `${LISTING}Permission denied.` })]);
 		expect(rowsNow()).toEqual([{ destination: 'Offsite', status: 'success', error: `${LISTING}Permission denied` }]);
 		expect(sftp.deleted).toEqual([]);
-		expect(backupLines().filter((l) => l.level === 'ERROR').map((l) => l.message)).toEqual(['Retention cleanup failed for Offsite']);
+		expect(backupLines().filter((l) => l.level === 'ERROR').map((l) => l.message)).toEqual(['Retention cleanup failed for Offsite: Permission denied.']);
 		expect(sent.emails).toEqual([]);
 	});
 
@@ -1314,7 +1412,9 @@ describe('What retention could not do is in Backup History, the answer and the m
 		expect(mail.html).toContain('Scheduled Backup Needs Attention');
 		expect(mail.html).toContain('<strong>Off&lt;site&gt;</strong> (sftp) was uploaded, but older copies were not removed.');
 		expect(mail.html).toContain('Problem:');
-		expect(mail.html).toContain(`${LISTING}Permission &lt;denied&gt;`);
+		// The far end's words with their tags removed (card 3080, R-I); the name is still escaped, above.
+		expect(mail.html).toContain(`${LISTING}Permission</p>`);
+		expect(mail.html).not.toContain('denied');
 		expect(mail.html).not.toContain('Error:');
 		expect(backupLines().filter((l) => l.message.startsWith('Scheduled backup failed at every destination'))).toEqual([]);
 	});
@@ -1460,6 +1560,373 @@ describe('S3 and SFTP list only their own copies (card 2941, C1 and C2)', () => 
 		] as never);
 
 		expect(await new SftpDestination(OFFSITE as SftpDestinationConfig).list()).toEqual([copy(1)]);
+	});
+});
+
+describe('S3 and SFTP look for a copy before a try again; a Test answers at once (card 3080)', () => {
+	const S3: S3DestinationConfig = { type: 's3', name: 'Bucket', region: 'eu-west-2', bucket: 'b', accessKeyId: 'AKIA-3080', secretAccessKey: 's', prefix: 'dumpfire/' };
+	const NAME = 'dumpfire-backup-2026-11-25T10-00-00-000.db';
+
+	it('D2: S3 lists the exact key as its prefix, no HeadObject, finds a same-size key, and Keep Last still refuses to delete it', async () => {
+		const sent: { input: Record<string, unknown> }[] = [];
+		vi.spyOn(S3Client.prototype, 'send').mockImplementation((async (command: { input: Record<string, unknown> }) => {
+			sent.push(command);
+			return command instanceof ListObjectsV2Command ? { Contents: [{ Key: `dumpfire/${NAME}`, Size: 1234 }] } : {};
+		}) as never);
+		const s3 = new S3Destination(S3);
+
+		expect(await s3.uploadedAlready(NAME, 1234)).toBe(true);
+		expect(await s3.uploadedAlready(NAME, 1235)).toBe(false);
+		expect(sent.every((command) => command instanceof ListObjectsV2Command)).toBe(true);
+		expect(sent[0].input).toEqual({ Bucket: 'b', Prefix: `dumpfire/${NAME}`, MaxKeys: 1 });
+		// The check left Keep Last's own list alone (R-K).
+		await expect(s3.delete(NAME)).rejects.toThrow(S3_NOT_LISTED);
+	});
+
+	it.each([
+		{ size: 1234, found: true },
+		{ size: 1000, found: false }
+	])('D3: SFTP finds a file of the full size, not a shorter one ($size bytes: $found)', async ({ size, found }) => {
+		vi.spyOn(SftpClient.prototype, 'connect').mockResolvedValue(undefined as never);
+		vi.spyOn(SftpClient.prototype, 'end').mockResolvedValue(true as never);
+		const stat = vi.spyOn(SftpClient.prototype, 'stat').mockResolvedValue({ size, isFile: true } as never);
+
+		expect(await new SftpDestination(OFFSITE as SftpDestinationConfig).uploadedAlready(NAME, 1234)).toBe(found);
+		expect(stat).toHaveBeenCalledWith(`/backups/${NAME}`);
+	});
+
+	it('T1: an S3 Test whose request answers 503 sends once and answers the plain sentence at once', async () => {
+		const send = vi
+			.spyOn(S3Client.prototype, 'send')
+			.mockRejectedValue(Object.assign(new Error('Please reduce your request rate.'), { name: 'SlowDown', $metadata: { httpStatusCode: 503 } }) as never);
+
+		expect(await new S3Destination(S3).test()).toEqual({ success: false, message: 'S3 answered 503 (SlowDown), a temporary error at Amazon S3.' });
+		expect(send).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('Google Drive’s resumable session (card 3080)', () => {
+	const MiB = 1024 * 1024;
+	const NAME = 'dumpfire-backup-2026-11-25T10-00-00-000.db';
+	const isStatus = (r: SessionRequest) => r.method === 'PUT' && r.headers['Content-Range']?.startsWith('bytes */');
+	const isChunk = (r: SessionRequest) => r.method === 'PUT' && !isStatus(r);
+	/** Each request in order: POST, status, or the chunk's range. */
+	const kinds = () => session.requests.map((r) => (r.method === 'POST' ? 'POST' : isStatus(r) ? 'status' : r.headers['Content-Range']));
+	const range = (first: number, last: number, total: number) => `bytes ${first}-${last}/${total}`;
+	const google502 = (): SessionAnswer => ({ status: 502, data: '<!DOCTYPE html><html><title>Error 502 (Server Error)!!1</title></html>' });
+	/** A copy of `mib` MiB whose every byte is not the same, so a chunk out of place changes its MD5. */
+	const copyOf = (mib: number) => Buffer.from(Array.from({ length: mib * MiB }, (_, i) => (i * 31) % 251));
+	const saveDrive = (retention = 0) =>
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention, destinations: [GDRIVE], notifyOnFailure: false, notifyEmail: '' });
+	const rows = () => sqlite.prepare('SELECT status, error FROM backup_log ORDER BY id').all() as { status: string; error: string | null }[];
+
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], now: new Date('2026-11-25T10:00:00Z') });
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('G1: a 20 MiB copy: one POST for a resumable session, then PUTs of 8, 8 and 4 MiB, answered 308, 308, 200, checked', async () => {
+		const data = copyOf(20);
+		const total = data.length;
+
+		const answer = await new GDriveDestination(GDRIVE).upload(data, NAME);
+
+		expect(answer).toEqual({ resumes: 0, lastResumed: undefined });
+		const [post, ...puts] = session.requests;
+		expect(post).toMatchObject({
+			method: 'POST',
+			url: 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,size,md5Checksum',
+			retry: false,
+			headers: { 'X-Upload-Content-Length': String(total), 'X-Upload-Content-Type': 'application/x-sqlite3' }
+		});
+		expect(JSON.parse(String(post.data))).toEqual({ name: NAME, parents: ['folder-1'] });
+		expect(puts.map((r) => [r.headers['Content-Range'], r.bytes, r.retry])).toEqual([
+			[range(0, 8 * MiB - 1, total), 8 * MiB, false],
+			[range(8 * MiB, 16 * MiB - 1, total), 8 * MiB, false],
+			[range(16 * MiB, total - 1, total), 4 * MiB, false]
+		]);
+		expect(puts.every((r) => r.validateStatus?.(308) === true && r.validateStatus?.(200) === true && r.validateStatus?.(502) === false)).toBe(true);
+		expect(folder.map((f) => f.name)).toEqual([NAME]);
+	});
+
+	it('G2: a 2nd chunk answered 502 resumes from the byte the status’s Range holds; the run says "after resuming once", with no ⚠️', async () => {
+		const data = copyOf(20);
+		const total = data.length;
+		let failed = false;
+		session.answer = (r) => (isChunk(r) && r.headers['Content-Range'].startsWith(`bytes ${8 * MiB}-`) && !failed ? ((failed = true), google502()) : undefined);
+
+		const uploading = new GDriveDestination(GDRIVE).upload(data, NAME);
+		await vi.advanceTimersByTimeAsync(999);
+		expect(kinds()).toHaveLength(3);
+		await vi.advanceTimersByTimeAsync(1);
+		const answer = await uploading;
+
+		expect(kinds()).toEqual(['POST', range(0, 8 * MiB - 1, total), range(8 * MiB, 16 * MiB - 1, total), 'status', range(8 * MiB, 16 * MiB - 1, total), range(16 * MiB, total - 1, total)]);
+		expect(answer).toEqual({ resumes: 1, lastResumed: { err: expect.any(Error), atBytes: 8 * MiB } });
+		expect(folder.map((f) => f.name)).toEqual([NAME]);
+
+		// And through a run: one resume within the try is said on the success line alone.
+		folder.length = 0;
+		session.requests = [];
+		let once = false;
+		session.answer = (r) => {
+			if (!isChunk(r) || once) return undefined;
+			once = true;
+			// Google kept the first 1,000 bytes before it gave up.
+			const open = session.sessions.get(r.url)!;
+			open.bytes = Buffer.from((r.data as Buffer).subarray(0, 1000));
+			open.held = 1000;
+			return google502();
+		};
+		saveDrive();
+		const running = runBackup();
+		await vi.advanceTimersByTimeAsync(1000);
+		const results = await running;
+
+		expect(results).toEqual([expect.objectContaining({ status: 'success' })]);
+		expect(results[0].note).toBeUndefined();
+		expect(rows()).toEqual([{ status: 'success', error: null }]);
+		expect(session.requests.filter(isChunk)[1].headers['Content-Range']).toMatch(/^bytes 1000-/);
+		const line = sqlite.prepare("SELECT message FROM system_logs WHERE message LIKE 'Backup succeeded%'").pluck().get() as string;
+		expect(line).toMatch(/ after resuming once \(Google Drive answered 502 at 0\.0 of \d+\.\d MB\)$/);
+	});
+
+	it('G3: a 2nd chunk whose connection drops after it landed: the status answers 200, complete, no more chunks', async () => {
+		const data = copyOf(16);
+		session.answer = (r) => {
+			if (!(isChunk(r) && r.headers['Content-Range'].startsWith(`bytes ${8 * MiB}-`))) return undefined;
+			session.answer = null;
+			asGoogle(r);
+			return Object.assign(new Error('request to https://www.googleapis.com/upload failed, reason: socket hang up'), { code: 'ECONNRESET' });
+		};
+
+		const uploading = new GDriveDestination(GDRIVE).upload(data, NAME);
+		await vi.advanceTimersByTimeAsync(1000);
+		const answer = await uploading;
+
+		expect(kinds()).toEqual(['POST', range(0, 8 * MiB - 1, data.length), range(8 * MiB, data.length - 1, data.length), 'status']);
+		expect(answer.resumes).toBe(1);
+		expect(folder.map((f) => f.name)).toEqual([NAME]);
+	});
+
+	it('G4: a status answered 308 with no Range resumes from the first byte', async () => {
+		const data = copyOf(16);
+		let failed = false;
+		session.answer = (r) => {
+			if (isChunk(r) && r.headers['Content-Range'].startsWith(`bytes ${8 * MiB}-`) && !failed) return ((failed = true), google502());
+			if (isStatus(r)) return { status: 308 };
+			return undefined;
+		};
+
+		const uploading = new GDriveDestination(GDRIVE).upload(data, NAME);
+		await vi.advanceTimersByTimeAsync(1000);
+		await uploading;
+
+		expect(kinds().slice(3)).toEqual(['status', range(0, 8 * MiB - 1, data.length), range(8 * MiB, data.length - 1, data.length)]);
+		expect(folder.map((f) => f.name)).toEqual([NAME]);
+	});
+
+	it('G5: a status answered 410: a new session from the first byte, in the same try', async () => {
+		const data = copyOf(16);
+		let failed = false;
+		session.answer = (r) => {
+			if (isChunk(r) && r.headers['Content-Range'].startsWith(`bytes ${8 * MiB}-`) && !failed) return ((failed = true), google502());
+			if (isStatus(r)) return { status: 410, data: 'Gone' };
+			return undefined;
+		};
+
+		const uploading = new GDriveDestination(GDRIVE).upload(data, NAME);
+		await vi.advanceTimersByTimeAsync(1000);
+		const answer = await uploading;
+
+		expect(kinds()).toEqual([
+			'POST',
+			range(0, 8 * MiB - 1, data.length),
+			range(8 * MiB, data.length - 1, data.length),
+			'status',
+			'POST',
+			range(0, 8 * MiB - 1, data.length),
+			range(8 * MiB, data.length - 1, data.length)
+		]);
+		expect(answer.resumes).toBe(1);
+		expect(folder.map((f) => f.name)).toEqual([NAME]);
+	});
+
+	it('G6: five resumes without progress end the try as passing; the 2nd try begins with the session’s status, not a POST', async () => {
+		saveDrive();
+		let failures = 0;
+		session.answer = (r) => (isChunk(r) && failures < 5 ? (failures++, google502()) : undefined);
+
+		const running = runBackup();
+		// Resumes wait 1, 2, 4, 8 and 16 s: 31 s; then the try again's 30 s.
+		await vi.advanceTimersByTimeAsync(31_000);
+		const chunk = kinds()[1];
+		expect(kinds()).toEqual(['POST', chunk, 'status', chunk, 'status', chunk, 'status', chunk, 'status', chunk, 'status']);
+		await vi.advanceTimersByTimeAsync(29_999);
+		expect(kinds()).toHaveLength(11);
+		await vi.advanceTimersByTimeAsync(1);
+		const results = await running;
+
+		expect(kinds().slice(11)).toEqual(['status', chunk]);
+		expect(session.requests.filter((r) => r.method === 'POST')).toHaveLength(1);
+		expect(results[0]).toEqual(expect.objectContaining({ status: 'success', note: 'Uploaded on the 2nd try, after Google Drive answered 502.' }));
+	});
+
+	it('G7: a hold written between requests: no further request, and the held words alone', async () => {
+		saveDrive();
+		const entry = getBackupConfig().destinations[0];
+		session.answer = (r) => {
+			if (r.method === 'POST') {
+				sqlite
+					.prepare("INSERT OR IGNORE INTO setting_holds (setting, place, held_because, held_at, set_by, set_by_name) VALUES (?, ?, ?, datetime('now'), 7, 'ann')")
+					.run('backup_destination:GoogleDriveTest', placeKey(destinationPlace(entry)), SETTER_ACCESS_ENDED);
+			}
+			return undefined;
+		};
+
+		const results = await runBackup();
+
+		expect(kinds()).toEqual(['POST']);
+		expect(results[0]).toEqual(expect.objectContaining({ status: 'failed', message: destinationHeldWordsNow(entry) }));
+	});
+
+	it('G8: a completion whose size or MD5 is not the copy’s: DumpFire’s own sentence, not tried again', async () => {
+		saveDrive();
+		session.answer = (r) => (isChunk(r) ? { status: 200, data: { id: 'id-x', size: String(r.bytes), md5Checksum: '0'.repeat(32) } } : undefined);
+
+		const results = await runBackup();
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+		expect(results[0]).toEqual(expect.objectContaining({ status: 'failed', message: 'Google Drive stored a file of a different size or content.' }));
+		expect(kinds()).toHaveLength(2);
+	});
+
+	it('G9: a chunk answered 403 storageQuotaExceeded: the try ends at once, no resume, no try again', async () => {
+		saveDrive();
+		session.answer = (r) =>
+			isChunk(r)
+				? { status: 403, data: { error: { message: "The user's Drive storage quota has been exceeded.", errors: [{ reason: 'storageQuotaExceeded' }] } } }
+				: undefined;
+
+		const results = await runBackup();
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+		expect(kinds()).toHaveLength(2);
+		expect(results[0].message).toBe("Google Drive refused the upload with 403: The user's Drive storage quota has been exceeded.");
+	});
+
+	it('A (fix pass): every chunk answered 308 with no Range is a stall: resumed with waits, the try ended at the cap as passing, the session kept', async () => {
+		const data = copyOf(1);
+		session.answer = (r) => (isChunk(r) ? { status: 308 } : undefined);
+		const destination = new GDriveDestination(GDRIVE);
+
+		const uploading = destination.upload(data, NAME).then(
+			() => null,
+			(err: Error) => err
+		);
+		await vi.advanceTimersByTimeAsync(31_000);
+		const thrown = await uploading;
+
+		expect(thrown?.name).toBe('DriveStalled');
+		expect(failureOf(GDRIVE, thrown).temporary).toBe(true);
+		// The POST, then a chunk and a status for each of the five resumes: bounded, never a loop without a wait.
+		expect(kinds()).toHaveLength(1 + 2 * DRIVE_RESUMES);
+		expect(kinds().filter((k) => k === 'status')).toHaveLength(DRIVE_RESUMES);
+		// The session kept: the next try begins with its status.
+		session.answer = null;
+		session.requests = [];
+		await destination.upload(data, NAME);
+		expect(kinds()[0]).toBe('status');
+		expect(folder.map((f) => f.name)).toEqual([NAME]);
+	});
+
+	it('B (fix pass): a Run Now whose Drive try resumes answers by the 45 s deadline with retrying, and the background finishes the same session', async () => {
+		saveDrive();
+		let faults = 0;
+		session.answer = (r) => (isChunk(r) && faults < 2 ? (faults++, { status: 502, headers: { 'retry-after': '30' }, data: 'busy' }) : undefined);
+		const began = Date.now();
+
+		const running = runBackup(undefined, 'manual');
+		await vi.advanceTimersByTimeAsync(30_000);
+		const results = await running;
+
+		expect(Date.now() - began).toBeLessThanOrEqual(45_000);
+		expect(results[0]).toEqual(expect.objectContaining({ status: 'failed', retrying: true }));
+		expect(results[0].message).toMatch(/^Try 1 of 3 failed, trying again in 30 s: Google Drive answered 502/);
+		const chunk = kinds()[1];
+		expect(kinds()).toEqual(['POST', chunk, 'status', chunk]);
+
+		await vi.advanceTimersByTimeAsync(30_000);
+
+		expect(kinds().slice(4)).toEqual(['status', chunk]);
+		expect(kinds().filter((k) => k === 'POST')).toHaveLength(1);
+		expect(folder).toHaveLength(1);
+		expect(rows()).toEqual([{ status: 'success', error: 'Uploaded on the 2nd try, after Google Drive answered 502' }]);
+	});
+
+	it('C (fix pass): the destination changed between requests: no further PUT, and the run says so', async () => {
+		saveDrive();
+		session.answer = (r) => {
+			if (r.method === 'POST') saveBackupConfig({ ...getBackupConfig(), destinations: [{ ...GDRIVE, clientId: 'another-client-id' } as DestinationConfig] });
+			return undefined;
+		};
+
+		const results = await runBackup();
+
+		expect(kinds()).toEqual(['POST']);
+		expect(results[0]).toEqual(expect.objectContaining({ status: 'failed', message: 'The destination was removed or changed meanwhile.' }));
+	});
+
+	it('J (fix pass): a session answered at a foreign address: no PUT, not tried again, the address said nowhere', async () => {
+		saveDrive();
+		const foreign = 'https://upload.evil.example/drive?upload_id=FOREIGN-SESSION-3080';
+		session.answer = (r) => (r.method === 'POST' ? { status: 200, headers: { location: foreign } } : undefined);
+
+		const results = await runBackup();
+		await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+		expect(kinds()).toEqual(['POST']);
+		expect(results[0]).toEqual(
+			expect.objectContaining({ status: 'failed', message: 'Google Drive answered an upload session outside https://www.googleapis.com/upload/drive/v3/files, so nothing was sent to it.' })
+		);
+		const said = JSON.stringify([results, rows(), sqlite.prepare('SELECT message, meta FROM system_logs').all()]);
+		expect(said).not.toContain('evil.example');
+		expect(said).not.toContain('FOREIGN-SESSION-3080');
+	});
+
+	it('K (fix pass): a completion naming only the file’s id: its size and MD5 read with files.get, and the upload succeeds', async () => {
+		const data = copyOf(1);
+		session.answer = (r) => {
+			if (!isChunk(r)) return undefined;
+			asGoogle(r);
+			return { status: 200, data: { id: 'id-k' } };
+		};
+		files.get.mockResolvedValue({ data: { size: String(data.length), md5Checksum: createHash('md5').update(data).digest('hex') } });
+
+		const answer = await new GDriveDestination(GDRIVE).upload(data, NAME);
+
+		expect(answer.resumes).toBe(0);
+		expect(files.get).toHaveBeenCalledWith({ fileId: 'id-k', fields: 'size,md5Checksum', supportsAllDrives: true });
+	});
+
+	it('D1: through a run, the session’s POST answers 502 on the 1st try; at 30 s the 2nd opens a new session and succeeds; no name is looked up', async () => {
+		saveDrive(7);
+		let failed = false;
+		session.answer = (r) => (r.method === 'POST' && !failed ? ((failed = true), google502()) : undefined);
+
+		const running = runBackup();
+		await vi.advanceTimersByTimeAsync(29_999);
+		expect(kinds()).toEqual(['POST']);
+		await vi.advanceTimersByTimeAsync(1);
+		const results = await running;
+
+		expect(kinds().filter((k) => k === 'POST')).toHaveLength(2);
+		expect(results[0]).toEqual(expect.objectContaining({ status: 'success', note: 'Uploaded on the 2nd try, after Google Drive answered 502.' }));
+		expect(rows()).toEqual([{ status: 'success', error: 'Uploaded on the 2nd try, after Google Drive answered 502' }]);
+		expect(files.list.mock.calls.map((c) => String(c[0].q))).not.toContainEqual(expect.stringContaining("name = '"));
+		expect(folder.map((f) => f.name)).toHaveLength(1);
 	});
 });
 

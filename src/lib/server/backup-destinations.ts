@@ -11,10 +11,10 @@
 import { error } from '@sveltejs/kit';
 import SftpClient from 'ssh2-sftp-client';
 import { S3Client, PutObjectCommand, ListObjectsV2Command, DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { google, type drive_v3 } from 'googleapis';
-import { Client as GraphClient, RedirectHandlerOptions } from '@microsoft/microsoft-graph-client';
+import { google, type Auth, type drive_v3 } from 'googleapis';
+import { Client as GraphClient, RedirectHandlerOptions, RetryHandlerOptions } from '@microsoft/microsoft-graph-client';
 import { ClientSecretCredential } from '@azure/identity';
-import { Readable } from 'node:stream';
+import { createHash } from 'node:crypto';
 import { readChoice, readNumber, readText, type RequestBody } from './request-body';
 import { destinationPlace, serviceAccountJsonMasked, serviceAccountMissing, trimHost } from './backup-secrets';
 import { readServiceAccountJson, serviceAccountKey, type ServiceAccountRefusal } from './service-account-json';
@@ -32,6 +32,7 @@ import {
 	type HostKey
 } from './ssh-host-key';
 import { DRIVE_FILE_SCOPE, dumpfireFolderName } from '$lib/drive-scope';
+import { ChangedMeanwhile, HeldMeanwhile, failureOf, plainFailure, withStop, type FailureWhat, type MaskSource } from './backup-failure';
 import {
 	DRIVE_REFUSAL,
 	FOLDER_PATH_REFUSAL,
@@ -69,11 +70,35 @@ export function cappedMessage(text: unknown): string {
 	return said.length > MESSAGE_MAX ? `${said.slice(0, MESSAGE_MAX - 1)}…` : said;
 }
 
+/**
+ * What an upload that resumed answers (card 3080, R-F): how many times a Google Drive session resumed within the
+ * try that succeeded, and the last fault it resumed after, with the bytes Google held then. The other types answer
+ * nothing.
+ */
+export type UploadAnswer = { resumes: number; lastResumed?: { err: unknown; atBytes: number } };
+
 export interface BackupDestination {
 	type: string;
 	name: string;
 	test(): Promise<{ success: boolean; message: string }>;
-	upload(data: Buffer, filename: string): Promise<void>;
+	/**
+	 * Send `data` as `filename`. `guard` asks whether the destination has been put on hold, and throws if it has
+	 * (card 3080, R-B): a destination that makes several requests (Google Drive's session) asks it before each; one
+	 * that makes one call is asked by its caller, immediately before. `deadline` (a ▶ Run Now's first try, ms since
+	 * the epoch) is when a destination that waits within a try (Google Drive's resumes) stops waiting and ends the
+	 * try with its fault (the fix pass, B).
+	 */
+	upload(data: Buffer, filename: string, guard?: () => void, deadline?: number): Promise<void | UploadAnswer>;
+	/**
+	 * Whether a copy of `filename` of `size` bytes is already at the destination (card 3080, section 4.5): asked
+	 * before a try again, so that a copy that arrived though its try failed is not sent twice. A name DumpFire does
+	 * not make is refused. Google Drive has none: its session's own status says.
+	 */
+	uploadedAlready?(filename: string, size: number): Promise<boolean>;
+	/** Whether an upload of a name already there replaces it (SFTP, S3, OneDrive), so a copy not checked is sent again. */
+	overwritesByName?: boolean;
+	/** How many times a Google Drive session has resumed in this destination's run, over all its tries (R-F). */
+	resumedInAll?: number;
 	list(): Promise<string[]>;
 	/**
 	 * Remove one backup. A destination that moved it to a trash, where it can
@@ -269,7 +294,7 @@ export class SftpDestination implements BackupDestination {
 				readyTimeout: FIRST_LOOK_TIMEOUT_MS
 			} as Record<string, unknown>);
 		} catch (err: any) {
-			if (seen.blob === null) return { success: false, message: err?.message || 'Connection failed' };
+			if (seen.blob === null) return { success: false, message: withStop(plainFailure(this.config, err, { what: 'test' })) };
 		} finally {
 			try { await sftp.end(); } catch {}
 		}
@@ -314,7 +339,39 @@ export class SftpDestination implements BackupDestination {
 			}
 			if (err instanceof HostKeyTypeNotOffered) return { success: false, message: err.message, confirmedHostKey: err.confirmed };
 			if (err instanceof HostKeySignatureFailed) throw err;
-			return { success: false, message: err.message || 'Connection failed' };
+			return { success: false, message: withStop(plainFailure(this.config, err, { what: 'test' })) };
+		}
+	}
+
+	overwritesByName = true;
+
+	/** Where `filename` goes in the remote folder. */
+	private remoteFile(filename: string): string {
+		return `${this.config.remotePath.replace(/\/+$/, '')}/${filename}`;
+	}
+
+	/**
+	 * Whether `filename` is in the remote folder at `size` bytes (card 3080): connected with the confirmed key, and
+	 * `stat`. "No such file" is not there; a shorter file a dropped `put` left is not equal, and the next `put`,
+	 * which truncates, replaces it.
+	 */
+	async uploadedAlready(filename: string, size: number): Promise<boolean> {
+		if (!isCopyName(filename)) throw new Error(NOT_A_COPY_NAME);
+		const sftp = this.createClient();
+		try {
+			await this.connect(sftp);
+			let found = false;
+			try {
+				const stats = await sftp.stat(this.remoteFile(filename));
+				found = stats.isFile !== false && stats.size === size;
+			} catch (err: any) {
+				if (err?.code !== 'ENOENT') throw err;
+			}
+			await sftp.end();
+			return found;
+		} catch (err) {
+			try { await sftp.end(); } catch {}
+			throw err;
 		}
 	}
 
@@ -326,8 +383,7 @@ export class SftpDestination implements BackupDestination {
 			if (!exists) {
 				await sftp.mkdir(this.config.remotePath, true);
 			}
-			const remotePath = `${this.config.remotePath.replace(/\/+$/, '')}/${filename}`;
-			await sftp.put(data, remotePath);
+			await sftp.put(data, this.remoteFile(filename));
 			await sftp.end();
 		} catch (err) {
 			try { await sftp.end(); } catch {}
@@ -453,6 +509,11 @@ export class S3Destination implements BackupDestination {
 	type = 's3';
 	name: string;
 	private client: S3Client;
+	/**
+	 * The client the upload and its check use (card 3080's fix pass, L): one attempt, so the SDK does not try again
+	 * inside one of the run's tries, which wait and look for the copy first. Keep Last and Test keep the SDK's own.
+	 */
+	private once: S3Client;
 
 	constructor(private config: S3DestinationConfig) {
 		this.name = config.name;
@@ -468,6 +529,7 @@ export class S3Destination implements BackupDestination {
 			s3Config.forcePathStyle = true;
 		}
 		this.client = new S3Client(s3Config);
+		this.once = new S3Client({ ...s3Config, maxAttempts: 1 });
 	}
 
 	private getKey(filename: string): string {
@@ -484,12 +546,27 @@ export class S3Destination implements BackupDestination {
 			}));
 			return { success: true, message: `Connected to S3 bucket "${this.config.bucket}"` };
 		} catch (err: any) {
-			return { success: false, message: err.message || 'S3 connection failed' };
+			return { success: false, message: withStop(plainFailure(this.config, err, { what: 'test' })) };
 		}
 	}
 
+	overwritesByName = true;
+
+	/**
+	 * Whether the key `filename` goes to holds `size` bytes (card 3080): one listing with the exact key as its prefix
+	 * and `MaxKeys` 1, so only `s3:ListBucket` is needed, as Keep Last needs (no `HeadObject`, which needs
+	 * `s3:GetObject`). It does not touch `listed` (R-K), which only Keep Last's listing fills.
+	 */
+	async uploadedAlready(filename: string, size: number): Promise<boolean> {
+		if (!isCopyName(filename)) throw new Error(NOT_A_COPY_NAME);
+		const key = this.getKey(filename);
+		const result = await this.once.send(new ListObjectsV2Command({ Bucket: this.config.bucket, Prefix: key, MaxKeys: 1 }));
+		const found = result.Contents?.[0];
+		return found?.Key === key && found?.Size === size;
+	}
+
 	async upload(data: Buffer, filename: string): Promise<void> {
-		await this.client.send(new PutObjectCommand({
+		await this.once.send(new PutObjectCommand({
 			Bucket: this.config.bucket,
 			Key: this.getKey(filename),
 			Body: data,
@@ -553,6 +630,9 @@ export class S3Destination implements BackupDestination {
 /** The most pages of 1,000 keys an S3 listing reads before it gives up, as OneDrive's (card 2941, C1). */
 export const S3_MAX_PAGES = 100;
 
+/** What a destination's check for a copy refuses a name DumpFire does not make with (card 3080; card 2941, R5). */
+export const NOT_A_COPY_NAME = 'DumpFire looks only for a backup of a name it makes';
+
 /** What an S3 delete of a copy the last listing did not find throws (card 2941, C1). */
 export const S3_NOT_LISTED = 'S3 removes only a backup it has just listed for retention';
 
@@ -566,7 +646,11 @@ export class GDriveDestination implements BackupDestination {
 		this.name = config.name;
 	}
 
-	private async getDrive() {
+	/**
+	 * The signed-in auth client (card 3080: `getDrive`'s setup, refactored, so that the upload's session can send
+	 * its own requests through it): the OAuth2 client with the refresh token, or the service account's JWT.
+	 */
+	private async getAuth(): Promise<Auth.OAuth2Client> {
 		if (this.config.authMethod === 'oauth') {
 			// OAuth2 flow — use client credentials + refresh token
 			if (!this.config.clientId || !this.config.clientSecret || !this.config.refreshToken) {
@@ -577,7 +661,7 @@ export class GDriveDestination implements BackupDestination {
 				this.config.clientSecret
 			);
 			oauth2Client.setCredentials({ refresh_token: this.config.refreshToken });
-			return google.drive({ version: 'v3', auth: oauth2Client });
+			return oauth2Client;
 		} else {
 			// A service account (card 2939): its key read by the one rule, once,
 			// and a JWT built from that key's fields alone. The JSON never reaches
@@ -599,8 +683,12 @@ export class GDriveDestination implements BackupDestination {
 				keyId: account.keyId,
 				scopes: [DRIVE_FILE_SCOPE]
 			});
-			return google.drive({ version: 'v3', auth });
+			return auth;
 		}
+	}
+
+	private async getDrive() {
+		return google.drive({ version: 'v3', auth: await this.getAuth() });
 	}
 
 	async test(): Promise<{ success: boolean; message: string }> {
@@ -610,7 +698,7 @@ export class GDriveDestination implements BackupDestination {
 				// The folder fetched first, as an upload would meet it (card 2188,
 				// decision 8): a listing of a folder the account cannot see answers
 				// "0 existing files", as if it were empty.
-				const reached = await reachFolder(drive, this.config.folderId);
+				const reached = await reachFolder(drive, this.config.folderId, this.config, 'test');
 				if (!reached.reached) {
 					return { success: false, message: `Google Drive cannot reach the folder "${this.config.folderId}": ${reached.reason}` };
 				}
@@ -630,25 +718,193 @@ export class GDriveDestination implements BackupDestination {
 				return { success: true, message: 'Connected to Google Drive (no folder specified — will upload to root)' };
 			}
 		} catch (err: any) {
-			return { success: false, message: err.message || 'Google Drive connection failed' };
+			return { success: false, message: withStop(plainFailure(this.config, err, { what: 'test' })) };
 		}
 	}
 
-	async upload(data: Buffer, filename: string): Promise<void> {
-		const drive = await this.getDrive();
-		const stream = Readable.from(data);
-		await drive.files.create({
-			requestBody: {
-				name: filename,
-				parents: [this.config.folderId]
+	/**
+	 * The session this run's upload goes through (card 3080, R-A): its address, held in memory only and never logged
+	 * or written anywhere, and the copy it is for. Kept from one try to the next, so a later try asks its status.
+	 */
+	private session: { uri: string; filename: string; size: number } | null = null;
+
+	/** How many times the session has resumed in this run, over all its tries (R-F). */
+	resumedInAll = 0;
+
+	/** Google Drive's session is its own check: no `uploadedAlready`, and a name is never written twice. */
+	overwritesByName = false;
+
+	/**
+	 * Send `data` as `filename` through a resumable session (card 3080, R-A): one POST that opens it, then PUTs of
+	 * `DRIVE_CHUNK` bytes each, every request through the signed-in auth client with gaxios's own retries off, and
+	 * `guard` asked before each. A chunk answered with a passing fault, or a session Google has lost (404, 410), is
+	 * resumed within the try: after a wait (1, 2, 4, 8, 16 s, or the far end's Retry-After up to 2 minutes) the
+	 * session's status says which bytes Google holds, and the upload carries on from there, so a 502 halfway costs one
+	 * chunk. A resume is not a try: after `DRIVE_RESUMES` in a row without progress the try ends with the last fault,
+	 * a passing one. A fault that does not pass ends the try at once, as does a POST that fails (no session yet, so
+	 * nothing is at Google). A later try begins with the kept session's status, not a POST, so a try that ended without
+	 * knowing whether its last chunk landed never makes a second file; a session gone is opened again from the first
+	 * byte. Google's answer on completion must hold the copy's size and MD5 (`DriveStoredOtherwise`).
+	 *
+	 * `files.create` with media could not do this: googleapis sends it as one multipart request, so a retry sent all
+	 * of the copy again, and gaxios does not retry a POST.
+	 */
+	async upload(data: Buffer, filename: string, guard: () => void = () => {}, deadline?: number): Promise<UploadAnswer> {
+		const auth = await this.getAuth();
+		const total = data.length;
+		const md5 = createHash('md5').update(data).digest('hex');
+		const kept = this.session !== null && this.session.filename === filename && this.session.size === total;
+		/** What is asked next: a new session, the session's status, or the bytes from `next`. */
+		let step: 'open' | 'status' | 'send' = kept ? 'status' : 'open';
+		/** The first byte Google does not hold, as last known: where the next chunk starts. */
+		let next = 0;
+		let resumes = 0;
+		/** Resumes in a row since Google last held more bytes. */
+		let stalled = 0;
+		let lastResumed: { err: unknown; atBytes: number } | undefined;
+		let lastFault: unknown = undefined;
+		/** Whether the status being asked follows a fault. */
+		let resuming = false;
+
+		/** Google holds the bytes before `bytes`: more than before is progress, and resets the count of resumes. */
+		const holds = (bytes: number) => {
+			if (bytes > next) stalled = 0;
+			next = bytes;
+		};
+
+		for (;;) {
+			try {
+				// The hold and the settings, asked before every request that reaches Google (R-B, R-C), with nothing
+				// awaited between.
+				guard();
+				if (step === 'open') {
+					this.session = null;
+					const uri = await this.openSession(auth, filename, total);
+					this.session = { uri, filename, size: total };
+					next = 0;
+					step = 'send';
+					continue;
+				}
+				const uri = this.session!.uri;
+				if (step === 'status') {
+					const answer = await this.sessionRequest(auth, uri, { 'Content-Range': `bytes */${total}`, 'Content-Length': '0' });
+					if (answer.status !== 308) return await this.completed(auth, answer.data, total, md5, guard, { resumes, lastResumed });
+					holds(rangeEnd(answer.headers));
+					// What Google confirmed it holds, not what was last known before the fault (the fix pass, M).
+					if (resuming && lastResumed !== undefined) lastResumed.atBytes = next;
+					// The last resume in a row without progress ends the try with its fault (R-A).
+					if (resuming && stalled >= DRIVE_RESUMES) break;
+					resuming = false;
+					step = 'send';
+					continue;
+				}
+				const start = next;
+				const end = Math.min(next + DRIVE_CHUNK, total);
+				const answer = await this.sessionRequest(
+					auth,
+					uri,
+					{ 'Content-Range': `bytes ${start}-${end - 1}/${total}`, 'Content-Length': String(end - start) },
+					data.subarray(start, end)
+				);
+				if (answer.status !== 308) return await this.completed(auth, answer.data, total, md5, guard, { resumes, lastResumed });
+				const held = rangeEnd(answer.headers);
+				// A 308 that holds nothing past where the chunk began is a stall (the fix pass, A): resumed as a fault
+				// that passes, with the same waits and the same cap, so it never loops without a wait.
+				if (held <= start) {
+					next = held;
+					throw new DriveStalled();
+				}
+				holds(held);
+			} catch (err) {
+				if (err instanceof HeldMeanwhile || err instanceof ChangedMeanwhile || err instanceof DriveStoredOtherwise || step === 'open') throw err;
+				const failure = failureOf(this.config, err);
+				const gone = failure.status === 404 || failure.status === 410;
+				// The session gone at its status: a new one, from the first byte, in the same try.
+				if (gone && step === 'status') {
+					step = 'open';
+					continue;
+				}
+				if (!failure.temporary && !gone) throw err;
+				if (stalled >= DRIVE_RESUMES) throw err;
+				const wait = failure.retryAfterMs ?? DRIVE_RESUME_WAITS_MS[Math.min(stalled + 1, DRIVE_RESUME_WAITS_MS.length) - 1];
+				// A ▶ Run Now's first try ends where a wait would cross its deadline (the fix pass, B): with the fault,
+				// which passes, and the session kept, so the try again in the background asks its status and sends only
+				// what Google does not hold.
+				if (deadline !== undefined && Date.now() + wait > deadline) throw err;
+				// A resume (R-A): wait, then ask the session's status.
+				lastFault = err;
+				stalled++;
+				resumes++;
+				this.resumedInAll++;
+				lastResumed = { err, atBytes: next };
+				// On the global setTimeout, so that a test's fake clock moves it.
+				await new Promise<void>((resolve) => setTimeout(resolve, wait));
+				resuming = true;
+				step = 'status';
+			}
+		}
+		throw lastFault;
+	}
+
+	/**
+	 * Open a session for `filename` of `total` bytes in the folder (R-A), and answer its address: Google's `Location`,
+	 * which must be under Google's upload address, since the copy and the bearer token go to it. One elsewhere is
+	 * refused (`DriveSessionElsewhere`), its address said nowhere.
+	 */
+	private async openSession(auth: Auth.OAuth2Client, filename: string, total: number): Promise<string> {
+		const answer = await auth.request({
+			url: `${DRIVE_UPLOAD_URL}?uploadType=resumable&supportsAllDrives=true&fields=id,size,md5Checksum`,
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json; charset=UTF-8',
+				'X-Upload-Content-Type': 'application/x-sqlite3',
+				'X-Upload-Content-Length': String(total)
 			},
-			media: {
-				mimeType: 'application/x-sqlite3',
-				body: stream
-			},
-			fields: 'id',
-			supportsAllDrives: true
+			data: JSON.stringify({ name: filename, parents: [this.config.folderId] }),
+			responseType: 'json',
+			retry: false
 		});
+		const uri = headerIn(answer.headers, 'location') ?? '';
+		if (!uri.startsWith(`${DRIVE_UPLOAD_URL}?`)) throw new DriveSessionElsewhere();
+		return uri;
+	}
+
+	/** One PUT to the session: a chunk, or (with no body) its status. 2xx is complete, 308 holds part; anything else throws. */
+	private async sessionRequest(auth: Auth.OAuth2Client, uri: string, headers: Record<string, string>, body?: Buffer) {
+		return auth.request<unknown>({
+			url: uri,
+			method: 'PUT',
+			headers,
+			...(body === undefined ? {} : { data: body }),
+			validateStatus: (status: number) => (status >= 200 && status < 300) || status === 308,
+			responseType: 'json',
+			retry: false
+		});
+	}
+
+	/**
+	 * The session's completion (R-A): the file Google made must be the copy's size and MD5. Where the answer names
+	 * the file but not its size or checksum, they are read by its id (`files.get`, the hold asked first; the fix pass,
+	 * K). The session is done with once the file is checked; a read that fails keeps it, and the resume that follows
+	 * asks its status again.
+	 */
+	private async completed(auth: Auth.OAuth2Client, body: unknown, total: number, md5: string, guard: () => void, answer: UploadAnswer): Promise<UploadAnswer> {
+		let file: Record<string, unknown> = {};
+		try {
+			const read = typeof body === 'string' ? JSON.parse(body) : body;
+			if (read && typeof read === 'object') file = read as Record<string, unknown>;
+		} catch {
+			// Not JSON: neither size nor checksum, so refused below.
+		}
+		if (typeof file.id === 'string' && file.id !== '' && (file.size === undefined || file.md5Checksum === undefined)) {
+			guard();
+			const drive = google.drive({ version: 'v3', auth });
+			const got = await drive.files.get({ fileId: file.id, fields: 'size,md5Checksum', supportsAllDrives: true });
+			file = { ...file, ...(got.data as Record<string, unknown>) };
+		}
+		this.session = null;
+		if (Number(file.size) !== total || file.md5Checksum !== md5) throw new DriveStoredOtherwise();
+		return answer;
 	}
 
 	/**
@@ -746,6 +1002,57 @@ export class GDriveDestination implements BackupDestination {
 	}
 }
 
+/** Where Google Drive takes an upload, and the only place a session's address may be (card 3080). */
+const DRIVE_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files';
+
+/** How much of a copy each request of a Google Drive session sends: 8 MiB, 32 times Google's required 256 KiB (R-A). */
+export const DRIVE_CHUNK = 8 * 1024 * 1024;
+
+/** The most resumes in a row without progress within one try (R-A); the next ends the try with its fault. */
+export const DRIVE_RESUMES = 5;
+
+/** The waits before each resume in a row without progress: 1, 2, 4, 8 and 16 s, 31 s in all (R-A). */
+export const DRIVE_RESUME_WAITS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
+
+/** What a Google Drive session answers in its completion where it holds other bytes than were sent (card 3080). */
+export class DriveStoredOtherwise extends Error {
+	constructor() {
+		super('Google Drive stored a file of a different size or content');
+		this.name = 'DriveStoredOtherwise';
+	}
+}
+
+/** A Google Drive session that took a chunk and held no more of the copy (the fix pass, A): it passes, and is resumed. */
+export class DriveStalled extends Error {
+	constructor() {
+		super('Google Drive took a chunk of the copy and held no more of it');
+		this.name = 'DriveStalled';
+	}
+}
+
+/** What a Google Drive session answered elsewhere than Google's upload address throws: the address is said nowhere. */
+export class DriveSessionElsewhere extends Error {
+	constructor() {
+		super(`Google Drive answered an upload session outside ${DRIVE_UPLOAD_URL}, so nothing was sent to it`);
+		this.name = 'DriveSessionElsewhere';
+	}
+}
+
+/** A header of a gaxios answer (a fetch `Headers`, or a plain record), any case. */
+function headerIn(headers: unknown, name: string): string | undefined {
+	if (headers && typeof (headers as Headers).get === 'function') return (headers as Headers).get(name) ?? undefined;
+	if (headers && typeof headers === 'object') {
+		for (const [key, value] of Object.entries(headers)) if (key.toLowerCase() === name) return String(value);
+	}
+	return undefined;
+}
+
+/** The first byte a session's 308 says it does not hold yet: after its `Range: bytes=0-n`, or 0 where it names none. */
+function rangeEnd(headers: unknown): number {
+	const range = /^bytes=0-(\d+)$/.exec(headerIn(headers, 'range')?.trim() ?? '');
+	return range ? Number(range[1]) + 1 : 0;
+}
+
 /** What a Google Drive delete of a name not listed for retention throws (card 2941, R5). */
 export const GDRIVE_NOT_LISTED = 'Google Drive removes only a backup it has just listed for retention';
 
@@ -761,14 +1068,17 @@ export { dumpfireFolderName };
 /**
  * Whether the account `drive` is signed in as can reach the folder `folderId`
  * (card 2188, decision 8): it is fetched (`files.get`), and must be a folder
- * that is not in the trash. Any error Google answers is "cannot reach", with
- * its message. With `drive.file`, a folder DumpFire did not make may be one
+ * that is not in the trash. Any error Google answers is "cannot reach", in
+ * one plain sentence with no full stop (card 3080, `plainFailure`), masked
+ * with `config`'s secrets. With `drive.file`, a folder DumpFire did not make may be one
  * Google does not let it see; this reads what Google answers rather than
  * depending on it. Used by Connect and by `GDriveDestination.test()`.
  */
 export async function reachFolder(
 	drive: drive_v3.Drive,
-	folderId: string
+	folderId: string,
+	config: MaskSource = { type: 'gdrive' },
+	what: FailureWhat = 'test'
 ): Promise<{ reached: true } | { reached: false; reason: string }> {
 	try {
 		const res = await drive.files.get({ fileId: folderId, fields: 'id, name, mimeType, trashed', supportsAllDrives: true });
@@ -776,7 +1086,7 @@ export async function reachFolder(
 		if (res.data.trashed) return { reached: false, reason: 'it is in the trash' };
 		return { reached: true };
 	} catch (err: any) {
-		return { reached: false, reason: err?.message || 'Google Drive did not find it' };
+		return { reached: false, reason: plainFailure(config, err, { what }) };
 	}
 }
 
@@ -819,17 +1129,30 @@ export class OneDriveDestination implements BackupDestination {
 		return itemPath(this.config.drive, this.config.folderPath, ...names);
 	}
 
-	/** `path` asked of `client`, never following a redirect (ruling R4). */
-	private request(client: GraphClient, path: string) {
-		return client.api(path).middlewareOptions([new RedirectHandlerOptions(0, () => false)]);
+	/**
+	 * `path` asked of `client`, never following a redirect (ruling R4). With `once`, Graph's own retries are off as
+	 * well (card 3080): it otherwise tries a 429, 503 or 504 again up to three times, waiting up to 180 s each, inside
+	 * one of the run's tries.
+	 */
+	private request(client: GraphClient, path: string, once = false) {
+		const options = [new RedirectHandlerOptions(0, () => false), ...(once ? [new RetryHandlerOptions(0, 0)] : [])];
+		return client.api(path).middlewareOptions(options);
 	}
 
-	/** `call`'s answer, or a throw with Graph's words capped (ruling R10). */
+	/**
+	 * `call`'s answer, or a throw with Graph's words capped (ruling R10), which keeps the status, code, headers,
+	 * request id and name (card 3080), so the run can tell a passing failure and read its Retry-After.
+	 */
 	private async graph<T>(call: () => Promise<T>): Promise<T> {
 		try {
 			return await call();
 		} catch (err: any) {
-			throw new Error(cappedMessage(err?.message || 'OneDrive request failed'));
+			const kept = new Error(cappedMessage(err?.message || 'OneDrive request failed')) as Error & Record<string, unknown>;
+			for (const field of ['statusCode', 'code', 'headers', 'requestId'] as const) {
+				if (err?.[field] !== undefined) kept[field] = err[field];
+			}
+			if (typeof err?.name === 'string' && err.name !== 'Error') kept.name = err.name;
+			throw kept;
 		}
 	}
 
@@ -879,15 +1202,34 @@ export class OneDriveDestination implements BackupDestination {
 			if (!item?.folder) return { success: false, message: `"${shown}" in that OneDrive is a file, not a folder` };
 			return { success: true, message: `${where}; folder "${shown}" found` };
 		} catch (err: any) {
-			return { success: false, message: cappedMessage(err?.message || 'OneDrive connection failed') };
+			return { success: false, message: withStop(plainFailure(this.config, err, { what: 'test' })) };
 		}
 	}
 
-	/** One PUT, which Graph takes up to 250 MB (card 2990 for larger). */
+	overwritesByName = true;
+
+	/**
+	 * Whether `filename` is in the folder at `size` bytes (card 3080): its item, with Graph's own retries off. 404 or
+	 * `itemNotFound` is not there; any other failure is thrown, and the run uploads.
+	 */
+	async uploadedAlready(filename: string, size: number): Promise<boolean> {
+		if (!isCopyName(filename)) throw new Error(NOT_A_COPY_NAME);
+		const path = `${this.item(filename)}?$select=size,file`;
+		const client = await this.graph(() => this.getClient());
+		try {
+			const item: any = await this.graph(() => this.request(client, path, true).get());
+			return !!item?.file && item?.size === size;
+		} catch (err: any) {
+			if (err?.statusCode === 404 || err?.code === 'itemNotFound') return false;
+			throw err;
+		}
+	}
+
+	/** One PUT, which Graph takes up to 250 MB (card 2990 for larger), with Graph's own retries off (card 3080). */
 	async upload(data: Buffer, filename: string): Promise<void> {
 		const path = `${this.item(filename)}:/content`;
 		const client = await this.graph(() => this.getClient());
-		await this.graph(() => this.request(client, path).put(data));
+		await this.graph(() => this.request(client, path, true).put(data));
 	}
 
 	/**

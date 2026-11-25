@@ -78,6 +78,8 @@ const TEST_FILES = [
 	'atomic-v1.test.ts',
 	'audit-log.test.ts',
 	'audit-page.test.ts',
+	// Card 3080: a destination tried again after a passing failure, and every failure said in one plain sentence.
+	'backup-retry.test.ts',
 	'backups.test.ts',
 	'body-limits.test.ts',
 	'board-contents.test.ts',

@@ -1,10 +1,13 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.97
+version: 1.98
 status: As-Built
-date: 2026-11-24
+date: 2026-11-25
 tags:
+  - card-3080
+  - backup-retry
+  - plain-failures
   - card-2689
   - decision-webhooks
   - card-2684
@@ -51,7 +54,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Two notices for objections and requests to talk (card 2684): to the decider on a raise and to the person on a reply, naming nobody and quoting nothing, under email_decisions, decided inside the write by the shared deciderNoticeOf and participantNoticeOf. The ruling mail of a survey says No options were put to a vote, and no mail carries a survey answer (card 2683). Mail, the App URL and report schedules moved away from or switched off here held or paused by a restore, and mail settings that are not text read as none (card 3004, card 3031). The From handed over as a name and an address, and kept as this server's by an unsealed restore (card 3029), Complete guide to DumpFire's notification pipeline: requester mail held after an unsealed restore, progress mail to every unheld accepted request on a card, mailed false on a reply, and people marked left mailed nothing about decisions (card 3020), the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
+description: "The backup failure mail's error is one plain, secret-masked sentence, and a backup that recovered on a later try sends none (card 3080). Two notices for objections and requests to talk (card 2684): to the decider on a raise and to the person on a reply, naming nobody and quoting nothing, under email_decisions, decided inside the write by the shared deciderNoticeOf and participantNoticeOf. The ruling mail of a survey says No options were put to a vote, and no mail carries a survey answer (card 2683). Mail, the App URL and report schedules moved away from or switched off here held or paused by a restore, and mail settings that are not text read as none (card 3004, card 3031). The From handed over as a name and an address, and kept as this server's by an unsealed restore (card 3029), Complete guide to DumpFire's notification pipeline: requester mail held after an unsealed restore, progress mail to every unheld accepted request on a card, mailed false on a reply, and people marked left mailed nothing about decisions (card 3020), the two-step reset's notice naming the API keys it ended and the webhooks it switched off (card 2915), the account-disabled and account-enabled notices and nothing else mailed to a disabled account, a decision's account_disabled skip and the webhook switch-off mail leaving disabled owners out (card 2671), the two-step reset's notice with the schedules paused and the keys and webhooks kept, and the factor-removed notice's schedules (card 2894), SMTP email, SSE real-time events, webhooks (a webhook switched off for good when its setter loses the board, and the owners' two mails, card 2752; one switched off when its API key ends, the setter's own mail and the one-time notice of webhooks set up before keys were recorded, card 2893; where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -772,6 +775,26 @@ sequenceDiagram
     D-->>R: failed: Offsite (error 2)
     Note over R: failed() writes the row and ERROR line,<br/>keeps the failure
     R->>M: one mail: heading, NAS + error 1, Offsite + error 2
+```
+
+**The backup failure mail's error is one plain sentence, and a recovery sends none** (card 3080,
+2026-11-25). Each destination is tried up to three times in a run when it fails in a way that
+passes (a 502, a dropped connection), and the run's one mail is sent when the last try of the last
+destination has ended: for a ▶ Run Now, after the tries that go on in the background once the
+page has its answer. A destination that recovered on a later try, or whose copy was found to have
+arrived in full, is in no mail: Backup History shows it ✅ ⚠️. The error in a failed destination's
+box is `plainFailure()`'s sentence (`src/lib/server/backup-failure.ts`), for example "Google
+Drive answered 502, a temporary error at Google Drive; tried 3 times.": no HTML page (Google's
+502 page went into the mail whole before), every secret of the destination masked, at most 300
+characters, still escaped where it is put in the mail. Keep Last's problem in a **Problem:** box
+is worded the same way. See [Backup & Reporting](backup-reporting.md#a-destination-tried-again-card-3080).
+
+```mermaid
+flowchart LR
+    T1["try 1 fails, passing"] --> W["wait 30 s / 60 s"]
+    W --> T2["try again"]
+    T2 -->|"succeeds"| OK["✅ ⚠️ in Backup History<br/>no mail"]
+    T2 -->|"fails after 3 tries,<br/>or a failure that does not pass"| F["the run's one mail:<br/>Error: one plain sentence"]
 ```
 
 **The backup failure mail is sent where the copy cannot be made** (card 2416, 2026-10-22).

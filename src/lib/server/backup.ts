@@ -8,7 +8,23 @@
 import { db, sqlite, getDbPath } from './db';
 import { settings, backupLog } from './db/schema';
 import { eq, desc, inArray } from 'drizzle-orm';
-import { cappedMessage, createDestination, type DestinationConfig } from './backup-destinations';
+import { createDestination, type BackupDestination, type DestinationConfig, type UploadAnswer } from './backup-destinations';
+import {
+	CHANGED_MEANWHILE_WORDS,
+	ChangedMeanwhile,
+	HeldMeanwhile,
+	UPLOAD_TRIES,
+	briefFailure,
+	capitalised,
+	failureOf,
+	logFacts,
+	ordinal,
+	plainFailure,
+	rawForLog,
+	retryWaitMs,
+	timesWord,
+	withStop
+} from './backup-failure';
 import { escapeHtml } from '$lib/escape-html';
 import { parseStamp } from '$lib/timestamps';
 import { sendEmail, isSmtpConfigured } from './email';
@@ -476,18 +492,39 @@ export const MANUAL_COPY = /-manual\.db$/;
  * `RETENTION_DEADLINE_MS`; the first call that does not answer in time, or the
  * deadline, stops it, the rest counted as not removed (the fix pass's C3).
  * The destination is asked again before each delete whether it is held, and
- * a hold stops it with the held reason. The far end's words are capped
- * (`cappedMessage`, ruling R10).
+ * a hold stops it with the held reason. The far end's words are one plain
+ * sentence (`plainFailure`, card 3080), capped as card 2941's R10 had them;
+ * the ERROR line carries the facts alone and the far end's own words go to a
+ * DEBUG line (`keepLastFailure`). Nothing here is tried again.
  */
-async function cleanupRetention(config: DestinationConfig, retention: number, kind: 'scheduled' | 'manual'): Promise<string | null> {
+async function cleanupRetention(
+	config: DestinationConfig,
+	retention: number,
+	kind: 'scheduled' | 'manual'
+): Promise<{ problem: string; mail: boolean } | null> {
+	// Not at a destination held (card 2922, R3), asked before the destination is made or listed (card 3080's fix
+	// pass, D), with nothing awaited between this and the listing: on the row and the answer, not the mail (card
+	// 2941, R6), the hold being the superadmin's to review already.
+	const heldFirst = destinationHeldWordsNow(config);
+	if (heldFirst !== null) {
+		log.warn(`Retention not run at "${config.name}": ${heldFirst}`);
+		return { problem: `Keep Last was not applied: ${heldFirst}`, mail: false };
+	}
+	const problem = await keepLast(config, retention, kind);
+	return problem === null ? null : { problem, mail: true };
+}
+
+/** `cleanupRetention`'s work at a destination not held: what went wrong, or null. */
+async function keepLast(config: DestinationConfig, retention: number, kind: 'scheduled' | 'manual'): Promise<string | null> {
 	if (retention <= 0) return null;
 	const deadline = Date.now() + RETENTION_DEADLINE_MS;
 	let dest: ReturnType<typeof createDestination>;
 	try {
 		dest = createDestination(config);
 	} catch (err) {
-		log.error(`Retention cleanup failed for ${config.name}`, err);
-		return `Keep Last was not applied: this destination could not be reached: ${cappedMessage(messageOf(err))}`;
+		const said = keepLastFailure(config, err, 'listing');
+		log.error(`Retention cleanup failed for ${config.name}: ${withStop(said)}`, logFacts(config, err));
+		return `Keep Last was not applied: this destination could not be reached: ${said}`;
 	}
 	let files: string[];
 	try {
@@ -506,8 +543,9 @@ async function cleanupRetention(config: DestinationConfig, retention: number, ki
 			files = await inTime(dest.list(), 'The listing', deadline);
 		}
 	} catch (err) {
-		log.error(`Retention cleanup failed for ${config.name}`, err);
-		return `Keep Last was not applied: the backups at this destination could not be listed: ${cappedMessage(messageOf(err))}`;
+		const said = keepLastFailure(config, err, 'listing');
+		log.error(`Retention cleanup failed for ${config.name}: ${withStop(said)}`, logFacts(config, err));
+		return `Keep Last was not applied: the backups at this destination could not be listed: ${said}`;
 	}
 	files = files.filter((filename) => MANUAL_COPY.test(filename) === (kind === 'manual'));
 	if (files.length <= retention) return null;
@@ -534,8 +572,9 @@ async function cleanupRetention(config: DestinationConfig, retention: number, ki
 			const how = (await inTime(dest.delete(filename), 'The delete', deadline)) === 'trashed' ? 'moved to the trash' : 'deleted';
 			log.warn(`Retention cleanup: ${how} ${filename} from ${config.name}`);
 		} catch (err) {
-			log.error(`Retention cleanup: failed to delete ${filename}`, err);
-			notRemovedBecause(filename, cappedMessage(messageOf(err)));
+			const said = keepLastFailure(config, err, 'delete');
+			log.error(`Retention cleanup: failed to delete ${filename}: ${withStop(said)}`, logFacts(config, err));
+			notRemovedBecause(filename, said);
 			// A call that did not answer stops the rest (C3): the destination is not answering.
 			if (err instanceof NoAnswer) {
 				for (const rest of toDelete.slice(i + 1)) notRemovedBecause(rest, err.message);
@@ -565,6 +604,12 @@ export const RETENTION_CALL_MS = 60_000;
  */
 export const RETENTION_DEADLINE_MS = 5 * 60_000;
 
+/**
+ * How long a ▶ Run Now's first pass may wait within its tries (card 3080's fix pass, B): 45 s from the run's start,
+ * inside the 60 s live's nginx waits for an answer.
+ */
+export const RUN_NOW_FIRST_PASS_MS = 45_000;
+
 /** What a retention call that did not answer within its time throws: it may still complete at the far end. */
 class NoAnswer extends Error {
 	constructor(what: string) {
@@ -583,8 +628,14 @@ function inTime<T>(work: Promise<T>, what: string, deadline: number): Promise<T>
 	return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
-/** An error's message, or what was thrown, as text. */
-const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err ?? '')) || 'Unknown error';
+/**
+ * A Keep Last call's failure as one plain sentence (card 3080, section 4.7), with no full stop, and the far end's own
+ * words, masked and capped, on a DEBUG line (`rawForLog`), which the logger drops unless LOG_LEVEL=DEBUG.
+ */
+function keepLastFailure(config: DestinationConfig, err: unknown, what: 'listing' | 'delete'): string {
+	log.debug(`Retention cleanup failure as ${config.name} gave it`, rawForLog(config, err));
+	return plainFailure(config, err, { what });
+}
 
 // ─── Run Backup ──────────────────────────────────────────────────────────────
 
@@ -621,7 +672,20 @@ function copyName(manual: boolean): string {
  * A destination's result is a success once its upload succeeds, and carries
  * a `note` where its Backup History row could not be written (card 2417),
  * or retention could not remove its older copies (card 2941), which its row's
- * `error` holds too.
+ * `error` holds too, or it was uploaded on a later try (card 3080).
+ *
+ * Each destination is tried up to `UPLOAD_TRIES` times when it fails in a way
+ * that passes (card 3080, `failureOf`), in two passes: every destination's
+ * first try in order, then the tries again of those that failed in a passing
+ * way, in order, each after a wait (30 s, then 60 s, or the far end's
+ * Retry-After up to 2 minutes). Before each try again the settings are read
+ * again, and a destination removed or changed meanwhile is not tried again
+ * (R-C); the hold is asked immediately before every call that reaches it
+ * (R-B); SFTP, S3 and OneDrive are first asked whether the copy already
+ * arrived. A failure that does not pass is never tried again. A scheduled run
+ * awaits both passes; a ▶ Run Now answers after the first, with each
+ * destination still being tried `retrying: true`, and the rest goes on in the
+ * background, its rows and the run's one mail following when it ends (R-D).
  */
 export async function runBackup(targetDestinationName?: string, how: 'scheduled' | 'manual' = 'scheduled'): Promise<Array<{
 	destination: string;
@@ -629,7 +693,9 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	message: string;
 	durationMs: number;
 	note?: string;
+	retrying?: true;
 }>> {
+	const runStart = Date.now();
 	const config = getBackupConfig();
 	if (config.destinations.length === 0) {
 		return [{ destination: 'none', status: 'failed', message: 'No destinations configured', durationMs: 0 }];
@@ -646,8 +712,12 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	const manual = how === 'manual';
 	const filename = copyName(manual);
 
-	/** `note`: an upload that succeeded but whose Backup History row could not be written (card 2417), or whose older copies were not removed (card 2941). */
-	type Result = { destination: string; status: 'success' | 'failed'; message: string; durationMs: number; note?: string };
+	/**
+	 * `note`: an upload that succeeded but whose Backup History row could not be written (card 2417), or whose older
+	 * copies were not removed (card 2941), or that needed a later try (card 3080). `retrying`: a ▶ Run Now's
+	 * destination still being tried in the background (card 3080, R-D).
+	 */
+	type Result = { destination: string; status: 'success' | 'failed'; message: string; durationMs: number; note?: string; retrying?: true };
 	/** Each destination's result, given in the order the destinations are. */
 	const outcome = new Map<DestinationConfig, Result>();
 
@@ -660,9 +730,11 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	 * A destination that failed: its `backup_log` row, its result and the
 	 * ERROR line, and it is kept for the run's failure mail. A row that cannot
 	 * be written (the volume too full for the copy may be too full for it) is
-	 * said, and the run still answers and sends its mail (card 2416).
+	 * said, and the run still answers and sends its mail (card 2416). `facts`
+	 * is the ERROR line's meta where the failure was a destination's error
+	 * (card 3080, R-G): never the error itself.
 	 */
-	const failed = (destConfig: DestinationConfig, errMsg: string, durationMs: number, sizeBytes: number) => {
+	const failed = (destConfig: DestinationConfig, errMsg: string, durationMs: number, sizeBytes: number, facts?: ReturnType<typeof logFacts>) => {
 		try {
 			logBackup({
 				destinationType: destConfig.type,
@@ -684,7 +756,7 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 			durationMs
 		});
 
-		log.error(`Backup failed: ${destConfig.name} → ${errMsg}`);
+		log.error(`Backup failed: ${destConfig.name} → ${errMsg}`, facts);
 		failures.push({ destConfig, errMsg });
 	};
 
@@ -692,11 +764,12 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	 * The failure mail, if one is configured and a destination failed: one a
 	 * run, with a paragraph and the error for each destination that failed, in
 	 * the destinations' order (card 2415). It was sent once for each, so four
-	 * destinations failing sent four mails for one run. The error is whatever
-	 * the destination's server answered, so it and the destination's name and
-	 * type are escaped where they are put in the mail (card 2149). The mail
+	 * destinations failing sent four mails for one run. The error is one plain
+	 * sentence (card 3080, `plainFailure`), not whatever the destination's
+	 * server answered; it and the destination's name and type are escaped
+	 * where they are put in the mail all the same (card 2149). The mail
 	 * says which kind of run failed: it said "scheduled" for a Run Now too
-	 * (card 2413).
+	 * (card 2413). A destination that recovered on a later try is not in it.
 	 *
 	 * A destination uploaded to whose older copies were not removed is in it
 	 * too (card 2941, ruling R7), with its problem labelled "Problem:"; a run
@@ -780,25 +853,93 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 		return finish();
 	}
 
-	for (const destConfig of ready) {
-		const start = Date.now();
-		let durationMs: number;
-		// Asked again, of the destination as it is used, immediately before it is reached (card 2922, its plan's
-		// R3): a hold committed while an earlier destination was uploading is not missed. Nothing is awaited
-		// between this and the upload begun below. An upload already on the wire finishes.
-		const heldBefore = destinationHeldWordsNow(destConfig);
-		if (heldBefore !== null) {
-			failed(destConfig, heldBefore, 0, 0);
-			continue;
-		}
+	/**
+	 * A destination being tried in this run (card 3080): one destination object for every try, so that Google
+	 * Drive's session survives from one try to the next; when its first try began, how many tries it has had, and
+	 * the last error and the try that gave it (`failures`, in order).
+	 */
+	type Trying = { destConfig: DestinationConfig; dest: BackupDestination; start: number; tries: number; errors: unknown[] };
+
+	/** A Google Drive session's resumes over the run so far (section 4.4), 0 for any other type. */
+	const resumesOf = (trying: Trying) => trying.dest.resumedInAll ?? 0;
+
+	/**
+	 * The hold asked of the destination as it is about to be reached (card 2922, R3; card 3080, R-B), synchronously:
+	 * given to the upload, which asks it before every request it makes where it makes more than one (Google Drive).
+	 * The settings are asked too (the fix pass, C): an entry removed or changed in any field, or one `notTried` would
+	 * refuse now, stops further contact (`ChangedMeanwhile`), so a long Google Drive try sends no more after a change.
+	 */
+	const guardOf = (destConfig: DestinationConfig) => () => {
+		const held = destinationHeldWordsNow(destConfig);
+		if (held !== null) throw new HeldMeanwhile(held);
+		const now = getBackupConfig().destinations.find((d) => d.name === destConfig.name);
+		if (now === undefined || !sameEntry(now, destConfig) || notTried(now) !== null) throw new ChangedMeanwhile();
+	};
+
+	/**
+	 * One try: the upload, with nothing awaited between the hold asked by the caller and the call. `deadline` is a ▶
+	 * Run Now's first-pass deadline (the fix pass, B), none for a scheduled run or a try again.
+	 */
+	const tryOnce = async (trying: Trying, deadline?: number): Promise<{ ok: true; answer: UploadAnswer | void } | { ok: false; err: unknown }> => {
+		trying.tries++;
 		try {
-			const dest = createDestination(destConfig);
-			await dest.upload(buffer, filename);
-			durationMs = Date.now() - start;
-		} catch (err: any) {
-			failed(destConfig, err.message || 'Unknown error', Date.now() - start, buffer.length);
-			continue;
+			return { ok: true, answer: await trying.dest.upload(buffer, filename, guardOf(trying.destConfig), deadline) };
+		} catch (err) {
+			return { ok: false, err };
 		}
+	};
+
+	/** A destination's final failure, from its error: the sentence, the row, the ERROR line's facts and a DEBUG line. */
+	const failedWith = (trying: Trying, err: unknown) => {
+		const { destConfig } = trying;
+		log.debug(`Backup failure as ${destConfig.name} gave it (try ${trying.tries})`, rawForLog(destConfig, err));
+		failed(
+			destConfig,
+			withStop(plainFailure(destConfig, err, { tries: trying.tries, resumes: resumesOf(trying) })),
+			Date.now() - trying.start,
+			buffer.length,
+			logFacts(destConfig, err, trying.tries)
+		);
+	};
+
+	/**
+	 * A destination not tried again after a passing failure (card 3080, section 4.6): held, or removed or changed,
+	 * while it waited. The last error is named, with its try, then why.
+	 */
+	const notTriedAgain = (trying: Trying, why: string) => {
+		const last = trying.errors[trying.errors.length - 1];
+		failed(
+			trying.destConfig,
+			withStop(capitalised(`${briefFailure(trying.destConfig, last)} on the ${ordinal(trying.tries)} try; not tried again: ${why}`)),
+			Date.now() - trying.start,
+			buffer.length,
+			logFacts(trying.destConfig, last, trying.tries)
+		);
+	};
+
+	/** How a success after earlier tries is said (R-E): the try, and the last error with its own try where there were several. */
+	const laterTryNote = (trying: Trying) => {
+		const last = trying.errors[trying.errors.length - 1];
+		const several = trying.errors.length > 1 ? ` on the ${ordinal(trying.errors.length)}` : '';
+		return `Uploaded on the ${ordinal(trying.tries)} try, after ${briefFailure(trying.destConfig, last)}${several}`;
+	};
+
+	/** How a Google Drive session's resumes within the try that succeeded are said on the success line (R-F). */
+	const resumedWords = (destConfig: DestinationConfig, answer: UploadAnswer | void) => {
+		if (!answer || answer.resumes <= 0) return '';
+		const last = answer.lastResumed;
+		const where = last ? ` (${briefFailure(destConfig, last.err)} at ${(last.atBytes / 1_000_000).toFixed(1)} of ${(buffer.length / 1_000_000).toFixed(1)} MB)` : '';
+		return ` after resuming ${timesWord(answer.resumes)}${where}`;
+	};
+
+	/**
+	 * A destination the copy reached: its success row (with `retryNote`, a ⚠️, written at the insert), Keep Last,
+	 * the result and the success line. `retryNote` is a later try's or a copy found whole at a later try's check
+	 * (card 3080, R-F); a resume within one try is said on the success line alone.
+	 */
+	const succeeded = async (trying: Trying, retryNote: string | null, answer: UploadAnswer | void) => {
+		const { destConfig } = trying;
+		const durationMs = Date.now() - trying.start;
 
 		// The copy is at the destination from here, so it is a success whether
 		// or not its row can be written (card 2417). A row that could not be
@@ -816,6 +957,7 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 				filename,
 				sizeBytes: buffer.length,
 				status: 'success',
+				error: retryNote ?? undefined,
 				durationMs
 			});
 		} catch (err: any) {
@@ -824,29 +966,25 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 		}
 
 		// Run retention cleanup over this run's own kind of copy (card 2405). Not at a destination held while its
-		// upload ran (card 2922, R3): asked again here, with nothing awaited before the cleanup reaches it.
-		let problem: string | null;
-		const heldAfter = destinationHeldWordsNow(destConfig);
-		if (heldAfter !== null) {
-			log.warn(`Retention not run at "${destConfig.name}": ${heldAfter}`);
-			// On the row and the answer, not the mail: the hold is the superadmin's to review already (card 2941, R6).
-			problem = `Keep Last was not applied: ${heldAfter}`;
-		} else {
-			problem = await cleanupRetention(destConfig, config.retention, how);
-			if (problem !== null) retentionProblems.push({ destConfig, problem });
-		}
-		// What retention could not do, on the success row, the answer and the mail (card 2941).
+		// upload ran (card 2922, R3): `cleanupRetention` asks first, with nothing awaited before it reaches it, and a
+		// hold is on the row and the answer, not the mail (card 2941, R6).
+		const kept = await cleanupRetention(destConfig, config.retention, how);
+		const problem = kept === null ? null : kept.problem;
+		if (kept !== null && kept.mail) retentionProblems.push({ destConfig, problem: kept.problem });
+		// What retention could not do, on the success row, the answer and the mail (card 2941): on the row the problem
+		// first, then a later try's note (card 3080, R-F).
 		if (problem !== null) {
 			notes.push(problem);
 			if (rowId !== null) {
 				try {
-					db.update(backupLog).set({ error: problem }).where(eq(backupLog.id, rowId)).run();
+					db.update(backupLog).set({ error: retryNote === null ? problem : `${withStop(problem)} ${retryNote}` }).where(eq(backupLog.id, rowId)).run();
 				} catch (err: any) {
 					log.error(`Backup History row for ${destConfig.name} could not be given what retention could not do`, err);
 					notes.push(`Backup History could not record that either: ${err?.message || 'Unknown error'}`);
 				}
 			}
 		}
+		if (retryNote !== null) notes.push(retryNote);
 
 		outcome.set(destConfig, {
 			destination: destConfig.name,
@@ -854,16 +992,191 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 			message: `Uploaded ${filename} (${(buffer.length / 1024).toFixed(1)} KB)`,
 			durationMs,
 			// Each part a sentence of its own, ending with a full stop (the fix pass's C9).
-			...(notes.length === 0 ? {} : { note: notes.map((part) => (/[.!?…]$/.test(part) ? part : `${part}.`)).join(' ') })
+			...(notes.length === 0 ? {} : { note: notes.map(withStop).join(' ') })
 		});
 
 		log.warn(
 			`Backup succeeded: ${destConfig.name} → ${filename} (${durationMs}ms, ${(buffer.length / 1024).toFixed(1)} KB)` +
+				resumedWords(destConfig, answer) +
+				(retryNote === null ? '' : `. ${retryNote}`) +
 				(manual ? '. Made by Run Now: Keep Last counts Run Now copies apart from scheduled ones, so only an older Run Now copy can be removed' : '')
 		);
+	};
+
+	/** The destinations whose first try failed in a passing way, in order, for the second pass. */
+	const again: Trying[] = [];
+
+	/**
+	 * A ▶ Run Now's first pass ends its waits 45 s after the run began (the fix pass, B): live's proxy answers 504
+	 * after 60 s, so a Google Drive try that would wait past it ends with its fault, which passes, and is tried again
+	 * in the background. A scheduled run has no deadline.
+	 */
+	const deadline = manual ? runStart + RUN_NOW_FIRST_PASS_MS : undefined;
+
+	// Pass 1: each destination's first try, in order.
+	for (const destConfig of ready) {
+		const start = Date.now();
+		// Asked again, of the destination as it is used, immediately before it is reached (card 2922, its plan's
+		// R3): a hold committed while an earlier destination was uploading is not missed. Nothing is awaited
+		// between this and the upload begun below. An upload already on the wire finishes.
+		const heldBefore = destinationHeldWordsNow(destConfig);
+		if (heldBefore !== null) {
+			failed(destConfig, heldBefore, 0, 0);
+			continue;
+		}
+		let dest: BackupDestination;
+		try {
+			dest = createDestination(destConfig);
+		} catch (err) {
+			failedWith({ destConfig, dest: { resumedInAll: 0 } as BackupDestination, start, tries: 1, errors: [] }, err);
+			continue;
+		}
+		const trying: Trying = { destConfig, dest, start, tries: 0, errors: [] };
+		const tried = await tryOnce(trying, deadline);
+		if (tried.ok) {
+			await succeeded(trying, null, tried.answer);
+			continue;
+		}
+		// Held, or changed, during the try (between a Google Drive session's requests): its words alone, as a hold
+		// before it (the fix pass, C).
+		if (tried.err instanceof HeldMeanwhile || tried.err instanceof ChangedMeanwhile) {
+			failed(destConfig, withStop(capitalised(tried.err.message)), Date.now() - start, buffer.length);
+			continue;
+		}
+		if (failureOf(destConfig, tried.err).temporary && UPLOAD_TRIES > 1) {
+			trying.errors.push(tried.err);
+			again.push(trying);
+			continue;
+		}
+		failedWith(trying, tried.err);
 	}
 
-	return finish();
+	/** The wait after `trying`'s last try, before the next. */
+	const waitFor = (trying: Trying) => retryWaitMs(trying.tries, failureOf(trying.destConfig, trying.errors[trying.errors.length - 1]));
+
+	/**
+	 * One destination's tries again (pass 2): wait, read the settings again, ask the hold, look for the copy where
+	 * the destination can say, ask the hold again, try. Ends with its row written, as a success or a failure.
+	 */
+	const tryAgain = async (trying: Trying) => {
+		const { destConfig } = trying;
+		for (;;) {
+			const last = trying.errors[trying.errors.length - 1];
+			const wait = waitFor(trying);
+			log.warn(
+				`Backup try ${trying.tries} of ${UPLOAD_TRIES} failed: ${destConfig.name} → ${withStop(plainFailure(destConfig, last))} Trying again in ${wait / 1000} s.`
+			);
+			// On the global setTimeout, so that a test's fake clock moves it.
+			await new Promise<void>((resolve) => setTimeout(resolve, wait));
+
+			// The settings read again (R-C): a destination removed, or changed in any field, or one that would not be
+			// tried now, is not tried again. The run goes on with the entry it began with.
+			const now = getBackupConfig().destinations.find((d) => d.name === destConfig.name);
+			if (now === undefined || !sameEntry(now, destConfig)) return notTriedAgain(trying, CHANGED_MEANWHILE_WORDS);
+			// The hold (R-B), asked synchronously with nothing awaited before the check reaches the destination.
+			const heldNow = destinationHeldWordsNow(destConfig);
+			if (heldNow !== null) return notTriedAgain(trying, heldNow);
+			if (notTried(now) !== null) return notTriedAgain(trying, CHANGED_MEANWHILE_WORDS);
+
+			// Whether the copy already arrived (R-K): within RETENTION_CALL_MS; one that could not be checked (no
+			// answer, or any error) is uploaded, the destination overwriting by name.
+			if (trying.dest.uploadedAlready) {
+				let found = false;
+				try {
+					found = await inTime(trying.dest.uploadedAlready(filename, buffer.length), 'The check', Date.now() + RETENTION_CALL_MS);
+				} catch (err) {
+					log.debug(`Backup check of ${destConfig.name} for ${filename} could not be made`, rawForLog(destConfig, err));
+				}
+				if (found) return succeeded(trying, capitalised(`${briefFailure(destConfig, last)}, but the copy had arrived in full; it was not sent again`), undefined);
+				// Asked again after the check, before the upload (R-B).
+				const heldAfterCheck = destinationHeldWordsNow(destConfig);
+				if (heldAfterCheck !== null) return notTriedAgain(trying, heldAfterCheck);
+			}
+
+			const tried = await tryOnce(trying);
+			if (tried.ok) return succeeded(trying, laterTryNote(trying), tried.answer);
+			if (tried.err instanceof HeldMeanwhile || tried.err instanceof ChangedMeanwhile) {
+				trying.tries--;
+				return notTriedAgain(trying, tried.err.message);
+			}
+			trying.errors.push(tried.err);
+			if (!failureOf(destConfig, tried.err).temporary || trying.tries >= UPLOAD_TRIES) return failedWith(trying, tried.err);
+		}
+	};
+
+	/**
+	 * Pass 2: each destination to be tried again, in order. One whose tries throw (a fault of DumpFire's own) is
+	 * written as failed with that error (the fix pass, G), and the next is still tried.
+	 */
+	const secondPass = async () => {
+		for (const trying of again) {
+			try {
+				await tryAgain(trying);
+			} catch (err) {
+				failedWith(trying, err);
+			}
+		}
+	};
+
+	if (again.length === 0) return finish();
+
+	if (!manual) {
+		// A scheduled run awaits both passes, as it awaited the whole run before; the mail is sent once, whatever
+		// happened (G).
+		try {
+			await secondPass();
+		} finally {
+			await mailFailures();
+		}
+		return destinations.flatMap((destConfig) => outcome.get(destConfig) ?? []);
+	}
+
+	// A ▶ Run Now answers now (R-D): live's proxy waits 60 s. Each destination still being tried is `failed`,
+	// `retrying: true`, in words that lead with the try again; Backup History shows how it ends.
+	const answer = destinations.flatMap((destConfig): Result[] => {
+		const trying = again.find((t) => t.destConfig === destConfig);
+		if (trying === undefined) {
+			const result = outcome.get(destConfig);
+			return result === undefined ? [] : [result];
+		}
+		const sentence = withStop(plainFailure(destConfig, trying.errors[0]));
+		return [
+			{
+				destination: destConfig.name,
+				status: 'failed',
+				message: `Try 1 of ${UPLOAD_TRIES} failed, trying again in ${waitFor(trying) / 1000} s: ${sentence} Backup History will show how it ends.`,
+				durationMs: Date.now() - trying.start,
+				retrying: true
+			}
+		];
+	});
+	// The tries again in the background, then the run's one mail, sent once whatever happened (G); a fault of the
+	// background's own is one ERROR line, its meta the facts alone.
+	void (async () => {
+		try {
+			await secondPass();
+		} catch (err) {
+			log.error(`The background tries of a Run Now could not finish: ${withStop(plainFailure(destinations, err))}`, logFacts(destinations, err));
+		} finally {
+			await mailFailures();
+		}
+	})();
+	return answer;
+}
+
+/**
+ * Whether `now`, a destination as the settings hold it now, is `before`, as the run began with it, in every field
+ * (card 3080, R-C): compared as `getBackupConfig` gives them, secrets opened, the host key, the service account's
+ * JSON, the refresh token and `unopenable` included.
+ */
+function sameEntry(now: DestinationConfig, before: DestinationConfig): boolean {
+	const stable = (value: unknown): unknown =>
+		Array.isArray(value)
+			? value.map(stable)
+			: value !== null && typeof value === 'object'
+				? Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable((value as Record<string, unknown>)[key])]))
+				: value;
+	return JSON.stringify(stable(now)) === JSON.stringify(stable(before));
 }
 
 // ─── Scheduler ───────────────────────────────────────────────────────────────
@@ -1195,7 +1508,8 @@ export function initBackupScheduler(): void {
 				}
 			}
 		} catch (err) {
-			log.error('Scheduler error', err);
+			// The facts alone as its meta, never the error (card 3080's fix pass, G).
+			log.error(`Scheduler error: ${withStop(plainFailure(null, err))}`, logFacts(null, err));
 		}
 	}, 60_000);
 

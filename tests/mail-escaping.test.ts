@@ -172,11 +172,12 @@ describe('the backup failure mail', () => {
 
 		const results = await runBackup();
 
-		expect(results).toEqual([expect.objectContaining({ status: 'failed', message: UPLOAD_FAILURE })]);
+		// Words holding HTML (`</b>`) are dropped whole (card 3080, plainFailure, R-I): no markup reaches the mail.
+		expect(results).toEqual([expect.objectContaining({ status: 'failed', message: 'The destination failed without a readable reason.' })]);
 		const mail = onlyMail();
 		expect(mail.to).toBe('chief@example.test');
 		expect(mail.html).toContain(`<strong>${MARKER_ESCAPED}</strong> (${MARKER_ESCAPED}) failed.`);
-		expect(mail.html).toContain('&lt;b&gt;refused&lt;/b&gt;');
+		expect(mail.html).toContain('>The destination failed without a readable reason.</p>');
 		expect(mail.html).not.toContain(MARKER);
 		expect(mail.html).not.toContain(UPLOAD_FAILURE);
 	});
@@ -232,7 +233,7 @@ describe('the backup failure mail', () => {
 		const tape = mail.html.indexOf(`A scheduled backup to <strong>${MARKER_ESCAPED}</strong> (tape) failed.`);
 		expect(nas).toBeGreaterThan(-1);
 		expect(tape).toBeGreaterThan(nas);
-		expect(mail.html.match(/&lt;b&gt;refused&lt;\/b&gt;/g)).toHaveLength(2);
+		expect(mail.html.match(/>The destination failed without a readable reason\.<\/p>/g)).toHaveLength(2);
 		expect(mail.html).not.toContain(MARKER);
 	});
 

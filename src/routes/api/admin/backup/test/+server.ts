@@ -32,6 +32,7 @@ import { requireAdmin } from '$lib/server/route-guards';
 import { stillCallerNow } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
+import { logFacts, plainFailure, withStop } from '$lib/server/backup-failure';
 
 const log = createLogger('BACKUP');
 
@@ -107,7 +108,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			const answer: SftpTestResult = { success: false, message: err.message, confirmedHostKey: err.confirmed };
 			return json(answer);
 		}
-		log.error(`Destination test failed for "${destConfig.name}" (${destConfig.type}): ${err.message}`, undefined, byCaller);
-		return json({ success: false, message: err.message || 'Test failed' });
+		// One plain sentence (card 3080, P8), masked with the destination as stored and as sent; the ERROR line
+		// carries the facts alone, never the error.
+		const said = withStop(plainFailure([destConfig, sent], err, { what: 'test' }));
+		log.error(`Destination test failed for "${destConfig.name}" (${destConfig.type}): ${said}`, logFacts([destConfig, sent], err), byCaller);
+		return json({ success: false, message: said });
 	}
 };

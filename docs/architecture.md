@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.162
+version: 1.163
 status: As-Built
 date: 2026-11-25
 tags:
+  - card-3080
+  - backup-failure
   - card-3075
   - decision-facts
   - card-2689
@@ -79,7 +81,7 @@ tags:
   - preview
   - decisions-api
   - two-step-sign-in
-description: "A decision as a PDF (card 2688): the shareable copy and the full record, readShareableExport and readFullExport in decision-export.ts, the body read under a deadline, the access asked before the route's hold (code review S-M1), the writeAs either side of the drawing, recordExport and its 409 (the release compared too), the record_exported entry, the renderer's order, caps, ceiling and yields in decision-report.ts, pdfSafe, DecisionExport.svelte. A wait on an open decision on board faces, All Tasks, All To Do and the v1 card reads (card 3059): getDecisionWaitsForCards beside getBlockedStateForCards, decisionWaits per viewer, heldTooltip, waitingOnDecisions asked after the card checks, no-store on five routes, two live listeners. The group breakdown (card 2686): groupBreakdownOf in decision-results.ts, the current round per group from each participant's snapshot names, on readResults alone, never in the summary or a release, drawn by GroupBreakdown.svelte. Objections and requests to talk (card 2684): decision-flag-writes.ts (raise signed in or by link, the decider's reply), the ruling's two new refusals, the results revision over flags, who sees them (a change of decider included), the pages, the shared notice, cap and rest helpers, and the one list of tables that name a decision place. Decision survey questions (card 2683): rows plus words, survey-only decisions, any change but help asks everyone again, the answered kind, the tolerant answers reader, results per version and never released. The restore's outbound steps (seedOutbound, carryOutboundChanges, applyOutboundSchedules, applyOutboundSettings, applyOutboundWebhooks, holdResetSettersIn) and the sweep's outbound seed and pass (card 3004). The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+description: "backup-failure.ts among the backup components: what a destination's failure is and the one sentence it is said in, with the run's tries again (card 3080). A decision as a PDF (card 2688): the shareable copy and the full record, readShareableExport and readFullExport in decision-export.ts, the body read under a deadline, the access asked before the route's hold (code review S-M1), the writeAs either side of the drawing, recordExport and its 409 (the release compared too), the record_exported entry, the renderer's order, caps, ceiling and yields in decision-report.ts, pdfSafe, DecisionExport.svelte. A wait on an open decision on board faces, All Tasks, All To Do and the v1 card reads (card 3059): getDecisionWaitsForCards beside getBlockedStateForCards, decisionWaits per viewer, heldTooltip, waitingOnDecisions asked after the card checks, no-store on five routes, two live listeners. The group breakdown (card 2686): groupBreakdownOf in decision-results.ts, the current round per group from each participant's snapshot names, on readResults alone, never in the summary or a release, drawn by GroupBreakdown.svelte. Objections and requests to talk (card 2684): decision-flag-writes.ts (raise signed in or by link, the decider's reply), the ruling's two new refusals, the results revision over flags, who sees them (a change of decider included), the pages, the shared notice, cap and rest helpers, and the one list of tables that name a decision place. Decision survey questions (card 2683): rows plus words, survey-only decisions, any change but help asks everyone again, the answered kind, the tolerant answers reader, results per version and never released. The restore's outbound steps (seedOutbound, carryOutboundChanges, applyOutboundSchedules, applyOutboundSettings, applyOutboundWebhooks, holdResetSettersIn) and the sweep's outbound seed and pass (card 3004). The restore's decision steps (decisionRolesHeldHere, rulingOwnersHere, applyDecisionRecord or keepDecisionRolesHere, raiseUserCounterOverNamed) and the access pass's decision items (card 3033). The restore's card 3002 steps (accessHeldHere on every restore, carryAccessChanges, keepAccessHere, applyAccessRecord, keepPersonLinksHere and the capped owners held board by board) and the sweep's access pass capAccessAtStart between the password pass and the key pass; The restore's card 3013 steps (keepAccountStateHere in place of keepSuperadminsHere, before the rulings; both records carried from a sealed backup only; no belt from an unsealed one), the restore's card 3029 step (keepMailFromHere) and the From handed to nodemailer as a name and an address, High-level and component-level architecture of the DumpFire Kanban board system, including the restore's card 3020 steps (holdUnsealedRequestMail, switchOffUnsealedPeople), the restore's unsealed steps (keepAccountsHere, pauseUnsealedSchedules, holdUnsealedWebhooks, keepNotifyEmailHere and the browser-safe printable module: card 3012; keepSuperadminsHere, the superadmin carry, the unsealed key leave-out, holdUnsealedSettings: card 3009), the restore's password step and the start's password pass between the account and key passes (card 2997), disabling an account as a path that removes an administrator's settings and a decision's account_disabled skip (card 2671), decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -194,7 +196,10 @@ flowchart TB
             BoardAccess["Board Access Control"]
             ReportEngine["Report Engine"]
             Notifications["Notifications"]
-            BackupService["Backup Scheduler"]
+            BackupService["Backup Scheduler
+backup.ts: runBackup, two passes (card 3080)"]
+            BackupFailure["Backup Failures
+backup-failure.ts (card 3080)"]
             Snapshots["Snapshot Scheduler"]
             ActivityLogger["Activity Logger"]
             SSE["SSE Emitter"]
@@ -243,9 +248,24 @@ flowchart TB
     BoardContents --> BoardAccess
     SSE -.->|"Server-Sent Events"| Client
     ReportEngine -.->|"SMTP"| EmailServer["Email Server"]
-    BackupService -.->|"Push"| BackupDest["Backup Destinations"]
+    BackupService -.->|"Push, tried again after a failure that passes"| BackupDest["Backup Destinations
+backup-destinations.ts"]
+    BackupService -->|"failureOf, plainFailure"| BackupFailure
+    BackupDest -->|"Test: plainFailure"| BackupFailure
     Reminders -.->|"SMTP, awaited, one at a time"| EmailServer
 ```
+
+**The backup components** (card 3080). `src/lib/server/backup.ts` makes the copy and runs it to
+each destination (`runBackup`, in two passes: every first try, then the tries again of those that
+failed in a way that passes, after 30 s and 60 s or the far end's Retry-After), asking the hold
+before every call that reaches a destination and the settings again before each try again.
+`src/lib/server/backup-destinations.ts` holds the four destination types (SFTP, S3, Google Drive by
+a resumable session, OneDrive), each answering `upload` and, but Google Drive, `uploadedAlready`.
+`src/lib/server/backup-failure.ts` imports neither of them: it reads whether
+a failure passes (`failureOf`) and says it in one plain, secret-masked sentence (`plainFailure`),
+with the facts for the `ERROR` line (`logFacts`) and the far end's words for a `DEBUG` line
+(`rawForLog`); the run, Keep Last, a Test and a Connect all say failures through it. See [Backup &
+Reporting](backup-reporting.md#a-destination-tried-again-card-3080).
 
 All Tasks and All To Do (card 2240) read their cards through one reader,
 `readCrossBoardCards(user, { inColumn? })` in `src/lib/server/cross-board-cards.ts`: the boards

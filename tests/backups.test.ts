@@ -6382,7 +6382,8 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 				sqlite.exec('DROP TRIGGER backup_config_frozen; DROP TRIGGER backup_config_frozen_insert;');
 			}
 
-			expect(res.body).toEqual({ success: false, message: 'frozen' });
+			// One sentence with its full stop (card 3080, P9).
+			expect(res.body).toEqual({ success: false, message: 'frozen.' });
 			expect(storedG()).toEqual(G);
 			expect(files.delete.mock.calls[0][0]).toMatchObject({ fileId: 'made-folder-1' });
 			expect(connectLines()).toEqual([]);
@@ -6454,7 +6455,7 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 				expect(gdriveLines()).toEqual([
 					{
 						level: 'WARN',
-						message: `Connect of destination ${QUOTED} refused: Google Drive cannot reach its folder gone: File not found: gone.`,
+						message: `Connect of destination ${QUOTED} refused: Google Drive cannot reach its folder gone: Google Drive refused the request with 404: File not found: gone.`,
 						userId: chief.id
 					}
 				]);
@@ -6472,7 +6473,7 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 				expect(gdriveLines()).toEqual([
 					{
 						level: 'WARN',
-						message: `Could not delete the folder made-folder-1 made for destination ${QUOTED} by a Connect that was not saved: nope`,
+						message: `Could not delete the folder made-folder-1 made for destination ${QUOTED} by a Connect that was not saved: nope.`,
 						userId: chief.id
 					}
 				]);
@@ -6482,9 +6483,10 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 				store({ ...G, name: NAME });
 				vi.spyOn(google.auth.OAuth2.prototype, 'getToken').mockRejectedValue(new Error('invalid_grant') as never);
 
-				expect((await connectNamed()).body).toEqual({ success: false, message: 'invalid_grant' });
+				// One sentence with its full stop (card 3080, P9): an error with no answer from Google is its words alone.
+				expect((await connectNamed()).body).toEqual({ success: false, message: 'invalid_grant.' });
 
-				expect(gdriveLines()).toEqual([{ level: 'ERROR', message: `Google Drive Connect failed for destination ${QUOTED}: invalid_grant`, userId: chief.id }]);
+				expect(gdriveLines()).toEqual([{ level: 'ERROR', message: `Google Drive Connect failed for destination ${QUOTED}: invalid_grant.`, userId: chief.id }]);
 			});
 		});
 	});

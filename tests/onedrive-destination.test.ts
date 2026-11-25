@@ -63,7 +63,9 @@ vi.mock('@azure/identity', () => ({
 	}
 }));
 
+import { RetryHandlerOptions } from '@microsoft/microsoft-graph-client';
 import { OneDriveDestination, type OneDriveDestinationConfig } from '$lib/server/backup-destinations';
+import { failureOf } from '$lib/server/backup-failure';
 import { DRIVE_REFUSAL, FOLDER_PATH_REFUSAL, ONEDRIVE_DRIVE_NOT_SET } from '$lib/server/onedrive-address';
 
 const BASE = { type: 'onedrive', name: 'One', tenantId: 'tenant-1', clientId: 'client-1', clientSecret: 'secret-1', folderPath: '/DumpFire Backups' } as const;
@@ -95,9 +97,11 @@ describe('addresses', () => {
 			['DELETE', `${USER_ITEM}/${COPY}`]
 		]);
 		for (const { options } of graph.requests) {
-			expect(options).toEqual([expect.objectContaining({ maxRedirects: 0 })]);
+			expect(options![0]).toEqual(expect.objectContaining({ maxRedirects: 0 }));
 			expect((options![0] as { shouldRedirect: () => boolean }).shouldRedirect()).toBe(false);
 		}
+		// The upload with Graph's own retries off beside it (card 3080); the delete as before.
+		expect(graph.requests.map(({ options }) => options!.length)).toEqual([2, 1]);
 	});
 
 	it.each([
@@ -244,7 +248,45 @@ describe('Test', () => {
 		const result = await oneDrive().test();
 
 		expect(result.success).toBe(false);
-		expect(result.message).toHaveLength(300);
-		expect(result.message).toMatch(/^Access denied\. x+…$/);
+		// One plain sentence (card 3080, R-E): Graph's reason kept to 200 characters, cut with …, after the status.
+		expect(result.message).toHaveLength('OneDrive refused the request with 403: '.length + 200);
+		expect(result.message).toMatch(/^OneDrive refused the request with 403: Access denied\. x+…$/);
+	});
+});
+
+describe('a try again (card 3080)', () => {
+	it('O1: a Graph 503 with Retry-After 20 comes through the capped wrapper as passing, 20 s; the upload has Graph’s own retries off beside the redirect option', async () => {
+		graph.answer = async () => {
+			throw Object.assign(new Error(`Service unavailable. ${'y'.repeat(400)}`), {
+				name: 'GraphError',
+				statusCode: 503,
+				code: 'serviceNotAvailable',
+				requestId: 'req-3080',
+				headers: new Headers({ 'Retry-After': '20' })
+			});
+		};
+
+		const thrown = await oneDrive().upload(Buffer.from('copy'), COPY).then(
+			() => null,
+			(err: Error) => err
+		);
+
+		expect(thrown?.message).toHaveLength(300);
+		expect(failureOf(BASE, thrown)).toMatchObject({ temporary: true, status: 503, reason: 'serviceNotAvailable', requestId: 'req-3080', retryAfterMs: 20_000 });
+		const [options] = graph.requests.map((r) => r.options!);
+		expect(options[0]).toEqual(expect.objectContaining({ maxRedirects: 0 }));
+		expect(options[1]).toBeInstanceOf(RetryHandlerOptions);
+		expect(options[1]).toMatchObject({ delay: 0, maxRetries: 0 });
+	});
+
+	it.each([
+		{ answer: async () => Promise.reject(notFound()), found: false },
+		{ answer: async () => ({ size: 4, file: {} }), found: true }
+	])('O2: the check finds the copy: $found', async ({ answer, found }) => {
+		graph.answer = answer;
+
+		expect(await oneDrive().uploadedAlready(COPY, 4)).toBe(found);
+		expect(graph.requests.map(({ method, path }) => [method, path])).toEqual([['GET', `${USER_ITEM}/${COPY}?$select=size,file`]]);
+		expect(graph.requests[0].options![1]).toMatchObject({ maxRetries: 0 });
 	});
 });
