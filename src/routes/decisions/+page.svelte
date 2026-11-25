@@ -27,16 +27,28 @@
 	 * 26), which reaches a caller only for a board they can open: a decision
 	 * with no board, or a participant's on a board they cannot open, is
 	 * current on navigation, a return to the tab, or a reconnect.
+	 *
+	 * Card 3075: on the kit's shell, full width, the filters in a rail on the
+	 * left from 1024px (above the list beneath that); the tabs, the table, the
+	 * empty states and the status badges are the kit's.
 	 */
 	import { onMount } from 'svelte';
 	import type { PageData } from './$types';
 	import { invalidateAll } from '$app/navigation';
-	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
-	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
+	import PageShell from '$lib/components/ui/PageShell.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import Tabs from '$lib/components/ui/Tabs.svelte';
+	import Table from '$lib/components/ui/Table.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import { REGISTER_TABS, SHOWN_STATUSES, type RegisterTab } from '$lib/decision-register-types';
 	import { PARTICIPATION_ROLE_WORDS, STATUS_WORDS, shownMoment } from '$lib/decision-words';
 	import { connectLiveRefresh } from '$lib/live-refresh';
-	import { theme, themeIcon } from '$lib/stores/theme';
 
 	let { data }: { data: PageData } = $props();
 
@@ -64,6 +76,9 @@
 
 	/** The filters a tab link carries: the board, the person and the title, never `status` (All's alone) or `before`. */
 	const tabHref = (tab: RegisterTab) => hrefWith({ tab, board: data.query.board, person: data.query.person, q: data.query.q });
+
+	/** The tabs as the kit draws them, a count on the waiting tabs alone. */
+	const tabLinks = $derived(TABS.map((tab) => ({ id: tab.id, label: tab.label, href: tabHref(tab.id), count: countOf(tab.id) })));
 
 	/** The filters this list was read with, for Next and Back to newest. */
 	const kept = $derived({
@@ -95,213 +110,206 @@
 	<meta name="robots" content="noindex" />
 </svelte:head>
 
-<div class="register-page">
-	<header class="register-header glass">
-		<div class="register-header-inner">
-			<a href="/" class="header-logo" title="Back to DumpFire">
-				<span class="logo-fire">🔥</span>
-				<span class="logo-text">DumpFire</span>
-			</a>
-			<p class="crumb">Decisions</p>
-			<a class="target my-record" href="/decisions/tour" data-action="tour">How it works</a>
-			{#if data.myPersonId !== null}
-				<a class="target my-record" href="/decisions/people/{data.myPersonId}" data-action="my-record">My record</a>
-			{/if}
-			<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
-				{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
-				<ThemeMenuItems heading={false} />
-			</HeaderMenu>
-		</div>
-	</header>
 
-	<main class="register-content">
-		<h1>Decisions</h1>
+{#snippet crumbs()}
+	<p class="crumb">Decisions</p>
+{/snippet}
 
-		<nav class="tabs" aria-label="Decision lists">
-			{#each TABS as tab (tab.id)}
-				{@const count = countOf(tab.id)}
-				<a class="tab" href={tabHref(tab.id)} aria-current={data.tab === tab.id ? 'page' : undefined} data-tab={tab.id}>
-					{tab.label}{#if count !== null}<span class="tab-count">{` (${count})`}</span>{/if}
-				</a>
-			{/each}
-		</nav>
+{#snippet actions()}
+	<Button variant="ghost" size="sm" href="/decisions/tour" data-action="tour">How it works</Button>
+	{#if data.myPersonId !== null}
+		<Button variant="ghost" size="sm" href="/decisions/people/{data.myPersonId}" data-action="my-record">My record</Button>
+	{/if}
+{/snippet}
 
-		<form class="filters glass" method="GET" action="/decisions" data-form="filters">
-			<input type="hidden" name="tab" value={data.tab} />
-			<div class="filter">
-				<label for="filter-board">Board</label>
-				<select id="filter-board" name="board" class="field" value={data.query.board === null ? '' : String(data.query.board)}>
-					<option value="">Any board</option>
-					{#each data.boards as board (board.id)}
-						<option value={String(board.id)}>{board.name}</option>
-					{/each}
-				</select>
-			</div>
-			<div class="filter">
-				<label for="filter-who">Find a person</label>
-				<input id="filter-who" name="who" class="field" type="search" maxlength="100" value={data.query.who ?? ''} />
-			</div>
-			<div class="filter">
-				<label for="filter-person">Person</label>
-				<select id="filter-person" name="person" class="field" value={data.query.person === null ? '' : String(data.query.person)}>
-					<option value="">Anyone</option>
-					{#if chosenMissing}<option value={String(data.query.person)}>The person chosen</option>{/if}
-					{#each data.people as person (person.id)}
-						<option value={String(person.id)}>{person.name}</option>
-					{/each}
-				</select>
-			</div>
-			{#if data.tab === 'all'}
+{#snippet filters()}
+	<Card>
+		<CardHeader><CardTitle level={2}>Filters</CardTitle></CardHeader>
+		<CardContent>
+			<form class="filters" method="GET" action="/decisions" data-form="filters">
+				<input type="hidden" name="tab" value={data.tab} />
 				<div class="filter">
-					<label for="filter-status">Status</label>
-					<select id="filter-status" name="status" class="field" value={data.query.status ?? ''}>
-						<option value="">Any status</option>
-						{#each SHOWN_STATUSES as status (status)}
-							<option value={status}>{STATUS_WORDS[status]}</option>
+					<label class="ui-label" for="filter-board">Board</label>
+					<select id="filter-board" name="board" class="ui-select" value={data.query.board === null ? '' : String(data.query.board)}>
+						<option value="">Any board</option>
+						{#each data.boards as board (board.id)}
+							<option value={String(board.id)}>{board.name}</option>
 						{/each}
 					</select>
 				</div>
-			{/if}
-			<div class="filter">
-				<label for="filter-q">Title contains</label>
-				<input id="filter-q" name="q" class="field" type="search" maxlength="200" value={data.query.q ?? ''} />
-			</div>
-			<div class="filter-actions">
-				<button type="submit" class="btn-primary target">Apply filters</button>
-			</div>
-		</form>
+				<div class="filter">
+					<label class="ui-label" for="filter-who">Find a person</label>
+					<input id="filter-who" name="who" class="ui-input" type="search" maxlength="100" value={data.query.who ?? ''} />
+				</div>
+				<div class="filter">
+					<label class="ui-label" for="filter-person">Person</label>
+					<select id="filter-person" name="person" class="ui-select" value={data.query.person === null ? '' : String(data.query.person)}>
+						<option value="">Anyone</option>
+						{#if chosenMissing}<option value={String(data.query.person)}>The person chosen</option>{/if}
+						{#each data.people as person (person.id)}
+							<option value={String(person.id)}>{person.name}</option>
+						{/each}
+					</select>
+				</div>
+				{#if data.tab === 'all'}
+					<div class="filter">
+						<label class="ui-label" for="filter-status">Status</label>
+						<select id="filter-status" name="status" class="ui-select" value={data.query.status ?? ''}>
+							<option value="">Any status</option>
+							{#each SHOWN_STATUSES as status (status)}
+								<option value={status}>{STATUS_WORDS[status]}</option>
+							{/each}
+						</select>
+					</div>
+				{/if}
+				<div class="filter">
+					<label class="ui-label" for="filter-q">Title contains</label>
+					<input id="filter-q" name="q" class="ui-input" type="search" maxlength="200" value={data.query.q ?? ''} />
+				</div>
+				<div class="filter-actions"><Button type="submit">Apply filters</Button></div>
+			</form>
+		</CardContent>
+	</Card>
+{/snippet}
 
-		<p class="result-count" role="status" aria-live="polite" data-said="count">{countWords}</p>
+<PageShell width="full" {crumbs} {actions} rail={filters} railLabel="Filters" railPosition="start">
+	<PageHeader title="Decisions" description="Every decision you can see, across boards.">
+		<Tabs label="Decision lists" items={tabLinks} current={data.tab} />
+	</PageHeader>
 
-		{#if data.rows.length === 0}
-			{#if filtered}
-				<p class="empty" data-empty="filtered">No matches. <a class="target" href={hrefWith({ tab: data.tab })}>Clear filters</a></p>
-			{:else}
-				<p class="empty" data-empty={data.tab}>{current.empty}</p>
-				<!-- Card 3070 (ruling 3): with nothing to list, the guided tour, which needs no decision of its own. -->
-				<p class="empty-tour">New to decisions? <a class="target" href="/decisions/tour" data-action="tour-empty">See how they work</a></p>
-			{/if}
+	<p class="result-count" role="status" aria-live="polite" data-said="count">{countWords}</p>
+
+	{#if data.rows.length === 0}
+		{#if filtered}
+			<EmptyState data-empty="filtered" title="No matches.">
+				{#snippet action()}
+					<Button variant="outline" size="sm" href={hrefWith({ tab: data.tab })}>Clear filters</Button>
+				{/snippet}
+			</EmptyState>
 		{:else}
-			<table class="register-table">
-				<caption>{current.label}</caption>
-				<thead>
-					<tr>
-						<th scope="col">Title</th>
-						<th scope="col">Status</th>
-						<th scope="col">Board</th>
-						<th scope="col">Decider</th>
-						<th scope="col">Closes</th>
-						<th scope="col">Your part</th>
+			<!-- Card 3070 (ruling 3): with nothing to list, the guided tour, which needs no decision of its own. -->
+			<EmptyState data-empty={data.tab} title={current.empty}>
+				New to decisions?
+				{#snippet action()}
+					<Button variant="link" size="sm" href="/decisions/tour" data-action="tour-empty">See how they work</Button>
+				{/snippet}
+			</EmptyState>
+		{/if}
+	{:else}
+		<Table caption={current.label} stack>
+			<thead>
+				<tr>
+					<th scope="col">Title</th>
+					<th scope="col">Status</th>
+					<th scope="col">Board</th>
+					<th scope="col">Decider</th>
+					<th scope="col">Closes</th>
+					<th scope="col">Your part</th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each data.rows as row (row.id)}
+					<tr data-decision={row.id}>
+						<td data-label="Title" class="title"><a class="row-link" href="/decisions/{row.id}">{row.title}</a></td>
+						<td data-label="Status"><Badge status={row.shownStatus} /></td>
+						<td data-label="Board">
+							{#if row.board.id !== null}
+								<a class="row-link quiet" href="/board/{row.board.id}">{row.board.name}</a>
+							{:else}
+								<span>{row.board.name}{row.board.gone ? ' (deleted)' : ''}</span>
+							{/if}
+						</td>
+						<td data-label="Decider">{row.deciderName ?? '—'}</td>
+						<td data-label="Closes" class="when">{shownMoment(row.closesAt, '—')}</td>
+						<td data-label="Your part">
+							{#if row.waiting === 'response'}<span class="waiting">Your response is awaited</span>
+							{:else if row.waiting === 'ruling'}<span class="waiting">Your ruling is awaited</span>
+							{:else if row.role !== null}{PARTICIPATION_ROLE_WORDS[row.role]}
+							{:else}—{/if}
+						</td>
 					</tr>
-				</thead>
-				<tbody>
-					{#each data.rows as row (row.id)}
-						<tr data-decision={row.id}>
-							<td data-label="Title" class="title"><a class="target" href="/decisions/{row.id}">{row.title}</a></td>
-							<td data-label="Status"><span class="status-chip" data-status={row.shownStatus}>{STATUS_WORDS[row.shownStatus] ?? row.shownStatus}</span></td>
-							<td data-label="Board">
-								{#if row.board.id !== null}
-									<a class="target" href="/board/{row.board.id}">{row.board.name}</a>
-								{:else}
-									<span>{row.board.name}{row.board.gone ? ' (deleted)' : ''}</span>
-								{/if}
-							</td>
-							<td data-label="Decider">{row.deciderName ?? '—'}</td>
-							<td data-label="Closes">{shownMoment(row.closesAt, '—')}</td>
-							<td data-label="Your part">
-								{#if row.waiting === 'response'}<span class="waiting">Your response is awaited</span>
-								{:else if row.waiting === 'ruling'}<span class="waiting">Your ruling is awaited</span>
-								{:else if row.role !== null}{PARTICIPATION_ROLE_WORDS[row.role]}
-								{:else}—{/if}
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-		{/if}
+				{/each}
+			</tbody>
+		</Table>
+	{/if}
 
-		{#if data.next !== null || data.query.before !== null}
-			<nav class="pages" aria-label="Pages of decisions">
-				{#if data.query.before !== null}<a class="target" href={hrefWith(kept)} data-page="newest">Back to newest</a>{/if}
-				{#if data.next !== null}<a class="target" href={hrefWith({ ...kept, before: data.next })} data-page="next">Older decisions</a>{/if}
-			</nav>
-		{/if}
-	</main>
-</div>
+	{#if data.next !== null || data.query.before !== null}
+		<nav class="pages" aria-label="Pages of decisions">
+			{#if data.query.before !== null}<Button variant="outline" size="sm" href={hrefWith(kept)} data-page="newest">Back to newest</Button>{/if}
+			{#if data.next !== null}<Button variant="outline" size="sm" href={hrefWith({ ...kept, before: data.next })} data-page="next">Older decisions</Button>{/if}
+		</nav>
+	{/if}
+</PageShell>
 
 <style>
-	.register-page { min-height: 100vh; padding-top: 64px; }
-	.register-header {
-		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-		height: 64px; border-bottom: 1px solid var(--glass-border);
-		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+	.crumb {
+		margin: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		font-weight: 500;
+		color: var(--ui-foreground);
 	}
-	.register-header-inner {
-		max-width: 1400px; margin: 0 auto; height: 100%;
-		display: flex; align-items: center; gap: var(--space-lg);
-		padding: 0 var(--space-xl);
+
+	.filters {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-md);
 	}
-	.header-logo {
-		display: flex; align-items: center; gap: var(--space-sm);
-		text-decoration: none; color: var(--text-primary);
-		font-weight: 700; font-size: 1.1rem;
+	.filter {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
 	}
-	.logo-fire { font-size: 1.4rem; }
-	.crumb { flex: 1; font-size: 0.85rem; min-width: 0; margin: 0; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.my-record { font-size: 0.9rem; color: var(--accent-indigo); text-decoration: none; white-space: nowrap; }
-
-	/* The page's last line stops above the user badge (card 2239). */
-	.register-content { max-width: 1100px; margin: 0 auto; padding: var(--space-xl) var(--space-xl) var(--user-badge-space); }
-	h1 { font-size: 1.2rem; margin: 0 0 var(--space-md); }
-
-	.tabs { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin-bottom: var(--space-md); }
-	.tab {
-		min-height: 44px; display: inline-flex; align-items: center; padding: 0 var(--space-md);
-		border-radius: var(--radius-sm); text-decoration: none; color: var(--text-secondary); border: 1px solid var(--glass-border);
+	.filter-actions {
+		display: grid;
 	}
-	.tab[aria-current='page'] { color: var(--text-primary); font-weight: 600; border-color: var(--accent-indigo); background: rgba(99, 102, 241, 0.12); }
-	.tab:focus-visible, .target:focus-visible, .field:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: 2px; }
 
-	.filters { display: flex; flex-wrap: wrap; gap: var(--space-md); align-items: flex-end; padding: var(--space-md); border-radius: var(--radius-md); margin-bottom: var(--space-md); }
-	.filter { display: flex; flex-direction: column; gap: var(--space-xs); min-width: 10rem; flex: 1; }
-	.filter label { font-size: 0.85rem; color: var(--text-secondary); }
-	.field {
-		min-height: 44px; box-sizing: border-box; font-size: 16px; font-family: var(--font-family); padding: 0 var(--space-sm);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary);
+	.result-count {
+		margin: 0 0 var(--space-sm);
+		font-size: 0.875rem;
+		color: var(--ui-muted-foreground);
 	}
-	.filter-actions { display: flex; }
-	.target { min-height: 44px; display: inline-flex; align-items: center; }
-	button.target { padding: 0 var(--space-lg); }
 
-	.result-count { font-size: 0.9rem; color: var(--text-secondary); margin: 0 0 var(--space-sm); }
-	.empty-tour { font-size: 0.9rem; color: var(--text-secondary); margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
-	.empty-tour a { color: var(--accent-indigo); }
-	.empty { font-size: 0.95rem; color: var(--text-tertiary); padding: var(--space-lg) 0; margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
-
-	.register-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-	.register-table caption { text-align: left; font-weight: 600; padding: var(--space-xs) 0; }
-	.register-table th {
-		text-align: left; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
-		color: var(--text-tertiary); padding: var(--space-xs) var(--space-sm); border-bottom: 1px solid var(--glass-border);
+	.row-link {
+		color: var(--ui-foreground);
+		font-weight: 500;
+		text-decoration: none;
+		text-underline-offset: 3px;
+		border-radius: var(--ui-radius-sm);
 	}
-	.register-table td { padding: var(--space-xs) var(--space-sm); border-bottom: 1px solid var(--glass-border); vertical-align: middle; overflow-wrap: anywhere; }
-	.register-table td.title { font-weight: 600; }
-	.register-table a { color: var(--accent-indigo); text-decoration: none; }
-	.status-chip { display: inline-block; padding: 1px var(--space-sm); border-radius: 999px; font-size: 0.75rem; background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo); }
-	.waiting { font-weight: 600; }
+	.row-link.quiet {
+		font-weight: 400;
+		color: var(--ui-muted-foreground);
+	}
+	.row-link:hover {
+		color: var(--ui-foreground);
+		text-decoration: underline;
+	}
+	.row-link:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
+	.when {
+		white-space: nowrap;
+		color: var(--ui-muted-foreground);
+	}
+	.waiting {
+		font-weight: 600;
+	}
 
-	.pages { display: flex; flex-wrap: wrap; gap: var(--space-lg); margin-top: var(--space-md); }
-	.pages a { color: var(--accent-indigo); text-decoration: none; }
+	.pages {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-sm);
+		margin-top: var(--space-lg);
+	}
 
-	@media (max-width: 640px) {
-		.register-header-inner { padding: 0 var(--space-md); }
-		.logo-text { display: none; }
-		.register-content { padding: var(--space-md) var(--space-md) var(--user-badge-space); }
-		/* Each row a block, each cell with its label (D5). */
-		.register-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-		.register-table, .register-table tbody, .register-table tr, .register-table td { display: block; width: 100%; box-sizing: border-box; }
-		.register-table tr { border-bottom: 1px solid var(--glass-border); padding: var(--space-sm) 0; }
-		.register-table td { border-bottom: none; display: flex; gap: var(--space-sm); align-items: center; min-height: 44px; }
-		.register-table td::before { content: attr(data-label); flex: 0 0 6.5rem; font-size: 0.75rem; font-weight: 600; color: var(--text-tertiary); }
+	/* A finger needs 44px (D5). */
+	@media (pointer: coarse) {
+		.row-link {
+			display: inline-flex;
+			align-items: center;
+			min-height: 2.75rem;
+		}
 	}
 </style>

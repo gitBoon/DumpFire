@@ -32,6 +32,7 @@
 	import { tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
+	import Button from '$lib/components/ui/Button.svelte';
 	import { FLAG_TEXT_RULES, FLAGS_PER_PARTICIPANT_VERSION, type FlagKind } from '$lib/decision-rules';
 	import type { OwnFlag } from '$lib/decision-view-types';
 	import { FLAG_KIND_WORDS, FLAG_TEXT_NOTE, flagRepliedWords, flagsClosedWords, flagUnrepliedWords, flagWhoSees, shownMoment } from '$lib/decision-words';
@@ -137,10 +138,10 @@
 			}}
 		>
 			<h3>{kind === 'objection' ? 'I object' : 'I need to talk to the decider'}</h3>
-			<label class="field-label" for="{id}-{kind}">{kind === 'objection' ? 'Why you cannot live with this decision (required)' : 'A note for the decider (optional)'}</label>
+			<label class="ui-label field-label" for="{id}-{kind}">{kind === 'objection' ? 'Why you cannot live with this decision (required)' : 'A note for the decider (optional)'}</label>
 			<textarea
 				id="{id}-{kind}"
-				class="field"
+				class="ui-textarea"
 				rows={kind === 'objection' ? 4 : 3}
 				maxlength={rule.max}
 				required={rule.required}
@@ -149,9 +150,11 @@
 			></textarea>
 			<p class="count" id="{id}-{kind}-count">{reasons[kind].length} of {rule.max.toLocaleString('en-GB')} characters</p>
 			<p class="note" id="{id}-{kind}-note">{FLAG_TEXT_NOTE}</p>
-			<button type="submit" class="btn-primary send" data-action={kind} disabled={!ready(kind)} aria-busy={sending === kind ? 'true' : undefined}
-				>{kind === 'objection' ? 'Send my objection' : 'Ask to talk'}</button
-			>
+			<div class="send-row">
+				<Button type="submit" class="send" data-action={kind} disabled={!ready(kind)} aria-busy={sending === kind ? 'true' : undefined}
+					>{kind === 'objection' ? 'Send my objection' : 'Ask to talk'}</Button
+				>
+			</div>
 		</form>
 	{:else if !shut}
 		<p class="closed" data-note="{kind}-closed">{closedWords(kind)}</p>
@@ -193,24 +196,20 @@
 </div>
 
 <style>
-	.flag-form { display: flex; flex-direction: column; gap: var(--space-sm); font-size: 1rem; }
+	.flag-form { display: flex; flex-direction: column; gap: var(--space-sm); font-size: 1rem; color: var(--ui-foreground); }
 	.flag-form p { margin: 0; }
-	.who-sees, .closed, .note { font-size: 0.9rem; color: var(--text-secondary); }
-	h3 { font-size: 1rem; margin: var(--space-xs) 0 0; }
+	.who-sees, .closed, .note { font-size: 0.875rem; color: var(--ui-muted-foreground); }
+	h3 { font-size: 1rem; font-weight: 600; margin: var(--space-xs) 0 0; }
 	.flags { margin: 0; padding-left: var(--space-lg); display: flex; flex-direction: column; gap: var(--space-sm); }
 	.line { display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: baseline; }
-	.meta { font-size: 0.85rem; color: var(--text-secondary); }
+	.meta { font-size: 0.8125rem; color: var(--ui-muted-foreground); }
 	.text { white-space: pre-wrap; overflow-wrap: anywhere; }
-	.reply { padding-left: var(--space-md); border-left: 2px solid var(--glass-border); }
-	form { display: flex; flex-direction: column; gap: var(--space-xs); }
-	.field-label { font-size: 0.9rem; color: var(--text-secondary); }
-	/* 16px, so a phone does not zoom; every tap target 44px tall at least (card 2677, decision 22). */
-	.field {
-		font-size: 16px; font-family: var(--font-family); padding: var(--space-sm); width: 100%; box-sizing: border-box;
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary);
-	}
-	.count { font-size: 0.8rem; color: var(--text-tertiary); text-align: right; }
-	.send { min-height: 44px; font-size: 1rem; align-self: flex-start; }
-	.said { font-size: 0.9rem; color: var(--accent-emerald, var(--text-secondary)); }
-	.said.refused { color: var(--accent-rose); }
+	.reply { padding-left: var(--space-md); border-left: 2px solid var(--ui-border); }
+	form { display: flex; flex-direction: column; gap: var(--space-xs); max-width: 48rem; }
+	.count { font-size: 0.75rem; color: var(--ui-muted-foreground); text-align: right; }
+	.send-row { display: flex; }
+	.said { font-size: 0.875rem; color: var(--ui-foreground); }
+	.said:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
+	/* A refusal: the words in the text colour, marked by the destructive tone. */
+	.said.refused { padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); }
 </style>

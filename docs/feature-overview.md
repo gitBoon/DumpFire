@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.101
+version: 1.102
 status: As-Built
 date: 2026-11-25
 tags:
+  - card-3075
+  - decision-pages-full-width
   - card-2689
   - decision-webhooks
   - card-2688
@@ -386,6 +388,7 @@ Once a decision is opened, each participant reads it on its own page and, if the
 
 - **Two ways in** — someone with an account opens `/decisions/<id>`, signed in, from the board's decision list or from their email. Someone without an account opens the personal link in their email, `/decision-link/[token]`, and needs no account and no password: the link is theirs alone, and the page says "This address is personal to you: do not share it." Anyone else who can open the board sees the same page with no form: the published text and its status
 - **What the page shows** — in this order: when you were told of the decision, the situation, the question, what is asked of you and by when (in UTC), who sees your response, the options side by side (stacked on a phone), how it affects you (your own group's part first and open), the user stories, what is not yet known, what is already settled and the technical detail (closed until you open them). A section an agent drafted says so. The page is made for a phone first: one column, large buttons, and text that does not need zooming
+- **Beside the decision on a wide screen** — the decision pages use the whole width of the window, up to 1600 pixels, in the same frame as the other pages around the board (card 3075). From 1024 pixels wide, a side column titled "About this decision" sits to the right of the decision and stays in view as you scroll: when it closes, who decides, your part, and, if you are consulted, where your response stands ("Not given yet", "Given <date>; you can change it" and so on) with a **Go to the form** link; under that, Results and ruling, Record, Supersede… and the PDF copies, for whoever may use them. On a narrower screen, or a phone, the same column follows the decision. The status sits beside the title. The personal link's page has the same column with the details alone, the response state as plain text, and no link anywhere; its header shows the DumpFire name as text with no menu. Paragraphs keep a comfortable reading width while the options spread three or four across. The register and a decision's record put their filters on the left in the same way; the editor, the results, a person's record and a board's decision list use the full width with no side column
 - **Answering** — choose one option, or score each from 0 to 5 when the decision asks for scores, or say "I abstain" or "I have no concerns"; add a comment, and a comment on any option, if you want. **Send my response** records it and shows what was recorded and when. You can change your answer while the decision is open: each change is kept, and the latest counts. Sending the same answer twice records it once. If the decision was changed and you were only told of it, your answer is shown "Given on version N."; sending it again records it for the version you are reading now. Someone kept informed reads the decision and gives no response
 - **If the decision changed** — if it was changed after you opened it, sending says so and offers **Reload**. If it was changed and you were asked again, your earlier answer is shown as for the earlier version, and you answer again. Once the closing time has passed, or the decision is ruled on, superseded or withdrawn, the page says responses are closed and shows your last one, if you gave one
 - **Who sees your answer** — the page says: "While this decision is open, only <the decider>, who decides, sees your response. DumpFire's administrators can also see it in the record. No other participant sees it, or any totals. After the ruling, the decider may show the totals and the comments, without names, to everyone who can see this decision." The last sentence came with card 2679 (4 November 2026), and each response records which wording it was given under, so that an answer given before the page said so is never shown to anyone else

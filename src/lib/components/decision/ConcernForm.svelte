@@ -22,6 +22,7 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
+	import Button from '$lib/components/ui/Button.svelte';
 	import { DECISION_TEXT_MAX } from '$lib/decision-rules';
 	import type { OwnConcern } from '$lib/decision-view-types';
 	import { CONCERN_WHO_SEES, shownMoment } from '$lib/decision-words';
@@ -99,10 +100,10 @@
 				send();
 			}}
 		>
-			<label class="field-label" for="{id}-concern">Your concern about the ruling</label>
-			<textarea id="{id}-concern" class="field" rows="4" maxlength={TEXT_MAX} aria-describedby="{id}-concern-count" bind:value={comment}></textarea>
+			<label class="ui-label field-label" for="{id}-concern">Your concern about the ruling</label>
+			<textarea id="{id}-concern" class="ui-textarea" rows="4" maxlength={TEXT_MAX} aria-describedby="{id}-concern-count" bind:value={comment}></textarea>
 			<p class="count" id="{id}-concern-count">{comment.length} of {TEXT_MAX.toLocaleString('en-GB')} characters</p>
-			<button type="submit" class="btn-primary send" data-action="concern" disabled={!ready} aria-busy={sending ? 'true' : undefined}>Send my concern</button>
+			<div class="send-row"><Button type="submit" class="send" data-action="concern" disabled={!ready} aria-busy={sending ? 'true' : undefined}>Send my concern</Button></div>
 		</form>
 	{/if}
 
@@ -111,22 +112,17 @@
 </div>
 
 <style>
-	.concern-form { display: flex; flex-direction: column; gap: var(--space-sm); font-size: 1rem; }
+	.concern-form { display: flex; flex-direction: column; gap: var(--space-sm); font-size: 1rem; color: var(--ui-foreground); }
 	.concern-form p { margin: 0; }
-	.who-sees { font-size: 0.9rem; color: var(--text-secondary); }
-	h3 { font-size: 1rem; margin: var(--space-xs) 0 0; }
+	.who-sees { font-size: 0.875rem; color: var(--ui-muted-foreground); }
+	h3 { font-size: 1rem; font-weight: 600; margin: var(--space-xs) 0 0; }
 	.concerns { margin: 0; padding-left: var(--space-lg); display: flex; flex-direction: column; gap: var(--space-xs); }
 	.when { font-weight: 600; }
 	.text { white-space: pre-wrap; overflow-wrap: anywhere; }
-	form { display: flex; flex-direction: column; gap: var(--space-xs); }
-	.field-label { font-size: 0.9rem; color: var(--text-secondary); }
-	/* 16px, so a phone does not zoom; every tap target 44px tall at least (card 2677, decision 22). */
-	.field {
-		font-size: 16px; font-family: var(--font-family); padding: var(--space-sm); width: 100%; box-sizing: border-box;
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary);
-	}
-	.count { font-size: 0.8rem; color: var(--text-tertiary); text-align: right; }
-	.send { min-height: 44px; font-size: 1rem; align-self: flex-start; }
-	.said { font-size: 0.9rem; color: var(--accent-emerald, var(--text-secondary)); }
-	.said.refused { color: var(--accent-rose); }
+	form { display: flex; flex-direction: column; gap: var(--space-xs); max-width: 48rem; }
+	.count { font-size: 0.75rem; color: var(--ui-muted-foreground); text-align: right; }
+	.send-row { display: flex; }
+	.said { font-size: 0.875rem; color: var(--ui-foreground); }
+	/* A refusal: the words in the text colour, marked by the destructive tone. */
+	.said.refused { padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); }
 </style>

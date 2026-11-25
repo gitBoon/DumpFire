@@ -32,6 +32,7 @@
 	import { tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
+	import Button from '$lib/components/ui/Button.svelte';
 	import { REPLY_TEXT_RULE } from '$lib/decision-rules';
 	import type { ResultFlag } from '$lib/decision-view-types';
 	import { FLAG_KIND_WORDS, FLAG_REPLIES_CLOSED, FLAG_REPLY_ELSEWHERE, flagRepliedWords, flagReplyWhoSees, flagUnrepliedWords, shownMoment } from '$lib/decision-words';
@@ -145,12 +146,12 @@
 						}}
 					>
 						<p class="note" id="{id}-{flag.flagId}-who-sees" data-note="reply-who-sees">{flagReplyWhoSees(flag.name)}</p>
-						<label class="field-label" for="{id}-{flag.flagId}">
+						<label class="ui-label field-label" for="{id}-{flag.flagId}">
 							{flag.kind === 'objection' ? `Your answer to ${flag.name}'s objection` : `What came of the talk with ${flag.name}`}
 						</label>
 						<textarea
 							id="{id}-{flag.flagId}"
-							class="field"
+							class="ui-textarea"
 							rows="3"
 							maxlength={TEXT_MAX}
 							required
@@ -158,9 +159,11 @@
 							bind:value={() => replies[flag.flagId] ?? '', (value) => (replies[flag.flagId] = value)}
 						></textarea>
 						<p class="count" id="{id}-{flag.flagId}-count">{(replies[flag.flagId] ?? '').length} of {TEXT_MAX.toLocaleString('en-GB')} characters</p>
-						<button type="submit" class="btn btn-primary btn-sm" data-action="reply" disabled={!ready(flag.flagId)} aria-busy={sending === flag.flagId ? 'true' : undefined}
-							>{flag.kind === 'objection' ? 'Send answer' : 'Record outcome'}</button
-						>
+						<div class="reply-actions">
+							<Button type="submit" size="sm" data-action="reply" disabled={!ready(flag.flagId)} aria-busy={sending === flag.flagId ? 'true' : undefined}
+								>{flag.kind === 'objection' ? 'Send answer' : 'Record outcome'}</Button
+							>
+						</div>
 					</form>
 				{:else}
 					<p class="meta" data-note="no-reply">{flagUnrepliedWords(flag.kind)}</p>
@@ -173,22 +176,18 @@
 </div>
 
 <style>
-	.flag-replies { display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; }
+	.flag-replies { display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; color: var(--ui-foreground); }
 	.flag-replies p { margin: 0; }
-	.flags { margin: 0; padding-left: var(--space-lg); display: flex; flex-direction: column; gap: var(--space-md); font-size: 0.88rem; }
+	.flags { margin: 0; padding-left: var(--space-lg); display: flex; flex-direction: column; gap: var(--space-md); font-size: 0.875rem; }
 	.line { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-sm); align-items: baseline; overflow-wrap: anywhere; }
-	.meta, .note { font-size: 0.82rem; color: var(--text-secondary); }
+	.meta, .note { font-size: 0.8125rem; color: var(--ui-muted-foreground); }
 	.text { white-space: pre-wrap; overflow-wrap: anywhere; }
-	.reply { padding-left: var(--space-md); border-left: 2px solid var(--glass-border); }
-	form { display: flex; flex-direction: column; gap: var(--space-xs); margin-top: var(--space-xs); }
-	.field-label { font-size: 0.82rem; color: var(--text-secondary); }
-	.field {
-		width: 100%; box-sizing: border-box; padding: var(--space-xs) var(--space-sm);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-elevated); color: var(--text-primary); font-size: 16px; font-family: var(--font-family);
-	}
-	.count { font-size: 0.7rem; color: var(--text-tertiary); text-align: right; }
-	button { align-self: flex-end; min-height: 44px; }
-	.said { font-size: 0.85rem; color: var(--accent-emerald, var(--text-secondary)); min-height: 1em; }
-	.said.refused { color: var(--accent-rose); }
+	.reply { padding-left: var(--space-md); border-left: 2px solid var(--ui-border); }
+	form { display: flex; flex-direction: column; gap: var(--space-xs); margin-top: var(--space-xs); max-width: 48rem; }
+	.count { font-size: 0.75rem; color: var(--ui-muted-foreground); text-align: right; }
+	.reply-actions { display: flex; justify-content: flex-end; }
+	.said { font-size: 0.875rem; color: var(--ui-foreground); min-height: 1em; }
+	.said:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
+	/* A refusal: the words in the text colour, marked by the destructive tone. */
+	.said.refused { padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); }
 </style>

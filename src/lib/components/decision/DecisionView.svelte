@@ -35,11 +35,17 @@
   need those, in their snippets, through the components they share
   (`ParticipantBanner` and `ParticipantResponse`, card 2707). It fetches
   nothing and posts nothing.
+
+  Card 3075: it fills the page's main column, beside the side column the
+  pages draw; running text keeps a measure of about 80 characters, while the
+  options and the forms take the full width. The status is the kit's Badge,
+  and the response section is `#response`, where the side column links.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { DecisionViewProps } from '$lib/decision-view-types';
-	import { STATUS_WORDS, shownMoment, surveyWhoSees, whoSeesStatement } from '$lib/decision-words';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import { shownMoment, surveyWhoSees, whoSeesStatement } from '$lib/decision-words';
 	import AgentLabel from './AgentLabel.svelte';
 	import MarkdownBlock from './MarkdownBlock.svelte';
 	import SurveyQuestions from './SurveyQuestions.svelte';
@@ -86,7 +92,7 @@
 <article class="decision-view" data-mode={mode}>
 	<header class="view-head">
 		<h1>{decision.title}</h1>
-		<span class="status-chip" data-status={decision.shownStatus}>{STATUS_WORDS[decision.shownStatus] ?? decision.shownStatus}</span>
+		<Badge status={decision.shownStatus} />
 	</header>
 
 	{#if banner}
@@ -94,20 +100,20 @@
 	{/if}
 
 	{#if content.situation !== ''}
-		<section data-section="situation">
+		<section class="prose" data-section="situation">
 			<h2>Situation</h2>
 			{@render agentLabel('situation')}
 			<MarkdownBlock text={content.situation} />
 		</section>
 	{/if}
 
-	<section data-section="question">
+	<section class="prose" data-section="question">
 		<h2>The question</h2>
 		{@render agentLabel('question')}
 		<p class="question">{content.question}</p>
 	</section>
 
-	<section data-section="ask">
+	<section class="prose" data-section="ask">
 		<h2>What is asked of you, and by when</h2>
 		{@render agentLabel('ask')}
 		{#if content.ask !== ''}<MarkdownBlock text={content.ask} />{/if}
@@ -115,7 +121,7 @@
 	</section>
 
 	{#if consulted}
-		<section data-section="who-sees">
+		<section class="prose" data-section="who-sees">
 			<h2>Who sees your response</h2>
 			<!-- The words and their version are one bundle's, so the version a response sends is the one shown (card 2679, decisions 21 and 25). -->
 			<p>{whoSeesStatement(decider, releases)}</p>
@@ -158,7 +164,7 @@
 	{/if}
 
 	{#if audiences.length > 0}
-		<section data-section="audiences">
+		<section class="prose" data-section="audiences">
 			<h2>How it affects you</h2>
 			{@render agentLabel('audiences')}
 			{#each audiences as audience, i (i)}
@@ -171,7 +177,7 @@
 	{/if}
 
 	{#if content.stories.length > 0}
-		<section data-section="stories">
+		<section class="prose" data-section="stories">
 			<details>
 				<summary><h2>User stories</h2></summary>
 				{@render agentLabel('stories')}
@@ -184,7 +190,7 @@
 	{/if}
 
 	{#if content.unknowns !== ''}
-		<section data-section="unknowns">
+		<section class="prose" data-section="unknowns">
 			<h2>What is not yet known</h2>
 			{@render agentLabel('unknowns')}
 			<MarkdownBlock text={content.unknowns} />
@@ -192,7 +198,7 @@
 	{/if}
 
 	{#if content.alreadyRuled !== ''}
-		<section data-section="already-ruled">
+		<section class="prose" data-section="already-ruled">
 			<h2>Already settled</h2>
 			{@render agentLabel('alreadyRuled')}
 			<MarkdownBlock text={content.alreadyRuled} />
@@ -200,7 +206,7 @@
 	{/if}
 
 	{#if content.technicalDetail !== ''}
-		<section data-section="technical-detail">
+		<section class="prose" data-section="technical-detail">
 			<details>
 				<summary><h2>Technical detail</h2></summary>
 				{@render agentLabel('technicalDetail')}
@@ -210,8 +216,9 @@
 	{/if}
 
 	{#if consulted && response}
-		<section data-section="response">
-			<h2>Your response</h2>
+		<!-- The response is where the side column's Go to the form leads (card 3075). -->
+		<section class="response-section" data-section="response" id="response" aria-labelledby="response-heading">
+			<h2 id="response-heading">Your response</h2>
 			{@render response()}
 		</section>
 	{/if}
@@ -254,25 +261,41 @@
 </article>
 
 <style>
-	.decision-view { max-width: 46rem; margin: 0 auto; font-size: 1rem; display: flex; flex-direction: column; gap: var(--space-lg); }
+	/* It fills the page's main column (card 3075); running text keeps a readable measure, the options and forms the full width. */
+	.decision-view { font-size: 1rem; display: flex; flex-direction: column; gap: var(--space-xl); min-width: 0; color: var(--ui-foreground); }
+	.prose { max-width: 80ch; }
+	/* Reached by the side column's Go to the form: its heading clear of the shell's fixed header. */
+	.response-section { scroll-margin-top: calc(64px + var(--space-md)); }
 	.view-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); }
-	.view-head h1 { font-size: 1.4rem; line-height: 1.3; margin: 0; flex: 1 1 16rem; overflow-wrap: anywhere; }
-	.status-chip {
-		display: inline-block; padding: 2px var(--space-sm); border-radius: 999px;
-		font-size: 0.8rem; background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo);
+	.view-head h1 { font-size: 1.625rem; font-weight: 600; line-height: 1.2; letter-spacing: -0.025em; margin: 0; flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+	/* The banner: a quiet panel; its parts stay its direct children (card 2707's tests compare them). */
+	.view-banner {
+		padding: 0.75rem 1rem;
+		border: 1px solid var(--ui-border);
+		border-radius: var(--ui-radius-lg);
+		background: color-mix(in srgb, var(--ui-muted) 50%, transparent);
 	}
-	section h2 { font-size: 1.05rem; margin: 0 0 var(--space-sm); }
-	section h3 { font-size: 1rem; margin: var(--space-sm) 0 var(--space-xs); }
-	section h4 { font-size: 0.85rem; margin: var(--space-sm) 0 var(--space-xs); color: var(--text-secondary); }
-	.question { font-size: 1.1rem; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+	section h2 { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 var(--space-sm); }
+	section h3 { font-size: 1rem; font-weight: 600; margin: var(--space-sm) 0 var(--space-xs); }
+	section h4 { font-size: 0.8125rem; font-weight: 600; margin: var(--space-md) 0 var(--space-xs); color: var(--ui-muted-foreground); }
+	.question { font-size: 1.125rem; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
 	.by-when { font-weight: 600; margin: var(--space-sm) 0 0; }
 	/* Side by side where there is room, stacked on a phone (decision 22). */
-	.option-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: var(--space-md); }
-	.option-card { padding: var(--space-md); border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--bg-elevated); min-width: 0; }
-	.option-label { margin: 0; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent-indigo); }
+	.option-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: var(--space-md); }
+	.option-card {
+		min-width: 0;
+		padding: 1rem 1.25rem;
+		border: 1px solid var(--ui-border);
+		border-radius: var(--ui-radius-lg);
+		background: var(--ui-card);
+		box-shadow: var(--ui-shadow-sm);
+	}
+	.option-label { margin: 0; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ui-muted-foreground); }
+	.option-card h3 { margin-top: var(--space-xs); }
 	.option-card ul { margin: 0; padding-left: 1.2rem; }
-	details > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+	details > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; border-radius: var(--ui-radius-sm); }
+	details > summary:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
 	details > summary h2 { margin: 0; }
-	.audience { border-bottom: 1px solid var(--glass-border); }
+	.audience { border-bottom: 1px solid var(--ui-border); }
 	.audience > summary { font-weight: 600; }
 </style>

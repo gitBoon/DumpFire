@@ -34,7 +34,7 @@
 <nav class="ui-tabs" aria-label={label}>
 	{#each items as tab (tab.id)}
 		<a class="ui-tab" href={tab.href} data-tab={tab.id} aria-current={tab.id === current ? 'page' : undefined}>
-			{tab.label}{#if tab.count !== undefined && tab.count !== null}<span class="ui-tab-count"><span class="ui-tab-sr"> (</span>{tab.count}<span class="ui-tab-sr">)</span></span>{/if}
+			{tab.label}{#if tab.count !== undefined && tab.count !== null}<span class="ui-tab-count"><span class="ui-tab-sr">{' ('}</span>{tab.count}<span class="ui-tab-sr">)</span></span>{/if}
 		</a>
 	{/each}
 </nav>

@@ -18,6 +18,12 @@
   before it. In the document the page always comes first, so a screen reader
   reads it first.
 
+  `bare` (card 3075): the header holds the fire and "DumpFire" as plain
+  text, not a link, and nothing else: no crumbs, title, actions or Theme
+  menu, even when given. For a page that must link nowhere, such as a
+  personal decision link held by someone outside DumpFire. `main` and the
+  rail are as without it.
+
   It also brings in the kit's field classes (ui-field.css).
 -->
 <script lang="ts">
@@ -47,8 +53,11 @@
 		railPosition = 'end',
 		railLabel,
 		width = 'full',
+		bare = false,
 		children
 	}: {
+		/** The header with the name alone, as plain text: no link, crumbs, actions or Theme menu. */
+		bare?: boolean;
 		/** The page's name in the header, where there are no crumbs. */
 		title?: string;
 		/** The header's crumbs, in place of `title`. */
@@ -63,25 +72,32 @@
 <div class="ui-shell">
 	<header class="ui-shell-header">
 		<div class="ui-shell-header-inner">
-			<a href="/" class="ui-shell-logo" title="Back to DumpFire">
-				<span class="ui-shell-fire" aria-hidden="true">🔥</span>
-				<span class="ui-shell-brand">DumpFire</span>
-			</a>
-			<span class="ui-shell-divider" aria-hidden="true"></span>
-			<div class="ui-shell-crumbs">
-				{#if crumbs}
-					{@render crumbs()}
-				{:else if title}
-					<p class="ui-shell-title">{title}</p>
+			{#if bare}
+				<span class="ui-shell-logo ui-shell-logo-bare">
+					<span class="ui-shell-fire" aria-hidden="true">🔥</span>
+					<span class="ui-shell-brand">DumpFire</span>
+				</span>
+			{:else}
+				<a href="/" class="ui-shell-logo" title="Back to DumpFire">
+					<span class="ui-shell-fire" aria-hidden="true">🔥</span>
+					<span class="ui-shell-brand">DumpFire</span>
+				</a>
+				<span class="ui-shell-divider" aria-hidden="true"></span>
+				<div class="ui-shell-crumbs">
+					{#if crumbs}
+						{@render crumbs()}
+					{:else if title}
+						<p class="ui-shell-title">{title}</p>
+					{/if}
+				</div>
+				{#if actions}
+					<div class="ui-shell-actions">{@render actions()}</div>
 				{/if}
-			</div>
-			{#if actions}
-				<div class="ui-shell-actions">{@render actions()}</div>
+				<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
+					{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
+					<ThemeMenuItems heading={false} />
+				</HeaderMenu>
 			{/if}
-			<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
-				{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
-				<ThemeMenuItems heading={false} />
-			</HeaderMenu>
 		</div>
 	</header>
 
@@ -142,6 +158,10 @@
 	.ui-shell-logo:hover {
 		color: var(--ui-foreground);
 		background: var(--ui-muted);
+	}
+	/* The bare header's name is text, not a link: no hover. */
+	.ui-shell-logo-bare:hover {
+		background: none;
 	}
 	.ui-shell-logo:focus-visible {
 		outline: 2px solid var(--ui-ring);
@@ -241,6 +261,10 @@
 		}
 		.ui-shell-brand {
 			display: none;
+		}
+		/* With nothing else in the header, the name has the room. */
+		.ui-shell-logo-bare .ui-shell-brand {
+			display: inline;
 		}
 		.ui-shell-main {
 			padding: var(--space-md) var(--space-md) var(--user-badge-space);

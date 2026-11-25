@@ -104,6 +104,7 @@
 			{extra}
 			initial={ownResponse}
 			onReload={reload}
+			onRecorded={() => invalidateAll()}
 		/>
 	{/key}
 {:else if decision.shownStatus === 'awaiting_ruling'}

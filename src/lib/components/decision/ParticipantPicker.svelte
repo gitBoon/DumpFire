@@ -29,6 +29,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
 	import { failureMessage } from '$lib/api';
 	import { mailedOnSave, openForInput } from '$lib/decision-rules';
 	import { STALE_REVISION } from '$lib/decision-words';
@@ -265,7 +266,7 @@
 	{/if}
 
 	{#if canSave}
-		<input id={searchId} type="search" class="picker-search" placeholder="Search name, job title or group" aria-label="Search people" bind:value={search} />
+		<input id={searchId} type="search" class="ui-input picker-search" placeholder="Search name, job title or group" aria-label="Search people" bind:value={search} />
 
 		{#if groups.length > 0}
 			<p class="picker-sub">Groups</p>
@@ -312,10 +313,10 @@
 		{#if error}
 			<p class="picker-error" role="alert">
 				{error}
-				{#if stale}<button type="button" class="btn-ghost btn-xs" onclick={() => onReload()}>Reload</button>{/if}
+				{#if stale}<Button variant="outline" size="sm" onclick={() => onReload()}>Reload</Button>{/if}
 			</p>
 		{/if}
-		<button type="button" class="btn-primary btn-sm" aria-busy={saving ? 'true' : undefined} onclick={askSave}>Save participants</button>
+		<div class="save-row"><Button size="sm" aria-busy={saving ? 'true' : undefined} onclick={askSave}>Save participants</Button></div>
 	{:else}
 		{#if status !== 'draft' && editable}
 			<p class="note">Once a decision is open, only its author and its decider can include people.</p>
@@ -352,32 +353,47 @@
 {/if}
 
 <style>
-	.picker h3 { font-size: 0.9rem; margin: 0 0 var(--space-sm); }
-	.picker-sub { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); margin: var(--space-sm) 0 var(--space-xs); }
-	.picker-search {
-		width: 100%; box-sizing: border-box; padding: var(--space-xs) var(--space-sm);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-elevated); color: var(--text-primary); font-size: 0.8rem; font-family: var(--font-family);
-	}
+	.picker { color: var(--ui-foreground); }
+	.picker h3 { font-size: 0.9375rem; font-weight: 600; margin: 0 0 var(--space-sm); }
+	.picker-sub { font-size: 0.75rem; font-weight: 600; color: var(--ui-muted-foreground); margin: var(--space-md) 0 var(--space-xs); }
 	ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+	.group-ticks { flex-direction: row; flex-wrap: wrap; gap: var(--space-xs); }
 	.people-ticks { max-height: 320px; overflow-y: auto; }
-	.person-row, .flagged-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); font-size: 0.8rem; padding: 2px 0; }
+	.person-row, .flagged-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); font-size: 0.8125rem; padding: 2px 0; }
 	.tick { display: inline-flex; align-items: center; gap: var(--space-xs); cursor: pointer; }
-	.person-name { font-weight: 600; }
-	.job, .note, .role { font-size: 0.72rem; color: var(--text-tertiary); }
-	.flag { font-size: 0.72rem; color: var(--accent-rose); }
+	.person-name { font-weight: 500; }
+	.job, .note, .role { font-size: 0.75rem; color: var(--ui-muted-foreground); }
+	/* A flag: the words in the text colour, marked by the destructive tone. */
+	.flag { display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; color: var(--ui-foreground); }
+	.flag::before { content: ''; width: 0.375rem; height: 0.375rem; border-radius: var(--radius-full); background: var(--ui-destructive); }
 	.chip {
-		display: inline-block; padding: 0 var(--space-sm); border-radius: 999px;
-		font-size: 0.68rem; background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo);
+		display: inline-block; padding: 0 0.5rem; border-radius: var(--ui-radius-sm);
+		font-size: 0.6875rem; background: var(--ui-muted); color: var(--ui-foreground);
 	}
+	/* The group and role toggles keep their checkbox role; drawn as the kit's small outline controls. */
 	.group-tick, .role-toggle {
-		font-size: 0.75rem; font-family: var(--font-family); padding: 1px var(--space-sm);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-base); color: var(--text-secondary); cursor: pointer;
+		min-height: 1.75rem; padding: 0 0.625rem;
+		font-size: 0.75rem; font-weight: 500; font-family: var(--font-family);
+		border: 1px solid var(--ui-input); border-radius: var(--ui-radius-sm);
+		background: var(--ui-background); color: var(--ui-foreground); cursor: pointer;
+		transition: background-color var(--duration-fast) var(--ease-out);
 	}
-	.group-tick[aria-checked='true'] { background: var(--accent-indigo); border-color: var(--accent-indigo); color: white; }
-	.group-tick[aria-checked='mixed'] { border-color: var(--accent-indigo); color: var(--accent-indigo); }
-	.group-tick:disabled { opacity: 0.5; cursor: default; }
-	.summary { font-size: 0.78rem; color: var(--text-secondary); margin: var(--space-sm) 0; }
-	.picker-error { font-size: 0.78rem; color: var(--accent-rose); margin: var(--space-xs) 0; }
+	.group-tick:hover:not(:disabled), .role-toggle:hover { background: var(--ui-muted); }
+	.group-tick:focus-visible, .role-toggle:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
+	.group-tick[aria-checked='true'] { background: var(--ui-primary); border-color: var(--ui-primary); color: var(--ui-primary-foreground); }
+	.group-tick[aria-checked='mixed'] { border-color: var(--ui-primary); background: color-mix(in srgb, var(--ui-primary) 12%, var(--ui-background)); }
+	.group-tick:disabled { opacity: 0.5; cursor: not-allowed; }
+	.summary { font-size: 0.8125rem; color: var(--ui-muted-foreground); margin: var(--space-sm) 0; }
+	.picker-error {
+		display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm);
+		margin: var(--space-xs) 0; padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive);
+		font-size: 0.8125rem; color: var(--ui-foreground);
+	}
+	.save-row { display: flex; }
+	@media (pointer: coarse) {
+		.group-tick, .role-toggle { min-height: 2.75rem; }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.group-tick, .role-toggle { transition: none; }
+	}
 </style>

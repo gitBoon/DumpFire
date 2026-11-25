@@ -10,16 +10,23 @@
 	 * Card 2680 (decisions 26 and 28): All decisions goes to the register,
 	 * filtered to this board; and the list re-reads on a `decision` event of
 	 * this board alone, through the one 250 ms debounce.
+	 *
+	 * Card 3075: a list page on the kit's shell, full width (not the board
+	 * view, which never uses the kit); New decision is the page's one main
+	 * action, with the kit's short sheen.
 	 */
 	import type { PageData } from './$types';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { connectLiveRefresh } from '$lib/live-refresh';
-	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
-	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import Toast from '$lib/components/Toast.svelte';
+	import PageShell from '$lib/components/ui/PageShell.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import Table from '$lib/components/ui/Table.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import { failureMessage } from '$lib/api';
-	import { STATUS_WORDS, shownMoment } from '$lib/decision-words';
-	import { theme, themeIcon } from '$lib/stores/theme';
+	import { shownMoment } from '$lib/decision-words';
 
 	let { data }: { data: PageData } = $props();
 
@@ -78,81 +85,64 @@
 	<title>Decisions on {data.board.name} — DumpFire</title>
 </svelte:head>
 
-<div class="decisions-page">
-	<header class="decisions-header glass">
-		<div class="decisions-header-inner">
-			<a href="/" class="header-logo" title="Back to DumpFire">
-				<span class="logo-fire">🔥</span>
-				<span class="logo-text">DumpFire</span>
-			</a>
-			<nav class="crumb" aria-label="Where this is">
-				<a href="/board/{data.board.id}">{data.board.name}</a>
-			</nav>
-			<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
-				{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
-				<ThemeMenuItems heading={false} />
-			</HeaderMenu>
-		</div>
-	</header>
+{#snippet crumbs()}
+	<nav class="crumb" aria-label="Where this is">
+		<a href="/board/{data.board.id}">{data.board.name}</a>
+	</nav>
+{/snippet}
 
-	<main class="decisions-content">
-		<section class="decisions-card glass">
-			<div class="section-header">
-				<h1>Decisions on {data.board.name}</h1>
-				<div class="section-actions">
-					<a class="btn-ghost btn-sm all-link" href="/decisions?board={data.board.id}" data-action="all">All decisions</a>
-					{#if data.canCreate}
-						<button type="button" class="btn-primary btn-sm" onclick={openNew}>New decision</button>
-					{/if}
-				</div>
-			</div>
+{#snippet headerActions()}
+	<Button variant="outline" size="sm" href="/decisions?board={data.board.id}" data-action="all">All decisions</Button>
+	{#if data.canCreate}
+		<Button size="sm" highlight onclick={openNew}>New decision</Button>
+	{/if}
+{/snippet}
 
-			{#if data.decisions.length === 0}
-				<p class="empty-msg">No decisions on this board yet.</p>
-			{:else}
-				<div class="table-wrap">
-					<table class="decisions-table">
-						<thead>
-							<tr>
-								<th>Title</th>
-								<th>Status</th>
-								<th>Decider</th>
-								<th>Closes</th>
-								<th>Updated</th>
-							</tr>
-						</thead>
-						<tbody>
-							{#each data.decisions as decision (decision.id)}
-								<tr data-decision={decision.id}>
-									<td class="title">
-										{#if decision.status !== 'draft'}
-											<a href="/decisions/{decision.id}">{decision.title}</a>
-											{#if decision.mayEdit}<a class="edit-link" href="/decisions/{decision.id}/edit">Edit</a>{/if}
-										{:else if decision.mayEdit}
-											<a href="/decisions/{decision.id}/edit">{decision.title}</a>
-										{:else}
-											<span>{decision.title}</span>
-										{/if}
-									</td>
-									<td><span class="status-chip" data-status={decision.shownStatus}>{STATUS_WORDS[decision.shownStatus] ?? decision.shownStatus}</span></td>
-									<td>{decision.deciderName ?? '—'}</td>
-									<td>{shownMoment(decision.closesAt, '—')}</td>
-									<td>{shownMoment(decision.updatedAt, '—')}</td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				</div>
-			{/if}
-		</section>
-	</main>
-</div>
+<PageShell width="full" {crumbs}>
+	<PageHeader title="Decisions on {data.board.name}" actions={headerActions} />
+
+	{#if data.decisions.length === 0}
+		<EmptyState title="No decisions on this board yet." />
+	{:else}
+		<Table caption="Decisions on {data.board.name}" captionHidden stack>
+			<thead>
+				<tr>
+					<th>Title</th>
+					<th>Status</th>
+					<th>Decider</th>
+					<th>Closes</th>
+					<th>Updated</th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each data.decisions as decision (decision.id)}
+					<tr data-decision={decision.id}>
+						<td class="title" data-label="Title">
+							{#if decision.status !== 'draft'}
+								<a class="row-link" href="/decisions/{decision.id}">{decision.title}</a>
+								{#if decision.mayEdit}<Button variant="link" size="sm" class="edit-link" href="/decisions/{decision.id}/edit">Edit</Button>{/if}
+							{:else if decision.mayEdit}
+								<a class="row-link" href="/decisions/{decision.id}/edit">{decision.title}</a>
+							{:else}
+								<span>{decision.title}</span>
+							{/if}
+						</td>
+						<td data-label="Status"><Badge status={decision.shownStatus} /></td>
+						<td data-label="Decider">{decision.deciderName ?? '—'}</td>
+						<td data-label="Closes" class="when">{shownMoment(decision.closesAt, '—')}</td>
+						<td data-label="Updated" class="when">{shownMoment(decision.updatedAt, '—')}</td>
+					</tr>
+				{/each}
+			</tbody>
+		</Table>
+	{/if}
+</PageShell>
 
 {#if creating}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-overlay" role="presentation" onclick={() => (creating = false)}>
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="new-dialog glass" role="dialog" aria-modal="true" aria-label="New decision" tabindex="-1" onclick={(e) => e.stopPropagation()}>
+		<div class="new-dialog" role="dialog" aria-modal="true" aria-label="New decision" tabindex="-1" onclick={(e) => e.stopPropagation()}>
 			<h2>New decision</h2>
 			<form
 				onsubmit={(e) => {
@@ -160,13 +150,13 @@
 					createDraft();
 				}}
 			>
-				<label for="new-decision-title">Title</label>
+				<label class="ui-label" for="new-decision-title">Title</label>
 				<!-- svelte-ignore a11y_autofocus -->
-				<input id="new-decision-title" class="form-input" maxlength="200" autofocus bind:value={newTitle} />
+				<input id="new-decision-title" class="ui-input" maxlength="200" autofocus bind:value={newTitle} />
 				{#if error}<p class="dialog-error" role="alert">{error}</p>{/if}
 				<div class="dialog-actions">
-					<button type="button" class="btn-ghost btn-sm" onclick={() => (creating = false)}>Cancel</button>
-					<button type="submit" class="btn-primary btn-sm" aria-busy={sending ? 'true' : undefined}>Make draft</button>
+					<Button variant="ghost" size="sm" onclick={() => (creating = false)}>Cancel</Button>
+					<Button type="submit" size="sm" aria-busy={sending ? 'true' : undefined}>Make draft</Button>
 				</div>
 			</form>
 		</div>
@@ -176,68 +166,94 @@
 <Toast />
 
 <style>
-	.decisions-page { min-height: 100vh; padding-top: 64px; }
-	.decisions-header {
-		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-		height: 64px; border-bottom: 1px solid var(--glass-border);
-		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+	.crumb {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
-	.decisions-header-inner {
-		max-width: 1400px; margin: 0 auto; height: 100%;
-		display: flex; align-items: center; gap: var(--space-lg);
-		padding: 0 var(--space-xl);
+	.crumb a {
+		border-radius: var(--ui-radius-sm);
+		color: var(--ui-muted-foreground);
+		text-decoration: none;
 	}
-	.header-logo {
-		display: flex; align-items: center; gap: var(--space-sm);
-		text-decoration: none; color: var(--text-primary);
-		font-weight: 700; font-size: 1.1rem;
+	.crumb a:hover {
+		color: var(--ui-foreground);
 	}
-	.logo-fire { font-size: 1.4rem; }
-	.crumb { flex: 1; font-size: 0.85rem; min-width: 0; }
-	.crumb a { color: var(--text-secondary); text-decoration: none; }
-	.crumb a:hover { color: var(--accent-indigo); }
-
-	/* The page's last line stops above the user badge (card 2239). */
-	.decisions-content { max-width: 1100px; margin: 0 auto; padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space); }
-	@media (max-width: 640px) {
-		.decisions-header-inner { padding: 0 var(--space-md); }
-		.logo-text { display: none; }
-		.decisions-content { padding: var(--space-md) var(--space-md) var(--user-badge-space); }
-	}
-	.decisions-card { padding: var(--space-xl); border-radius: var(--radius-lg); }
-	.section-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); margin-bottom: var(--space-lg); }
-	.section-header h1 { font-size: 1.05rem; margin: 0; }
-	.section-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: center; }
-	.all-link { min-height: 44px; display: inline-flex; align-items: center; text-decoration: none; }
-	.empty-msg { font-size: 0.85rem; color: var(--text-tertiary); text-align: center; padding: var(--space-xl); }
-
-	.table-wrap { overflow-x: auto; }
-	.decisions-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
-	.decisions-table th {
-		text-align: left; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
-		color: var(--text-tertiary); padding: var(--space-xs) var(--space-sm); border-bottom: 1px solid var(--glass-border);
-	}
-	.decisions-table td { padding: var(--space-sm); border-bottom: 1px solid var(--glass-border); vertical-align: middle; }
-	.decisions-table td.title { font-weight: 600; }
-	.decisions-table td.title a { color: var(--accent-indigo); text-decoration: none; }
-	.decisions-table td.title a.edit-link { margin-left: var(--space-sm); font-size: 0.75rem; font-weight: 500; }
-	.status-chip {
-		display: inline-block; padding: 1px var(--space-sm); border-radius: 999px;
-		font-size: 0.7rem; background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo);
+	.crumb a:focus-visible,
+	.row-link:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
 	}
 
-	.modal-overlay { position: fixed; inset: 0; z-index: 300; background: rgba(0, 0, 0, 0.4); display: flex; align-items: center; justify-content: center; padding: var(--space-md); }
-	.new-dialog { width: 100%; max-width: 420px; padding: var(--space-xl); border-radius: var(--radius-lg); background: var(--bg-surface); }
-	.new-dialog h2 { font-size: 1rem; margin: 0 0 var(--space-md); }
-	.new-dialog form { display: flex; flex-direction: column; gap: var(--space-sm); }
-	.new-dialog label { font-size: 0.75rem; color: var(--text-secondary); }
-	.form-input {
-		padding: var(--space-sm) var(--space-md);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-elevated); color: var(--text-primary);
-		font-size: 0.82rem; font-family: var(--font-family);
+	.title {
+		font-weight: 500;
 	}
-	.dialog-error { font-size: 0.78rem; color: var(--accent-rose); margin: 0; }
-	.dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-sm); }
-	.decisions-page :global(.btn-sm), .new-dialog .btn-sm { font-size: 0.78rem !important; padding: var(--space-xs) var(--space-md) !important; }
+	.row-link {
+		border-radius: var(--ui-radius-sm);
+		color: var(--ui-foreground);
+		text-decoration: none;
+		text-underline-offset: 3px;
+	}
+	.row-link:hover {
+		color: var(--ui-foreground);
+		text-decoration: underline;
+	}
+	.when {
+		white-space: nowrap;
+		color: var(--ui-muted-foreground);
+	}
+
+	/* The New decision dialog, over the page. */
+	.modal-overlay {
+		position: fixed;
+		inset: 0;
+		z-index: 300;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: var(--space-md);
+		background: color-mix(in srgb, var(--ui-background) 75%, transparent);
+	}
+	.new-dialog {
+		width: 100%;
+		max-width: 28rem;
+		padding: 1.5rem;
+		border: 1px solid var(--ui-border);
+		border-radius: var(--ui-radius-lg);
+		background: var(--ui-card);
+		color: var(--ui-foreground);
+		box-shadow: var(--ui-shadow);
+	}
+	.new-dialog h2 {
+		margin: 0 0 var(--space-md);
+		font-size: 1.125rem;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+	}
+	.new-dialog form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+	}
+	.dialog-error {
+		margin: 0;
+		padding-left: 0.625rem;
+		border-left: 3px solid var(--ui-destructive);
+		font-size: 0.8125rem;
+		color: var(--ui-foreground);
+	}
+	.dialog-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--space-sm);
+		margin-top: var(--space-sm);
+	}
+
+	@media (pointer: coarse) {
+		.row-link {
+			display: inline-flex;
+			align-items: center;
+			min-height: 2.75rem;
+		}
+	}
 </style>

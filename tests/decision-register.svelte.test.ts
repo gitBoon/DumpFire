@@ -231,6 +231,16 @@ describe('the register', () => {
 		expect(textOf(rows[1].querySelector('td[data-label="Your part"]')!)).toBe('Your response is awaited');
 	});
 
+	it('T3 (card 3075): draws each status cell as a kit badge coloured by its status, with its data-status', () => {
+		const target = drawRegister(register({ rows: [row(3), row(4, { shownStatus: 'awaiting_ruling' })] }));
+		const badges = [...target.querySelectorAll<HTMLElement>('tbody td[data-label="Status"] [data-status]')];
+		expect(badges.map((badge) => badge.dataset.status)).toEqual(['open', 'awaiting_ruling']);
+		expect(badges[0].classList.contains('ui-badge-info')).toBe(true);
+		expect(badges[1].classList.contains('ui-badge-warning')).toBe(true);
+		expect(badges.map(textOf)).toEqual(['Open', 'Awaiting ruling']);
+		expect(target.querySelector('.status-chip')).toBeNull();
+	});
+
 	it('labels every filter, and sends tab, board, person, who, status on All alone and q, never before (116)', () => {
 		const fieldsOf = (target: HTMLElement) => {
 			const form = target.querySelector<HTMLFormElement>('form[data-form="filters"]')!;
@@ -284,7 +294,8 @@ describe('the register', () => {
 		const tabs: RegisterTab[] = ['waiting-response', 'waiting-ruling', 'open', 'ruled', 'all'];
 		const said = tabs.map((tab) => {
 			const target = drawRegister(register({ tab, rows: [] }));
-			const empty = target.querySelector(`[data-empty="${tab}"]`)!;
+			// Card 3075 (A2): the kit's empty state, the tab's words its heading.
+			const empty = target.querySelector(`[data-empty="${tab}"] h2`)!;
 			expect(target.querySelector('table')).toBeNull();
 			return textOf(empty);
 		});
@@ -294,9 +305,11 @@ describe('the register', () => {
 
 	it('says No matches with Clear filters where a filter is set and nothing matches (120)', () => {
 		const target = drawRegister(register({ tab: 'ruled', rows: [], query: { ...NO_QUERY, q: 'nothing like it' } }));
+		// Card 3075 (A3): the kit's empty state, "No matches." its heading and Clear filters its action.
 		const empty = target.querySelector('[data-empty="filtered"]')!;
-		expect(textOf(empty)).toBe('No matches. Clear filters');
+		expect(textOf(empty.querySelector('h2')!)).toBe('No matches.');
 		expect(empty.querySelector('a')!.getAttribute('href')).toBe('/decisions?tab=ruled');
+		expect(textOf(empty.querySelector('a')!)).toBe('Clear filters');
 		// A status on a tab that does not read it is no filter.
 		const unfiltered = drawRegister(register({ tab: 'open', rows: [], query: { ...NO_QUERY, status: 'ruled' } }));
 		expect(unfiltered.querySelector('[data-empty="open"]')).not.toBeNull();

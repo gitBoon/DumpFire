@@ -82,6 +82,7 @@
 
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import Button from '$lib/components/ui/Button.svelte';
 	import { SURVEY_KINDS } from '$lib/decision-readiness';
 
 	let {
@@ -122,7 +123,7 @@
 
 <section class="editor-section" data-part="survey">
 	<div class="section-head"><h2 id="{uid}-heading">Survey questions</h2></div>
-	<p class="help" id="{uid}-help">
+	<p class="ui-hint help" id="{uid}-help">
 		Your own questions for the people consulted: pick one, a number on a scale, or a short written answer. A decision with no options asks these alone; re-publish
 		it with options to put them to a vote.
 	</p>
@@ -137,39 +138,39 @@
 
 			{#if fixed || !editable}
 				<!-- Code review F8: a fixed kind is text, not a field, so no <label for> names it. -->
-				<p class="small" data-name="kind">Kind</p>
+				<p class="ui-label" data-name="kind">Kind</p>
 				<p id="{id}-kind" class="fixed" data-kind={question.kind}>{SURVEY_KIND_WORDS[question.kind]}</p>
 			{:else}
-				<label class="small" for="{id}-kind">Kind</label>
-				<select id="{id}-kind" class="field" bind:value={question.kind}>
+				<label class="ui-label" for="{id}-kind">Kind</label>
+				<select id="{id}-kind" class="ui-select" bind:value={question.kind}>
 					{#each SURVEY_KINDS as kind (kind)}
 						<option value={kind}>{SURVEY_KIND_WORDS[kind]}</option>
 					{/each}
 				</select>
 			{/if}
-			{#if fixed}<p class="note" data-note="published">{PUBLISHED_NOTE}</p>{/if}
+			{#if fixed}<p class="ui-hint note" data-note="published">{PUBLISHED_NOTE}</p>{/if}
 
-			<label class="small" for="{id}-prompt">Prompt</label>
-			<input id="{id}-prompt" class="field" maxlength="300" readonly={!editable} bind:value={question.prompt} />
-			<label class="small" for="{id}-help">Help (optional)</label>
-			<textarea id="{id}-help" class="field" rows="2" readonly={!editable} bind:value={question.help}></textarea>
+			<label class="ui-label" for="{id}-prompt">Prompt</label>
+			<input id="{id}-prompt" class="ui-input" maxlength="300" readonly={!editable} bind:value={question.prompt} />
+			<label class="ui-label" for="{id}-help">Help (optional)</label>
+			<textarea id="{id}-help" class="ui-textarea" rows="2" readonly={!editable} bind:value={question.help}></textarea>
 
 			{#if question.kind === 'choice'}
-				<label class="small" for="{id}-choices">Choices, one a line (2 to 20)</label>
-				<textarea id="{id}-choices" class="field" rows="4" readonly={!editable} bind:value={question.choices}></textarea>
+				<label class="ui-label" for="{id}-choices">Choices, one a line (2 to 20)</label>
+				<textarea id="{id}-choices" class="ui-textarea" rows="4" readonly={!editable} bind:value={question.choices}></textarea>
 			{:else if question.kind === 'scale'}
 				<div class="scale-fields">
-					<div>
-						<label class="small" for="{id}-max">Top of the scale (2 to 10)</label>
-						<input id="{id}-max" class="field" type="number" min="2" max="10" step="1" readonly={!editable} bind:value={question.max} />
+					<div class="scale-field">
+						<label class="ui-label" for="{id}-max">Top of the scale (2 to 10)</label>
+						<input id="{id}-max" class="ui-input" type="number" min="2" max="10" step="1" readonly={!editable} bind:value={question.max} />
 					</div>
-					<div>
-						<label class="small" for="{id}-low">Words at 1</label>
-						<input id="{id}-low" class="field" maxlength="100" readonly={!editable} bind:value={question.lowLabel} />
+					<div class="scale-field">
+						<label class="ui-label" for="{id}-low">Words at 1</label>
+						<input id="{id}-low" class="ui-input" maxlength="100" readonly={!editable} bind:value={question.lowLabel} />
 					</div>
-					<div>
-						<label class="small" for="{id}-high">Words at the top</label>
-						<input id="{id}-high" class="field" maxlength="100" readonly={!editable} bind:value={question.highLabel} />
+					<div class="scale-field">
+						<label class="ui-label" for="{id}-high">Words at the top</label>
+						<input id="{id}-high" class="ui-input" maxlength="100" readonly={!editable} bind:value={question.highLabel} />
 					</div>
 				</div>
 			{/if}
@@ -178,39 +179,41 @@
 
 			{#if editable}
 				<div class="question-actions">
-					<button type="button" class="btn-ghost btn-xs" aria-label="Move survey question {index + 1} up" disabled={index === 0} onclick={() => moveQuestion(index, -1)}>↑</button>
-					<button
-						type="button"
-						class="btn-ghost btn-xs"
+					<Button variant="ghost" size="icon" aria-label="Move survey question {index + 1} up" disabled={index === 0} onclick={() => moveQuestion(index, -1)}>↑</Button>
+					<Button
+						variant="ghost"
+						size="icon"
 						aria-label="Move survey question {index + 1} down"
 						disabled={index === questions.length - 1}
-						onclick={() => moveQuestion(index, 1)}>↓</button
+						onclick={() => moveQuestion(index, 1)}>↓</Button
 					>
-					<button type="button" class="btn-ghost btn-xs danger" aria-label="Remove survey question {index + 1}" onclick={() => questions.splice(index, 1)}>Remove</button>
+					<Button variant="ghost" size="sm" aria-label="Remove survey question {index + 1}" onclick={() => questions.splice(index, 1)}>Remove</Button>
 				</div>
 			{/if}
 		</div>
 	{/each}
-	{#if editable}<button type="button" class="btn-ghost btn-sm" aria-describedby="{uid}-help" onclick={addQuestion}>+ Add survey question</button>{/if}
+	{#if editable}<div class="add-row"><Button variant="outline" size="sm" aria-describedby="{uid}-help" onclick={addQuestion}>+ Add survey question</Button></div>{/if}
 </section>
 
 <style>
-	.editor-section { display: flex; flex-direction: column; gap: var(--space-xs); }
+	.editor-section { display: flex; flex-direction: column; gap: var(--space-sm); }
 	.section-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); }
-	.section-head h2 { font-size: 0.9rem; font-weight: 700; margin: 0; }
-	.question-name { font-weight: 700; font-size: 0.85rem; }
-	.entry { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-md); border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--bg-base); }
-	.field {
-		width: 100%; box-sizing: border-box; padding: var(--space-xs) var(--space-sm);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-elevated); color: var(--text-primary); font-size: 0.82rem; font-family: var(--font-family);
+	.section-head h2 { font-size: 0.9375rem; font-weight: 600; margin: 0; }
+	.question-name { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ui-muted-foreground); }
+	.entry {
+		display: flex; flex-direction: column; gap: var(--space-sm);
+		padding: 1rem 1.25rem;
+		border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg);
+		background: var(--ui-card); box-shadow: var(--ui-shadow-sm);
 	}
-	.field[readonly] { background: var(--bg-base); }
-	.small { font-size: 0.72rem; color: var(--text-secondary); margin: 0; }
-	.fixed { font-size: 0.82rem; margin: 0; }
-	.help, .note { font-size: 0.7rem; color: var(--text-tertiary); margin: 0; }
-	.scale-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-sm); }
-	.required { display: flex; align-items: center; gap: var(--space-xs); font-size: 0.78rem; }
+	/* Read-only: the muted fill (the kit has no read-only look of its own). */
+	.ui-input[readonly], .ui-textarea[readonly] { background: var(--ui-muted); }
+	.ui-label { margin: var(--space-xs) 0 0; }
+	.fixed { font-size: 0.875rem; margin: 0; }
+	.help, .note { margin: 0; }
+	.scale-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr)); gap: var(--space-sm); }
+	.scale-field { display: flex; flex-direction: column; gap: var(--space-xs); }
+	.required { display: flex; align-items: center; gap: var(--space-xs); font-size: 0.875rem; }
 	.question-actions { display: flex; gap: var(--space-xs); justify-content: flex-end; }
-	.danger { color: var(--accent-rose) !important; }
+	.add-row { display: flex; }
 </style>

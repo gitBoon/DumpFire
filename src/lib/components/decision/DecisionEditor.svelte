@@ -54,6 +54,10 @@
   no option to a vote (no live option row published), the vote mode may be
   changed on an opened decision too (R23), so that a survey becomes a vote in
   either mode; otherwise it is fixed once opened.
+
+  Card 3075: the kit's buttons, fields and status badge; the side column is
+  the shell's rail width (--ui-rail) beside the form from 1024px, the shell's
+  breakpoint, and stacked under it beneath that.
 -->
 <script lang="ts">
 	import { untrack, type Snippet } from 'svelte';
@@ -62,6 +66,8 @@
 	import { FLAGS_HANDED_OVER, STALE_REVISION, STATUS_WORDS, shownMoment } from '$lib/decision-words';
 	import { DECISION_TITLE_MAX } from '$lib/decision-rules';
 	import { failureMessage } from '$lib/api';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
 	import AgentLabel from './AgentLabel.svelte';
 	import ReadinessPanel from './ReadinessPanel.svelte';
 	import SurveyEditor, { surveyContentOf, surveyFormOf, type SurveyDraft } from './SurveyEditor.svelte';
@@ -477,13 +483,13 @@
 		<AgentLabel data-section={k} />
 		{#if canReview}
 			{@const unsaved = unsavedKey(k)}
-			<button
-				type="button"
-				class="btn-ghost btn-xs"
+			<Button
+				variant="ghost"
+				size="sm"
 				aria-label="Mark {name} reviewed"
 				aria-disabled={unsaved ? 'true' : undefined}
 				aria-describedby={unsaved ? `${uid}-${k}-save-first` : undefined}
-				onclick={() => markReviewed([k])}>Mark reviewed</button
+				onclick={() => markReviewed([k])}>Mark reviewed</Button
 			>
 			{#if unsaved}<span id="{uid}-{k}-save-first" class="save-first" data-save-first={k}>{SAVE_FIRST}</span>{/if}
 		{/if}
@@ -493,10 +499,10 @@
 {#snippet textSection(k: 'situation' | 'ask' | 'unknowns' | 'alreadyRuled' | 'technicalDetail', heading: string, rows: number)}
 	<section class="editor-section">
 		<div class="section-head">
-			<label for="{uid}-{k}">{heading}</label>
+			<label class="ui-label" for="{uid}-{k}">{heading}</label>
 			{@render agentLabel(k, heading)}
 		</div>
-		<textarea id="{uid}-{k}" class="field" {rows} readonly={!editable} bind:value={form[k]}></textarea>
+		<textarea id="{uid}-{k}" class="ui-textarea" {rows} readonly={!editable} bind:value={form[k]}></textarea>
 	</section>
 {/snippet}
 
@@ -504,32 +510,32 @@
 	<div class="top-bar">
 		{#if draft && editable}
 			<label class="visually-hidden" for="{uid}-title">Title</label>
-			<input id="{uid}-title" class="title-input" maxlength={DECISION_TITLE_MAX} bind:value={title} />
+			<input id="{uid}-title" class="ui-input title-input" maxlength={DECISION_TITLE_MAX} bind:value={title} />
 		{:else}
 			<h1 class="title-text">{saved.title}</h1>
 		{/if}
 		{@render agentLabel('title', 'Title')}
-		<span class="status-chip" data-status={saved.shownStatus}>{STATUS_WORDS[saved.shownStatus] ?? saved.shownStatus}</span>
+		<Badge status={saved.shownStatus} />
 		{#if anyFlagged && canReview}
-			<button
-				type="button"
-				class="btn-ghost btn-sm"
+			<Button
+				variant="outline"
+				size="sm"
 				aria-disabled={anyFlaggedUnsaved ? 'true' : undefined}
 				aria-describedby={anyFlaggedUnsaved ? `${uid}-all-save-first` : undefined}
-				onclick={() => markReviewed('all')}>Mark all reviewed</button
+				onclick={() => markReviewed('all')}>Mark all reviewed</Button
 			>
 			{#if anyFlaggedUnsaved}<span id="{uid}-all-save-first" class="save-first" data-save-first="all">{SAVE_FIRST}</span>{/if}
 		{/if}
 		{#if editable}
 			{#if dirty}<span class="unsaved">Unsaved changes</span>{/if}
-			<button type="button" class="btn-primary btn-sm save" aria-disabled={!dirty || saving ? 'true' : undefined} aria-busy={saving ? 'true' : undefined} onclick={save}>Save</button>
+			<Button size="sm" class="save" aria-disabled={!dirty || saving ? 'true' : undefined} aria-busy={saving ? 'true' : undefined} onclick={save}>Save</Button>
 		{/if}
 	</div>
 
 	{#if error}
 		<p class="editor-error" role="alert">
 			{error}
-			{#if stale}<button type="button" class="btn-ghost btn-xs" onclick={() => onReload()}>Reload</button>{/if}
+			{#if stale}<Button variant="outline" size="sm" onclick={() => onReload()}>Reload</Button>{/if}
 		</p>
 	{/if}
 	{#if !editable}
@@ -549,10 +555,10 @@
 
 			<section class="editor-section">
 				<div class="section-head">
-					<label for="{uid}-question">Question</label>
+					<label class="ui-label" for="{uid}-question">Question</label>
 					{@render agentLabel('question', 'Question')}
 				</div>
-				<input id="{uid}-question" class="field" maxlength="500" readonly={!editable} bind:value={form.question} />
+				<input id="{uid}-question" class="ui-input" maxlength="500" readonly={!editable} bind:value={form.question} />
 			</section>
 
 			{@render textSection('ask', 'What is asked', 3)}
@@ -566,27 +572,27 @@
 								<span class="option-label">{labelOf(option) ? `Option ${labelOf(option)}` : 'New option'}</span>
 								{#if option.optionId !== undefined}{@render agentLabel(`options.${option.optionId}`, `option ${index + 1}`)}{/if}
 							</div>
-							<label class="small" for="{uid}-o{option.key}-title">Title</label>
-							<input id="{uid}-o{option.key}-title" class="field" maxlength="200" readonly={!editable} bind:value={option.title} />
-							<label class="small" for="{uid}-o{option.key}-summary">Summary</label>
-							<textarea id="{uid}-o{option.key}-summary" class="field" rows="3" readonly={!editable} bind:value={option.summary}></textarea>
-							<label class="small" for="{uid}-o{option.key}-pros">Pros, one a line</label>
-							<textarea id="{uid}-o{option.key}-pros" class="field" rows="3" readonly={!editable} bind:value={option.pros}></textarea>
-							<label class="small" for="{uid}-o{option.key}-cons">Cons, one a line</label>
-							<textarea id="{uid}-o{option.key}-cons" class="field" rows="3" readonly={!editable} bind:value={option.cons}></textarea>
-							<label class="small" for="{uid}-o{option.key}-commercial">Commercial notes</label>
-							<textarea id="{uid}-o{option.key}-commercial" class="field" rows="2" readonly={!editable} bind:value={option.commercial}></textarea>
+							<label class="ui-label" for="{uid}-o{option.key}-title">Title</label>
+							<input id="{uid}-o{option.key}-title" class="ui-input" maxlength="200" readonly={!editable} bind:value={option.title} />
+							<label class="ui-label" for="{uid}-o{option.key}-summary">Summary</label>
+							<textarea id="{uid}-o{option.key}-summary" class="ui-textarea" rows="3" readonly={!editable} bind:value={option.summary}></textarea>
+							<label class="ui-label" for="{uid}-o{option.key}-pros">Pros, one a line</label>
+							<textarea id="{uid}-o{option.key}-pros" class="ui-textarea" rows="3" readonly={!editable} bind:value={option.pros}></textarea>
+							<label class="ui-label" for="{uid}-o{option.key}-cons">Cons, one a line</label>
+							<textarea id="{uid}-o{option.key}-cons" class="ui-textarea" rows="3" readonly={!editable} bind:value={option.cons}></textarea>
+							<label class="ui-label" for="{uid}-o{option.key}-commercial">Commercial notes</label>
+							<textarea id="{uid}-o{option.key}-commercial" class="ui-textarea" rows="2" readonly={!editable} bind:value={option.commercial}></textarea>
 							{#if editable}
 								<div class="option-actions">
-									<button type="button" class="btn-ghost btn-xs" aria-label="Move option {index + 1} left" disabled={index === 0} onclick={() => moveOption(index, -1)}>←</button>
-									<button type="button" class="btn-ghost btn-xs" aria-label="Move option {index + 1} right" disabled={index === form.options.length - 1} onclick={() => moveOption(index, 1)}>→</button>
-									<button type="button" class="btn-ghost btn-xs danger" aria-label="Remove option {index + 1}" onclick={() => form.options.splice(index, 1)}>Remove</button>
+									<Button variant="ghost" size="icon" aria-label="Move option {index + 1} left" disabled={index === 0} onclick={() => moveOption(index, -1)}>←</Button>
+									<Button variant="ghost" size="icon" aria-label="Move option {index + 1} right" disabled={index === form.options.length - 1} onclick={() => moveOption(index, 1)}>→</Button>
+									<Button variant="ghost" size="sm" aria-label="Remove option {index + 1}" onclick={() => form.options.splice(index, 1)}>Remove</Button>
 								</div>
 							{/if}
 						</div>
 					{/each}
 				</div>
-				{#if editable}<button type="button" class="btn-ghost btn-sm" onclick={addOption}>+ Add option</button>{/if}
+				{#if editable}<div class="add-row"><Button variant="outline" size="sm" onclick={addOption}>+ Add option</Button></div>{/if}
 			</section>
 
 			<SurveyEditor bind:questions={form.surveyQuestions} {editable} published={publishedQuestions} flag={agentLabel} newKey={key} />
@@ -596,8 +602,8 @@
 				{#each form.audiences as audience, index (audience.key)}
 					<div class="entry">
 						{#if editable}
-							<label class="small" for="{uid}-a{audience.key}-group">Group</label>
-							<select id="{uid}-a{audience.key}-group" class="field" bind:value={audience.groupId}>
+							<label class="ui-label" for="{uid}-a{audience.key}-group">Group</label>
+							<select id="{uid}-a{audience.key}-group" class="ui-select" bind:value={audience.groupId}>
 								<option value="">No group</option>
 								{#if audience.groupId !== '' && !groupName.has(audience.groupId)}
 									<option value={audience.groupId}>A group that has been deleted</option>
@@ -607,28 +613,28 @@
 								{/each}
 							</select>
 						{/if}
-						<label class="small" for="{uid}-a{audience.key}-heading">Heading</label>
-						<input id="{uid}-a{audience.key}-heading" class="field" maxlength="200" readonly={!editable} bind:value={audience.heading} />
-						<label class="small" for="{uid}-a{audience.key}-body">Text</label>
-						<textarea id="{uid}-a{audience.key}-body" class="field" rows="3" readonly={!editable} bind:value={audience.body}></textarea>
-						{#if editable}<button type="button" class="btn-ghost btn-xs danger" aria-label="Remove audience {index + 1}" onclick={() => form.audiences.splice(index, 1)}>Remove</button>{/if}
+						<label class="ui-label" for="{uid}-a{audience.key}-heading">Heading</label>
+						<input id="{uid}-a{audience.key}-heading" class="ui-input" maxlength="200" readonly={!editable} bind:value={audience.heading} />
+						<label class="ui-label" for="{uid}-a{audience.key}-body">Text</label>
+						<textarea id="{uid}-a{audience.key}-body" class="ui-textarea" rows="3" readonly={!editable} bind:value={audience.body}></textarea>
+						{#if editable}<div class="entry-actions"><Button variant="ghost" size="sm" aria-label="Remove audience {index + 1}" onclick={() => form.audiences.splice(index, 1)}>Remove</Button></div>{/if}
 					</div>
 				{/each}
-				{#if editable}<button type="button" class="btn-ghost btn-sm" onclick={() => form.audiences.push({ key: key(), groupId: '', heading: '', body: '' })}>+ Add audience</button>{/if}
+				{#if editable}<div class="add-row"><Button variant="outline" size="sm" onclick={() => form.audiences.push({ key: key(), groupId: '', heading: '', body: '' })}>+ Add audience</Button></div>{/if}
 			</section>
 
 			<section class="editor-section">
 				<div class="section-head"><h2>User stories</h2>{@render agentLabel('stories', 'User stories')}</div>
 				{#each form.stories as story, index (story.key)}
 					<div class="entry">
-						<label class="small" for="{uid}-s{story.key}-title">Title</label>
-						<input id="{uid}-s{story.key}-title" class="field" maxlength="200" readonly={!editable} bind:value={story.title} />
-						<label class="small" for="{uid}-s{story.key}-body">Story</label>
-						<textarea id="{uid}-s{story.key}-body" class="field" rows="3" readonly={!editable} bind:value={story.body}></textarea>
-						{#if editable}<button type="button" class="btn-ghost btn-xs danger" aria-label="Remove story {index + 1}" onclick={() => form.stories.splice(index, 1)}>Remove</button>{/if}
+						<label class="ui-label" for="{uid}-s{story.key}-title">Title</label>
+						<input id="{uid}-s{story.key}-title" class="ui-input" maxlength="200" readonly={!editable} bind:value={story.title} />
+						<label class="ui-label" for="{uid}-s{story.key}-body">Story</label>
+						<textarea id="{uid}-s{story.key}-body" class="ui-textarea" rows="3" readonly={!editable} bind:value={story.body}></textarea>
+						{#if editable}<div class="entry-actions"><Button variant="ghost" size="sm" aria-label="Remove story {index + 1}" onclick={() => form.stories.splice(index, 1)}>Remove</Button></div>{/if}
 					</div>
 				{/each}
-				{#if editable}<button type="button" class="btn-ghost btn-sm" onclick={() => form.stories.push({ key: key(), title: '', body: '' })}>+ Add story</button>{/if}
+				{#if editable}<div class="add-row"><Button variant="outline" size="sm" onclick={() => form.stories.push({ key: key(), title: '', body: '' })}>+ Add story</Button></div>{/if}
 			</section>
 
 			{@render textSection('unknowns', 'What is not yet known', 4)}
@@ -636,18 +642,18 @@
 			{@render textSection('technicalDetail', 'Technical detail', 6)}
 		</div>
 
-		<aside class="side-column">
+		<aside class="side-column" aria-label="Decision settings">
 			<section class="side-section">
-				<label class="small" for="{uid}-closes">Closes (UTC)</label>
+				<label class="ui-label" for="{uid}-closes">Closes (UTC)</label>
 				{#if draft && editable}
-					<input id="{uid}-closes" class="field" type="datetime-local" aria-describedby="{uid}-closes-help" bind:value={closes} />
-					<p id="{uid}-closes-help" class="help" data-help="closes">{CLOSES_HELP}</p>
+					<input id="{uid}-closes" class="ui-input" type="datetime-local" aria-describedby="{uid}-closes-help" bind:value={closes} />
+					<p id="{uid}-closes-help" class="ui-hint help" data-help="closes">{CLOSES_HELP}</p>
 				{:else}
 					<p id="{uid}-closes" class="fixed">{shownMoment(saved.closesAt, 'Not set')}</p>
 				{/if}
-				<div class="side-head"><label class="small" for="{uid}-vote">Vote mode</label>{@render agentLabel('voteMode', 'Vote mode')}</div>
+				<div class="side-head"><label class="ui-label" for="{uid}-vote">Vote mode</label>{@render agentLabel('voteMode', 'Vote mode')}</div>
 				{#if modeFree && editable}
-					<select id="{uid}-vote" class="field" bind:value={voteMode}>
+					<select id="{uid}-vote" class="ui-select" bind:value={voteMode}>
 						<option value="single">{VOTE_WORDS.single}</option>
 						<option value="score">{VOTE_WORDS.score}</option>
 					</select>
@@ -658,8 +664,8 @@
 
 			<section class="side-section">
 				{#if canSetDecider}
-					<div class="side-head"><label class="small" for="{uid}-decider">Decider</label>{@render agentLabel('decider', 'Decider')}</div>
-					<select id="{uid}-decider" class="field" bind:value={chosenDecider}>
+					<div class="side-head"><label class="ui-label" for="{uid}-decider">Decider</label>{@render agentLabel('decider', 'Decider')}</div>
+					<select id="{uid}-decider" class="ui-select" bind:value={chosenDecider}>
 						{#if saved.deciderUserId === null}
 							<option value="">None named</option>
 						{:else if !offered.some((candidate) => candidate.id === saved.deciderUserId)}
@@ -670,16 +676,18 @@
 						{/each}
 					</select>
 					<!-- Card 2684 (R24): fixed words wherever the form is offered, with no number and whether or not anything was raised. -->
-					<p class="small" id="{uid}-flags-handed-over" data-note="flags-handed-over">{FLAGS_HANDED_OVER}</p>
-					<button
-						type="button"
-						class="btn-ghost btn-xs"
-						aria-disabled={chosenDecider === storedDecider || saving ? 'true' : undefined}
-						aria-describedby="{uid}-flags-handed-over"
-						onclick={saveDecider}>Change decider</button
-					>
+					<p class="ui-hint help" id="{uid}-flags-handed-over" data-note="flags-handed-over">{FLAGS_HANDED_OVER}</p>
+					<div>
+						<Button
+							variant="outline"
+							size="sm"
+							aria-disabled={chosenDecider === storedDecider || saving ? 'true' : undefined}
+							aria-describedby="{uid}-flags-handed-over"
+							onclick={saveDecider}>Change decider</Button
+						>
+					</div>
 				{:else}
-					<div class="side-head"><p class="small">Decider</p>{@render agentLabel('decider', 'Decider')}</div>
+					<div class="side-head"><p class="ui-label">Decider</p>{@render agentLabel('decider', 'Decider')}</div>
 					<p class="fixed decider-fixed">{saved.deciderName ?? 'None named'}</p>
 				{/if}
 			</section>
@@ -687,7 +695,7 @@
 			{#if side || flaggedKey('participants')}
 				<div class="side-section">
 					{#if flaggedKey('participants')}
-						<div class="side-head" data-flagged="participants"><p class="small">Participants</p>{@render agentLabel('participants', 'Participants')}</div>
+						<div class="side-head" data-flagged="participants"><p class="ui-label">Participants</p>{@render agentLabel('participants', 'Participants')}</div>
 					{/if}
 					{#if side}{@render side()}{/if}
 				</div>
@@ -701,47 +709,53 @@
 </div>
 
 <style>
-	.editor { display: flex; flex-direction: column; gap: var(--space-md); }
+	.editor { display: flex; flex-direction: column; gap: var(--space-md); min-width: 0; color: var(--ui-foreground); }
 	.top-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); }
-	.title-input {
-		flex: 1; min-width: 200px; font-size: 1.1rem; font-weight: 700; font-family: var(--font-family);
-		padding: var(--space-xs) var(--space-sm); border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-elevated); color: var(--text-primary);
+	.title-input { flex: 1; min-width: 200px; width: auto; height: 2.75rem; font-size: 1.25rem; font-weight: 600; letter-spacing: -0.02em; }
+	.title-text { flex: 1; margin: 0; font-size: 1.625rem; font-weight: 600; line-height: 1.2; letter-spacing: -0.025em; overflow-wrap: anywhere; }
+	.unsaved { display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; color: var(--ui-foreground); }
+	.unsaved::before { content: ''; width: 0.375rem; height: 0.375rem; border-radius: var(--radius-full); background: var(--ui-warning); }
+	.save-first { font-size: 0.75rem; color: var(--ui-muted-foreground); }
+	/* A refusal: the words in the text colour, marked by the destructive tone. */
+	.editor-error {
+		display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm);
+		margin: 0; padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive);
+		font-size: 0.875rem; color: var(--ui-foreground);
 	}
-	.title-text { flex: 1; font-size: 1.1rem; margin: 0; }
-	.status-chip {
-		font-size: 0.72rem; font-weight: 600; padding: 2px var(--space-sm); border-radius: 999px;
-		background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo);
+	.note { font-size: 0.8125rem; color: var(--ui-muted-foreground); margin: 0; }
+
+	/* The side column is the shell's rail width, beside the form from the shell's own breakpoint (card 3075). */
+	.columns { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-xl); align-items: start; }
+	@media (min-width: 1024px) { .columns { grid-template-columns: minmax(0, 1fr) var(--ui-rail); } }
+	.main-column, .side-column { display: flex; flex-direction: column; gap: var(--space-lg); min-width: 0; }
+	.side-section {
+		display: flex; flex-direction: column; gap: var(--space-sm);
+		padding: 1rem 1.25rem;
+		border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg);
+		background: var(--ui-card); box-shadow: var(--ui-shadow-sm);
 	}
-	.unsaved { font-size: 0.75rem; color: var(--accent-amber); }
-	.save-first { font-size: 0.75rem; color: var(--text-tertiary); }
-	.editor-error { font-size: 0.8rem; color: var(--accent-rose); margin: 0; }
-	.note { font-size: 0.8rem; color: var(--text-tertiary); margin: 0; }
 
-	.columns { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--space-xl); align-items: start; }
-	@media (max-width: 900px) { .columns { grid-template-columns: minmax(0, 1fr); } }
-	.main-column, .side-column { display: flex; flex-direction: column; gap: var(--space-lg); }
-	.side-section { padding: var(--space-md); border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--bg-base); display: flex; flex-direction: column; gap: var(--space-xs); }
-
-	.editor-section { display: flex; flex-direction: column; gap: var(--space-xs); }
+	.editor-section { display: flex; flex-direction: column; gap: var(--space-sm); }
 	.section-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); }
-	.section-head label, .section-head h2 { font-size: 0.9rem; font-weight: 700; margin: 0; }
-	.field {
-		width: 100%; box-sizing: border-box; padding: var(--space-xs) var(--space-sm);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-elevated); color: var(--text-primary); font-size: 0.82rem; font-family: var(--font-family);
-	}
-	.field[readonly] { background: var(--bg-base); }
-	.small { font-size: 0.72rem; color: var(--text-secondary); margin: 0; }
+	.section-head .ui-label, .section-head h2 { font-size: 0.9375rem; font-weight: 600; margin: 0; }
+	/* Read-only: the muted fill (the kit has no read-only look of its own). */
+	.ui-input[readonly], .ui-textarea[readonly] { background: var(--ui-muted); }
 	.side-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-xs); }
-	.fixed { font-size: 0.82rem; margin: 0; }
-	.help { font-size: 0.7rem; color: var(--text-tertiary); margin: 0; }
+	.side-head p { margin: 0; }
+	.fixed { font-size: 0.875rem; margin: 0; }
+	.help { margin: 0; }
 
-	.option-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-md); }
-	.option-card, .entry { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-md); border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--bg-base); }
-	.option-label { font-weight: 700; font-size: 0.85rem; }
-	.option-actions { display: flex; gap: var(--space-xs); justify-content: flex-end; }
-	.danger { color: var(--accent-rose) !important; }
+	.option-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); gap: var(--space-md); }
+	.option-card, .entry {
+		display: flex; flex-direction: column; gap: var(--space-sm);
+		padding: 1rem 1.25rem;
+		border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg);
+		background: var(--ui-card); box-shadow: var(--ui-shadow-sm);
+	}
+	.option-card .ui-label, .entry .ui-label { margin-top: var(--space-xs); }
+	.option-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ui-muted-foreground); }
+	.option-actions, .entry-actions { display: flex; gap: var(--space-xs); justify-content: flex-end; }
+	.add-row { display: flex; }
 	.visually-hidden {
 		position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
 		overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;

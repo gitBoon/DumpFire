@@ -29,6 +29,7 @@
 	import { tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
+	import Button from '$lib/components/ui/Button.svelte';
 	import { QUESTION_TEXT_MAX, QUESTIONS_PER_PARTICIPANT } from '$lib/decision-rules';
 	import type { QuestionView } from '$lib/decision-view-types';
 	import { QUESTION_WHO_SEES, questionsClosedWords } from '$lib/decision-words';
@@ -108,10 +109,10 @@
 				send();
 			}}
 		>
-			<label class="field-label" for="{id}-question">Your question</label>
-			<textarea id="{id}-question" class="field" rows="3" maxlength={TEXT_MAX} aria-describedby="{id}-question-count" bind:value={question}></textarea>
+			<label class="ui-label field-label" for="{id}-question">Your question</label>
+			<textarea id="{id}-question" class="ui-textarea" rows="3" maxlength={TEXT_MAX} aria-describedby="{id}-question-count" bind:value={question}></textarea>
 			<p class="count" id="{id}-question-count">{question.length} of {TEXT_MAX.toLocaleString('en-GB')} characters</p>
-			<button type="submit" class="btn-primary send" data-action="ask" disabled={!ready} aria-busy={sending ? 'true' : undefined}>Send my question</button>
+			<div class="send-row"><Button type="submit" class="send" data-action="ask" disabled={!ready} aria-busy={sending ? 'true' : undefined}>Send my question</Button></div>
 		</form>
 	{:else}
 		<p class="closed" data-note="questions-closed">{closedWords}</p>
@@ -122,18 +123,13 @@
 </div>
 
 <style>
-	.question-form { display: flex; flex-direction: column; gap: var(--space-sm); font-size: 1rem; }
+	.question-form { display: flex; flex-direction: column; gap: var(--space-sm); font-size: 1rem; color: var(--ui-foreground); }
 	.question-form p { margin: 0; }
-	.who-sees, .closed { font-size: 0.9rem; color: var(--text-secondary); }
-	form { display: flex; flex-direction: column; gap: var(--space-xs); }
-	.field-label { font-size: 0.9rem; color: var(--text-secondary); }
-	/* 16px, so a phone does not zoom; every tap target 44px tall at least (card 2677, decision 22). */
-	.field {
-		font-size: 16px; font-family: var(--font-family); padding: var(--space-sm); width: 100%; box-sizing: border-box;
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary);
-	}
-	.count { font-size: 0.8rem; color: var(--text-tertiary); text-align: right; }
-	.send { min-height: 44px; font-size: 1rem; align-self: flex-start; }
-	.said { font-size: 0.9rem; color: var(--accent-emerald, var(--text-secondary)); }
-	.said.refused { color: var(--accent-rose); }
+	.who-sees, .closed { font-size: 0.875rem; color: var(--ui-muted-foreground); }
+	form { display: flex; flex-direction: column; gap: var(--space-xs); max-width: 48rem; }
+	.count { font-size: 0.75rem; color: var(--ui-muted-foreground); text-align: right; }
+	.send-row { display: flex; }
+	.said { font-size: 0.875rem; color: var(--ui-foreground); }
+	/* A refusal: the words in the text colour, marked by the destructive tone. */
+	.said.refused { padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); }
 </style>

@@ -38,7 +38,7 @@ import { releaseResults } from '$lib/server/decision-ruling-writes';
 import { setParticipants } from '$lib/server/decision-participant-writes';
 import { resultsRevisionFor } from '$lib/server/decision-results';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
-import { DEAD_DECISION_LINK, STALE_REVISION, tooManyWrongLinks, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
+import { DEAD_DECISION_LINK, responseStateWords, STALE_REVISION, tooManyWrongLinks, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
 import { stamp } from '$lib/timestamps';
 import { effects, type Effects } from './helpers/effects';
 import {
@@ -184,6 +184,21 @@ const seen = (user: SessionUser, decision: Decision, body: Record<string, unknow
 	as(user, (caller) => recordSeen(caller, { decisionId: decision.id }, body, opts));
 
 // ─── Responses (cases 1 to 9) ────────────────────────────────────────────────
+
+// ─── The side column's response words (card 3075, T6) ───────────────────────
+
+describe('responseStateWords (card 3075, T6)', () => {
+	const given = { createdAt: '2026-11-02 10:00:00' };
+	it.each([
+		['may respond, none in this round, none earlier', { mayRespond: true, own: null, earlier: null }, 'Not given yet'],
+		['may respond, none in this round, one earlier', { mayRespond: true, own: null, earlier: given }, 'Asked again: not given for this version'],
+		['may respond, given in this round', { mayRespond: true, own: given, earlier: null }, 'Given 2026-11-02 10:00 UTC; you can change it'],
+		['may not respond, given', { mayRespond: false, own: given, earlier: null }, 'Given 2026-11-02 10:00 UTC'],
+		['may not respond, none', { mayRespond: false, own: null, earlier: given }, 'None given']
+	])('%s', (_name, state, words) => {
+		expect(responseStateWords(state)).toBe(words);
+	});
+});
 
 describe('respondToDecision', () => {
 	it('records a consulted participant’s vote as one row, a responded and a seen event, and answers the one projection; nothing else hears of it (1)', async () => {

@@ -39,6 +39,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { failureMessage } from '$lib/api';
+	import Button from '$lib/components/ui/Button.svelte';
 	import type { OwnResponse, ViewOption, ViewSurveyQuestion } from '$lib/decision-view-types';
 	import { STALE_REVISION, WHO_SEES_STATEMENT_VERSION, givenOnWords, responseLines, shownMoment, surveyAnswerLines, surveyWhoSees } from '$lib/decision-words';
 	import SurveyQuestions from './SurveyQuestions.svelte';
@@ -57,6 +58,8 @@
 		initial?: OwnResponse | null;
 		/** Reads the page again, after a 409 in STALE_REVISION's words. */
 		onReload?: () => void;
+		/** Card 3075: a response was recorded; the page reads its data again. None by default. */
+		onRecorded?: (response: OwnResponse) => unknown;
 	};
 	type Props = Common &
 		(
@@ -84,7 +87,8 @@
 		extra = {},
 		disabled = false,
 		initial = null,
-		onReload = () => location.reload()
+		onReload = () => location.reload(),
+		onRecorded = () => {}
 	}: Props = $props();
 
 	const start = untrack(() => initial);
@@ -159,6 +163,9 @@
 			if (res.ok) {
 				const answer = (await res.json()) as { response: OwnResponse; unchanged: boolean };
 				recorded = answer.response;
+				// Card 3075 (review M1): the page is told, so what it shows of the response (its side column) is read again. Not
+				// awaited, and a failed read again is not this form's refusal: the response was recorded.
+				void Promise.resolve(onRecorded(answer.response)).catch(() => {});
 			} else {
 				error = await failureMessage(res, 'Your response was not recorded.');
 				// Reload throws away what was chosen: offered only on the stale-version words (2676 C6).
@@ -247,16 +254,16 @@
 	{/if}
 
 	<label class="comment">
-		<span>Your comment (optional)</span>
-		<textarea maxlength="4000" rows="4" bind:value={comment} {disabled}></textarea>
+		<span class="ui-label">Your comment (optional)</span>
+		<textarea class="ui-textarea" maxlength="4000" rows="4" bind:value={comment} {disabled}></textarea>
 	</label>
 	{#if options.length > 0}
 		<details class="option-comments">
 			<summary>Comment on an option (optional)</summary>
 			{#each options as option (option.optionId)}
 				<label class="comment">
-					<span>Comment on option {option.label}</span>
-					<textarea maxlength="2000" rows="3" bind:value={optionComments[String(option.optionId)]} {disabled}></textarea>
+					<span class="ui-label">Comment on option {option.label}</span>
+					<textarea class="ui-textarea" maxlength="2000" rows="3" bind:value={optionComments[String(option.optionId)]} {disabled}></textarea>
 				</label>
 			{/each}
 		</details>
@@ -264,10 +271,10 @@
 
 	{#if error}
 		<p class="form-error" role="alert">{error}</p>
-		{#if stale}<button type="button" class="btn-ghost reload" onclick={() => onReload()}>Reload</button>{/if}
+		{#if stale}<div class="send-row"><Button variant="outline" class="reload" onclick={() => onReload()}>Reload</Button></div>{/if}
 	{/if}
 
-	<button type="submit" class="btn-primary send" disabled={disabled || sending || !ready} aria-busy={sending ? 'true' : undefined}>Send my response</button>
+	<div class="send-row"><Button type="submit" class="send" disabled={disabled || sending || !ready} aria-busy={sending ? 'true' : undefined}>Send my response</Button></div>
 
 	{#if recorded !== null}
 		{@const givenOn = givenOnWords(recorded, versionNumber)}
@@ -291,36 +298,48 @@
 {/snippet}
 
 <style>
-	.response-form { display: flex; flex-direction: column; gap: var(--space-md); font-size: 1rem; }
+	.response-form { display: flex; flex-direction: column; gap: var(--space-md); font-size: 1rem; color: var(--ui-foreground); }
 	.choices { border: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; }
 	.choices legend { font-weight: 600; margin-bottom: var(--space-sm); }
-	/* Every tap target 44px tall at least, every input 16px, so a phone does not zoom (decision 22). */
+	/* Every tap target 44px tall at least, every input 16px on a touch screen, so a phone does not zoom (decision 22). */
 	.choice-card {
 		display: flex; align-items: center; gap: var(--space-md); min-height: 44px; padding: var(--space-sm) var(--space-md);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--bg-elevated); cursor: pointer;
+		border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); background: var(--ui-card); cursor: pointer;
+		transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
 	}
-	.choice-card.chosen { border-color: var(--accent-indigo); box-shadow: 0 0 0 1px var(--accent-indigo); }
-	.choice-card input { width: 1.25rem; height: 1.25rem; flex-shrink: 0; }
-	.score-row { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-sm) 0; border-bottom: 1px solid var(--glass-border); }
-	.score-buttons { display: grid; grid-template-columns: repeat(6, minmax(44px, 1fr)); gap: var(--space-xs); }
+	.choice-card:hover { border-color: var(--ui-input); }
+	.choice-card.chosen { border-color: var(--ui-primary); box-shadow: 0 0 0 1px var(--ui-primary); }
+	.choice-card input { width: 1.25rem; height: 1.25rem; flex-shrink: 0; accent-color: var(--ui-primary); }
+	.score-row { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-sm) 0; border-bottom: 1px solid var(--ui-border); }
+	.score-buttons { display: grid; grid-template-columns: repeat(6, minmax(44px, 1fr)); gap: var(--space-xs); max-width: 32rem; }
+	/* The scores keep their radio role; drawn as the kit's outline controls, the chosen one filled. */
 	.score {
-		min-height: 44px; font-size: 1rem; font-family: var(--font-family); cursor: pointer;
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary);
+		min-height: 44px; font-size: 1rem; font-weight: 500; font-family: var(--font-family); cursor: pointer;
+		border: 1px solid var(--ui-input); border-radius: var(--ui-radius); background: var(--ui-background); color: var(--ui-foreground);
+		transition: background-color var(--duration-fast) var(--ease-out);
 	}
-	.score[aria-checked='true'] { background: var(--accent-indigo); border-color: var(--accent-indigo); color: white; }
-	.comment { display: flex; flex-direction: column; gap: var(--space-xs); }
-	.comment span { font-size: 0.9rem; color: var(--text-secondary); }
-	textarea {
-		font-size: 16px; font-family: var(--font-family); padding: var(--space-sm); width: 100%; box-sizing: border-box;
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary);
-	}
-	.option-comments > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+	.score:hover:not(:disabled) { background: var(--ui-muted); }
+	.score:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
+	.score:disabled { opacity: 0.5; cursor: not-allowed; }
+	.score[aria-checked='true'] { background: var(--ui-primary); border-color: var(--ui-primary); color: var(--ui-primary-foreground); }
+	.comment { display: flex; flex-direction: column; gap: var(--space-xs); max-width: 48rem; }
+	.option-comments > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; border-radius: var(--ui-radius-sm); }
+	.option-comments > summary:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
 	.option-comments .comment { margin-top: var(--space-sm); }
-	.send, .reload { min-height: 44px; font-size: 1rem; }
-	.form-error { color: var(--accent-rose); margin: 0; }
-	.required-note { margin: 0; font-size: 0.9rem; color: var(--text-secondary); }
-	.recorded { padding: var(--space-md); border-radius: var(--radius-md); background: rgba(16, 185, 129, 0.1); }
+	.send-row { display: flex; }
+	/* A refusal: the words in the text colour, marked by the destructive tone. */
+	.form-error { margin: 0; padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); color: var(--ui-foreground); }
+	.required-note { margin: 0; font-size: 0.875rem; color: var(--ui-muted-foreground); }
+	.recorded {
+		padding: var(--space-md);
+		border: 1px solid color-mix(in srgb, var(--ui-success) 35%, transparent);
+		border-radius: var(--ui-radius-lg);
+		background: color-mix(in srgb, var(--ui-success) 8%, var(--ui-background));
+	}
 	.recorded p { margin: 0 0 var(--space-xs); }
 	.given-on { font-weight: 600; }
 	.response-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+	@media (prefers-reduced-motion: reduce) {
+		.choice-card, .score { transition: none; }
+	}
 </style>

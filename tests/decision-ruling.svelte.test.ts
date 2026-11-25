@@ -1147,6 +1147,14 @@ describe('the decision page and DecisionActions (47, 48)', () => {
 			['POST /api/decisions/5/supersede', JSON_TYPE, JSON.stringify({ title: 'Pick a plan, again' })]
 		]);
 		expect(navigation.goto).toHaveBeenCalledWith('/decisions/9/edit');
+
+		// Card 3075 (review N2): Cancel closes the form and returns the focus to its toggle, the kit Button held by bind:ref.
+		const cancel = [...target.querySelectorAll<HTMLButtonElement>('[data-panel="supersede"] button')].find((b) => textOf(b) === 'Cancel')!;
+		cancel.click();
+		await settle();
+		expect(target.querySelector('[data-panel="supersede"]')).toBeNull();
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
+		expect(document.activeElement).toBe(toggle);
 	});
 
 	it('48: DecisionActions links to the results and ruling only with mayReadResults', () => {

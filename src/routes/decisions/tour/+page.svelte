@@ -33,8 +33,7 @@
 	import { onMount, tick } from 'svelte';
 	import { replaceState } from '$app/navigation';
 	import { page } from '$app/stores';
-	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
-	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
+	import PageShell from '$lib/components/ui/PageShell.svelte';
 	import {
 		AGENT_UNREVIEWED,
 		PRIVATE_BAND,
@@ -64,7 +63,6 @@
 		type TourDetails,
 		type TourRole
 	} from '$lib/decision-tour';
-	import { theme, themeIcon } from '$lib/stores/theme';
 
 	/** The stops, in order, as the step list and the progress line name them. */
 	const STEPS = [
@@ -296,21 +294,12 @@
 	<span class="chip {cls}">{STATUS_WORDS[status]}</span>
 {/snippet}
 
-<div class="tour-page">
-	<header class="tour-header glass">
-		<div class="tour-header-inner">
-			<a href="/" class="header-logo" title="Back to DumpFire">
-				<span class="logo-fire">🔥</span>
-				<span class="logo-text">DumpFire</span>
-			</a>
-			<p class="crumb"><a href="/decisions">Decisions</a> / How it works</p>
-			<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
-				{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
-				<ThemeMenuItems heading={false} />
-			</HeaderMenu>
-		</div>
-	</header>
+{#snippet crumbs()}
+	<p class="crumb"><a href="/decisions">Decisions</a> / How it works</p>
+{/snippet}
 
+<PageShell width="full" {crumbs}>
+<div class="tour-page">
 	<div class="wrap">
 		<div class="masthead">
 			<p class="eyebrow">DumpFire · Decisions</p>
@@ -335,7 +324,7 @@
 				</ol>
 			</nav>
 
-			<main class="stage" bind:this={stage}>
+			<div class="stage" bind:this={stage}>
 				{#if current === 0 || tour === null}
 					<section class="setup" id="setup" aria-labelledby="h-0">
 						<div class="setup-head">
@@ -1190,10 +1179,11 @@
 					</div>
 					<div class="meter" aria-hidden="true"><span style:width="{Math.round((current / TOUR_STOPS) * 100)}%"></span></div>
 				{/if}
-			</main>
+			</div>
 		</div>
 	</div>
 </div>
+</PageShell>
 
 <style>
 	/* The app's theme tokens, named for what the tour uses them for, so every theme carries over (ruling 4). */
@@ -1212,32 +1202,16 @@
 		--warn-soft: color-mix(in srgb, var(--accent-amber) 16%, transparent);
 		--bad: var(--accent-rose);
 		--bad-soft: color-mix(in srgb, var(--accent-rose) 14%, transparent);
-		min-height: 100vh;
-		padding-top: 64px;
 		color: var(--ink);
 	}
 
-	.tour-header {
-		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-		height: 64px; border-bottom: 1px solid var(--glass-border);
-		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
-	}
-	.tour-header-inner {
-		max-width: 1400px; margin: 0 auto; height: 100%;
-		display: flex; align-items: center; gap: var(--space-lg);
-		padding: 0 var(--space-xl);
-	}
-	.header-logo {
-		display: flex; align-items: center; gap: var(--space-sm);
-		text-decoration: none; color: var(--text-primary);
-		font-weight: 700; font-size: 1.1rem;
-	}
-	.logo-fire { font-size: 1.4rem; }
-	.crumb { flex: 1; font-size: 0.85rem; min-width: 0; margin: 0; color: var(--text-secondary); }
-	.crumb a { color: var(--accent-indigo); }
+	/* Card 3075: the kit's shell draws the header and owns the page's width and padding. */
+	.crumb { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ui-muted-foreground); }
+	.crumb a { border-radius: var(--ui-radius-sm); color: var(--ui-muted-foreground); text-decoration: none; }
+	.crumb a:hover { color: var(--ui-foreground); }
+	.crumb a:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
 
-	/* The page's last line stops above the user badge (card 2239). */
-	.wrap { max-width: 1200px; margin: 0 auto; padding: var(--space-xl) var(--space-xl) var(--user-badge-space); display: grid; gap: 28px; }
+	.wrap { display: grid; gap: 28px; }
 	p { margin: 0; }
 	:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
@@ -1469,9 +1443,6 @@
 		.steps a { grid-template-columns: auto auto; white-space: nowrap; padding: 6px 10px; border: 1px solid var(--line); background: var(--surface); }
 	}
 	@media (max-width: 640px) {
-		.tour-header-inner { padding: 0 var(--space-md); }
-		.logo-text { display: none; }
-		.wrap { padding: var(--space-md) var(--space-md) var(--user-badge-space); }
 		.fgrid { grid-template-columns: minmax(0, 1fr); }
 		.prow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 		.prow .field:first-child { grid-column: 1 / -1; }

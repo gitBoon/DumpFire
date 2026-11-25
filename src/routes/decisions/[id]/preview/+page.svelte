@@ -14,14 +14,19 @@
 	 * version would ask, in the form, its inputs switched off, or alone, as
 	 * `DecisionView` draws them; never a response or an answer. No seen watch is armed, and the page
 	 * fetches and posts nothing of its own.
+	 *
+	 * Card 3075: on the kit's shell, full width; the "Preview as" choosers and
+	 * the facts of the person previewed (`DecisionFacts`, with no response row)
+	 * in a side column on the right.
 	 */
 	import type { PageData } from './$types';
 	import { goto } from '$app/navigation';
-	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
-	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
+	import PageShell from '$lib/components/ui/PageShell.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import DecisionFacts from '$lib/components/decision/DecisionFacts.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
 	import ResponseForm from '$lib/components/decision/ResponseForm.svelte';
-	import { theme, themeIcon } from '$lib/stores/theme';
 
 	let { data }: { data: PageData } = $props();
 
@@ -64,106 +69,118 @@
 	<ResponseForm voteMode={data.decision.voteMode} options={data.options} surveyQuestions={data.surveyQuestions} deciderName={data.decision.deciderName} disabled />
 {/snippet}
 
-<div class="decision-page">
-	<header class="decision-header glass">
-		<div class="decision-header-inner">
-			<a href="/" class="header-logo" title="Back to DumpFire">
-				<span class="logo-fire">🔥</span>
-				<span class="logo-text">DumpFire</span>
-			</a>
-			<nav class="crumb" aria-label="Where this is">
-				{#if data.decision.boardName !== null}<span>{data.decision.boardName}</span><span aria-hidden="true">›</span>{/if}
-				<a href="/decisions/{data.decision.id}/edit">Back to the editor</a>
-			</nav>
-			<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
-				{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
-				<ThemeMenuItems heading={false} />
-			</HeaderMenu>
-		</div>
-	</header>
+{#snippet crumbs()}
+	<nav class="crumb" aria-label="Where this is">
+		{#if data.decision.boardName !== null}<span>{data.decision.boardName}</span><span aria-hidden="true">›</span>{/if}
+		<a href="/decisions/{data.decision.id}/edit">Back to the editor</a>
+	</nav>
+{/snippet}
 
-	<main class="decision-content">
-		<section class="preview-bar glass" aria-label="Preview as">
-			<label class="bar-field">
-				<span>Preview as</span>
-				<select class="form-input" value={asValue} onchange={(e) => previewAs(e.currentTarget.value)} data-select="participant">
-					<option value="">A participant by role and group</option>
-					{#each data.participants as p (p.id)}
-						<option value={String(p.id)}>{p.name} ({p.role}{p.groups.length > 0 ? `, ${p.groups.join(', ')}` : ''})</option>
-					{/each}
-				</select>
-			</label>
-			{#if data.previewing.kind === 'generic'}
-				<span class="bar-or">or</span>
-				<label class="bar-field">
-					<span>Role</span>
-					<select class="form-input" value={roleValue} onchange={(e) => previewGeneric(e.currentTarget.value, groupValue)} data-select="role">
-						<option value="consulted">Consulted</option>
-						<option value="informed">Informed</option>
-					</select>
-				</label>
-				<label class="bar-field">
-					<span>in</span>
-					<select class="form-input" value={groupValue} onchange={(e) => previewGeneric(roleValue, e.currentTarget.value)} data-select="group">
-						<option value="">No group</option>
-						{#each data.groups as group (group.id)}
-							<option value={String(group.id)}>{group.name}</option>
-						{/each}
-					</select>
-				</label>
-			{/if}
-		</section>
+{#snippet settings()}
+	<div class="rail-stack">
+		<Card>
+			<CardContent>
+				<section class="preview-bar" aria-label="Preview as">
+					<label class="bar-field">
+						<span class="ui-label">Preview as</span>
+						<select class="ui-select" value={asValue} onchange={(e) => previewAs(e.currentTarget.value)} data-select="participant">
+							<option value="">A participant by role and group</option>
+							{#each data.participants as p (p.id)}
+								<option value={String(p.id)}>{p.name} ({p.role}{p.groups.length > 0 ? `, ${p.groups.join(', ')}` : ''})</option>
+							{/each}
+						</select>
+					</label>
+					{#if data.previewing.kind === 'generic'}
+						<span class="bar-or ui-hint">or</span>
+						<label class="bar-field">
+							<span class="ui-label">Role</span>
+							<select class="ui-select" value={roleValue} onchange={(e) => previewGeneric(e.currentTarget.value, groupValue)} data-select="role">
+								<option value="consulted">Consulted</option>
+								<option value="informed">Informed</option>
+							</select>
+						</label>
+						<label class="bar-field">
+							<span class="ui-label">in</span>
+							<select class="ui-select" value={groupValue} onchange={(e) => previewGeneric(roleValue, e.currentTarget.value)} data-select="group">
+								<option value="">No group</option>
+								{#each data.groups as group (group.id)}
+									<option value={String(group.id)}>{group.name}</option>
+								{/each}
+							</select>
+						</label>
+					{/if}
+				</section>
+			</CardContent>
+		</Card>
+		<!-- The person previewed: no response row, as a preview records nothing. -->
+		<DecisionFacts closesAt={data.decision.closesAt} deciderName={data.decision.deciderName} participant={data.participant} />
+	</div>
+{/snippet}
 
-		<DecisionView
-			decision={data.decision}
-			content={data.content}
-			options={data.options}
-			surveyQuestions={data.surveyQuestions}
-			audiences={data.audiences}
-			participant={data.participant}
-			mode="preview"
-			{banner}
-			{response}
-		/>
-	</main>
-</div>
+<!-- Card 3075: full width, the preview's settings and the facts of the person previewed in a side column on the right. -->
+<PageShell width="full" {crumbs} rail={settings} railLabel="Preview settings" railPosition="end">
+	<DecisionView
+		decision={data.decision}
+		content={data.content}
+		options={data.options}
+		surveyQuestions={data.surveyQuestions}
+		audiences={data.audiences}
+		participant={data.participant}
+		mode="preview"
+		{banner}
+		{response}
+	/>
+</PageShell>
 
 <style>
-	.decision-page { min-height: 100vh; padding-top: 64px; }
-	.decision-header {
-		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-		height: 64px; border-bottom: 1px solid var(--glass-border);
-		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+	.crumb {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		min-width: 0;
+		overflow: hidden;
+		white-space: nowrap;
 	}
-	.decision-header-inner {
-		max-width: 1400px; margin: 0 auto; height: 100%;
-		display: flex; align-items: center; gap: var(--space-md);
-		padding: 0 var(--space-xl);
+	.crumb a {
+		border-radius: var(--ui-radius-sm);
+		color: var(--ui-muted-foreground);
+		text-decoration: none;
 	}
-	.header-logo {
-		display: flex; align-items: center; gap: var(--space-sm);
-		text-decoration: none; color: var(--text-primary);
-		font-weight: 700; font-size: 1.1rem;
+	.crumb a:hover {
+		color: var(--ui-foreground);
 	}
-	.logo-fire { font-size: 1.4rem; }
-	.crumb { flex: 1; display: flex; align-items: center; gap: var(--space-sm); font-size: 0.85rem; min-width: 0; color: var(--text-secondary); }
-	.crumb a { color: var(--text-secondary); text-decoration: none; }
-	.crumb a:hover { color: var(--accent-indigo); }
+	.crumb a:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
 
-	/* One column, phone first, as the participant page; its last line stops above the user badge (card 2239). */
-	.decision-content { max-width: 46rem; margin: 0 auto; padding: var(--space-xl) var(--space-md) var(--user-badge-space); }
-	@media (max-width: 640px) {
-		.decision-header-inner { padding: 0 var(--space-md); }
-		.logo-text { display: none; }
+	.rail-stack {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-md);
 	}
 	.preview-bar {
-		display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-sm) var(--space-md);
-		padding: var(--space-md); border-radius: var(--radius-lg); margin-bottom: var(--space-lg);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-md);
 	}
-	.bar-field { display: flex; flex-direction: column; gap: var(--space-xs); font-size: 0.8rem; color: var(--text-secondary); min-width: 0; }
-	.bar-field select { max-width: 100%; }
-	.bar-or { font-size: 0.8rem; color: var(--text-tertiary); padding-bottom: var(--space-sm); }
-	.banner-line { margin: 0 0 var(--space-xs); font-weight: 600; }
-	.banner-line.preview { color: var(--accent-indigo); }
-	.banner-note { margin: 0; font-size: 0.9rem; color: var(--text-secondary); }
+	.bar-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+		min-width: 0;
+	}
+	.bar-or {
+		margin-bottom: calc(-1 * var(--space-sm));
+	}
+	.banner-line {
+		margin: 0 0 var(--space-xs);
+		font-weight: 600;
+		color: var(--ui-foreground);
+	}
+	.banner-note {
+		margin: 0;
+		font-size: 0.875rem;
+		color: var(--ui-muted-foreground);
+	}
 </style>

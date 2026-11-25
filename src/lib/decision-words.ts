@@ -718,6 +718,22 @@ export const PARTICIPATION_ROLE_WORDS: Readonly<Record<'consulted' | 'informed',
 	informed: 'Informed'
 };
 
+/**
+ * A consulted participant's response, as the decision page's side column
+ * states it (card 3075, `DecisionFacts`): whether they may respond now,
+ * their response in this round (`own`) and one from an earlier version
+ * (`earlier`), each with its moment.
+ */
+export function responseStateWords(state: {
+	mayRespond: boolean;
+	own: { createdAt: string } | null;
+	earlier: { createdAt: string } | null;
+}): string {
+	if (state.own !== null) return state.mayRespond ? `Given ${shownMoment(state.own.createdAt, '')}; you can change it` : `Given ${shownMoment(state.own.createdAt, '')}`;
+	if (!state.mayRespond) return 'None given';
+	return state.earlier !== null ? 'Asked again: not given for this version' : 'Not given yet';
+}
+
 // ─── A decision as a PDF (card 2688) ─────────────────────────────────────────
 
 /** The 409 for either copy of a draft (R1). */

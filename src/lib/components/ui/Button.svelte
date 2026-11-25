@@ -19,6 +19,9 @@
   A link cannot be disabled: a disabled one is drawn as disabled, has no
   `href` and no `onclick`, so it goes nowhere and does nothing. A disabled
   button keeps its `title`, which says why.
+
+  `bind:ref` (card 3075): the element drawn, the button or the link, for a
+  page that puts the focus back on it after a dialog or a refusal.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
@@ -27,6 +30,7 @@
 	type Size = 'sm' | 'default' | 'lg' | 'icon';
 
 	let {
+		ref = $bindable(null),
 		variant = 'default',
 		size = 'default',
 		highlight = false,
@@ -44,6 +48,8 @@
 		children,
 		...rest
 	}: {
+		/** The element drawn, with `bind:ref`. */
+		ref?: HTMLButtonElement | HTMLAnchorElement | null;
 		variant?: Variant;
 		size?: Size;
 		highlight?: boolean;
@@ -74,6 +80,7 @@
 
 {#if href !== undefined}
 	<a
+		bind:this={ref}
 		{...rest}
 		class={classes}
 		href={disabled ? undefined : href}
@@ -88,7 +95,7 @@
 		{@render children?.()}
 	</a>
 {:else}
-	<button {...rest} class={classes} {type} {disabled} {name} {value} {form} {onclick}>
+	<button bind:this={ref} {...rest} class={classes} {type} {disabled} {name} {value} {form} {onclick}>
 		{@render children?.()}
 	</button>
 {/if}

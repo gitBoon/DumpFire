@@ -1,10 +1,12 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.307
+version: 1.308
 status: Living
 date: 2026-11-25
 tags:
+  - card-3075
+  - decision-pages-on-shell
   - card-2689
   - decision-webhooks
   - card-2688
@@ -2952,6 +2954,37 @@ comment naming the card), migration 0065 and the account changes move these:
 - `tests/page-failures.test.ts` (plan case T61): the admin page's `accountOf` passes
   `mfaWithoutFactor` through and leaves it undefined when absent, and the report shows it on a
   line of its own after the secrets' lines.
+
+#### Card 3075: the decision pages on the shared shell
+
+Built in four slices (plan `docs/planning/card-3075-decision-pages-on-shell.md`): the kit's two
+additions and the list pages; the decision page family; the editor and the results; the shared
+forms, then the documents. After each slice the decision `.svelte.test.ts` files, both kit files
+and `tests/harness.test.ts` ran green with `svelte-check` at no errors. Every new case failed under
+a deliberate break of the source before it passed (each undone, none left). 7 new cases (T7 from
+the code review's M1), 4 adjusted with their intent kept, 2 cases extended; no new file.
+
+```mermaid
+flowchart LR
+    S1["S1 kit + lists<br/>T1, T2, T3; A2, A3"] --> S2["S2 decision page family<br/>T4, T5, T6; A4"]
+    S2 --> S3["S3 editor + results<br/>A1"]
+    S3 --> S4["S4 shared forms,<br/>then the documents"]
+    S4 --> R["Review fixes<br/>T7; 47 and (a) extended"]
+```
+
+| Case | File | What it holds | The break it failed under |
+|---|---|---|---|
+| T1 | `tests/ui-kit.svelte.test.ts` | `PageShell bare`: "DumpFire" as text, no `a`, no Theme menu, no crumbs or actions even when given; `main` and the rail as without it | the `{#if bare}` branch never taken |
+| T2 | `tests/ui-kit.svelte.test.ts` | `Button`'s `bind:ref` holds the `button` drawn, and with an `href` the `a` | `bind:this={ref}` dropped from the button branch |
+| T3 | `tests/decision-register.svelte.test.ts` | the register's status cells are kit badges, an open row `ui-badge-info` and an awaiting-ruling row `ui-badge-warning`, each with its `data-status`; no `.status-chip` | the status cell a plain span |
+| T4 | `tests/decision-participation.svelte.test.ts` | the decision page's `main.ui-shell-grid` holds `aside[aria-label="About this decision"]` with `[data-rail="facts"]` and `.page-actions`; no `.page-actions` in the main column; `DecisionView` not in the aside | the rail's contents also drawn in the main column |
+| T5 | `tests/decision-participation.svelte.test.ts` | the facts in order (closes, decider, part, response) before `[data-rail="actions"]`; "Go to the form" links to `#response`, which is `DecisionView`'s `[data-section="response"]`; no response row for an informed participant | the link branch in `DecisionFacts` never taken |
+| T6 | `tests/decision-participation.test.ts` | `responseStateWords`, one row per state (5 rows) | the "asked again" state given "Not given yet" |
+| T7 | `tests/decision-participation.svelte.test.ts` | on both pages, a response recorded (`POST` answered 200) reads the page again once (`invalidateAll`, through `ResponseForm`'s new `onRecorded`, which `ParticipantResponse` passes); drawn again with `ownResponse` set, `[data-fact="response"]` reads "Given 2026-11-02 10:00 UTC; you can change it" (with Go to the form on the signed-in page alone) | `ParticipantResponse` passing no `onRecorded` |
+
+Extended after the code review: ruling case 47 (N2: Cancel closes the Supersede form, `aria-expanded` back to `false`, and the focus returns to the toggle, the kit `Button` held by `bind:ref`) and lifecycle (a) (N4: the preview's side column holds `DecisionFacts` with the rows closes, decider and part, and no `[data-fact="response"]`).
+
+Adjusted: A1 (`decision-lifecycle.svelte.test.ts`, the editor's status read by `.top-bar [data-status]`, Badge's hook in the top bar, in place of `.status-chip`); A2 (register 119: each tab's words read from the empty state's heading, `[data-empty="<tab>"] h2`); A3 (register 120: `[data-empty="filtered"] h2` is "No matches." and its action links to `/decisions?tab=ruled`); A4 (2707-2, extended: the personal link page has no `button[title="Change theme"]` and draws `aside [data-rail="facts"]`, so its zero-`[href]` and forbidden-word checks cover the side column; it failed with the link page drawn on the full shell without its rail). Register 114 is unchanged: the kit's `Tabs` now writes its hidden " (" as an expression, as Svelte trimmed the leading space and the tab read "Waiting for my response(2)".
 
 #### Card 2689: decision webhooks
 

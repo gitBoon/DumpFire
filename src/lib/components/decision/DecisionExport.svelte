@@ -21,6 +21,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import { failureMessage } from '$lib/api';
+	import Button from '$lib/components/ui/Button.svelte';
 
 	let {
 		decisionId,
@@ -99,23 +100,23 @@
 
 {#if !draft}
 	<span class="decision-export">
-		<button
-			type="button"
-			class="btn-ghost export-action"
+		<Button
+			variant="outline"
+			size="sm"
 			data-action="export-shareable"
 			disabled={busy !== null}
 			aria-busy={busy === 'shareable' ? 'true' : undefined}
-			onclick={(event) => exportCopy('shareable', event.currentTarget)}>Shareable copy (PDF)</button
+			onclick={(event) => exportCopy('shareable', event.currentTarget as HTMLButtonElement)}>Shareable copy (PDF)</Button
 		>
 		{#if mayReadRecord}
-			<button
-				type="button"
-				class="btn-ghost export-action"
+			<Button
+				variant="outline"
+				size="sm"
 				data-action="export-full"
 				aria-describedby="{id}-private"
 				disabled={busy !== null}
 				aria-busy={busy === 'full' ? 'true' : undefined}
-				onclick={(event) => exportCopy('full', event.currentTarget)}>Full record (PDF)</button
+				onclick={(event) => exportCopy('full', event.currentTarget as HTMLButtonElement)}>Full record (PDF)</Button
 			>
 			<span class="private-note" id="{id}-private" data-note="export-full">Private: holds names and views. Taking one is written on the record.</span>
 		{/if}
@@ -125,10 +126,10 @@
 {/if}
 
 <style>
-	/* Its parts sit in the bar beside the page's other actions. */
+	/* Its parts sit in the actions column beside the page's other actions (card 3075). */
 	.decision-export { display: contents; }
-	.export-action { min-height: 44px; display: inline-flex; align-items: center; font-size: 0.95rem; }
-	.private-note { align-self: center; font-size: 0.85rem; color: var(--text-secondary); }
-	.said { flex-basis: 100%; font-size: 0.9rem; color: var(--text-secondary); }
-	.said.refused { color: var(--accent-rose); }
+	.private-note { font-size: 0.8125rem; line-height: 1.4; color: var(--ui-muted-foreground); }
+	.said { font-size: 0.8125rem; line-height: 1.4; color: var(--ui-muted-foreground); }
+	/* A refusal: the words in the text colour, which reads in every theme, marked by the destructive tone. */
+	.said.refused { padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); color: var(--ui-foreground); }
 </style>

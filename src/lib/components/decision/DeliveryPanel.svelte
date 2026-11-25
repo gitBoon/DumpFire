@@ -43,6 +43,7 @@
 	import type { PageData } from '../../../routes/decisions/[id]/edit/$types';
 	import { failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
 	import { codeAskedHere } from '$lib/code-asked';
 	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
@@ -232,9 +233,11 @@
 						<p class="line" data-line="revoked">{row.lastRevoked.words}, {shown(row.lastRevoked.at)}</p>
 					{/if}
 					{#if row.resendable}
-						<button type="button" class="btn btn-ghost btn-xs" data-action="resend" disabled={sending !== null} onclick={() => resend(row.participantId)}>
-							{sending === row.participantId ? 'Sending…' : 'Resend'}
-						</button>
+						<div class="row-actions">
+							<Button variant="outline" size="sm" data-action="resend" disabled={sending !== null} onclick={() => resend(row.participantId)}>
+								{sending === row.participantId ? 'Sending…' : 'Resend'}
+							</Button>
+						</div>
 					{:else if row.resendFrom}
 						<p class="line note" data-line="from">Resend from {shown(row.resendFrom)}</p>
 					{:else if row.refusal}
@@ -245,23 +248,23 @@
 						{#if offer.attach || offer.clear || offer.address !== null}
 							<div class="admin-actions" data-actions="admin">
 								{#if offer.attach}
-									<button type="button" class="btn btn-ghost btn-xs" onclick={() => (asking = { action: 'attach', participantId: row.participantId, name: who?.name ?? 'This participant', address: null })}>
+									<Button variant="outline" size="sm" onclick={() => (asking = { action: 'attach', participantId: row.participantId, name: who?.name ?? 'This participant', address: null })}>
 										Attach account
-									</button>
+									</Button>
 								{/if}
 								{#if offer.clear}
-									<button type="button" class="btn btn-ghost btn-xs" onclick={() => (asking = { action: 'clear', participantId: row.participantId, name: who?.name ?? 'This participant', address: null })}>
+									<Button variant="outline" size="sm" onclick={() => (asking = { action: 'clear', participantId: row.participantId, name: who?.name ?? 'This participant', address: null })}>
 										Clear account
-									</button>
+									</Button>
 								{/if}
 								{#if offer.address !== null}
-									<button
-										type="button"
-										class="btn btn-ghost btn-xs"
+									<Button
+										variant="outline"
+										size="sm"
 										onclick={() => (asking = { action: 'address', participantId: row.participantId, name: who?.name ?? 'This participant', address: offer.address })}
 									>
 										Use the directory's address
-									</button>
+									</Button>
 								{/if}
 							</div>
 						{/if}
@@ -289,16 +292,18 @@
 {/if}
 
 <style>
-	.delivery h3 { font-size: 0.9rem; margin: 0 0 var(--space-sm); }
+	.delivery { color: var(--ui-foreground); }
+	.delivery h3 { font-size: 0.9375rem; font-weight: 600; margin: 0 0 var(--space-sm); }
 	ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-sm); }
-	.delivery-row { display: flex; flex-direction: column; gap: 2px; font-size: 0.8rem; padding-bottom: var(--space-xs); border-bottom: 1px solid var(--glass-border); }
-	.delivery-row button { align-self: flex-start; }
-	.admin-actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
+	.delivery-row { display: flex; flex-direction: column; gap: 2px; font-size: 0.8125rem; padding-bottom: var(--space-sm); border-bottom: 1px solid var(--ui-border); }
+	.delivery-row:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
+	.row-actions, .admin-actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin-top: var(--space-xs); }
 	.who { display: flex; align-items: baseline; gap: var(--space-xs); }
-	.name { font-weight: 600; }
-	.role { font-size: 0.72rem; color: var(--text-tertiary); }
-	.line { margin: 0; font-size: 0.75rem; color: var(--text-secondary); }
-	.note { color: var(--text-tertiary); }
-	.flag { color: var(--accent-rose); }
-	.delivery-error { font-size: 0.78rem; color: var(--accent-rose); margin: var(--space-xs) 0 0; }
+	.name { font-weight: 500; }
+	.role { font-size: 0.75rem; color: var(--ui-muted-foreground); }
+	.line { margin: 0; font-size: 0.75rem; color: var(--ui-muted-foreground); }
+	.note { color: var(--ui-muted-foreground); }
+	/* A mail not sent: the words in the text colour, marked by the destructive tone. */
+	.flag { padding-left: 0.5rem; border-left: 2px solid var(--ui-destructive); color: var(--ui-foreground); }
+	.delivery-error { margin: var(--space-xs) 0 0; padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); font-size: 0.8125rem; color: var(--ui-foreground); }
 </style>

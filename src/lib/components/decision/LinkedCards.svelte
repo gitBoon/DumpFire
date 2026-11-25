@@ -52,6 +52,7 @@
 	import { onDestroy, tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
+	import Button from '$lib/components/ui/Button.svelte';
 	import type { LinkedCardView, LinkOutcome } from '$lib/decision-register-types';
 	import type { ShownStatus } from '$lib/decision-view-types';
 
@@ -319,33 +320,39 @@
 					</a>
 					<span class="card-where">{card.boardName}</span>
 					{#if card.archived}<span class="archived" data-mark="archived">Archived</span>{/if}
-					{#if mayMarkWaiting}
-						<!-- Its words and name fixed; aria-pressed alone says whether it waits (review P-M2). -->
-						<button
-							type="button"
-							class="btn-ghost row-action wait-toggle"
-							class:pressed={card.relation === 'waits'}
-							data-action="wait"
-							data-card={card.id}
-							aria-pressed={card.relation === 'waits'}
-							aria-label="Waits on this decision: {named(card)}"
-							disabled={busy}
-							onclick={() => toggleWaiting(card)}
-							><span class="press-box" aria-hidden="true">{card.relation === 'waits' ? '✓' : ''}</span>Waits on this decision</button
-						>
-					{:else if card.relation === 'waits' && holds}
+					{#if !mayMarkWaiting && card.relation === 'waits' && holds}
 						<span class="waits" data-mark="waits">Waits on this decision</span>
 					{/if}
-					{#if mayUnlink}
-						<button
-							type="button"
-							class="btn-ghost row-action"
-							data-action="unlink"
-							data-card={card.id}
-							aria-label="Unlink {named(card)}"
-							disabled={busy}
-							onclick={() => unlink(card)}>Unlink</button
-						>
+					{#if mayMarkWaiting || mayUnlink}
+						<!-- The toggle and Unlink sit together at the row's end (card 2687). -->
+						<span class="row-actions">
+							{#if mayMarkWaiting}
+								<!-- Its words and name fixed; aria-pressed alone says whether it waits (review P-M2). -->
+								<Button
+									variant="outline"
+									size="sm"
+									class={card.relation === 'waits' ? 'wait-toggle pressed' : 'wait-toggle'}
+									data-action="wait"
+									data-card={card.id}
+									aria-pressed={card.relation === 'waits'}
+									aria-label="Waits on this decision: {named(card)}"
+									disabled={busy}
+									onclick={() => toggleWaiting(card)}
+									><span class="press-box" class:on={card.relation === 'waits'} aria-hidden="true">{card.relation === 'waits' ? '✓' : ''}</span>Waits on this decision</Button
+								>
+							{/if}
+							{#if mayUnlink}
+								<Button
+									variant="ghost"
+									size="sm"
+									data-action="unlink"
+									data-card={card.id}
+									aria-label="Unlink {named(card)}"
+									disabled={busy}
+									onclick={() => unlink(card)}>Unlink</Button
+								>
+							{/if}
+						</span>
 					{/if}
 				</li>
 			{/each}
@@ -356,10 +363,10 @@
 
 	{#if mayLink}
 		<div class="link-search">
-			<label class="small" for="{id}-search">Find a card to link, by #id or title</label>
+			<label class="ui-label" for="{id}-search">Find a card to link, by #id or title</label>
 			<input
 				id="{id}-search"
-				class="field"
+				class="ui-input"
 				type="search"
 				autocomplete="off"
 				aria-describedby="{id}-search-note"
@@ -367,13 +374,13 @@
 				bind:this={searchBox}
 				oninput={onSearchInput}
 			/>
-			<p class="small" id="{id}-search-note">Cards on every board you can see; one on a board you cannot edit is refused.</p>
+			<p class="ui-hint small" id="{id}-search-note">Cards on every board you can see; one on a board you cannot edit is refused.</p>
 			{#if searching}
-				<p class="small">Searching…</p>
+				<p class="ui-hint small">Searching…</p>
 			{:else if searchError}
 				<p class="refused">{searchError}</p>
 			{:else if query.trim() && found.length === 0}
-				<p class="small">No cards match “{query.trim()}”.</p>
+				<p class="ui-hint small">No cards match “{query.trim()}”.</p>
 			{:else if found.length > 0}
 				<ul class="results" aria-label="Cards found">
 					{#each found as result (result.id)}
@@ -384,15 +391,16 @@
 							{#if linkedIds.has(result.id)}
 								<span class="already">Linked</span>
 							{:else}
-								<button
-									type="button"
-									class="btn-primary row-action"
-									data-action="link"
-									data-card={result.id}
-									aria-label="Link {named(result)}"
-									disabled={busy}
-									onclick={() => link(result)}>Link</button
-								>
+								<span class="row-actions">
+									<Button
+										size="sm"
+										data-action="link"
+										data-card={result.id}
+										aria-label="Link {named(result)}"
+										disabled={busy}
+										onclick={() => link(result)}>Link</Button
+									>
+								</span>
 							{/if}
 						</li>
 					{/each}
@@ -405,36 +413,35 @@
 </div>
 
 <style>
-	.linked-cards { display: flex; flex-direction: column; gap: var(--space-sm); }
+	.linked-cards { display: flex; flex-direction: column; gap: var(--space-sm); color: var(--ui-foreground); }
 	.cards, .results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-xs); }
 	.card-row {
 		display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm);
-		padding: var(--space-xs) var(--space-sm); border-radius: var(--radius-sm); background: var(--bg-elevated);
+		padding: 0.375rem 0.75rem;
+		border: 1px solid var(--ui-border); border-radius: var(--ui-radius);
+		background: var(--ui-card);
 	}
-	.card-link { min-height: 44px; display: inline-flex; align-items: center; gap: var(--space-xs); flex: 1 1 12rem; min-width: 0; color: var(--text-primary); }
+	.card-link { min-height: 44px; display: inline-flex; align-items: center; gap: var(--space-xs); flex: 1 1 12rem; min-width: 0; border-radius: var(--ui-radius-sm); color: var(--ui-foreground); text-underline-offset: 3px; }
+	.card-link:hover { color: var(--ui-foreground); }
+	.card-link:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
 	.card-title { overflow-wrap: anywhere; }
-	.card-id { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-	.card-where { font-size: 0.9rem; color: var(--text-secondary); overflow-wrap: anywhere; }
-	.archived, .already { font-size: 0.85rem; font-weight: 600; color: var(--text-secondary); }
-	.row-action { min-height: 44px; min-width: 44px; font-size: 0.95rem; margin-left: auto; }
+	.card-id { color: var(--ui-muted-foreground); font-variant-numeric: tabular-nums; }
+	.card-where { font-size: 0.875rem; color: var(--ui-muted-foreground); overflow-wrap: anywhere; }
+	.archived, .already { font-size: 0.8125rem; font-weight: 600; color: var(--ui-muted-foreground); }
 	/* The toggle and Unlink sit together at the row's end (card 2687). */
-	.row-action + .row-action { margin-left: 0; }
-	.waits { font-size: 0.85rem; font-weight: 600; color: var(--text-primary); }
-	/* The toggle (review P-M2): pressed is a tick in a filled box and a solid edge, unpressed an empty box and a dashed one, so not colour alone. */
-	.wait-toggle { display: inline-flex; align-items: center; gap: var(--space-xs); border: 1px dashed var(--glass-border); }
-	.wait-toggle.pressed { border-style: solid; border-color: var(--text-primary); font-weight: 600; }
+	.row-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs); margin-left: auto; }
+	.waits { font-size: 0.8125rem; font-weight: 600; color: var(--ui-foreground); }
+	/* The toggle (review P-M2): pressed is a tick in a filled box, unpressed an empty box, so not colour alone. */
 	.press-box {
 		display: inline-flex; align-items: center; justify-content: center; width: 1.1em; height: 1.1em;
 		border: 1.5px solid currentColor; border-radius: 3px; font-size: 0.85rem; line-height: 1;
 	}
-	.wait-toggle.pressed .press-box { background: var(--text-primary); color: var(--bg-elevated); border-color: var(--text-primary); }
-	.none { margin: 0; color: var(--text-secondary); }
-	.link-search { display: flex; flex-direction: column; gap: var(--space-xs); }
-	.small { margin: 0; font-size: 0.9rem; color: var(--text-secondary); }
-	.field {
-		font-size: 16px; font-family: var(--font-family); padding: var(--space-sm); width: 100%; box-sizing: border-box; min-height: 44px;
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary);
-	}
-	.status { margin: 0; font-size: 0.9rem; min-height: 1.2em; }
-	.refused { margin: 0; font-size: 0.9rem; color: var(--accent-rose); }
+	.press-box.on { background: var(--ui-foreground); color: var(--ui-background); border-color: var(--ui-foreground); }
+	.none { margin: 0; color: var(--ui-muted-foreground); }
+	.link-search { display: flex; flex-direction: column; gap: var(--space-xs); max-width: 48rem; }
+	.small { margin: 0; }
+	.status { margin: 0; font-size: 0.875rem; min-height: 1.2em; }
+	/* A refusal: the words in the text colour, marked by the destructive tone. */
+	.refused { margin: 0; padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); font-size: 0.875rem; color: var(--ui-foreground); }
+	.status.refused:empty { padding-left: 0; border-left: none; }
 </style>

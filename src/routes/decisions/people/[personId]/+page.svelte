@@ -32,11 +32,21 @@
 	 * with only the replies given up to their removal (the server's rule); to
 	 * an administrator and the decider also how each was raised and who
 	 * replied, by name. Their events are named in the record's words.
+	 *
+	 * Card 3075: on the kit's shell, full width; each participation a card,
+	 * as many across as fit, newest first.
 	 */
 	import type { PageData } from './$types';
-	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
-	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import RecordEvents from '$lib/components/decision/RecordEvents.svelte';
+	import PageShell from '$lib/components/ui/PageShell.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 	import type { OwnRecordEvent, ParticipationDecision, RecordAnswer, RecordFlag, RecordResponse } from '$lib/decision-register-types';
 	import type { QuestionView } from '$lib/decision-view-types';
 	import {
@@ -46,11 +56,9 @@
 		flagRepliedWords,
 		flagUnrepliedWords,
 		PARTICIPATION_ROLE_WORDS,
-		STATUS_WORDS,
 		shownMoment,
 		unansweredWords
 	} from '$lib/decision-words';
-	import { theme, themeIcon } from '$lib/stores/theme';
 
 	let { data }: { data: PageData } = $props();
 
@@ -70,7 +78,6 @@
 	const recordAnswerWords = (answer: RecordAnswer) =>
 		answer.kind === 'choice' ? answer.choice : answer.kind === 'scale' ? `${answer.value} of ${answer.max}` : answer.text;
 
-	const decisionWords = (decision: ParticipationDecision) => STATUS_WORDS[decision.shownStatus] ?? decision.shownStatus;
 	const recordHref = (decisionId: number, participantId: number) => `/decisions/${decisionId}/record?participant=${participantId}`;
 </script>
 
@@ -168,30 +175,19 @@
 
 {#snippet decisionLine(decision: ParticipationDecision)}
 	<p class="meta">
-		<span class="status-chip" data-status={decision.shownStatus}>{decisionWords(decision)}</span>
+		<Badge status={decision.shownStatus} />
 		{#if decision.board.id !== null}<a class="target" href="/board/{decision.board.id}">{decision.board.name}</a>{:else}{decision.board.name}{decision.board.gone ? ' (deleted)' : ''}{/if}
 		{#if decision.closesAt !== null}<span>closes {shownMoment(decision.closesAt, '')}</span>{/if}
 	</p>
 {/snippet}
 
-<div class="person-page">
-	<header class="person-header glass">
-		<div class="person-header-inner">
-			<a href="/" class="header-logo" title="Back to DumpFire">
-				<span class="logo-fire">🔥</span>
-				<span class="logo-text">DumpFire</span>
-			</a>
-			<nav class="crumb" aria-label="Where this is"><a href="/decisions">Decisions</a></nav>
-			<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
-				{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
-				<ThemeMenuItems heading={false} />
-			</HeaderMenu>
-		</div>
-	</header>
+{#snippet crumbs()}
+	<nav class="crumb" aria-label="Where this is"><a href="/decisions">Decisions</a></nav>
+{/snippet}
 
-	<main class="person-content">
-		<section class="person-card glass" aria-labelledby="person-name">
-			<h1 id="person-name">{own ? 'Your record' : data.person.name}</h1>
+<PageShell width="full" {crumbs}>
+	<PageHeader title={own ? 'Your record' : data.person.name}>
+		<div class="person-lines">
 			{#if own}<p class="meta">{data.person.name}{data.person.jobTitle ? `, ${data.person.jobTitle}` : ''}</p>
 			{:else}
 				{#if data.person.jobTitle}<p class="meta">{data.person.jobTitle}</p>{/if}
@@ -199,116 +195,203 @@
 				{#if data.person.email}<p class="meta" data-field="email">{data.person.email}</p>{/if}
 				{#if data.person.status === 'left'}<p class="meta" data-field="left">Has left</p>{/if}
 			{/if}
-		</section>
+		</div>
+	</PageHeader>
 
-		{#if data.participations.length === 0}
-			<p class="empty">{own ? 'You have not been included in a decision yet.' : 'No participations to show.'}</p>
-		{:else if data.audience === 'self'}
+	{#if data.participations.length === 0}
+		<EmptyState title={own ? 'You have not been included in a decision yet.' : 'No participations to show.'} />
+	{:else if data.audience === 'self'}
+		<div class="participations">
 			{#each data.participations as participation, i (i)}
-				<article
-					class="participation glass"
-					data-participation={participation.kind === 'removed' && participation.removedAt === null ? 'unviewable' : participation.kind}
-				>
+				<Card as="article" data-participation={participation.kind === 'removed' && participation.removedAt === null ? 'unviewable' : participation.kind}>
 					{#if participation.kind === 'removed'}
 						<!-- F4: "removed" only where the row was removed; a live row the person may not open has its own words. -->
-						<h2>{participation.removedAt !== null ? 'A decision you were removed from' : 'A decision you can no longer open'}</h2>
-						<p class="meta">Included {shownMoment(participation.includedAt, '')}{participation.removedAt !== null ? `, removed ${shownMoment(participation.removedAt, '')}` : ''}</p>
-						{@render responsesOf(participation.responses)}
-						{@render questionsOf(participation.questions)}
-						{@render concernsOf(participation.concerns)}
-						{@render flagsOf(participation.flags)}
-						{@render ownEvents(participation.events)}
+						<CardHeader>
+							<CardTitle level={2}>{participation.removedAt !== null ? 'A decision you were removed from' : 'A decision you can no longer open'}</CardTitle>
+						</CardHeader>
+						<CardContent>
+							<p class="meta">Included {shownMoment(participation.includedAt, '')}{participation.removedAt !== null ? `, removed ${shownMoment(participation.removedAt, '')}` : ''}</p>
+							{@render responsesOf(participation.responses)}
+							{@render questionsOf(participation.questions)}
+							{@render concernsOf(participation.concerns)}
+							{@render flagsOf(participation.flags)}
+							{@render ownEvents(participation.events)}
+						</CardContent>
 					{:else}
-						<h2><a class="target" href="/decisions/{participation.decision.id}">{participation.decision.title}</a></h2>
+						<CardHeader>
+							<CardTitle level={2}><a class="title-link" href="/decisions/{participation.decision.id}">{participation.decision.title}</a></CardTitle>
+						</CardHeader>
+						<CardContent>
+							{@render decisionLine(participation.decision)}
+							<p class="meta">
+								{PARTICIPATION_ROLE_WORDS[participation.role]}, included {shownMoment(participation.includedAt, '')}{participation.removedAt !== null
+									? `, removed ${shownMoment(participation.removedAt, '')}`
+									: ''}
+							</p>
+							{@render responsesOf(participation.responses)}
+							{@render questionsOf(participation.questions)}
+							{@render concernsOf(participation.concerns)}
+							{@render flagsOf(participation.flags)}
+							{@render ownEvents(participation.events)}
+						</CardContent>
+					{/if}
+				</Card>
+			{/each}
+		</div>
+	{:else}
+		<div class="participations">
+			{#each data.participations as participation, i (i)}
+				<Card as="article" data-participation="full">
+					<CardHeader>
+						<CardTitle level={2}><a class="title-link" href="/decisions/{participation.decision.id}">{participation.decision.title}</a></CardTitle>
+					</CardHeader>
+					<CardContent>
 						{@render decisionLine(participation.decision)}
 						<p class="meta">
-							{PARTICIPATION_ROLE_WORDS[participation.role]}, included {shownMoment(participation.includedAt, '')}{participation.removedAt !== null
-								? `, removed ${shownMoment(participation.removedAt, '')}`
-								: ''}
+							{PARTICIPATION_ROLE_WORDS[participation.role]} as {participation.name}{participation.jobTitle ? `, ${participation.jobTitle}` : ''}{participation.groups.length > 0
+								? ` (${participation.groups.join(', ')})`
+								: ''}; included {shownMoment(participation.includedAt, '')}{participation.removedAt !== null ? `, removed ${shownMoment(participation.removedAt, '')}` : ''}
 						</p>
+						{#if participation.id !== undefined}
+							<p><Button variant="outline" size="sm" href={recordHref(participation.decision.id, participation.id)} data-action="record">Record</Button></p>
+						{/if}
 						{@render responsesOf(participation.responses)}
 						{@render questionsOf(participation.questions)}
 						{@render concernsOf(participation.concerns)}
 						{@render flagsOf(participation.flags)}
-						{@render ownEvents(participation.events)}
-					{/if}
-				</article>
+						<h3>Events</h3>
+						<RecordEvents entries={participation.events} />
+						{#if participation.moreEvents && participation.id !== undefined}
+							<p><a class="target" href={recordHref(participation.decision.id, participation.id)} data-action="more">More in the record</a></p>
+						{/if}
+					</CardContent>
+				</Card>
 			{/each}
-		{:else}
-			{#each data.participations as participation, i (i)}
-				<article class="participation glass" data-participation="full">
-					<h2><a class="target" href="/decisions/{participation.decision.id}">{participation.decision.title}</a></h2>
-					{@render decisionLine(participation.decision)}
-					<p class="meta">
-						{PARTICIPATION_ROLE_WORDS[participation.role]} as {participation.name}{participation.jobTitle ? `, ${participation.jobTitle}` : ''}{participation.groups.length > 0
-							? ` (${participation.groups.join(', ')})`
-							: ''}; included {shownMoment(participation.includedAt, '')}{participation.removedAt !== null ? `, removed ${shownMoment(participation.removedAt, '')}` : ''}
-					</p>
-					{#if participation.id !== undefined}
-						<p><a class="target" href={recordHref(participation.decision.id, participation.id)} data-action="record">Record</a></p>
-					{/if}
-					{@render responsesOf(participation.responses)}
-					{@render questionsOf(participation.questions)}
-					{@render concernsOf(participation.concerns)}
-					{@render flagsOf(participation.flags)}
-					<h3>Events</h3>
-					<RecordEvents entries={participation.events} />
-					{#if participation.moreEvents && participation.id !== undefined}
-						<p><a class="target" href={recordHref(participation.decision.id, participation.id)} data-action="more">More in the record</a></p>
-					{/if}
-				</article>
-			{/each}
-		{/if}
+		</div>
+	{/if}
 
-		{#if data.next !== null || data.before !== null}
-			<nav class="pages" aria-label="Pages of the record">
-				{#if data.before !== null}<a class="target" href={base} data-page="newest">Back to newest</a>{/if}
-				{#if data.next !== null}<a class="target" href="{base}?before={data.next}" data-page="next">Older participations</a>{/if}
-			</nav>
-		{/if}
-	</main>
-</div>
+	{#if data.next !== null || data.before !== null}
+		<nav class="pages" aria-label="Pages of the record">
+			{#if data.before !== null}<Button variant="outline" size="sm" href={base} data-page="newest">Back to newest</Button>{/if}
+			{#if data.next !== null}<Button variant="outline" size="sm" href="{base}?before={data.next}" data-page="next">Older participations</Button>{/if}
+		</nav>
+	{/if}
+</PageShell>
 
 <style>
-	.person-page { min-height: 100vh; padding-top: 64px; }
-	.person-header {
-		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-		height: 64px; border-bottom: 1px solid var(--glass-border);
-		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+	.crumb {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
-	.person-header-inner {
-		max-width: 1400px; margin: 0 auto; height: 100%;
-		display: flex; align-items: center; gap: var(--space-lg);
-		padding: 0 var(--space-xl);
+	.crumb a {
+		border-radius: var(--ui-radius-sm);
+		color: var(--ui-muted-foreground);
+		text-decoration: none;
 	}
-	.header-logo {
-		display: flex; align-items: center; gap: var(--space-sm);
-		text-decoration: none; color: var(--text-primary);
-		font-weight: 700; font-size: 1.1rem;
+	.crumb a:hover {
+		color: var(--ui-foreground);
 	}
-	.logo-fire { font-size: 1.4rem; }
-	.crumb { flex: 1; font-size: 0.85rem; min-width: 0; }
-	.crumb a { color: var(--text-secondary); text-decoration: none; }
 
-	.person-content { max-width: 52rem; margin: 0 auto; padding: var(--space-xl) var(--space-md) var(--user-badge-space); display: flex; flex-direction: column; gap: var(--space-md); }
-	.person-card, .participation { padding: var(--space-md) var(--space-lg); border-radius: var(--radius-md); overflow-wrap: anywhere; }
-	h1 { font-size: 1.2rem; margin: 0 0 var(--space-xs); }
-	h2 { font-size: 1.05rem; margin: 0 0 var(--space-xs); }
-	h3 { font-size: 0.9rem; margin: var(--space-md) 0 var(--space-xs); }
-	h2 a, .participation a, .pages a { color: var(--accent-indigo); text-decoration: none; }
-	.meta { margin: 0 0 var(--space-xs); font-size: 0.85rem; color: var(--text-secondary); display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: center; }
-	.line { margin: 0; display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: baseline; }
-	.text { margin: var(--space-xs) 0 0; white-space: pre-wrap; }
-	.answer { padding-left: var(--space-md); border-left: 2px solid var(--glass-border); }
-	.plain { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-sm); }
-	.own-event { font-size: 0.9rem; }
-	.status-chip { display: inline-block; padding: 1px var(--space-sm); border-radius: 999px; font-size: 0.75rem; background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo); }
-	.empty { font-size: 0.95rem; color: var(--text-tertiary); }
-	.target { min-height: 44px; display: inline-flex; align-items: center; }
-	.target:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: 2px; }
-	.pages { display: flex; flex-wrap: wrap; gap: var(--space-lg); }
-	@media (max-width: 640px) {
-		.person-header-inner { padding: 0 var(--space-md); }
-		.logo-text { display: none; }
+	.person-lines {
+		display: flex;
+		flex-direction: column;
+		gap: 0.125rem;
+		margin-top: calc(-1 * var(--space-sm));
+	}
+
+	/* Newest first, as many across as fit at 32rem each. */
+	.participations {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(min(100%, 32rem), 1fr));
+		gap: var(--space-lg);
+		align-items: start;
+	}
+
+	h3 {
+		margin: var(--space-lg) 0 var(--space-xs);
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--ui-foreground);
+	}
+	.title-link {
+		border-radius: var(--ui-radius-sm);
+		color: var(--ui-foreground);
+		text-decoration: none;
+		text-underline-offset: 3px;
+		overflow-wrap: anywhere;
+	}
+	.title-link:hover {
+		color: var(--ui-foreground);
+		text-decoration: underline;
+	}
+	.target {
+		border-radius: var(--ui-radius-sm);
+		color: var(--ui-foreground);
+		text-decoration: underline;
+		text-decoration-color: var(--ui-border);
+		text-underline-offset: 3px;
+	}
+	.target:hover {
+		color: var(--ui-foreground);
+		text-decoration-color: currentColor;
+	}
+	.title-link:focus-visible,
+	.target:focus-visible,
+	.crumb a:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
+
+	.meta {
+		margin: 0 0 var(--space-xs);
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-sm);
+		align-items: center;
+		font-size: 0.8125rem;
+		color: var(--ui-muted-foreground);
+		overflow-wrap: anywhere;
+	}
+	.line {
+		margin: 0;
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-sm);
+		align-items: baseline;
+	}
+	.text {
+		margin: var(--space-xs) 0 0;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+	.answer {
+		padding-left: var(--space-md);
+		border-left: 2px solid var(--ui-border);
+	}
+	.plain {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+	}
+	.own-event {
+		font-size: 0.875rem;
+	}
+	.pages {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-sm);
+		margin-top: var(--space-lg);
+	}
+
+	@media (pointer: coarse) {
+		.target {
+			display: inline-flex;
+			align-items: center;
+			min-height: 2.75rem;
+		}
 	}
 </style>

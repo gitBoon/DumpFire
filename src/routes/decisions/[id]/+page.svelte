@@ -58,15 +58,25 @@
 	 * `ParticipantResponse` (to this page's route, keyed on the decision), so
 	 * the two pages cannot drift. Everything above that only this page has
 	 * stays here, never in them.
+	 *
+	 * Card 3075: on the kit's shell, full width. Beside the decision, from
+	 * 1024px, a side column ("About this decision"): its facts
+	 * (`DecisionFacts`: closing time, decider, the reader's part and their
+	 * response, with a link to the form) and then the actions, the PDFs and
+	 * the Supersede form, opened beside its toggle. Beneath 1024px it follows
+	 * the decision.
 	 */
 	import { tick } from 'svelte';
 	import type { PageData } from './$types';
 	import { goto } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
-	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
-	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
+	import PageShell from '$lib/components/ui/PageShell.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
 	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
 	import DecisionExport from '$lib/components/decision/DecisionExport.svelte';
+	import DecisionFacts from '$lib/components/decision/DecisionFacts.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
 	import FlagForm from '$lib/components/decision/FlagForm.svelte';
 	import LinkedCards from '$lib/components/decision/LinkedCards.svelte';
@@ -77,16 +87,20 @@
 	import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
 	import { DECISION_TITLE_MAX } from '$lib/decision-rules';
 	import { watchForSeen } from '$lib/decision-seen';
-	import { theme, themeIcon } from '$lib/stores/theme';
 
 	let { data }: { data: PageData } = $props();
+
+	/** Opened: the decision is drawn, and its facts head the side column. */
+	const opened = $derived(!data.draft && data.version !== null);
+	/** Any action the side column offers: the PDFs come with every decision out of draft. */
+	const hasActions = $derived(data.mayReadResults || data.maySupersede || data.mayReadRecord || !data.draft);
 
 	// ─── Supersede (card 2679, decision 5) ───────────────────────────────────
 	let superseding = $state(false);
 	let supersedeTitle = $state('');
 	let supersedeBusy = $state(false);
 	let supersedeRefused = $state('');
-	let supersedeToggle = $state<HTMLButtonElement>();
+	let supersedeToggle = $state<HTMLButtonElement | HTMLAnchorElement | null>(null);
 	let supersedeField = $state<HTMLInputElement>();
 
 	/** Open the form, the old title to start from and the focus in it; or close it, the focus back on its toggle. */
@@ -225,143 +239,184 @@
 	/>
 {/snippet}
 
-<div class="decision-page">
-	<header class="decision-header glass">
-		<div class="decision-header-inner">
-			<a href="/" class="header-logo" title="Back to DumpFire">
-				<span class="logo-fire">🔥</span>
-				<span class="logo-text">DumpFire</span>
-			</a>
-			<nav class="crumb" aria-label="Where this is">
-				{#if data.decision.boardName !== null}<span>{data.decision.boardName}</span>{/if}
-			</nav>
-			{#if data.mayEdit}
-				<a class="btn-ghost edit-link" href="/decisions/{data.decision.id}/edit">Edit</a>
-			{/if}
-			<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
-				{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
-				<ThemeMenuItems heading={false} />
-			</HeaderMenu>
-		</div>
-	</header>
+{#snippet crumbs()}
+	<nav class="crumb" aria-label="Where this is">
+		{#if data.decision.boardName !== null}<span>{data.decision.boardName}</span>{/if}
+	</nav>
+{/snippet}
 
-	<main class="decision-content">
-		{#if data.mayReadResults || data.maySupersede || data.mayReadRecord || !data.draft}
-			<!-- Not in the fixed header, which has no room for them at phone width. -->
-			<nav class="page-actions" aria-label="What you can do with this decision">
-				{#if data.mayReadResults}
-					<a class="btn-ghost page-action" href="/decisions/{data.decision.id}/results" data-action="results">Results and ruling</a>
-				{/if}
-				{#if data.mayReadRecord}
-					<a class="btn-ghost page-action" href="/decisions/{data.decision.id}/record" data-action="record">Record</a>
-				{/if}
-				{#if data.maySupersede}
-					<button
-						type="button"
-						class="btn-ghost page-action"
-						data-action="supersede"
-						aria-expanded={superseding}
-						aria-controls={superseding ? 'supersede-panel' : undefined}
-						bind:this={supersedeToggle}
-						onclick={toggleSupersede}>Supersede…</button
-					>
-				{/if}
-				<!-- Card 2688 (R14): the shareable copy out of draft, and the full record where the record may be read. -->
-				{#if data.decision.id !== undefined}
-					<DecisionExport decisionId={data.decision.id} draft={data.draft} mayReadRecord={data.mayReadRecord ?? false} />
-				{/if}
-			</nav>
-			{#if superseding}
-				<form
-					class="supersede-panel glass"
-					id="supersede-panel"
-					data-panel="supersede"
-					onsubmit={(e) => {
-						e.preventDefault();
-						supersede();
-					}}
-				>
-					<p class="banner-note">
-						A new draft copies the content this decision was ruled on, with no participants, and its decider cannot be changed. This decision is marked
-						superseded once the draft is ruled on by this decision's decider, the board's Product Owner when it was ruled, or an administrator.
-					</p>
-					<label class="small" for="supersede-title">Title of the new decision</label>
-					<input id="supersede-title" class="field" type="text" maxlength={DECISION_TITLE_MAX} bind:value={supersedeTitle} bind:this={supersedeField} />
-					<div class="panel-actions">
-						<button type="button" class="btn-ghost page-action" onclick={toggleSupersede}>Cancel</button>
-						<button type="submit" class="btn-primary page-action" disabled={supersedeBusy || supersedeTitle.trim() === ''} aria-busy={supersedeBusy ? 'true' : undefined}
-							>Make the draft</button
-						>
-					</div>
-					<p class="refused" role="status" data-said="supersede">{supersedeRefused}</p>
-				</form>
-			{/if}
-		{/if}
-		{#if data.draft || data.version === null}
-			<section class="not-opened glass">
-				<h1>{data.decision.title}</h1>
-				<p>This decision has not been opened yet.</p>
-			</section>
-		{:else}
-			<DecisionView
-				decision={data.decision}
-				content={data.version.content}
-				options={data.options}
-				surveyQuestions={data.surveyQuestions}
-				audiences={data.audiences}
+{#snippet headerActions()}
+	{#if data.mayEdit}
+		<Button variant="ghost" size="sm" class="edit-link" href="/decisions/{data.decision.id}/edit">Edit</Button>
+	{/if}
+{/snippet}
+
+{#snippet side()}
+	<div class="rail-stack">
+		{#if opened}
+			<DecisionFacts
+				closesAt={data.decision.closesAt}
+				deciderName={data.decision.deciderName}
 				participant={data.participant === null ? null : { role: data.participant.role }}
-				mode="participant"
-				{banner}
-				response={yourResponse}
-				results={data.released !== null ? releasedResults : undefined}
-				concern={data.participant !== null && (data.mayRaiseConcern || data.concerns.length > 0) ? concern : undefined}
-				questions={data.questions.length > 0 || data.mayAsk ? questions : undefined}
-				flags={data.participant !== null && (data.flags.length > 0 || data.mayObject || data.mayAskToTalk) ? flagsSection : undefined}
-				linkedCards={(data.linkedCards ?? []).length > 0 || data.mayLinkCards || data.mayUnlinkCards ? linkedCards : undefined}
+				response={{ mayRespond: data.mayRespond, own: data.ownResponse, earlier: data.earlierResponse }}
+				responseHref="#response"
 			/>
 		{/if}
-	</main>
-</div>
+		{#if hasActions}
+			<Card data-rail="actions">
+				<CardContent>
+					<nav class="page-actions" aria-label="What you can do with this decision">
+						{#if data.mayReadResults}
+							<Button variant="outline" size="sm" href="/decisions/{data.decision.id}/results" data-action="results">Results and ruling</Button>
+						{/if}
+						{#if data.mayReadRecord}
+							<Button variant="outline" size="sm" href="/decisions/{data.decision.id}/record" data-action="record">Record</Button>
+						{/if}
+						{#if data.maySupersede}
+							<Button
+								variant="outline"
+								size="sm"
+								data-action="supersede"
+								aria-expanded={superseding}
+								aria-controls={superseding ? 'supersede-panel' : undefined}
+								bind:ref={supersedeToggle}
+								onclick={toggleSupersede}>Supersede…</Button
+							>
+						{/if}
+						<!-- Card 2688 (R14): the shareable copy out of draft, and the full record where the record may be read. -->
+						{#if data.decision.id !== undefined}
+							<DecisionExport decisionId={data.decision.id} draft={data.draft} mayReadRecord={data.mayReadRecord ?? false} />
+						{/if}
+					</nav>
+					{#if superseding}
+						<form
+							class="supersede-panel"
+							id="supersede-panel"
+							data-panel="supersede"
+							onsubmit={(e) => {
+								e.preventDefault();
+								supersede();
+							}}
+						>
+							<p class="panel-note">
+								A new draft copies the content this decision was ruled on, with no participants, and its decider cannot be changed. This decision is marked
+								superseded once the draft is ruled on by this decision's decider, the board's Product Owner when it was ruled, or an administrator.
+							</p>
+							<label class="ui-label" for="supersede-title">Title of the new decision</label>
+							<input id="supersede-title" class="ui-input" type="text" maxlength={DECISION_TITLE_MAX} bind:value={supersedeTitle} bind:this={supersedeField} />
+							<div class="panel-actions">
+								<Button variant="ghost" size="sm" onclick={toggleSupersede}>Cancel</Button>
+								<Button type="submit" size="sm" disabled={supersedeBusy || supersedeTitle.trim() === ''} aria-busy={supersedeBusy ? 'true' : undefined}>Make the draft</Button>
+							</div>
+							<p class="refused" class:said={supersedeRefused !== ''} role="status" data-said="supersede">{supersedeRefused}</p>
+						</form>
+					{/if}
+				</CardContent>
+			</Card>
+		{/if}
+	</div>
+{/snippet}
+
+{#snippet body()}
+	{#if data.draft || data.version === null}
+		<Card class="not-opened">
+			<CardContent>
+				<h1>{data.decision.title}</h1>
+				<p>This decision has not been opened yet.</p>
+			</CardContent>
+		</Card>
+	{:else}
+		<DecisionView
+			decision={data.decision}
+			content={data.version.content}
+			options={data.options}
+			surveyQuestions={data.surveyQuestions}
+			audiences={data.audiences}
+			participant={data.participant === null ? null : { role: data.participant.role }}
+			mode="participant"
+			{banner}
+			response={yourResponse}
+			results={data.released !== null ? releasedResults : undefined}
+			concern={data.participant !== null && (data.mayRaiseConcern || data.concerns.length > 0) ? concern : undefined}
+			questions={data.questions.length > 0 || data.mayAsk ? questions : undefined}
+			flags={data.participant !== null && (data.flags.length > 0 || data.mayObject || data.mayAskToTalk) ? flagsSection : undefined}
+			linkedCards={(data.linkedCards ?? []).length > 0 || data.mayLinkCards || data.mayUnlinkCards ? linkedCards : undefined}
+		/>
+	{/if}
+{/snippet}
+
+<!-- Card 3075: full width, the facts and the actions in a side column on the right from 1024px, after the decision beneath that. -->
+{#if opened || hasActions}
+	<PageShell width="full" {crumbs} actions={headerActions} rail={side} railLabel="About this decision" railPosition="end">
+		{@render body()}
+	</PageShell>
+{:else}
+	<PageShell width="full" {crumbs} actions={headerActions}>
+		{@render body()}
+	</PageShell>
+{/if}
 
 <style>
-	.decision-page { min-height: 100vh; padding-top: 64px; }
-	.decision-header {
-		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-		height: 64px; border-bottom: 1px solid var(--glass-border);
-		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+	.crumb {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
-	.decision-header-inner {
-		max-width: 1400px; margin: 0 auto; height: 100%;
-		display: flex; align-items: center; gap: var(--space-md);
-		padding: 0 var(--space-xl);
-	}
-	.header-logo {
-		display: flex; align-items: center; gap: var(--space-sm);
-		text-decoration: none; color: var(--text-primary);
-		font-weight: 700; font-size: 1.1rem;
-	}
-	.logo-fire { font-size: 1.4rem; }
-	.crumb { flex: 1; font-size: 0.85rem; min-width: 0; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.edit-link { min-height: 44px; display: inline-flex; align-items: center; text-decoration: none; }
 
-	/* One column, phone first; the page's last line stops above the user badge (card 2239). */
-	.decision-content { max-width: 46rem; margin: 0 auto; padding: var(--space-xl) var(--space-md) var(--user-badge-space); }
-	@media (max-width: 640px) {
-		.decision-header-inner { padding: 0 var(--space-md); }
-		.logo-text { display: none; }
+	.rail-stack {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-md);
 	}
-	.not-opened { padding: var(--space-xl); border-radius: var(--radius-lg); }
-	.not-opened h1 { font-size: 1.2rem; margin: 0 0 var(--space-sm); }
-	/* The supersede panel's note; the banner's are `ParticipantBanner`'s (card 2707). */
-	.banner-note { margin: 0; font-size: 0.9rem; color: var(--text-secondary); }
-	.page-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-bottom: var(--space-md); }
-	.page-action { min-height: 44px; display: inline-flex; align-items: center; text-decoration: none; font-size: 0.95rem; }
-	.supersede-panel { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-md); border-radius: var(--radius-md); margin-bottom: var(--space-md); }
-	.small { font-size: 0.9rem; color: var(--text-secondary); }
-	.field {
-		font-size: 16px; font-family: var(--font-family); padding: var(--space-sm); width: 100%; box-sizing: border-box;
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary);
+	/* The actions one under another, each the rail's width. */
+	.page-actions {
+		display: grid;
+		gap: var(--space-sm);
 	}
-	.panel-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-sm); }
-	.refused { margin: 0; font-size: 0.9rem; color: var(--accent-rose); }
+
+	.supersede-panel {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+		margin-top: var(--space-md);
+		padding-top: var(--space-md);
+		border-top: 1px solid var(--ui-border);
+	}
+	/* The supersede form's note; the banner's are `ParticipantBanner`'s (card 2707). */
+	.panel-note {
+		margin: 0;
+		font-size: 0.8125rem;
+		line-height: 1.45;
+		color: var(--ui-muted-foreground);
+	}
+	.panel-actions {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: var(--space-sm);
+	}
+	.refused {
+		margin: 0;
+		font-size: 0.8125rem;
+		color: var(--ui-foreground);
+	}
+	/* A refusal: the words in the text colour, marked by the destructive tone. */
+	.refused.said {
+		padding-left: 0.625rem;
+		border-left: 3px solid var(--ui-destructive);
+	}
+
+	h1 {
+		margin: 0 0 var(--space-sm);
+		font-size: 1.625rem;
+		font-weight: 600;
+		line-height: 1.2;
+		letter-spacing: -0.025em;
+		overflow-wrap: anywhere;
+	}
+	p {
+		margin: 0;
+		color: var(--ui-muted-foreground);
+	}
 </style>

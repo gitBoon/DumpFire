@@ -39,9 +39,18 @@
 	 * unlinked) and `ParticipantResponse` (to the link's route, the token in
 	 * the body, keyed on the token), so the two pages cannot drift. Nothing only
 	 * the signed-in page has is handed to them from here.
+	 *
+	 * Card 3075: on the kit's shell, bare (DumpFire as text, not a link, with
+	 * no crumbs, actions or Theme menu), full width, with the decision's facts
+	 * (`DecisionFacts`, given no link) in a side column. Still no `href`
+	 * anywhere on the page.
 	 */
 	import type { PageData } from './$types';
 	import { page } from '$app/state';
+	import PageShell from '$lib/components/ui/PageShell.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import DecisionFacts from '$lib/components/decision/DecisionFacts.svelte';
 	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
 	import FlagForm from '$lib/components/decision/FlagForm.svelte';
@@ -151,42 +160,57 @@
 	/>
 {/snippet}
 
-<div class="link-page">
-	<header class="link-header">
-		<span class="logo"><span aria-hidden="true">🔥</span> DumpFire</span>
-	</header>
+{#snippet facts()}
+	<!-- The facts alone: no actions, PDFs, Supersede, Edit or linked cards, and the response state as text, never a link (D9, S8). -->
+	<DecisionFacts
+		closesAt={data.decision.closesAt}
+		deciderName={data.decision.deciderName}
+		participant={data.participant === null ? null : { role: data.participant.role }}
+		response={{ mayRespond: data.mayRespond, own: data.ownResponse, earlier: data.earlierResponse }}
+	/>
+{/snippet}
 
-	<main class="link-content">
-		{#if data.draft || data.version === null}
-			<section class="not-opened">
+<!-- Card 3075: the shared frame, bare (the name as text, no link, crumbs, actions or Theme menu), full width. No user badge is drawn here (D9). -->
+{#if data.draft || data.version === null}
+	<PageShell bare width="full">
+		<Card class="not-opened">
+			<CardContent>
 				<h1>{data.decision.title}</h1>
 				<p>This decision has not been opened yet.</p>
-			</section>
-		{:else}
-			<DecisionView
-				decision={data.decision}
-				content={data.version.content}
-				options={data.options}
-				surveyQuestions={data.surveyQuestions}
-				audiences={data.audiences}
-				participant={data.participant === null ? null : { role: data.participant.role }}
-				mode="participant"
-				{banner}
-				response={yourResponse}
-				results={data.released !== null ? releasedResults : undefined}
-				concern={data.participant !== null && (data.mayRaiseConcern || data.concerns.length > 0) ? concern : undefined}
-				questions={data.questions.length > 0 || data.mayAsk ? questions : undefined}
-				flags={data.participant !== null && (data.flags.length > 0 || data.mayObject || data.mayAskToTalk) ? flagsSection : undefined}
-			/>
-		{/if}
-	</main>
-</div>
+			</CardContent>
+		</Card>
+	</PageShell>
+{:else}
+	<PageShell bare width="full" rail={facts} railLabel="About this decision" railPosition="end">
+		<DecisionView
+			decision={data.decision}
+			content={data.version.content}
+			options={data.options}
+			surveyQuestions={data.surveyQuestions}
+			audiences={data.audiences}
+			participant={data.participant === null ? null : { role: data.participant.role }}
+			mode="participant"
+			{banner}
+			response={yourResponse}
+			results={data.released !== null ? releasedResults : undefined}
+			concern={data.participant !== null && (data.mayRaiseConcern || data.concerns.length > 0) ? concern : undefined}
+			questions={data.questions.length > 0 || data.mayAsk ? questions : undefined}
+			flags={data.participant !== null && (data.flags.length > 0 || data.mayObject || data.mayAskToTalk) ? flagsSection : undefined}
+		/>
+	</PageShell>
+{/if}
 
 <style>
-	.link-page { min-height: 100vh; }
-	.link-header { max-width: 46rem; margin: 0 auto; padding: var(--space-md); }
-	.logo { font-weight: 700; font-size: 1.1rem; color: var(--text-primary); }
-	/* One column, phone first (decision 22). No user badge is drawn here (D9). */
-	.link-content { max-width: 46rem; margin: 0 auto; padding: 0 var(--space-md) var(--space-2xl); }
-	.not-opened h1 { font-size: 1.2rem; margin: 0 0 var(--space-sm); }
+	h1 {
+		margin: 0 0 var(--space-sm);
+		font-size: 1.625rem;
+		font-weight: 600;
+		line-height: 1.2;
+		letter-spacing: -0.025em;
+		overflow-wrap: anywhere;
+	}
+	p {
+		margin: 0;
+		color: var(--ui-muted-foreground);
+	}
 </style>

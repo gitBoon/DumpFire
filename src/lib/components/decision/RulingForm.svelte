@@ -46,6 +46,7 @@
 	import { tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
+	import Button from '$lib/components/ui/Button.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { againstOf, DECISION_TEXT_MAX } from '$lib/decision-rules';
 	import { NOT_REACHED_WORDS, NO_OPTIONS_PUT, objectionsUnansweredWords, RESULTS_READ_AGAIN, STALE_REVISION, talksConfirmWords } from '$lib/decision-words';
@@ -122,7 +123,7 @@
 	/** The last refusal, said in the status region. */
 	let refused = $state('');
 
-	let ruleButton = $state<HTMLButtonElement>();
+	let ruleButton = $state<HTMLButtonElement | HTMLAnchorElement | null>(null);
 	let saidRegion = $state<HTMLElement>();
 
 	/** Card 2683 (R18): no option was put to a vote, so the ruling is on none, with nothing to choose. */
@@ -238,12 +239,12 @@
 		<p class="warning" id={warningId} data-note="against">This goes against the responses: it is not the most chosen option. Only you and DumpFire's administrators are shown this.</p>
 	{/if}
 
-	<label class="small" for="{id}-reason">Why (required; every participant is told)</label>
-	<textarea id="{id}-reason" class="field" rows="4" maxlength={TEXT_MAX} required aria-describedby="{id}-reason-count" bind:value={reason}></textarea>
+	<label class="ui-label" for="{id}-reason">Why (required; every participant is told)</label>
+	<textarea id="{id}-reason" class="ui-textarea" rows="4" maxlength={TEXT_MAX} required aria-describedby="{id}-reason-count" bind:value={reason}></textarea>
 	<p class="count" id="{id}-reason-count">{reason.length} of {TEXT_MAX.toLocaleString('en-GB')} characters</p>
 
-	<label class="small" for="{id}-conditions">Conditions (optional)</label>
-	<textarea id="{id}-conditions" class="field" rows="3" maxlength={TEXT_MAX} aria-describedby="{id}-conditions-count" bind:value={conditions}></textarea>
+	<label class="ui-label" for="{id}-conditions">Conditions (optional)</label>
+	<textarea id="{id}-conditions" class="ui-textarea" rows="3" maxlength={TEXT_MAX} aria-describedby="{id}-conditions-count" bind:value={conditions}></textarea>
 	<p class="count" id="{id}-conditions-count">{conditions.length} of {TEXT_MAX.toLocaleString('en-GB')} characters</p>
 
 	{#if early}
@@ -279,7 +280,7 @@
 	{/if}
 
 	<div class="actions">
-		<button type="submit" class="btn btn-primary btn-sm" data-action="rule" disabled={!ready} bind:this={ruleButton}>Rule…</button>
+		<Button type="submit" size="sm" data-action="rule" disabled={!ready} bind:ref={ruleButton}>Rule…</Button>
 	</div>
 	<p class="refused" role="status" data-said="ruling" tabindex="-1" bind:this={saidRegion}>{refused}</p>
 </form>
@@ -289,23 +290,23 @@
 {/if}
 
 <style>
-	.ruling-form { display: flex; flex-direction: column; gap: var(--space-xs); }
-	.choices { border: none; padding: 0; margin: 0 0 var(--space-xs); display: flex; flex-direction: column; gap: var(--space-xs); font-size: 0.88rem; }
+	.ruling-form { display: flex; flex-direction: column; gap: var(--space-sm); color: var(--ui-foreground); }
+	.choices { border: none; padding: 0; margin: 0 0 var(--space-xs); display: flex; flex-direction: column; gap: var(--space-xs); font-size: 0.875rem; }
 	.choices legend { font-weight: 600; margin-bottom: var(--space-xs); }
 	.choices label { display: flex; gap: var(--space-xs); align-items: flex-start; overflow-wrap: anywhere; }
-	.warning { margin: 0; font-size: 0.82rem; color: var(--accent-amber, var(--accent-rose)); }
-	.field {
-		width: 100%; box-sizing: border-box; padding: var(--space-xs) var(--space-sm);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-elevated); color: var(--text-primary); font-size: 0.85rem; font-family: var(--font-family);
-	}
-	.small { font-size: 0.78rem; color: var(--text-secondary); }
-	.count { margin: 0; font-size: 0.7rem; color: var(--text-tertiary); text-align: right; }
-	.note { font-size: 0.82rem; color: var(--text-secondary); }
+	/* A warning: the words in the text colour, marked by the warning tone. */
+	.warning { margin: 0; padding-left: 0.625rem; border-left: 3px solid var(--ui-warning); font-size: 0.8125rem; color: var(--ui-foreground); }
+	.warning a { color: var(--ui-foreground); text-underline-offset: 3px; border-radius: var(--ui-radius-sm); }
+	.warning a:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
+	.ui-label { margin-top: var(--space-xs); }
+	.count { margin: 0; font-size: 0.75rem; color: var(--ui-muted-foreground); text-align: right; }
+	.note { font-size: 0.8125rem; color: var(--ui-muted-foreground); }
 	.note p { margin: 0; }
 	.note ul { margin: var(--space-xs) 0 0; padding-left: var(--space-lg); }
-	.not-reached { color: var(--text-tertiary); }
-	.confirm-open { display: flex; gap: var(--space-xs); align-items: flex-start; font-size: 0.85rem; }
+	.not-reached { color: var(--ui-muted-foreground); }
+	.confirm-open { display: flex; gap: var(--space-xs); align-items: flex-start; font-size: 0.875rem; }
 	.actions { display: flex; justify-content: flex-end; }
-	.refused { margin: 0; font-size: 0.82rem; color: var(--accent-rose); min-height: 1em; }
+	.refused { margin: 0; font-size: 0.8125rem; color: var(--ui-foreground); min-height: 1em; }
+	.refused:not(:empty) { padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); }
+	.refused:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
 </style>

@@ -101,6 +101,31 @@ describe('PageShell', () => {
 		// The page before the rail in the document, whichever side the rail is drawn on.
 		expect(page.compareDocumentPosition(aside) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 	});
+
+	it('T1 (card 3075). bare: the header shows DumpFire as text with no link, no Theme menu, and no crumbs or actions even when given; main as without it', () => {
+		const target = draw(PageShell, {
+			bare: true,
+			crumbs: html('<span data-said="crumb">Board A</span>'),
+			actions: html('<button type="button" data-action="edit">Edit</button>'),
+			rail: html('<div data-said="rail">Facts</div>'),
+			railLabel: 'About this decision',
+			children: html('<section data-said="page"><h2>Inside</h2></section>')
+		});
+
+		const header = target.querySelector('header')!;
+		expect(header.textContent).toContain('DumpFire');
+		expect(header.querySelector('a')).toBeNull();
+		expect(header.querySelector('button[title="Change theme"]')).toBeNull();
+		expect(header.querySelector('[data-said="crumb"]')).toBeNull();
+		expect(header.querySelector('[data-action="edit"]')).toBeNull();
+		expect(target.querySelector('[href]')).toBeNull();
+
+		const main = target.querySelector('main')!;
+		expect(main.classList.contains('ui-shell-full')).toBe(true);
+		expect(main.classList.contains('ui-shell-grid')).toBe(true);
+		expect(main.querySelector('[data-said="page"]')).not.toBeNull();
+		expect(main.querySelector('aside[aria-label="About this decision"] [data-said="rail"]')).not.toBeNull();
+	});
 });
 
 describe('Button', () => {
@@ -132,6 +157,36 @@ describe('Button', () => {
 		expect(off.title).toBe('Nothing to send');
 		off.click();
 		expect(clicked).not.toHaveBeenCalled();
+	});
+
+	it('T2 (card 3075). bind:ref holds the element drawn: the button, and with an href the link', () => {
+		const held: { ref: HTMLElement | null } = { ref: null };
+		draw(Button, {
+			get ref() {
+				return held.ref;
+			},
+			set ref(value: HTMLElement | null) {
+				held.ref = value;
+			},
+			'data-action': 'supersede',
+			children: html('<span>Supersede…</span>')
+		});
+		expect(held.ref).toBeInstanceOf(HTMLButtonElement);
+		expect((held.ref as HTMLElement).dataset.action).toBe('supersede');
+
+		const linked: { ref: HTMLElement | null } = { ref: null };
+		draw(Button, {
+			href: '/decisions/5/results',
+			get ref() {
+				return linked.ref;
+			},
+			set ref(value: HTMLElement | null) {
+				linked.ref = value;
+			},
+			children: html('<span>Results</span>')
+		});
+		expect(linked.ref).toBeInstanceOf(HTMLAnchorElement);
+		expect(linked.ref!.getAttribute('href')).toBe('/decisions/5/results');
 	});
 });
 

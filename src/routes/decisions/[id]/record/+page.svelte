@@ -11,13 +11,19 @@
 	 * directory to their person record (code review F1), which this reader,
 	 * the decider or an administrator, may open; a draft's participants, and
 	 * one included by address alone, have no link.
+	 *
+	 * Card 3075: on the kit's shell, full width, the participant filter and
+	 * People's records in a rail on the left from 1024px (above the record
+	 * beneath that).
 	 */
 	import type { PageData } from './$types';
-	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
-	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import RecordEvents from '$lib/components/decision/RecordEvents.svelte';
-	import { STATUS_WORDS } from '$lib/decision-words';
-	import { theme, themeIcon } from '$lib/stores/theme';
+	import PageShell from '$lib/components/ui/PageShell.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
 
 	let { data }: { data: PageData } = $props();
 
@@ -41,111 +47,161 @@
 	<meta name="robots" content="noindex" />
 </svelte:head>
 
-<div class="record-page">
-	<header class="record-header glass">
-		<div class="record-header-inner">
-			<a href="/" class="header-logo" title="Back to DumpFire">
-				<span class="logo-fire">🔥</span>
-				<span class="logo-text">DumpFire</span>
-			</a>
-			<nav class="crumb" aria-label="Where this is">
-				<a href="/decisions">Decisions</a>
-				<span aria-hidden="true">/</span>
-				<a href="/decisions/{data.decision.id}">{data.decision.title}</a>
-			</nav>
-			<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
-				{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
-				<ThemeMenuItems heading={false} />
-			</HeaderMenu>
-		</div>
-	</header>
+{#snippet crumbs()}
+	<nav class="crumb" aria-label="Where this is">
+		<a href="/decisions">Decisions</a>
+		<span aria-hidden="true">/</span>
+		<a href="/decisions/{data.decision.id}">{data.decision.title}</a>
+	</nav>
+{/snippet}
 
-	<main class="record-content">
-		<h1>Record of {data.decision.title}</h1>
-		<p class="status-line"><span class="status-chip" data-status={data.decision.shownStatus}>{STATUS_WORDS[data.decision.shownStatus] ?? data.decision.shownStatus}</span></p>
-
-		<form class="filters glass" method="GET" action={base} data-form="participant">
-			<div class="filter">
-				<label for="record-participant">Participant</label>
-				<select id="record-participant" name="participant" class="field" value={data.participant === null ? '' : String(data.participant)}>
-					<option value="">Every participant and event</option>
-					{#each data.participants as participant (participant.id)}
-						<option value={String(participant.id)}>{participant.name}</option>
-					{/each}
-				</select>
-			</div>
-			<button type="submit" class="btn-primary target">Show</button>
-		</form>
+{#snippet side()}
+	<div class="rail-stack">
+		<Card>
+			<CardContent>
+				<form class="filters" method="GET" action={base} data-form="participant">
+					<div class="filter">
+						<label class="ui-label" for="record-participant">Participant</label>
+						<select id="record-participant" name="participant" class="ui-select" value={data.participant === null ? '' : String(data.participant)}>
+							<option value="">Every participant and event</option>
+							{#each data.participants as participant (participant.id)}
+								<option value={String(participant.id)}>{participant.name}</option>
+							{/each}
+						</select>
+					</div>
+					<div class="filter-actions"><Button type="submit">Show</Button></div>
+				</form>
+			</CardContent>
+		</Card>
 
 		{#if withRecords.length > 0}
-			<details class="people glass">
-				<summary class="target">People's records</summary>
-				<ul class="people-list">
-					{#each withRecords as participant (participant.id)}
-						<li><a class="target" href="/decisions/people/{participant.personId}" data-action="person-record">{participant.name}</a></li>
-					{/each}
-				</ul>
-			</details>
+			<Card>
+				<CardContent>
+					<details class="people">
+						<summary>People's records</summary>
+						<ul class="people-list">
+							{#each withRecords as participant (participant.id)}
+								<li><a class="person-link" href="/decisions/people/{participant.personId}" data-action="person-record">{participant.name}</a></li>
+							{/each}
+						</ul>
+					</details>
+				</CardContent>
+			</Card>
 		{/if}
+	</div>
+{/snippet}
 
-		<p class="result-count" role="status" aria-live="polite" data-said="count">{countWords}</p>
+<PageShell width="full" {crumbs} rail={side} railLabel="Filter the record" railPosition="start">
+	<PageHeader title="Record of {data.decision.title}">
+		<p class="status-line"><Badge status={data.decision.shownStatus} /></p>
+	</PageHeader>
 
-		<RecordEvents entries={data.entries} empty={data.participant === null ? 'Nothing has been recorded on this decision yet.' : 'No event names this participant.'} />
+	<p class="result-count" role="status" aria-live="polite" data-said="count">{countWords}</p>
 
-		{#if data.next !== null || later}
-			<nav class="pages" aria-label="Pages of the record">
-				{#if later}<a class="target" href={withParticipant('')} data-page="start">Back to the start</a>{/if}
-				{#if data.next !== null}<a class="target" href={withParticipant(String(data.next))} data-page="next">Later events</a>{/if}
-			</nav>
-		{/if}
-	</main>
-</div>
+	<RecordEvents entries={data.entries} empty={data.participant === null ? 'Nothing has been recorded on this decision yet.' : 'No event names this participant.'} />
+
+	{#if data.next !== null || later}
+		<nav class="pages" aria-label="Pages of the record">
+			{#if later}<Button variant="outline" size="sm" href={withParticipant('')} data-page="start">Back to the start</Button>{/if}
+			{#if data.next !== null}<Button variant="outline" size="sm" href={withParticipant(String(data.next))} data-page="next">Later events</Button>{/if}
+		</nav>
+	{/if}
+</PageShell>
 
 <style>
-	.record-page { min-height: 100vh; padding-top: 64px; }
-	.record-header {
-		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-		height: 64px; border-bottom: 1px solid var(--glass-border);
-		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+	.crumb {
+		display: flex;
+		gap: var(--space-xs);
+		min-width: 0;
+		overflow: hidden;
+		white-space: nowrap;
 	}
-	.record-header-inner {
-		max-width: 1400px; margin: 0 auto; height: 100%;
-		display: flex; align-items: center; gap: var(--space-lg);
-		padding: 0 var(--space-xl);
+	.crumb a {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		border-radius: var(--ui-radius-sm);
+		color: var(--ui-muted-foreground);
+		text-decoration: none;
 	}
-	.header-logo {
-		display: flex; align-items: center; gap: var(--space-sm);
-		text-decoration: none; color: var(--text-primary);
-		font-weight: 700; font-size: 1.1rem;
+	.crumb a:hover {
+		color: var(--ui-foreground);
 	}
-	.logo-fire { font-size: 1.4rem; }
-	.crumb { flex: 1; font-size: 0.85rem; min-width: 0; display: flex; gap: var(--space-xs); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-	.crumb a { color: var(--text-secondary); text-decoration: none; overflow: hidden; text-overflow: ellipsis; }
+	.crumb a:focus-visible,
+	.person-link:focus-visible,
+	.people summary:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
 
-	.record-content { max-width: 52rem; margin: 0 auto; padding: var(--space-xl) var(--space-md) var(--user-badge-space); }
-	h1 { font-size: 1.2rem; margin: 0 0 var(--space-xs); overflow-wrap: anywhere; }
-	.status-line { margin: 0 0 var(--space-md); }
-	.status-chip { display: inline-block; padding: 1px var(--space-sm); border-radius: 999px; font-size: 0.75rem; background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo); }
-	.filters { display: flex; flex-wrap: wrap; gap: var(--space-md); align-items: flex-end; padding: var(--space-md); border-radius: var(--radius-md); margin-bottom: var(--space-md); }
-	.filter { display: flex; flex-direction: column; gap: var(--space-xs); flex: 1; min-width: 12rem; }
-	.filter label { font-size: 0.85rem; color: var(--text-secondary); }
-	.field {
-		min-height: 44px; box-sizing: border-box; font-size: 16px; font-family: var(--font-family); padding: 0 var(--space-sm);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary);
+	.status-line {
+		margin: calc(-1 * var(--space-sm)) 0 0;
 	}
-	.target { min-height: 44px; display: inline-flex; align-items: center; }
-	button.target { padding: 0 var(--space-lg); }
-	.target:focus-visible, .field:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: 2px; }
-	.result-count { font-size: 0.9rem; color: var(--text-secondary); margin: 0 0 var(--space-sm); }
-	.people { padding: 0 var(--space-md); border-radius: var(--radius-md); margin-bottom: var(--space-md); }
-	.people summary { cursor: pointer; font-size: 0.9rem; }
-	.people summary:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: 2px; }
-	.people-list { list-style: none; margin: 0; padding: 0 0 var(--space-sm); display: flex; flex-wrap: wrap; gap: 0 var(--space-lg); }
-	.people-list a { color: var(--accent-indigo); text-decoration: none; }
-	.pages { display: flex; flex-wrap: wrap; gap: var(--space-lg); margin-top: var(--space-md); }
-	.pages a { color: var(--accent-indigo); text-decoration: none; }
-	@media (max-width: 640px) {
-		.record-header-inner { padding: 0 var(--space-md); }
-		.logo-text { display: none; }
+
+	.rail-stack {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-md);
+	}
+	.filters {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-md);
+	}
+	.filter {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+	}
+	.filter-actions {
+		display: grid;
+	}
+
+	.people summary {
+		cursor: pointer;
+		border-radius: var(--ui-radius-sm);
+		font-size: 0.875rem;
+		font-weight: 500;
+	}
+	.people-list {
+		list-style: none;
+		margin: var(--space-sm) 0 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-xs);
+	}
+	.person-link {
+		border-radius: var(--ui-radius-sm);
+		color: var(--ui-foreground);
+		text-decoration: underline;
+		text-decoration-color: var(--ui-border);
+		text-underline-offset: 3px;
+	}
+	.person-link:hover {
+		color: var(--ui-foreground);
+		text-decoration-color: currentColor;
+	}
+
+	.result-count {
+		margin: 0 0 var(--space-sm);
+		font-size: 0.875rem;
+		color: var(--ui-muted-foreground);
+	}
+	.pages {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-sm);
+		margin-top: var(--space-lg);
+	}
+
+	@media (pointer: coarse) {
+		.people summary {
+			padding-block: 0.75rem;
+		}
+		.person-link {
+			display: inline-flex;
+			align-items: center;
+			min-height: 2.75rem;
+		}
 	}
 </style>

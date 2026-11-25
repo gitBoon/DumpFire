@@ -1001,6 +1001,67 @@ describe('the parts both participant pages share (card 2707)', () => {
 			expect(text, word).not.toContain(word);
 		}
 		expect(link.querySelector('button[data-action="wait"]')).toBeNull();
+		// Card 3075 (A4): the bare frame draws no Theme menu, and the side column is drawn, so the checks above cover it too.
+		expect(link.querySelector('button[title="Change theme"]')).toBeNull();
+		expect(link.querySelector('aside [data-rail="facts"]')).not.toBeNull();
+	});
+
+	it('T4 (card 3075): the decision page draws its side column: the facts and the actions in the aside, the decision in the main column', () => {
+		const target = draw(DecisionPage, { data: pageData({ mayReadResults: true, mayReadRecord: true, maySupersede: true }) });
+		const main = target.querySelector('main.ui-shell-grid')!;
+		expect(main).not.toBeNull();
+		const aside = main.querySelector('aside[aria-label="About this decision"]')!;
+		expect(aside.querySelector('[data-rail="facts"]')).not.toBeNull();
+		expect(aside.querySelector('.page-actions')).not.toBeNull();
+		expect(main.querySelector('.ui-shell-content .page-actions')).toBeNull();
+		expect(main.querySelector('.ui-shell-content .decision-view')).not.toBeNull();
+		expect(aside.querySelector('.decision-view')).toBeNull();
+	});
+
+	it('T5 (card 3075): the facts in order, before the actions; the response row links to #response, DecisionView’s response section; none for an informed participant', () => {
+		const consulted = draw(DecisionPage, { data: pageData({ mayReadResults: true }) });
+		const facts = consulted.querySelector('[data-rail="facts"]')!;
+		expect([...facts.querySelectorAll<HTMLElement>('[data-fact]')].map((row) => row.dataset.fact)).toEqual(['closes', 'decider', 'part', 'response']);
+		expect([...facts.querySelectorAll('[data-fact]')].map(textOf)).toEqual([
+			'Closes 2099-12-01 12:00 UTC',
+			'Decider Dee Cider',
+			'Your part Consulted',
+			'Your response Not given yet Go to the form'
+		]);
+		const actions = consulted.querySelector('[data-rail="actions"]')!;
+		expect(facts.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		const toForm = facts.querySelector('[data-fact="response"] a')!;
+		expect(toForm.getAttribute('href')).toBe('#response');
+		expect(consulted.querySelector('#response')).toBe(consulted.querySelector('[data-section="response"]'));
+
+		clear();
+		const informed = draw(DecisionPage, {
+			data: pageData({ participant: { role: 'informed', includedAt: '2026-11-01 09:00:00', told: null }, mayRespond: false })
+		});
+		expect([...informed.querySelectorAll<HTMLElement>('[data-rail="facts"] [data-fact]')].map((row) => row.dataset.fact)).toEqual(['closes', 'decider', 'part']);
+	});
+
+	it('T7 (card 3075, review M1): on either page, a response recorded reads the page again once, and the side column then says it was given', async () => {
+		for (const [name, page, data, route, given] of [
+			['signed in', DecisionPage, pageData, 'POST /api/decisions/5/responses', 'Your response Given 2026-11-02 10:00 UTC; you can change it Go to the form'],
+			['link', LinkPage, linkData, 'POST /api/decision-by-link/responses', 'Your response Given 2026-11-02 10:00 UTC; you can change it']
+		] as const) {
+			clear();
+			navigation.invalidateAll.mockClear();
+			const target = draw(page, { data: data() });
+			expect(textOf(target.querySelector('[data-fact="response"]')!), name).toBe(name === 'link' ? 'Your response Not given yet' : 'Your response Not given yet Go to the form');
+			radio(target, 'option-12').click();
+			flushSync();
+			answer(route, { response: response({ optionId: 12 }), unchanged: false });
+			button(target, 'Send my response').click();
+			await settle();
+			expect(navigation.invalidateAll, name).toHaveBeenCalledTimes(1);
+
+			// The page's data read again holds the response: the side column says so.
+			clear();
+			const readAgain = draw(page, { data: data({ ownResponse: response({ optionId: 12 }) }) });
+			expect(textOf(readAgain.querySelector('[data-fact="response"]')!), name).toBe(given);
+		}
 	});
 
 	it('2707-3: on either page, Reload after the stale-version 409 reads the page again once and draws the form afresh', async () => {

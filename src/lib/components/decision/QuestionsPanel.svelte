@@ -37,6 +37,7 @@
 	import { tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
+	import Button from '$lib/components/ui/Button.svelte';
 	import { DECISION_TEXT_MAX } from '$lib/decision-rules';
 	import type { QuestionView } from '$lib/decision-view-types';
 	import {
@@ -218,39 +219,43 @@
 						{#if controls && question.id !== undefined}
 							{@const qid = question.id}
 							<div class="controls">
-								<button
-									type="button"
-									class="btn-primary control"
-									data-action="publish"
-									aria-label={publishDraftName(n)}
-									aria-describedby={textId(key)}
-									disabled={busy !== null}
-									onclick={() => publishDraft(qid)}>Publish the agent's answer</button
-								>
+								<div class="control-row">
+									<Button
+										class="control"
+										data-action="publish"
+										aria-label={publishDraftName(n)}
+										aria-describedby={textId(key)}
+										disabled={busy !== null}
+										onclick={() => publishDraft(qid)}>Publish the agent's answer</Button
+									>
+								</div>
 								<form
 									onsubmit={(e) => {
 										e.preventDefault();
 										replaceDraft(qid);
 									}}
 								>
-									<label class="field-label" for="{uid}-replace-{qid}">{replaceFieldName(n)}</label>
+									<label class="ui-label field-label" for="{uid}-replace-{qid}">{replaceFieldName(n)}</label>
 									<textarea
 										id="{uid}-replace-{qid}"
-										class="field"
+										class="ui-textarea"
 										rows="3"
 										maxlength={TEXT_MAX}
 										aria-describedby="{textId(key)} {uid}-replace-{qid}-count"
 										bind:value={() => replacements[qid] ?? '', (value) => (replacements[qid] = value)}
 									></textarea>
 									<p class="count" id="{uid}-replace-{qid}-count">{(replacements[qid] ?? '').length} of {TEXT_MAX.toLocaleString('en-GB')} characters</p>
-									<button
-										type="submit"
-										class="btn-ghost control"
-										data-action="replace"
-										aria-label={replaceDraftName(n)}
-										aria-describedby={textId(key)}
-										disabled={busy !== null || (replacements[qid] ?? '').trim() === ''}>Replace the agent's answer</button
-									>
+									<div class="control-row">
+										<Button
+											type="submit"
+											variant="outline"
+											class="control"
+											data-action="replace"
+											aria-label={replaceDraftName(n)}
+											aria-describedby={textId(key)}
+											disabled={busy !== null || (replacements[qid] ?? '').trim() === ''}>Replace the agent's answer</Button
+										>
+									</div>
 								</form>
 							</div>
 						{/if}
@@ -265,24 +270,26 @@
 									sendAnswer(qid);
 								}}
 							>
-								<label class="field-label" for="{uid}-answer-field-{qid}">{answerFieldName(n)}</label>
+								<label class="ui-label field-label" for="{uid}-answer-field-{qid}">{answerFieldName(n)}</label>
 								<textarea
 									id="{uid}-answer-field-{qid}"
-									class="field"
+									class="ui-textarea"
 									rows="3"
 									maxlength={TEXT_MAX}
 									aria-describedby="{textId(key)} {uid}-answer-field-{qid}-count"
 									bind:value={() => answers[qid] ?? '', (value) => (answers[qid] = value)}
 								></textarea>
 								<p class="count" id="{uid}-answer-field-{qid}-count">{(answers[qid] ?? '').length} of {TEXT_MAX.toLocaleString('en-GB')} characters</p>
-								<button
-									type="submit"
-									class="btn-primary control"
-									data-action="answer"
-									aria-label={sendAnswerName(n)}
-									aria-describedby={textId(key)}
-									disabled={busy !== null || (answers[qid] ?? '').trim() === ''}>Send answer</button
-								>
+								<div class="control-row">
+									<Button
+										type="submit"
+										class="control"
+										data-action="answer"
+										aria-label={sendAnswerName(n)}
+										aria-describedby={textId(key)}
+										disabled={busy !== null || (answers[qid] ?? '').trim() === ''}>Send answer</Button
+									>
+								</div>
 							</form>
 						{/if}
 					{/if}
@@ -290,8 +297,8 @@
 					{#if unsentFor(question) !== ''}
 						<!-- Typed here before the question was answered elsewhere: kept, so that nothing typed is lost (F4). -->
 						<div class="unsent" data-block="unsent">
-							<label class="field-label" for={unsentId(key)}>Your answer to question {n}, not sent</label>
-							<textarea id={unsentId(key)} class="field" rows="3" readonly value={unsentFor(question)}></textarea>
+							<label class="ui-label field-label" for={unsentId(key)}>Your answer to question {n}, not sent</label>
+							<textarea id={unsentId(key)} class="ui-textarea" rows="3" readonly value={unsentFor(question)}></textarea>
 						</div>
 					{/if}
 				</li>
@@ -304,32 +311,34 @@
 </div>
 
 <style>
-	.questions-panel { display: flex; flex-direction: column; gap: var(--space-sm); font-size: 1rem; }
+	.questions-panel { display: flex; flex-direction: column; gap: var(--space-sm); font-size: 1rem; color: var(--ui-foreground); }
 	.questions-panel p { margin: 0; }
-	.none { font-size: 0.9rem; color: var(--text-tertiary); }
+	.none { font-size: 0.875rem; color: var(--ui-muted-foreground); }
 	.question-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-md); }
-	.question { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-md); border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--bg-elevated); min-width: 0; }
+	.question {
+		display: flex; flex-direction: column; gap: var(--space-xs); min-width: 0;
+		padding: 1rem 1.25rem;
+		border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg);
+		background: var(--ui-card); box-shadow: var(--ui-shadow-sm);
+	}
 	/* A long name with no break wraps at phone width rather than pushing the page sideways (code review F8). */
-	.question-head { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-sm); font-size: 0.85rem; color: var(--text-secondary); overflow-wrap: anywhere; min-width: 0; }
-	.number { font-weight: 700; color: var(--text-primary); }
-	.own { font-weight: 600; color: var(--accent-indigo); }
-	.asked-by-agent, .asked-in, .unanswered, .answer-by { font-size: 0.85rem; color: var(--text-secondary); }
+	.question-head { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-sm); font-size: 0.8125rem; color: var(--ui-muted-foreground); overflow-wrap: anywhere; min-width: 0; }
+	.number { font-weight: 600; color: var(--ui-foreground); }
+	.own { font-weight: 600; color: var(--ui-foreground); }
+	.asked-by-agent, .asked-in, .unanswered, .answer-by { font-size: 0.8125rem; color: var(--ui-muted-foreground); }
 	.answer-by { overflow-wrap: anywhere; min-width: 0; }
 	/* As typed, never markup (decision 3). */
-	.text { white-space: pre-wrap; overflow-wrap: anywhere; }
-	.answer, .draft { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-xs); padding-left: var(--space-md); border-left: 3px solid var(--glass-border); }
-	.answer:focus, .text:focus { outline: 2px solid var(--accent-indigo); outline-offset: 2px; }
-	.controls { display: flex; flex-direction: column; gap: var(--space-xs); }
+	.text { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 80ch; }
+	.answer, .draft { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-xs); padding-left: var(--space-md); border-left: 3px solid var(--ui-border); }
+	.answer:focus, .text:focus { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
+	.controls { display: flex; flex-direction: column; gap: var(--space-xs); max-width: 48rem; }
 	form { display: flex; flex-direction: column; gap: var(--space-xs); }
-	.field-label { font-size: 0.9rem; color: var(--text-secondary); }
-	/* 16px, so a phone does not zoom; every tap target 44px tall at least (card 2677, decision 22). */
-	.field {
-		font-size: 16px; font-family: var(--font-family); padding: var(--space-sm); width: 100%; box-sizing: border-box;
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-base); color: var(--text-primary);
-	}
-	.count { font-size: 0.8rem; color: var(--text-tertiary); text-align: right; }
-	.control { min-height: 44px; font-size: 1rem; align-self: flex-start; }
-	.unsent { display: flex; flex-direction: column; gap: var(--space-xs); }
-	.said { font-size: 0.9rem; color: var(--accent-emerald, var(--text-secondary)); }
-	.said.refused { color: var(--accent-rose); }
+	/* Read-only: the muted fill (the kit has no read-only look of its own). */
+	.ui-textarea[readonly] { background: var(--ui-muted); }
+	.count { font-size: 0.75rem; color: var(--ui-muted-foreground); text-align: right; }
+	.control-row { display: flex; }
+	.unsent { display: flex; flex-direction: column; gap: var(--space-xs); max-width: 48rem; }
+	.said { font-size: 0.875rem; color: var(--ui-foreground); }
+	/* A refusal: the words in the text colour, marked by the destructive tone. */
+	.said.refused { padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); }
 </style>

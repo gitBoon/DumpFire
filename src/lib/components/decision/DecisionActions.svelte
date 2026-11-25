@@ -2,6 +2,11 @@
   DecisionActions.svelte — a decision's lifecycle controls, above its editor
   (card 2697, decision 20, Q14, Q17, Q25, Q29).
 
+  Card 3075: every control is the kit's small Button, the main one (Open)
+  filled and the rest outlined; Withdraw and Delete at the end of the bar
+  after a divider, outlined, their confirmation the red step (Withdraw…'s
+  submit is the kit's destructive button).
+
   Every control is drawn only where the server's `actions` says the caller
   may take it now (`TRANSITIONS` and `mayDo`, as each write asks them); the
   server asks again.
@@ -66,6 +71,8 @@
 	import { goto } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Separator from '$lib/components/ui/Separator.svelte';
 	import { CLOSES_HELP, closesField, type Refusal, type Warning } from '$lib/decision-readiness';
 	import { openForInput } from '$lib/decision-rules';
 	import { codeAskedHere } from '$lib/code-asked';
@@ -384,66 +391,59 @@
 
 <section class="decision-actions" aria-label="What can be done with this decision" bind:this={section}>
 	<div class="bar">
-		<a class="btn btn-ghost btn-sm" href="/decisions/{decisionId}/preview" data-action="preview">Preview as a participant</a>
+		<Button variant="outline" size="sm" href="/decisions/{decisionId}/preview" data-action="preview">Preview as a participant</Button>
 		{#if mayReadResults}
-			<a class="btn btn-ghost btn-sm" href="/decisions/{decisionId}/results" data-action="results">Results and ruling</a>
+			<Button variant="outline" size="sm" href="/decisions/{decisionId}/results" data-action="results">Results and ruling</Button>
 		{/if}
 		{#if mayReadRecord}
-			<a class="btn btn-ghost btn-sm" href="/decisions/{decisionId}/record" data-action="record">Record</a>
+			<Button variant="outline" size="sm" href="/decisions/{decisionId}/record" data-action="record">Record</Button>
 		{/if}
 		{#if actions.dryRun}
-			<button type="button" class="btn btn-ghost btn-sm" data-action="dryRun" disabled={dirty || busy} title={dirty ? SAVE_FIRST : undefined} onclick={dryRun}>
-				Send me a dry run
-			</button>
+			<Button variant="outline" size="sm" data-action="dryRun" disabled={dirty || busy} title={dirty ? SAVE_FIRST : undefined} onclick={dryRun}>Send me a dry run</Button>
 		{/if}
 		{#if actions.open}
-			<button
-				type="button"
-				class="btn btn-primary btn-sm"
+			<Button
+				size="sm"
 				data-action="open"
 				disabled={dirty || refusals.length > 0}
 				title={dirty ? SAVE_FIRST : undefined}
-				onclick={() => ((said = null), (confirming = 'open'))}
+				onclick={() => ((said = null), (confirming = 'open'))}>Open</Button
 			>
-				Open
-			</button>
 		{/if}
 		{#if actions.republish}
-			<button
-				type="button"
-				class="btn btn-ghost btn-sm"
+			<Button
+				variant="outline"
+				size="sm"
 				data-action="republish"
 				disabled={dirty}
 				title={dirty ? SAVE_FIRST : undefined}
 				aria-expanded={panel === 'republish'}
 				aria-controls={panelId('republish')}
-				onclick={() => show('republish')}
+				onclick={() => show('republish')}>Re-publish</Button
 			>
-				Re-publish
-			</button>
 		{/if}
 		{#if actions.close}
-			<button type="button" class="btn btn-ghost btn-sm" data-action="close" onclick={() => ((said = null), (confirming = 'close'))}>Close</button>
+			<Button variant="outline" size="sm" data-action="close" onclick={() => ((said = null), (confirming = 'close'))}>Close</Button>
 		{/if}
 		{#if actions.extend}
-			<button type="button" class="btn btn-ghost btn-sm" data-action="extend" aria-expanded={panel === 'extend'} aria-controls={panelId('extend')} onclick={() => show('extend')}>
-				Extend
-			</button>
+			<Button variant="outline" size="sm" data-action="extend" aria-expanded={panel === 'extend'} aria-controls={panelId('extend')} onclick={() => show('extend')}>Extend</Button>
+		{/if}
+		{#if actions.withdraw || actions.delete}
+			<!-- The ending steps at the end of the bar, after a divider; their final confirmation is the red one (card 3075, ruling 11). -->
+			<span class="divider"><Separator orientation="vertical" /></span>
 		{/if}
 		{#if actions.withdraw}
-			<button
-				type="button"
-				class="btn btn-ghost btn-sm danger"
+			<Button
+				variant="outline"
+				size="sm"
 				data-action="withdraw"
 				aria-expanded={panel === 'withdraw'}
 				aria-controls={panelId('withdraw')}
-				onclick={() => show('withdraw')}
+				onclick={() => show('withdraw')}>Withdraw</Button
 			>
-				Withdraw
-			</button>
 		{/if}
 		{#if actions.delete}
-			<button type="button" class="btn btn-ghost btn-sm danger" data-action="delete" onclick={() => ((said = null), (confirming = 'delete'))}>Delete</button>
+			<Button variant="outline" size="sm" data-action="delete" onclick={() => ((said = null), (confirming = 'delete'))}>Delete</Button>
 		{/if}
 	</div>
 
@@ -466,10 +466,10 @@
 
 	{#if panel === 'republish'}
 		<form class="panel" id={panelId('republish')} data-panel="republish" onsubmit={(e) => (e.preventDefault(), republish())}>
-			<label class="small" for="republish-note-{decisionId}">What changed (participants are told it)</label>
-			<textarea id="republish-note-{decisionId}" class="field" rows="3" maxlength="2000" bind:value={changeNote}></textarea>
+			<label class="ui-label" for="republish-note-{decisionId}">What changed (participants are told it)</label>
+			<textarea id="republish-note-{decisionId}" class="ui-textarea" rows="3" maxlength="2000" bind:value={changeNote}></textarea>
 			<fieldset>
-				<legend class="small">Then</legend>
+				<legend class="ui-label">Then</legend>
 				<label><input type="radio" name="ask-again-{decisionId}" value={true} bind:group={askAgain} /> Ask everyone again</label>
 				<label>
 					<input
@@ -488,27 +488,27 @@
 				<p class="note" data-note="republish-who">{republishWho}</p>
 			</fieldset>
 			<div class="panel-actions">
-				<button type="button" class="btn btn-ghost btn-sm" onclick={() => closed('republish')}>Cancel</button>
-				<button type="submit" class="btn btn-primary btn-sm" disabled={busy || dirty || changeNote.trim() === ''}>Re-publish</button>
+				<Button variant="ghost" size="sm" onclick={() => closed('republish')}>Cancel</Button>
+				<Button type="submit" size="sm" disabled={busy || dirty || changeNote.trim() === ''}>Re-publish</Button>
 			</div>
 		</form>
 	{:else if panel === 'extend'}
 		<form class="panel" id={panelId('extend')} data-panel="extend" onsubmit={(e) => (e.preventDefault(), (confirming = 'extend'))}>
-			<label class="small" for="extend-closes-{decisionId}">New closing time (UTC)</label>
-			<input id="extend-closes-{decisionId}" class="field" type="datetime-local" aria-describedby="extend-help-{decisionId}" bind:value={closes} />
-			<p id="extend-help-{decisionId}" class="help" data-help="extend">{CLOSES_HELP}</p>
+			<label class="ui-label" for="extend-closes-{decisionId}">New closing time (UTC)</label>
+			<input id="extend-closes-{decisionId}" class="ui-input" type="datetime-local" aria-describedby="extend-help-{decisionId}" bind:value={closes} />
+			<p id="extend-help-{decisionId}" class="ui-hint help" data-help="extend">{CLOSES_HELP}</p>
 			<div class="panel-actions">
-				<button type="button" class="btn btn-ghost btn-sm" onclick={() => closed('extend')}>Cancel</button>
-				<button type="submit" class="btn btn-primary btn-sm" disabled={closes === ''}>Extend…</button>
+				<Button variant="ghost" size="sm" onclick={() => closed('extend')}>Cancel</Button>
+				<Button type="submit" size="sm" disabled={closes === ''}>Extend…</Button>
 			</div>
 		</form>
 	{:else if panel === 'withdraw'}
 		<form class="panel" id={panelId('withdraw')} data-panel="withdraw" onsubmit={(e) => (e.preventDefault(), (confirming = 'withdraw'))}>
-			<label class="small" for="withdraw-reason-{decisionId}">Why it is withdrawn{actions.withdrawAsks ? ' (every participant is told)' : ''}</label>
-			<textarea id="withdraw-reason-{decisionId}" class="field" rows="3" maxlength="2000" bind:value={reason}></textarea>
+			<label class="ui-label" for="withdraw-reason-{decisionId}">Why it is withdrawn{actions.withdrawAsks ? ' (every participant is told)' : ''}</label>
+			<textarea id="withdraw-reason-{decisionId}" class="ui-textarea" rows="3" maxlength="2000" bind:value={reason}></textarea>
 			<div class="panel-actions">
-				<button type="button" class="btn btn-ghost btn-sm" onclick={() => closed('withdraw')}>Cancel</button>
-				<button type="submit" class="btn btn-sm btn-confirm-danger" disabled={reason.trim() === ''}>Withdraw…</button>
+				<Button variant="ghost" size="sm" onclick={() => closed('withdraw')}>Cancel</Button>
+				<Button type="submit" variant="destructive" size="sm" disabled={reason.trim() === ''}>Withdraw…</Button>
 			</div>
 		</form>
 	{/if}
@@ -554,25 +554,24 @@
 {/if}
 
 <style>
-	.decision-actions { display: flex; flex-direction: column; gap: var(--space-xs); margin-bottom: var(--space-md); }
+	.decision-actions { display: flex; flex-direction: column; gap: var(--space-sm); color: var(--ui-foreground); }
 	.bar { display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: center; }
-	.bar a { text-decoration: none; }
-	.note { font-size: 0.78rem; color: var(--text-tertiary); margin: 0; }
-	.refusals ul { margin: 0; padding-left: var(--space-lg); font-size: 0.78rem; color: var(--accent-rose); }
-	.refused { font-size: 0.8rem; color: var(--accent-rose); margin: 0; }
-	.done { font-size: 0.8rem; color: var(--accent-emerald, var(--text-secondary)); margin: 0; }
-	.danger { color: var(--accent-rose) !important; }
+	.divider { display: inline-flex; align-self: stretch; padding: 0.375rem var(--space-xs); }
+	.note { font-size: 0.8125rem; color: var(--ui-muted-foreground); margin: 0; }
+	/* Refusals: the words in the text colour, marked by the destructive tone. */
+	.refusals { padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); }
+	.refusals ul { margin: var(--space-xs) 0 0; padding-left: var(--space-lg); font-size: 0.8125rem; color: var(--ui-foreground); }
+	.refused { margin: 0; padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); font-size: 0.875rem; color: var(--ui-foreground); }
+	.done { font-size: 0.875rem; color: var(--ui-foreground); margin: 0; }
+	.done:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
 	.panel {
-		display: flex; flex-direction: column; gap: var(--space-xs); max-width: 560px;
-		padding: var(--space-md); border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--bg-base);
+		display: flex; flex-direction: column; gap: var(--space-sm); max-width: 40rem;
+		padding: 1rem 1.25rem;
+		border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg);
+		background: var(--ui-card); box-shadow: var(--ui-shadow-sm);
 	}
-	.panel fieldset { border: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 2px; font-size: 0.82rem; }
+	.panel fieldset { border: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-xs); font-size: 0.875rem; }
+	.panel fieldset legend { margin-bottom: var(--space-xs); }
 	.panel-actions { display: flex; justify-content: flex-end; gap: var(--space-sm); }
-	.field {
-		width: 100%; box-sizing: border-box; padding: var(--space-xs) var(--space-sm);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-elevated); color: var(--text-primary); font-size: 0.82rem; font-family: var(--font-family);
-	}
-	.small { font-size: 0.72rem; color: var(--text-secondary); margin: 0; }
-	.help { font-size: 0.7rem; color: var(--text-tertiary); margin: 0; }
+	.help { margin: 0; }
 </style>

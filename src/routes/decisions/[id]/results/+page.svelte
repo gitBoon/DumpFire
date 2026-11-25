@@ -32,6 +32,10 @@
 	 * words changing, and takes the focus once the page's data is read again,
 	 * as the form that was used may then be gone (DecisionActions' F6). The
 	 * page carries noindex, as its answer does, for a copy saved.
+	 *
+	 * Card 3075: on the kit's shell, full width with no side column; the
+	 * flags, the ruling and the release each in a card, Release results… the
+	 * kit's small button.
 	 */
 	import { tick } from 'svelte';
 	import type { PageData } from './$types';
@@ -39,22 +43,27 @@
 	import { failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import FlagReplies from '$lib/components/decision/FlagReplies.svelte';
-	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
-	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
 	import ResultsView from '$lib/components/decision/ResultsView.svelte';
 	import RulingForm from '$lib/components/decision/RulingForm.svelte';
-	import { RELEASE_INFERENCE, RESULTS_READ_AGAIN, shownMoment, STALE_REVISION, STATUS_WORDS } from '$lib/decision-words';
+	import PageShell from '$lib/components/ui/PageShell.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import { RELEASE_INFERENCE, RESULTS_READ_AGAIN, shownMoment, STALE_REVISION } from '$lib/decision-words';
 	import type { PreviewComment, ReleasePreview } from '$lib/decision-view-types';
 	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
-	import { theme, themeIcon } from '$lib/stores/theme';
 
 	let { data }: { data: PageData } = $props();
 
 	/** What was done, or the last refusal of the release, said in the status region. */
 	let said = $state<{ refused: boolean; words: string } | null>(null);
 	let statusRegion = $state<HTMLElement>();
-	let releaseButton = $state<HTMLButtonElement>();
+	let releaseButton = $state<HTMLButtonElement | HTMLAnchorElement | null>(null);
 	/** The keys of the comments left out of the release. */
 	let leftOut = $state<string[]>([]);
 	let confirmingRelease = $state(false);
@@ -155,62 +164,58 @@
 	</li>
 {/snippet}
 
-<div class="decision-page">
-	<header class="decision-header glass">
-		<div class="decision-header-inner">
-			<a href="/" class="header-logo" title="Back to DumpFire">
-				<span class="logo-fire">🔥</span>
-				<span class="logo-text">DumpFire</span>
-			</a>
-			<nav class="crumb" aria-label="Where this is">
-				<span>{data.decision.boardName}</span><span aria-hidden="true">›</span>
-				<a href="/decisions/{data.decision.id}">Back to the decision</a>
-			</nav>
-			<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
-				{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
-				<ThemeMenuItems heading={false} />
-			</HeaderMenu>
-		</div>
-	</header>
+{#snippet crumbs()}
+	<nav class="crumb" aria-label="Where this is">
+		<span>{data.decision.boardName}</span><span aria-hidden="true">›</span>
+		<a href="/decisions/{data.decision.id}">Back to the decision</a>
+	</nav>
+{/snippet}
 
-	<main class="decision-content">
-		<h1>Results: {data.decision.title}</h1>
-		<p class="facts">
-			{STATUS_WORDS[data.decision.shownStatus] ?? data.decision.shownStatus}.
-			{data.decision.closesAt === null ? 'No closing time.' : `Closes ${shownMoment(data.decision.closesAt, '')}.`}
-			Only {data.decision.deciderName ?? 'the decider'}, who decides, and DumpFire's administrators see this page.
-		</p>
+<!-- Card 3075: full width, no side column; its tables want the width. -->
+<PageShell width="full" {crumbs}>
+	<div class="results-page">
+		<PageHeader title="Results: {data.decision.title}">
+			<p class="facts">
+				<Badge status={data.decision.shownStatus} />
+				<span>{data.decision.closesAt === null ? 'No closing time.' : `Closes ${shownMoment(data.decision.closesAt, '')}.`}</span>
+				<span>Only {data.decision.deciderName ?? 'the decider'}, who decides, and DumpFire's administrators see this page.</span>
+			</p>
+		</PageHeader>
 
 		<ResultsView results={data} />
 
 		{#if flags.length > 0}
 			<!-- `flags` is where the ruling form's note links (R23). -->
-			<section class="panel glass" id="flags" aria-labelledby="flags-heading" data-block="flags">
-				<h2 id="flags-heading">Objections and requests to talk</h2>
-				<FlagReplies decisionId={data.decision.id} {flags} mayReply={data.mayReply} shownStatus={data.decision.shownStatus} />
-			</section>
+			<Card as="section" id="flags" aria-labelledby="flags-heading" data-block="flags">
+				<CardHeader><CardTitle level={2} id="flags-heading">Objections and requests to talk</CardTitle></CardHeader>
+				<CardContent>
+					<FlagReplies decisionId={data.decision.id} {flags} mayReply={data.mayReply} shownStatus={data.decision.shownStatus} />
+				</CardContent>
+			</Card>
 		{/if}
 
 		{#if data.mayRule}
-			<section class="panel glass" aria-label="Rule">
-				<h2>Rule</h2>
-				<RulingForm
-					decisionId={data.decision.id}
-					title={data.decision.title}
-					revision={data.revision}
-					options={data.options}
-					mostChosen={data.mostChosen}
-					voted={data.current.voted}
-					early={data.rulesEarly}
-					closedEarly={data.rulesEarly && data.decision.shownStatus !== 'open'}
-					cutOff={data.notResponded.map((person) => ({ name: person.name, reached: person.reached }))}
-					openQuestions={data.openQuestions.length}
-					unansweredObjections={flags.filter((flag) => flag.kind === 'objection' && flag.reply === null).length}
-					openTalks={flags.filter((flag) => flag.kind === 'talk' && flag.reply === null).length}
-					flagsHref="#flags"
-					onRuled={done}
-				/>
-			</section>
+			<Card as="section" aria-label="Rule">
+				<CardHeader><CardTitle level={2}>Rule</CardTitle></CardHeader>
+				<CardContent>
+					<RulingForm
+						decisionId={data.decision.id}
+						title={data.decision.title}
+						revision={data.revision}
+						options={data.options}
+						mostChosen={data.mostChosen}
+						voted={data.current.voted}
+						early={data.rulesEarly}
+						closedEarly={data.rulesEarly && data.decision.shownStatus !== 'open'}
+						cutOff={data.notResponded.map((person) => ({ name: person.name, reached: person.reached }))}
+						openQuestions={data.openQuestions.length}
+						unansweredObjections={flags.filter((flag) => flag.kind === 'objection' && flag.reply === null).length}
+						openTalks={flags.filter((flag) => flag.kind === 'talk' && flag.reply === null).length}
+						flagsHref="#flags"
+						onRuled={done}
+					/>
+				</CardContent>
+			</Card>
 		{/if}
 
 		{#if data.released !== null}
@@ -220,25 +225,25 @@
 					: ''}.
 			</p>
 		{:else if preview !== null}
-			<section class="panel glass" aria-label="Release the results" data-block="release">
-				<h2>Release the results</h2>
-				<!-- The same component every viewer is shown it by, so that the preview cannot differ from the release (code review F3). -->
-				<ReleasedResults
-					released={preview}
-					name="preview"
-					note="Everyone who can see this decision would be shown exactly this: the totals and the comments, without names. Figures that could single someone out are withheld."
-					comment={leaveOut}
-				/>
-				{#if data.mayRelease}
-					<div class="actions">
-						<button type="button" class="btn btn-primary btn-sm" data-action="release" bind:this={releaseButton} onclick={() => ((said = null), (confirmingRelease = true))}>
-							Release results…
-						</button>
-					</div>
-				{:else if data.releaseRefusal !== null}
-					<p class="note" data-note="release-refusal">{data.releaseRefusal}</p>
-				{/if}
-			</section>
+			<Card as="section" aria-label="Release the results" data-block="release">
+				<CardHeader><CardTitle level={2}>Release the results</CardTitle></CardHeader>
+				<CardContent>
+					<!-- The same component every viewer is shown it by, so that the preview cannot differ from the release (code review F3). -->
+					<ReleasedResults
+						released={preview}
+						name="preview"
+						note="Everyone who can see this decision would be shown exactly this: the totals and the comments, without names. Figures that could single someone out are withheld."
+						comment={leaveOut}
+					/>
+					{#if data.mayRelease}
+						<div class="actions">
+							<Button size="sm" data-action="release" bind:ref={releaseButton} onclick={() => ((said = null), (confirmingRelease = true))}>Release results…</Button>
+						</div>
+					{:else if data.releaseRefusal !== null}
+						<p class="note" data-note="release-refusal">{data.releaseRefusal}</p>
+					{/if}
+				</CardContent>
+			</Card>
 		{:else if data.ruling?.noOptions && data.releaseRefusal !== null}
 			<!-- Card 2683 (R11): a ruled survey has no preview, as nothing of it can be released; why is said. -->
 			<p class="note" data-note="release-refusal">{data.releaseRefusal}</p>
@@ -249,54 +254,97 @@
 		{#if said?.refused}
 			<p class="refused" role="alert" data-said="refused">{said.words}</p>
 		{/if}
-	</main>
-</div>
+	</div>
+</PageShell>
 
 {#if confirmingRelease}
 	<ConfirmModal title="Release the results?" message={releaseMessage} confirmText="Release" askPassword onConfirm={release} onCancel={cancelRelease} />
 {/if}
 
 <style>
-	.decision-page { min-height: 100vh; padding-top: 64px; }
-	.decision-header {
-		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-		height: 64px; border-bottom: 1px solid var(--glass-border);
-		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+	.crumb {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		min-width: 0;
+		overflow: hidden;
+		white-space: nowrap;
 	}
-	.decision-header-inner {
-		max-width: 1400px; margin: 0 auto; height: 100%;
-		display: flex; align-items: center; gap: var(--space-md);
-		padding: 0 var(--space-xl);
+	.crumb a {
+		border-radius: var(--ui-radius-sm);
+		color: var(--ui-muted-foreground);
+		text-decoration: none;
 	}
-	.header-logo {
-		display: flex; align-items: center; gap: var(--space-sm);
-		text-decoration: none; color: var(--text-primary);
-		font-weight: 700; font-size: 1.1rem;
+	.crumb a:hover {
+		color: var(--ui-foreground);
 	}
-	.logo-fire { font-size: 1.4rem; }
-	.crumb { flex: 1; display: flex; align-items: center; gap: var(--space-sm); font-size: 0.85rem; min-width: 0; color: var(--text-secondary); }
-	.crumb a { color: var(--text-secondary); text-decoration: none; }
-	.crumb a:hover { color: var(--accent-indigo); }
+	.crumb a:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
 
-	/* One column, phone first; its last line stops above the user badge (card 2239). */
-	.decision-content {
-		max-width: 52rem; margin: 0 auto; padding: var(--space-xl) var(--space-md) var(--user-badge-space);
-		display: flex; flex-direction: column; gap: var(--space-md); min-width: 0;
+	.results-page {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-lg);
+		min-width: 0;
 	}
-	.decision-content h1 { font-size: 1.3rem; margin: 0; overflow-wrap: anywhere; }
-	.facts { margin: 0; font-size: 0.85rem; color: var(--text-secondary); }
-	.panel { padding: var(--space-md); border-radius: var(--radius-lg); display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; }
-	.panel h2 { font-size: 1rem; margin: 0; }
-	.note { margin: 0; font-size: 0.82rem; color: var(--text-secondary); }
-	.released { margin: 0; font-size: 0.88rem; }
-	.preview-comment { display: flex; flex-wrap: wrap; gap: var(--space-sm); justify-content: space-between; }
-	.comment { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
-	.leave-out { display: flex; gap: var(--space-xs); align-items: center; font-size: 0.78rem; color: var(--text-secondary); }
-	.actions { display: flex; justify-content: flex-end; }
-	.done { font-size: 0.85rem; color: var(--accent-emerald, var(--text-secondary)); margin: 0; }
-	.refused { font-size: 0.85rem; color: var(--accent-rose); margin: 0; }
-	@media (max-width: 640px) {
-		.decision-header-inner { padding: 0 var(--space-md); }
-		.logo-text { display: none; }
+	.facts {
+		margin: calc(-1 * var(--space-sm)) 0 0;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-xs) var(--space-md);
+		font-size: 0.875rem;
+		color: var(--ui-muted-foreground);
+	}
+	.note {
+		margin: var(--space-sm) 0 0;
+		font-size: 0.8125rem;
+		color: var(--ui-muted-foreground);
+	}
+	.released {
+		margin: 0;
+		font-size: 0.875rem;
+	}
+	.preview-comment {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-sm);
+		justify-content: space-between;
+	}
+	.comment {
+		min-width: 0;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+	.leave-out {
+		display: flex;
+		gap: var(--space-xs);
+		align-items: center;
+		font-size: 0.8125rem;
+		color: var(--ui-muted-foreground);
+	}
+	.actions {
+		display: flex;
+		justify-content: flex-end;
+		margin-top: var(--space-md);
+	}
+	.done {
+		margin: 0;
+		font-size: 0.875rem;
+		color: var(--ui-foreground);
+	}
+	.done:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
+	/* A refusal: the words in the text colour, marked by the destructive tone. */
+	.refused {
+		margin: 0;
+		padding-left: 0.625rem;
+		border-left: 3px solid var(--ui-destructive);
+		font-size: 0.875rem;
+		color: var(--ui-foreground);
 	}
 </style>

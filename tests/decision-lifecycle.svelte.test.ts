@@ -253,6 +253,9 @@ describe('the preview page (45)', () => {
 
 		expect(page.querySelector('.decision-view')!.getAttribute('data-mode')).toBe('preview');
 		expect(textOf(page.querySelector('[data-banner="preview"]')!)).toBe('Preview: this is what Pat Doe will see. Nothing is recorded.');
+		// Card 3075 (review N4): the side column's facts for the person previewed, with no response row, as a preview records nothing.
+		expect([...page.querySelectorAll<HTMLElement>('aside [data-rail="facts"] [data-fact]')].map((row) => row.dataset.fact)).toEqual(['closes', 'decider', 'part']);
+		expect(page.querySelector('[data-fact="response"]')).toBeNull();
 		const form = page.querySelector<HTMLFormElement>('.response-form')!;
 		expect(form.getAttribute('data-disabled')).toBe('yes');
 		const send = form.querySelector<HTMLButtonElement>('button[type="submit"]')!;
@@ -870,7 +873,8 @@ describe('DecisionActions (51 to 54)', () => {
 				onReload: () => {}
 			});
 			const editor = draw(DecisionEditor, props);
-			const chip = () => textOf(editor.querySelector('.status-chip')!);
+			// Card 3075 (A1): the status is the kit's Badge in the top bar, read by its data-status hook.
+			const chip = () => textOf(editor.querySelector('.top-bar [data-status]')!);
 			const closesShown = () => editor.querySelector<HTMLElement>('p.fixed[id$="-closes"]');
 			expect(chip()).toBe('Draft');
 			expect(editor.querySelector('.title-input')).not.toBeNull();
