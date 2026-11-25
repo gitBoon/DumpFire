@@ -1,7 +1,7 @@
 ---
 title: "Release Checklist: 106ea45 to 4ce25de"
 category: "Deployment"
-version: 1.0
+version: 1.1
 status: Living
 date: 2026-11-25
 tags:
@@ -77,12 +77,131 @@ c=dumpfire
 q() { docker exec "$c" node -e "const D=require('better-sqlite3');const d=new D(process.env.DB_PATH||'/app/data/dumpfire.db',{readonly:true,fileMustExist:true});console.log(JSON.stringify(d.prepare(process.argv[1]).all()))" "$1"; }
 ```
 
-Then run **P1, P2, P3, P-new-1 to P-new-4, P8, P16, P17** and the **P-new-3 query block**, exactly as
-[Before the Release](deployment.md#before-the-release-owner-read-only) gives them.
+Then paste each block below. Nothing here writes anything. Why: confirms live is what was tested,
+and gives the counts for the notices and the ISO risk register. Keep the output (paste it to Claude).
 
-Why: confirms live is what was tested, and gives the counts for the notices and the ISO risk register.
-Stop if: an unknown administrator or CRITICAL line, a second volume, or a webhook whose events already
-name a decision event.
+**P1. Live's version, user and settings.**
+
+```bash
+q "SELECT hash FROM __drizzle_migrations ORDER BY id DESC LIMIT 1"
+docker exec $c id
+for v in ORIGIN DB_PATH MFA_KEY_FILE APP_URL ADDRESS_HEADER; do docker exec $c printenv $v || echo "$v unset"; done
+```
+
+Expect `0060_add_upstream_options.sql`; `uid=0(root)`; `https://dumpfire.elecfron.com`,
+`/app/data/dumpfire.db`, then `MFA_KEY_FILE unset`, `APP_URL unset`, `ADDRESS_HEADER unset`.
+Stop if: any other migration.
+
+**P2. Only one DumpFire container.**
+
+```bash
+docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}'
+```
+
+Expect one `dumpfire`. Stop if: a second DumpFire instance on the volume.
+
+**P3. Critical log lines and administrators.**
+
+```bash
+q "SELECT timestamp, message FROM system_logs WHERE level = 'CRITICAL' ORDER BY id"
+q "SELECT id, username, email, role, created_at FROM users WHERE role IN ('superadmin','admin') ORDER BY role, id"
+```
+
+Expect every CRITICAL line one you recognise, every administrator one you know, each email a mailbox
+that person reads. Stop if: anything unknown (treat the server as compromised; do not deploy).
+
+**P-new-1. Compose facts.**
+
+```bash
+git -C /home/itsupport/DumpFire status --porcelain --ignored
+ls -la /home/itsupport/DumpFire
+( cd /home/itsupport/DumpFire && docker compose -p dumpfire config )
+docker volume ls | grep dumpfire
+docker inspect dumpfire -f '{{.Config.Image}} {{.Image}}'
+gpg --version | head -1
+```
+
+Expect only `?? docker-compose.yml` untracked; `config` shows `ORIGIN` and volume
+`dumpfire_dumpfire-data`; that one volume only; gpg answers. Stop if: a second DumpFire volume, or no
+gpg. Any other Compose input (an `.env`) is copied in B1.
+
+**P-new-2. App URL.**
+
+```bash
+q "SELECT value FROM settings WHERE key = 'app_url'"
+```
+
+Expect `https://dumpfire.elecfron.com` (checked 2026-11-24): `APP_URL` stays unset.
+
+**P-new-3. What will be kept, counted.**
+
+```bash
+# Sessions, unused invites and requester links kept.
+q "SELECT (SELECT COUNT(*) FROM sessions) AS sessions, (SELECT COUNT(*) FROM invite_tokens WHERE used = 0) AS unused_invites, (SELECT COUNT(*) FROM task_requests WHERE access_token IS NOT NULL AND access_token <> '') AS requests_with_link"
+# API keys.
+q "SELECT COUNT(*) AS api_keys, SUM(expires_at IS NULL) AS no_expiry, SUM(last_used_at IS NOT NULL) AS used FROM api_keys"
+# Webhooks by state (active 0 + no_setter 1 is the count C7's 2923 line holds).
+q "SELECT active, set_by IS NULL AS no_setter, secret <> '' AS has_secret, COUNT(*) AS n FROM webhooks GROUP BY 1, 2, 3"
+# Expect NO rows: a webhook already naming a decision event.
+q "SELECT id, board_id, active, events FROM webhooks WHERE events LIKE '%decision%'"
+# Webhooks made before 0056 (compare the two by eye).
+q "SELECT created_at FROM __drizzle_migrations WHERE hash = '0056_add_webhook_set_by.sql'"
+q "SELECT id, board_id, created_at FROM webhooks WHERE secret <> '' ORDER BY created_at"
+# 2752, list 1: on, with no setter (switched off at the first start; owners mailed).
+q "SELECT w.id, w.board_id, b.name AS board FROM webhooks w JOIN boards b ON b.id = w.board_id WHERE w.active = 1 AND (w.set_by IS NULL OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id = w.set_by)) ORDER BY w.board_id, w.id"
+# 2752, list 2: on, with a setter who cannot open the board (switched off too).
+q "SELECT w.id, w.board_id, b.name AS board, u.username AS setter FROM webhooks w JOIN boards b ON b.id = w.board_id JOIN users u ON u.id = w.set_by WHERE w.active = 1 AND u.role NOT IN ('admin', 'superadmin') AND (b.created_by IS NULL OR b.created_by <> u.id) AND b.is_public = 0 AND NOT EXISTS (SELECT 1 FROM board_members m WHERE m.board_id = b.id AND m.user_id = u.id) AND NOT EXISTS (SELECT 1 FROM board_teams bt JOIN team_members tm ON tm.team_id = bt.team_id WHERE bt.board_id = b.id AND tm.user_id = u.id) ORDER BY w.board_id, w.id"
+# Signing keys' lengths (never values): seal key 64 + hex means "kept, sealed in place" at C7.
+q "SELECT key, length(value) AS len, value NOT GLOB '*[^0-9a-f]*' AS hex FROM settings WHERE key IN ('backup_seal_key', 'request_form_secret', 'known_browser_secret')"
+# Rows whose created_at names no moment: expect 0 in each.
+q "SELECT 'users' AS t, COUNT(*) AS n FROM users WHERE datetime(created_at) IS NULL UNION ALL SELECT 'boards', COUNT(*) FROM boards WHERE datetime(created_at) IS NULL UNION ALL SELECT 'teams', COUNT(*) FROM teams WHERE datetime(created_at) IS NULL UNION ALL SELECT 'webhooks', COUNT(*) FROM webhooks WHERE datetime(created_at) IS NULL UNION ALL SELECT 'report_schedules', COUNT(*) FROM report_schedules WHERE datetime(created_at) IS NULL"
+# Image attachments (not checked at this release).
+q "SELECT COUNT(*) AS images FROM card_attachments WHERE mime_type LIKE 'image/%'"
+# Enabled report schedules: an administrator confirms each one.
+q "SELECT u.username, u.email, s.id, s.name, s.scope, s.scope_id, s.recipients FROM report_schedules s JOIN users u ON u.id = s.user_id WHERE s.enabled = 1 ORDER BY u.username, s.id"
+# OneDrive backup history.
+q "SELECT status, substr(error, 1, 120) AS error, created_at FROM backup_log WHERE destination_type = 'onedrive' ORDER BY id DESC LIMIT 10"
+```
+
+Stop if: any `created_at` count above 0, or any row from the decision-event query. Keep the two 2752
+lists: they are the board owners you notify (A5) and what C7 must match.
+
+Also, by hand: any **S3** destination with more than 1,000 objects under its prefix (copy older ones
+aside or raise Keep Last); any **Google Drive** destination with a service account JSON (C7 then shows
+"Rewrote the service account JSON"); any **OneDrive** destination (it pauses until re-entered).
+
+**P-new-4. Nothing in front of nginx.**
+
+```bash
+docker logs --tail 500 nginx-proxy 2>/dev/null | awk '{ print $1 }' | sort | uniq -c
+docker logs --tail 500 nginx-proxy 2>/dev/null | awk -F'"' 'NF == 9 { print $8 }' | sort | uniq -c
+docker exec nginx-proxy grep -n 'X-Forwarded-For' /etc/nginx/conf.d/default.conf
+```
+
+Expect the first list to be callers' own addresses (10.1.10.x, or remote callers you know), never a
+CDN's; the second, `-` only; the grep, three lines, DumpFire's reading `$remote_addr` (after A2).
+Stop if: a CDN's addresses (then `XFF_DEPTH=2`: ask first).
+
+**P8. Mail works.** Admin → 📧 Email / SMTP: send a test mail to the superadmin's address and to each
+administrator's from P3. Each must arrive.
+
+**P16. Disk space.**
+
+```bash
+docker exec $c df -h /app/data
+docker exec $c ls -l /app/data/dumpfire.db /app/data/dumpfire.db-wal
+```
+
+Expect free space above 1 GB + 2 × the database + 25 MB.
+
+**P17. Key and user id headroom.**
+
+```bash
+q "SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name='api_keys'),0), coalesce((SELECT max(id) FROM api_keys),0)) - (SELECT COUNT(*) FROM api_keys) AS key_seed_rows"
+q "SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name='users'),0), coalesce((SELECT max(id) FROM users),0)) - (SELECT COUNT(*) FROM users) AS user_seed_rows"
+```
+
+Expect both far under 1,000,000. Stop if: either at or above it.
 
 ### A5. Notices (two working days before; a quiet weekday morning, not a Friday)
 
