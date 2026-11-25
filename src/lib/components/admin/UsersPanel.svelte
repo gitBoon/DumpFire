@@ -782,7 +782,7 @@
 					<input type="password" placeholder="Password (blank = send invite)" bind:value={newPassword} class="ui-input" autocomplete="new-password" />
 				</div>
 				<!-- The caller's own, which making an account asks for again (card 2701), with the server's refusal of it. -->
-				<CurrentPasswordField bind:value={newUserCurrentPassword} bind:code={newUserCurrentCode} refusal={newUserRefusal} onEnter={createUser} />
+				<CurrentPasswordField bind:value={newUserCurrentPassword} bind:code={newUserCurrentCode} refusal={newUserRefusal} onEnter={createUser} kit />
 				<p class="form-hint admin-note">{asksForPassword(codeAskedHere())} Making an account asks for yours, so that a browser left signed in cannot.</p>
 				<div class="admin-field-row">
 					<EmojiPicker value={newUserEmoji} onSelect={(e) => (newUserEmoji = e)} />

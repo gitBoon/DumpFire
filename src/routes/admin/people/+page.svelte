@@ -375,6 +375,7 @@
 
 {#if confirmAction}
 	<ConfirmModal
+		kit
 		title={confirmAction.title}
 		message={confirmAction.message}
 		confirmText={confirmAction.confirmText}

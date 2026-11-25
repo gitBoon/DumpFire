@@ -258,7 +258,7 @@
 </PageShell>
 
 {#if confirmingRelease}
-	<ConfirmModal title="Release the results?" message={releaseMessage} confirmText="Release" askPassword onConfirm={release} onCancel={cancelRelease} />
+	<ConfirmModal kit title="Release the results?" message={releaseMessage} confirmText="Release" askPassword onConfirm={release} onCancel={cancelRelease} />
 {/if}
 
 <style>

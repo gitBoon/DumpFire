@@ -12,9 +12,15 @@
  *     the kit's plain CSS (ui-field.css) only .ui- classes.
  *
  * The components, mounted, are in `tests/ui-kit.svelte.test.ts`.
+ *
+ * Card 3078 (B1 of `docs/planning/card-3078-dialogs-on-kit.md`): the board
+ * view keeps the app's own dialogs. No `<ConfirmModal>` or
+ * `<CurrentPasswordField>` in it turns on the kit's look, and none of its
+ * files draws the kit's Dialog; on the pages on the kit, every confirm has
+ * the kit's look and no dialog is left in the app's old frame.
  */
-import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join, posix } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const ROOT = process.cwd();
@@ -137,6 +143,177 @@ describe('the UI kit’s CSS stays inside the kit (card 3074)', () => {
 		// The check finds what it is for: a global outside a .ui- class, and a bare one in the plain CSS.
 		expect(selectorsOf('.ui-table :global(td) { color: red; } :global(body) { margin: 0; }')).toEqual(['.ui-table :global(td)', ':global(body)']);
 		expect(selectorsOf('@media (max-width: 640px) { .ui-input { font-size: 16px; } input { x: y; } }')).toEqual(['.ui-input', 'input']);
+	});
+});
+
+// ─── The board view keeps the app's own dialogs (card 3078) ─────────────────
+
+/**
+ * The components a file imports, by their paths from the root: `$lib/…` and
+ * relative `.svelte` imports. A `.svelte.ts` module, imported as `….svelte`,
+ * is no component and is left out.
+ */
+function svelteImportsOf(file: string): string[] {
+	const source = read(file);
+	return [...source.matchAll(/\bimport\s+(?:[^'";]*?\s+from\s+)?['"]([^'"]+\.svelte)['"]/g)].map(([, spec]) =>
+		spec.startsWith('$lib/') ? posix.join('src/lib', spec.slice('$lib/'.length)) : posix.join(posix.dirname(file), spec)
+	).filter((path) => existsSync(join(ROOT, path)));
+}
+
+/**
+ * The board view: every component drawn from the board page and the root
+ * layout around it, found by walking their imports. The walk stops at the
+ * two shared components whose look is chosen by their callers (`ConfirmModal`
+ * and `CurrentPasswordField`, which hold the kit's look behind `kit`) and at
+ * the kit itself (`components/ui/`): what is checked is what the board view
+ * asks of them.
+ */
+function boardView(): string[] {
+	const stops = new Set(['src/lib/components/ConfirmModal.svelte', 'src/lib/components/CurrentPasswordField.svelte']);
+	const seen = new Set<string>();
+	const walk = (file: string) => {
+		if (seen.has(file)) return;
+		seen.add(file);
+		for (const next of svelteImportsOf(file)) {
+			if (stops.has(next) || next.startsWith('src/lib/components/ui/')) continue;
+			walk(next);
+		}
+	};
+	walk('src/routes/+layout.svelte');
+	walk('src/routes/board/[id]/+page.svelte');
+	return [...seen].sort();
+}
+
+/**
+ * Each `<Name …>` tag of a component in a file: its attributes as written
+ * (`{…}` expressions, which may hold `>` in an arrow, and quoted values read
+ * through to the tag's true end), and whether it has `kit` (`kit`, `kit=…` or
+ * `{kit}`) or a spread, which could carry it unseen.
+ */
+function tagsOf(source: string, name: string): { tag: string; kit: boolean; spread: boolean }[] {
+	const tags: { tag: string; kit: boolean; spread: boolean }[] = [];
+	for (const found of source.matchAll(new RegExp(`<${name}(?=[\\s/>])`, 'g'))) {
+		let depth = 0;
+		let quote = '';
+		let plain = '';
+		const braces: string[] = [];
+		let i = found.index! + found[0].length;
+		for (; i < source.length; i++) {
+			const c = source[i];
+			if (depth > 0) {
+				if (c === '{') depth++;
+				else if (c === '}') depth--;
+				if (depth > 0) braces[braces.length - 1] += c;
+				else plain += ' {} ';
+			} else if (quote) {
+				if (c === quote) quote = '';
+			} else if (c === '"' || c === "'") {
+				quote = c;
+			} else if (c === '{') {
+				depth = 1;
+				braces.push('');
+			} else if (c === '>') {
+				break;
+			} else {
+				plain += c;
+			}
+		}
+		tags.push({
+			tag: source.slice(found.index!, i + 1),
+			kit: /(^|\s)kit(?=[\s=/]|$)/.test(plain) || braces.some((inner) => inner.trim() === 'kit'),
+			spread: braces.some((inner) => inner.trim().startsWith('...'))
+		});
+	}
+	return tags;
+}
+
+const BOARD_VIEW = boardView();
+
+/** The files on the kit whose dialogs are moved onto its frame (card 3078, slice 2): the decision pages', and the admin pages'. */
+const KIT_DIALOG_FILES = [
+	'src/lib/components/decision/DecisionActions.svelte',
+	'src/lib/components/decision/DeliveryPanel.svelte',
+	'src/lib/components/decision/ParticipantPicker.svelte',
+	'src/lib/components/decision/RulingForm.svelte',
+	'src/routes/decisions/[id]/results/+page.svelte',
+	'src/routes/board/[id]/decisions/+page.svelte',
+	'src/routes/admin/+page.svelte',
+	'src/lib/components/admin/AppUrlPanel.svelte',
+	'src/lib/components/admin/BackupRestorePanel.svelte',
+	'src/lib/components/admin/SmtpPanel.svelte',
+	'src/lib/components/admin/UsersPanel.svelte',
+	'src/lib/components/admin/InviteLinkDialog.svelte',
+	'src/lib/components/admin/ResetPasswordDialog.svelte',
+	'src/lib/components/admin/GDriveConnectModal.svelte',
+	'src/routes/admin/people/+page.svelte',
+	'src/lib/components/admin/people/PersonDialog.svelte',
+	'src/lib/components/admin/people/GroupDialog.svelte',
+	'src/lib/components/admin/people/FromAccountsDialog.svelte'
+];
+
+describe('the board view keeps the app’s own dialogs (card 3078)', () => {
+	it('B1. no confirm or password field in the board view has the kit’s look and none of its files draws the kit’s Dialog; on the kit’s pages every confirm has it and no old frame is left', () => {
+		const faults: string[] = [];
+		let confirms = 0;
+		for (const file of BOARD_VIEW) {
+			const source = read(file);
+			for (const name of ['ConfirmModal', 'CurrentPasswordField']) {
+				for (const { tag, kit, spread } of tagsOf(source, name)) {
+					confirms++;
+					if (kit || spread) faults.push(`${file}: ${tag}`);
+				}
+			}
+			if (/['"][^'"]*\/ui\/Dialog(\.svelte)?['"]/.test(source)) faults.push(`${file}: imports ui/Dialog`);
+		}
+		let kitTags = 0;
+		for (const file of KIT_DIALOG_FILES) {
+			const source = read(file);
+			// The password field in the kit's dialogs and forms has the kit's look too (decision 4).
+			for (const name of ['ConfirmModal', 'CurrentPasswordField']) {
+				for (const { tag, kit } of tagsOf(source, name)) {
+					kitTags++;
+					if (!kit) faults.push(`${file}: ${tag} without kit`);
+				}
+			}
+			if (/class="[^"]*\bmodal-(overlay|content)\b/.test(source)) faults.push(`${file}: the app's old frame is left`);
+		}
+		expect(faults).toEqual([]);
+		// It reads the kit pages' confirms and fields: the decision pages' nine, and the admin pages' and their dialogs'.
+		expect(kitTags).toBeGreaterThanOrEqual(20);
+		// It reads the board view's confirms: the page's two, a comment's and a file's, Share's two.
+		expect(BOARD_VIEW.length).toBeGreaterThan(30);
+		expect(confirms).toBeGreaterThanOrEqual(6);
+		const drawing = BOARD_VIEW.filter((file) => tagsOf(read(file), 'ConfirmModal').length > 0);
+		expect(drawing).toEqual(
+			expect.arrayContaining([
+				'src/routes/board/[id]/+page.svelte',
+				'src/lib/components/card/CardAttachments.svelte',
+				'src/lib/components/card/CardComments.svelte',
+				'src/lib/components/ShareModal.svelte'
+			])
+		);
+		// Walked from the page: the card window, the subtask window and the Kanban components among what it found.
+		expect(BOARD_VIEW).toEqual(expect.arrayContaining(['src/lib/components/CardModal.svelte', 'src/lib/components/SubtaskModal.svelte']));
+		expect(BOARD_VIEW.some((file) => file.startsWith('src/lib/components/board/'))).toBe(true);
+
+		// The check finds what it is for: kit written each way, a spread, and an arrow's `>` read through.
+		const sample = [
+			'<ConfirmModal title="Delete" onConfirm={() => remove(a > b)} onCancel={() => (open = false)} />',
+			'<ConfirmModal kit title="x" onConfirm={go} onCancel={stop} />',
+			'<ConfirmModal\n\ttitle="x"\n\tkit={true}\n\tonConfirm={go}\n/>',
+			'<ConfirmModal {kit} onConfirm={go} onCancel={stop} />',
+			'<ConfirmModal {...props} />',
+			'<ConfirmModal title="kit" message="a kit of parts" />'
+		].join('\n');
+		expect(tagsOf(sample, 'ConfirmModal').map(({ kit, spread }) => [kit, spread])).toEqual([
+			[false, false],
+			[true, false],
+			[true, false],
+			[true, false],
+			[false, true],
+			[false, false]
+		]);
+		expect(tagsOf(sample, 'ConfirmModal')[0].tag.endsWith('(open = false)} />')).toBe(true);
 	});
 });
 

@@ -4,6 +4,8 @@
 	import { keepTab, takeFocus } from '$lib/dialog-focus';
 	import { isStepUpMissing, NO_ANSWER_TRY_AGAIN, NO_PROOF, passwordKeptAfter, proofTyped, STEP_UP_SIGNED_OUT, type StepUpProof } from '$lib/step-up-words';
 	import CurrentPasswordField from './CurrentPasswordField.svelte';
+	import Button from './ui/Button.svelte';
+	import Dialog from './ui/Dialog.svelte';
 
 	let {
 		title = 'Are you sure?',
@@ -11,6 +13,7 @@
 		confirmText = 'Delete',
 		confirmDanger = true,
 		askPassword = false,
+		kit = false,
 		onConfirm,
 		onCancel
 	}: {
@@ -24,6 +27,14 @@
 		 * Confirm off until both are typed, and Enter confirms once they are.
 		 */
 		askPassword?: boolean;
+		/**
+		 * The UI kit's look (card 3078), for the pages on the kit alone: the
+		 * kit's dialog frame (`ui/Dialog.svelte`), its buttons and fields, the
+		 * keyboard held by that frame's `holdFocus` on the same rules. Off (the
+		 * board view and the pages not yet on the kit), the dialog is drawn and
+		 * behaves exactly as before. Set once, as the dialog is drawn.
+		 */
+		kit?: boolean;
 		/**
 		 * Confirm pressed, handed the proof typed (`NO_PROOF` with no field). It may
 		 * be awaited (card 2701, D6): while it runs both buttons are off and
@@ -44,7 +55,10 @@
 	const messageId = $props.id();
 	const refusalId = `${messageId}-refusal`;
 
+	// Bound in the default look alone, now inside its `{#if}` (card 3078), and read only by its own focus rules.
+	// svelte-ignore non_reactive_update
 	let dialog: HTMLDivElement;
+	// svelte-ignore non_reactive_update
 	let cancelButton: HTMLButtonElement;
 	let passwordField = $state<ReturnType<typeof CurrentPasswordField>>();
 
@@ -97,9 +111,15 @@
 	// `$effect`, not `onMount`, so any runtime runs it (card 2353). The rules
 	// are `$lib/dialog-focus`'s, which the admin page's own dialogs share (card
 	// 2362).
-	$effect(() => takeFocus(untrack(() => (askPassword ? passwordField?.element() : undefined)) ?? cancelButton));
+	// In the kit's look the frame holds the focus on these rules instead (card
+	// 3078): this effect and the keys below stand aside.
+	$effect(() => {
+		if (kit) return;
+		return takeFocus(untrack(() => (askPassword ? passwordField?.element() : undefined)) ?? cancelButton);
+	});
 
 	function handleKeydown(e: KeyboardEvent) {
+		if (kit) return;
 		if (e.key === 'Escape' && !waiting) onCancel();
 		// Tab and Shift+Tab stay on the dialog's own stops; from outside the
 		// dialog (the page behind, after a click on the overlay) Tab comes back
@@ -154,6 +174,44 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
+{#if kit}
+	<!-- The kit's look (card 3078): the frame holds the focus on the rules above, Escape off while the answer is awaited. -->
+	{#snippet describedBy()}
+		<p class="confirm-message kit" id={messageId}>{message}</p>
+	{/snippet}
+	{#snippet actions()}
+		<Button variant="outline" class="confirm-cancel" onclick={cancel} disabled={waiting}>Cancel</Button>
+		<Button
+			variant={confirmDanger ? 'destructive' : 'default'}
+			class={confirmDanger ? 'btn-confirm-danger' : undefined}
+			onclick={confirm}
+			disabled={waiting || ended || (asking && !typed)}
+			aria-busy={waiting ? 'true' : undefined}
+		>
+			{waiting ? 'Working…' : confirmText}
+		</Button>
+	{/snippet}
+	<Dialog
+		{title}
+		titleLevel={3}
+		size="sm"
+		class="confirm-modal"
+		footerClass="confirm-actions"
+		aria-label={title}
+		aria-describedby={message ? messageId : undefined}
+		description={message ? describedBy : undefined}
+		initialFocus={asking && !ended ? 'input[autocomplete="current-password"]' : '.confirm-cancel'}
+		onEscape={waiting ? undefined : onCancel}
+		footer={actions}
+	>
+		{#if asking}
+			<!-- The caller's own password and a sign-in code (cards 2701, 2770), with the server's refusal: a password manager may fill it. -->
+			<CurrentPasswordField kit bind:value={password} bind:code bind:this={passwordField} {refusal} readonly={waiting} onEnter={confirm} />
+		{:else if refusal}
+			<p class="confirm-refusal kit" id={refusalId} role="alert">{refusal}</p>
+		{/if}
+	</Dialog>
+{:else}
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="modal-overlay" role="dialog" aria-modal="true" aria-label={title} aria-describedby={message ? messageId : undefined}>
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -193,6 +251,7 @@
 		</div>
 	</div>
 </div>
+{/if}
 
 <style>
 	.confirm-modal {
@@ -280,5 +339,30 @@
 	@keyframes scaleIn {
 		from { opacity: 0; transform: scale(0.95); }
 		to { opacity: 1; transform: scale(1); }
+	}
+
+	/*
+	 * The kit's look (card 3078): only on elements marked `kit`, which the
+	 * default look never draws, so none of these reaches it. The frame draws
+	 * the message's place and size; these set what the rules above would.
+	 */
+	.confirm-message.kit {
+		margin: 0.375rem 0 0;
+		color: var(--ui-muted-foreground);
+		font-size: 0.875rem;
+		line-height: 1.5;
+	}
+
+	/* The refusal as the kit's notice: a red edge, the words in the text colour. */
+	.confirm-refusal.kit {
+		margin: 0;
+		padding: 0 0 0 0.625rem;
+		border: 0;
+		border-left: 3px solid var(--ui-destructive);
+		border-radius: 0;
+		background: none;
+		color: var(--ui-foreground);
+		font-size: 0.8125rem;
+		line-height: 1.45;
 	}
 </style>

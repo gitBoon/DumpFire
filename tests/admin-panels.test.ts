@@ -401,7 +401,7 @@ describe('the Scheduled Backups panel, mounted', () => {
 
 		expect(asked('GET /api/admin/backup/gdrive/auth?dest=Drive')).toHaveLength(1);
 		expect(window.open).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?state=s1', '_blank', 'width=600,height=700');
-		expect([...target.querySelectorAll('h2')].map((heading) => heading.textContent)).toContain('🔗 Connect Google Drive');
+		expect([...target.querySelectorAll('h2')].map((heading) => heading.textContent)).toContain('Connect Google Drive');
 		expect(target.querySelector<HTMLInputElement>('input[placeholder="Paste the whole address, starting http://localhost/?state=…"]')!.disabled).toBe(false);
 	});
 
@@ -413,7 +413,7 @@ describe('the Scheduled Backups panel, mounted', () => {
 		opener.focus();
 		opener.click();
 		await settle();
-		const box = [...target.querySelectorAll<HTMLElement>('.confirm-modal')].find((each) => each.querySelector('h2')?.textContent === '🔗 Connect Google Drive')!;
+		const box = [...target.querySelectorAll<HTMLElement>('.confirm-modal')].find((each) => each.querySelector('h2')?.textContent === 'Connect Google Drive')!;
 		expect(document.activeElement).toBe(buttonNamed(box, 'Cancel'));
 
 		escape();
@@ -1750,7 +1750,7 @@ describe('the users panel, mounted', () => {
 		const dialog = draw(InviteLinkDialog, { inviteLink: link.value }).querySelector<HTMLElement>('[role="alertdialog"]')!;
 		flushSync();
 		expect(dialog.getAttribute('aria-label')).toBe("The new account's set-up link");
-		expect(dialog.querySelector('h2')!.textContent).toBe('🔑 Their set-up link');
+		expect(dialog.querySelector('h2')!.textContent).toBe('Their set-up link');
 		expect(dialog.querySelector('code')!.textContent).toBe('http://localhost/enrol/t4');
 		expect(dialog.querySelector('#invite-link-said')!.textContent).toBe(message);
 		expect(dialog.querySelector('#invite-link-warning')!.textContent).toBe(
@@ -1759,7 +1759,7 @@ describe('the users panel, mounted', () => {
 				"password sets up the authenticator of carol's account. Do not open it yourself."
 		);
 		expect(dialog.textContent).toContain('It is not shown again. If it is lost, give a new one with 🛡️ on their row.');
-		expect(document.activeElement).toBe(buttonNamed(dialog, '📋 Copy'));
+		expect(document.activeElement).toBe(buttonNamed(dialog, 'Copy'));
 		expect(dialog.textContent).not.toContain('invite');
 	});
 
@@ -1921,7 +1921,7 @@ describe('the users panel, mounted', () => {
 		target.querySelectorAll<HTMLButtonElement>('button[title="Reset password"]')[1].click();
 		await settle();
 
-		expect([...target.querySelectorAll('h2')].map((heading) => heading.textContent)).toContain('🔑 Reset Password');
+		expect([...target.querySelectorAll('h2')].map((heading) => heading.textContent)).toContain('Reset Password');
 		expect(target.textContent).toContain('Enter a new password for bob.');
 		// The counts are read again as it opens, and shown once they have been.
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
@@ -2158,7 +2158,7 @@ describe('the two-step sign-in reset on the users panel and its dialog, mounted 
 
 		const dialog = target.querySelector<HTMLElement>('[role="alertdialog"]')!;
 		expect(dialog.getAttribute('aria-label')).toBe("The two-step sign-in reset's link");
-		expect(dialog.querySelector('h2')!.textContent).toBe('🛡️ Two-step sign-in was reset');
+		expect(dialog.querySelector('h2')!.textContent).toBe('Two-step sign-in was reset');
 		expect(dialog.querySelector('code')!.textContent).toBe('https://kanban.example.com/enrol/t3');
 		expect(dialog.querySelector('#invite-link-said')!.textContent).toBe("bob's two-step sign-in was reset.");
 		expect(dialog.querySelector('#invite-link-warning')!.textContent).toBe(
@@ -2168,7 +2168,7 @@ describe('the two-step sign-in reset on the users panel and its dialog, mounted 
 		);
 		expect(dialog.textContent).toContain("It is not shown again. If it is lost, reset bob's two-step sign-in again with 🛡️");
 		expect(dialog.textContent).not.toContain('invite');
-		expect(buttonNamed(dialog, '📋 Copy')).toBeDefined();
+		expect(buttonNamed(dialog, 'Copy')).toBeDefined();
 		expect(buttonNamed(dialog, 'Done')).toBeDefined();
 	});
 });
@@ -2409,7 +2409,7 @@ describe('the password dialog, mounted', () => {
 
 		await (drawn!.component as unknown as { openResetDialog: (userId: number) => Promise<void> }).openResetDialog(1);
 		flushSync();
-		expect([...target.querySelectorAll('h2')].map((heading) => heading.textContent)).toEqual(['🔑 Change Your Password']);
+		expect([...target.querySelectorAll('h2')].map((heading) => heading.textContent)).toEqual(['Change Your Password']);
 		type(target.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!, 'the-old-one');
 		typeCode(target);
 		type(target.querySelector<HTMLInputElement>('input[placeholder="New password (min 8 chars)"]')!, 'a-new-password');
@@ -2473,7 +2473,7 @@ describe('the password dialog, mounted', () => {
 		expect(document.activeElement).toBe(password);
 
 		escape();
-		expect([...target.querySelectorAll('h2')].map((heading) => heading.textContent)).not.toContain('🔑 Reset Password');
+		expect([...target.querySelectorAll('h2')].map((heading) => heading.textContent)).not.toContain('Reset Password');
 		await settle();
 		expect(document.activeElement).toBe(opener);
 		expect(sent.filter((request) => request.what.startsWith('PUT '))).toEqual([]);
@@ -2486,7 +2486,7 @@ describe('the password dialog, mounted', () => {
 			box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
 			flushSync();
 		};
-		for (const [row, heading] of [[0, '🔑 Change Your Password'], [1, '🔑 Reset Password']] as const) {
+		for (const [row, heading] of [[0, 'Change Your Password'], [1, 'Reset Password']] as const) {
 			target.querySelectorAll<HTMLButtonElement>('button[title="Reset password"]')[row].click();
 			await settle();
 			const dialog = target.querySelector<HTMLElement>('[role="dialog"]')!;
@@ -2575,7 +2575,7 @@ describe('every dialog with a password field of its own waits for the sign-in co
 				buttonNamed(target, '🔗 Connect').click();
 				await settle();
 				type(target.querySelector<HTMLInputElement>('input[placeholder="Paste the whole address, starting http://localhost/?state=…"]')!, 'http://localhost/?state=s1&code=c1');
-				return { within: target, button: () => buttonNamed(target, '✅ Connect') };
+				return { within: target, button: () => buttonNamed(target, 'Connect') };
 			}
 		],
 		[
@@ -3537,14 +3537,14 @@ describe('the admin page, mounted with its panels', () => {
 		inviteButton(target).click();
 		confirmWithPassword();
 		await settle();
-		expect(headings(target)).toContain('📧 The invite mail was not sent');
+		expect(headings(target)).toContain('The invite mail was not sent');
 		expect(target.querySelector('code')!.textContent).toBe('http://localhost/invite/t2');
 		// While it is open every 📧 waits.
 		expect(inviteButton(target).disabled).toBe(true);
 
 		buttonNamed(target, 'Done').click();
 		flushSync();
-		expect(headings(target)).not.toContain('📧 The invite mail was not sent');
+		expect(headings(target)).not.toContain('The invite mail was not sent');
 		// The page's link is cleared, so the users panel lets 📧 be pressed again.
 		expect(inviteButton(target).disabled).toBe(false);
 	});
@@ -3581,7 +3581,7 @@ describe('the admin page, mounted with its panels', () => {
 		await settle();
 
 		const dialog = document.querySelector<HTMLElement>('[role="alertdialog"][aria-label="The invite mail was not sent"]')!;
-		const copy = buttonNamed(dialog, '📋 Copy');
+		const copy = buttonNamed(dialog, 'Copy');
 		const done = buttonNamed(dialog, 'Done');
 		expect(document.activeElement).toBe(copy);
 		done.focus();
@@ -3595,10 +3595,10 @@ describe('the admin page, mounted with its panels', () => {
 		expect(document.activeElement).toBe(copy);
 
 		escape();
-		expect(headings(target)).toContain('📧 The invite mail was not sent');
+		expect(headings(target)).toContain('The invite mail was not sent');
 		done.click();
 		flushSync();
-		expect(headings(target)).not.toContain('📧 The invite mail was not sent');
+		expect(headings(target)).not.toContain('The invite mail was not sent');
 	});
 
 	// Card 2365's review: the dialog opens once its answer comes, by when the pressed Create is gone and
@@ -3627,7 +3627,7 @@ describe('the admin page, mounted with its panels', () => {
 		create.focus();
 		create.click();
 		await settle();
-		expect(document.activeElement).toBe(buttonNamed(dialog()!, '📋 Copy'));
+		expect(document.activeElement).toBe(buttonNamed(dialog()!, 'Copy'));
 		buttonNamed(dialog()!, 'Done').click();
 		flushSync();
 		await settle();
@@ -3640,7 +3640,7 @@ describe('the admin page, mounted with its panels', () => {
 		// Card 2701: through the page's confirm, which asks for the password.
 		confirmWithPassword();
 		await settle();
-		expect(document.activeElement).toBe(buttonNamed(dialog()!, '📋 Copy'));
+		expect(document.activeElement).toBe(buttonNamed(dialog()!, 'Copy'));
 		buttonNamed(dialog()!, 'Done').click();
 		flushSync();
 		await settle();
@@ -4138,7 +4138,7 @@ describe("the panels say what a confirmation asks by the layout's codeAsked (car
 			await (drawn!.component as unknown as { openResetDialog: (userId: number) => Promise<void> }).openResetDialog(1);
 			flushSync();
 
-			expect(target.querySelector('.modal-content p')!.textContent, JSON.stringify(data)).toBe(`${words} Your other sessions will be signed out. Your report schedules are paused.`);
+			expect(target.querySelector('[role="dialog"] p')!.textContent, JSON.stringify(data)).toBe(`${words} Your other sessions will be signed out. Your report schedules are paused.`);
 			unmount(drawn!.component);
 			drawn!.target.remove();
 			drawn = null;

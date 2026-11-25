@@ -25,7 +25,8 @@
 	import { answerBody } from '$lib/api';
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
-	import { holdFocus } from '$lib/dialog-focus';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Dialog from '$lib/components/ui/Dialog.svelte';
 	import { page } from '$app/state';
 	import { codeAskedHere } from '$lib/code-asked';
 	import { asksForPassword, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
@@ -119,62 +120,62 @@
 	}
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Add from Accounts">
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-content from-accounts-dialog admin-kit-fields" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: '.modal-actions .btn-ghost', onEscape: onClose }}>
-		<h2>Add from Accounts</h2>
-		<p class="dialog-hint">Each account ticked becomes a person named by its username, with its address, linked to it.</p>
-		<!-- Code review S1: an account's address is its holder's own, and nobody has confirmed it. -->
-		<p class="dialog-hint">An account's address is set by its holder and is not confirmed: check each is the person you mean before adding them.</p>
-		{#if offered.length === 0}
-			<p class="dialog-empty">Every account is already linked to a person.</p>
-		{:else}
-			<div class="account-list">
-				{#each offered as account (account.id)}
-					<label class="account-row" class:matched={account.matches !== null}>
-						<input
-							type="checkbox"
-							checked={account.matches === null && ticked.includes(account.id)}
-							disabled={account.matches !== null}
-							onchange={(e) => toggle(account.id, e.currentTarget.checked)}
-						/>
-						<span class="account-name">{account.emoji} {account.username}</span>
-						<span class="account-email">{account.email}</span>
-						{#if account.matches}
-							<span class="account-match">matches person {account.matches.fullName}: link by hand</span>
-						{/if}
-					</label>
-				{/each}
-			</div>
-			<!-- The code review's part B, S1: each person made is given an account and its address. -->
-			<p class="dialog-hint">Each account's address decides where that person's decision mail and personal links go. {asksForPassword(codeAskedHere())}</p>
-			<div class="password-row">
-				<CurrentPasswordField bind:value={currentPassword} bind:code={stepUpCode} {refusal} readonly={saving} onEnter={add} />
-			</div>
-		{/if}
-		<div class="modal-actions">
-			<button class="btn-ghost" onclick={onClose}>Cancel</button>
-			<button class="btn-primary" onclick={add} disabled={ticked.length === 0 || !proofTyped(currentPassword, stepUpCode, page.data.codeAsked)} aria-busy={saving ? 'true' : undefined}>
-				Add {ticked.length} {ticked.length === 1 ? 'person' : 'people'}
-			</button>
+{#snippet accountsActions()}
+	<Button variant="outline" class="accounts-cancel" onclick={onClose}>Cancel</Button>
+	<Button onclick={add} disabled={ticked.length === 0 || !proofTyped(currentPassword, stepUpCode, page.data.codeAsked)} aria-busy={saving ? 'true' : undefined}>
+		Add {ticked.length} {ticked.length === 1 ? 'person' : 'people'}
+	</Button>
+{/snippet}
+
+<!-- Card 3078: the kit's frame, on the same focus rules. -->
+<Dialog
+	aria-label="Add from Accounts"
+	title="Add from Accounts"
+	size="md"
+	class="from-accounts-dialog"
+	footerClass="modal-actions"
+	initialFocus=".modal-actions .accounts-cancel"
+	onEscape={onClose}
+	footer={accountsActions}
+>
+	<p class="ui-hint">Each account ticked becomes a person named by its username, with its address, linked to it.</p>
+	<!-- Code review S1: an account's address is its holder's own, and nobody has confirmed it. -->
+	<p class="ui-hint">An account's address is set by its holder and is not confirmed: check each is the person you mean before adding them.</p>
+	{#if offered.length === 0}
+		<p class="dialog-empty">Every account is already linked to a person.</p>
+	{:else}
+		<div class="account-list">
+			{#each offered as account (account.id)}
+				<label class="account-row" class:matched={account.matches !== null}>
+					<input
+						type="checkbox"
+						checked={account.matches === null && ticked.includes(account.id)}
+						disabled={account.matches !== null}
+						onchange={(e) => toggle(account.id, e.currentTarget.checked)}
+					/>
+					<span class="account-name">{account.emoji} {account.username}</span>
+					<span class="account-email">{account.email}</span>
+					{#if account.matches}
+						<span class="account-match">matches person {account.matches.fullName}: link by hand</span>
+					{/if}
+				</label>
+			{/each}
 		</div>
-	</div>
-</div>
+		<!-- The code review's part B, S1: each person made is given an account and its address. -->
+		<p class="ui-hint">Each account's address decides where that person's decision mail and personal links go. {asksForPassword(codeAskedHere())}</p>
+		<CurrentPasswordField bind:value={currentPassword} bind:code={stepUpCode} {refusal} readonly={saving} onEnter={add} kit />
+	{/if}
+</Dialog>
 
 <style>
-	.from-accounts-dialog { max-width: 600px; width: 100%; }
-	.from-accounts-dialog h2 { font-size: 1.1rem; margin-bottom: var(--space-sm); }
-	/* Card 3076: the kit's colours; the frame and buttons the app's dialog. */
-	.dialog-hint { font-size: 0.8rem; color: var(--ui-muted-foreground); margin-bottom: var(--space-lg); }
-	.dialog-empty { font-size: 0.85rem; color: var(--ui-muted-foreground); text-align: center; padding: var(--space-xl); }
-	.account-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; margin-bottom: var(--space-xl); }
+	/* Card 3076: the kit's colours. Card 3078: the frame and buttons the kit's dialog. */
+	.dialog-empty { font-size: 0.875rem; color: var(--ui-muted-foreground); text-align: center; padding: var(--space-xl); }
+	/* The accounts to tick: a bordered list that scrolls within itself. */
+	.account-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; padding: var(--space-sm) var(--space-md); border: 1px solid var(--ui-border); border-radius: var(--ui-radius); }
 	.account-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); padding: var(--space-xs) 0; font-size: 0.82rem; }
 	.account-row.matched { color: var(--ui-muted-foreground); }
 	.account-name { font-weight: 600; }
 	.account-email { color: var(--ui-muted-foreground); font-size: 0.75rem; }
 	/* Said in the text colour, marked by its edge (F3). */
 	.account-match { padding-left: 0.375rem; border-left: 2px solid var(--ui-warning); font-size: 0.75rem; color: var(--ui-foreground); }
-	.password-row { margin-bottom: var(--space-xl); }
-	.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-md); }
 </style>

@@ -340,6 +340,7 @@
 
 {#if confirming}
 	<ConfirmModal
+		kit
 		title="Save participants"
 		message={confirming}
 		confirmText="Save"

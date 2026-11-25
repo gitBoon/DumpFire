@@ -286,7 +286,7 @@
 </form>
 
 {#if confirming}
-	<ConfirmModal title="Rule on this decision?" {message} confirmText="Rule" askPassword onConfirm={rule} onCancel={cancel} />
+	<ConfirmModal kit title="Rule on this decision?" {message} confirmText="Rule" askPassword onConfirm={rule} onCancel={cancel} />
 {/if}
 
 <style>

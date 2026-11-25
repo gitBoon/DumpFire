@@ -44,7 +44,7 @@
 	import TwoStepSwitchPanel from '$lib/components/admin/TwoStepSwitchPanel.svelte';
 	import { HELD_POINTER, type HeldSetting } from '$lib/settings-held';
 	import SettingsHeldBanner from '$lib/components/SettingsHeldBanner.svelte';
-	import { holdFocus } from '$lib/dialog-focus';
+	import Dialog from '$lib/components/ui/Dialog.svelte';
 	import type { StepUpProof } from '$lib/step-up-words';
 
 	let { data }: { data: PageData } = $props();
@@ -244,6 +244,7 @@
 <!-- Confirm dialog: the app's, which takes the focus and answers Escape (card 2362: it was the page's own, with neither) -->
 {#if confirmAction.show}
 	<ConfirmModal
+		kit
 		title={confirmAction.title}
 		message={confirmAction.message}
 		confirmText="Confirm"
@@ -257,29 +258,37 @@
      Its button has the focus as it opens and Tab stays in it (card 2365: it took no focus). Escape is Close, after a refused reset;
      after one that was done the way out is Continue to set-up alone, and Escape does nothing. -->
 {#if resetNotice}
-	<div class="modal-overlay" role="alertdialog" aria-modal="true" aria-label={resetNotice.title}>
-		<div class="modal-content confirm-modal admin-dialog" role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions button', onEscape: resetNotice.redirect ? undefined : () => (resetNotice = null) }}>
-			<h2>{resetNotice.title}</h2>
-			<p style={resetNotice.problems.length > 0 ? 'margin-bottom: var(--space-sm)' : undefined}>{resetNotice.message}</p>
-			{#if resetNotice.problems.length > 0}
-				<ul class="reset-problems">
-					{#each resetNotice.problems.slice(0, 100) as problem}
-						<li>{problem}</li>
-					{/each}
-					{#if resetNotice.problems.length > 100}
-						<li>…and {resetNotice.problems.length - 100} more.</li>
-					{/if}
-				</ul>
-			{/if}
-			<div class="modal-actions">
-				{#if resetNotice.redirect}
-					<button class="btn-primary" onclick={() => { window.location.href = resetNotice?.redirect ?? '/setup'; }}>Continue to set-up</button>
-				{:else}
-					<button class="btn-ghost" onclick={() => (resetNotice = null)}>Close</button>
+	{#snippet resetNoticeActions()}
+		{#if resetNotice?.redirect}
+			<Button onclick={() => { window.location.href = resetNotice?.redirect ?? '/setup'; }}>Continue to set-up</Button>
+		{:else}
+			<Button variant="outline" onclick={() => (resetNotice = null)}>Close</Button>
+		{/if}
+	{/snippet}
+	<!-- Card 3078: the kit's frame, on the same focus rules. -->
+	<Dialog
+		role="alertdialog"
+		aria-label={resetNotice.title}
+		title={resetNotice.title}
+		size="md"
+		class="confirm-modal"
+		footerClass="modal-actions"
+		initialFocus=".modal-actions button"
+		onEscape={resetNotice.redirect ? undefined : () => (resetNotice = null)}
+		footer={resetNoticeActions}
+	>
+		<p>{resetNotice.message}</p>
+		{#if resetNotice.problems.length > 0}
+			<ul class="reset-problems">
+				{#each resetNotice.problems.slice(0, 100) as problem}
+					<li>{problem}</li>
+				{/each}
+				{#if resetNotice.problems.length > 100}
+					<li>…and {resetNotice.problems.length - 100} more.</li>
 				{/if}
-			</div>
-		</div>
-	</div>
+			</ul>
+		{/if}
+	</Dialog>
 {/if}
 
 <!-- The link of an invite whose mail was not sent: its dialog, set by the users panel, drawn here after the page's own dialogs as it always was. -->
@@ -302,7 +311,7 @@
 
 	/* What a reset could not move to the trash */
 	.reset-problems {
-		margin: 0 0 var(--space-xl);
+		margin: 0;
 		padding-left: var(--space-lg);
 		max-height: 240px;
 		overflow-y: auto;

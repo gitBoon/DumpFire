@@ -278,6 +278,7 @@
 <!-- Save asks for the caller's own password (card 2701). After the card: fixed to the window. -->
 {#if askingToSave}
 	<ConfirmModal
+		kit
 		title="Save SMTP Settings"
 		message={`Invites and password resets are sent through this mail server. ${asksForPassword(codeAskedHere())}`}
 		confirmText="Save"

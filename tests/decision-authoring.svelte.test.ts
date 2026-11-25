@@ -958,4 +958,52 @@ describe("the board's decision list (case 31)", () => {
 		expect(requests('POST /api/boards/7/decisions')).toEqual([{ title: 'Pick a supplier' }]);
 		expect(navigation.goto).toHaveBeenCalledWith('/decisions/42/edit');
 	});
+
+	// Card 3078 (N1, F1): the dialog let Tab walk the page behind it and gave no focus back.
+	it('N1: New decision holds the focus: the title has it, Tab on Make draft wraps to the title, Escape closes and New decision has the focus back; reopened, a press on the backdrop closes', async () => {
+		const target = draw(BoardDecisionsPage, { data: { board: { id: 7, name: 'Website' }, canCreate: true, decisions: [] } });
+		const opener = button(target, 'New decision');
+		const dialog = () => document.querySelector<HTMLElement>('[role="dialog"][aria-label="New decision"]');
+		const press = (key: string) => {
+			const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+			(document.activeElement ?? document.body).dispatchEvent(event);
+			flushSync();
+			return event.defaultPrevented;
+		};
+		const macrotask = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+		/** A press on an element as a pointer makes it: down, then the click. */
+		const pressOn = (el: HTMLElement) => {
+			el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+			el.click();
+			flushSync();
+		};
+
+		// Pressed, and the focus not left on it (as Safari leaves it): only returnTo can give it back.
+		opener.click();
+		opener.blur();
+		flushSync();
+		const title = dialog()!.querySelector<HTMLInputElement>('#new-decision-title')!;
+		expect(document.activeElement).toBe(title);
+		// Make draft sits in the frame's button row, outside the form, and submits it by naming it.
+		expect(button(dialog()!, 'Make draft').form).toBe(dialog()!.querySelector('form'));
+		button(dialog()!, 'Make draft').focus();
+		expect(press('Tab')).toBe(true);
+		expect(document.activeElement).toBe(title);
+
+		press('Escape');
+		expect(dialog()).toBeNull();
+		await macrotask();
+		expect(document.activeElement).toBe(opener);
+
+		opener.click();
+		opener.blur();
+		flushSync();
+		pressOn(dialog()!.querySelector<HTMLElement>('.ui-dialog-body')!);
+		expect(dialog()).not.toBeNull();
+		pressOn(dialog()!.parentElement!);
+		expect(dialog()).toBeNull();
+		await macrotask();
+		expect(document.activeElement).toBe(opener);
+	});
 });

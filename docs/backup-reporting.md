@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.72
+version: 1.73
 status: As-Built
 date: 2026-11-25
 tags:
@@ -1522,7 +1522,7 @@ person's Google account (with the Folder ID empty, every later backup went to a 
   `GET`, which Safari, a strict blocker or an answer slower than a click's activation (about five
   seconds in Chrome and Firefox) stops: the page reads what `window.open` returns, and the box
   says "Opening Google's sign-in page…" until the address is known (`gdriveAuthUrl`, the paste
-  box and its ✅ Connect disabled meanwhile), then "Your browser blocked Google's sign-in window."
+  box and its **Connect** disabled meanwhile; the button read ✅ Connect until card 3078), then "Your browser blocked Google's sign-in window."
   when it returned `null` (`gdriveBlocked`), or "A Google sign-in window has opened." otherwise;
   both give the address as a link (`rel="noopener noreferrer"`), since a blocker may hand back a
   window it then closes. Each Connect takes a number, `gdriveAttempt`, which

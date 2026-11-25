@@ -281,6 +281,7 @@
 {#if asking}
 	{@const a = asking}
 	<ConfirmModal
+		kit
 		title={confirmTitle(a)}
 		message={confirmMessage(a)}
 		confirmText={confirmTitle(a)}

@@ -20,7 +20,8 @@
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { toasts } from '$lib/stores/toast';
-	import { holdFocus } from '$lib/dialog-focus';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Dialog from '$lib/components/ui/Dialog.svelte';
 	import { page } from '$app/state';
 	import { codeAskedHere } from '$lib/code-asked';
 	import { asksForPassword, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
@@ -209,50 +210,58 @@
 <!-- Google Drive OAuth code entry -->
 <!-- Cancel takes the focus, Tab stays in it and Escape is Cancel (card 2362). -->
 {#if gdriveConnecting}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Connect Google Drive">
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content confirm-modal admin-dialog" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions .btn-ghost', onEscape: closeGDriveConnect }}>
-			<h2>🔗 Connect Google Drive</h2>
-			<p style="margin-bottom: var(--space-md)">
-				{#if !gdriveAuthUrl}
-					Opening Google's sign-in page…
-				{:else if gdriveBlocked}
-					Your browser blocked Google's sign-in window. <a href={gdriveAuthUrl} target="_blank" rel="noopener noreferrer">Open Google's sign-in page</a>. After granting access, Google will redirect to a page that may not load — <strong>that's expected</strong>.
-				{:else}
-					A Google sign-in window has opened. If you cannot see it, <a href={gdriveAuthUrl} target="_blank" rel="noopener noreferrer">open Google's sign-in page</a>. After granting access, Google will redirect to a page that may not load — <strong>that's expected</strong>.
-				{/if}
-			</p>
-			<p class="connect-note">
-				Copy the <strong>whole address</strong> from your browser's address bar, not only the code: it holds the code and the check that this connection was started here. Paste it below:
-			</p>
-			<input
-				type="text"
-				placeholder="Paste the whole address, starting http://localhost/?state=…"
-				bind:value={gdriveAuthCode}
-				disabled={!gdriveAuthUrl}
-				class="ui-input"
-				style="font-family: monospace; font-size: 0.78rem; margin-bottom: var(--space-md)"
-			/>
-			<!-- The caller's own password, which Connect asks for (card 2701), with the server's refusal of it. -->
-			<CurrentPasswordField bind:value={gdrivePassword} bind:code={gdriveStepUpCode} refusal={gdriveRefusal} disabled={!gdriveAuthUrl} onEnter={exchangeGDriveCode} />
-			<p class="connect-note">{asksForPassword(codeAskedHere())} Connecting chooses the Google account every backup to this destination goes to.</p>
-			<div class="modal-actions">
-				<button class="btn-ghost" onclick={closeGDriveConnect}>Cancel</button>
-				<button class="btn-primary" onclick={exchangeGDriveCode} disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || !proofTyped(gdrivePassword, gdriveStepUpCode, page.data.codeAsked) || gdriveExchanging}>
-					{gdriveExchanging ? '⏳ Connecting...' : '✅ Connect'}
-				</button>
-			</div>
-		</div>
-	</div>
+	{#snippet connectActions()}
+		<Button variant="outline" class="gdrive-cancel" onclick={closeGDriveConnect}>Cancel</Button>
+		<Button onclick={exchangeGDriveCode} disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || !proofTyped(gdrivePassword, gdriveStepUpCode, page.data.codeAsked) || gdriveExchanging}>
+			{gdriveExchanging ? 'Connecting…' : 'Connect'}
+		</Button>
+	{/snippet}
+	<!-- Card 3078: the kit's frame, on the same focus rules. -->
+	<Dialog
+		aria-label="Connect Google Drive"
+		title="Connect Google Drive"
+		size="md"
+		class="confirm-modal"
+		footerClass="modal-actions"
+		initialFocus=".modal-actions .gdrive-cancel"
+		onEscape={closeGDriveConnect}
+		footer={connectActions}
+	>
+		<p>
+			{#if !gdriveAuthUrl}
+				Opening Google's sign-in page…
+			{:else if gdriveBlocked}
+				Your browser blocked Google's sign-in window. <a href={gdriveAuthUrl} target="_blank" rel="noopener noreferrer">Open Google's sign-in page</a>. After granting access, Google will redirect to a page that may not load — <strong>that's expected</strong>.
+			{:else}
+				A Google sign-in window has opened. If you cannot see it, <a href={gdriveAuthUrl} target="_blank" rel="noopener noreferrer">open Google's sign-in page</a>. After granting access, Google will redirect to a page that may not load — <strong>that's expected</strong>.
+			{/if}
+		</p>
+		<p class="connect-note">
+			Copy the <strong>whole address</strong> from your browser's address bar, not only the code: it holds the code and the check that this connection was started here. Paste it below:
+		</p>
+		<input
+			type="text"
+			placeholder="Paste the whole address, starting http://localhost/?state=…"
+			bind:value={gdriveAuthCode}
+			disabled={!gdriveAuthUrl}
+			class="ui-input gdrive-address"
+		/>
+		<!-- The caller's own password, which Connect asks for (card 2701), with the server's refusal of it. -->
+		<CurrentPasswordField bind:value={gdrivePassword} bind:code={gdriveStepUpCode} refusal={gdriveRefusal} disabled={!gdriveAuthUrl} onEnter={exchangeGDriveCode} kit />
+		<p class="connect-note">{asksForPassword(codeAskedHere())} Connecting chooses the Google account every backup to this destination goes to.</p>
+	</Dialog>
 {/if}
 
 <style>
-	/* Card 3076: the box's notes in the kit's quiet text colour; its frame is the app's dialog, sized by admin.css. */
+	/* Card 3076: the box's notes in the kit's quiet text colour; card 3078: its frame is the kit's dialog. */
 	.connect-note {
-		margin-bottom: var(--space-md);
-		font-size: 0.78rem;
+		font-size: 0.8125rem;
 		line-height: 1.5;
 		color: var(--ui-muted-foreground);
+	}
+	/* The pasted address, long and read character by character. */
+	.gdrive-address {
+		font-family: var(--font-mono);
+		font-size: 0.8125rem;
 	}
 </style>

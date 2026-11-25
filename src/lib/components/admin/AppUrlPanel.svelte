@@ -186,6 +186,7 @@
 <!-- Save asks for the caller's own password (card 2701). After the card: fixed to the window. -->
 {#if askingToSave}
 	<ConfirmModal
+		kit
 		title="Save App URL"
 		message={`Every link in an invite and a password reset begins with the App URL. ${asksForPassword(codeAskedHere())}`}
 		confirmText="Save"

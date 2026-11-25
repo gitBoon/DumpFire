@@ -10,10 +10,15 @@
  * The source checks (the tokens in app.css, and no global CSS in the kit
  * outside a .ui- class) are in `tests/ui-kit.test.ts`. The plan is
  * `docs/planning/card-3074-page-shell-and-ui-kit.md`.
+ *
+ * Card 3078 (D1 to D5 of `docs/planning/card-3078-dialogs-on-kit.md`): the
+ * kit's Dialog frame, its name and role on the box, and its wiring of the
+ * app's focus hold (`holdFocus`): the first focus, Tab held inside, Escape,
+ * a press on the backdrop, and the focus handed back as it closes.
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Svelte from 'svelte';
 
 // A bare 'svelte' gives the server's runtime, whose tick the Theme menu cannot use in a browser: the client's, by its path.
@@ -26,6 +31,7 @@ vi.mock('svelte', async () => {
 import Alert from '$lib/components/ui/Alert.svelte';
 import Badge from '$lib/components/ui/Badge.svelte';
 import Button from '$lib/components/ui/Button.svelte';
+import Dialog from '$lib/components/ui/Dialog.svelte';
 import PageShell from '$lib/components/ui/PageShell.svelte';
 import { tickUp } from '$lib/components/ui/motion';
 
@@ -256,5 +262,189 @@ describe('tickUp', () => {
 		expect(cancelled).toHaveBeenCalledWith(1);
 		expect(counting.textContent).toBe('57');
 		count.destroy?.();
+	});
+});
+
+describe('Dialog (card 3078)', () => {
+	/** The button a page's dialog is opened from, with the focus, as a click or Enter leaves it. */
+	let opener: HTMLButtonElement;
+
+	beforeEach(() => {
+		opener = document.createElement('button');
+		opener.textContent = 'Open';
+		document.body.appendChild(opener);
+		opener.focus();
+	});
+
+	afterEach(() => opener.remove());
+
+	/** Draws a dialog with a body and, unless told otherwise, a footer of Cancel and Save; gives back the box. */
+	function open(props: Record<string, unknown> = {}): HTMLElement {
+		const target = draw(Dialog, {
+			title: 'Import Database',
+			children: html('<div data-said="body"><p>Choose a file.</p></div>'),
+			footer: html('<div data-said="footer"><button type="button" data-action="cancel">Cancel</button><button type="button" data-action="save">Save</button></div>'),
+			...props
+		});
+		return target.querySelector<HTMLElement>('.ui-dialog')!;
+	}
+
+	/** Closes the last dialog drawn, as a page does by no longer drawing it. */
+	function close() {
+		const last = drawn.pop()!;
+		unmount(last.component);
+		last.target.remove();
+		flushSync();
+	}
+
+	/** A key pressed where the focus is, bubbling as a real one does; gives back whether its default was taken. */
+	function press(key: string, shiftKey = false): boolean {
+		const event = new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true });
+		(document.activeElement ?? document.body).dispatchEvent(event);
+		flushSync();
+		return event.defaultPrevented;
+	}
+
+	const macrotask = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+	/** A press on an element as a pointer makes it: down, then the click. */
+	function pressOn(target: HTMLElement) {
+		target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+		target.click();
+		flushSync();
+	}
+
+	it('D1. the box, not the backdrop, is the modal dialog, named by its title and described by its description; aria-label, role, titleLevel, class and footerClass as given; no footer without one', () => {
+		const box = open({ description: 'The file replaces every board.', class: 'confirm-modal', footerClass: 'modal-actions' });
+		const overlay = box.parentElement!;
+		expect(overlay.classList.contains('ui-dialog-overlay')).toBe(true);
+		expect(overlay.getAttribute('role')).toBe('presentation');
+		expect(overlay.hasAttribute('aria-modal')).toBe(false);
+
+		expect(box.getAttribute('role')).toBe('dialog');
+		expect(box.getAttribute('aria-modal')).toBe('true');
+		expect(box.getAttribute('tabindex')).toBe('-1');
+		const title = box.querySelector('h2')!;
+		expect(title.textContent).toBe('Import Database');
+		expect(box.getAttribute('aria-labelledby')).toBe(title.id);
+		expect(box.hasAttribute('aria-label')).toBe(false);
+		const description = box.querySelector('.ui-dialog-description')!;
+		expect(description.textContent).toBe('The file replaces every board.');
+		expect(box.getAttribute('aria-describedby')).toBe(description.id);
+		expect(box.classList.contains('confirm-modal')).toBe(true);
+		expect(box.querySelector('.ui-dialog-footer')!.classList.contains('modal-actions')).toBe(true);
+		expect(box.querySelector('.ui-dialog-body [data-said="body"]')).not.toBeNull();
+		close();
+
+		// Named by its aria-label alone; an alert dialog with an h3; no footer, and nothing describing it, where none is given.
+		const alert = open({ 'aria-label': 'Reset done', role: 'alertdialog', titleLevel: 3, footer: undefined });
+		expect(alert.getAttribute('role')).toBe('alertdialog');
+		expect(alert.getAttribute('aria-label')).toBe('Reset done');
+		expect(alert.hasAttribute('aria-labelledby')).toBe(false);
+		expect(alert.hasAttribute('aria-describedby')).toBe(false);
+		expect(alert.querySelector('h3')?.textContent).toBe('Import Database');
+		expect(alert.querySelector('h2')).toBeNull();
+		expect(alert.querySelector('.ui-dialog-footer')).toBeNull();
+	});
+
+	it('D2. gives the first focus to the first enabled field, else the footer’s first button, else what initialFocus names, else the box', () => {
+		let box = open({ children: html('<div><button type="button" data-action="help">Help</button><input data-said="off" disabled /><input data-said="name" /></div>') });
+		expect(document.activeElement).toBe(box.querySelector('[data-said="name"]'));
+		close();
+
+		box = open();
+		expect(document.activeElement).toBe(box.querySelector('[data-action="cancel"]'));
+		close();
+
+		box = open({ initialFocus: '[data-action="save"]' });
+		expect(document.activeElement).toBe(box.querySelector('[data-action="save"]'));
+		close();
+
+		// Nothing to focus in it, or a selector that finds nothing: the box itself.
+		box = open({ footer: undefined });
+		expect(document.activeElement).toBe(box);
+		close();
+		box = open({ initialFocus: '.not-here' });
+		expect(document.activeElement).toBe(box);
+	});
+
+	it('D3. holds Tab inside: the last stop to the first, Shift+Tab the first to the last, and a Tab from outside back to the first focus', () => {
+		const box = open({ initialFocus: '[data-action="save"]' });
+		const cancel = box.querySelector<HTMLElement>('[data-action="cancel"]')!;
+		const save = box.querySelector<HTMLElement>('[data-action="save"]')!;
+
+		expect(document.activeElement).toBe(save);
+		expect(press('Tab')).toBe(true);
+		expect(document.activeElement).toBe(cancel);
+		expect(press('Tab', true)).toBe(true);
+		expect(document.activeElement).toBe(save);
+		// Between its stops the browser's own Tab.
+		cancel.focus();
+		expect(press('Tab')).toBe(false);
+
+		opener.focus();
+		expect(press('Tab')).toBe(true);
+		expect(document.activeElement).toBe(save);
+	});
+
+	it('D4. runs onEscape once on Escape and onBackdrop on a press on the backdrop alone; without them each does nothing, and while paused Escape is left alone', () => {
+		const onEscape = vi.fn();
+		const onBackdrop = vi.fn();
+		let box = open({ onEscape, onBackdrop });
+		press('Escape');
+		expect(onEscape).toHaveBeenCalledTimes(1);
+
+		pressOn(box.querySelector<HTMLElement>('[data-said="body"]')!);
+		pressOn(box);
+		expect(onBackdrop).not.toHaveBeenCalled();
+		pressOn(box.parentElement!);
+		expect(onBackdrop).toHaveBeenCalledTimes(1);
+		expect(onEscape).toHaveBeenCalledTimes(1);
+		close();
+
+		// Neither given: Escape and a press on the backdrop do nothing, and nothing throws.
+		box = open();
+		expect(() => {
+			press('Escape');
+			pressOn(box.parentElement!);
+		}).not.toThrow();
+		expect(onEscape).toHaveBeenCalledTimes(1);
+		expect(onBackdrop).toHaveBeenCalledTimes(1);
+		close();
+
+		// Paused, as under a dialog opened over it: its Escape is the top one's.
+		open({ onEscape, paused: true });
+		press('Escape');
+		expect(onEscape).toHaveBeenCalledTimes(1);
+	});
+
+	it('D6. takes a press that went down in the box and came up on the backdrop (a drag to select text) as no press on the backdrop', () => {
+		const onBackdrop = vi.fn();
+		const box = open({ onBackdrop });
+		const overlay = box.parentElement!;
+		// The click's target is where the press went down and came up in common: the backdrop.
+		box.querySelector<HTMLElement>('[data-said="body"]')!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+		overlay.click();
+		expect(onBackdrop).not.toHaveBeenCalled();
+		overlay.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+		overlay.click();
+		expect(onBackdrop).toHaveBeenCalledTimes(1);
+	});
+
+	it('D5. hands the focus back as it closes, after one macrotask: to the opener, or to what returnTo names', async () => {
+		open();
+		close();
+		await Promise.resolve();
+		expect(document.activeElement).not.toBe(opener);
+		await macrotask();
+		expect(document.activeElement).toBe(opener);
+
+		const named = document.createElement('button');
+		document.body.appendChild(named);
+		open({ returnTo: () => named });
+		close();
+		await macrotask();
+		expect(document.activeElement).toBe(named);
+		named.remove();
 	});
 });

@@ -24,7 +24,8 @@
 	import { answerBody, failureMessage, heldOfOthersWords, heldOnEndingWords } from '$lib/api';
 	import { NO_ANSWER, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
-	import { holdFocus } from '$lib/dialog-focus';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Dialog from '$lib/components/ui/Dialog.svelte';
 	import { toasts } from '$lib/stores/toast';
 	import { page } from '$app/state';
 	import { passwordKeptAfter, proofTyped, stepUpRefusal } from '$lib/step-up-words';
@@ -119,14 +120,6 @@
 		if (opening === resetOpenings && resetPasswordUserId === userId) resetKeysRead = true;
 	}
 
-	/**
-	 * Cancel, which Escape presses (card 2886): one way to close the dialog
-	 * sending nothing. Its handler stays in the markup, where it clears the
-	 * password, the code and the refusal; the script sets no account but in
-	 * `openResetDialog` and a finished reset (`tests/page-failures.test.ts`).
-	 */
-	let cancelButton = $state<HTMLButtonElement>();
-
 	/** The new-password box, where Enter in the code field moves the focus (card 2886). */
 	let newPasswordInput = $state<HTMLInputElement>();
 
@@ -218,48 +211,62 @@
 
 <!-- Password Reset Modal (inline) -->
 {#if resetPasswordUserId}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" role="dialog" aria-modal="true" aria-label={resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}>
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content admin-kit-fields" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: 'input:not(:disabled)', onEscape: () => cancelButton?.click() }}>
-			<h2>🔑 {resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}</h2>
-			{#if resettingOwnPassword}
-				<!-- Their own account: the password they have is asked for, as on the Account page. -->
-				<!-- The code named only where it is asked (card 3064, F25), as the field below shows it. -->
-				<p>This is your own account. Enter your current password{codeAskedHere() ? ', a code from your authenticator app,' : ''} and a new one. Your other sessions will be signed out. Your report schedules are paused.</p>
-				<!-- Sent with no endApiKeys, so the keys are kept. The Account page offers the choice. -->
-				<p>Your API keys and the webhooks you set up keep working. To end the keys and switch off those webhooks too, change your password on the <a href="/account">Account page</a>.</p>
-				<CurrentPasswordField label="Current password" bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} onEnter={toNewPassword} />
-			{:else}
-				<p>Enter a new password for {resetTarget?.username || 'user'}.</p>
-				{#if resetTargetKeys !== null && resetTargetKeys > 0}
-					<p class="admin-warning">They have {counted(resetTargetKeys, 'API key')}, which {resetTargetKeys === 1 ? 'stops' : 'stop'} working.</p>
-				{/if}
-				{#if resetTargetWebhooks !== null && resetTargetWebhooks > 0}
-					<p class="admin-warning">They set up {counted(resetTargetWebhooks, 'webhook')}, which {resetTargetWebhooks === 1 ? 'is' : 'are'} switched off.</p>
-				{/if}
-				{#if resetTargetAlreadyOff !== null && resetTargetAlreadyOff > 0}
-					<p class="admin-warning">They set up {counted(resetTargetAlreadyOff, 'webhook')} already switched off, which {resetTargetAlreadyOff === 1 ? 'is' : 'are'} held, to be switched on only with a new secret.</p>
-				{/if}
-				{#if resetTargetReadable !== null && resetTargetReadable > 0}
-					<p class="admin-warning">They could read the secret of {counted(resetTargetReadable, 'other webhook')}, as {resetTarget?.role === 'admin' || resetTarget?.role === 'superadmin' ? 'an administrator' : "a board's owner"}: {resetTargetReadable === 1 ? 'it is' : 'those are'} switched off too, to be switched on only with a new secret, and their boards' owners are mailed.</p>
-				{/if}
-				{#if resetTargetSchedules !== null && resetTargetSchedules > 0}
-					<p class="admin-warning">They have {counted(resetTargetSchedules, 'report schedule')}, which {resetTargetSchedules === 1 ? 'is' : 'are'} paused.</p>
-				{/if}
-				<!-- Card 2922: what they set, held for the superadmin's review. -->
-				{#if resetTargetHeld}
-					<p class="admin-warning settings-held">{resetTargetHeld}</p>
-				{/if}
-				<p>They are signed out everywhere, every API key they have stops working, any invite not yet used stops working, the webhooks they set up are switched off and their report schedules are paused. Their boards' owners are mailed about them, and about any already switched off, which can now be switched on only with a new secret.</p>
-				<!-- The administrator's own password, which a reset asks for again (card 2701). -->
-				<CurrentPasswordField bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} onEnter={toNewPassword} />
+	<!--
+	  Cancel, which Escape presses too (card 2886): one way to close the dialog sending nothing. Its handler stays in the
+	  markup, where it clears the password, the code and the refusal; the script sets no account but in
+	  `openResetDialog` and a finished reset (`tests/page-failures.test.ts`). Card 3078: named here, for the kit's frame.
+	-->
+	{@const cancel = () => {
+		resetPasswordUserId = null;
+		resetPasswordCurrent = '';
+		resetCodeCurrent = '';
+		resetRefusal = null;
+	}}
+	{#snippet resetActions()}
+		<Button variant="outline" onclick={cancel}>Cancel</Button>
+		<Button onclick={resetPassword} disabled={resetPasswordValue.length < 8 || !proofTyped(resetPasswordCurrent, resetCodeCurrent, page.data.codeAsked)}>{resettingOwnPassword ? 'Change Password' : 'Reset Password'}</Button>
+	{/snippet}
+	<Dialog
+		aria-label={resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}
+		title={resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}
+		size="lg"
+		footerClass="modal-actions"
+		initialFocus="input:not(:disabled)"
+		onEscape={cancel}
+		footer={resetActions}
+	>
+		{#if resettingOwnPassword}
+			<!-- Their own account: the password they have is asked for, as on the Account page. -->
+			<!-- The code named only where it is asked (card 3064, F25), as the field below shows it. -->
+			<p>This is your own account. Enter your current password{codeAskedHere() ? ', a code from your authenticator app,' : ''} and a new one. Your other sessions will be signed out. Your report schedules are paused.</p>
+			<!-- Sent with no endApiKeys, so the keys are kept. The Account page offers the choice. -->
+			<p>Your API keys and the webhooks you set up keep working. To end the keys and switch off those webhooks too, change your password on the <a href="/account">Account page</a>.</p>
+			<CurrentPasswordField label="Current password" bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} onEnter={toNewPassword} kit />
+		{:else}
+			<p>Enter a new password for {resetTarget?.username || 'user'}.</p>
+			{#if resetTargetKeys !== null && resetTargetKeys > 0}
+				<p class="admin-warning">They have {counted(resetTargetKeys, 'API key')}, which {resetTargetKeys === 1 ? 'stops' : 'stop'} working.</p>
 			{/if}
-			<input type="password" placeholder="New password (min 8 chars)" aria-label="New password" bind:value={resetPasswordValue} bind:this={newPasswordInput} class="ui-input" style="margin: 0 0 var(--space-md);" autocomplete="new-password" />
-			<div class="modal-actions">
-				<button class="btn-ghost" bind:this={cancelButton} onclick={() => { resetPasswordUserId = null; resetPasswordCurrent = ''; resetCodeCurrent = ''; resetRefusal = null; }}>Cancel</button>
-				<button class="btn-primary" onclick={resetPassword} disabled={resetPasswordValue.length < 8 || !proofTyped(resetPasswordCurrent, resetCodeCurrent, page.data.codeAsked)}>{resettingOwnPassword ? 'Change Password' : 'Reset Password'}</button>
-			</div>
-		</div>
-	</div>
+			{#if resetTargetWebhooks !== null && resetTargetWebhooks > 0}
+				<p class="admin-warning">They set up {counted(resetTargetWebhooks, 'webhook')}, which {resetTargetWebhooks === 1 ? 'is' : 'are'} switched off.</p>
+			{/if}
+			{#if resetTargetAlreadyOff !== null && resetTargetAlreadyOff > 0}
+				<p class="admin-warning">They set up {counted(resetTargetAlreadyOff, 'webhook')} already switched off, which {resetTargetAlreadyOff === 1 ? 'is' : 'are'} held, to be switched on only with a new secret.</p>
+			{/if}
+			{#if resetTargetReadable !== null && resetTargetReadable > 0}
+				<p class="admin-warning">They could read the secret of {counted(resetTargetReadable, 'other webhook')}, as {resetTarget?.role === 'admin' || resetTarget?.role === 'superadmin' ? 'an administrator' : "a board's owner"}: {resetTargetReadable === 1 ? 'it is' : 'those are'} switched off too, to be switched on only with a new secret, and their boards' owners are mailed.</p>
+			{/if}
+			{#if resetTargetSchedules !== null && resetTargetSchedules > 0}
+				<p class="admin-warning">They have {counted(resetTargetSchedules, 'report schedule')}, which {resetTargetSchedules === 1 ? 'is' : 'are'} paused.</p>
+			{/if}
+			<!-- Card 2922: what they set, held for the superadmin's review. -->
+			{#if resetTargetHeld}
+				<p class="admin-warning settings-held">{resetTargetHeld}</p>
+			{/if}
+			<p>They are signed out everywhere, every API key they have stops working, any invite not yet used stops working, the webhooks they set up are switched off and their report schedules are paused. Their boards' owners are mailed about them, and about any already switched off, which can now be switched on only with a new secret.</p>
+			<!-- The administrator's own password, which a reset asks for again (card 2701). -->
+			<CurrentPasswordField bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} onEnter={toNewPassword} kit />
+		{/if}
+		<input type="password" placeholder="New password (min 8 chars)" aria-label="New password" bind:value={resetPasswordValue} bind:this={newPasswordInput} class="ui-input" autocomplete="new-password" />
+	</Dialog>
 {/if}

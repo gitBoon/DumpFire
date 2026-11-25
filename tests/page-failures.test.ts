@@ -1309,7 +1309,7 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	});
 
 	it('says in the import dialog that everybody is signed out, and that a backup with no superadmin is refused', () => {
-		const dialog = restoreMarkup.slice(restoreMarkup.indexOf('<h2>Import Database</h2>'));
+		const dialog = restoreMarkup.slice(restoreMarkup.indexOf('title="Import Database"'));
 
 		expect(dialog).toContain('Everybody is signed out, you included: no session is restored, whatever the backup holds');
 		expect(dialog).toContain('A backup with users and no superadmin among them is refused.');
@@ -1317,7 +1317,7 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	});
 
 	it('says in the import dialog that a backup holds no secret, and no longer that the outside comes back exactly (card 2169)', () => {
-		const dialog = restoreMarkup.slice(restoreMarkup.indexOf('<h2>Import Database</h2>'));
+		const dialog = restoreMarkup.slice(restoreMarkup.indexOf('title="Import Database"'));
 		const asItIs = dialog.slice(dialog.indexOf('<strong>Restore everything as it is</strong>'));
 		const said = /<span class="import-choice-desc">([^<]*)<\/span>/.exec(asItIs)?.[1];
 
@@ -5046,6 +5046,8 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 			// Its sections' dropdowns and template dialogs (card 2280, slice B4).
 			...filesUnder('src/lib/components/card', '.svelte'),
 			'src/lib/components/ConfirmModal.svelte',
+			// The UI kit's dialog frame, the kit pages' dialogs (card 3078, A1).
+			'src/lib/components/ui/Dialog.svelte',
 			// The admin page's panels and their dialogs (card 2281, slice C1a).
 			...filesUnder('src/lib/components/admin', '.svelte'),
 			// And the admin page itself, which is in the table of writes no longer (slice C1b).
@@ -6536,6 +6538,8 @@ describe('the user badge, the update bar, the avatar and the subtask window’s 
 		const z = Number(/\.user-badge \{[^}]*z-index:\s*(\d+)/.exec(layout.source)?.[1]);
 		expect(z).toBeLessThan(1000);
 		expect(Number(/\.modal-overlay \{[^}]*z-index:\s*(\d+)/.exec(readFileSync(join(ROOT, 'src/app.css'), 'utf8'))?.[1])).toBe(1000);
+		// And the UI kit's dialog frame's backdrop, the kit pages' (card 3078, A2).
+		expect(Number(/\.ui-dialog-overlay \{[^}]*z-index:\s*(\d+)/.exec(readFileSync(join(ROOT, 'src/lib/components/ui/Dialog.svelte'), 'utf8'))?.[1])).toBe(1000);
 	});
 
 	// Card 2239. The badge had only the global .glass's background, 2 to 6%
@@ -6599,6 +6603,10 @@ describe('the user badge, the update bar, the avatar and the subtask window’s 
 		expect(layout.tree.getText()).toContain("document.documentElement.style.setProperty('--update-bar-space', updated.current ? `${barHeight}px` : '0px');");
 		// And each of them keeps clear of it by that much.
 		expect(/\.modal-overlay \{([^}]*)\}/.exec(readFileSync(join(ROOT, 'src/app.css'), 'utf8'))![1]).toContain('padding-bottom: var(--update-bar-space, 0px);');
+		// The UI kit's dialog frame too (card 3078, A2): its backdrop's foot, beneath its own 1rem margin.
+		expect(/\.ui-dialog-overlay \{([^}]*)\}/.exec(readFileSync(join(ROOT, 'src/lib/components/ui/Dialog.svelte'), 'utf8'))![1]).toMatch(
+			/padding-bottom: [^;]*var\(--update-bar-space, 0px\)[^;]*;/
+		);
 		expect(readFileSync(join(ROOT, 'src/lib/components/Toast.svelte'), 'utf8')).toContain('bottom: calc(24px + var(--update-bar-space, 0px));');
 		expect(/\.user-badge \{([^}]*)\}/.exec(layout.source)![1]).toContain('bottom: calc(var(--space-lg) + var(--update-bar-space, 0px));');
 	});
@@ -6966,7 +6974,8 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 			expect(script.getText()).not.toMatch(/(localStorage|sessionStorage|history\.|goto\()[^\n]*invite/i);
 		}
 
-		expect(dialog.split('onclick={closeInviteLink}>Done</button>')).toHaveLength(2);
+		// Card 3078: the kit's Button, in the frame's footer.
+		expect(dialog.split('<Button onclick={closeInviteLink}>Done</Button>')).toHaveLength(2);
 		const allMarkup = adminSvelteSources()
 			.map((admin) => admin.source.slice(admin.source.indexOf('</script>')))
 			.join('\n');
@@ -6990,7 +6999,8 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 
 	it('says what decision 9 says, word for word', () => {
 		for (const words of [
-			'📧 The invite mail was not sent',
+			// Card 3078: the title without its emoji.
+			'The invite mail was not sent',
 			'Give this link to {inviteLink.username} yourself, by a way only they read. Whoever opens it can set the password of ' +
 				"{inviteLink.username}'s account, then sets up its two-step sign-in and is signed in as them. It works once, for seven days, and stops working if " +
 				'another invite is sent to this account. Do not open it yourself.',
@@ -6999,6 +7009,8 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		]) {
 			expect(dialog, words).toContain(words);
 		}
+		// Card 3078: the words are the dialog's title itself (its aria-label says them too), with no emoji before them.
+		expect(dialog).toMatch(/\btitle=\{[^\n]*: 'The invite mail was not sent'\}\r?\n/);
 		// Card 2395: the mail panel is every administrator's, so every reader is pointed to it.
 		expect(dialog).not.toContain('The superadmin can see why under Email / SMTP.');
 		expect(functionNamed(tree, 'createUser').getText()).toContain(
@@ -7066,9 +7078,12 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		expect(dialog).toContain('<p id="invite-link-warning"');
 		// Through the dialog's hold on the focus since card 2365, which keeps Tab in it too and, since its review, gives the focus back to
 		// the control the users panel names (mounted in tests/admin-panels.test.ts).
-		expect(dialog).toContain("use:holdFocus={{ first: '.invite-link-row button', returnTo: backTo(inviteLink) }}");
-		// Card 3076: its size is the dialog's own rule (.invite-link-row button); the page's btn-sm rule is gone.
-		expect(dialog).toContain('<button class="btn-ghost" onclick={copyInviteLink}>');
+		// Card 3078: the kit's frame holds it, through the same holdFocus, given the same first focus and return.
+		expect(dialog).toContain('initialFocus=".invite-link-row button"');
+		expect(dialog).toContain('returnTo={backTo(inviteLink)}');
+		expect(dialog).not.toContain('onEscape');
+		// Card 3078: the kit's small outline Button.
+		expect(dialog).toContain('<Button variant="outline" size="sm" onclick={copyInviteLink}>');
 	});
 
 	it('says "Invite sent!" only for an answer that says mailSent: true, and an answer that says neither is not taken as sent (review fixes, item 4)', () => {
@@ -7187,7 +7202,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 	 * connectGDriveOAuth compiled from the page and run (cards 2265 and 2266),
 	 * with the real failureMessage and answerBody, and stand-ins for fetch,
 	 * whose answers the test gives one at a time, window.open and the toast.
-	 * Cancel is what the box's Cancel button does. The exchange (✅ Connect)
+	 * Cancel is what the box's Cancel button does. The exchange (Connect)
 	 * is compiled with them, with `sentAsking` a stand-in whose answers the
 	 * test gives in `posts` (card 2701: the caller's password goes with it).
 	 * `loadBackupConfig` is the Scheduled Backups panel's, handed to the box;
@@ -7411,7 +7426,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 		const old = page.exchange();
 		expect(page.exchanging()).toBe(true);
 
-		// Cancel mid exchange: the box closes, and the next one's ✅ Connect is not left disabled.
+		// Cancel mid exchange: the box closes, and the next one's Connect is not left disabled.
 		page.cancel();
 		expect(page.exchanging()).toBe(false);
 
@@ -7430,7 +7445,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 		expect(page.window.open).toHaveBeenCalledTimes(2);
 	});
 
-	it('keeps ✅ Connect disabled through a newer exchange when an older one answers in the middle of it (the card 2266 review)', async () => {
+	it('keeps Connect disabled through a newer exchange when an older one answers in the middle of it (the card 2266 review)', async () => {
 		const page = connecting();
 		await readyToExchange(page, CONSENT, 's1');
 		const old = page.exchange();
@@ -7507,7 +7522,9 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 		expect(box).toMatch(/<input\s+type="text"\s+placeholder="Paste the whole address, starting http:\/\/localhost\/\?state=…"\s+bind:value=\{gdriveAuthCode\}\s+disabled=\{!gdriveAuthUrl\}/);
 		// And for the caller's own password (card 2701) and a sign-in code (card 2770).
 		expect(box).toContain('disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || !proofTyped(gdrivePassword, gdriveStepUpCode, page.data.codeAsked) || gdriveExchanging}');
-		expect(box).toContain('<button class="btn-ghost" onclick={closeGDriveConnect}>Cancel</button>');
+		// Card 3078: the kit's outline Button, its hook the frame's first focus.
+		expect(box).toContain('<Button variant="outline" class="gdrive-cancel" onclick={closeGDriveConnect}>Cancel</Button>');
+		expect(box).toContain('initialFocus=".modal-actions .gdrive-cancel"');
 	});
 
 	it('closes the box in one place, which forgets the address and the password and moves the Connect on (card 2266)', () => {

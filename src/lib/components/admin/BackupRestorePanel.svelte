@@ -29,10 +29,10 @@
 	import { answerBody, failureMessage, uploadFailure, uploadNoAnswer, uploadNotRead } from '$lib/api';
 	import { showToast } from '$lib/admin/send';
 	import { toasts } from '$lib/stores/toast';
-	import { holdFocus } from '$lib/dialog-focus';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
+	import Dialog from '$lib/components/ui/Dialog.svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 	import CardContent from '$lib/components/ui/CardContent.svelte';
 	import CardDescription from '$lib/components/ui/CardDescription.svelte';
@@ -643,51 +643,57 @@
 
 <!-- Import dialog, once a backup is chosen: the warning, the file, which of the two ways to restore, and the password. Cancel takes the focus, Tab stays in it and Escape is Cancel (card 2362). -->
 {#if showImportDialog && importFile}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Import Database">
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content confirm-modal admin-dialog" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions .import-cancel', onEscape: cancelImportDialog }}>
-			<h2>Import Database</h2>
-			<p class="import-file">Backup chosen: <strong>{importFile.file.name}</strong></p>
-			<p style="margin-bottom: var(--space-md)">This will REPLACE ALL existing data with the backup — users, teams, boards, cards, comments, labels, task requests, and settings will all be overwritten. Everybody is signed out, you included: no session is restored, whatever the backup holds, so you will sign in again with an account the backup has. Invites that have not been used yet stop working. A backup with users and no superadmin among them is refused.</p>
-			<div class="import-choices" role="radiogroup" aria-label="How to restore the backup">
-				<label class="import-choice" class:selected={importOutside === 'keep'}>
-					<input type="radio" name="import-outside" value="keep" bind:group={importOutside} />
-					<span>
-						<strong>Restore everything as it is</strong>
-						<span class="import-choice-desc">For putting this installation back. Backup destinations, report schedules, mail settings and webhooks come back as the backup has them. A backup holds no mail password, destination credential, webhook secret or webhook address: the ones this server has for the same accounts are kept, and the result lists any to enter again; a webhook whose secret or address is to enter stays off until it is set.</span>
-					</span>
-				</label>
-				<label class="import-choice" class:selected={importOutside === 'off'}>
-					<input type="radio" name="import-outside" value="off" bind:group={importOutside} />
-					<span>
-						<strong>Restore as a working copy</strong>
-						<span class="import-choice-desc">For a copy that must not reach outside. Report schedules and webhooks are switched off, the backup schedule is switched off and its destinations removed, and the mail settings are removed. Everything else is restored.</span>
-					</span>
-				</label>
-				{#if importOutsideDefault === 'off' && importOutside === 'off'}
-					<span class="import-default-note">Working copy is selected because this instance's schedulers are off.</span>
-				{/if}
-			</div>
-			<!-- The caller's own password (card 2701), sent alone to the confirm; the backup is uploaded once it is accepted. -->
-			<CurrentPasswordField bind:value={importPassword} bind:code={importCode} refusal={importRefusal} readonly={importConfirming} onEnter={confirmImport} />
-			<p class="import-default-note">{asksForPassword(codeAskedHere())} Confirm checks it, and then sends the backup.</p>
-			<div class="modal-actions">
-				<Button variant="outline" class="import-cancel" onclick={cancelImportDialog} disabled={importConfirming}>Cancel</Button>
-				<Button
-					variant="destructive"
-					onclick={confirmImport}
-					disabled={!proofTyped(importPassword, importCode, page.data.codeAsked) || importConfirming}
-					aria-busy={importConfirming ? 'true' : undefined}
-				>{importConfirming ? 'Working…' : 'Confirm'}</Button>
-			</div>
+	{#snippet importActions()}
+		<Button variant="outline" class="import-cancel" onclick={cancelImportDialog} disabled={importConfirming}>Cancel</Button>
+		<Button
+			variant="destructive"
+			onclick={confirmImport}
+			disabled={!proofTyped(importPassword, importCode, page.data.codeAsked) || importConfirming}
+			aria-busy={importConfirming ? 'true' : undefined}
+		>{importConfirming ? 'Working…' : 'Confirm'}</Button>
+	{/snippet}
+	<!-- Card 3078: the kit's frame, on the same focus rules. -->
+	<Dialog
+		aria-label="Import Database"
+		title="Import Database"
+		size="md"
+		class="confirm-modal"
+		footerClass="modal-actions"
+		initialFocus=".import-cancel"
+		onEscape={cancelImportDialog}
+		footer={importActions}
+	>
+		<p class="import-file">Backup chosen: <strong>{importFile.file.name}</strong></p>
+		<p>This will REPLACE ALL existing data with the backup — users, teams, boards, cards, comments, labels, task requests, and settings will all be overwritten. Everybody is signed out, you included: no session is restored, whatever the backup holds, so you will sign in again with an account the backup has. Invites that have not been used yet stop working. A backup with users and no superadmin among them is refused.</p>
+		<div class="import-choices" role="radiogroup" aria-label="How to restore the backup">
+			<label class="import-choice" class:selected={importOutside === 'keep'}>
+				<input type="radio" name="import-outside" value="keep" bind:group={importOutside} />
+				<span>
+					<strong>Restore everything as it is</strong>
+					<span class="import-choice-desc">For putting this installation back. Backup destinations, report schedules, mail settings and webhooks come back as the backup has them. A backup holds no mail password, destination credential, webhook secret or webhook address: the ones this server has for the same accounts are kept, and the result lists any to enter again; a webhook whose secret or address is to enter stays off until it is set.</span>
+				</span>
+			</label>
+			<label class="import-choice" class:selected={importOutside === 'off'}>
+				<input type="radio" name="import-outside" value="off" bind:group={importOutside} />
+				<span>
+					<strong>Restore as a working copy</strong>
+					<span class="import-choice-desc">For a copy that must not reach outside. Report schedules and webhooks are switched off, the backup schedule is switched off and its destinations removed, and the mail settings are removed. Everything else is restored.</span>
+				</span>
+			</label>
+			{#if importOutsideDefault === 'off' && importOutside === 'off'}
+				<span class="import-default-note">Working copy is selected because this instance's schedulers are off.</span>
+			{/if}
 		</div>
-	</div>
+		<!-- The caller's own password (card 2701), sent alone to the confirm; the backup is uploaded once it is accepted. -->
+		<CurrentPasswordField bind:value={importPassword} bind:code={importCode} refusal={importRefusal} readonly={importConfirming} onEnter={confirmImport} kit />
+		<p class="import-default-note">{asksForPassword(codeAskedHere())} Confirm checks it, and then sends the backup.</p>
+	</Dialog>
 {/if}
 
 <!-- Export asks for the caller's own password (card 2701): the file holds every account's password hash. -->
 {#if askingToExport}
 	<ConfirmModal
+		kit
 		title="Export Database"
 		message={`The file holds every account's email address and password hash, and every setting. Keep it where only you can read it. ${asksForPassword(codeAskedHere())}`}
 		confirmText="Export"
@@ -827,16 +833,16 @@
 		color: var(--ui-foreground);
 		font-variant-numeric: tabular-nums;
 	}
-	/* Import dialog: the two ways to restore */
-	.import-choices { display: flex; flex-direction: column; gap: var(--space-sm); margin-bottom: var(--space-xl); }
+	/* Import dialog: the two ways to restore, each a bordered choice; the chosen one has the ring's edge and the muted fill (card 3078). */
+	.import-choices { display: flex; flex-direction: column; gap: var(--space-sm); }
 	.import-choice {
 		display: flex; align-items: flex-start; gap: var(--space-sm);
 		padding: var(--space-md); background: var(--ui-background);
 		border: 1px solid var(--ui-border); border-radius: var(--ui-radius);
-		cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out);
+		cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out), background-color var(--duration-fast) var(--ease-out);
 	}
 	.import-choice:hover { border-color: var(--ui-input); }
-	.import-choice.selected { border-color: var(--ui-ring); box-shadow: 0 0 0 1px var(--ui-ring); }
+	.import-choice.selected { border-color: var(--ui-ring); box-shadow: 0 0 0 1px var(--ui-ring); background: var(--ui-muted); }
 	@media (prefers-reduced-motion: reduce) {
 		.import-choice { transition: none; }
 	}
@@ -848,9 +854,9 @@
 		border: none; background: none; cursor: pointer;
 	}
 	.import-choice > span { flex: 1; min-width: 0; }
-	.import-choice strong { font-size: 0.9rem; display: block; margin-bottom: 4px; }
+	.import-choice strong { font-size: 0.875rem; font-weight: 600; display: block; margin-bottom: 4px; color: var(--ui-foreground); }
 	.import-choice-desc { font-size: 0.78rem; color: var(--ui-muted-foreground); line-height: 1.4; display: block; }
 	.import-default-note { font-size: 0.78rem; color: var(--ui-muted-foreground); line-height: 1.4; }
 	/* The backup chosen, named in the dialog before anything is sent (card 2701) */
-	.import-file { margin-bottom: var(--space-sm); overflow-wrap: anywhere; }
+	.import-file { overflow-wrap: anywhere; }
 </style>

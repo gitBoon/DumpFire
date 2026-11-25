@@ -60,6 +60,13 @@
   held there alone, never in a toast or in storage, and cleared once sent
   (decision 12). `code` has no default, so a dialog that does not bind it is
   refused by `svelte-check` (card 2770, UX2).
+
+  `kit` (card 3078): the UI kit's look, for the dialogs and forms on the
+  kit's pages alone: `ui-input` fields, `ui-label` labels, the switch a quiet
+  link, the weight line `ui-hint` and the refusal the kit's notice. Ids,
+  `aria-*`, `autocomplete`, `inputmode` and the hook classes are the same in
+  both looks. Off (the board view's confirm and the pages not yet on the
+  kit), the field is drawn exactly as before.
 -->
 <script lang="ts">
 	import { flushSync, untrack } from 'svelte';
@@ -74,6 +81,7 @@
 		label = 'Your password',
 		disabled = false,
 		readonly = false,
+		kit = false,
 		onEnter
 	}: {
 		/** The password typed. */
@@ -87,6 +95,8 @@
 		disabled?: boolean;
 		/** Kept as typed while it is being sent; the switch is off. */
 		readonly?: boolean;
+		/** The UI kit's look (card 3078); off, the field is drawn as before. */
+		kit?: boolean;
 		/** Enter in the field, as a form's would submit. */
 		onEnter?: () => void;
 	} = $props();
@@ -221,13 +231,13 @@
 	}
 </script>
 
-<div class="current-password">
-	<label for={fieldId}>{label}</label>
+<div class="current-password" class:kit>
+	<label for={fieldId} class={kit ? 'ui-label' : undefined}>{label}</label>
 	<input
 		id={fieldId}
 		type="password"
 		autocomplete="current-password"
-		class="form-input"
+		class={kit ? 'ui-input' : 'form-input'}
 		bind:value
 		bind:this={input}
 		disabled={disabled || ended}
@@ -238,11 +248,11 @@
 	/>
 	<!-- The code, only where it is asked for (card 3064, R7). -->
 	{#if codeAsked}
-		<label for={codeId}>{recovery ? 'Recovery code' : 'Code from your authenticator app'}</label>
+		<label for={codeId} class={kit ? 'ui-label' : undefined}>{recovery ? 'Recovery code' : 'Code from your authenticator app'}</label>
 		<input
 			id={codeId}
 			type="text"
-			class="form-input"
+			class={kit ? 'ui-input' : 'form-input'}
 			inputmode={recovery ? 'text' : 'numeric'}
 			autocomplete={recovery ? 'off' : 'one-time-code'}
 			autocapitalize={recovery ? 'characters' : undefined}
@@ -263,7 +273,7 @@
 		</button>
 	{/if}
 	{#if weightLine !== null}
-		<p class="current-code-weight" id={weightId}>{weightLine}</p>
+		<p class={['current-code-weight', kit && 'ui-hint']} id={weightId}>{weightLine}</p>
 	{/if}
 	{#if refusal !== null}
 		<p class="current-password-refusal" id={refusalId} role="alert">{refusal}</p>
@@ -326,5 +336,60 @@
 		font-size: 0.8rem;
 		line-height: 1.4;
 		text-align: left;
+	}
+
+	/*
+	 * The kit's look (card 3078): every rule below is keyed on `.kit`, which
+	 * the default look never has, so none of them reaches it. Each sets again
+	 * what the rules above set, in the kit's tokens.
+	 */
+	.current-password.kit {
+		gap: 0.375rem;
+		margin-bottom: 0;
+	}
+
+	.current-password.kit label {
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--ui-foreground);
+	}
+
+	/* The code's label: a little room after the password above it. */
+	.current-password.kit input + label {
+		margin-top: 0.5rem;
+	}
+
+	.current-password.kit .code-switch {
+		border-radius: var(--ui-radius-sm);
+		color: var(--ui-muted-foreground);
+		font-size: 0.8125rem;
+		text-underline-offset: 3px;
+	}
+
+	.current-password.kit .code-switch:hover:not(:disabled) {
+		color: var(--ui-foreground);
+	}
+
+	.current-password.kit .code-switch:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
+
+	.current-password.kit .current-code-weight {
+		color: var(--ui-muted-foreground);
+		font-size: 0.8125rem;
+	}
+
+	/* The refusal as the kit's notice: a red edge, the words in the text colour. */
+	.current-password.kit .current-password-refusal {
+		margin-top: 0.25rem;
+		padding: 0 0 0 0.625rem;
+		border: 0;
+		border-left: 3px solid var(--ui-destructive);
+		border-radius: 0;
+		background: none;
+		color: var(--ui-foreground);
+		font-size: 0.8125rem;
+		line-height: 1.45;
 	}
 </style>

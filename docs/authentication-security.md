@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.180
+version: 1.181
 status: As-Built
-date: 2026-11-24
+date: 2026-11-25
 tags:
   - card-2689
   - decision-webhooks
@@ -4706,8 +4706,8 @@ token. Since card 2905 this is the one line every account made writes (see
 [Making an account is logged](#making-an-account-is-logged-card-2905)), so this path still writes
 one. Then the reset's three checks, `enrolmentLinkNotGiven()`: all holding, the answer
 is `201` with `enrolmentUrl` (`<base>/enrol/<token>`) and `message`, `Cache-Control: no-store`,
-and the Users panel shows it once in `InviteLinkDialog` under its own words ("🔑 Their set-up
-link", `kind: 'new-account'`); one failing, the account and its link stand, `enrolmentUrl` is
+and the Users panel shows it once in `InviteLinkDialog` under its own words ("Their set-up
+link", its title without emoji since card 3078, `kind: 'new-account'`); one failing, the account and its link stand, `enrolmentUrl` is
 `null`, the message says to press 🛡️ on the row for a new one, and one `WARN` line says why:
 `The enrolment link of user <id>, issued when user <id> made the account, was not given to them:
 <reason>`. With no link address (no App URL, `APP_URL` or `ORIGIN`, on a built server) every

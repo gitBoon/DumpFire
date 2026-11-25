@@ -29,7 +29,8 @@
 	import { invalidateAll } from '$app/navigation';
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
-	import { holdFocus } from '$lib/dialog-focus';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Dialog from '$lib/components/ui/Dialog.svelte';
 	import { page } from '$app/state';
 	import { codeAskedHere } from '$lib/code-asked';
 	import { asksForPassword, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
@@ -140,79 +141,83 @@
 	}
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="modal-overlay" role="dialog" aria-modal="true" aria-label={start ? 'Edit Person' : 'Add Person'}>
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-content person-dialog admin-kit-fields" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: 'input', onEscape: onClose }}>
-		<h2>{start ? 'Edit Person' : 'Add Person'}</h2>
-		<div class="dialog-fields">
-			<label class="dialog-field">
-				<span class="ui-label">Full name</span>
-				<input type="text" class="ui-input" bind:value={fullName} maxlength="200" />
-			</label>
-			{#if start && start.status !== 'active'}
-				<!-- Card 3020 (R3): a person who is not active may hold an address a backup whose seal did not verify chose; shown as it is. -->
-				<p class="dialog-hint address-on-file">Address on file: {asciiShown(start.email)}</p>
-			{/if}
-			<label class="dialog-field">
-				<span class="ui-label">Email</span>
-				<input type="email" class="ui-input" bind:value={email} maxlength="254" oninput={forgetProofIfNotAsked} />
-			</label>
-			<label class="dialog-field">
-				<span class="ui-label">Job title</span>
-				<input type="text" class="ui-input" bind:value={jobTitle} maxlength="200" />
-			</label>
-			<label class="dialog-field">
-				<span class="ui-label">Account</span>
-				<select class="ui-select" bind:value={userId} onchange={forgetProofIfNotAsked}>
-					<option value="">None</option>
-					{#each linkable as account (account.id)}
-						<option value={String(account.id)}>{account.emoji} {account.username} ({account.email})</option>
+{#snippet personActions()}
+	<Button variant="outline" onclick={onClose}>Cancel</Button>
+	<Button onclick={save} disabled={!canSave} aria-busy={saving ? 'true' : undefined}>{start ? 'Save' : 'Add Person'}</Button>
+{/snippet}
+
+<!-- Card 3078: the kit's frame, on the same focus rules. -->
+<Dialog
+	aria-label={start ? 'Edit Person' : 'Add Person'}
+	title={start ? 'Edit Person' : 'Add Person'}
+	size="md"
+	class="person-dialog"
+	footerClass="modal-actions"
+	initialFocus="input"
+	onEscape={onClose}
+	footer={personActions}
+>
+	<div class="dialog-fields">
+		<label class="dialog-field">
+			<span class="ui-label">Full name</span>
+			<input type="text" class="ui-input" bind:value={fullName} maxlength="200" />
+		</label>
+		{#if start && start.status !== 'active'}
+			<!-- Card 3020 (R3): a person who is not active may hold an address a backup whose seal did not verify chose; shown as it is. -->
+			<p class="ui-hint address-on-file">Address on file: {asciiShown(start.email)}</p>
+		{/if}
+		<label class="dialog-field">
+			<span class="ui-label">Email</span>
+			<input type="email" class="ui-input" bind:value={email} maxlength="254" oninput={forgetProofIfNotAsked} />
+		</label>
+		<label class="dialog-field">
+			<span class="ui-label">Job title</span>
+			<input type="text" class="ui-input" bind:value={jobTitle} maxlength="200" />
+		</label>
+		<label class="dialog-field">
+			<span class="ui-label">Account</span>
+			<select class="ui-select" bind:value={userId} onchange={forgetProofIfNotAsked}>
+				<option value="">None</option>
+				{#each linkable as account (account.id)}
+					<option value={String(account.id)}>{account.emoji} {account.username} ({account.email})</option>
+				{/each}
+			</select>
+		</label>
+		<!-- Plan review R1: an account's address is its holder's own, and nobody has confirmed it. -->
+		<p class="ui-hint">An account's address is set by its holder and is not confirmed: check it is this person before linking.</p>
+		<fieldset class="dialog-field">
+			<legend class="ui-label">Groups</legend>
+			{#if data.groups.length === 0}
+				<p class="ui-hint">No groups yet.</p>
+			{:else}
+				<div class="tick-list">
+					{#each data.groups as group (group.id)}
+						<label class="tick">
+							<input type="checkbox" checked={groupIds.includes(group.id)} onchange={(e) => toggleGroup(group.id, e.currentTarget.checked)} />
+							{group.name}
+						</label>
 					{/each}
-				</select>
-			</label>
-			<!-- Plan review R1: an account's address is its holder's own, and nobody has confirmed it. -->
-			<p class="dialog-hint">An account's address is set by its holder and is not confirmed: check it is this person before linking.</p>
-			<fieldset class="dialog-field">
-				<legend class="ui-label">Groups</legend>
-				{#if data.groups.length === 0}
-					<p class="dialog-hint">No groups yet.</p>
-				{:else}
-					<div class="tick-list">
-						{#each data.groups as group (group.id)}
-							<label class="tick">
-								<input type="checkbox" checked={groupIds.includes(group.id)} onchange={(e) => toggleGroup(group.id, e.currentTarget.checked)} />
-								{group.name}
-							</label>
-						{/each}
-					</div>
-				{/if}
-			</fieldset>
-			{#if asks}
-				<!-- Card 2697 (Q21, and the code review's part B, S1): an address or an account decides where decision mail and personal links go. -->
-				<p class="dialog-hint">
-					{start ? "A new address or account changes where this person's decision mail and personal links go." : "This person's address and account decide where their decision mail and personal links go."}
-					{asksForPassword(codeAskedHere())}
-				</p>
-				<CurrentPasswordField bind:value={currentPassword} bind:code={stepUpCode} {refusal} readonly={saving} onEnter={save} />
+				</div>
 			{/if}
-		</div>
-		<div class="modal-actions">
-			<button class="btn-ghost" onclick={onClose}>Cancel</button>
-			<button class="btn-primary" onclick={save} disabled={!canSave} aria-busy={saving ? 'true' : undefined}>{start ? 'Save' : 'Add Person'}</button>
-		</div>
+		</fieldset>
+		{#if asks}
+			<!-- Card 2697 (Q21, and the code review's part B, S1): an address or an account decides where decision mail and personal links go. -->
+			<p class="ui-hint">
+				{start ? "A new address or account changes where this person's decision mail and personal links go." : "This person's address and account decide where their decision mail and personal links go."}
+				{asksForPassword(codeAskedHere())}
+			</p>
+			<CurrentPasswordField bind:value={currentPassword} bind:code={stepUpCode} {refusal} readonly={saving} onEnter={save} kit />
+		{/if}
 	</div>
-</div>
+</Dialog>
 
 <style>
-	.person-dialog { max-width: 520px; width: 100%; }
-	.person-dialog h2 { font-size: 1.1rem; margin-bottom: var(--space-lg); }
-	.dialog-fields { display: flex; flex-direction: column; gap: var(--space-md); margin-bottom: var(--space-xl); }
-	/* Card 3076: the fields the kit's (ui-field.css), their names the kit's label; the frame and buttons the app's dialog. */
+	/* Card 3076: the fields the kit's (ui-field.css), their names the kit's label. Card 3078: the frame and buttons the kit's dialog. */
+	.dialog-fields { display: flex; flex-direction: column; gap: var(--space-md); }
 	.dialog-field { display: flex; flex-direction: column; gap: 0.375rem; border: none; padding: 0; margin: 0; }
-	.dialog-field legend { margin-bottom: var(--space-xs); }
-	.dialog-hint { font-size: 0.75rem; color: var(--ui-muted-foreground); margin: 0; }
-	.tick-list { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-md); max-height: 160px; overflow-y: auto; }
-	.tick { display: flex; align-items: center; gap: var(--space-xs); font-size: 0.82rem; color: var(--ui-foreground); }
-	.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-md); }
+	.dialog-field legend { margin-bottom: var(--space-xs); padding: 0; }
+	.dialog-fields .ui-hint { margin: 0; }
+	/* The groups to tick: a bordered list that scrolls within itself. */
+	.tick-list { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-md); max-height: 160px; overflow-y: auto; padding: var(--space-sm) var(--space-md); border: 1px solid var(--ui-border); border-radius: var(--ui-radius); }
+	.tick { display: flex; align-items: center; gap: var(--space-xs); font-size: 0.8125rem; color: var(--ui-foreground); }
 </style>

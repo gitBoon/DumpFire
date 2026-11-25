@@ -522,6 +522,7 @@
 
 {#if confirming === 'open'}
 	<ConfirmModal
+		kit
 		title="Open this decision?"
 		message={openMessage}
 		confirmText={warnings.length === 0 ? 'Open' : `Open with ${plural(warnings.length, 'warning')}`}
@@ -531,6 +532,7 @@
 	/>
 {:else if confirming === 'close'}
 	<ConfirmModal
+		kit
 		title="Close for input?"
 		message={`"${title}" stops taking responses now. Its decider can still extend it.`}
 		confirmText="Close"
@@ -540,6 +542,7 @@
 	/>
 {:else if confirming === 'extend'}
 	<ConfirmModal
+		kit
 		title="Extend this decision?"
 		message={`"${title}" closes at ${closes.replace('T', ' ')} UTC, and is open for input until then.${reopenWords}`}
 		confirmText="Extend"
@@ -548,9 +551,9 @@
 		onCancel={() => (confirming = null)}
 	/>
 {:else if confirming === 'withdraw'}
-	<ConfirmModal title="Withdraw this decision?" message={withdrawMessage} confirmText="Withdraw" askPassword={actions.withdrawAsks} onConfirm={withdraw} onCancel={() => (confirming = null)} />
+	<ConfirmModal kit title="Withdraw this decision?" message={withdrawMessage} confirmText="Withdraw" askPassword={actions.withdrawAsks} onConfirm={withdraw} onCancel={() => (confirming = null)} />
 {:else if confirming === 'delete'}
-	<ConfirmModal title="Delete this decision?" message={deleteMessage} confirmText="Delete" askPassword={actions.deleteAsks} onConfirm={remove} onCancel={() => (confirming = null)} />
+	<ConfirmModal kit title="Delete this decision?" message={deleteMessage} confirmText="Delete" askPassword={actions.deleteAsks} onConfirm={remove} onCancel={() => (confirming = null)} />
 {/if}
 
 <style>

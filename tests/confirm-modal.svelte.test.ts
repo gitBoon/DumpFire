@@ -29,6 +29,11 @@
  * than one authenticator, the field says before sending what one wrong answer
  * costs. The page's data is stood in for (`$app/state`), empty but where a
  * case gives it `authenticators`.
+ *
+ * Card 3078 (C1 to C3 of `docs/planning/card-3078-dialogs-on-kit.md`): the
+ * kit's look (`kit`), which the pages on the kit alone turn on, drawn in the
+ * kit's frame with its hooks kept; the default look, the board view's, drawn
+ * with nothing of the kit; and the focus cases above run in both looks.
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -74,8 +79,16 @@ let drawn: { component: ReturnType<typeof mount>; target: HTMLElement } | null =
 let opener: HTMLButtonElement;
 let onConfirm: Mock<() => void>;
 let onCancel: Mock<() => void>;
+/** The look `open` draws: the default, unless a case run in both looks says (card 3078, C3). */
+let look = false;
+/** The two looks, for the focus cases run in each (C3). */
+const LOOKS = [
+	{ name: 'default', kit: false },
+	{ name: 'kit', kit: true }
+];
 
 beforeEach(() => {
+	look = false;
 	pageStub.data = {};
 	navigation.invalidateAll.mockClear();
 	onConfirm = vi.fn<() => void>();
@@ -96,7 +109,7 @@ afterEach(() => {
 function open(extra: Record<string, unknown> = {}) {
 	const target = document.createElement('div');
 	document.body.appendChild(target);
-	const props = { title: 'Delete Team', message: 'The team will be deleted.', onConfirm, onCancel, ...extra };
+	const props = { title: 'Delete Team', message: 'The team will be deleted.', onConfirm, onCancel, ...(look ? { kit: true } : {}), ...extra };
 	drawn = { component: mount(ConfirmModal, { target, props: props as never }), target };
 	flushSync();
 	return target;
@@ -126,7 +139,11 @@ function tab(shiftKey = false): boolean {
 /** One macrotask turn: what the dialog schedules as it closes has run. */
 const macrotask = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-describe('the confirm dialog takes the focus as it opens (card 2353)', () => {
+describe.each(LOOKS)('the confirm dialog takes the focus as it opens (card 2353), in the $name look', ({ kit }) => {
+	beforeEach(() => {
+		look = kit;
+	});
+
 	it('gives Cancel the focus, and ties its message to the dialog', () => {
 		const target = open();
 		expect(document.activeElement).toBe(cancelButton(target));
@@ -144,7 +161,11 @@ describe('the confirm dialog takes the focus as it opens (card 2353)', () => {
 	});
 });
 
-describe('the confirm dialog keeps the focus on its two buttons (card 2353)', () => {
+describe.each(LOOKS)('the confirm dialog keeps the focus on its two buttons (card 2353), in the $name look', ({ kit }) => {
+	beforeEach(() => {
+		look = kit;
+	});
+
 	it('Tab on the confirm button goes to Cancel, and Shift+Tab on Cancel to the confirm button, each taking the default; Tab on Cancel is the browser’s own', () => {
 		const target = open();
 		confirmButton(target).focus();
@@ -175,7 +196,11 @@ describe('the confirm dialog keeps the focus on its two buttons (card 2353)', ()
 	});
 });
 
-describe('the confirm dialog gives the focus back as it closes (card 2353)', () => {
+describe.each(LOOKS)('the confirm dialog gives the focus back as it closes (card 2353), in the $name look', ({ kit }) => {
+	beforeEach(() => {
+		look = kit;
+	});
+
 	it('to the button that opened it, after one macrotask, when the focus was on the dialog', async () => {
 		const target = open();
 		confirmButton(target).focus();
@@ -441,7 +466,8 @@ describe('the confirm dialog asks for a sign-in code beside the password (card 2
 });
 
 describe('the confirm dialog waits for its answer and keeps a refusal in it (card 2701, case 27, D6)', () => {
-	it('turns both buttons off while onConfirm runs, so one press sends one request, and ignores Escape meanwhile', async () => {
+	it.each(LOOKS)('turns both buttons off while onConfirm runs, so one press sends one request, and ignores Escape meanwhile, in the $name look', async ({ kit }) => {
+		look = kit;
 		const asked = heldConfirm();
 		const target = open({ askPassword: true, onConfirm: asked.fn });
 		type(passwordField(target)!, 'my-own-password');
@@ -800,5 +826,55 @@ describe("the words of a confirmation follow the layout's codeAsked, as the fiel
 		expect(asked.handed).toEqual([NO_PROOF, { currentPassword: 'my-own-password', currentCode: '' }]);
 		asked.answer();
 		await macrotask();
+	});
+});
+
+// Card 3078 (C1, C2): the kit's look, which only the pages on the kit turn on, and the default look, the board view's.
+describe('the confirm dialog’s two looks (card 3078)', () => {
+	/** Each element drawn that has a class of the kit's. */
+	const kitClassed = (target: HTMLElement) => [...target.querySelectorAll('*')].filter((el) => [...el.classList].some((name) => name.startsWith('ui-')));
+
+	it('C1. in the kit’s look, .confirm-modal is the modal box named by the title and described by .confirm-message; .confirm-actions holds Cancel then Confirm as kit buttons, Confirm red only where confirmDanger; no app overlay; the password a kit field', () => {
+		let target = open({ kit: true, askPassword: true });
+		const box = target.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(box.matches('[role="dialog"][aria-modal="true"][aria-label="Delete Team"]')).toBe(true);
+		expect(box.classList.contains('ui-dialog')).toBe(true);
+		expect(box.getAttribute('aria-describedby')).toBe(target.querySelector('.confirm-message')!.id);
+		expect(target.querySelector('.modal-overlay')).toBeNull();
+		expect(target.querySelector('.confirm-icon')).toBeNull();
+
+		const buttons = [...target.querySelectorAll<HTMLButtonElement>('.confirm-actions button')];
+		expect(buttons.map((b) => b.textContent!.trim())).toEqual(['Cancel', 'Delete']);
+		expect(buttons.every((b) => b.classList.contains('ui-btn'))).toBe(true);
+		expect(buttons[0].classList.contains('ui-btn-outline')).toBe(true);
+		expect(buttons[1].classList.contains('ui-btn-destructive')).toBe(true);
+		expect(buttons[1].classList.contains('btn-confirm-danger')).toBe(true);
+
+		const field = passwordField(target)!;
+		expect(field.classList.contains('ui-input')).toBe(true);
+		expect(field.classList.contains('form-input')).toBe(false);
+		expect(codeFieldIn(target)!.classList.contains('ui-input')).toBe(true);
+		close();
+
+		target = open({ kit: true, confirmDanger: false, confirmText: 'Turn on' });
+		const confirm = confirmButton(target);
+		expect(confirm.textContent!.trim()).toBe('Turn on');
+		expect(confirm.classList.contains('ui-btn-default')).toBe(true);
+		expect(confirm.classList.contains('ui-btn-destructive')).toBe(false);
+		expect(confirm.classList.contains('btn-confirm-danger')).toBe(false);
+	});
+
+	it('C2. in the default look (the board view’s), nothing drawn has a class of the kit’s, and .modal-overlay is the [role="dialog"] element, as before', () => {
+		for (const extra of [{}, { askPassword: true }, { message: '', confirmDanger: false }]) {
+			const said = JSON.stringify(extra);
+			const target = open(extra);
+			expect(kitClassed(target).map((el) => el.className), said).toEqual([]);
+			const dialog = target.querySelector('[role="dialog"]')!;
+			expect(dialog.classList.contains('modal-overlay'), said).toBe(true);
+			expect(dialog.querySelector('.confirm-modal'), said).not.toBeNull();
+			close();
+		}
+		// The check finds what it is for: the kit's look has them.
+		expect(kitClassed(open({ kit: true })).length).toBeGreaterThan(0);
 	});
 });

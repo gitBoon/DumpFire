@@ -25,6 +25,7 @@
 	import Badge from '$lib/components/ui/Badge.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import Dialog from '$lib/components/ui/Dialog.svelte';
 	import { failureMessage } from '$lib/api';
 	import { shownMoment } from '$lib/decision-words';
 
@@ -35,6 +36,8 @@
 	let newTitle = $state('');
 	let error = $state('');
 	let sending = $state(false);
+	/** New decision, which the focus goes back to as the dialog closes (card 3078, F1). */
+	let newButton = $state<HTMLButtonElement | HTMLAnchorElement | null>(null);
 
 	function openNew() {
 		newTitle = '';
@@ -70,16 +73,10 @@
 		}
 	}
 
-	function keydown(e: KeyboardEvent) {
-		if (creating && e.key === 'Escape') creating = false;
-	}
-
 	// Listened again only when the page is read for another board: a re-read of this one gives the same id.
 	const listenedBoard = $derived(data.board.id);
 	$effect(() => connectLiveRefresh(() => invalidateAll(), undefined, { events: ['decision'], boardId: listenedBoard }));
 </script>
-
-<svelte:window onkeydown={keydown} />
 
 <svelte:head>
 	<title>Decisions on {data.board.name} — DumpFire</title>
@@ -94,7 +91,7 @@
 {#snippet headerActions()}
 	<Button variant="outline" size="sm" href="/decisions?board={data.board.id}" data-action="all">All decisions</Button>
 	{#if data.canCreate}
-		<Button size="sm" highlight onclick={openNew}>New decision</Button>
+		<Button size="sm" highlight onclick={openNew} bind:ref={newButton}>New decision</Button>
 	{/if}
 {/snippet}
 
@@ -139,28 +136,35 @@
 </PageShell>
 
 {#if creating}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" role="presentation" onclick={() => (creating = false)}>
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="new-dialog" role="dialog" aria-modal="true" aria-label="New decision" tabindex="-1" onclick={(e) => e.stopPropagation()}>
-			<h2>New decision</h2>
-			<form
-				onsubmit={(e) => {
-					e.preventDefault();
-					createDraft();
-				}}
-			>
-				<label class="ui-label" for="new-decision-title">Title</label>
-				<!-- svelte-ignore a11y_autofocus -->
-				<input id="new-decision-title" class="ui-input" maxlength="200" autofocus bind:value={newTitle} />
-				{#if error}<p class="dialog-error" role="alert">{error}</p>{/if}
-				<div class="dialog-actions">
-					<Button variant="ghost" size="sm" onclick={() => (creating = false)}>Cancel</Button>
-					<Button type="submit" size="sm" aria-busy={sending ? 'true' : undefined}>Make draft</Button>
-				</div>
-			</form>
-		</div>
-	</div>
+	<!-- Card 3078 (F1): the kit's frame holds the focus inside, Escape and a press on the backdrop close it, and the
+	     focus goes back to New decision. The buttons sit outside the form, so Make draft names it (`form`). -->
+	{#snippet newActions()}
+		<Button variant="outline" onclick={() => (creating = false)}>Cancel</Button>
+		<Button type="submit" form="new-decision-form" aria-busy={sending ? 'true' : undefined}>Make draft</Button>
+	{/snippet}
+	<Dialog
+		aria-label="New decision"
+		title="New decision"
+		size="sm"
+		initialFocus="#new-decision-title"
+		onEscape={() => (creating = false)}
+		onBackdrop={() => (creating = false)}
+		returnTo={() => newButton}
+		footer={newActions}
+	>
+		<form
+			id="new-decision-form"
+			class="new-form"
+			onsubmit={(e) => {
+				e.preventDefault();
+				createDraft();
+			}}
+		>
+			<label class="ui-label" for="new-decision-title">Title</label>
+			<input id="new-decision-title" class="ui-input" maxlength="200" bind:value={newTitle} />
+			{#if error}<p class="dialog-error" role="alert">{error}</p>{/if}
+		</form>
+	</Dialog>
 {/if}
 
 <Toast />
@@ -203,34 +207,8 @@
 		color: var(--ui-muted-foreground);
 	}
 
-	/* The New decision dialog, over the page. */
-	.modal-overlay {
-		position: fixed;
-		inset: 0;
-		z-index: 300;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: var(--space-md);
-		background: color-mix(in srgb, var(--ui-background) 75%, transparent);
-	}
-	.new-dialog {
-		width: 100%;
-		max-width: 28rem;
-		padding: 1.5rem;
-		border: 1px solid var(--ui-border);
-		border-radius: var(--ui-radius-lg);
-		background: var(--ui-card);
-		color: var(--ui-foreground);
-		box-shadow: var(--ui-shadow);
-	}
-	.new-dialog h2 {
-		margin: 0 0 var(--space-md);
-		font-size: 1.125rem;
-		font-weight: 600;
-		letter-spacing: -0.01em;
-	}
-	.new-dialog form {
+	/* The New decision dialog's form, in the kit's frame (card 3078). */
+	.new-form {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-sm);
@@ -241,12 +219,6 @@
 		border-left: 3px solid var(--ui-destructive);
 		font-size: 0.8125rem;
 		color: var(--ui-foreground);
-	}
-	.dialog-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: var(--space-sm);
-		margin-top: var(--space-sm);
 	}
 
 	@media (pointer: coarse) {
