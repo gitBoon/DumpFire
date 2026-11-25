@@ -1,7 +1,7 @@
 ---
 title: "Release Checklist: 106ea45 to 4ce25de"
 category: "Deployment"
-version: 1.3
+version: 1.4
 status: Living
 date: 2026-11-25
 tags:
@@ -433,9 +433,31 @@ docker network create --internal dumpfire_edge
 docker network connect dumpfire_edge dumpfire
 ```
 
-In `/home/itsupport/nginx/docker-compose.yml`, the `nginx-proxy` service gains:
+Keep the current nginx compose file, then replace it:
+
+```bash
+cd /home/itsupport/nginx
+cp -p docker-compose.yml docker-compose.yml.bak-$(date +%F)
+```
+
+`/home/itsupport/nginx/docker-compose.yml`, the whole file (the live file of 2026-11-25 with two
+additions: the `dumpfire_edge` network and log rotation; everything else unchanged):
 
 ```yaml
+version: '3.8'
+
+services:
+  nginx-proxy:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./default.conf:/etc/nginx/conf.d/default.conf:ro
+      # Mount the entire SSL directory so all subfolders are included automatically
+      - ./ssl:/etc/nginx/ssl:ro
     networks:
       - proxy_net
       - dumpfire_edge
@@ -444,7 +466,6 @@ In `/home/itsupport/nginx/docker-compose.yml`, the `nginx-proxy` service gains:
       options:
         max-size: "10m"
         max-file: "5"
-# and at the top level:
 networks:
   proxy_net:
     external: true
@@ -453,11 +474,20 @@ networks:
 ```
 
 ```bash
-cd /home/itsupport/nginx && docker compose up -d --force-recreate
+docker compose config --quiet && echo 'compose file ok'
+docker compose up -d --force-recreate
 docker exec nginx-proxy nginx -t
+docker inspect nginx-proxy -f '{{json .HostConfig.LogConfig}}'                    # names max-size
+docker network inspect dumpfire_edge -f '{{range .Containers}}{{.Name}} {{end}}'  # dumpfire nginx-proxy
 ```
 
-Then sign in and open a board.
+Then open DumpFire, Yeastar Ledger and Merview2 in the browser: each loads.
+
+Why: the recreate puts nginx on DumpFire's private network and starts a fresh, rotated log, which drops
+the old log holding unmasked invite links. It restarts nginx, so all three sites blink for a few
+seconds. (A `docker compose` warning that `version` is obsolete is harmless.)
+
+Undo: `cp -p docker-compose.yml.bak-YYYY-MM-DD docker-compose.yml && docker compose up -d --force-recreate`.
 
 ### C2. Re-checks (L2)
 
