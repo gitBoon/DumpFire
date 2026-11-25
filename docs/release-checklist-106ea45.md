@@ -379,7 +379,7 @@ Stop if: `EXITED`, any other `[ERROR]` or `[CRITICAL]`, the Scrubbed line missin
 counts r1
 ```
 
-Expect `migrations 84 … 0084_compatibility_release.sql`; `sessions 4` and `sessions kept 4` (nobody
+Expect `migrations` 24 higher than B3.3, last `0084_compatibility_release.sql`; `sessions 4` and `sessions kept 4` (nobody
 signed out); `requester links 11` (P-new-3's count: every link kept); `api keys 2` with
 `no_deadline 2`; `two-step switch []` (dormant, no deadline); `fk violations 0`. Stop if any differs.
 
