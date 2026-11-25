@@ -35,6 +35,7 @@
  * (`src/routes/teams/+page.svelte`, not an admin panel, mounted here beside
  * the panel that does the same) with its role when adding.
  */
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -3461,7 +3462,8 @@ describe('the admin page, mounted with its panels', () => {
 		answer = (what) => (what === 'POST /api/users/2/invite' ? Response.json({ mailSent: true, message: 'Invite sent to bob@example.com' }) : undefined);
 		const target = draw(AdminPage, { data: asSuperadmin });
 		await settle();
-		expect(headings(target)).toContain('📧 Email / SMTP');
+		// Card 3076: the kit's card titles, the emoji gone.
+		expect(headings(target)).toContain('Email / SMTP');
 		// The App URL panel's read and the mail panel's.
 		expect(mailReads()).toBe(2);
 
@@ -3712,15 +3714,16 @@ describe('the admin page, mounted with its panels', () => {
 		const target = draw(AdminPage, { data: asAdministrator });
 		await settle();
 
-		expect(headings(target)).toContain('📧 Email / SMTP');
-		expect(headings(target)).toContain('🌐 Application Settings');
-		expect(headings(target)).toContain('☁️ Scheduled Backups');
-		expect(headings(target)).not.toContain('💾 Backup & Restore');
+		// Card 3076: the kit's card titles, the emoji gone.
+		expect(headings(target)).toContain('Email / SMTP');
+		expect(headings(target)).toContain('Application Settings');
+		expect(headings(target)).toContain('Scheduled Backups');
+		expect(headings(target)).not.toContain('Backup & Restore');
 		expect(target.textContent).not.toContain('Export Backup');
 		expect(target.textContent).not.toContain('Reset Everything');
-		expect(headings(target)).toContain("🔒 The superadmin's");
+		expect(headings(target)).toContain("The superadmin's");
 		expect(target.textContent).toContain('Exporting, importing and resetting the database belong to the superadmin, chief, and are on this page for that account only.');
-		expect(headings(target)).toContain('👥 User Management');
+		expect(headings(target)).toContain('User Management');
 		// The App URL panel's read and the mail panel's; the backup panel's.
 		expect(mailReads()).toBe(2);
 		expect(asked('GET /api/admin/backup')).toHaveLength(1);
@@ -4028,8 +4031,9 @@ describe('the Two-step sign-in panel, mounted (card 3064, S4)', () => {
 		// Required: the state and its moment, and no button, counts or lists for anyone.
 		const required = { ...dormant, required: true, requiredAt: '2026-12-01 09:00:00' };
 		const forRequired = draw(TwoStepSwitchPanel, { twoStepSwitch: required, confirm: vi.fn() });
+		// Card 3076: the title without its emoji.
 		expect(textOf(forRequired)).toBe(
-			'🛡️ Two-step sign-in Two-step sign-in is required on this server, since 2026-12-01 09:00 UTC. Every account signs in with its password and a code from an authenticator app. It cannot be turned off here.'
+			'Two-step sign-in Two-step sign-in is required on this server, since 2026-12-01 09:00 UTC. Every account signs in with its password and a code from an authenticator app. It cannot be turned off here.'
 		);
 		expect(requireButton(forRequired)).toBeUndefined();
 	});
@@ -4139,5 +4143,192 @@ describe("the panels say what a confirmation asks by the layout's codeAsked (car
 			drawn!.target.remove();
 			drawn = null;
 		}
+	});
+});
+
+// ─── Card 3076: the admin pages on the kit's shell ───────────────────────────
+
+describe('the admin pages on the shell (card 3076)', () => {
+	const asSuperadmin = { ...pageData, importOutsideDefault: 'keep' };
+	const ada = { id: 3, username: 'ada', email: 'ada@example.com', emoji: '🛠️', role: 'admin' };
+	const asAdministrator = {
+		...asSuperadmin,
+		currentUser: ada,
+		users: [...asSuperadmin.users, { ...ada, apiKeys: null, webhooks: null, reportSchedules: null }],
+		twoStepSwitch: { ...asSuperadmin.twoStepSwitch, keysWithoutFactorListed: null, mayRequire: false }
+	};
+	const HELD = {
+		setting: 'mail',
+		kind: 'mail',
+		name: null,
+		place: 'p'.repeat(64),
+		heldAt: '2026-11-19 09:00:00',
+		setBy: 3,
+		setByName: 'ada',
+		where: { host: 'smtp.example', port: 587, user: '', allowInsecure: false }
+	};
+	/** The list of what is held, as the server answers it. */
+	const heldAnswer = (held: unknown[], mayRelease: boolean) => (what: string) =>
+		what === 'GET /api/admin/settings/held' ? Response.json({ held, tombstones: 0, mayRelease }) : undefined;
+	/** The element id names within within (an earlier case may have left an element with the same id in the document). */
+	const byId = (within: ParentNode, id: string) => within.querySelector<HTMLElement>(`[id="${id}"]`);
+	/** The section list's links, in order. */
+	const links = (target: HTMLElement) => [...target.querySelectorAll<HTMLAnchorElement>('aside[aria-label="Admin sections"] nav a')];
+	const current = (target: HTMLElement) => links(target).filter((link) => link.hasAttribute('aria-current'));
+	const linkNamed = (target: HTMLElement, text: string) => links(target).find((link) => link.textContent === text)!;
+
+	/** A stand-in for the browser's IntersectionObserver, which jsdom has none of: it keeps what it watches and reports what a case says. */
+	class StandInObserver {
+		static last: StandInObserver | null = null;
+		watched: Element[] = [];
+		callback: IntersectionObserverCallback;
+		options?: IntersectionObserverInit;
+		constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+			this.callback = callback;
+			this.options = options;
+			StandInObserver.last = this;
+		}
+		observe(element: Element) {
+			this.watched.push(element);
+		}
+		unobserve(element: Element) {
+			this.watched = this.watched.filter((watched) => watched !== element);
+		}
+		disconnect() {
+			this.watched = [];
+		}
+		/** Reports each section, by id, in view or not, as the browser does. */
+		report(changes: [id: string, inView: boolean][]) {
+			const entries = changes.map(([id, isIntersecting]) => ({ target: this.watched.find((element) => element.id === id)!, isIntersecting }) as unknown as IntersectionObserverEntry);
+			this.callback(entries, this as unknown as IntersectionObserver);
+			flushSync();
+		}
+	}
+
+	afterEach(() => {
+		StandInObserver.last = null;
+		// A pressed section link moves the address; the next case starts with none.
+		window.history.replaceState(null, '', location.pathname);
+	});
+
+	it('N1. lists the superadmin’s sections in page order in the rail, each naming a card on the page, none marked without an observer', async () => {
+		expect('IntersectionObserver' in window).toBe(false);
+		answer = heldAnswer([], true);
+		const target = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+
+		expect(links(target).map((link) => link.textContent)).toEqual([
+			'Database Overview',
+			'Two-step sign-in',
+			'User Management',
+			'Team Management',
+			'People Directory',
+			'ISO 27001:2022 Checklist',
+			'Board Management',
+			'Backup & Restore',
+			'Scheduled Backups',
+			'Application Settings',
+			'Email / SMTP',
+			'Danger Zone'
+		]);
+		const main = target.querySelector('main')!;
+		const sections = links(target).map((link) => byId(main, link.getAttribute('href')!.slice(1)));
+		expect(sections.map((section) => section?.tagName)).toEqual(links(target).map(() => 'SECTION'));
+		// In the page's order.
+		for (let i = 1; i < sections.length; i++) {
+			expect(sections[i - 1]!.compareDocumentPosition(sections[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		}
+		expect(byId(main, 'backup')!.textContent).toContain('Export Backup');
+		expect(current(target)).toEqual([]);
+	});
+
+	it('N2. adds the held list second for an administrator while a setting is held, and gives the placeholder card the backup section’s address', async () => {
+		answer = heldAnswer([HELD], false);
+		const target = draw(AdminPage, { data: asAdministrator });
+		await settle();
+
+		const held = links(target)[1];
+		expect(held.textContent).toBe('Settings held for review');
+		expect(byId(target, held.getAttribute('href')!.slice(1))!.classList.contains('settings-held')).toBe(true);
+		const backup = byId(target.querySelector('main')!, 'backup')!;
+		expect(backup.querySelector('h2')!.textContent).toBe("The superadmin's");
+		expect(backup.textContent).not.toContain('Export Backup');
+	});
+
+	it('N3. marks the first section in view, in page order, as the observer reports them', async () => {
+		vi.stubGlobal('IntersectionObserver', StandInObserver);
+		answer = heldAnswer([], true);
+		const target = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+		const observer = StandInObserver.last!;
+		expect(observer.options?.rootMargin).toBe('-72px 0px -55% 0px');
+		expect(observer.watched.map((element) => element.id)).toContain('users');
+
+		observer.report([['users', true]]);
+		expect(current(target).map((link) => link.textContent)).toEqual(['User Management']);
+		expect(current(target)[0].getAttribute('aria-current')).toBe('location');
+		observer.report([['teams', true]]);
+		expect(current(target).map((link) => link.textContent)).toEqual(['User Management']);
+		observer.report([['users', false]]);
+		expect(current(target).map((link) => link.textContent)).toEqual(['Team Management']);
+	});
+
+	it('N4. marks a pressed section link at once, before any observer report', async () => {
+		answer = heldAnswer([], true);
+		const target = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+
+		linkNamed(target, 'Danger Zone').click();
+		flushSync();
+		expect(current(target).map((link) => link.textContent)).toEqual(['Danger Zone']);
+	});
+
+	describe('N5. the held list brought into view for an address that names it (F2)', () => {
+		let scrolled: Element[] = [];
+		const had = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
+		beforeEach(() => {
+			scrolled = [];
+			Element.prototype.scrollIntoView = function (this: Element) {
+				scrolled.push(this);
+			};
+		});
+		afterEach(() => {
+			if (had) Object.defineProperty(Element.prototype, 'scrollIntoView', had);
+			else delete (Element.prototype as Partial<Element>).scrollIntoView;
+		});
+
+		it('scrolls to the list once, once it is read, where the address is #settings-held', async () => {
+			window.history.replaceState(null, '', '#settings-held');
+			answer = heldAnswer([HELD], true);
+			const target = draw(SettingsHeldPanel, { confirm: vi.fn() });
+			await settle();
+			expect(scrolled).toEqual([byId(target, 'settings-held')]);
+			// Read again (after a Keep or a Remove): not again.
+			await (drawn!.component as unknown as { load: () => Promise<void> }).load();
+			await settle();
+			expect(scrolled).toHaveLength(1);
+		});
+
+		it('does not scroll where the address does not name it', async () => {
+			answer = heldAnswer([HELD], true);
+			const target = draw(SettingsHeldPanel, { confirm: vi.fn() });
+			await settle();
+			expect(byId(target, 'settings-held')).not.toBeNull();
+			expect(scrolled).toEqual([]);
+		});
+	});
+
+	it('N6. styles only .admin- classes in admin.css, which stays loaded once the page is left', () => {
+		/** Each rule's selectors, comments taken out; at-rules left out. */
+		const selectorsOf = (css: string) =>
+			[...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{};]+)\{/g)]
+				.map((found) => found[1].trim())
+				.filter((selector) => !selector.startsWith('@'))
+				.flatMap((list) => list.split(',').map((selector) => selector.trim()));
+		const selectors = selectorsOf(readFileSync(join(process.cwd(), 'src/lib/components/admin/admin.css'), 'utf8'));
+		expect(selectors.length).toBeGreaterThan(10);
+		expect(selectors.filter((selector) => !/^\.admin-[a-z0-9-]+/.test(selector))).toEqual([]);
+		// The check finds what it is for: a bare element, and one inside an at-rule.
+		expect(selectorsOf('.admin-note, p { x: y; } @media (x) { .admin-row { x: y; } h2 { x: y; } }')).toEqual(['.admin-note', 'p', '.admin-row', 'h2']);
 	});
 });

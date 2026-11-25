@@ -1,0 +1,265 @@
+/*
+ * The admin pages' shared look (card 3076): /admin, /admin/people and
+ * /admin/iso-27001 import it, and each of their panels names these classes
+ * where it uses them, in place of the page's old `.admin-page :global(...)`
+ * rules that reached into every panel.
+ *
+ * A stylesheet a page imports stays loaded once the page is left, so every
+ * selector here starts with an `.admin-` class: nothing on another page, the
+ * board view among them, is touched (tests/admin-panels.test.ts, N6). Every
+ * colour is a kit token (--ui-*), so each of the 17 themes draws it.
+ */
+
+/* Each section of the admin page is a card with an address (/admin#users): its title clears the fixed header. */
+.admin-section {
+	scroll-margin-top: calc(64px + var(--space-lg));
+}
+
+/* The danger zone's card: a faint red edge (three classes, to outweigh the card's own scoped edge). */
+.admin-danger-zone.admin-section.ui-card {
+	border-color: color-mix(in srgb, var(--ui-destructive) 35%, var(--ui-border));
+}
+
+/* The header's crumbs on the people and ISO pages: "Admin" (a link) and the page's name. */
+/* 4px of room inside the cut keeps the link's focus ring whole, as the shell's crumbs do. */
+.admin-crumb {
+	display: flex;
+	align-items: center;
+	gap: var(--space-xs);
+	min-width: 0;
+	padding: 4px;
+	margin: -4px;
+	overflow: hidden;
+	white-space: nowrap;
+}
+.admin-crumb a {
+	border-radius: var(--ui-radius-sm);
+	color: var(--ui-muted-foreground);
+	text-decoration: none;
+}
+.admin-crumb a:hover {
+	color: var(--ui-foreground);
+}
+.admin-crumb a:focus-visible {
+	outline: 2px solid var(--ui-ring);
+	outline-offset: 2px;
+}
+.admin-crumb span:last-child {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-weight: 500;
+	color: var(--ui-foreground);
+}
+
+/* A group of fields inside a card stops at a readable width; lists and tables use the card's. */
+.admin-fields-max {
+	max-width: 48rem;
+}
+
+/* A form opened inside a card (add a user, a team, a destination; the schedule): a quiet box. */
+.admin-subform {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-sm);
+	max-width: 48rem;
+	margin-bottom: var(--space-md);
+	padding: var(--space-md);
+	border: 1px solid var(--ui-border);
+	border-radius: var(--ui-radius);
+	background: color-mix(in srgb, var(--ui-muted) 45%, transparent);
+}
+
+/* Fields side by side, wrapping on a narrow screen. */
+.admin-field-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-sm);
+}
+.admin-field-row > .ui-input,
+.admin-field-row > .ui-select {
+	flex: 1;
+	width: auto;
+	min-width: 120px;
+}
+
+/* A field and its label, one under the other. */
+.admin-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.375rem;
+	min-width: 0;
+}
+
+/* A quiet line: a hint, a note under a field, a list that is loading. */
+.admin-note {
+	margin: 0;
+	font-size: 0.8125rem;
+	line-height: 1.45;
+	color: var(--ui-muted-foreground);
+}
+
+/* A warning said in words: weight, not colour, so it reads in every theme. */
+.admin-warning {
+	font-weight: 600;
+	color: var(--ui-foreground);
+}
+
+/* Rows inside a card, divided by a line: boards, users, the danger zone's actions. */
+.admin-rows {
+	display: flex;
+	flex-direction: column;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.admin-rows > * + * {
+	border-top: 1px solid var(--ui-border);
+}
+
+/*
+ * A notice in the page: the kit's alert look on the element and role it
+ * already has (a test reads it by its own class). The tone is in the fill
+ * and the edge; the words stay in the text colour.
+ */
+.admin-notice {
+	margin: 0;
+	padding: 0.625rem 0.875rem;
+	border: 1px solid var(--ui-border);
+	border-radius: var(--ui-radius-lg);
+	background: var(--ui-card);
+	color: var(--ui-foreground);
+	font-size: 0.8125rem;
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+.admin-notice-success {
+	border-color: color-mix(in srgb, var(--ui-success) 35%, transparent);
+	background: color-mix(in srgb, var(--ui-success) 6%, var(--ui-background));
+}
+.admin-notice-info {
+	border-color: color-mix(in srgb, var(--ui-info) 35%, transparent);
+	background: color-mix(in srgb, var(--ui-info) 6%, var(--ui-background));
+}
+.admin-notice-warning {
+	border-color: color-mix(in srgb, var(--ui-warning) 40%, transparent);
+	background: color-mix(in srgb, var(--ui-warning) 7%, var(--ui-background));
+}
+.admin-notice-destructive {
+	border-color: color-mix(in srgb, var(--ui-destructive) 40%, transparent);
+	background: color-mix(in srgb, var(--ui-destructive) 6%, var(--ui-background));
+}
+.admin-notice a {
+	border-radius: var(--ui-radius-sm);
+	color: var(--ui-foreground);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+.admin-notice a:focus-visible {
+	outline: 2px solid var(--ui-ring);
+	outline-offset: 2px;
+}
+
+/*
+ * The shared password and code field (CurrentPasswordField, its inputs still
+ * the app's `form-input`) inside an admin form or dialog: drawn as the kit's
+ * field beside the kit's own, here alone, the component itself unchanged
+ * (card 3078 gives it the kit's look everywhere). `.admin-kit-fields` marks a
+ * dialog that holds one and is not an `.admin-dialog`.
+ */
+.admin-subform .current-password label,
+.admin-dialog .current-password label,
+.admin-kit-fields .current-password label {
+	font-size: 0.875rem;
+	font-weight: 500;
+	color: var(--ui-foreground);
+}
+.admin-subform .current-password input,
+.admin-dialog .current-password input,
+.admin-kit-fields .current-password input {
+	display: block;
+	width: 100%;
+	min-width: 0;
+	height: 2.5rem;
+	padding: 0 0.75rem;
+	border: 1px solid var(--ui-input);
+	border-radius: var(--ui-radius);
+	background: var(--ui-background);
+	color: var(--ui-foreground);
+	font-family: var(--font-family);
+	font-size: 0.875rem;
+	line-height: 1.5;
+	box-shadow: var(--ui-shadow-sm);
+	transition:
+		border-color var(--duration-fast) var(--ease-out),
+		box-shadow var(--duration-fast) var(--ease-out);
+}
+.admin-subform .current-password input::placeholder,
+.admin-dialog .current-password input::placeholder,
+.admin-kit-fields .current-password input::placeholder {
+	color: var(--ui-muted-foreground);
+}
+.admin-subform .current-password input:hover,
+.admin-dialog .current-password input:hover,
+.admin-kit-fields .current-password input:hover {
+	border-color: color-mix(in srgb, var(--ui-foreground) 75%, transparent);
+}
+/* app.css's glow on a focused input is not drawn: the ring is the kit's. */
+.admin-subform .current-password input:focus,
+.admin-dialog .current-password input:focus,
+.admin-kit-fields .current-password input:focus {
+	border-color: var(--ui-input);
+	box-shadow: var(--ui-shadow-sm);
+}
+.admin-subform .current-password input:focus-visible,
+.admin-dialog .current-password input:focus-visible,
+.admin-kit-fields .current-password input:focus-visible {
+	outline: 2px solid var(--ui-ring);
+	outline-offset: 2px;
+}
+.admin-subform .current-password input[aria-invalid='true'],
+.admin-dialog .current-password input[aria-invalid='true'],
+.admin-kit-fields .current-password input[aria-invalid='true'] {
+	border-color: var(--ui-destructive);
+}
+.admin-subform .current-password input:disabled,
+.admin-dialog .current-password input:disabled,
+.admin-kit-fields .current-password input:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+@media (pointer: coarse) {
+	.admin-subform .current-password input,
+	.admin-dialog .current-password input,
+	.admin-kit-fields .current-password input {
+		height: 2.75rem;
+		font-size: 16px;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.admin-subform .current-password input,
+	.admin-dialog .current-password input,
+	.admin-kit-fields .current-password input {
+		transition: none;
+	}
+}
+
+/* The admin pages' own dialogs (the Import, Connect and invite link dialogs, the reset's notice), in the app's frame. */
+.admin-dialog {
+	max-width: 420px;
+}
+.admin-dialog h2 {
+	margin-bottom: var(--space-sm);
+	font-size: 1.1rem;
+}
+.admin-dialog p {
+	margin-bottom: var(--space-xl);
+	font-size: 0.85rem;
+	line-height: 1.5;
+	color: var(--ui-muted-foreground);
+}
+.admin-dialog .modal-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--space-md);
+}

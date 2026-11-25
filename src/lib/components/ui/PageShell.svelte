@@ -15,8 +15,10 @@
   With a `rail`, the page and the rail sit side by side from 1024px up, the
   rail --ui-rail wide and held below the header as the page scrolls; below
   1024px they stack, the rail after the page or, with `railPosition="start"`,
-  before it. In the document the page always comes first, so a screen reader
-  reads it first.
+  before it. The document follows what is drawn (card 3076): a rail at the end
+  comes after the page, and one at the start (a list of the page's sections,
+  its filters) before it, so the keyboard and a screen reader meet it first,
+  as navigation is met.
 
   `bare` (card 3075): the header holds the fire and "DumpFire" as plain
   text, not a link, and nothing else: no crumbs, title, actions or Theme
@@ -102,7 +104,10 @@
 	</header>
 
 	<main class={['ui-shell-main', `ui-shell-${width}`, rail && 'ui-shell-grid', rail && railPosition === 'start' && 'ui-shell-rail-start']}>
-		{#if rail}
+		{#if rail && railPosition === 'start'}
+			<aside class="ui-shell-rail" aria-label={railLabel}>{@render rail()}</aside>
+			<div class="ui-shell-content">{@render children()}</div>
+		{:else if rail}
 			<div class="ui-shell-content">{@render children()}</div>
 			<aside class="ui-shell-rail" aria-label={railLabel}>{@render rail()}</aside>
 		{:else}
@@ -220,7 +225,7 @@
 		max-width: 48rem;
 	}
 
-	/* With a rail: stacked under 1024px, the rail after the page unless it is put first. */
+	/* With a rail: stacked under 1024px in the document's order, the rail after the page unless it is put first. */
 	.ui-shell-grid {
 		display: flex;
 		flex-direction: column;
@@ -228,9 +233,6 @@
 	}
 	.ui-shell-content {
 		min-width: 0;
-	}
-	.ui-shell-rail-start .ui-shell-rail {
-		order: -1;
 	}
 
 	@media (min-width: 1024px) {

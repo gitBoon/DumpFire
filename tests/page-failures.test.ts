@@ -978,6 +978,8 @@ const SUPERADMIN_COMPONENTS = ['BackupRestorePanel'].map((name) => `src/lib/comp
 /** And those every administrator is shown (card 2281, slice C1b; the App URL, scheduled backups and mail panels since card 2395). */
 const ADMINISTRATOR_COMPONENTS = [
 	'AdminOverview',
+	// Card 3076: the list of the page's sections, in its rail.
+	'AdminSectionNav',
 	'AppUrlPanel',
 	'BoardManagementPanel',
 	'DangerZonePanel',
@@ -1123,7 +1125,8 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	};
 
 	it.each([
-		'<h2>💾 Backup & Restore</h2>',
+		// Card 3076: a kit card's title, the emoji gone.
+		'>Backup & Restore</CardTitle>',
 		'<strong>Reset Everything</strong>',
 		// Card 2701: Export opens a confirm that asks for the password, and its Confirm exports.
 		'onclick={askExport}',
@@ -1135,17 +1138,18 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	});
 
 	it.each([
-		'<h2>📊 Database Overview</h2>',
-		'<h2>📋 Board Management</h2>',
-		'<h2>👥 User Management</h2>',
-		'<h2>🏢 Team Management</h2>',
+		// Card 3076: kit card titles, the emoji gone.
+		'>Database Overview</CardTitle>',
+		'>Board Management</CardTitle>',
+		'>User Management</CardTitle>',
+		'>Team Management</CardTitle>',
 		'<strong>Purge Archived Cards</strong>',
 		'<strong>Vacuum Database</strong>',
 		'<strong>Reset All XP</strong>',
 		// Card 2395: the superadmin's alone until then.
-		'<h2>🌐 Application Settings</h2>',
-		'<h2>☁️ Scheduled Backups</h2>',
-		'<h2>📧 Email / SMTP</h2>',
+		'>Application Settings</CardTitle>',
+		'>Scheduled Backups</CardTitle>',
+		'>Email / SMTP</CardTitle>',
 		// Card 2701: Run Now opens a confirm that asks for the password, and its Confirm runs it.
 		'onclick={askRunNow}'
 	])('still shows %s to an administrator', (text) => {
@@ -1844,7 +1848,8 @@ describe('the admin page’s password dialog, src/lib/components/admin/ResetPass
 	it('reads the counts again when the dialog opens, and shows none until it has', () => {
 		// The one way the dialog opens: 🔑 on a row of the users panel, which draws the dialog.
 		const users = readFileSync(join(ROOT, 'src/lib/components/admin/UsersPanel.svelte'), 'utf8');
-		expect(users).toContain('onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>');
+		// Card 3076: the kit's Button.
+		expect(users).toContain('onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</Button>');
 		expect(users).toContain('<ResetPasswordDialog bind:this={resetDialog} {data} />');
 		expect(
 			adminSources()
@@ -6565,7 +6570,8 @@ describe('the user badge, the update bar, the avatar and the subtask window’s 
 			['src/routes/todo/+page.svelte', /\.todo-page \{([^}]*)\}/, 'padding: 0 var(--space-xl) var(--user-badge-space);'],
 			['src/routes/plan/[id]/+page.svelte', /\.plan-body \{([^}]*)\}/, 'padding: var(--space-xl) var(--space-xl) var(--user-badge-space);'],
 			['src/routes/archived/+page.svelte', /\.archived-page \{([^}]*)\}/, 'padding: 0 var(--space-xl) var(--user-badge-space);'],
-			['src/routes/admin/+page.svelte', /\.admin-content \{([^}]*)\}/, 'padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);'],
+			// Card 3076: the admin page is in the kit's shell, whose main has the same padding.
+			['src/lib/components/ui/PageShell.svelte', /\.ui-shell-main \{([^}]*)\}/, 'padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);'],
 			['src/routes/reports/+page.svelte', /\.reports-content \{([^}]*)\}/, 'padding: var(--space-xl) var(--space-xl) var(--user-badge-space);'],
 			['src/routes/inbox/+page.svelte', /\.inbox-content \{([^}]*)\}/, 'padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);'],
 			['src/routes/+page.svelte', /\.dashboard \{([^}]*)\}/, 'padding: var(--space-xl) var(--space-xl) var(--user-badge-space);'],
@@ -6576,6 +6582,8 @@ describe('the user badge, the update bar, the avatar and the subtask window’s 
 		for (const [file, rule, padding] of rules) {
 			expect(rule.exec(readFileSync(join(ROOT, file), 'utf8'))?.[1], file).toContain(padding);
 		}
+		// Card 3076: the admin page's padding is the shell's, so it draws the shell.
+		expect(readFileSync(join(ROOT, 'src/routes/admin/+page.svelte'), 'utf8')).toContain('<PageShell width="full"');
 		// The two pages whose narrow-window rule sets the padding again keep the space there too.
 		for (const file of ['src/routes/plan/[id]/+page.svelte', 'src/routes/reports/+page.svelte']) {
 			expect(readFileSync(join(ROOT, file), 'utf8'), file).toContain('{ padding: var(--space-md) var(--space-md) var(--user-badge-space); }');
@@ -6655,7 +6663,8 @@ describe('the admin page’s user rows, src/lib/components/admin/UsersPanel.svel
 			// Asks first where the account's settings would go with its role (card 2397's review).
 			'onclick={() => askChangeUserRole(u.id, u.username)}',
 			// Asks first, for the caller's password (card 2701).
-			'onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)}',
+			// Card 3076: the kit's Button, whose onclick is handed a MouseEvent: its currentTarget is the button, said to the type.
+			'onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget as HTMLElement)}',
 			// Reads what the account holds, then asks (card 2397's second review).
 			'onclick={() => askDeleteUser(u.id, u.username)}'
 		]) {
@@ -6666,7 +6675,7 @@ describe('the admin page’s user rows, src/lib/components/admin/UsersPanel.svel
 	});
 
 	it('shows 🔑 where the rule lets the caller use it, their own row included, and 🔒 everywhere else', () => {
-		const key = around('onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>');
+		const key = around('onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</Button>');
 		expect(key.some((block) => block.condition === RULE && !block.inElse)).toBe(true);
 		expect(key.some((block) => block.condition === NOT_OWN)).toBe(false);
 
@@ -7017,16 +7026,19 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		// Card 2773: aria-disabled for an account that uses two-step sign-in, beside 🛡️, gated the same way.
 		expect(markup.replace(/\r\n/g, '\n')).toContain(
 			[
-				'<button',
-				'\tclass="btn-ghost btn-sm invite-resend"',
-				'\tonclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)}',
+				// Card 3076: the kit's Button, the same handler, gates, title, hook and contents.
+				'<Button',
+				'\tvariant="ghost"',
+				'\tsize="sm"',
+				'\tclass="invite-resend"',
+				'\tonclick={(e) => askResendInvite(u.id, u.username, e.currentTarget as HTMLElement)}',
 				'\tdisabled={inviteInFlight !== null || inviteLink !== null}',
 				"\taria-disabled={u.twoStep === true ? 'true' : undefined}",
 				"\ttitle={u.twoStep === true ? INVITE_REFUSED : 'Resend invite email'}",
-				">{inviteInFlight === u.id && twoStepInFlight === null ? '…' : '📧'}</button>",
-				'<button class="btn-ghost btn-sm" onclick={(e) => askResetTwoStep(u.id, u.username, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Reset two-step sign-in">{twoStepInFlight === u.id ? \'…\' : \'🛡️\'}</button>'
-				// One level deeper since card 2671: offered only on an account that is not disabled.
-			].join('\n\t\t\t\t\t\t\t\t')
+				">{inviteInFlight === u.id && twoStepInFlight === null ? '…' : '📧'}</Button>",
+				'<Button variant="ghost" size="sm" onclick={(e) => askResetTwoStep(u.id, u.username, e.currentTarget as HTMLElement)} disabled={inviteInFlight !== null || inviteLink !== null} title="Reset two-step sign-in">{twoStepInFlight === u.id ? \'…\' : \'🛡️\'}</Button>'
+				// One level deeper since card 2671: offered only on an account that is not disabled; and since card 3076, in the card's content.
+			].join('\n\t\t\t\t\t\t\t\t\t')
 		);
 		expect(functionNamed(tree, 'askResendInvite').body!.statements[0].getText()).toBe('if (inviteInFlight !== null || inviteLink !== null) return;');
 		expect(functionNamed(tree, 'askResetTwoStep').body!.statements[0].getText()).toBe('if (inviteInFlight !== null || inviteLink !== null) return;');
@@ -7055,7 +7067,8 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		// Through the dialog's hold on the focus since card 2365, which keeps Tab in it too and, since its review, gives the focus back to
 		// the control the users panel names (mounted in tests/admin-panels.test.ts).
 		expect(dialog).toContain("use:holdFocus={{ first: '.invite-link-row button', returnTo: backTo(inviteLink) }}");
-		expect(dialog).toContain('<button class="btn-ghost btn-sm" onclick={copyInviteLink}>');
+		// Card 3076: its size is the dialog's own rule (.invite-link-row button); the page's btn-sm rule is gone.
+		expect(dialog).toContain('<button class="btn-ghost" onclick={copyInviteLink}>');
 	});
 
 	it('says "Invite sent!" only for an answer that says mailSent: true, and an answer that says neither is not taken as sent (review fixes, item 4)', () => {
@@ -7082,7 +7095,7 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 
 	it('shows decision 11’s block in the mail panel, under Send Test, to every administrator (card 2395: the superadmin alone before)', () => {
 		const smtpMarkup = smtpSource.slice(smtpSource.indexOf('</script>'));
-		const panel = smtpMarkup.slice(smtpMarkup.indexOf('<h2>📧 Email / SMTP</h2>'));
+		const panel = smtpMarkup.slice(smtpMarkup.indexOf('>Email / SMTP</CardTitle>'));
 		const block = panel.slice(panel.indexOf('{#if mailStatus}'));
 		expect(panel.indexOf('{#if mailStatus}')).toBeGreaterThan(panel.indexOf('onclick={testSmtp}'));
 		for (const words of [
@@ -7623,7 +7636,7 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 		expect(box.slice(0, branches[0])).toContain('{check.message}');
 		expect(unconfirmed).toContain('<code>{check.presented}</code>');
 		// Card 2701: through the page's confirm, which asks for the caller's password.
-		expect(unconfirmed).toMatch(/<button class="btn-primary btn-xs" disabled=\{backupSaving\} onclick=\{\(\) => askConfirmHostKey\(dest\.name, check\.presented\)\}>/);
+		expect(unconfirmed).toMatch(/<Button size="sm" disabled=\{backupSaving\} onclick=\{\(\) => askConfirmHostKey\(dest\.name, check\.presented\)\}>/);
 		expect(mismatch).toContain('<code>{check.presented}</code>');
 		expect(mismatch).toContain('<code>{check.confirmed}</code>');
 		expect(typeGone).toContain('<code>{check.confirmed}</code>');
@@ -7749,7 +7762,7 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 	});
 
 	/** The Test button's markup, and the expression that keeps it disabled while its Test waits. */
-	const testButton = /<button class="btn-ghost btn-xs" onclick=\{\(\) => testDestination\(dest\)\} disabled=\{([^}]*)\}>\s*\{([^}]*)\} Test/.exec(row);
+	const testButton = /<Button variant="outline" size="sm" onclick=\{\(\) => testDestination\(dest\)\} disabled=\{([^}]*)\}>\s*\{([^}]*)\} Test/.exec(row);
 	/** The condition the host key box under a destination is shown on. */
 	const hostKeyBox = /\{#if (dest\.type === 'sftp' && [^}]*hostKeyChecks[^}]*)\}/.exec(row);
 

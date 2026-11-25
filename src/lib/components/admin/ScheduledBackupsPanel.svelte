@@ -42,6 +42,13 @@
 	import BackupHistory from './BackupHistory.svelte';
 	import DestinationForm from './DestinationForm.svelte';
 	import GDriveConnectModal from './GDriveConnectModal.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 
 	/**
 	 * The page's confirm dialog, which asks before a destination is added,
@@ -715,240 +722,291 @@
 </script>
 
 <!-- Scheduled Backups -->
-<section class="admin-card glass fade-in-up" style="animation-delay: 120ms">
-	<div class="section-header">
-		<h2>☁️ Scheduled Backups</h2>
-		<div style="display: flex; gap: var(--space-sm); align-items: center">
+<Card as="section" id="scheduled-backups" class="admin-section" aria-labelledby="scheduled-backups-title">
+	<CardHeader>
+		{#snippet actions()}
 			{#if backupDestinations.length > 0}
-				<button class="btn-primary btn-sm" onclick={askRunNow} disabled={backupRunning}>
+				<Button variant="outline" size="sm" onclick={askRunNow} disabled={backupRunning}>
 					{backupRunning ? '⏳ Running...' : '▶ Run Now'}
-				</button>
+				</Button>
 			{/if}
 			<!-- Closes an edit form left open: the two share one set of fields (card 2305). Off while a save is on its way, which empties the form that sent it once answered (its review). -->
-			<button class="btn-primary btn-sm" disabled={backupSaving} onclick={() => { editingDest = null; resetDestForm(); newDestType = 'sftp'; showAddDestination = true; }}>+ Add Destination</button>
-		</div>
-	</div>
-
-	{#if backupLoading}
-		<p class="empty-msg">Loading backup config...</p>
-	{:else}
-		<!-- Schedule Settings -->
-		<div class="sched-config">
-			<div class="sched-row">
-				<label class="sched-label">Schedule</label>
-				<select bind:value={backupSchedule} class="form-input" style="flex: none; width: 160px" onchange={changeSchedule}>
-					<!-- Switching the schedule off is the superadmin's (card 2398): for an administrator, marked and put back when chosen. -->
-					{#if !isSuperadmin && storedSchedule !== 'disabled'}
-						<option value="disabled" aria-disabled="true">Disabled (superadmin only)</option>
-					{:else}
-						<option value="disabled">Disabled</option>
-					{/if}
-					<option value="hourly">Every Hour</option>
-					<option value="every6h">Every 6 Hours</option>
-					<option value="every12h">Every 12 Hours</option>
-					<option value="daily">Daily</option>
-					<option value="weekly">Weekly</option>
-				</select>
-
-				{#if backupSchedule === 'weekly'}
-					<label class="sched-label" style="margin-left: var(--space-md)">on</label>
-					<select bind:value={backupScheduleDay} class="form-input" style="flex: none; width: 120px" onchange={() => saveBackupConfig()}>
-						<option value={0}>Sunday</option>
-						<option value={1}>Monday</option>
-						<option value={2}>Tuesday</option>
-						<option value={3}>Wednesday</option>
-						<option value={4}>Thursday</option>
-						<option value={5}>Friday</option>
-						<option value={6}>Saturday</option>
-					</select>
-				{/if}
-
-				{#if backupSchedule === 'daily' || backupSchedule === 'weekly'}
-					<label class="sched-label" style="margin-left: var(--space-md)">at</label>
-					<input type="time" bind:value={backupScheduleTime} class="form-input" style="flex: none; width: 110px" onchange={() => saveBackupConfig()} />
-				{/if}
-
-				<label class="sched-label" style="margin-left: var(--space-lg)">Keep Last</label>
-				<!-- An administrator may raise it, and not lower it (card 2398): the least is the number stored. -->
-				<input type="number" min={isSuperadmin ? 1 : storedRetention} max="100" bind:value={backupRetention} class="form-input" style="flex: none; width: 60px" onchange={changeRetention} />
-				<span style="font-size: 0.75rem; color: var(--text-tertiary)">backups</span>
-			</div>
-
-			{#if !isSuperadmin}
-				<p class="sched-note">🔒 {SUPERADMIN_RULE}</p>
-			{/if}
-			<!-- Card 2405: two lists, so that Run Now cannot push the scheduled copies out. -->
-			<p class="sched-keep-note">{KEEP_LAST_RULE}</p>
-
-			<div class="sched-row">
-				<!-- Switching the failure mail off and changing who receives it are the superadmin's (card 2408): for an administrator, marked, and a change put back with the rule. Ticking it on is anyone's. -->
-				<label style="display: flex; align-items: center; gap: var(--space-xs); font-size: 0.78rem; color: var(--text-secondary); cursor: pointer">
-					<input type="checkbox" bind:checked={backupNotifyOnFailure} aria-disabled={!isSuperadmin && storedNotifyOnFailure ? 'true' : undefined} title={!isSuperadmin && storedNotifyOnFailure ? 'Switching the failure mail off needs the superadmin' : undefined} onchange={changeNotifyOnFailure} /> Email on failure
-				</label>
-				{#if backupNotifyOnFailure}
-					<input type="email" placeholder="Notification email" bind:value={backupNotifyEmail} class="form-input" style="flex: 1; max-width: 250px" readonly={!isSuperadmin} aria-disabled={isSuperadmin ? undefined : 'true'} title={isSuperadmin ? undefined : 'Changing who receives the failure mail needs the superadmin'} onbeforeinput={refuseAddressEdit} onkeydown={refuseAddressEdit} onpaste={refuseAddressEdit} onchange={changeNotifyEmail} />
-				{/if}
-			</div>
-		</div>
-
-		<!-- Destinations -->
-		{#if backupDestinations.length === 0 && !showAddDestination}
-			<p class="empty-msg">No backup destinations configured. Add one to get started.</p>
-		{/if}
-
-		{#each backupDestinations as dest (dest.name)}
-			<div class="dest-card">
-				<div class="dest-card-header">
-					<span class="dest-type-badge dest-type-{dest.type}">{destTypeLabels[dest.type] || dest.type}</span>
-					<span class="dest-name">{dest.name}</span>
-					<div class="dest-actions">
-						{#if dest.type === 'gdrive' && dest.authMethod === 'oauth'}
-							<!-- By the scope Google granted, recorded at Connect: none recorded is a connection made before card 2188, with all of Drive. No button to connect it over again: narrowing starts in the Google account (the line under the row). -->
-							{#if dest.refreshToken}
-								{#if driveScopeIsNarrow(dest.grantedScope)}
-									<span style="font-size: 0.68rem; color: var(--accent-emerald)">✅ Connected</span>
-								{:else}
-									<span style="font-size: 0.68rem; color: var(--accent-amber)">⚠️ Connected · all of Drive</span>
-								{/if}
-							{:else}
-								<button class="btn-ghost btn-xs" style="color: var(--accent-indigo)" onclick={() => gdriveConnect?.connectGDriveOAuth(dest.name)}>🔗 Connect</button>
-							{/if}
-						{/if}
-						<!-- An SFTP destination with no confirmed host key is not backed up to until one is confirmed (card 2250 review, S1). -->
-						{#if dest.type === 'sftp' && !dest.hostKey}
-							<span style="font-size: 0.68rem; color: var(--accent-amber)">⚠️ Host key not confirmed — press Test</span>
-						{/if}
-						<button class="btn-ghost btn-xs" onclick={() => testDestination(dest)} disabled={byName(testsInFlight, dest.name) !== undefined}>
-							{byName(testsInFlight, dest.name) !== undefined ? '⏳' : '🧪'} Test
-						</button>
-						<!-- Off while a save is on its way, as + Add Destination is (the card 2305 review). -->
-						<button class="btn-ghost btn-xs" disabled={backupSaving} onclick={() => startEditDestination(dest)}>✏️ Edit</button>
-						<!-- Off while the destinations are being saved: a second removal sent before the first was answered was put back wrongly when the first was refused. The superadmin's alone (card 2398): aria-disabled for an administrator, saying why when pressed. -->
-						<button class="btn-ghost btn-xs danger" disabled={backupSaving} aria-disabled={isSuperadmin ? undefined : 'true'} title={isSuperadmin ? undefined : 'Removing a destination needs the superadmin'} onclick={() => (isSuperadmin ? confirm('Remove Destination', `Remove "${dest.name}" from backup destinations? ${asksForPassword(codeAskedHere())}`, async (proof: StepUpProof) => removeDestination(dest.name, proof), { askPassword: true }) : sayRule())}>🗑️</button>
-					</div>
-				</div>
-				<div class="dest-card-detail">
-					{#if dest.type === 'sftp'}
-						<span>{dest.host}:{dest.port} → {dest.remotePath}</span>
-					{:else if dest.type === 's3'}
-						<span>{dest.bucket}{dest.prefix ? `/${dest.prefix}` : ''} ({dest.region})</span>
-					{:else if dest.type === 'gdrive'}
-						<span>{dest.authMethod === 'oauth' ? '🔑 OAuth' : '🏢 Service Account'} · Folder: {dest.folderId}</span>
-					{:else if dest.type === 'onedrive'}
-						<!-- Whose OneDrive (card 2941): one saved before has none, and is not backed up to until it is given. -->
-						<span>{dest.folderPath} · Drive: {dest.drive || 'not set'}</span>
-					{/if}
-				</div>
-				{#if dest.type === 'gdrive' && dest.authMethod === 'oauth' && dest.refreshToken && !driveScopeIsNarrow(dest.grantedScope)}
-					<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
-						Connected with access to all of this Google account's Drive. To narrow it: first remove DumpFire's access in the Google account (Google Account, Security, Your connections to third-party apps and services), then have the superadmin remove this destination, add it again with the Folder ID left empty, and connect it. See the admin guide, Configuring Backups.
-					</p>
-				{/if}
-				<!-- What the last Test said of an SFTP server's host key (card 2250): the server's words, then Confirm for a key not confirmed yet, both keys for one that did not match, and no Confirm where the confirmed type is no longer offered (there is no key to confirm). -->
-				{#if dest.type === 'sftp' && byName(hostKeyChecks, dest.name)}
-					{@const check = byName(hostKeyChecks, dest.name)!}
-					<div class="host-key-box">
-						<p>{check.message}</p>
-						{#if check.presented && !check.confirmed}
-							<p>Presented: <code>{check.presented}</code></p>
-							<p>Confirm saves this key on the destination and runs the Test again, which then uses its password or private key with this server and no other.</p>
-							<div class="form-row" style="justify-content: flex-end">
-								<button class="btn-primary btn-xs" disabled={backupSaving} onclick={() => askConfirmHostKey(dest.name, check.presented)}>✅ Confirm this key</button>
-							</div>
-						{:else if check.presented}
-							<p>Presented: <code>{check.presented}</code></p>
-							<p>Confirmed: <code>{check.confirmed}</code></p>
-							<p>To accept the new key, check it on the server, then Edit the destination, paste it in the Host key box and type the password or private key again.</p>
+			<Button size="sm" disabled={backupSaving} onclick={() => { editingDest = null; resetDestForm(); newDestType = 'sftp'; showAddDestination = true; }}>+ Add Destination</Button>
+		{/snippet}
+		<CardTitle level={2} id="scheduled-backups-title">Scheduled Backups</CardTitle>
+	</CardHeader>
+	<CardContent>
+		{#if backupLoading}
+			<p class="admin-note">Loading backup config...</p>
+		{:else}
+			<!-- Schedule Settings -->
+			<div class="sched-config admin-subform">
+				<div class="sched-row">
+					<label class="sched-label">Schedule</label>
+					<select bind:value={backupSchedule} class="ui-select" style="flex: none; width: 160px" onchange={changeSchedule}>
+						<!-- Switching the schedule off is the superadmin's (card 2398): for an administrator, marked and put back when chosen. -->
+						{#if !isSuperadmin && storedSchedule !== 'disabled'}
+							<option value="disabled" aria-disabled="true">Disabled (superadmin only)</option>
 						{:else}
-							<p>Confirmed: <code>{check.confirmed}</code></p>
+							<option value="disabled">Disabled</option>
+						{/if}
+						<option value="hourly">Every Hour</option>
+						<option value="every6h">Every 6 Hours</option>
+						<option value="every12h">Every 12 Hours</option>
+						<option value="daily">Daily</option>
+						<option value="weekly">Weekly</option>
+					</select>
+
+					{#if backupSchedule === 'weekly'}
+						<label class="sched-label" style="margin-left: var(--space-md)">on</label>
+						<select bind:value={backupScheduleDay} class="ui-select" style="flex: none; width: 120px" onchange={() => saveBackupConfig()}>
+							<option value={0}>Sunday</option>
+							<option value={1}>Monday</option>
+							<option value={2}>Tuesday</option>
+							<option value={3}>Wednesday</option>
+							<option value={4}>Thursday</option>
+							<option value={5}>Friday</option>
+							<option value={6}>Saturday</option>
+						</select>
+					{/if}
+
+					{#if backupSchedule === 'daily' || backupSchedule === 'weekly'}
+						<label class="sched-label" style="margin-left: var(--space-md)">at</label>
+						<input type="time" bind:value={backupScheduleTime} class="ui-input" style="flex: none; width: 110px" onchange={() => saveBackupConfig()} />
+					{/if}
+
+					<label class="sched-label" style="margin-left: var(--space-lg)">Keep Last</label>
+					<!-- An administrator may raise it, and not lower it (card 2398): the least is the number stored. -->
+					<input type="number" min={isSuperadmin ? 1 : storedRetention} max="100" bind:value={backupRetention} class="ui-input" style="flex: none; width: 72px" onchange={changeRetention} />
+					<span class="sched-unit">backups</span>
+				</div>
+
+				{#if !isSuperadmin}
+					<p class="sched-note">🔒 {SUPERADMIN_RULE}</p>
+				{/if}
+				<!-- Card 2405: two lists, so that Run Now cannot push the scheduled copies out. -->
+				<p class="sched-keep-note">{KEEP_LAST_RULE}</p>
+
+				<div class="sched-row">
+					<!-- Switching the failure mail off and changing who receives it are the superadmin's (card 2408): for an administrator, marked, and a change put back with the rule. Ticking it on is anyone's. -->
+					<label class="sched-check">
+						<input type="checkbox" bind:checked={backupNotifyOnFailure} aria-disabled={!isSuperadmin && storedNotifyOnFailure ? 'true' : undefined} title={!isSuperadmin && storedNotifyOnFailure ? 'Switching the failure mail off needs the superadmin' : undefined} onchange={changeNotifyOnFailure} /> Email on failure
+					</label>
+					{#if backupNotifyOnFailure}
+						<input type="email" placeholder="Notification email" bind:value={backupNotifyEmail} class="ui-input" style="flex: 1; max-width: 250px" readonly={!isSuperadmin} aria-disabled={isSuperadmin ? undefined : 'true'} title={isSuperadmin ? undefined : 'Changing who receives the failure mail needs the superadmin'} onbeforeinput={refuseAddressEdit} onkeydown={refuseAddressEdit} onpaste={refuseAddressEdit} onchange={changeNotifyEmail} />
+					{/if}
+				</div>
+			</div>
+
+			<!-- Destinations -->
+			{#if backupDestinations.length === 0 && !showAddDestination}
+				<EmptyState level={3} title="No backup destinations configured.">Add one to get started.</EmptyState>
+			{/if}
+
+			{#each backupDestinations as dest (dest.name)}
+				<div class="dest-card">
+					<div class="dest-card-header">
+						<Badge variant="outline" class="dest-type-badge dest-type-{dest.type}">{destTypeLabels[dest.type] || dest.type}</Badge>
+						<span class="dest-name">{dest.name}</span>
+						<div class="dest-actions">
+							{#if dest.type === 'gdrive' && dest.authMethod === 'oauth'}
+								<!-- By the scope Google granted, recorded at Connect: none recorded is a connection made before card 2188, with all of Drive. No button to connect it over again: narrowing starts in the Google account (the line under the row). -->
+								{#if dest.refreshToken}
+									{#if driveScopeIsNarrow(dest.grantedScope)}
+										<span class="dest-state">✅ Connected</span>
+									{:else}
+										<span class="dest-state">⚠️ Connected · all of Drive</span>
+									{/if}
+								{:else}
+									<Button variant="ghost" size="sm" onclick={() => gdriveConnect?.connectGDriveOAuth(dest.name)}>🔗 Connect</Button>
+								{/if}
+							{/if}
+							<!-- An SFTP destination with no confirmed host key is not backed up to until one is confirmed (card 2250 review, S1). -->
+							{#if dest.type === 'sftp' && !dest.hostKey}
+								<span class="dest-state">⚠️ Host key not confirmed — press Test</span>
+							{/if}
+							<Button variant="outline" size="sm" onclick={() => testDestination(dest)} disabled={byName(testsInFlight, dest.name) !== undefined}>
+								{byName(testsInFlight, dest.name) !== undefined ? '⏳' : '🧪'} Test
+							</Button>
+							<!-- Off while a save is on its way, as + Add Destination is (the card 2305 review). -->
+							<Button variant="outline" size="sm" disabled={backupSaving} onclick={() => startEditDestination(dest)}>✏️ Edit</Button>
+							<!-- Off while the destinations are being saved: a second removal sent before the first was answered was put back wrongly when the first was refused. The superadmin's alone (card 2398): aria-disabled for an administrator, saying why when pressed. -->
+							<Button variant="ghost" size="sm" class="danger" disabled={backupSaving} aria-disabled={isSuperadmin ? undefined : 'true'} title={isSuperadmin ? undefined : 'Removing a destination needs the superadmin'} onclick={() => (isSuperadmin ? confirm('Remove Destination', `Remove "${dest.name}" from backup destinations? ${asksForPassword(codeAskedHere())}`, async (proof: StepUpProof) => removeDestination(dest.name, proof), { askPassword: true }) : sayRule())}>🗑️</Button>
+						</div>
+					</div>
+					<div class="dest-card-detail">
+						{#if dest.type === 'sftp'}
+							<span>{dest.host}:{dest.port} → {dest.remotePath}</span>
+						{:else if dest.type === 's3'}
+							<span>{dest.bucket}{dest.prefix ? `/${dest.prefix}` : ''} ({dest.region})</span>
+						{:else if dest.type === 'gdrive'}
+							<span>{dest.authMethod === 'oauth' ? '🔑 OAuth' : '🏢 Service Account'} · Folder: {dest.folderId}</span>
+						{:else if dest.type === 'onedrive'}
+							<!-- Whose OneDrive (card 2941): one saved before has none, and is not backed up to until it is given. -->
+							<span>{dest.folderPath} · Drive: {dest.drive || 'not set'}</span>
 						{/if}
 					</div>
-				{/if}
+					{#if dest.type === 'gdrive' && dest.authMethod === 'oauth' && dest.refreshToken && !driveScopeIsNarrow(dest.grantedScope)}
+						<p class="dest-note">
+							Connected with access to all of this Google account's Drive. To narrow it: first remove DumpFire's access in the Google account (Google Account, Security, Your connections to third-party apps and services), then have the superadmin remove this destination, add it again with the Folder ID left empty, and connect it. See the admin guide, Configuring Backups.
+						</p>
+					{/if}
+					<!-- What the last Test said of an SFTP server's host key (card 2250): the server's words, then Confirm for a key not confirmed yet, both keys for one that did not match, and no Confirm where the confirmed type is no longer offered (there is no key to confirm). -->
+					{#if dest.type === 'sftp' && byName(hostKeyChecks, dest.name)}
+						{@const check = byName(hostKeyChecks, dest.name)!}
+						<div class="host-key-box admin-notice admin-notice-warning">
+							<p>{check.message}</p>
+							{#if check.presented && !check.confirmed}
+								<p>Presented: <code>{check.presented}</code></p>
+								<p>Confirm saves this key on the destination and runs the Test again, which then uses its password or private key with this server and no other.</p>
+								<div class="host-key-actions">
+									<Button size="sm" disabled={backupSaving} onclick={() => askConfirmHostKey(dest.name, check.presented)}>✅ Confirm this key</Button>
+								</div>
+							{:else if check.presented}
+								<p>Presented: <code>{check.presented}</code></p>
+								<p>Confirmed: <code>{check.confirmed}</code></p>
+								<p>To accept the new key, check it on the server, then Edit the destination, paste it in the Host key box and type the password or private key again.</p>
+							{:else}
+								<p>Confirmed: <code>{check.confirmed}</code></p>
+							{/if}
+						</div>
+					{/if}
 
-				<!-- Inline edit form -->
-				{#if editingDest === dest.name}
-					<DestinationForm
-						mode="edit"
-						bind:destName bind:destHost bind:destPort bind:destUsername bind:destPassword bind:destPrivateKey bind:destHostKey bind:destRemotePath
-						bind:destRegion bind:destBucket bind:destAccessKey bind:destSecretKey bind:destPrefix bind:destEndpoint
-						bind:destServiceAccountJson bind:destFolderId bind:destGdriveAuthMethod bind:destGdriveClientId bind:destGdriveClientSecret {destGdriveRefreshToken}
-						bind:destTenantId bind:destClientId bind:destClientSecret bind:destFolderPath bind:destDrive bind:newDestType
-						{isSuperadmin}
-						onSave={askUpdateDestination}
-						onCancel={() => { editingDest = null; resetDestForm(); }}
-					/>
-				{/if}
-			</div>
-		{/each}
+					<!-- Inline edit form -->
+					{#if editingDest === dest.name}
+						<DestinationForm
+							mode="edit"
+							bind:destName bind:destHost bind:destPort bind:destUsername bind:destPassword bind:destPrivateKey bind:destHostKey bind:destRemotePath
+							bind:destRegion bind:destBucket bind:destAccessKey bind:destSecretKey bind:destPrefix bind:destEndpoint
+							bind:destServiceAccountJson bind:destFolderId bind:destGdriveAuthMethod bind:destGdriveClientId bind:destGdriveClientSecret {destGdriveRefreshToken}
+							bind:destTenantId bind:destClientId bind:destClientSecret bind:destFolderPath bind:destDrive bind:newDestType
+							{isSuperadmin}
+							onSave={askUpdateDestination}
+							onCancel={() => { editingDest = null; resetDestForm(); }}
+						/>
+					{/if}
+				</div>
+			{/each}
 
-		<!-- Add Destination Form -->
-		{#if showAddDestination}
-			<DestinationForm
-				mode="add"
-				bind:destName bind:destHost bind:destPort bind:destUsername bind:destPassword bind:destPrivateKey bind:destHostKey bind:destRemotePath
-				bind:destRegion bind:destBucket bind:destAccessKey bind:destSecretKey bind:destPrefix bind:destEndpoint
-				bind:destServiceAccountJson bind:destFolderId bind:destGdriveAuthMethod bind:destGdriveClientId bind:destGdriveClientSecret {destGdriveRefreshToken}
-				bind:destTenantId bind:destClientId bind:destClientSecret bind:destFolderPath bind:destDrive bind:newDestType
-				onSave={askAddDestination}
-				onCancel={() => { showAddDestination = false; resetDestForm(); }}
-			/>
+			<!-- Add Destination Form -->
+			{#if showAddDestination}
+				<DestinationForm
+					mode="add"
+					bind:destName bind:destHost bind:destPort bind:destUsername bind:destPassword bind:destPrivateKey bind:destHostKey bind:destRemotePath
+					bind:destRegion bind:destBucket bind:destAccessKey bind:destSecretKey bind:destPrefix bind:destEndpoint
+					bind:destServiceAccountJson bind:destFolderId bind:destGdriveAuthMethod bind:destGdriveClientId bind:destGdriveClientSecret {destGdriveRefreshToken}
+					bind:destTenantId bind:destClientId bind:destClientSecret bind:destFolderPath bind:destDrive bind:newDestType
+					onSave={askAddDestination}
+					onCancel={() => { showAddDestination = false; resetDestForm(); }}
+				/>
+			{/if}
+
+			<!-- Backup History -->
+			<BackupHistory {backupHistory} bind:showAllHistory />
 		{/if}
+	</CardContent>
+</Card>
 
-		<!-- Backup History -->
-		<BackupHistory {backupHistory} bind:showAllHistory />
-	{/if}
-</section>
-
-<!-- Google Drive's Connect box: after the section, not in it, so that it is fixed to the window and not to a card that moves on hover. -->
+<!-- Google Drive's Connect box: after the card, not in it, so that it is fixed to the window. -->
 <GDriveConnectModal bind:this={gdriveConnect} {loadBackupConfig} />
 
 <style>
-	/* Scheduled Backups */
-	.sched-config {
-		padding: var(--space-md) var(--space-lg);
-		background: var(--bg-base); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-md); margin-bottom: var(--space-lg);
-		display: flex; flex-direction: column; gap: var(--space-sm);
-	}
+	/* Scheduled Backups: the schedule in admin.css's quiet box. */
 	.sched-row {
-		display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm);
 	}
 	.sched-label {
-		font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); white-space: nowrap;
+		font-size: 0.8125rem;
+		font-weight: 500;
+		color: var(--ui-foreground);
+		white-space: nowrap;
 	}
-	.sched-note, .sched-keep-note {
-		margin: 0; font-size: 0.72rem; color: var(--text-tertiary);
+	.sched-unit {
+		font-size: 0.8125rem;
+		color: var(--ui-muted-foreground);
 	}
-	.dest-actions button[aria-disabled='true'] { opacity: 0.4; cursor: default; }
-	.sched-row input[aria-disabled='true'] { opacity: 0.6; cursor: default; }
+	.sched-check {
+		display: flex;
+		align-items: center;
+		gap: var(--space-xs);
+		font-size: 0.8125rem;
+		color: var(--ui-foreground);
+		cursor: pointer;
+	}
+	.sched-note,
+	.sched-keep-note {
+		margin: 0;
+		font-size: 0.75rem;
+		color: var(--ui-muted-foreground);
+	}
+	.sched-row input[aria-disabled='true'] {
+		opacity: 0.6;
+		cursor: default;
+	}
 
+	/* Each destination a box of its own: it holds its own actions, notices and edit form. */
 	.dest-card {
-		background: var(--bg-base); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-md); overflow: hidden;
-		margin-bottom: var(--space-sm); transition: border-color 0.15s;
+		min-width: 0;
+		margin-bottom: var(--space-sm);
+		border: 1px solid var(--ui-border);
+		border-radius: var(--ui-radius);
+		overflow: hidden;
 	}
-	.dest-card:hover { border-color: var(--accent-indigo); }
 	.dest-card-header {
-		display: flex; align-items: center; gap: var(--space-sm);
-		padding: var(--space-md) var(--space-lg);
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md);
 	}
-	.dest-name { font-weight: 600; font-size: 0.85rem; flex: 1; }
-	.dest-actions { display: flex; gap: var(--space-xs); }
+	.dest-name {
+		flex: 1 1 8rem;
+		min-width: 0;
+		font-weight: 500;
+		overflow-wrap: anywhere;
+	}
+	.dest-actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-xs);
+	}
+	/* A destination's state in words, the tone in its ✅ or ⚠️ (card 3076, F3). */
+	.dest-state {
+		font-size: 0.75rem;
+		color: var(--ui-foreground);
+	}
 	.dest-card-detail {
-		padding: 0 var(--space-lg) var(--space-md);
-		font-size: 0.72rem; color: var(--text-tertiary);
+		padding: 0 var(--space-md) var(--space-sm);
+		font-size: 0.75rem;
+		color: var(--ui-muted-foreground);
+		overflow-wrap: anywhere;
+	}
+	.dest-note {
+		margin: 0;
+		padding: 0 var(--space-md) var(--space-sm);
+		font-size: 0.75rem;
+		color: var(--ui-muted-foreground);
 	}
 	.host-key-box {
-		margin: 0 var(--space-lg) var(--space-md); padding: var(--space-sm) var(--space-md);
-		border: 1px solid var(--accent-amber); border-radius: var(--radius-sm);
-		font-size: 0.72rem; color: var(--text-secondary);
-		display: flex; flex-direction: column; gap: var(--space-xs);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-xs);
+		margin: 0 var(--space-md) var(--space-sm);
+		font-size: 0.75rem;
 	}
-	.host-key-box p { margin: 0; }
-	.host-key-box code { font-size: 0.7rem; word-break: break-all; }
-
-	.dest-type-badge {
-		font-size: 0.65rem; font-weight: 700; padding: 2px 8px;
-		border-radius: var(--radius-sm); white-space: nowrap;
+	.host-key-box p {
+		margin: 0;
+	}
+	.host-key-box code {
+		font-size: 0.7rem;
+		word-break: break-all;
+	}
+	.host-key-actions {
+		display: flex;
+		justify-content: flex-end;
 	}
 </style>

@@ -25,10 +25,19 @@
   Card 2847: setting it is the superadmin's alone, and the route refuses any
   other administrator. For them the field is read-only, there is no Save, and
   a line says whose it is and why; the where-from lines stay.
+
+  Card 3076: a kit card at the page's #app-url, the field the kit's, its
+  lines quiet notes (the warnings marked by their ⚠️, not by amber words).
 -->
 <script lang="ts">
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardDescription from '$lib/components/ui/CardDescription.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
 	import { codeAskedHere } from '$lib/code-asked';
 	import { asksForPassword, type StepUpProof } from '$lib/step-up-words';
 
@@ -115,62 +124,66 @@
 </script>
 
 <!-- Application Settings -->
-<section class="admin-card glass fade-in-up" style="animation-delay: 40ms">
-	<h2>🌐 Application Settings</h2>
-	<p class="section-desc">Configure the public URL for your DumpFire instance. Every link in a mail begins with it: an invite, a request's confirmation and reply links, and the links in notifications.</p>
-	<div class="form-row" style="align-items: flex-end">
-		<div style="flex: 2; display: flex; flex-direction: column; gap: 4px">
-			<label style="font-size: 0.72rem; font-weight: 600; color: var(--text-secondary)">Application URL</label>
-			<input
-				type="url"
-				placeholder="https://kanban.example.com"
-				bind:value={appUrl}
-				class="form-input"
-				readonly={!isSuperadmin}
-				aria-disabled={isSuperadmin ? undefined : 'true'}
-			/>
+<Card as="section" id="app-url" class="admin-section" aria-labelledby="app-url-title">
+	<CardHeader>
+		<CardTitle level={2} id="app-url-title">Application Settings</CardTitle>
+		<CardDescription>Configure the public URL for your DumpFire instance. Every link in a mail begins with it: an invite, a request's confirmation and reply links, and the links in notifications.</CardDescription>
+	</CardHeader>
+	<CardContent>
+		<div class="app-url-fields admin-fields-max">
+			<div class="admin-field app-url-field">
+				<label class="ui-label" for="app-url-field">Application URL</label>
+				<input
+					id="app-url-field"
+					type="url"
+					placeholder="https://kanban.example.com"
+					bind:value={appUrl}
+					class="ui-input"
+					readonly={!isSuperadmin}
+					aria-disabled={isSuperadmin ? undefined : 'true'}
+				/>
+			</div>
+			{#if isSuperadmin}
+				<Button onclick={() => (askingToSave = true)} disabled={appUrlSaving || appUrlFrom === null}>
+					{appUrlSaving ? 'Saving...' : 'Save'}
+				</Button>
+			{/if}
 		</div>
-		{#if isSuperadmin}
-			<button class="btn-primary btn-sm" onclick={() => (askingToSave = true)} disabled={appUrlSaving || appUrlFrom === null} style="flex: none">
-				{appUrlSaving ? 'Saving...' : 'Save'}
-			</button>
-		{/if}
-	</div>
-	{#if !isSuperadmin}
-		<!-- Card 2847: the superadmin's alone; no Save, so no dialog asks for a password the server would only refuse. -->
-		<p class="app-url-superadmin" style="font-size: 0.68rem; color: var(--text-secondary); margin-top: var(--space-xs)">
-			🔒 Setting the App URL belongs to the superadmin{#if superadminName}, <strong>{superadminName}</strong>{/if}: every link in a mail begins with it.
-		</p>
-	{/if}
-	{#if appUrlUnread}
-		<p class="app-url-unread" style="font-size: 0.68rem; color: var(--accent-amber); margin-top: var(--space-xs)">
-			⚠️ The page could not read the App URL settings: reload the page before saving.
-		</p>
-	{/if}
-	<!-- Where the App URL that was read comes from: not said of one being typed. -->
-	{#if appUrl === appUrlRead}
-		{#if appUrlFrom === 'environment'}
-			<p class="app-url-from" style="font-size: 0.68rem; color: var(--text-secondary); margin-top: var(--space-xs)">
-				From the server's configuration (APP_URL). Saving it unchanged leaves it there, so a later change of APP_URL still applies.
-			</p>
-		{:else if appUrlFrom === 'setting' && appUrlEnvSet}
-			<p class="app-url-from" style="font-size: 0.68rem; color: var(--text-secondary); margin-top: var(--space-xs)">
-				Saved here, ahead of the server's configuration (APP_URL). Clear it and save to use the server's configuration (APP_URL) again.
-			</p>
-		{:else if appUrlFrom === 'setting'}
-			<p class="app-url-from" style="font-size: 0.68rem; color: var(--text-secondary); margin-top: var(--space-xs)">
-				Saved here; the server's configuration sets no APP_URL. Clear it and save to use ORIGIN, the server's own address.
+		{#if !isSuperadmin}
+			<!-- Card 2847: the superadmin's alone; no Save, so no dialog asks for a password the server would only refuse. -->
+			<p class="app-url-superadmin admin-note">
+				🔒 Setting the App URL belongs to the superadmin{#if superadminName}, <strong>{superadminName}</strong>{/if}: every link in a mail begins with it.
 			</p>
 		{/if}
-	{/if}
-	{#if appUrlFrom !== null && !appUrl}
-		<p style="font-size: 0.68rem; color: var(--accent-amber); margin-top: var(--space-xs)">
-			⚠️ No App URL set. Links in mail begin with the address the server was started with (ORIGIN), and never with what a request says. If that is not the address people reach this server at, {isSuperadmin ? 'set it here' : 'ask the superadmin to set it'}.
-		</p>
-	{/if}
-</section>
-
-<!-- Save asks for the caller's own password (card 2701). After the section: fixed to the window, not to a card that moves on hover. -->
+		{#if appUrlUnread}
+			<p class="app-url-unread admin-note">
+				⚠️ The page could not read the App URL settings: reload the page before saving.
+			</p>
+		{/if}
+		<!-- Where the App URL that was read comes from: not said of one being typed. -->
+		{#if appUrl === appUrlRead}
+			{#if appUrlFrom === 'environment'}
+				<p class="app-url-from admin-note">
+					From the server's configuration (APP_URL). Saving it unchanged leaves it there, so a later change of APP_URL still applies.
+				</p>
+			{:else if appUrlFrom === 'setting' && appUrlEnvSet}
+				<p class="app-url-from admin-note">
+					Saved here, ahead of the server's configuration (APP_URL). Clear it and save to use the server's configuration (APP_URL) again.
+				</p>
+			{:else if appUrlFrom === 'setting'}
+				<p class="app-url-from admin-note">
+					Saved here; the server's configuration sets no APP_URL. Clear it and save to use ORIGIN, the server's own address.
+				</p>
+			{/if}
+		{/if}
+		{#if appUrlFrom !== null && !appUrl}
+			<p class="app-url-unset admin-note">
+				⚠️ No App URL set. Links in mail begin with the address the server was started with (ORIGIN), and never with what a request says. If that is not the address people reach this server at, {isSuperadmin ? 'set it here' : 'ask the superadmin to set it'}.
+			</p>
+		{/if}
+	</CardContent>
+</Card>
+<!-- Save asks for the caller's own password (card 2701). After the card: fixed to the window. -->
 {#if askingToSave}
 	<ConfirmModal
 		title="Save App URL"
@@ -182,3 +195,27 @@
 		onCancel={() => (askingToSave = false)}
 	/>
 {/if}
+
+<style>
+	.app-url-fields {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-end;
+		gap: var(--space-sm);
+	}
+	.app-url-field {
+		flex: 1 1 16rem;
+	}
+	/* Read-only for an administrator who is not the superadmin (card 2847): a muted fill says it. */
+	.ui-input[readonly] {
+		background: var(--ui-muted);
+		cursor: default;
+	}
+	.admin-note {
+		margin-top: var(--space-sm);
+	}
+	.app-url-unread,
+	.app-url-unset {
+		color: var(--ui-foreground);
+	}
+</style>

@@ -122,13 +122,13 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Add from Accounts">
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-content from-accounts-dialog" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: '.modal-actions .btn-ghost', onEscape: onClose }}>
+	<div class="modal-content from-accounts-dialog admin-kit-fields" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: '.modal-actions .btn-ghost', onEscape: onClose }}>
 		<h2>Add from Accounts</h2>
 		<p class="dialog-hint">Each account ticked becomes a person named by its username, with its address, linked to it.</p>
 		<!-- Code review S1: an account's address is its holder's own, and nobody has confirmed it. -->
 		<p class="dialog-hint">An account's address is set by its holder and is not confirmed: check each is the person you mean before adding them.</p>
 		{#if offered.length === 0}
-			<p class="empty-msg">Every account is already linked to a person.</p>
+			<p class="dialog-empty">Every account is already linked to a person.</p>
 		{:else}
 			<div class="account-list">
 				{#each offered as account (account.id)}
@@ -165,14 +165,16 @@
 <style>
 	.from-accounts-dialog { max-width: 600px; width: 100%; }
 	.from-accounts-dialog h2 { font-size: 1.1rem; margin-bottom: var(--space-sm); }
-	.dialog-hint { font-size: 0.8rem; color: var(--text-secondary); margin-bottom: var(--space-lg); }
-	.empty-msg { font-size: 0.85rem; color: var(--text-tertiary); text-align: center; padding: var(--space-xl); }
+	/* Card 3076: the kit's colours; the frame and buttons the app's dialog. */
+	.dialog-hint { font-size: 0.8rem; color: var(--ui-muted-foreground); margin-bottom: var(--space-lg); }
+	.dialog-empty { font-size: 0.85rem; color: var(--ui-muted-foreground); text-align: center; padding: var(--space-xl); }
 	.account-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; margin-bottom: var(--space-xl); }
 	.account-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); padding: var(--space-xs) 0; font-size: 0.82rem; }
-	.account-row.matched { color: var(--text-tertiary); }
+	.account-row.matched { color: var(--ui-muted-foreground); }
 	.account-name { font-weight: 600; }
-	.account-email { color: var(--text-tertiary); font-size: 0.75rem; }
-	.account-match { font-size: 0.75rem; color: var(--accent-amber); }
+	.account-email { color: var(--ui-muted-foreground); font-size: 0.75rem; }
+	/* Said in the text colour, marked by its edge (F3). */
+	.account-match { padding-left: 0.375rem; border-left: 2px solid var(--ui-warning); font-size: 0.75rem; color: var(--ui-foreground); }
 	.password-row { margin-bottom: var(--space-xl); }
 	.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-md); }
 </style>

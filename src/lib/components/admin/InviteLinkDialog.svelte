@@ -70,7 +70,7 @@
      It holds the keyboard as the page's other dialogs do (card 2365: Tab walked the page behind it): Copy has the focus as it opens, Tab stays in it, and the focus goes back as it closes to the control the users panel names (+ Add User, or the row's 📧). -->
 {#if inviteLink}
 	<div class="modal-overlay" role="alertdialog" aria-modal="true" aria-label={isReset ? "The two-step sign-in reset's link" : isNewAccount ? "The new account's set-up link" : 'The invite mail was not sent'} aria-describedby="invite-link-said invite-link-warning">
-		<div class="modal-content confirm-modal" role="document" style="max-width: 560px" use:holdFocus={{ first: '.invite-link-row button', returnTo: backTo(inviteLink) }}>
+		<div class="modal-content confirm-modal admin-dialog" role="document" style="max-width: 560px" use:holdFocus={{ first: '.invite-link-row button', returnTo: backTo(inviteLink) }}>
 			{#if isReset}
 				<!-- Card 2773, decision 6: the link is never mailed, so this is the one place it is given, to the administrator who reset the account. -->
 				<h2>🛡️ Two-step sign-in was reset</h2>
@@ -91,7 +91,7 @@
 			<div class="invite-link-row">
 				<code>{inviteLink.url}</code>
 				<!-- Focused as the dialog opens (holdFocus, above): what the reader is there to do, and away from the page behind it -->
-				<button class="btn-ghost btn-sm" onclick={copyInviteLink}>{inviteLinkCopy === 'copied' ? '✅ Copied!' : inviteLinkCopy === 'failed' ? 'Select it and copy it yourself' : '📋 Copy'}</button>
+				<button class="btn-ghost" onclick={copyInviteLink}>{inviteLinkCopy === 'copied' ? '✅ Copied!' : inviteLinkCopy === 'failed' ? 'Select it and copy it yourself' : '📋 Copy'}</button>
 			</div>
 			{#if isReset}
 				<p>It is not shown again. If it is lost, reset {inviteLink.username}'s two-step sign-in again with 🛡️, which issues a new link and ends this one.</p>
@@ -109,19 +109,28 @@
 {/if}
 
 <style>
-	/* The admin page's rules for a dialog, which do not reach past its .admin-page: copied as they are there */
-	.confirm-modal { max-width: 420px; }
-	.confirm-modal h2 { font-size: 1.1rem; margin-bottom: var(--space-sm); }
-	.confirm-modal p { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: var(--space-xl); line-height: 1.5; }
-	.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-md); }
-	.btn-sm { font-size: 0.78rem !important; padding: var(--space-xs) var(--space-md) !important; }
+	/* Its frame is the app's dialog, sized and spaced by admin.css's .admin-dialog (card 3076: it kept a copy of the page's rules before). */
 
 	/* The link of an invite whose mail was not sent (card 2196) */
 	.invite-link-row {
-		display: flex; align-items: center; gap: var(--space-sm);
-		margin: 0 0 var(--space-md); padding: var(--space-sm) var(--space-md);
-		background: var(--bg-base); border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		margin: 0 0 var(--space-md);
+		padding: var(--space-sm) var(--space-md);
+		border: 1px solid var(--ui-border);
+		border-radius: var(--ui-radius);
+		background: var(--ui-background);
 	}
-	.invite-link-row code { flex: 1; font-size: 0.78rem; overflow-wrap: anywhere; user-select: all; }
-	.invite-link-row button { flex: none; }
+	.invite-link-row code {
+		flex: 1;
+		font-size: 0.78rem;
+		overflow-wrap: anywhere;
+		user-select: all;
+	}
+	.invite-link-row button {
+		flex: none;
+		padding: var(--space-xs) var(--space-md);
+		font-size: 0.78rem;
+	}
 </style>

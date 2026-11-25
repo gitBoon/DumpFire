@@ -1,10 +1,12 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.152
+version: 1.153
 status: As-Built
-date: 2026-11-24
+date: 2026-11-25
 tags:
+  - card-3076
+  - admin-sections
   - card-2689
   - decision-webhooks
   - card-3064
@@ -108,20 +110,29 @@ This guide covers day-to-day administration tasks for DumpFire. You need the **A
 
 Click the **⚙️ Admin** link in the dashboard sidebar or navigate to `/admin`.
 
+The page is titled **Admin**. On a wide screen a list of its sections runs down the left side and stays in view as you scroll; on a narrower one (under 1024px wide) it is one line of links above the page, which scrolls sideways on its own. The sections are in groups: **Database Overview** and, while anything is held, **Settings held for review**; **Access** (Two-step sign-in, User Management, Team Management, People Directory, ISO 27001:2022 Checklist); **Data** (Board Management, Backup & Restore, Scheduled Backups); **Settings** (Application Settings, Email / SMTP); and the **Danger Zone** last. The section you are looking at is marked in the list, and a link you press is marked at once (card 3076).
+
+Each section has an address of its own, so a link can open the page at it: `/admin#users` (User Management), `/admin#teams`, `/admin#two-step`, `/admin#boards`, `/admin#backup`, `/admin#scheduled-backups`, `/admin#app-url`, `/admin#mail`, `/admin#danger-zone`, `/admin#overview`, `/admin#people-directory`, `/admin#iso` and `/admin#settings-held`. The banner's **Review** link opens the page at Settings held for review once the list has been read. An administrator who is not the superadmin sees **The superadmin's** in place of Backup & Restore, and no Reset Everything. The People Directory and the ISO checklist have pages of their own, each opened with its section's **Open** button and leading back by **Admin** at the top of the page.
+
 ```mermaid
 flowchart LR
-    Dashboard["Dashboard"] --> Admin["Admin Panel"]
-    Admin --> Users["User Management"]
-    Admin --> Teams["Team Management"]
-    Admin --> People["People Directory\n(/admin/people)"]
-    Admin --> Iso["ISO 27001:2022 Checklist\n(/admin/iso-27001, read-only)"]
-    Admin --> Boards["Board Management"]
+    Dashboard["Dashboard"] --> Admin["Admin\n(/admin)"]
+    Admin --> Top["Database Overview,\nSettings held for review"]
+    Admin --> Access["Access"]
+    Access --> TwoStep["Two-step sign-in"]
+    Access --> Users["User Management"]
+    Access --> Teams["Team Management"]
+    Access --> People["People Directory\n(/admin/people)"]
+    Access --> Iso["ISO 27001:2022 Checklist\n(/admin/iso-27001, read-only)"]
+    Admin --> Data["Data"]
+    Data --> Boards["Board Management"]
+    Data -->|"superadmin only"| Restore["Backup & Restore:\nexport and import"]
+    Data --> Backups["Scheduled Backups"]
+    Admin --> Settings["Settings"]
+    Settings --> AppUrl["Application Settings\n(the App URL)"]
+    Settings --> SMTP["Email / SMTP"]
     Admin --> Danger["Danger Zone:\npurge, vacuum, XP"]
-    Admin --> Settings["Application Settings\n(the App URL)"]
-    Admin --> Backups["Scheduled Backups"]
-    Admin --> SMTP["Email / SMTP"]
-    Admin -->|"superadmin only"| Restore["Backup & Restore:\nexport and import"]
-    Admin -->|"superadmin only"| Reset["Reset Everything"]
+    Danger -->|"superadmin only"| Reset["Reset Everything"]
 ```
 
 ### The Admin Page's Dialogs and the Keyboard
@@ -759,7 +770,7 @@ longer be listed on a card.
 
 ## People Directory
 
-The people directory (card 2674, 2026-11-03) is the list of the people who can be consulted on or told of a decision, with an account or without one, and the groups they are in. Administrators keep it, on a page of its own: **Admin → 👥 People Directory → Open the people directory**, or `/admin/people`. Anyone signed in who is not an administrator is sent from the page to the dashboard, and the routes behind it refuse them with `403` `Forbidden`. Decisions read it: their participants are picked from it, and each participant's address and account are taken from it again when a decision opens (cards 2676 and 2697).
+The people directory (card 2674, 2026-11-03) is the list of the people who can be consulted on or told of a decision, with an account or without one, and the groups they are in. Administrators keep it, on a page of its own: **Admin → People Directory → Open the people directory**, or `/admin/people`. Anyone signed in who is not an administrator is sent from the page to the dashboard, and the routes behind it refuse them with `403` `Forbidden`. Decisions read it: their participants are picked from it, and each participant's address and account are taken from it again when a decision opens (cards 2676 and 2697).
 
 A person is a full name, an email address, a job title (which may be empty), the account they are linked to if they have one, their groups, and whether they are **Active** or have **Left**. A person needs no account: many of the people a decision consults never sign in. A group gives nothing: no board, no access, no mail. It is a name for a set of people, to pick them together.
 

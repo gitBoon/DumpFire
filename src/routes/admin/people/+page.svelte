@@ -25,11 +25,25 @@
 	 * and their address through `asciiShown` (R3), and the status as stored:
 	 * one neither active nor left is shown as it is, through `asciiShown`, and
 	 * never as Active (R8).
+	 *
+	 * Card 3076: on the kit's shell, full width, with "Admin" in the
+	 * header's crumbs; Add from accounts and + Add person beside the title;
+	 * the people and the groups each a table in a card, labelled rows on a
+	 * phone; the Active / Left / All filter the kit's segmented control.
 	 */
 	import type { PageData } from './$types';
-	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
-	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
-	import { theme, themeIcon } from '$lib/stores/theme';
+	import PageShell from '$lib/components/ui/PageShell.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
+	import SegmentedControl from '$lib/components/ui/SegmentedControl.svelte';
+	import Table from '$lib/components/ui/Table.svelte';
+	import '$lib/components/admin/admin.css';
 	import Toast from '$lib/components/Toast.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import PersonDialog from '$lib/components/admin/people/PersonDialog.svelte';
@@ -219,50 +233,48 @@
 	<title>People Directory — DumpFire</title>
 </svelte:head>
 
-<div class="people-page">
-	<header class="admin-header glass">
-		<div class="admin-header-inner">
-			<a href="/" class="header-logo" title="Back to DumpFire">
-				<span class="logo-fire">🔥</span>
-				<span class="logo-text">DumpFire</span>
-			</a>
-			<h1 class="header-title">👥 People Directory</h1>
-			<div class="admin-header-right">
-				<a href="/admin" class="btn-ghost back-link">← Admin</a>
-				<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
-					{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
-					<ThemeMenuItems heading={false} />
-				</HeaderMenu>
-			</div>
-		</div>
-	</header>
+{#snippet crumbs()}
+	<nav class="admin-crumb" aria-label="Where this is">
+		<a href="/admin">Admin</a>
+		<span aria-hidden="true">/</span>
+		<span>People Directory</span>
+	</nav>
+{/snippet}
 
-	<main class="admin-content">
-		<SettingsHeldBanner held={data.settingsHeld} superadmin={data.user?.role === 'superadmin'} />
+<PageShell width="full" {crumbs}>
+	<SettingsHeldBanner held={data.settingsHeld} superadmin={data.user?.role === 'superadmin'} />
+	<PageHeader title="People Directory" description="Who can be consulted on or told of a decision, with an account or without one, and their groups.">
+		{#snippet actions()}
+			<Button variant="outline" onclick={() => (addingFromAccounts = true)}>Add from accounts</Button>
+			<Button onclick={() => (editingPerson = { person: null })}>+ Add person</Button>
+		{/snippet}
+	</PageHeader>
+
+	<div class="page-sections">
 		<!-- People -->
-		<section class="admin-card glass">
-			<div class="section-header">
-				<h2>People</h2>
-				<div class="section-actions">
-					<button class="btn-ghost btn-sm" onclick={() => (addingFromAccounts = true)}>Add from accounts</button>
-					<button class="btn-primary btn-sm" onclick={() => (editingPerson = { person: null })}>+ Add person</button>
+		<Card as="section" aria-labelledby="people-title">
+			<CardHeader>
+				<CardTitle level={2} id="people-title">People</CardTitle>
+			</CardHeader>
+			<CardContent>
+				<div class="people-toolbar">
+					<input type="search" class="ui-input people-search" placeholder="Search name, email, job title or group" aria-label="Search people" bind:value={search} />
+					<SegmentedControl
+						label="Show"
+						options={[
+							{ value: 'active', label: 'Active' },
+							{ value: 'left', label: 'Left' },
+							{ value: 'all', label: 'All' }
+						]}
+						bind:value={show}
+						size="sm"
+					/>
 				</div>
-			</div>
 
-			<div class="filters">
-				<input type="search" class="form-input" placeholder="Search name, email, job title or group" aria-label="Search people" bind:value={search} />
-				<div class="status-filter" role="group" aria-label="Show">
-					{#each [['active', 'Active'], ['left', 'Left'], ['all', 'All']] as [value, label] (value)}
-						<button class="filter-btn" class:active={show === value} aria-pressed={show === value} onclick={() => (show = value as typeof show)}>{label}</button>
-					{/each}
-				</div>
-			</div>
-
-			{#if listed.length === 0}
-				<p class="empty-msg">{data.people.length === 0 ? 'No people yet.' : 'No one matches.'}</p>
-			{:else}
-				<div class="table-wrap">
-					<table class="people-table">
+				{#if listed.length === 0}
+					<EmptyState level={3} title={data.people.length === 0 ? 'No people yet.' : 'No one matches.'} />
+				{:else}
+					<Table caption="People" captionHidden stack>
 						<thead>
 							<tr>
 								<th>Name</th>
@@ -277,70 +289,89 @@
 						<tbody>
 							{#each listed as person (person.id)}
 								<tr class:left={person.status === 'left'}>
-									<td class="name">{nameOf(person)}</td>
-									<td>{addressOf(person)}</td>
-									<td>{person.jobTitle}</td>
-									<td>
-										{#each person.groupIds as id (id)}
-											<span class="chip">{groupName.get(id)}</span>
-										{/each}
+									<td class="name" data-label="Name">{nameOf(person)}</td>
+									<td data-label="Email">{addressOf(person)}</td>
+									<td data-label="Job title">{person.jobTitle}</td>
+									<td data-label="Groups">
+										<span class="chips">
+											{#each person.groupIds as id (id)}
+												<Badge variant="secondary">{groupName.get(id)}</Badge>
+											{/each}
+										</span>
 									</td>
-									<td>{person.account ? person.account.username : '—'}</td>
-									<td>{statusOf(person)}</td>
+									<td data-label="Account">{person.account ? person.account.username : '—'}</td>
+									<td data-label="Status">{statusOf(person)}</td>
 									<td class="row-actions">
-										<button class="btn-ghost btn-xs" onclick={() => (editingPerson = { person })} aria-label="Edit {nameOf(person)}">Edit</button>
+										<Button variant="ghost" size="sm" onclick={() => (editingPerson = { person })} aria-label="Edit {nameOf(person)}">Edit</Button>
 										{#if person.status === 'active'}
-											<button class="btn-ghost btn-xs" aria-busy={marking === person.id ? 'true' : undefined} onclick={() => markLeft(person)} aria-label="Mark {nameOf(person)} left">Mark left</button>
+											<Button variant="ghost" size="sm" aria-busy={marking === person.id ? 'true' : undefined} onclick={() => markLeft(person)} aria-label="Mark {nameOf(person)} left">Mark left</Button>
 										{:else}
-											<button class="btn-ghost btn-xs" onclick={() => askMarkActive(person)} aria-label="Mark {nameOf(person)} active">Mark active</button>
+											<Button variant="ghost" size="sm" onclick={() => askMarkActive(person)} aria-label="Mark {nameOf(person)} active">Mark active</Button>
 										{/if}
-										<button class="btn-ghost btn-xs danger" onclick={() => askDeletePerson(person)} aria-label="Delete {nameOf(person)}">Delete</button>
+										<Button variant="ghost" size="sm" class="danger" onclick={() => askDeletePerson(person)} aria-label="Delete {nameOf(person)}">Delete</Button>
 									</td>
 								</tr>
 							{/each}
 						</tbody>
-					</table>
-				</div>
-			{/if}
-		</section>
+					</Table>
+				{/if}
+			</CardContent>
+		</Card>
 
 		<!-- Groups -->
-		<section class="admin-card glass">
-			<div class="section-header">
-				<h2>Groups</h2>
-				<button class="btn-primary btn-sm" onclick={() => (editingGroup = { group: null })}>+ Add group</button>
-			</div>
-			{#if data.groups.length === 0}
-				<p class="empty-msg">No groups yet.</p>
-			{:else}
-				<div class="group-list">
-					{#each data.groups as group (group.id)}
-						{@const active = group.personIds.filter((id) => activeIds.has(id)).length}
-						<div class="group-row">
-							<div class="group-info">
-								<span class="group-name">{group.name}</span>
-								{#if group.description}<span class="group-desc">{group.description}</span>{/if}
-							</div>
-							<span class="group-count">{active} active member{active === 1 ? '' : 's'}</span>
-							<button class="btn-ghost btn-xs" onclick={() => (editingGroup = { group })} aria-label="Edit group {group.name}">Edit</button>
-							<button class="btn-ghost btn-xs danger" onclick={() => askDeleteGroup(group)} aria-label="Delete group {group.name}">Delete</button>
-						</div>
-					{/each}
-				</div>
-			{/if}
-		</section>
-	</main>
+		<Card as="section" aria-labelledby="groups-title">
+			<CardHeader>
+				{#snippet actions()}
+					<Button size="sm" onclick={() => (editingGroup = { group: null })}>+ Add group</Button>
+				{/snippet}
+				<CardTitle level={2} id="groups-title">Groups</CardTitle>
+			</CardHeader>
+			<CardContent>
+				{#if data.groups.length === 0}
+					<EmptyState level={3} title="No groups yet." />
+				{:else}
+					<Table caption="Groups" captionHidden stack>
+						<thead>
+							<tr>
+								<th>Name and description</th>
+								<th>Active members</th>
+								<th><span class="visually-hidden">Actions</span></th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each data.groups as group (group.id)}
+								{@const active = group.personIds.filter((id) => activeIds.has(id)).length}
+								<tr>
+									<td data-label="Name and description">
+										<span class="group-info">
+											<span class="group-name">{group.name}</span>
+											{#if group.description}<span class="group-desc">{group.description}</span>{/if}
+										</span>
+									</td>
+									<td data-label="Active members">{active} active member{active === 1 ? '' : 's'}</td>
+									<td class="row-actions">
+										<Button variant="ghost" size="sm" onclick={() => (editingGroup = { group })} aria-label="Edit group {group.name}">Edit</Button>
+										<Button variant="ghost" size="sm" class="danger" onclick={() => askDeleteGroup(group)} aria-label="Delete group {group.name}">Delete</Button>
+									</td>
+								</tr>
+							{/each}
+						</tbody>
+					</Table>
+				{/if}
+			</CardContent>
+		</Card>
+	</div>
+</PageShell>
 
-	{#if editingPerson}
-		<PersonDialog {data} person={editingPerson.person} onClose={() => (editingPerson = null)} />
-	{/if}
-	{#if editingGroup}
-		<GroupDialog {data} group={editingGroup.group} onClose={() => (editingGroup = null)} />
-	{/if}
-	{#if addingFromAccounts}
-		<FromAccountsDialog {data} onClose={() => (addingFromAccounts = false)} />
-	{/if}
-</div>
+{#if editingPerson}
+	<PersonDialog {data} person={editingPerson.person} onClose={() => (editingPerson = null)} />
+{/if}
+{#if editingGroup}
+	<GroupDialog {data} group={editingGroup.group} onClose={() => (editingGroup = null)} />
+{/if}
+{#if addingFromAccounts}
+	<FromAccountsDialog {data} onClose={() => (addingFromAccounts = false)} />
+{/if}
 
 {#if confirmAction}
 	<ConfirmModal
@@ -357,89 +388,73 @@
 <Toast />
 
 <style>
-	.people-page { min-height: 100vh; padding-top: 64px; }
+	.page-sections {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-lg);
+	}
 
-	.admin-header {
-		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-		height: 64px; border-bottom: 1px solid var(--glass-border);
-		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+	/* The search and the Active / Left / All filter, above the table. */
+	.people-toolbar {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm) var(--space-md);
+		margin-bottom: var(--space-md);
 	}
-	.admin-header-inner {
-		max-width: 1400px; margin: 0 auto; height: 100%;
-		display: flex; align-items: center; justify-content: space-between;
-		padding: 0 var(--space-xl);
+	.people-search {
+		flex: 1 1 16rem;
+		width: auto;
+		max-width: 32rem;
 	}
-	.header-logo {
-		display: flex; align-items: center; gap: var(--space-sm);
-		text-decoration: none; color: var(--text-primary);
-		font-weight: 700; font-size: 1.1rem;
-	}
-	.logo-fire { font-size: 1.4rem; }
-	.header-title { font-size: 1rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.01em; }
-	.admin-header-right { display: flex; align-items: center; gap: var(--space-sm); }
-	.back-link { text-decoration: none; font-size: 0.82rem; }
 
-	/* The page's last line stops above the user badge (card 2239). */
-	.admin-content {
-		max-width: 1100px; margin: 0 auto; padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);
-		display: flex; flex-direction: column; gap: var(--space-xl);
+	td.name {
+		font-weight: 500;
 	}
-	.admin-card { padding: var(--space-xl); border-radius: var(--radius-lg); }
-	.admin-card h2 { font-size: 1.05rem; margin-bottom: 0; }
-	.section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-lg); }
-	.section-actions { display: flex; gap: var(--space-sm); }
-	.empty-msg { font-size: 0.85rem; color: var(--text-tertiary); text-align: center; padding: var(--space-xl); }
-
-	.filters { display: flex; gap: var(--space-md); align-items: center; flex-wrap: wrap; margin-bottom: var(--space-lg); }
-	.filters .form-input { flex: 1; }
-	.status-filter { display: flex; gap: var(--space-xs); }
-	.filter-btn {
-		padding: var(--space-xs) var(--space-md); border-radius: var(--radius-sm);
-		font-size: 0.8rem; font-weight: 600; font-family: var(--font-family);
-		background: var(--bg-base); border: 1px solid var(--glass-border); color: var(--text-secondary); cursor: pointer;
+	/* Someone who has left: their row quieter. */
+	tr.left td {
+		color: var(--ui-muted-foreground);
 	}
-	.filter-btn.active { background: var(--accent-indigo); border-color: var(--accent-indigo); color: white; }
-
-	.table-wrap { overflow-x: auto; }
-	.people-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
-	.people-table th {
-		text-align: left; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
-		color: var(--text-tertiary); padding: var(--space-xs) var(--space-sm); border-bottom: 1px solid var(--glass-border);
+	.chips {
+		display: inline-flex;
+		flex-wrap: wrap;
+		gap: 0.25rem;
 	}
-	.people-table td { padding: var(--space-sm); border-bottom: 1px solid var(--glass-border); vertical-align: middle; }
-	.people-table tr.left td { color: var(--text-tertiary); }
-	.people-table td.name { font-weight: 600; }
-	.row-actions { white-space: nowrap; text-align: right; }
-	.chip {
-		display: inline-block; margin: 1px 2px; padding: 1px var(--space-sm); border-radius: 999px;
-		font-size: 0.7rem; background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo);
+	.row-actions {
+		text-align: right;
+		white-space: nowrap;
 	}
 	.visually-hidden {
-		position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-		overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 
-	.group-list { display: flex; flex-direction: column; gap: var(--space-xs); }
-	.group-row {
-		display: flex; align-items: center; gap: var(--space-sm);
-		padding: var(--space-sm) var(--space-md); background: var(--bg-base);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
+	.group-info {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
 	}
-	.group-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-	.group-name { font-weight: 600; font-size: 0.85rem; }
-	.group-desc { font-size: 0.75rem; color: var(--text-tertiary); }
-	.group-count { font-size: 0.72rem; color: var(--text-tertiary); white-space: nowrap; }
+	.group-name {
+		font-weight: 500;
+	}
+	.group-desc {
+		font-size: 0.8125rem;
+		color: var(--ui-muted-foreground);
+	}
 
-	/* The dialogs' fields, which are drawn inside the page */
-	.people-page :global(.form-input) {
-		padding: var(--space-sm) var(--space-md);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-elevated); color: var(--text-primary);
-		font-size: 0.82rem; font-family: var(--font-family);
-		min-width: 120px;
+	/* A phone: the row's buttons wrap under its labelled cells. */
+	@media (max-width: 640px) {
+		.row-actions {
+			flex-wrap: wrap;
+			justify-content: flex-start;
+			white-space: normal;
+		}
 	}
-	.people-page :global(.form-input:focus) { border-color: var(--accent-indigo); outline: none; }
-	.people-page :global(.btn-sm) { font-size: 0.78rem !important; padding: var(--space-xs) var(--space-md) !important; }
-	.people-page :global(.btn-xs) { font-size: 0.7rem !important; padding: 2px var(--space-sm) !important; }
-	.people-page :global(.danger) { color: var(--accent-rose) !important; }
 </style>

@@ -32,6 +32,12 @@
 	import { holdFocus } from '$lib/dialog-focus';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardDescription from '$lib/components/ui/CardDescription.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
 	import { page } from '$app/state';
 	import { codeAskedHere } from '$lib/code-asked';
 	import { asksForPassword, CONFIRMATION_HEADER, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
@@ -508,137 +514,139 @@
 </script>
 
 <!-- Backup & Restore -->
-<section class="admin-card glass fade-in-up" style="animation-delay: 80ms">
-	<h2>💾 Backup & Restore</h2>
-	<p class="section-desc">Export a complete backup of your entire database as a SQLite file, or restore from a previous backup. Captures everything automatically — users, teams, boards, cards, settings, and all other data.</p>
+<Card as="section" id="backup" class="admin-section" aria-labelledby="backup-title">
+	<CardHeader>
+		<CardTitle level={2} id="backup-title">Backup & Restore</CardTitle>
+		<CardDescription>Export a complete backup of your entire database as a SQLite file, or restore from a previous backup. Captures everything automatically — users, teams, boards, cards, settings, and all other data.</CardDescription>
+	</CardHeader>
+	<CardContent>
+		<div class="backup-actions admin-rows">
+			<div class="backup-item">
+				<div class="backup-icon export-icon">
+					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+						<path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+				</div>
+				<div class="backup-info">
+					<strong>Export Database</strong>
+					<p>Download the complete database as a .db file — includes all data automatically. {asksForPassword(codeAskedHere())}</p>
+				</div>
+				<Button class="btn-backup export" onclick={askExport} disabled={exporting}>
+					{#if exporting}
+						<span class="spinner"></span> Exporting...
+					{:else}
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 2v8m0 0l-3-3m3 3l3-3M2 11v1a1 1 0 001 1h8a1 1 0 001-1v-1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+						Export Backup
+					{/if}
+				</Button>
+			</div>
 
-	<div class="backup-actions">
-		<div class="backup-item">
-			<div class="backup-icon export-icon">
-				<svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-					<path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-				</svg>
+			<div class="backup-item">
+				<div class="backup-icon import-icon">
+					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+						<path d="M12 15V3m0 0l-4 4m4-4l4 4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+				</div>
+				<div class="backup-info">
+					<strong>Import Database</strong>
+					<p>Restore from a backup file. <span class="admin-warning">This will replace ALL current data.</span> {asksForPassword(codeAskedHere())}</p>
+				</div>
+				<Button variant="outline" class="btn-backup import" onclick={pickImportFile} disabled={importing}>
+					{#if importing}
+						<span class="spinner"></span> Importing...
+					{:else}
+						<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M7 12V4m0 0L4 7m3-3l3 3M2 2v1a1 1 0 001 1h8a1 1 0 001-1V2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+						Import Backup
+					{/if}
+				</Button>
 			</div>
-			<div class="backup-info">
-				<strong>Export Database</strong>
-				<p>Download the complete database as a .db file — includes all data automatically. {asksForPassword(codeAskedHere())}</p>
-			</div>
-			<button class="btn-backup export" onclick={askExport} disabled={exporting}>
-				{#if exporting}
-					<span class="spinner"></span> Exporting...
-				{:else}
-					<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v8m0 0l-3-3m3 3l3-3M2 11v1a1 1 0 001 1h8a1 1 0 001-1v-1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-					Export Backup
-				{/if}
-			</button>
 		</div>
-
-		<div class="backup-item">
-			<div class="backup-icon import-icon">
-				<svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-					<path d="M12 15V3m0 0l-4 4m4-4l4 4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-				</svg>
-			</div>
-			<div class="backup-info">
-				<strong>Import Database</strong>
-				<p>Restore from a backup file. <span class="warning-text">This will replace ALL current data.</span> {asksForPassword(codeAskedHere())}</p>
-			</div>
-			<button class="btn-backup import" onclick={pickImportFile} disabled={importing}>
-				{#if importing}
-					<span class="spinner"></span> Importing...
-				{:else}
-					<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 12V4m0 0L4 7m3-3l3 3M2 2v1a1 1 0 001 1h8a1 1 0 001-1V2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-					Import Backup
+		{#if importReport}
+			<div class="import-report admin-notice" class:import-report-done={!importReport.trouble} class:admin-notice-destructive={importReport.trouble} class:admin-notice-success={!importReport.trouble} role={importReport.trouble ? 'alert' : 'status'}>
+				<strong>{importReport.headline}</strong>
+				{#if importReport.detail}
+					<p class="import-report-detail">{importReport.detail}</p>
 				{/if}
-			</button>
-		</div>
-	</div>
-
-	{#if importReport}
-		<div class="import-report" class:import-report-done={!importReport.trouble} role={importReport.trouble ? 'alert' : 'status'}>
-			<strong>{importReport.headline}</strong>
-			{#if importReport.detail}
-				<p class="import-report-detail">{importReport.detail}</p>
-			{/if}
-			{#if importReport.putBack}
-				<p class="import-report-detail">{importReport.putBack}</p>
-			{/if}
-			{#if importReport.requestLinks}
-				<p class="import-report-detail">{importReport.requestLinks}</p>
-			{/if}
-			{#if importReport.keyDeadlines}
-				<p class="import-report-detail">{importReport.keyDeadlines}</p>
-			{/if}
-			{#if importReport.keysLeftOut}
-				<p class="import-report-detail">{importReport.keysLeftOut}</p>
-			{/if}
-			{#if importReport.accountsKept}
-				{#each importReport.accountsKept as line (line)}
-					<p class="import-report-detail" data-testid="import-accounts-kept">{line}</p>
-				{/each}
-			{/if}
-			{#if importReport.decisionLinks}
-				<p class="import-report-detail">{importReport.decisionLinks}</p>
-			{/if}
-			{#if importReport.workingCopy}
-				<p class="import-report-detail">{importReport.workingCopy}</p>
-			{/if}
-			{#if importReport.secretsKept}
-				<p class="import-report-detail">{importReport.secretsKept}</p>
-			{/if}
-			{#if importReport.secretsToEnter}
-				<p class="import-report-detail">{importReport.secretsToEnter}</p>
-			{/if}
-			{#if importReport.mfaWithoutFactor}
-				<p class="import-report-detail">{importReport.mfaWithoutFactor}</p>
-			{/if}
-			{#if importReport.settingsRemoved}
-				<p class="import-report-detail">{importReport.settingsRemoved}</p>
-			{/if}
-			{#if importReport.settingsHeld}
-				<p class="import-report-detail">{importReport.settingsHeld}</p>
-			{/if}
-			{#if importReport.systemLog}
-				<p class="import-report-detail">{importReport.systemLog}</p>
-			{/if}
-			{#if importReport.superadmin}
-				<p class="import-report-detail">{importReport.superadmin}</p>
-			{/if}
-			{#if importReport.tables && importReport.tables.length > 0}
-				<details class="import-report-tables">
-					<summary>All {importReport.tables.length} tables restored</summary>
-					<dl>
-						{#each importReport.tables as [table, rows]}
-							<div><dt>{table}</dt><dd>{count(rows)}</dd></div>
-						{/each}
-					</dl>
-				</details>
-			{/if}
-			{#if importReport.problems.length > 0}
-				<ul>
-					{#each importReport.problems.slice(0, 100) as problem}
-						<li>{problem}</li>
+				{#if importReport.putBack}
+					<p class="import-report-detail">{importReport.putBack}</p>
+				{/if}
+				{#if importReport.requestLinks}
+					<p class="import-report-detail">{importReport.requestLinks}</p>
+				{/if}
+				{#if importReport.keyDeadlines}
+					<p class="import-report-detail">{importReport.keyDeadlines}</p>
+				{/if}
+				{#if importReport.keysLeftOut}
+					<p class="import-report-detail">{importReport.keysLeftOut}</p>
+				{/if}
+				{#if importReport.accountsKept}
+					{#each importReport.accountsKept as line (line)}
+						<p class="import-report-detail" data-testid="import-accounts-kept">{line}</p>
 					{/each}
-				</ul>
-				{#if importReport.problems.length > 100}
-					<p>…and {importReport.problems.length - 100} more.</p>
 				{/if}
-			{/if}
-			<button class="btn-ghost btn-sm" onclick={dismissImportReport}>
-				{importReport.reload ? 'Dismiss and reload' : 'Dismiss'}
-			</button>
-		</div>
-	{/if}
+				{#if importReport.decisionLinks}
+					<p class="import-report-detail">{importReport.decisionLinks}</p>
+				{/if}
+				{#if importReport.workingCopy}
+					<p class="import-report-detail">{importReport.workingCopy}</p>
+				{/if}
+				{#if importReport.secretsKept}
+					<p class="import-report-detail">{importReport.secretsKept}</p>
+				{/if}
+				{#if importReport.secretsToEnter}
+					<p class="import-report-detail">{importReport.secretsToEnter}</p>
+				{/if}
+				{#if importReport.mfaWithoutFactor}
+					<p class="import-report-detail">{importReport.mfaWithoutFactor}</p>
+				{/if}
+				{#if importReport.settingsRemoved}
+					<p class="import-report-detail">{importReport.settingsRemoved}</p>
+				{/if}
+				{#if importReport.settingsHeld}
+					<p class="import-report-detail">{importReport.settingsHeld}</p>
+				{/if}
+				{#if importReport.systemLog}
+					<p class="import-report-detail">{importReport.systemLog}</p>
+				{/if}
+				{#if importReport.superadmin}
+					<p class="import-report-detail">{importReport.superadmin}</p>
+				{/if}
+				{#if importReport.tables && importReport.tables.length > 0}
+					<details class="import-report-tables">
+						<summary>All {importReport.tables.length} tables restored</summary>
+						<dl>
+							{#each importReport.tables as [table, rows]}
+								<div><dt>{table}</dt><dd>{count(rows)}</dd></div>
+							{/each}
+						</dl>
+					</details>
+				{/if}
+				{#if importReport.problems.length > 0}
+					<ul>
+						{#each importReport.problems.slice(0, 100) as problem}
+							<li>{problem}</li>
+						{/each}
+					</ul>
+					{#if importReport.problems.length > 100}
+						<p>…and {importReport.problems.length - 100} more.</p>
+					{/if}
+				{/if}
+				<Button variant="outline" size="sm" onclick={dismissImportReport}>
+					{importReport.reload ? 'Dismiss and reload' : 'Dismiss'}
+				</Button>
+			</div>
+		{/if}
 
-	<input type="file" accept=".db,.sqlite,.sqlite3" class="hidden-input" bind:this={fileInput} onchange={handleFileSelected} />
-</section>
+		<input type="file" accept=".db,.sqlite,.sqlite3" class="hidden-input" bind:this={fileInput} onchange={handleFileSelected} />
+	</CardContent>
+</Card>
 
 <!-- Import dialog, once a backup is chosen: the warning, the file, which of the two ways to restore, and the password. Cancel takes the focus, Tab stays in it and Escape is Cancel (card 2362). -->
 {#if showImportDialog && importFile}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Import Database">
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions .btn-ghost', onEscape: cancelImportDialog }}>
+		<div class="modal-content confirm-modal admin-dialog" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions .import-cancel', onEscape: cancelImportDialog }}>
 			<h2>Import Database</h2>
 			<p class="import-file">Backup chosen: <strong>{importFile.file.name}</strong></p>
 			<p style="margin-bottom: var(--space-md)">This will REPLACE ALL existing data with the backup — users, teams, boards, cards, comments, labels, task requests, and settings will all be overwritten. Everybody is signed out, you included: no session is restored, whatever the backup holds, so you will sign in again with an account the backup has. Invites that have not been used yet stop working. A backup with users and no superadmin among them is refused.</p>
@@ -665,13 +673,13 @@
 			<CurrentPasswordField bind:value={importPassword} bind:code={importCode} refusal={importRefusal} readonly={importConfirming} onEnter={confirmImport} />
 			<p class="import-default-note">{asksForPassword(codeAskedHere())} Confirm checks it, and then sends the backup.</p>
 			<div class="modal-actions">
-				<button class="btn-ghost" onclick={cancelImportDialog} disabled={importConfirming}>Cancel</button>
-				<button
-					class="btn-danger-solid"
+				<Button variant="outline" class="import-cancel" onclick={cancelImportDialog} disabled={importConfirming}>Cancel</Button>
+				<Button
+					variant="destructive"
 					onclick={confirmImport}
 					disabled={!proofTyped(importPassword, importCode, page.data.codeAsked) || importConfirming}
 					aria-busy={importConfirming ? 'true' : undefined}
-				>{importConfirming ? 'Working…' : 'Confirm'}</button>
+				>{importConfirming ? 'Working…' : 'Confirm'}</Button>
 			</div>
 		</div>
 	</div>
@@ -691,93 +699,147 @@
 {/if}
 
 <style>
-	/* Backup & Restore */
-	.backup-actions { display: flex; flex-direction: column; gap: var(--space-md); }
+	/* Backup & Restore: the export and the import, rows divided by a line (admin.css). */
 	.backup-item {
-		display: flex; align-items: center; gap: var(--space-lg);
-		padding: var(--space-lg); background: var(--bg-base);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
-		transition: border-color 0.2s ease, transform 0.2s ease;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm) var(--space-lg);
+		padding: var(--space-md) 0;
 	}
-	.backup-item:hover { border-color: var(--accent-indigo); transform: translateX(2px); }
+	.backup-item:first-child {
+		padding-top: 0;
+	}
+	.backup-item:last-child {
+		padding-bottom: 0;
+	}
 	.backup-icon {
-		width: 48px; height: 48px; border-radius: var(--radius-md);
-		display: flex; align-items: center; justify-content: center;
+		display: flex;
 		flex-shrink: 0;
+		align-items: center;
+		justify-content: center;
+		width: 2.5rem;
+		height: 2.5rem;
+		border-radius: var(--ui-radius);
 	}
-	.export-icon { background: rgba(52, 211, 153, 0.1); color: var(--accent-emerald); }
-	.import-icon { background: rgba(99, 102, 241, 0.1); color: var(--accent-indigo); }
-	.backup-info { flex: 1; }
-	.backup-info strong { font-size: 0.9rem; display: block; margin-bottom: 4px; }
-	.backup-info p { font-size: 0.78rem; color: var(--text-tertiary); margin: 0; line-height: 1.4; }
+	.export-icon {
+		background: color-mix(in srgb, var(--ui-success) 12%, transparent);
+		color: var(--ui-success);
+	}
+	.import-icon {
+		background: color-mix(in srgb, var(--ui-info) 12%, transparent);
+		color: var(--ui-info);
+	}
+	.backup-info {
+		flex: 1 1 16rem;
+		min-width: 0;
+	}
+	.backup-info strong {
+		display: block;
+		margin-bottom: 0.125rem;
+		font-weight: 500;
+	}
+	.backup-info p {
+		margin: 0;
+		font-size: 0.8125rem;
+		line-height: 1.45;
+		color: var(--ui-muted-foreground);
+	}
 
-	.btn-backup {
-		padding: var(--space-sm) var(--space-lg); border-radius: var(--radius-sm);
-		font-weight: 600; font-size: 0.82rem; border: none; cursor: pointer;
-		font-family: var(--font-family); white-space: nowrap;
-		display: flex; align-items: center; gap: 6px;
-		transition: all 0.2s ease;
-	}
-	.btn-backup.export {
-		background: var(--accent-emerald); color: white;
-	}
-	.btn-backup.export:hover { background: #059669; transform: scale(1.02); }
-	.btn-backup.import {
-		background: var(--accent-indigo); color: white;
-	}
-	.btn-backup.import:hover { background: #4f46e5; transform: scale(1.02); }
-	.btn-backup:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
-
+	/* Exporting or importing: a ring in the button's own text colour. */
 	.spinner {
-		width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3);
-		border-top-color: white; border-radius: 50%;
+		width: 14px;
+		height: 14px;
+		border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+		border-top-color: currentColor;
+		border-radius: 50%;
 		animation: spin 0.6s linear infinite;
 	}
 	@keyframes spin {
-		to { transform: rotate(360deg); }
+		to {
+			transform: rotate(360deg);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.spinner {
+			animation: none;
+		}
 	}
 
-	.hidden-input { display: none; }
+	.hidden-input {
+		display: none;
+	}
 
-	/* What an import could not do: stays until dismissed */
+	/* What an import did or could not do: stays until dismissed, in admin.css's notice look. */
 	.import-report {
-		margin-top: var(--space-md); padding: var(--space-lg);
-		background: rgba(244, 63, 94, 0.08);
-		border: 1px solid var(--accent-rose); border-radius: var(--radius-md);
-		font-size: 0.85rem; line-height: 1.5;
-		display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-sm);
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--space-sm);
+		margin-top: var(--space-md);
+		padding: var(--space-md);
+		font-size: 0.875rem;
 	}
-	.import-report strong { color: var(--accent-rose); }
+	.import-report strong {
+		font-size: 0.9375rem;
+		font-weight: 600;
+	}
 	.import-report ul {
-		margin: 0; padding-left: var(--space-lg);
-		max-height: 240px; overflow-y: auto; align-self: stretch;
-		color: var(--text-secondary); overflow-wrap: anywhere;
+		align-self: stretch;
+		max-height: 240px;
+		margin: 0;
+		padding-left: var(--space-lg);
+		overflow-y: auto;
+		color: var(--ui-muted-foreground);
+		overflow-wrap: anywhere;
 	}
-	.import-report p { margin: 0; color: var(--text-tertiary); }
-	/* Nothing wrong: what was restored, and what a working copy switched off */
-	.import-report-done { background: rgba(52, 211, 153, 0.08); border-color: var(--accent-emerald); }
-	.import-report-done strong { color: var(--accent-emerald); }
-	.import-report strong { font-size: 0.95rem; }
-	.import-report p.import-report-detail { color: var(--text-secondary); }
-	.import-report-tables { align-self: stretch; color: var(--text-secondary); }
-	.import-report-tables summary { cursor: pointer; color: var(--text-tertiary); font-size: 0.8rem; }
+	.import-report p {
+		margin: 0;
+		color: var(--ui-muted-foreground);
+	}
+	.import-report-tables {
+		align-self: stretch;
+		color: var(--ui-muted-foreground);
+	}
+	.import-report-tables summary {
+		border-radius: var(--ui-radius-sm);
+		font-size: 0.8125rem;
+		cursor: pointer;
+	}
+	.import-report-tables summary:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
 	.import-report-tables dl {
-		margin: var(--space-sm) 0 0; display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px var(--space-lg);
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+		gap: 2px var(--space-lg);
+		margin: var(--space-sm) 0 0;
 	}
-	.import-report-tables dl div { display: flex; justify-content: space-between; gap: var(--space-md); font-size: 0.8rem; }
-	.import-report-tables dt { color: var(--text-tertiary); }
-	.import-report-tables dd { margin: 0; font-variant-numeric: tabular-nums; }
-
+	.import-report-tables dl div {
+		display: flex;
+		justify-content: space-between;
+		gap: var(--space-md);
+		font-size: 0.8125rem;
+	}
+	.import-report-tables dd {
+		margin: 0;
+		color: var(--ui-foreground);
+		font-variant-numeric: tabular-nums;
+	}
 	/* Import dialog: the two ways to restore */
 	.import-choices { display: flex; flex-direction: column; gap: var(--space-sm); margin-bottom: var(--space-xl); }
 	.import-choice {
 		display: flex; align-items: flex-start; gap: var(--space-sm);
-		padding: var(--space-md); background: var(--bg-base);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
-		cursor: pointer; transition: border-color 0.2s ease;
+		padding: var(--space-md); background: var(--ui-background);
+		border: 1px solid var(--ui-border); border-radius: var(--ui-radius);
+		cursor: pointer; transition: border-color var(--duration-fast) var(--ease-out);
 	}
-	.import-choice:hover, .import-choice.selected { border-color: var(--accent-indigo); }
+	.import-choice:hover { border-color: var(--ui-input); }
+	.import-choice.selected { border-color: var(--ui-ring); box-shadow: 0 0 0 1px var(--ui-ring); }
+	@media (prefers-reduced-motion: reduce) {
+		.import-choice { transition: none; }
+	}
 	/* The global rule for inputs gives every one of them the full width and a
 	   text field's padding. A radio button takes its own size here, and the
 	   words beside it take the rest of the row. */
@@ -787,8 +849,8 @@
 	}
 	.import-choice > span { flex: 1; min-width: 0; }
 	.import-choice strong { font-size: 0.9rem; display: block; margin-bottom: 4px; }
-	.import-choice-desc { font-size: 0.78rem; color: var(--text-tertiary); line-height: 1.4; display: block; }
-	.import-default-note { font-size: 0.78rem; color: var(--text-secondary); line-height: 1.4; }
+	.import-choice-desc { font-size: 0.78rem; color: var(--ui-muted-foreground); line-height: 1.4; display: block; }
+	.import-default-note { font-size: 0.78rem; color: var(--ui-muted-foreground); line-height: 1.4; }
 	/* The backup chosen, named in the dialog before anything is sent (card 2701) */
 	.import-file { margin-bottom: var(--space-sm); overflow-wrap: anywhere; }
 </style>

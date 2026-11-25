@@ -19,6 +19,12 @@
 	import { answerBody, failureMessage } from '$lib/api';
 	import { NO_ANSWER } from '$lib/admin/send';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardDescription from '$lib/components/ui/CardDescription.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
 	import { codeAskedHere } from '$lib/code-asked';
 	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
@@ -211,63 +217,65 @@
 	}
 </script>
 
-<section class="admin-card glass fade-in-up" style="animation-delay: 220ms">
-	<h2>📧 Email / SMTP</h2>
-	<p class="section-desc">Configure SMTP to enable email notifications, user invites, and task alerts.</p>
-
-	{#if smtpLoading}
-		<p class="empty-msg">Loading SMTP config...</p>
-	{:else}
-		<div class="inline-form">
-			<div class="form-row">
-				<input type="text" placeholder="SMTP Host" bind:value={smtpHost} class="form-input" />
-				<input type="number" placeholder="Port" bind:value={smtpPort} class="form-input" style="width: 80px; flex: none" />
-			</div>
-			<p class="smtp-hint">Port 465 is encrypted from the start; any other port must offer STARTTLS. The mail server's certificate is checked either way.</p>
-			<div class="form-row">
-				<input type="text" placeholder="Username" bind:value={smtpUser} class="form-input" />
-				<input type="password" placeholder="Password" bind:value={smtpPass} class="form-input" />
-			</div>
-			<p class="smtp-hint">The saved password is kept only while the host, port, user name and the box below stay as they are: type it again when you change them.</p>
-			<div class="form-row">
-				<input type="email" placeholder="From Email" bind:value={smtpFromAddress} class="form-input" />
-				<input type="text" placeholder="From Name" bind:value={smtpFromName} class="form-input" />
-			</div>
-			<div class="form-row">
-				<label style="display: flex; align-items: center; gap: var(--space-xs); font-size: 0.78rem; color: var(--text-secondary); cursor: pointer">
-					<input type="checkbox" bind:checked={smtpAllowInsecure} /> Allow mail without a checked, encrypted connection
-				</label>
-				<div style="flex: 1"></div>
-				<button class="btn-primary btn-sm" onclick={() => (askingToSave = true)} disabled={!smtpHost || smtpSaving}>{smtpSaving ? 'Saving...' : 'Save SMTP'}</button>
-			</div>
-			{#if smtpAllowInsecure}
-				<p class="smtp-msg smtp-warning">⚠️ Mail, and the mail password, can then be read and changed by anyone on the network between this server and the mail server. Use it only for a relay on this server's own network that cannot use TLS. For a mail server whose certificate comes from a private authority, set NODE_EXTRA_CA_CERTS instead: see docs/deployment.md, Mail Server Certificates.</p>
-			{/if}
-			<div class="form-row" style="margin-top: var(--space-sm)">
-				<input type="email" placeholder="Test recipient (defaults to your email)" bind:value={smtpTestTo} class="form-input" />
-				<button class="btn-ghost btn-sm" onclick={testSmtp} disabled={!smtpHost || smtpTesting} style="flex: none">🧪 {smtpTesting ? 'Sending...' : 'Send Test'}</button>
-			</div>
-			{#if smtpMessage}
-				<p class="smtp-msg" class:smtp-error={smtpIsError} class:smtp-success={!smtpIsError}>{smtpMessage}</p>
-			{/if}
-			<!-- What mail has done since the server started (card 2196): kept in memory, so a restart starts it again -->
-			{#if mailStatus}
-				<div class="mail-status">
-					<p class="smtp-hint">Since the server started ({when(mailStatus.since)}): {mailStatus.sent} sent, {mailStatus.failed} failed.</p>
-					{#if mailStatus.lastFailure}
-						<p class="smtp-msg smtp-warning">⚠️ Last failure, {when(mailStatus.lastFailure.at)}: "{mailStatus.lastFailure.subject}": {mailStatus.lastFailure.problem}. The mail error was: {mailStatus.lastFailure.detail}.
-							{#if mailStatus.lastSentAt && mailStatus.lastSentAt > mailStatus.lastFailure.at}Mail has been sent since then, last at {when(mailStatus.lastSentAt)}.{:else}No mail has been sent since then.{/if}
-							Every failure is also in the system log, on the Audit page, with its recipient.</p>
-					{:else}
-						<p class="smtp-hint">✅ No mail has failed since then.</p>
-					{/if}
+<Card as="section" id="mail" class="admin-section" aria-labelledby="mail-title">
+	<CardHeader>
+		<CardTitle level={2} id="mail-title">Email / SMTP</CardTitle>
+		<CardDescription>Configure SMTP to enable email notifications, user invites, and task alerts.</CardDescription>
+	</CardHeader>
+	<CardContent>
+		{#if smtpLoading}
+			<p class="admin-note">Loading SMTP config...</p>
+		{:else}
+			<div class="admin-subform">
+				<div class="admin-field-row">
+					<input type="text" placeholder="SMTP Host" bind:value={smtpHost} class="ui-input" />
+					<input type="number" placeholder="Port" bind:value={smtpPort} class="ui-input" style="width: 80px; flex: none" />
 				</div>
-			{/if}
-		</div>
-	{/if}
-</section>
-
-<!-- Save asks for the caller's own password (card 2701). After the section: fixed to the window, not to a card that moves on hover. -->
+				<p class="smtp-hint">Port 465 is encrypted from the start; any other port must offer STARTTLS. The mail server's certificate is checked either way.</p>
+				<div class="admin-field-row">
+					<input type="text" placeholder="Username" bind:value={smtpUser} class="ui-input" />
+					<input type="password" placeholder="Password" bind:value={smtpPass} class="ui-input" />
+				</div>
+				<p class="smtp-hint">The saved password is kept only while the host, port, user name and the box below stay as they are: type it again when you change them.</p>
+				<div class="admin-field-row">
+					<input type="email" placeholder="From Email" bind:value={smtpFromAddress} class="ui-input" />
+					<input type="text" placeholder="From Name" bind:value={smtpFromName} class="ui-input" />
+				</div>
+				<div class="admin-field-row">
+					<label class="smtp-insecure">
+						<input type="checkbox" bind:checked={smtpAllowInsecure} /> Allow mail without a checked, encrypted connection
+					</label>
+					<div class="smtp-spacer"></div>
+					<Button size="sm" onclick={() => (askingToSave = true)} disabled={!smtpHost || smtpSaving}>{smtpSaving ? 'Saving...' : 'Save SMTP'}</Button>
+				</div>
+				{#if smtpAllowInsecure}
+					<p class="smtp-msg smtp-warning admin-notice admin-notice-warning">⚠️ Mail, and the mail password, can then be read and changed by anyone on the network between this server and the mail server. Use it only for a relay on this server's own network that cannot use TLS. For a mail server whose certificate comes from a private authority, set NODE_EXTRA_CA_CERTS instead: see docs/deployment.md, Mail Server Certificates.</p>
+				{/if}
+				<div class="admin-field-row smtp-test-row">
+					<input type="email" placeholder="Test recipient (defaults to your email)" bind:value={smtpTestTo} class="ui-input" />
+					<Button variant="outline" size="sm" onclick={testSmtp} disabled={!smtpHost || smtpTesting}>🧪 {smtpTesting ? 'Sending...' : 'Send Test'}</Button>
+				</div>
+				{#if smtpMessage}
+					<p class="smtp-msg admin-notice" class:smtp-error={smtpIsError} class:smtp-success={!smtpIsError} class:admin-notice-destructive={smtpIsError} class:admin-notice-success={!smtpIsError}>{smtpMessage}</p>
+				{/if}
+				<!-- What mail has done since the server started (card 2196): kept in memory, so a restart starts it again -->
+				{#if mailStatus}
+					<div class="mail-status">
+						<p class="smtp-hint">Since the server started ({when(mailStatus.since)}): {mailStatus.sent} sent, {mailStatus.failed} failed.</p>
+						{#if mailStatus.lastFailure}
+							<p class="smtp-msg smtp-warning admin-notice admin-notice-warning">⚠️ Last failure, {when(mailStatus.lastFailure.at)}: "{mailStatus.lastFailure.subject}": {mailStatus.lastFailure.problem}. The mail error was: {mailStatus.lastFailure.detail}.
+								{#if mailStatus.lastSentAt && mailStatus.lastSentAt > mailStatus.lastFailure.at}Mail has been sent since then, last at {when(mailStatus.lastSentAt)}.{:else}No mail has been sent since then.{/if}
+								Every failure is also in the system log, on the Audit page, with its recipient.</p>
+						{:else}
+							<p class="smtp-hint">✅ No mail has failed since then.</p>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		{/if}
+	</CardContent>
+</Card>
+<!-- Save asks for the caller's own password (card 2701). After the card: fixed to the window. -->
 {#if askingToSave}
 	<ConfirmModal
 		title="Save SMTP Settings"
@@ -281,17 +289,35 @@
 {/if}
 
 <style>
-	/* SMTP */
+	/* SMTP: the notices are admin.css's (the kit's alert look); these place them. */
 	.smtp-msg {
-		font-size: 0.78rem; font-weight: 500; padding: var(--space-sm) var(--space-md);
-		border-radius: var(--radius-sm); margin-top: var(--space-sm);
+		margin-top: var(--space-xs);
 	}
-	.smtp-success { background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); color: var(--accent-emerald); }
-	.smtp-error { background: rgba(244, 63, 94, 0.1); border: 1px solid rgba(244, 63, 94, 0.3); color: var(--accent-rose); }
-	/* While the way out is ticked (card 2189) */
-	.smtp-warning { background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); color: var(--accent-amber); }
-	.smtp-hint { font-size: 0.68rem; color: var(--text-tertiary); margin: 0 0 var(--space-xs); }
+	.smtp-hint {
+		margin: 0;
+		font-size: 0.75rem;
+		color: var(--ui-muted-foreground);
+	}
+	/* The way out (card 2189): a box and its words. */
+	.smtp-insecure {
+		display: flex;
+		align-items: center;
+		gap: var(--space-xs);
+		font-size: 0.8125rem;
+		color: var(--ui-foreground);
+		cursor: pointer;
+	}
+	.smtp-spacer {
+		flex: 1;
+	}
+	.smtp-test-row {
+		margin-top: var(--space-sm);
+	}
 	/* What mail has done since the server started (card 2196) */
-	.mail-status { margin-top: var(--space-md); }
-	.mail-status .smtp-msg { overflow-wrap: anywhere; }
+	.mail-status {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-xs);
+		margin-top: var(--space-sm);
+	}
 </style>

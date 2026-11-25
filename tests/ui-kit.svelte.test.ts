@@ -80,11 +80,15 @@ describe('PageShell', () => {
 		expect(target.querySelector('h1')).toBeNull();
 	});
 
-	it('2. with a rail, draws the page first and the rail after it in an aside, in a grid', () => {
+	// Card 3076: the document follows what is drawn, so a rail at the start (navigation, filters) is met first by the keyboard.
+	it.each([
+		{ railPosition: 'end', railFirst: false },
+		{ railPosition: 'start', railFirst: true }
+	])('2. with a rail at the $railPosition, draws it in an aside in a grid, before the page in the document only at the start', ({ railPosition, railFirst }) => {
 		const target = draw(PageShell, {
 			title: 'Decisions',
 			rail: html('<div data-said="rail">Filters</div>'),
-			railPosition: 'start',
+			railPosition,
 			railLabel: 'Filters',
 			children: html('<div data-said="page">Rows</div>')
 		});
@@ -93,13 +97,14 @@ describe('PageShell', () => {
 		const main = target.querySelector('main')!;
 		expect(main.classList.contains('ui-shell-grid')).toBe(true);
 		expect(main.classList.contains('ui-shell-full')).toBe(true);
+		expect(main.classList.contains('ui-shell-rail-start')).toBe(railFirst);
 		const aside = main.querySelector('aside')!;
 		expect(aside.getAttribute('aria-label')).toBe('Filters');
 		expect(aside.querySelector('[data-said="rail"]')).not.toBeNull();
 		const page = main.querySelector('[data-said="page"]')!;
 		expect(aside.contains(page)).toBe(false);
-		// The page before the rail in the document, whichever side the rail is drawn on.
-		expect(page.compareDocumentPosition(aside) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		const asideFollows = (page.compareDocumentPosition(aside) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+		expect(asideFollows).toBe(!railFirst);
 	});
 
 	it('T1 (card 3075). bare: the header shows DumpFire as text with no link, no Theme menu, and no crumbs or actions even when given; main as without it', () => {

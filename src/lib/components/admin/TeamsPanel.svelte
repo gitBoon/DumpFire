@@ -13,6 +13,12 @@
 	import { answerBody } from '$lib/api';
 	import { sent, showToast } from '$lib/admin/send';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 
 	let {
 		data,
@@ -246,139 +252,187 @@
 </script>
 
 <!-- Team Management -->
-<section class="admin-card glass fade-in-up" style="animation-delay: 280ms">
-	<div class="section-header">
-		<h2>🏢 Team Management</h2>
-		<button class="btn-primary btn-sm" onclick={() => (showCreateTeam = true)}>+ Add Team</button>
-	</div>
-	<!-- A role being saved, said politely to a screen reader (card 2376). -->
-	<p class="saving-status" role="status">{savingSaid}</p>
+<Card as="section" id="teams" class="admin-section" aria-labelledby="teams-title">
+	<CardHeader>
+		{#snippet actions()}
+			<Button size="sm" onclick={() => (showCreateTeam = true)}>+ Add Team</Button>
+		{/snippet}
+		<CardTitle level={2} id="teams-title">Team Management</CardTitle>
+	</CardHeader>
+	<CardContent>
+		<!-- A role being saved, said politely to a screen reader (card 2376). -->
+		<p class="saving-status" role="status">{savingSaid}</p>
 
-	{#if showCreateTeam}
-		<div class="inline-form">
-			<div class="form-row">
-				<input type="text" placeholder="Team name" bind:value={newTeamName} class="form-input" />
-				<EmojiPicker value={newTeamEmoji} onSelect={(e) => (newTeamEmoji = e)} />
-				<button class="btn-primary btn-sm" onclick={createTeam} disabled={!newTeamName.trim()}>Create</button>
-				<button class="btn-ghost btn-sm" onclick={() => (showCreateTeam = false)}>Cancel</button>
+		{#if showCreateTeam}
+			<div class="admin-subform">
+				<div class="admin-field-row">
+					<input type="text" placeholder="Team name" bind:value={newTeamName} class="ui-input" />
+					<EmojiPicker value={newTeamEmoji} onSelect={(e) => (newTeamEmoji = e)} />
+					<Button size="sm" onclick={createTeam} disabled={!newTeamName.trim()}>Create</Button>
+					<Button variant="outline" size="sm" onclick={() => (showCreateTeam = false)}>Cancel</Button>
+				</div>
 			</div>
-		</div>
-	{/if}
+		{/if}
 
-	{#if data.teams.length === 0}
-		<p class="empty-msg">No teams yet.</p>
-	{:else}
-		<div class="team-list">
-			{#each data.teams as team (team.id)}
-				<div class="team-card">
-					<div class="team-card-header">
-						<span class="team-emoji">{team.emoji}</span>
-						<span class="team-name">{team.name}</span>
-						<span class="team-count">{team.members.length} member{team.members.length !== 1 ? 's' : ''}</span>
-						<button class="btn-ghost btn-sm danger" onclick={() => confirm('Delete Team', `Delete team "${team.name}"?`, () => deleteTeam(team.id))} title="Delete team">🗑️</button>
-					</div>
-					<div class="team-members">
-						{#each team.members as member (member.userId)}
-							{@const roleKey = `${team.id}:${member.userId}`}
-							<div class="team-member">
-								<span>{member.emoji} {member.username}</span>
-								<!-- The role, changed in place (card 2355). A role stored before roles were checked is shown as itself. Choosing sends nothing; Change saves it (card 2376). Busy, not off, while its change is out: off, it would drop the focus. -->
-								<select
-									class="member-role"
-									value={chosenRole.get(roleKey) ?? member.role}
-									aria-busy={changingRole.has(roleKey) ? 'true' : undefined}
-									onchange={(e) => chooseRole(team.id, member, e.currentTarget)}
-									aria-label="{member.username}'s role in this team"
-								>
-									{#if member.role !== 'member' && member.role !== 'owner'}
-										<option value={member.role}>{member.role}</option>
-									{/if}
+		{#if data.teams.length === 0}
+			<EmptyState level={3} title="No teams yet." />
+		{:else}
+			<div class="team-list">
+				{#each data.teams as team (team.id)}
+					<div class="team-card">
+						<div class="team-card-header">
+							<span class="team-emoji">{team.emoji}</span>
+							<span class="team-name">{team.name}</span>
+							<span class="team-count">{team.members.length} member{team.members.length !== 1 ? 's' : ''}</span>
+							<Button variant="ghost" size="sm" class="danger" onclick={() => confirm('Delete Team', `Delete team "${team.name}"?`, () => deleteTeam(team.id))} title="Delete team">🗑️</Button>
+						</div>
+						<div class="team-members">
+							{#each team.members as member (member.userId)}
+								{@const roleKey = `${team.id}:${member.userId}`}
+								<div class="team-member">
+									<span class="team-member-name">{member.emoji} {member.username}</span>
+									<!-- The role, changed in place (card 2355). A role stored before roles were checked is shown as itself. Choosing sends nothing; Change saves it (card 2376). Busy, not off, while its change is out: off, it would drop the focus. -->
+									<select
+										class="ui-select member-role"
+										value={chosenRole.get(roleKey) ?? member.role}
+										aria-busy={changingRole.has(roleKey) ? 'true' : undefined}
+										onchange={(e) => chooseRole(team.id, member, e.currentTarget)}
+										aria-label="{member.username}'s role in this team"
+									>
+										{#if member.role !== 'member' && member.role !== 'owner'}
+											<option value={member.role}>{member.role}</option>
+										{/if}
+										<option value="member">Member</option>
+										<option value="owner">Owner</option>
+									</select>
+									<Button
+										variant="ghost"
+										size="sm"
+										class="member-role-change"
+										aria-disabled={chosenRole.has(roleKey) && !changingRole.has(roleKey) ? undefined : 'true'}
+										onclick={() => changeRole(team.id, member)}
+										aria-label="Change {member.username}'s team role"
+									>Change</Button>
+									<Button variant="ghost" size="sm" onclick={() => removeTeamMember(team.id, member.userId)} title="Remove from team">✕</Button>
+								</div>
+							{:else}
+								<p class="admin-note">No members</p>
+							{/each}
+						</div>
+						<div class="add-member-row">
+							<select class="ui-select" onchange={(e) => { addMemberRole = 'member'; addMemberTeamId = team.id; addMemberUserId = Number((e.target as HTMLSelectElement).value); }}>
+								<option value="">Add member...</option>
+								<!-- A disabled account is named on the panel, and cannot be added (card 2671). -->
+								{#each data.users.filter(u => !u.disabledAt && !team.members.some(m => m.userId === u.id)) as u}
+									<option value={u.id}>{u.emoji} {u.username}</option>
+								{/each}
+							</select>
+							{#if addMemberTeamId === team.id && addMemberUserId}
+								<select class="ui-select role-pick" bind:value={addMemberRole} title="Their role in this team">
 									<option value="member">Member</option>
 									<option value="owner">Owner</option>
 								</select>
-								<button
-									class="btn-ghost btn-xs member-role-change"
-									aria-disabled={chosenRole.has(roleKey) && !changingRole.has(roleKey) ? undefined : 'true'}
-									onclick={() => changeRole(team.id, member)}
-									aria-label="Change {member.username}'s team role"
-								>Change</button>
-								<button class="btn-ghost btn-xs" onclick={() => removeTeamMember(team.id, member.userId)} title="Remove from team">✕</button>
-							</div>
-						{:else}
-							<span class="empty-msg" style="padding: var(--space-sm)">No members</span>
-						{/each}
+								<!-- Busy, not off, while the add is out (card 2374): off, it would drop the focus. -->
+								<Button size="sm" aria-busy={addingTo === team.id ? 'true' : undefined} onclick={addTeamMember}>Add</Button>
+							{/if}
+						</div>
 					</div>
-					<div class="add-member-row">
-						<select class="form-input" onchange={(e) => { addMemberRole = 'member'; addMemberTeamId = team.id; addMemberUserId = Number((e.target as HTMLSelectElement).value); }}>
-							<option value="">Add member...</option>
-							<!-- A disabled account is named on the panel, and cannot be added (card 2671). -->
-							{#each data.users.filter(u => !u.disabledAt && !team.members.some(m => m.userId === u.id)) as u}
-								<option value={u.id}>{u.emoji} {u.username}</option>
-							{/each}
-						</select>
-						{#if addMemberTeamId === team.id && addMemberUserId}
-							<select class="form-input role-pick" bind:value={addMemberRole} title="Their role in this team">
-								<option value="member">Member</option>
-								<option value="owner">Owner</option>
-							</select>
-							<!-- Busy, not off, while the add is out (card 2374): off, it would drop the focus. -->
-							<button class="btn-primary btn-xs" aria-busy={addingTo === team.id ? 'true' : undefined} onclick={addTeamMember}>Add</button>
-						{/if}
-					</div>
-				</div>
-			{/each}
-		</div>
-	{/if}
-</section>
+				{/each}
+			</div>
+		{/if}
+	</CardContent>
+</Card>
 
 <style>
-	/* Team management */
-	.team-list { display: flex; flex-direction: column; gap: var(--space-md); }
+	/* Team management: each team a box of its own, with its members and its add row. */
+	.team-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-md);
+	}
 	.team-card {
-		background: var(--bg-base); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-md); overflow: hidden;
-		transition: border-color 0.15s;
+		min-width: 0;
+		border: 1px solid var(--ui-border);
+		border-radius: var(--ui-radius);
+		overflow: hidden;
 	}
-	.team-card:hover { border-color: var(--accent-indigo); }
 	.team-card-header {
-		display: flex; align-items: center; gap: var(--space-sm);
-		padding: var(--space-md) var(--space-lg);
-		border-bottom: 1px solid var(--glass-border);
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md);
+		border-bottom: 1px solid var(--ui-border);
+		background: color-mix(in srgb, var(--ui-muted) 45%, transparent);
 	}
-	.team-emoji { font-size: 1.2rem; }
-	.team-name { font-weight: 600; font-size: 0.9rem; flex: 1; }
-	.team-count { font-size: 0.72rem; color: var(--text-tertiary); }
+	.team-emoji {
+		font-size: 1.2rem;
+	}
+	.team-name {
+		flex: 1;
+		min-width: 0;
+		font-weight: 500;
+		overflow-wrap: anywhere;
+	}
+	.team-count {
+		font-size: 0.75rem;
+		color: var(--ui-muted-foreground);
+	}
 
 	.team-members {
-		padding: var(--space-sm) var(--space-lg);
-		display: flex; flex-direction: column; gap: 2px;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: var(--space-sm) var(--space-md);
 	}
 	.team-member {
-		display: flex; align-items: center; gap: var(--space-sm);
-		padding: var(--space-xs) 0; font-size: 0.82rem;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-xs) var(--space-sm);
+		padding: var(--space-xs) 0;
 	}
-	.team-member span:first-child { flex: 1; }
-	/* The role, a picker since card 2355: as small as the label it was. */
+	.team-member-name {
+		flex: 1 1 10rem;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	/* The role, a picker since card 2355: the kit's field, as low as the row's buttons. */
 	.member-role {
-		font-size: 0.7rem; color: var(--text-secondary); font-weight: 600; font-family: var(--font-family);
-		padding: 1px var(--space-xs); border-radius: var(--radius-sm);
-		border: 1px solid var(--glass-border); background: var(--bg-elevated);
+		width: auto;
+		height: 2rem;
+		padding-left: 0.5rem;
+		font-size: 0.8125rem;
 	}
-	.member-role:focus { border-color: var(--accent-indigo); outline: none; }
-	/* Change beside the picker (card 2376): dimmed, and sending nothing, until a role other than theirs is chosen. */
-	.member-role-change[aria-disabled='true'] { opacity: 0.35; cursor: default; }
 	/* The status line is for screen readers alone. */
 	.saving-status {
-		position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-		overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 
 	.add-member-row {
-		display: flex; gap: var(--space-sm); align-items: center;
-		padding: var(--space-sm) var(--space-lg);
-		border-top: 1px solid var(--glass-border);
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm);
+		padding: var(--space-sm) var(--space-md);
+		border-top: 1px solid var(--ui-border);
 	}
-	.add-member-row select { flex: 1; }
+	.add-member-row select {
+		flex: 1 1 12rem;
+		width: auto;
+		max-width: 24rem;
+	}
 	/* The role beside the person (card 2309): as wide as its words. */
-	.add-member-row select.role-pick { flex: none; min-width: 0; width: auto; }
+	.add-member-row select.role-pick {
+		flex: none;
+		min-width: 0;
+	}
 </style>

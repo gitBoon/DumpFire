@@ -6544,7 +6544,7 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 
 	it('shows a connection narrowed to DumpFire’s files as Connected, any other as all of Drive, and Connect only where there is no connection (decision 7, R2, R6)', () => {
 		expect(row).toMatch(
-			/\{#if dest\.refreshToken\}\s*\{#if driveScopeIsNarrow\(dest\.grantedScope\)\}\s*<span[^>]*>✅ Connected<\/span>\s*\{:else\}\s*<span[^>]*>⚠️ Connected · all of Drive<\/span>\s*\{\/if\}\s*\{:else\}\s*<button[^>]*onclick=\{\(\) => gdriveConnect\?\.connectGDriveOAuth\(dest\.name\)\}>🔗 Connect<\/button>\s*\{\/if\}/
+			/\{#if dest\.refreshToken\}\s*\{#if driveScopeIsNarrow\(dest\.grantedScope\)\}\s*<span[^>]*>✅ Connected<\/span>\s*\{:else\}\s*<span[^>]*>⚠️ Connected · all of Drive<\/span>\s*\{\/if\}\s*\{:else\}\s*<Button[^>]*onclick=\{\(\) => gdriveConnect\?\.connectGDriveOAuth\(dest\.name\)\}>🔗 Connect<\/Button>\s*\{\/if\}/
 		);
 		// The Connect box the button calls is the one the panel draws.
 		expect(markupOf(panel)).toContain('<GDriveConnectModal bind:this={gdriveConnect} {loadBackupConfig} />');
@@ -6596,7 +6596,8 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 	it('names the destination’s Connect button in the forms as the row labels it (card 2306)', () => {
 		// The row's button, word for word, and the one button there is to name.
 		const label = '🔗 Connect';
-		expect(row).toContain(`>${label}</button>`);
+		// Card 3076: the kit's Button.
+		expect(row).toContain(`>${label}</Button>`);
 		const connected = editForm.indexOf('{#if destGdriveRefreshToken}');
 		const notYet = editForm.slice(editForm.indexOf('{:else}', connected), editForm.indexOf('{/if}', connected));
 		expect(notYet).toContain(`Save first, then use "${label}" on the destination.`);

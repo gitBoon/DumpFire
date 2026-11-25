@@ -7,11 +7,17 @@
   the panel reads its settings again (after Run Now) and this is drawn anew.
 
   A success with an error is an upload whose older copies retention could not
-  remove (card 2941): ✅ then ⚠️ and the reason, in amber.
+  remove (card 2941): ✅ then ⚠️ and the reason.
+
+  Card 3076: the destination's type a kit outline badge (no fixed colours),
+  Show all a kit button; the words in the text colours, the tone in the
+  icons and the failed row's edge.
 -->
 
 <script lang="ts">
 	import { formatBytes, formatDuration, formatRelativeTime, type BackupHistoryEntry } from '$lib/admin/format';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
 
 	let {
 		backupHistory,
@@ -24,11 +30,9 @@
 
 {#if backupHistory.length > 0}
 	<div class="backup-history">
-		<div style="display: flex; align-items: center; justify-content: space-between; margin: var(--space-xl) 0 var(--space-md)">
-			<h3 style="font-size: 0.85rem; margin: 0">📜 Backup History</h3>
-			<div style="display: flex; gap: var(--space-sm); align-items: center">
-				<span style="font-size: 0.7rem; color: var(--text-tertiary)">{backupHistory.length} entries</span>
-			</div>
+		<div class="history-head">
+			<h3 class="history-title">📜 Backup History</h3>
+			<span class="history-count">{backupHistory.length} entries</span>
 		</div>
 		<div class="history-table-wrap">
 			<table class="history-table">
@@ -46,7 +50,7 @@
 						<tr class="history-row" class:history-failed={entry.status === 'failed'}>
 							<td title={entry.createdAt}>{formatRelativeTime(entry.createdAt)}</td>
 							<td>
-								<span class="dest-type-badge-sm dest-type-{entry.destinationType}">{entry.destinationType}</span>
+								<Badge variant="outline" class="dest-type-badge-sm dest-type-{entry.destinationType}">{entry.destinationType}</Badge>
 								{entry.destinationName}
 							</td>
 							<td>
@@ -68,43 +72,73 @@
 			</table>
 		</div>
 		{#if backupHistory.length > 5}
-			<button class="btn-ghost btn-sm" style="margin-top: var(--space-sm); font-size: 0.72rem" onclick={() => showAllHistory = !showAllHistory}>
-				{showAllHistory ? '▲ Show less' : `▼ Show all ${backupHistory.length} entries`}
-			</button>
+			<div class="history-more">
+				<Button variant="ghost" size="sm" onclick={() => showAllHistory = !showAllHistory}>
+					{showAllHistory ? '▲ Show less' : `▼ Show all ${backupHistory.length} entries`}
+				</Button>
+			</div>
 		{/if}
 	</div>
 {/if}
 
 <style>
-	.dest-type-badge-sm {
-		font-size: 0.6rem; font-weight: 700; padding: 1px 5px;
-		border-radius: 3px; white-space: nowrap;
+	.history-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-sm);
+		margin: var(--space-xl) 0 var(--space-sm);
+	}
+	.history-title {
+		margin: 0;
+		font-size: 0.875rem;
+		font-weight: 600;
+		color: var(--ui-foreground);
+	}
+	.history-count {
+		font-size: 0.75rem;
+		color: var(--ui-muted-foreground);
 	}
 
 	/* History table */
 	.history-table-wrap {
-		overflow-x: auto; border-radius: var(--radius-md);
-		border: 1px solid var(--glass-border);
+		overflow-x: auto;
+		border: 1px solid var(--ui-border);
+		border-radius: var(--ui-radius);
 	}
 	.history-table {
-		width: 100%; border-collapse: collapse; font-size: 0.75rem;
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.8125rem;
 	}
 	.history-table th {
-		text-align: left; padding: var(--space-sm) var(--space-md);
-		font-weight: 600; font-size: 0.68rem; text-transform: uppercase;
-		letter-spacing: 0.05em; color: var(--text-tertiary);
-		background: var(--bg-base); border-bottom: 1px solid var(--glass-border);
+		height: 2.25rem;
+		padding: 0 var(--space-md);
+		border-bottom: 1px solid var(--ui-border);
+		text-align: left;
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--ui-muted-foreground);
+		white-space: nowrap;
 	}
 	.history-table td {
 		padding: var(--space-xs) var(--space-md);
-		border-bottom: 1px solid var(--glass-border);
+		border-bottom: 1px solid var(--ui-border);
 		vertical-align: middle;
 	}
-	.history-row:last-child td { border-bottom: none; }
-	.history-failed { opacity: 0.85; }
-	.history-failed td:first-child { border-left: 3px solid var(--accent-rose); }
+	.history-row:last-child td {
+		border-bottom: none;
+	}
+	.history-failed td:first-child {
+		box-shadow: inset 3px 0 0 var(--ui-destructive);
+	}
 
-	.status-success { color: var(--accent-emerald); }
-	.status-failed { color: var(--accent-rose); font-size: 0.68rem; }
-	.status-warning { color: var(--accent-amber); font-size: 0.68rem; }
+	.status-failed,
+	.status-warning {
+		font-size: 0.75rem;
+		color: var(--ui-foreground);
+	}
+	.history-more {
+		margin-top: var(--space-xs);
+	}
 </style>

@@ -61,6 +61,14 @@
 	import { codeAskedHere } from '$lib/code-asked';
 	import { asksForPassword, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import ResetPasswordDialog from './ResetPasswordDialog.svelte';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardDescription from '$lib/components/ui/CardDescription.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
+	import EmptyState from '$lib/components/ui/EmptyState.svelte';
 
 	let {
 		data,
@@ -110,7 +118,7 @@
 	 * is dismissed. Create itself is off while the invite is out and gone with
 	 * the form once it is answered, so the dialog found the focus on nothing.
 	 */
-	let addUserButton = $state<HTMLButtonElement>();
+	let addUserButton = $state<HTMLButtonElement | HTMLAnchorElement | null>(null);
 
 	/** The password dialog, opened by 🔑. */
 	let resetDialog = $state<ReturnType<typeof ResetPasswordDialog>>();
@@ -213,7 +221,7 @@
 			// (card 2851).
 			if (typeof result?.enrolmentUrl === 'string') {
 				const said = typeof result.message === 'string' ? result.message : `User ${made} was made.`;
-				inviteLink = { url: result.enrolmentUrl, username: made, message: said, returnTo: addUserButton, kind: 'new-account' };
+				inviteLink = { url: result.enrolmentUrl, username: made, message: said, returnTo: addUserButton ?? undefined, kind: 'new-account' };
 				return;
 			}
 			if (result?.enrolmentUrl === null && typeof result.message === 'string') {
@@ -225,7 +233,7 @@
 			if (result?.mailSent === false) {
 				const said = `User ${made} was made, but the invite mail could not be sent: ${result.mailProblem}.`;
 				if (typeof result.inviteUrl === 'string') {
-					inviteLink = { url: result.inviteUrl, username: made, message: said, returnTo: addUserButton };
+					inviteLink = { url: result.inviteUrl, username: made, message: said, returnTo: addUserButton ?? undefined };
 				} else {
 					showToast(`${said} Send a new invite with 📧 once mail works.`, 'error', started);
 				}
@@ -754,168 +762,207 @@
 </script>
 
 <!-- User Management -->
-<section class="admin-card glass fade-in-up" style="animation-delay: 200ms">
-	<div class="section-header">
-		<h2>👥 User Management</h2>
-		<button class="btn-primary btn-sm" onclick={() => (showCreateUser = true)} bind:this={addUserButton}>+ Add User</button>
-	</div>
-	<!-- A role being saved, said politely to a screen reader (card 2376). -->
-	<p class="saving-status" role="status">{savingSaid}</p>
-	<p class="section-desc">Each row shows only what you may do to that account. Only the superadmin changes an administrator's account, and nobody else changes the superadmin's: those rows show 🔒. On your own row there is only 🔑, to change your password.</p>
+<Card as="section" id="users" class="admin-section" aria-labelledby="users-title">
+	<CardHeader>
+		{#snippet actions()}
+			<Button size="sm" onclick={() => (showCreateUser = true)} bind:ref={addUserButton}>+ Add User</Button>
+		{/snippet}
+		<CardTitle level={2} id="users-title">User Management</CardTitle>
+		<CardDescription>Each row shows only what you may do to that account. Only the superadmin changes an administrator's account, and nobody else changes the superadmin's: those rows show 🔒. On your own row there is only 🔑, to change your password.</CardDescription>
+	</CardHeader>
+	<CardContent>
+		<!-- A role being saved, said politely to a screen reader (card 2376). -->
+		<p class="saving-status" role="status">{savingSaid}</p>
 
-	{#if showCreateUser}
-		<div class="inline-form">
-			<div class="form-row">
-				<input type="text" placeholder="Username" bind:value={newUsername} class="form-input" />
-				<input type="email" placeholder="Email" bind:value={newEmail} class="form-input" />
-				<input type="password" placeholder="Password (blank = send invite)" bind:value={newPassword} class="form-input" autocomplete="new-password" />
+		{#if showCreateUser}
+			<div class="admin-subform">
+				<div class="admin-field-row">
+					<input type="text" placeholder="Username" bind:value={newUsername} class="ui-input" />
+					<input type="email" placeholder="Email" bind:value={newEmail} class="ui-input" />
+					<input type="password" placeholder="Password (blank = send invite)" bind:value={newPassword} class="ui-input" autocomplete="new-password" />
+				</div>
+				<!-- The caller's own, which making an account asks for again (card 2701), with the server's refusal of it. -->
+				<CurrentPasswordField bind:value={newUserCurrentPassword} bind:code={newUserCurrentCode} refusal={newUserRefusal} onEnter={createUser} />
+				<p class="form-hint admin-note">{asksForPassword(codeAskedHere())} Making an account asks for yours, so that a browser left signed in cannot.</p>
+				<div class="admin-field-row">
+					<EmojiPicker value={newUserEmoji} onSelect={(e) => (newUserEmoji = e)} />
+					<select bind:value={newUserRole} class="ui-select">
+						<option value="user">User</option>
+						{#if isSuperadmin}<option value="admin">Admin</option>{/if}
+					</select>
+					<Button size="sm" onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !proofTyped(newUserCurrentPassword, newUserCurrentCode, page.data.codeAsked)}>
+						{creatingUser ? 'Creating...' : 'Create'}
+					</Button>
+					<Button variant="outline" size="sm" onclick={() => { showCreateUser = false; newUserCurrentPassword = ''; newUserCurrentCode = ''; newUserRefusal = null; }}>Cancel</Button>
+				</div>
 			</div>
-			<!-- The caller's own, which making an account asks for again (card 2701), with the server's refusal of it. -->
-			<CurrentPasswordField bind:value={newUserCurrentPassword} bind:code={newUserCurrentCode} refusal={newUserRefusal} onEnter={createUser} />
-			<p class="form-hint">{asksForPassword(codeAskedHere())} Making an account asks for yours, so that a browser left signed in cannot.</p>
-			<div class="form-row">
-				<EmojiPicker value={newUserEmoji} onSelect={(e) => (newUserEmoji = e)} />
-				<select bind:value={newUserRole} class="form-input">
-					<option value="user">User</option>
-					{#if isSuperadmin}<option value="admin">Admin</option>{/if}
-				</select>
-				<button class="btn-primary btn-sm" onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !proofTyped(newUserCurrentPassword, newUserCurrentCode, page.data.codeAsked)}>
-					{creatingUser ? 'Creating...' : 'Create'}
-				</button>
-				<button class="btn-ghost btn-sm" onclick={() => { showCreateUser = false; newUserCurrentPassword = ''; newUserCurrentCode = ''; newUserRefusal = null; }}>Cancel</button>
-			</div>
-		</div>
-	{/if}
+		{/if}
 
-	{#if data.users.length === 0}
-		<p class="empty-msg">No users yet.</p>
-	{:else}
-		<div class="user-list">
-			{#each data.users as u (u.id)}
-				<!-- Card 2671: a disabled account's row is greyed, says when and by whom, and offers only Enable and Delete. -->
-				{@const disabled = !!u.disabledAt}
-				<div class="user-row" class:disabled-row={disabled}>
-					<span class="user-row-emoji">{u.emoji}</span>
-					<div class="user-row-info">
-						<span class="user-row-name">{u.username}</span>
-						<span class="user-row-email">{u.email}</span>
-						{#if disabled}
-							<span class="user-row-disabled">Disabled {u.disabledAt?.slice(0, 10)}{u.disabledByName ? ` by ${u.disabledByName}` : ''}</span>
-						{/if}
-						<!-- Card 2769 (decision 25): leave to set up two-step sign-in on the password alone, in the 14 days after the release. -->
-						{#if u.passwordSetUpUntil}
-							<span class="user-row-setup">may set up on password until {u.passwordSetUpUntil} UTC</span>
+		{#if data.users.length === 0}
+			<EmptyState level={3} title="No users yet." />
+		{:else}
+			<div class="user-list admin-rows">
+				{#each data.users as u (u.id)}
+					<!-- Card 2671: a disabled account's row is greyed, says when and by whom, and offers only Enable and Delete. -->
+					{@const disabled = !!u.disabledAt}
+					<div class="user-row" class:disabled-row={disabled}>
+						<span class="user-row-emoji">{u.emoji}</span>
+						<div class="user-row-info">
+							<span class="user-row-name">{u.username}</span>
+							<span class="user-row-email">{u.email}</span>
+							{#if disabled}
+								<span class="user-row-disabled">Disabled {u.disabledAt?.slice(0, 10)}{u.disabledByName ? ` by ${u.disabledByName}` : ''}</span>
+							{/if}
+							<!-- Card 2769 (decision 25): leave to set up two-step sign-in on the password alone, in the 14 days after the release. -->
+							{#if u.passwordSetUpUntil}
+								<span class="user-row-setup">may set up on password until {u.passwordSetUpUntil} UTC</span>
+							{/if}
+						</div>
+						<!-- Card 3076: the role as a kit badge, its tone by role; the class a hook. -->
+						<Badge class="role-badge role-{u.role}" variant={u.role === 'superadmin' ? 'warning' : u.role === 'admin' ? 'info' : 'secondary'}>{u.role}</Badge>
+						<!-- Only what the server would let you do to this account (the rule in $lib/account-rule.ts). On your own row, only the password. -->
+						{#if mayManageAccount(data.currentUser, u)}
+							{#if u.id !== data.currentUser.id}
+								<!-- The picker and Change for the superadmin alone: anyone else may give only User, so the picker had one choice and Change could never do anything (the card 2376 review); the badge says the role. -->
+								{#if isSuperadmin}
+									<!-- Choosing sends nothing; Change saves it (card 2376). Busy, not off, while its change is out: off, it would drop the focus. -->
+									<select
+										value={chosenRole.get(u.id) ?? u.role}
+										aria-busy={changingRole.has(u.id) ? 'true' : undefined}
+										onchange={(e) => chooseUserRole(u.id, e.currentTarget)}
+										class="ui-select role-select"
+										aria-label="{u.username}'s role"
+									>
+										<option value="user">User</option>
+										<option value="admin">Admin</option>
+									</select>
+									<Button
+										variant="ghost"
+										size="sm"
+										class="role-change"
+										aria-disabled={chosenRole.has(u.id) && !changingRole.has(u.id) ? undefined : 'true'}
+										onclick={() => askChangeUserRole(u.id, u.username)}
+										aria-label="Change {u.username}'s role"
+									>Change</Button>
+								{/if}
+							{/if}
+							<!-- Card 2671: a disabled account's password, invite and two-step sign-in are not reset (D18). -->
+							{#if !disabled}
+								<Button variant="ghost" size="sm" onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</Button>
+							{/if}
+							{#if u.id !== data.currentUser.id}
+								{#if !disabled}
+									<!-- Card 2773: refused for an account that uses two-step sign-in, aria-disabled so its title says why. -->
+									<Button
+										variant="ghost"
+										size="sm"
+										class="invite-resend"
+										onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget as HTMLElement)}
+										disabled={inviteInFlight !== null || inviteLink !== null}
+										aria-disabled={u.twoStep === true ? 'true' : undefined}
+										title={u.twoStep === true ? INVITE_REFUSED : 'Resend invite email'}
+									>{inviteInFlight === u.id && twoStepInFlight === null ? '…' : '📧'}</Button>
+									<Button variant="ghost" size="sm" onclick={(e) => askResetTwoStep(u.id, u.username, e.currentTarget as HTMLElement)} disabled={inviteInFlight !== null || inviteLink !== null} title="Reset two-step sign-in">{twoStepInFlight === u.id ? '…' : '🛡️'}</Button>
+									<!-- Card 2671: an account is disabled before it is deleted, and keeps its name on what it did. -->
+									<Button variant="ghost" size="sm" class="danger" onclick={() => askDisableUser(u.id, u.username)} title="Disable user">⛔</Button>
+								{:else if isSuperadmin || !u.disabledBySuperadmin}
+									<!-- Enable, not offered to an administrator for an account the superadmin disabled (S14). -->
+									<Button variant="ghost" size="sm" onclick={() => askEnableUser(u.id, u.username)} title="Enable user">✅</Button>
+								{/if}
+								<!-- Delete, for a disabled account alone (D14), and not to an administrator for one the superadmin disabled (S14b). -->
+								{#if disabled && (isSuperadmin || !u.disabledBySuperadmin)}
+									<Button variant="ghost" size="sm" class="danger" onclick={() => askDeleteUser(u.id, u.username)} title="Delete user">🗑️</Button>
+								{/if}
+							{/if}
+						{:else}
+							<span class="superadmin-lock" title={u.role === 'superadmin' ? "The superadmin's account is theirs alone" : "Only the superadmin can change an administrator's account"}>🔒</span>
 						{/if}
 					</div>
-					<span class="role-badge role-{u.role}">{u.role}</span>
-					<!-- Only what the server would let you do to this account (the rule in $lib/account-rule.ts). On your own row, only the password. -->
-					{#if mayManageAccount(data.currentUser, u)}
-						{#if u.id !== data.currentUser.id}
-							<!-- The picker and Change for the superadmin alone: anyone else may give only User, so the picker had one choice and Change could never do anything (the card 2376 review); the badge says the role. -->
-							{#if isSuperadmin}
-								<!-- Choosing sends nothing; Change saves it (card 2376). Busy, not off, while its change is out: off, it would drop the focus. -->
-								<select
-									value={chosenRole.get(u.id) ?? u.role}
-									aria-busy={changingRole.has(u.id) ? 'true' : undefined}
-									onchange={(e) => chooseUserRole(u.id, e.currentTarget)}
-									class="role-select"
-									aria-label="{u.username}'s role"
-								>
-									<option value="user">User</option>
-									<option value="admin">Admin</option>
-								</select>
-								<button
-									class="btn-ghost btn-sm role-change"
-									aria-disabled={chosenRole.has(u.id) && !changingRole.has(u.id) ? undefined : 'true'}
-									onclick={() => askChangeUserRole(u.id, u.username)}
-									aria-label="Change {u.username}'s role"
-								>Change</button>
-							{/if}
-						{/if}
-						<!-- Card 2671: a disabled account's password, invite and two-step sign-in are not reset (D18). -->
-						{#if !disabled}
-							<button class="btn-ghost btn-sm" onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>
-						{/if}
-						{#if u.id !== data.currentUser.id}
-							{#if !disabled}
-								<!-- Card 2773: refused for an account that uses two-step sign-in, aria-disabled so its title says why. -->
-								<button
-									class="btn-ghost btn-sm invite-resend"
-									onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)}
-									disabled={inviteInFlight !== null || inviteLink !== null}
-									aria-disabled={u.twoStep === true ? 'true' : undefined}
-									title={u.twoStep === true ? INVITE_REFUSED : 'Resend invite email'}
-								>{inviteInFlight === u.id && twoStepInFlight === null ? '…' : '📧'}</button>
-								<button class="btn-ghost btn-sm" onclick={(e) => askResetTwoStep(u.id, u.username, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Reset two-step sign-in">{twoStepInFlight === u.id ? '…' : '🛡️'}</button>
-								<!-- Card 2671: an account is disabled before it is deleted, and keeps its name on what it did. -->
-								<button class="btn-ghost btn-sm danger" onclick={() => askDisableUser(u.id, u.username)} title="Disable user">⛔</button>
-							{:else if isSuperadmin || !u.disabledBySuperadmin}
-								<!-- Enable, not offered to an administrator for an account the superadmin disabled (S14). -->
-								<button class="btn-ghost btn-sm" onclick={() => askEnableUser(u.id, u.username)} title="Enable user">✅</button>
-							{/if}
-							<!-- Delete, for a disabled account alone (D14), and not to an administrator for one the superadmin disabled (S14b). -->
-							{#if disabled && (isSuperadmin || !u.disabledBySuperadmin)}
-								<button class="btn-ghost btn-sm danger" onclick={() => askDeleteUser(u.id, u.username)} title="Delete user">🗑️</button>
-							{/if}
-						{/if}
-					{:else}
-						<span class="superadmin-lock" title={u.role === 'superadmin' ? "The superadmin's account is theirs alone" : "Only the superadmin can change an administrator's account"}>🔒</span>
-					{/if}
-				</div>
-			{/each}
-		</div>
-	{/if}
-</section>
+				{/each}
+			</div>
+		{/if}
+	</CardContent>
+</Card>
 
-<!-- The password dialog, after the section as it was on the page: fixed to the window, not to a card that moves on hover. -->
+<!-- The password dialog, after the card as it was on the page: fixed to the window. -->
 <ResetPasswordDialog bind:this={resetDialog} {data} />
 
 <style>
-	/* User list */
-	.user-list { display: flex; flex-direction: column; gap: var(--space-xs); }
+	/* User list: rows divided by a line (admin.css's .admin-rows), wrapping their buttons on a narrow card. */
 	.user-row {
-		display: flex; align-items: center; gap: var(--space-sm);
-		padding: var(--space-sm) var(--space-md);
-		background: var(--bg-base); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-md); transition: border-color 0.15s;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-xs) var(--space-sm);
+		padding: var(--space-sm) 0;
 	}
-	.user-row:hover { border-color: var(--accent-indigo); }
-	.user-row-emoji { font-size: 1.2rem; flex-shrink: 0; }
-	.user-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-	.user-row-name { font-weight: 600; font-size: 0.85rem; }
-	.user-row-email { font-size: 0.72rem; color: var(--text-tertiary); }
-	.user-row-setup { font-size: 0.72rem; color: var(--accent-amber); }
+	.user-row:first-child {
+		padding-top: 0;
+	}
+	.user-row:last-child {
+		padding-bottom: 0;
+	}
+	.user-row-emoji {
+		flex-shrink: 0;
+		font-size: 1.2rem;
+	}
+	.user-row-info {
+		display: flex;
+		flex: 1 1 12rem;
+		flex-direction: column;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.user-row-name {
+		font-weight: 500;
+	}
+	.user-row-email,
+	.user-row-disabled {
+		font-size: 0.75rem;
+		color: var(--ui-muted-foreground);
+	}
+	/* Card 2769: the leave to set up on the password alone; the words in the text colour, marked by a warning edge (card 3076, F3). */
+	.user-row-setup {
+		width: fit-content;
+		margin-top: 0.125rem;
+		padding-left: 0.375rem;
+		border-left: 2px solid var(--ui-warning);
+		font-size: 0.75rem;
+		color: var(--ui-foreground);
+	}
 	/* Card 2671: a disabled account, greyed, with when and by whom. */
-	.disabled-row { opacity: 0.6; }
-	.user-row-disabled { font-size: 0.72rem; color: var(--text-tertiary); }
-
-	.role-badge {
-		font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
-		letter-spacing: 0.05em; padding: 2px 8px; border-radius: var(--radius-sm);
+	.disabled-row {
+		opacity: 0.6;
 	}
-	.role-superadmin { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
-	.role-admin { background: rgba(99, 102, 241, 0.15); color: var(--accent-indigo); }
-	.role-user { background: rgba(100, 116, 139, 0.15); color: var(--text-secondary); }
 
+	/* The role picker in a row: the kit's field, as low as the row's buttons. */
 	.role-select {
-		padding: 2px var(--space-sm); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-sm); background: var(--bg-base);
-		color: var(--text-secondary); font-size: 0.72rem; font-weight: 600;
-		cursor: pointer; font-family: var(--font-family);
+		width: auto;
+		height: 2rem;
+		padding-left: 0.5rem;
+		font-size: 0.8125rem;
 	}
 
-	/* Change beside the picker (card 2376): dimmed, and sending nothing, until a role other than the account's is chosen. */
-	.role-change[aria-disabled='true'] { opacity: 0.35; cursor: default; }
-	/* 📧 for an account that uses two-step sign-in (card 2773): dimmed, its title saying why, and sending nothing. Keyed to the class, as Change is, so rewording the title cannot undim it. */
-	.invite-resend[aria-disabled='true'] { opacity: 0.35; cursor: default; }
 	/* The status line is for screen readers alone. */
 	.saving-status {
-		position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-		overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 
-	.superadmin-lock { font-size: 0.9rem; opacity: 0.5; }
+	.superadmin-lock {
+		padding: 0 var(--space-sm);
+		opacity: 0.6;
+	}
 
 	/* Why Add User asks for the caller's own password (card 2701) */
-	.form-hint { font-size: 0.72rem; color: var(--text-tertiary); margin: 0; }
+	.form-hint {
+		font-size: 0.75rem;
+	}
 </style>

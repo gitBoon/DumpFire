@@ -1,10 +1,12 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.308
+version: 1.310
 status: Living
 date: 2026-11-25
 tags:
+  - card-3076
+  - admin-pages-on-shell
   - card-3075
   - decision-pages-on-shell
   - card-2689
@@ -2955,6 +2957,55 @@ comment naming the card), migration 0065 and the account changes move these:
   `mfaWithoutFactor` through and leaves it undefined when absent, and the report shows it on a
   line of its own after the secrets' lines.
 
+#### Card 3076: the admin pages on the shared shell
+
+Built in four slices (plan `docs/planning/card-3076-admin-on-shell.md`): the frame, the section
+list and the smaller panels; the larger panels and the admin dialogs, then the page's `:global`
+bridge removed; the people and ISO pages; the documents. After each slice `tests/admin-panels.test.ts`,
+`tests/page-failures.test.ts`, `tests/theme-menus-and-tips.svelte.test.ts`,
+`tests/people-directory.svelte.test.ts`, both kit files and `tests/harness.test.ts` ran green with
+`svelte-check` at no errors (slices 2 and 3 were run together). Every new case failed under a
+deliberate break of the source before it passed (each undone by restoring the file, none left).
+7 new cases, no new file.
+
+```mermaid
+flowchart LR
+    S1["S1 frame, rail, smaller panels<br/>N1 to N6; A1, A2, A3, A4"] --> S2["S2 larger panels, dialogs,<br/>bridge gone<br/>A3, A5 to A10"]
+    S2 --> S3["S3 people and ISO pages<br/>A1, A11"]
+    S3 --> S4["S4 the documents"]
+```
+
+New, in `tests/admin-panels.test.ts` under "the admin pages on the shell (card 3076)":
+
+| Case | What it holds | The break it failed under |
+|---|---|---|
+| N1 | The superadmin's page, nothing held, no `IntersectionObserver`: `aside[aria-label="Admin sections"]` lists the twelve sections in page order with no "Settings held for review"; each `href="#id"` names a `section` in `main`, in page order; `#backup` holds Export Backup; no link has `aria-current` | the no-observer path marking the overview |
+| N2 | An administrator with one held setting: "Settings held for review" is the second link and names `.settings-held`; `#backup` is the placeholder card, its `h2` "The superadmin's" | the `held` branch never taken |
+| N3 | With a stand-in observer (its `rootMargin` `-72px 0px -55% 0px`): users in view marks User Management alone, `aria-current="location"`; users and teams marks users (first in page order); users out marks Team Management | the last in view chosen |
+| N4 | Pressing the Danger Zone link marks it at once, before any observer report | the press marking nothing |
+| N5 (2 rows) | `SettingsHeldPanel` read with the address `#settings-held` calls `scrollIntoView` once, on `#settings-held`, and not again on a second read; with no address, not at all | the call removed; the address check removed |
+| N6 | Every selector in `src/lib/components/admin/admin.css` starts with an `.admin-` class, and the check finds a bare element, inside an at-rule too | a bare `p` rule added |
+
+After the code review: `tests/ui-kit.svelte.test.ts` case 2 is two rows, a rail at the `end` after the page in the document and one at the `start` before it (`PageShell` draws a start rail first, card 3076's S1; it had put it first by CSS `order` alone); `page-failures.test.ts`'s invite link case reads the Copy button as `<button class="btn-ghost" …>`, its size the dialog's own rule.
+
+Elements are found by `[id="…"]` within the page drawn: an earlier case in the file leaves an
+element with the same id in the document, and jsdom's `#id` path then finds that one first.
+
+Adjusted, intent kept: A1 (`theme-menus-and-tips.svelte.test.ts`: `/admin` leaves the list of
+pages with their own Theme menu; a new case holds the three admin pages to `PageShell` with no
+`HeaderMenu` or `ThemeMenuItems` of their own); A2 (`page-failures.test.ts`, the padding row: the
+admin page's padding is read from `PageShell`'s `.ui-shell-main`, and the page draws
+`<PageShell width="full"`); A3 (the superadmin and administrator section titles read as
+`>Database Overview</CardTitle>` and so on, the emoji gone); A4 (`AdminSectionNav` in
+`ADMINISTRATOR_COMPONENTS`); A5 (the 📧 and 🛡️ row buttons as kit `Button` markup with the same
+handler, gates, title, hook and contents, one tab deeper for `CardContent`; the 🔑 literal in the
+user-rows and counts cases; the handler passes `e.currentTarget as HTMLElement`, the kit's `onclick`
+being typed for a `MouseEvent`); A6 (`page-failures.test.ts` and `mail-settings.test.ts`: the mail
+panel sliced from `>Email / SMTP</CardTitle>`); A7 (Confirm this key, `<Button size="sm" …>`); A8
+(the Test button regex on `<Button variant="outline" size="sm" …>`); A9 (`backups.test.ts`: Connect
+as `<Button …>🔗 Connect</Button>`, in the scope regex and the label case); A10
+(`admin-panels.test.ts`: headings without the emoji, and the Two-step panel's text, U3); A11
+(`people-directory.svelte.test.ts`: All pressed through `[role="group"][aria-label="Show"] button`).
 #### Card 3075: the decision pages on the shared shell
 
 Built in four slices (plan `docs/planning/card-3075-decision-pages-on-shell.md`): the kit's two

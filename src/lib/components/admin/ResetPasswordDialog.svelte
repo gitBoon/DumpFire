@@ -221,7 +221,7 @@
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-overlay" role="dialog" aria-modal="true" aria-label={resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}>
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: 'input:not(:disabled)', onEscape: () => cancelButton?.click() }}>
+		<div class="modal-content admin-kit-fields" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: 'input:not(:disabled)', onEscape: () => cancelButton?.click() }}>
 			<h2>🔑 {resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}</h2>
 			{#if resettingOwnPassword}
 				<!-- Their own account: the password they have is asked for, as on the Account page. -->
@@ -233,29 +233,29 @@
 			{:else}
 				<p>Enter a new password for {resetTarget?.username || 'user'}.</p>
 				{#if resetTargetKeys !== null && resetTargetKeys > 0}
-					<p class="warning-text">They have {counted(resetTargetKeys, 'API key')}, which {resetTargetKeys === 1 ? 'stops' : 'stop'} working.</p>
+					<p class="admin-warning">They have {counted(resetTargetKeys, 'API key')}, which {resetTargetKeys === 1 ? 'stops' : 'stop'} working.</p>
 				{/if}
 				{#if resetTargetWebhooks !== null && resetTargetWebhooks > 0}
-					<p class="warning-text">They set up {counted(resetTargetWebhooks, 'webhook')}, which {resetTargetWebhooks === 1 ? 'is' : 'are'} switched off.</p>
+					<p class="admin-warning">They set up {counted(resetTargetWebhooks, 'webhook')}, which {resetTargetWebhooks === 1 ? 'is' : 'are'} switched off.</p>
 				{/if}
 				{#if resetTargetAlreadyOff !== null && resetTargetAlreadyOff > 0}
-					<p class="warning-text">They set up {counted(resetTargetAlreadyOff, 'webhook')} already switched off, which {resetTargetAlreadyOff === 1 ? 'is' : 'are'} held, to be switched on only with a new secret.</p>
+					<p class="admin-warning">They set up {counted(resetTargetAlreadyOff, 'webhook')} already switched off, which {resetTargetAlreadyOff === 1 ? 'is' : 'are'} held, to be switched on only with a new secret.</p>
 				{/if}
 				{#if resetTargetReadable !== null && resetTargetReadable > 0}
-					<p class="warning-text">They could read the secret of {counted(resetTargetReadable, 'other webhook')}, as {resetTarget?.role === 'admin' || resetTarget?.role === 'superadmin' ? 'an administrator' : "a board's owner"}: {resetTargetReadable === 1 ? 'it is' : 'those are'} switched off too, to be switched on only with a new secret, and their boards' owners are mailed.</p>
+					<p class="admin-warning">They could read the secret of {counted(resetTargetReadable, 'other webhook')}, as {resetTarget?.role === 'admin' || resetTarget?.role === 'superadmin' ? 'an administrator' : "a board's owner"}: {resetTargetReadable === 1 ? 'it is' : 'those are'} switched off too, to be switched on only with a new secret, and their boards' owners are mailed.</p>
 				{/if}
 				{#if resetTargetSchedules !== null && resetTargetSchedules > 0}
-					<p class="warning-text">They have {counted(resetTargetSchedules, 'report schedule')}, which {resetTargetSchedules === 1 ? 'is' : 'are'} paused.</p>
+					<p class="admin-warning">They have {counted(resetTargetSchedules, 'report schedule')}, which {resetTargetSchedules === 1 ? 'is' : 'are'} paused.</p>
 				{/if}
 				<!-- Card 2922: what they set, held for the superadmin's review. -->
 				{#if resetTargetHeld}
-					<p class="warning-text settings-held">{resetTargetHeld}</p>
+					<p class="admin-warning settings-held">{resetTargetHeld}</p>
 				{/if}
 				<p>They are signed out everywhere, every API key they have stops working, any invite not yet used stops working, the webhooks they set up are switched off and their report schedules are paused. Their boards' owners are mailed about them, and about any already switched off, which can now be switched on only with a new secret.</p>
 				<!-- The administrator's own password, which a reset asks for again (card 2701). -->
 				<CurrentPasswordField bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} onEnter={toNewPassword} />
 			{/if}
-			<input type="password" placeholder="New password (min 8 chars)" aria-label="New password" bind:value={resetPasswordValue} bind:this={newPasswordInput} class="form-input" style="width: 100%; margin: 0 0 var(--space-md);" autocomplete="new-password" />
+			<input type="password" placeholder="New password (min 8 chars)" aria-label="New password" bind:value={resetPasswordValue} bind:this={newPasswordInput} class="ui-input" style="margin: 0 0 var(--space-md);" autocomplete="new-password" />
 			<div class="modal-actions">
 				<button class="btn-ghost" bind:this={cancelButton} onclick={() => { resetPasswordUserId = null; resetPasswordCurrent = ''; resetCodeCurrent = ''; resetRefusal = null; }}>Cancel</button>
 				<button class="btn-primary" onclick={resetPassword} disabled={resetPasswordValue.length < 8 || !proofTyped(resetPasswordCurrent, resetCodeCurrent, page.data.codeAsked)}>{resettingOwnPassword ? 'Change Password' : 'Reset Password'}</button>

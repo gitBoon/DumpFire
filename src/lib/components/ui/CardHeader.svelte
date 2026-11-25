@@ -14,23 +14,27 @@
 </div>
 
 <style>
+	/* The actions wrap under the title where the card is too narrow for both on one line (card 3076). */
 	.ui-card-header {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: flex-start;
 		justify-content: space-between;
-		gap: var(--space-md);
+		gap: var(--space-sm) var(--space-md);
 		padding: 0 1.25rem;
 	}
 	.ui-card-header-text {
 		display: flex;
+		flex: 1 1 16rem;
 		flex-direction: column;
 		gap: 0.375rem;
 		min-width: 0;
 	}
 	.ui-card-header-actions {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--space-sm);
-		flex-shrink: 0;
+		max-width: 100%;
 	}
 </style>

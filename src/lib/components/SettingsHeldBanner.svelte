@@ -36,13 +36,26 @@
 {/if}
 
 <style>
+	/* Card 3076: the kit's warning look; the words in the text colour, which reads in every theme. */
 	.settings-held-banner {
-		margin: var(--space-sm) auto;
-		max-width: 1100px;
-		padding: var(--space-sm) var(--space-md);
-		border-radius: 8px;
-		background: color-mix(in srgb, var(--accent-amber) 15%, transparent);
-		color: var(--text-primary);
-		font-size: 0.8rem;
+		margin: 0 0 var(--space-lg);
+		padding: 0.625rem 0.875rem;
+		border: 1px solid color-mix(in srgb, var(--ui-warning) 40%, transparent);
+		border-radius: var(--ui-radius-lg);
+		background: color-mix(in srgb, var(--ui-warning) 7%, var(--ui-background));
+		color: var(--ui-foreground);
+		font-size: 0.875rem;
+		line-height: 1.5;
+	}
+	.settings-held-banner a {
+		border-radius: var(--ui-radius-sm);
+		color: var(--ui-foreground);
+		font-weight: 500;
+		text-decoration: underline;
+		text-underline-offset: 2px;
+	}
+	.settings-held-banner a:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
 	}
 </style>

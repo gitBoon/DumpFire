@@ -17,9 +17,20 @@
   invite not yet used, set-up link and request link on the server ends (R2).
 
   Drawn nothing where nothing is held.
+
+  Card 3076: a kit card at the page's #settings-held. The banner's Review
+  links to /admin#settings-held, but the list is drawn only once read, after
+  the browser looked for that address: so once the first read draws it, the
+  list is scrolled into view where the address names it.
 -->
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardDescription from '$lib/components/ui/CardDescription.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import { codeAskedHere } from '$lib/code-asked';
 	import { asksForPassword, type StepUpProof } from '$lib/step-up-words';
@@ -48,6 +59,8 @@
 
 	let mayRelease = $state(false);
 	let unread = $state(false);
+	/** Whether the list has been brought into view for an address that names it (card 3076, F2): once, on the first read. */
+	let broughtIntoView = false;
 
 	// Read once, as the panel is drawn (the code review's C11): nothing it reads should read it again.
 	onMount(() => {
@@ -68,7 +81,20 @@
 			unread = false;
 		} catch {
 			unread = true;
+			return;
 		}
+		await bringIntoView();
+	}
+
+	/**
+	 * The banner's Review (`/admin#settings-held`) is followed before the list is drawn, so the browser found
+	 * nothing to scroll to: once the first read has drawn it, it is brought into view (card 3076, F2).
+	 */
+	async function bringIntoView() {
+		if (broughtIntoView || held.length === 0 || location.hash !== '#settings-held') return;
+		broughtIntoView = true;
+		await tick();
+		document.getElementById('settings-held')?.scrollIntoView();
 	}
 
 	/** Keep or Remove `setting`, confirmed with the password: the place reviewed is sent back (R4). */
@@ -127,66 +153,80 @@
 </script>
 
 {#if held.length > 0 || unread}
-	<section id="settings-held" class="admin-card glass fade-in-up settings-held" style="animation-delay: 20ms">
-		<h2>⏸️ Settings held for review</h2>
-		{#if unread}
-			<p class="section-desc">⚠️ The settings held for review could not be read: reload the page.</p>
-		{:else}
-			<p class="section-desc">
+	<Card as="section" id="settings-held" class="admin-section settings-held" aria-labelledby="settings-held-title">
+		<CardHeader>
+			<CardTitle level={2} id="settings-held-title">Settings held for review</CardTitle>
+			{#if unread}
+				<CardDescription>⚠️ The settings held for review could not be read: reload the page.</CardDescription>
+			{:else}
 				<!-- Worded by why each is held (card 3009's code review, FP4): an ended setter's access, or an unsealed backup. -->
-				{heldListWhy(held)} Nothing is sent to it until
-				{mayRelease ? 'you keep it or remove it' : 'the superadmin keeps it or removes it'}.
-			</p>
-			<ul class="held-list">
-				{#each held as setting (setting.setting + setting.place)}
-					<li class="held-item">
-						<div>
-							<strong>{heldSettingName(setting)}</strong>: {heldPlaceWords(setting)}
-							<div class="held-meta">
-								{heldSetByWords(setting)}; held since {setting.heldAt} UTC
+				<CardDescription>
+					{heldListWhy(held)} Nothing is sent to it until
+					{mayRelease ? 'you keep it or remove it' : 'the superadmin keeps it or removes it'}.
+				</CardDescription>
+			{/if}
+		</CardHeader>
+		{#if !unread}
+			<CardContent>
+				<ul class="held-list admin-rows">
+					{#each held as setting (setting.setting + setting.place)}
+						<li class="held-item">
+							<div class="held-what">
+								<strong>{heldSettingName(setting)}</strong>: {heldPlaceWords(setting)}
+								<div class="held-meta">
+									{heldSetByWords(setting)}; held since {setting.heldAt} UTC
+								</div>
+								{#if setting.kind === 'mail'}
+									<!-- The code review's C14: what was mailed through it before the hold still works. -->
+									<div class="held-meta held-urgent">
+										Links already mailed through these mail settings stay usable until they are removed, so decide quickly.
+									</div>
+								{/if}
 							</div>
-							{#if setting.kind === 'mail'}
-								<!-- The code review's C14: what was mailed through it before the hold still works. -->
-								<div class="held-meta held-urgent">
-									Links already mailed through these mail settings stay usable until they are removed, so decide quickly.
+							{#if mayRelease}
+								<div class="held-actions">
+									<Button variant="secondary" size="sm" aria-label={`Keep ${heldSettingNameWithin(setting)}`} onclick={() => ask(setting, 'keep')}>Keep</Button>
+									<Button variant="outline" size="sm" aria-label={`Remove ${heldSettingNameWithin(setting)}`} onclick={() => ask(setting, 'remove')}>Remove</Button>
 								</div>
 							{/if}
-						</div>
-						{#if mayRelease}
-							<div class="held-actions">
-								<button class="btn-secondary btn-sm" aria-label={`Keep ${heldSettingNameWithin(setting)}`} onclick={() => ask(setting, 'keep')}>Keep</button>
-								<button class="btn-danger btn-sm" aria-label={`Remove ${heldSettingNameWithin(setting)}`} onclick={() => ask(setting, 'remove')}>Remove</button>
-							</div>
-						{/if}
-					</li>
-				{/each}
-			</ul>
+						</li>
+					{/each}
+				</ul>
+			</CardContent>
 		{/if}
-	</section>
+	</Card>
 {/if}
 
 <style>
-	.held-list {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-sm);
-	}
 	.held-item {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		gap: var(--space-sm);
+		gap: var(--space-sm) var(--space-md);
 		flex-wrap: wrap;
+		padding: var(--space-sm) 0;
+	}
+	.held-item:first-child {
+		padding-top: 0;
+	}
+	.held-item:last-child {
+		padding-bottom: 0;
+	}
+	.held-what {
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 	.held-meta {
-		font-size: 0.68rem;
-		color: var(--text-secondary);
+		margin-top: 0.125rem;
+		font-size: 0.75rem;
+		color: var(--ui-muted-foreground);
+	}
+	.held-urgent {
+		font-weight: 500;
+		color: var(--ui-foreground);
 	}
 	.held-actions {
 		display: flex;
-		gap: var(--space-xs);
+		gap: var(--space-sm);
 	}
 </style>

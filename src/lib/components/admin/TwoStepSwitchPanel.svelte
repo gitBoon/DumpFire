@@ -25,6 +25,9 @@
   (`invalidateAll`): every session made while it was dormant ends at its next
   use, the superadmin's own among them, so the page read again goes to sign
   in. There is no way to turn it off here (R11).
+
+  Card 3076: a kit card at the page's #two-step; Require is an outline
+  button, red being the confirmation's alone.
 -->
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
@@ -32,6 +35,12 @@
 	import { codeAskedHere } from '$lib/code-asked';
 	import { asksForPassword, type StepUpProof } from '$lib/step-up-words';
 	import { parseStamp } from '$lib/timestamps';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardDescription from '$lib/components/ui/CardDescription.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
 
 	/** What the page's load gives the panel (`twoStepSwitchView` in admin/+page.server.ts). */
 	type TwoStepSwitch = {
@@ -109,80 +118,99 @@
 	}
 </script>
 
-<section class="admin-card glass fade-in-up two-step-switch" style="animation-delay: 30ms" aria-labelledby="{id}-heading">
-	<h2 id="{id}-heading">🛡️ Two-step sign-in</h2>
-	{#if twoStepSwitch.required}
-		<p class="section-desc switch-state">
-			Two-step sign-in is required on this server{#if twoStepSwitch.requiredAt}, since {moment(twoStepSwitch.requiredAt)}{/if}. Every account signs in with its password and a code from an authenticator app. It cannot be turned off here.
-		</p>
-	{:else}
-		<p class="section-desc switch-state">
-			Two-step sign-in is not required on this server. Accounts that have set up an authenticator app are asked for its code; the others sign in with their password alone. Each can set it up on their Account page.
-		</p>
-		<ul class="switch-counts">
-			<li>{counted(twoStepSwitch.accountsWithoutFactor, 'enabled account has', 'enabled accounts have')} not set up two-step sign-in.</li>
-			<li>{counted(twoStepSwitch.passwordOnlySessions, 'session is', 'sessions are')} signed in on a password alone: requiring two-step sign-in ends them.</li>
-		</ul>
-
-		<h3 class="switch-sub">Administrators</h3>
-		{#if blocked}
-			<p class="switch-line">Not yet set up, so two-step sign-in cannot be required until each has set it up on their Account page:</p>
-			<ul class="switch-list switch-admins">
-				{#each twoStepSwitch.administratorsWithoutFactor as admin (admin.id)}
-					<li>{admin.username} (user {admin.id})</li>
-				{/each}
-			</ul>
+<Card as="section" id="two-step" class="admin-section two-step-switch" aria-labelledby="{id}-heading">
+	<CardHeader>
+		<CardTitle level={2} id="{id}-heading">Two-step sign-in</CardTitle>
+		{#if twoStepSwitch.required}
+			<CardDescription>
+				Two-step sign-in is required on this server{#if twoStepSwitch.requiredAt}, since {moment(twoStepSwitch.requiredAt)}{/if}. Every account signs in with its password and a code from an authenticator app. It cannot be turned off here.
+			</CardDescription>
 		{:else}
-			<p class="switch-line">Every administrator has set up two-step sign-in.</p>
+			<CardDescription>
+				Two-step sign-in is not required on this server. Accounts that have set up an authenticator app are asked for its code; the others sign in with their password alone. Each can set it up on their Account page.
+			</CardDescription>
 		{/if}
+	</CardHeader>
+	{#if !twoStepSwitch.required}
+		<CardContent>
+			<ul class="switch-counts">
+				<li>{counted(twoStepSwitch.accountsWithoutFactor, 'enabled account has', 'enabled accounts have')} not set up two-step sign-in.</li>
+				<li>{counted(twoStepSwitch.passwordOnlySessions, 'session is', 'sessions are')} signed in on a password alone: requiring two-step sign-in ends them.</li>
+			</ul>
 
-		<h3 class="switch-sub">API keys of accounts without two-step sign-in</h3>
-		{#if twoStepSwitch.keysWithoutFactor === 0}
-			<p class="switch-line">None.</p>
-		{:else}
-			<p class="switch-line">
-				{counted(twoStepSwitch.keysWithoutFactor, 'API key was', 'API keys were')} made by accounts that have not set up two-step sign-in. Each keeps working after two-step sign-in is required, until the API key deadline is applied: check each with its holder.
-			</p>
-			{#if twoStepSwitch.keysWithoutFactorListed}
-				<ul class="switch-list switch-keys">
-					{#each twoStepSwitch.keysWithoutFactorListed as key (key.id)}
-						<li>
-							A key of <strong>{key.holder}</strong> (user {key.holderId}): made {moment(key.createdAt)}, {key.lastUsedAt === null ? 'never used' : `last used ${moment(key.lastUsedAt)}`}
-						</li>
+			<h3 class="switch-sub">Administrators</h3>
+			{#if blocked}
+				<p class="switch-line">Not yet set up, so two-step sign-in cannot be required until each has set it up on their Account page:</p>
+				<ul class="switch-list switch-admins">
+					{#each twoStepSwitch.administratorsWithoutFactor as admin (admin.id)}
+						<li>{admin.username} (user {admin.id})</li>
 					{/each}
 				</ul>
+			{:else}
+				<p class="switch-line">Every administrator has set up two-step sign-in.</p>
 			{/if}
-		{/if}
 
-		{#if twoStepSwitch.mayRequire}
-			<div class="switch-actions">
-				<button class="btn-danger-solid" onclick={ask} disabled={blocked} aria-describedby={blocked ? reasonId : undefined}>Require two-step sign-in</button>
-				{#if blocked}
-					<p class="switch-reason" id={reasonId}>Each administrator listed above must set up two-step sign-in first.</p>
+			<h3 class="switch-sub">API keys of accounts without two-step sign-in</h3>
+			{#if twoStepSwitch.keysWithoutFactor === 0}
+				<p class="switch-line">None.</p>
+			{:else}
+				<p class="switch-line">
+					{counted(twoStepSwitch.keysWithoutFactor, 'API key was', 'API keys were')} made by accounts that have not set up two-step sign-in. Each keeps working after two-step sign-in is required, until the API key deadline is applied: check each with its holder.
+				</p>
+				{#if twoStepSwitch.keysWithoutFactorListed}
+					<ul class="switch-list switch-keys">
+						{#each twoStepSwitch.keysWithoutFactorListed as key (key.id)}
+							<li>
+								A key of <strong>{key.holder}</strong> (user {key.holderId}): made {moment(key.createdAt)}, {key.lastUsedAt === null ? 'never used' : `last used ${moment(key.lastUsedAt)}`}
+							</li>
+						{/each}
+					</ul>
 				{/if}
-			</div>
-		{:else}
-			<p class="switch-line">Requiring two-step sign-in is the superadmin's.</p>
-		{/if}
+			{/if}
+
+			{#if twoStepSwitch.mayRequire}
+				<div class="switch-actions">
+					<Button variant="outline" onclick={ask} disabled={blocked} aria-describedby={blocked ? reasonId : undefined}>Require two-step sign-in</Button>
+					{#if blocked}
+						<p class="switch-reason" id={reasonId}>Each administrator listed above must set up two-step sign-in first.</p>
+					{/if}
+				</div>
+			{:else}
+				<p class="switch-line">Requiring two-step sign-in is the superadmin's.</p>
+			{/if}
+		</CardContent>
 	{/if}
-</section>
+</Card>
 
 <style>
-	.switch-state { margin-bottom: var(--space-md); }
-	.switch-counts, .switch-list {
+	.switch-counts,
+	.switch-list {
 		margin: 0 0 var(--space-md);
 		padding-left: var(--space-lg);
-		font-size: 0.82rem;
-		color: var(--text-secondary);
+		color: var(--ui-muted-foreground);
 		line-height: 1.5;
 		overflow-wrap: anywhere;
 	}
 	.switch-sub {
-		font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
-		color: var(--text-tertiary); margin: var(--space-md) 0 var(--space-xs);
+		margin: var(--space-md) 0 var(--space-xs);
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--ui-foreground);
 	}
-	.switch-line { font-size: 0.82rem; color: var(--text-secondary); margin: 0 0 var(--space-sm); }
-	.switch-actions { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-xs); margin-top: var(--space-md); }
-	.switch-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
-	.switch-reason { font-size: 0.72rem; color: var(--text-tertiary); margin: 0; }
+	.switch-line {
+		margin: 0 0 var(--space-sm);
+		color: var(--ui-muted-foreground);
+	}
+	.switch-actions {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--space-xs);
+		margin-top: var(--space-md);
+	}
+	.switch-reason {
+		margin: 0;
+		font-size: 0.75rem;
+		color: var(--ui-muted-foreground);
+	}
 </style>

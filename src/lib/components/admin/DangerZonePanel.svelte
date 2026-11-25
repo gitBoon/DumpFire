@@ -9,6 +9,10 @@
   they send (card 2701). What a reset has to say is the page's (`resetNotice`,
   bound here): its notice is drawn by the page where it was, after the page's
   confirm dialog.
+
+  Card 3076: a kit card at the page's #danger-zone with a faint red edge,
+  its actions rows divided by a line, each an outline button: the red is the
+  confirmation's alone, Reset Everything's too.
 -->
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
@@ -16,6 +20,12 @@
 	import { sent, sentAsking, showToast } from '$lib/admin/send';
 	import { codeAskedHere } from '$lib/code-asked';
 	import { asksForPassword, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardDescription from '$lib/components/ui/CardDescription.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
 
 	let {
 		isSuperadmin,
@@ -126,73 +136,85 @@
 </script>
 
 <!-- Danger zone -->
-<section class="admin-card glass danger-zone fade-in-up" style="animation-delay: 240ms">
-	<h2>⚠️ Danger Zone</h2>
-	<p class="section-desc">These actions affect the entire database. Use with caution.</p>
-
-	<div class="danger-actions">
-		<div class="danger-item">
-			<div>
-				<strong>Purge Archived Cards</strong>
-				<p>{purgeDescription(codeAskedHere())}</p>
+<Card as="section" id="danger-zone" class="admin-section admin-danger-zone" aria-labelledby="danger-zone-title">
+	<CardHeader>
+		<CardTitle level={2} id="danger-zone-title">Danger Zone</CardTitle>
+		<CardDescription>These actions affect the entire database. Use with caution.</CardDescription>
+	</CardHeader>
+	<CardContent>
+		<div class="danger-actions admin-rows">
+			<div class="danger-item">
+				<div class="danger-text">
+					<strong>Purge Archived Cards</strong>
+					<p>{purgeDescription(codeAskedHere())}</p>
+				</div>
+				<Button variant="outline" onclick={() => confirm('Purge Archived Cards', purgeWarning(codeAskedHere()), purgeArchivedCards, { askPassword: true })} disabled={purgingArchived}>
+					{purgingArchived ? 'Purging...' : 'Purge All'}
+				</Button>
 			</div>
-			<button class="btn-outline" onclick={() => confirm('Purge Archived Cards', purgeWarning(codeAskedHere()), purgeArchivedCards, { askPassword: true })} disabled={purgingArchived}>
-				{purgingArchived ? 'Purging...' : 'Purge All'}
-			</button>
-		</div>
-		<div class="danger-item">
-			<div>
-				<strong>Vacuum Database</strong>
-				<p>Rebuilds the database file to reclaim unused space. No data is changed, and ids are not reset.</p>
+			<div class="danger-item">
+				<div class="danger-text">
+					<strong>Vacuum Database</strong>
+					<p>Rebuilds the database file to reclaim unused space. No data is changed, and ids are not reset.</p>
+				</div>
+				<Button variant="outline" onclick={() => confirm('Vacuum Database', 'This rebuilds the database file to reclaim unused space. No data is changed, and ids are not reset.', vacuumDatabase)}>
+					Vacuum
+				</Button>
 			</div>
-			<button class="btn-outline" onclick={() => confirm('Vacuum Database', 'This rebuilds the database file to reclaim unused space. No data is changed, and ids are not reset.', vacuumDatabase)}>
-				Vacuum
-			</button>
-		</div>
-		<div class="danger-item">
-			<div>
-				<strong>Reset All XP</strong>
-				<p>Resets everyone's XP back to 0. Leaderboard will be cleared. This cannot be undone. {asksForPassword(codeAskedHere())}</p>
+			<div class="danger-item">
+				<div class="danger-text">
+					<strong>Reset All XP</strong>
+					<p>Resets everyone's XP back to 0. Leaderboard will be cleared. This cannot be undone. {asksForPassword(codeAskedHere())}</p>
+				</div>
+				<Button variant="outline" onclick={() => confirm('Reset All XP', `This will set every user's XP to 0. The leaderboard will be completely cleared. Are you sure? ${asksForPassword(codeAskedHere())}`, resetAllXp, { askPassword: true })}>
+					Reset XP
+				</Button>
 			</div>
-			<button class="btn-outline" onclick={() => confirm('Reset All XP', `This will set every user's XP to 0. The leaderboard will be completely cleared. Are you sure? ${asksForPassword(codeAskedHere())}`, resetAllXp, { askPassword: true })}>
-				Reset XP
-			</button>
-		</div>
-		<!-- The superadmin's alone: whoever sets up after a reset is the superadmin. -->
-		{#if isSuperadmin}
-		<div class="danger-item">
-			<div>
-				<strong>Reset Everything</strong>
-				<p>Deletes ALL data including boards, users, teams, and sessions. The system log and the backup history are kept. You will be redirected to initial setup. {asksForPassword(codeAskedHere())}</p>
+			<!-- The superadmin's alone: whoever sets up after a reset is the superadmin. -->
+			{#if isSuperadmin}
+			<div class="danger-item">
+				<div class="danger-text">
+					<strong>Reset Everything</strong>
+					<p>Deletes ALL data including boards, users, teams, and sessions. The system log and the backup history are kept. You will be redirected to initial setup. {asksForPassword(codeAskedHere())}</p>
+				</div>
+				<Button variant="outline" onclick={() => confirm('Reset Everything', resetWarning(codeAskedHere()), resetDatabase, { askPassword: true })}>
+					Reset Everything
+				</Button>
 			</div>
-			<button class="btn-danger-solid" onclick={() => confirm('Reset Everything', resetWarning(codeAskedHere()), resetDatabase, { askPassword: true })}>
-				Reset Everything
-			</button>
+			{/if}
 		</div>
-		{/if}
-	</div>
-</section>
+	</CardContent>
+</Card>
 
 <style>
-	.danger-zone { border-color: rgba(244, 63, 94, 0.2); }
-	.danger-zone h2 { color: var(--accent-rose); }
-	.danger-actions { display: flex; flex-direction: column; gap: var(--space-lg); }
 	.danger-item {
-		display: flex; justify-content: space-between; align-items: center;
-		gap: var(--space-xl); padding: var(--space-md); background: var(--bg-base);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
-		transition: border-color 0.2s ease;
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: var(--space-sm) var(--space-xl);
+		padding: var(--space-md) 0;
 	}
-	.danger-item:hover { border-color: rgba(244, 63, 94, 0.3); }
-	.danger-item strong { font-size: 0.9rem; display: block; margin-bottom: 4px; }
-	.danger-item p { font-size: 0.78rem; color: var(--text-tertiary); margin: 0; max-width: 400px; }
-
-	.btn-outline {
-		padding: var(--space-sm) var(--space-lg); border-radius: var(--radius-sm);
-		border: 1px solid var(--glass-border); background: transparent;
-		font-weight: 500; font-size: 0.82rem; color: var(--text-secondary);
-		white-space: nowrap; cursor: pointer; font-family: var(--font-family);
-		transition: all 0.2s ease;
+	.danger-item:first-child {
+		padding-top: 0;
 	}
-	.btn-outline:hover { background: var(--glass-hover); transform: scale(1.02); }
+	.danger-item:last-child {
+		padding-bottom: 0;
+	}
+	.danger-text {
+		flex: 1 1 20rem;
+		min-width: 0;
+	}
+	.danger-item strong {
+		display: block;
+		margin-bottom: 0.125rem;
+		font-weight: 500;
+	}
+	.danger-item p {
+		max-width: 48rem;
+		margin: 0;
+		font-size: 0.8125rem;
+		line-height: 1.45;
+		color: var(--ui-muted-foreground);
+	}
 </style>

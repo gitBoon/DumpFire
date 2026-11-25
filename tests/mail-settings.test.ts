@@ -994,7 +994,8 @@ describe('the mail panel on the admin page (cards 2189 and 2190, slice 4)', () =
 		.join('\n');
 	const script = smtp.slice(0, smtp.indexOf('</script>'));
 	const markup = smtp.slice(smtp.indexOf('</script>'));
-	const panel = markup.slice(markup.indexOf('<h2>📧 Email / SMTP</h2>'));
+	// Card 3076: the kit card's title, the emoji gone.
+	const panel = markup.slice(markup.indexOf('>Email / SMTP</CardTitle>'));
 	/** The body of one of the script's functions, to the closing brace at its own indent. */
 	const fn = (name: string) => {
 		const at = script.indexOf(`async function ${name}(`);

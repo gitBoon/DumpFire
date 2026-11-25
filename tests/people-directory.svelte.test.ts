@@ -334,7 +334,8 @@ describe('the People page, for a person who is not active (card 3020)', () => {
 		document.body.appendChild(target);
 		drawn.push({ component: mount(PeoplePage as never, { target, props: { data: { ...data, people, user: null } } as never }), target });
 		flushSync();
-		[...target.querySelectorAll<HTMLButtonElement>('.filter-btn')].find((b) => b.textContent!.trim() === 'All')!.click();
+		// Card 3076: the kit's segmented control, a labelled group of toggle buttons.
+		[...target.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Show"] button')].find((b) => b.textContent!.trim() === 'All')!.click();
 		flushSync();
 		return target;
 	}

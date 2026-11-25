@@ -116,20 +116,20 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="modal-overlay" role="dialog" aria-modal="true" aria-label={start ? 'Edit Group' : 'Add Group'}>
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-content group-dialog" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: 'input', onEscape: onClose }}>
+	<div class="modal-content group-dialog admin-kit-fields" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: 'input', onEscape: onClose }}>
 		<h2>{start ? 'Edit Group' : 'Add Group'}</h2>
 		<div class="dialog-fields">
 			<label class="dialog-field">
-				<span>Name</span>
-				<input type="text" class="form-input" bind:value={name} maxlength="100" />
+				<span class="ui-label">Name</span>
+				<input type="text" class="ui-input" bind:value={name} maxlength="100" />
 			</label>
 			<label class="dialog-field">
-				<span>Description</span>
-				<textarea class="form-input" rows="2" bind:value={description} maxlength="1000"></textarea>
+				<span class="ui-label">Description</span>
+				<textarea class="ui-textarea" rows="2" bind:value={description} maxlength="1000"></textarea>
 			</label>
 			<fieldset class="dialog-field">
-				<legend>People ({personIds.length} ticked)</legend>
-				<input type="search" class="form-input" placeholder="Search people" aria-label="Search people" bind:value={search} />
+				<legend class="ui-label">People ({personIds.length} ticked)</legend>
+				<input type="search" class="ui-input" placeholder="Search people" aria-label="Search people" bind:value={search} />
 				{#if listed.length === 0}
 					<p class="dialog-hint">{data.people.length === 0 ? 'No people yet.' : 'No one matches.'}</p>
 				{:else}
@@ -156,12 +156,14 @@
 	.group-dialog { max-width: 520px; width: 100%; }
 	.group-dialog h2 { font-size: 1.1rem; margin-bottom: var(--space-lg); }
 	.dialog-fields { display: flex; flex-direction: column; gap: var(--space-md); margin-bottom: var(--space-xl); }
-	.dialog-field { display: flex; flex-direction: column; gap: var(--space-xs); font-size: 0.8rem; color: var(--text-secondary); border: none; padding: 0; margin: 0; }
+	/* Card 3076: the fields the kit's (ui-field.css), their names the kit's label; the frame and buttons the app's dialog. */
+	.dialog-field { display: flex; flex-direction: column; gap: 0.375rem; border: none; padding: 0; margin: 0; }
 	.dialog-field legend { margin-bottom: var(--space-xs); }
-	.dialog-hint { font-size: 0.75rem; color: var(--text-tertiary); margin: 0; }
+	.dialog-hint { font-size: 0.75rem; color: var(--ui-muted-foreground); margin: 0; }
 	.tick-list { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; }
-	.tick { display: flex; align-items: center; gap: var(--space-xs); font-size: 0.82rem; color: var(--text-primary); }
-	.tick.left { color: var(--text-tertiary); }
-	.left-mark { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent-amber); }
+	.tick { display: flex; align-items: center; gap: var(--space-xs); font-size: 0.82rem; color: var(--ui-foreground); }
+	.tick.left { color: var(--ui-muted-foreground); }
+	/* Left: said in the text colour, marked by its edge (card 3076, F3). */
+	.left-mark { padding: 0 0.375rem; border: 1px solid color-mix(in srgb, var(--ui-warning) 40%, transparent); border-radius: var(--ui-radius-sm); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ui-foreground); }
 	.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-md); }
 </style>

@@ -143,28 +143,28 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="modal-overlay" role="dialog" aria-modal="true" aria-label={start ? 'Edit Person' : 'Add Person'}>
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-content person-dialog" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: 'input', onEscape: onClose }}>
+	<div class="modal-content person-dialog admin-kit-fields" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: 'input', onEscape: onClose }}>
 		<h2>{start ? 'Edit Person' : 'Add Person'}</h2>
 		<div class="dialog-fields">
 			<label class="dialog-field">
-				<span>Full name</span>
-				<input type="text" class="form-input" bind:value={fullName} maxlength="200" />
+				<span class="ui-label">Full name</span>
+				<input type="text" class="ui-input" bind:value={fullName} maxlength="200" />
 			</label>
 			{#if start && start.status !== 'active'}
 				<!-- Card 3020 (R3): a person who is not active may hold an address a backup whose seal did not verify chose; shown as it is. -->
 				<p class="dialog-hint address-on-file">Address on file: {asciiShown(start.email)}</p>
 			{/if}
 			<label class="dialog-field">
-				<span>Email</span>
-				<input type="email" class="form-input" bind:value={email} maxlength="254" oninput={forgetProofIfNotAsked} />
+				<span class="ui-label">Email</span>
+				<input type="email" class="ui-input" bind:value={email} maxlength="254" oninput={forgetProofIfNotAsked} />
 			</label>
 			<label class="dialog-field">
-				<span>Job title</span>
-				<input type="text" class="form-input" bind:value={jobTitle} maxlength="200" />
+				<span class="ui-label">Job title</span>
+				<input type="text" class="ui-input" bind:value={jobTitle} maxlength="200" />
 			</label>
 			<label class="dialog-field">
-				<span>Account</span>
-				<select class="form-input" bind:value={userId} onchange={forgetProofIfNotAsked}>
+				<span class="ui-label">Account</span>
+				<select class="ui-select" bind:value={userId} onchange={forgetProofIfNotAsked}>
 					<option value="">None</option>
 					{#each linkable as account (account.id)}
 						<option value={String(account.id)}>{account.emoji} {account.username} ({account.email})</option>
@@ -174,7 +174,7 @@
 			<!-- Plan review R1: an account's address is its holder's own, and nobody has confirmed it. -->
 			<p class="dialog-hint">An account's address is set by its holder and is not confirmed: check it is this person before linking.</p>
 			<fieldset class="dialog-field">
-				<legend>Groups</legend>
+				<legend class="ui-label">Groups</legend>
 				{#if data.groups.length === 0}
 					<p class="dialog-hint">No groups yet.</p>
 				{:else}
@@ -208,10 +208,11 @@
 	.person-dialog { max-width: 520px; width: 100%; }
 	.person-dialog h2 { font-size: 1.1rem; margin-bottom: var(--space-lg); }
 	.dialog-fields { display: flex; flex-direction: column; gap: var(--space-md); margin-bottom: var(--space-xl); }
-	.dialog-field { display: flex; flex-direction: column; gap: var(--space-xs); font-size: 0.8rem; color: var(--text-secondary); border: none; padding: 0; margin: 0; }
+	/* Card 3076: the fields the kit's (ui-field.css), their names the kit's label; the frame and buttons the app's dialog. */
+	.dialog-field { display: flex; flex-direction: column; gap: 0.375rem; border: none; padding: 0; margin: 0; }
 	.dialog-field legend { margin-bottom: var(--space-xs); }
-	.dialog-hint { font-size: 0.75rem; color: var(--text-tertiary); margin: 0; }
+	.dialog-hint { font-size: 0.75rem; color: var(--ui-muted-foreground); margin: 0; }
 	.tick-list { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-md); max-height: 160px; overflow-y: auto; }
-	.tick { display: flex; align-items: center; gap: var(--space-xs); font-size: 0.82rem; color: var(--text-primary); }
+	.tick { display: flex; align-items: center; gap: var(--space-xs); font-size: 0.82rem; color: var(--ui-foreground); }
 	.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-md); }
 </style>

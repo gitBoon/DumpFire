@@ -5,11 +5,24 @@
 	 * Provides board management (delete, clear cards/categories),
 	 * user management (create, roles, delete), team management,
 	 * database operations (reset, vacuum), and import/export.
+	 *
+	 * Card 3076: on the kit's shell, full width, with a list of its sections
+	 * in a rail on the left (`AdminSectionNav`, one row above the page below
+	 * 1024px). Each section is a card with an address (`/admin#users`), in
+	 * groups: the overview and the held list; Access; Data; Settings; the
+	 * Danger Zone last. The held list stays at the top and the mail panel
+	 * below the users panel, as the page's words say.
 	 */
 	import type { PageData } from './$types';
-	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
-	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
-	import { theme, themeIcon } from '$lib/stores/theme';
+	import PageShell from '$lib/components/ui/PageShell.svelte';
+	import PageHeader from '$lib/components/ui/PageHeader.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardDescription from '$lib/components/ui/CardDescription.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
+	import AdminSectionNav from '$lib/components/admin/AdminSectionNav.svelte';
+	import '$lib/components/admin/admin.css';
 	import Toast from '$lib/components/Toast.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	// The superadmin's panel (card 2281, slice C1a): the export and the import, drawn in the markup's isSuperadmin block alone.
@@ -133,102 +146,101 @@
 	<title>Admin — DumpFire</title>
 </svelte:head>
 
-<div class="admin-page">
-	<header class="admin-header glass">
-		<div class="admin-header-inner">
-			<a href="/" class="header-logo" title="Back to DumpFire">
-				<span class="logo-fire">🔥</span>
-				<span class="logo-text">DumpFire</span>
-			</a>
-			<h1 class="header-title">⚙️ Admin Panel</h1>
-			<div class="admin-header-right">
-				<!-- The theme, as the dashboard's More draws it: a menu worked from the keyboard (card 2471). -->
-				<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
-					{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
-					<ThemeMenuItems heading={false} />
-				</HeaderMenu>
-			</div>
-		</div>
-	</header>
+<!-- Card 3076: the list of the page's sections, in the rail; every administrator's, so in no {#if}. -->
+{#snippet sections()}
+	<AdminSectionNav held={settingsHeld.length > 0} />
+{/snippet}
 
-	<main class="admin-content">
-		<!-- Card 2922 (R7): the superadmin's banner while a setting is held for review, on every admin page. -->
-		<SettingsHeldBanner held={settingsHeld} superadmin={isSuperadmin} />
+<PageShell width="full" title="Admin" rail={sections} railLabel="Admin sections" railPosition="start">
+	<!-- Card 2922 (R7): the superadmin's banner while a setting is held for review, on every admin page. -->
+	<SettingsHeldBanner held={settingsHeld} superadmin={isSuperadmin} />
+	<PageHeader title="Admin" description="Settings, people, backups and upkeep for this DumpFire server." />
+	<div class="page-sections">
 		<AdminOverview {data} />
 
 		<!-- Card 2922: the settings held for review, every administrator's to read, the superadmin's to keep or remove.
 		     A Keep or a Remove draws the panels that show the setting again. -->
 		<SettingsHeldPanel {confirm} bind:held={settingsHeld} onChanged={(setting) => (setting.startsWith('backup_destination:') ? destinationsRead++ : mailRead++)} />
 
+		<!-- Access -->
 		<!-- Card 3064 (R10): two-step sign-in, every administrator's to read, the superadmin's to require. -->
 		<TwoStepSwitchPanel twoStepSwitch={data.twoStepSwitch} {confirm} />
-
-		<!-- The App URL: shown to every administrator since card 2395, set by the superadmin alone since card 2847. Drawn again once the mail settings or the App URL an account had set are removed with it (card 2397). -->
-		<!-- Card 2922 (R7): a pointer to the list while the App URL is held. -->
-		{#if appUrlHeldHere}<p class="held-pointer"><a href="#settings-held">⏸️ The App URL is held for review: {HELD_POINTER}</a></p>{/if}
-		{#key mailRead}
-		<AppUrlPanel {isSuperadmin} {superadminName} />
-		{/key}
-
-		<!-- The superadmin's alone: export and import (and Reset Everything, in the danger zone).
-		     An administrator is refused each of them by its route, and is shown one line in their place. -->
-		{#if isSuperadmin}
-		<BackupRestorePanel importOutsideDefault={data.importOutsideDefault} />
-		{:else}
-		<section class="admin-card glass fade-in-up" style="animation-delay: 40ms">
-			<h2>🔒 The superadmin's</h2>
-			<p class="section-desc" style="margin-bottom: 0">
-				{#if superadminName}
-					Exporting, importing and resetting the database belong to the superadmin, <strong>{superadminName}</strong>, and are on this page for that account only.
-				{:else}
-					Exporting, importing and resetting the database belong to the superadmin, and no account is the superadmin. Whoever runs the server can make one: see "If nobody can sign in as the superadmin" in the deployment guide.
-				{/if}
-			</p>
-		</section>
-		{/if}
-
-		<!-- Every administrator's since card 2395: the scheduled backups and their destinations. Lowering Keep Last,
-		     removing a destination and switching the schedule off are the superadmin's (card 2398). Drawn again once
-		     destinations an account had set are removed with it (card 2397). -->
-		<!-- Card 2922 (R7): a pointer to the list while a destination is held. -->
-		{#if destinationsHeldHere}<p class="held-pointer"><a href="#settings-held">⏸️ A backup destination is held for review: {HELD_POINTER}</a></p>{/if}
-		{#key destinationsRead}
-		<ScheduledBackupsPanel {confirm} {isSuperadmin} />
-		{/key}
-
-		<BoardManagementPanel {data} {confirm} />
 
 		<UsersPanel {data} {isSuperadmin} {confirm} loadMailStatus={() => smtpPanel?.loadMailStatus()} {settingsRemoved} bind:inviteLink />
 
 		<TeamsPanel {data} {confirm} />
 
 		<!-- The people directory (card 2674): its own page, every administrator's. -->
-		<section class="admin-card glass fade-in-up" style="animation-delay: 300ms">
-			<h2>👥 People Directory</h2>
-			<p class="section-desc" style="margin-bottom: 0">
-				Who can be consulted on or told of a decision, with an account or without one, and their groups. <a href="/admin/people">Open the people directory</a>
-			</p>
-		</section>
+		<Card as="section" id="people-directory" class="admin-section" aria-labelledby="people-directory-title">
+			<CardHeader>
+				{#snippet actions()}
+					<Button variant="outline" size="sm" href="/admin/people">Open the people directory</Button>
+				{/snippet}
+				<CardTitle level={2} id="people-directory-title">People Directory</CardTitle>
+				<CardDescription>Who can be consulted on or told of a decision, with an account or without one, and their groups.</CardDescription>
+			</CardHeader>
+		</Card>
 
 		<!-- The ISO 27001:2022 checklist (card 2670): its own page, every administrator's, read-only. -->
-		<section class="admin-card glass fade-in-up" style="animation-delay: 320ms">
-			<h2>📋 ISO 27001:2022 Checklist</h2>
-			<p class="section-desc" style="margin-bottom: 0">
-				Every Annex A control and clauses 4 to 10, with how far DumpFire meets each, its evidence and the cards that close what is open. <a href="/admin/iso-27001">Open the checklist</a>
-			</p>
-		</section>
+		<Card as="section" id="iso" class="admin-section" aria-labelledby="iso-title">
+			<CardHeader>
+				{#snippet actions()}
+					<Button variant="outline" size="sm" href="/admin/iso-27001">Open the checklist</Button>
+				{/snippet}
+				<CardTitle level={2} id="iso-title">ISO 27001:2022 Checklist</CardTitle>
+				<CardDescription>Every Annex A control and clauses 4 to 10, with how far DumpFire meets each, its evidence and the cards that close what is open.</CardDescription>
+			</CardHeader>
+		</Card>
+
+		<!-- Data -->
+		<BoardManagementPanel {data} {confirm} />
+
+		<!-- The superadmin's alone: export and import (and Reset Everything, in the danger zone).
+		     An administrator is refused each of them by its route, and is shown one line in their place. -->
+		{#if isSuperadmin}
+		<BackupRestorePanel importOutsideDefault={data.importOutsideDefault} />
+		{:else}
+		<Card as="section" id="backup" class="admin-section" aria-labelledby="backup-title">
+			<CardHeader>
+				<CardTitle level={2} id="backup-title">The superadmin's</CardTitle>
+				<CardDescription>
+					{#if superadminName}
+						Exporting, importing and resetting the database belong to the superadmin, <strong>{superadminName}</strong>, and are on this page for that account only.
+					{:else}
+						Exporting, importing and resetting the database belong to the superadmin, and no account is the superadmin. Whoever runs the server can make one: see "If nobody can sign in as the superadmin" in the deployment guide.
+					{/if}
+				</CardDescription>
+			</CardHeader>
+		</Card>
+		{/if}
+
+		<!-- Every administrator's since card 2395: the scheduled backups and their destinations. Lowering Keep Last,
+		     removing a destination and switching the schedule off are the superadmin's (card 2398). Drawn again once
+		     destinations an account had set are removed with it (card 2397). -->
+		<!-- Card 2922 (R7): a pointer to the list while a destination is held. -->
+		{#if destinationsHeldHere}<p class="held-pointer admin-notice admin-notice-warning"><a href="#settings-held">⏸️ A backup destination is held for review: {HELD_POINTER}</a></p>{/if}
+		{#key destinationsRead}
+		<ScheduledBackupsPanel {confirm} {isSuperadmin} />
+		{/key}
+
+		<!-- Settings -->
+		<!-- The App URL: shown to every administrator since card 2395, set by the superadmin alone since card 2847. Drawn again once the mail settings or the App URL an account had set are removed with it (card 2397). -->
+		<!-- Card 2922 (R7): a pointer to the list while the App URL is held. -->
+		{#if appUrlHeldHere}<p class="held-pointer admin-notice admin-notice-warning"><a href="#settings-held">⏸️ The App URL is held for review: {HELD_POINTER}</a></p>{/if}
+		{#key mailRead}
+		<AppUrlPanel {isSuperadmin} {superadminName} />
+		{/key}
 
 		<!-- SMTP Configuration: every administrator's since card 2395. Drawn again with the App URL panel (card 2397). -->
 		<!-- Card 2922 (R7): a pointer to the list while the mail settings are held. -->
-		{#if mailHeldHere}<p class="held-pointer"><a href="#settings-held">⏸️ The mail settings are held for review: {HELD_POINTER}</a></p>{/if}
+		{#if mailHeldHere}<p class="held-pointer admin-notice admin-notice-warning"><a href="#settings-held">⏸️ The mail settings are held for review: {HELD_POINTER}</a></p>{/if}
 		{#key mailRead}
 		<SmtpPanel bind:this={smtpPanel} currentUser={data.currentUser} />
 		{/key}
 
 		<DangerZonePanel {isSuperadmin} {confirm} bind:resetNotice />
-	</main>
-</div>
-
+	</div>
+</PageShell>
 <!-- Confirm dialog: the app's, which takes the focus and answers Escape (card 2362: it was the page's own, with neither) -->
 {#if confirmAction.show}
 	<ConfirmModal
@@ -246,7 +258,7 @@
      after one that was done the way out is Continue to set-up alone, and Escape does nothing. -->
 {#if resetNotice}
 	<div class="modal-overlay" role="alertdialog" aria-modal="true" aria-label={resetNotice.title}>
-		<div class="modal-content confirm-modal" role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions button', onEscape: resetNotice.redirect ? undefined : () => (resetNotice = null) }}>
+		<div class="modal-content confirm-modal admin-dialog" role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions button', onEscape: resetNotice.redirect ? undefined : () => (resetNotice = null) }}>
 			<h2>{resetNotice.title}</h2>
 			<p style={resetNotice.problems.length > 0 ? 'margin-bottom: var(--space-sm)' : undefined}>{resetNotice.message}</p>
 			{#if resetNotice.problems.length > 0}
@@ -277,136 +289,31 @@
 <Toast />
 
 <style>
-	.admin-page { min-height: 100vh; padding-top: 64px; }
-
-	.admin-header {
-		position: fixed; top: 0; left: 0; right: 0; z-index: 200;
-		height: 64px; border-bottom: 1px solid var(--glass-border);
-		backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
-	}
-	.admin-header-inner {
-		max-width: 1400px; margin: 0 auto; height: 100%;
-		display: flex; align-items: center; justify-content: space-between;
-		padding: 0 var(--space-xl);
-	}
-	.header-logo {
-		display: flex; align-items: center; gap: var(--space-sm);
-		text-decoration: none; color: var(--text-primary);
-		font-weight: 700; font-size: 1.1rem;
-	}
-	.logo-fire { font-size: 1.4rem; }
-	.header-title {
-		font-size: 1rem; font-weight: 700; color: var(--text-primary);
-		letter-spacing: -0.01em;
-	}
-	.admin-header-right { display: flex; gap: var(--space-sm); }
-
-	/* The page's last line stops above the user badge (card 2239). */
-	.admin-content {
-		max-width: 800px; margin: 0 auto; padding: var(--space-2xl) var(--space-2xl) var(--user-badge-space);
-		display: flex; flex-direction: column; gap: var(--space-xl);
-	}
-
 	/*
-	 * A rule written `.admin-page :global(...)` styles the panels, every
-	 * administrator's since card 2395 and the superadmin's export and import,
-	 * as well as the page (card 2281, slice C1a): each panel is a component of
-	 * its own, out of reach of the page's scoped rules. One that also has a
-	 * plain selector styles the page's own dialogs, which are after
-	 * `.admin-page` and not in it, as it did before.
+	 * Card 3076: the page's cards one under another; its foot stops above the
+	 * user badge in PageShell's main (card 2239). The panels are styled by the
+	 * kit and admin.css, no longer by `.admin-page :global(...)` rules here.
 	 */
-
-	/* Fade-in animation */
-	.admin-page :global(.fade-in-up) {
-		animation: fadeInUp 0.5s ease-out both;
-	}
-	@keyframes fadeInUp {
-		from { opacity: 0; transform: translateY(16px); }
-		to { opacity: 1; transform: translateY(0); }
+	.page-sections {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-lg);
 	}
 
-	.admin-page :global(.admin-card) {
-		padding: var(--space-xl); border-radius: var(--radius-lg);
-		transition: transform 0.2s ease, box-shadow 0.2s ease;
-	}
-	.admin-page :global(.admin-card:hover) {
-		transform: translateY(-1px);
-		box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-	}
-	.admin-page :global(.admin-card h2) { font-size: 1.05rem; margin-bottom: var(--space-sm); }
-	.admin-page :global(.section-desc) { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: var(--space-lg); }
-
-	/* Backup & Restore's warning, and the reset dialog's */
-	.admin-page :global(.warning-text) { color: var(--accent-amber); font-weight: 600; }
-
-	/* The panels' (the page's own confirm is the app's dialog since card 2362) */
-	.admin-page :global(.btn-danger-solid) {
-		padding: var(--space-sm) var(--space-lg); border-radius: var(--radius-sm);
-		background: var(--accent-rose); color: white; font-weight: 600;
-		font-size: 0.82rem; border: none; white-space: nowrap; cursor: pointer;
-		font-family: var(--font-family);
-		transition: all 0.2s ease;
-	}
-	.admin-page :global(.btn-danger-solid:hover) { background: #e11d48; transform: scale(1.02); }
-
-	.confirm-modal, .admin-page :global(.confirm-modal) { max-width: 420px; }
-	.confirm-modal h2, .admin-page :global(.confirm-modal h2) { font-size: 1.1rem; margin-bottom: var(--space-sm); }
-	.confirm-modal p, .admin-page :global(.confirm-modal p) { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: var(--space-xl); line-height: 1.5; }
-	.modal-actions, .admin-page :global(.modal-actions) { display: flex; justify-content: flex-end; gap: var(--space-md); }
 	/* What a reset could not move to the trash */
 	.reset-problems {
-		margin: 0 0 var(--space-xl); padding-left: var(--space-lg);
-		max-height: 240px; overflow-y: auto;
-		font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; overflow-wrap: anywhere;
+		margin: 0 0 var(--space-xl);
+		padding-left: var(--space-lg);
+		max-height: 240px;
+		overflow-y: auto;
+		font-size: 0.8rem;
+		line-height: 1.5;
+		color: var(--ui-muted-foreground);
+		overflow-wrap: anywhere;
 	}
 
-	.admin-page :global(.empty-msg) { font-size: 0.85rem; color: var(--text-tertiary); text-align: center; padding: var(--space-xl); }
-
-	/* Section header with title + action */
-	.admin-page :global(.section-header) {
-		display: flex; align-items: center; justify-content: space-between;
-		margin-bottom: var(--space-lg);
-	}
-	.admin-page :global(.section-header h2) { margin-bottom: 0; }
-
-	/* Inline form: the users', the teams' and the mail panel's (card 2281, slice C1b) */
-	.admin-page :global(.inline-form) {
-		padding: var(--space-lg); background: var(--bg-base);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-md);
-		margin-bottom: var(--space-lg);
-		display: flex; flex-direction: column; gap: var(--space-sm);
-	}
-	.admin-page :global(.form-row) {
-		display: flex; gap: var(--space-sm); align-items: center; flex-wrap: wrap;
-	}
-	.admin-page :global(.form-input) {
-		padding: var(--space-sm) var(--space-md);
-		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);
-		background: var(--bg-elevated); color: var(--text-primary);
-		font-size: 0.82rem; font-family: var(--font-family);
-		flex: 1; min-width: 120px;
-	}
-	.admin-page :global(.form-input:focus) { border-color: var(--accent-indigo); outline: none; }
-
-	/* The invite link's dialog, which is after .admin-page, has a copy of its own (card 2281, slice C1b) */
-	.admin-page :global(.btn-sm) { font-size: 0.78rem !important; padding: var(--space-xs) var(--space-md) !important; }
-	.admin-page :global(.btn-xs) { font-size: 0.7rem !important; padding: 2px var(--space-sm) !important; }
-
-	.admin-page :global(.danger) { color: var(--accent-rose) !important; }
-
-	/* A backup destination's type, on its card and in the backup history */
-	.admin-page :global(.dest-type-sftp) { background: rgba(34, 197, 94, 0.12); color: #22c55e; }
-	.admin-page :global(.dest-type-s3) { background: rgba(249, 115, 22, 0.12); color: #f97316; }
-	.admin-page :global(.dest-type-gdrive) { background: rgba(59, 130, 246, 0.12); color: #3b82f6; }
-	.admin-page :global(.dest-type-onedrive) { background: rgba(99, 102, 241, 0.12); color: #6366f1; }
-
-	/* Card 2922: the line above a settings panel while one of its settings is held for review */
+	/* Card 2922: the line above a settings panel while one of its settings is held for review, close above its card. */
 	.held-pointer {
-		margin: 0 0 var(--space-xs);
-		padding: var(--space-xs) var(--space-md);
-		border-radius: 8px;
-		background: color-mix(in srgb, var(--accent-amber) 15%, transparent);
-		font-size: 0.78rem;
+		margin-bottom: calc(var(--space-sm) - var(--space-lg));
 	}
-	.held-pointer a { color: var(--text-primary); }
 </style>

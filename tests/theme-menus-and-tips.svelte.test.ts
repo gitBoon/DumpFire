@@ -49,7 +49,6 @@ describe('the theme as a menu on every page (card 2471)', () => {
 	// All Tasks' header is not among them since card 2472: its theme is in its More menu, with the heading.
 	const pages = [
 		'src/routes/account/+page.svelte',
-		'src/routes/admin/+page.svelte',
 		'src/routes/archived/+page.svelte',
 		'src/routes/audit/+page.svelte',
 		'src/routes/reports/+page.svelte',
@@ -76,6 +75,16 @@ describe('the theme as a menu on every page (card 2471)', () => {
 		expect(end).toBeGreaterThan(items);
 		expect(source.slice(menu, end)).toContain('triggerTitle="Change theme"');
 		expect(source.slice(menu, end)).toContain('{themeIcon($theme)}');
+	});
+
+	// Card 3076: the admin pages are in the kit's shell, whose header draws the Theme menu as above (pinned by
+	// tests/ui-kit.svelte.test.ts, case 1); none draws a menu of its own.
+	it.each(['src/routes/admin/+page.svelte', 'src/routes/admin/people/+page.svelte', 'src/routes/admin/iso-27001/+page.svelte'])('%s draws the theme through PageShell, with no menu of its own', (file) => {
+		const source = read(file);
+		expect(source).toContain("import PageShell from '$lib/components/ui/PageShell.svelte';");
+		expect(source).toContain('<PageShell ');
+		expect(source).not.toContain('HeaderMenu');
+		expect(source).not.toContain('ThemeMenuItems');
 	});
 });
 
