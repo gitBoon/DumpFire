@@ -1,7 +1,7 @@
 ---
 title: "Release Checklist: 106ea45 to 4ce25de"
 category: "Deployment"
-version: 1.2
+version: 1.3
 status: Living
 date: 2026-11-25
 tags:
@@ -523,10 +523,59 @@ Expect: 24 `Applied migration` lines (0061 to 0084), the Sealed line, the Key ch
 "kept, sealed in place", **`Scrubbed the old plain text`**, `Listening on`. Any stop line from the
 runbook's L6 list: section D.
 
-### C8. First backup (L7)
+### C8. First backup and its seal (L7)
 
-Admin → Scheduled Backups → ▶ Run Now, then the seal check in the runbook's "L7, the seal checked after
-the release".
+Why: proves backups still work after the release, are sealed with the **kept** seal key (so backups
+made before the release still verify), and hold no secret.
+
+**C8.1 Run a backup.** In the browser, as the superadmin: Admin → ☁️ Scheduled Backups → ▶ Run Now
+(it asks for your password). Then open Backup History.
+
+- Expect: success at every destination.
+- An **SFTP** destination fails until its host key is confirmed (C7 named it). Confirm it: Admin →
+  ☁️ Scheduled Backups → the destination → confirm the host key shown, then ▶ Run Now again.
+- Any other failure: note the destination and its error and send it to Claude. Not a rollback reason
+  unless backups cannot be fixed within the day.
+
+**C8.2 The seal key was kept, not made anew** (host, root):
+
+```bash
+c=dumpfire
+q() { docker exec "$c" node -e "const D=require('better-sqlite3');const d=new D(process.env.DB_PATH||'/app/data/dumpfire.db',{readonly:true,fileMustExist:true});console.log(JSON.stringify(d.prepare(process.argv[1]).all()))" "$1"; }
+q "SELECT key, substr(value, 1, 9) AS form FROM settings WHERE key IN ('backup_seal_key', 'backup_seal_key_made_at')"
+```
+
+Expect exactly one row: `{"key":"backup_seal_key","form":"dfsealed:"}`, and **no**
+`backup_seal_key_made_at` row (a key made anew records that row; the kept one does not). With C7's
+Key change line saying "kept, sealed in place", backups made before the release still verify.
+
+**C8.3 One backup is sealed and holds no secret** (on your PC, in the repository folder):
+
+1. Browser, as the superadmin: Admin → Backup & Restore → **Export Backup** (asks your password).
+2. Save the file as `C:\Users\boong\source\repos\DumpFire\dumpfire-export.db`.
+3. In PowerShell:
+
+```powershell
+cd C:\Users\boong\source\repos\DumpFire
+node -e "
+const db = require('better-sqlite3')(process.argv[1], { readonly: true, fileMustExist: true });
+const get = (k) => (db.prepare('SELECT value FROM settings WHERE key = ?').get(k) || {}).value || '';
+const has = (v) => Boolean(v && String(v).length > 0);
+console.log('mail: host set', has(get('smtp_host')), '| user set', has(get('smtp_user')), '| password set', has(get('smtp_pass')));
+let c = {};
+try { c = JSON.parse(get('backup_config') || '{}'); } catch (e) { console.log('backup_config is not JSON'); }
+for (const d of (c.destinations || [])) { let sa = {}; try { sa = JSON.parse(d.serviceAccountJson || '{}'); } catch (e) {} console.log('destination', d.type, JSON.stringify(d.name), '| password', has(d.password), '| private key', has(d.privateKey), '| S3 secret', has(d.secretAccessKey), '| client secret', has(d.clientSecret), '| refresh token', has(d.refreshToken), '| service account key', has(sa.private_key)); }
+console.log('sealed:', has(get('backup_seal')), '| seal key in it:', has(get('backup_seal_key')));
+db.close();
+" ./dumpfire-export.db
+Remove-Item .\dumpfire-export.db
+```
+
+Expect: `password set false`; on every destination line every secret `false`; and
+`sealed: true | seal key in it: false`. Stop if any secret is `true` or `sealed: false`: send Claude the
+output. The file is deleted at the end (it is a whole copy of live).
+
+Never restore a backup on live to prove a seal.
 
 ### C9. Tell everyone to reload open tabs (L8)
 
