@@ -1,7 +1,7 @@
 ---
 title: "Release Checklist: 106ea45 to 4ce25de"
 category: "Deployment"
-version: 1.4
+version: 1.5
 status: Living
 date: 2026-11-25
 tags:
@@ -640,9 +640,208 @@ with the old one moved aside first, then the chown).
 
 ## E. After
 
-| When | Do |
-|---|---|
-| Same day | `docker exec dumpfire rm -f /app/data/.pre-restore-safety.json`; confirm each SFTP destination's host key |
-| Within a day | Regenerate any Slack, Teams or Discord webhook addresses |
-| Once known good | Replace `/home/itsupport/update-dumpfire.sh` with the runbook's new script; rename (do not delete) `/home/itsupport/DumpFire-5478f58` |
-| Go/no-go + 14 days | `shred -u /root/dumpfire-cold/dumpfire-data-0060.tar.gpg` |
+```mermaid
+flowchart LR
+    E1["E1 Same day:<br/>safety file, SFTP keys,<br/>log read"] --> E2["E2 Next morning:<br/>overnight backup and log"]
+    E2 --> E3["E3 Known good (2 to 3 days):<br/>new update script,<br/>old checkout retired"]
+    E3 --> E4["E4 Go/no-go + 14 days:<br/>cold copy shredded"]
+    E4 --> E5["E5 Later, each its own card:<br/>E1 to E6 switch-ons"]
+```
+
+### E1. Same day, straight after C10
+
+**E1.1 Remove the restore safety file, if one exists.**
+
+```bash
+docker exec dumpfire ls -l /app/data/.pre-restore-safety.json 2>/dev/null && docker exec dumpfire rm -f /app/data/.pre-restore-safety.json
+docker exec dumpfire ls /app/data/.pre-restore-safety.json 2>/dev/null || echo 'none left'
+```
+
+Why: if a restore was ever run, this file holds old keys and secrets in plain. Expect `none left`.
+
+**E1.2 Confirm each SFTP backup destination's host key** (only if C7 showed the line
+`N SFTP backup destination(s) have no confirmed host key`; otherwise skip).
+
+Why: from this release an SFTP destination receives nothing until its server's key is confirmed, so
+nobody else answering for that host can receive the password or the backup. For **each** SFTP
+destination, in this order:
+
+1. Browser, as the superadmin: Admin → ☁️ Scheduled Backups → the destination → **🧪 Test**, once.
+   Expect a box: "SFTP host key not confirmed: the server at host:22 presented the host key
+   ssh-ed25519 SHA256:…" and a **✅ Confirm this key** button. Nothing was sent.
+2. On the SFTP server itself (its own shell):
+
+   ```bash
+   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+   ```
+
+   (or `ssh_host_rsa_key.pub` / `ssh_host_ecdsa_key.pub` if the box names that type).
+3. Compare the `SHA256:…` with the box. **Same: press ✅ Confirm this key.** Different: **stop, do not
+   confirm**: something else answers for that host; tell Claude.
+4. Expect the Test to run again: "Connected to host:22", and the ⚠️ mark gone.
+5. ▶ **Run Now** once more (asks your password); Backup History shows success to it.
+
+**E1.3 Webhook addresses: nothing to do.** P-new-3 found no webhooks on live, so there are no
+Slack, Teams or Discord addresses to regenerate.
+
+**E1.4 Read the log once more, an hour after the start.**
+
+```bash
+docker logs --since 1h dumpfire 2>&1 | grep -E '\[(ERROR|CRITICAL)\]'
+docker logs --since 1h nginx-proxy 2>&1 | grep -cE ' 50[0-9] '
+```
+
+Expect no `ERROR` or `CRITICAL` line (the key-change `CRITICAL` was at the start, before this hour),
+and `0` or a handful of `5xx` from the restart moment. Anything else: send it to Claude.
+
+**E1.5 Tell Claude it is live.** Claude then closes card 3046 and milestone 36 on the board and records
+the release; card 3064's switch-on events (E5 below) become planned cards.
+
+### E2. Next morning
+
+```bash
+docker ps --format '{{.Names}} {{.Status}}' | grep -E 'dumpfire|nginx-proxy'     # both "Up …"
+docker logs --since 24h dumpfire 2>&1 | grep -E '\[(ERROR|CRITICAL)\]'
+```
+
+- Admin → ☁️ Scheduled Backups → Backup History: the overnight scheduled backup succeeded at every
+  destination.
+- Expect both containers up, no restarts, and no `ERROR` or `CRITICAL` line. Anything else: send it to
+  Claude. (Rolling back now loses a day of work; Claude will look for a fix first.)
+
+### E3. Once known good (two to three working days with no fault)
+
+**E3.1 Replace the update script.** The old one must never run again: its `git pull` fails on the new
+history and its prune deletes the way back. Keep it, then write the new one:
+
+```bash
+cp -p /home/itsupport/update-dumpfire.sh /home/itsupport/update-dumpfire.sh.old-$(date +%F)
+cat > /home/itsupport/update-dumpfire.sh <<'EOF'
+#!/bin/bash
+# Update DumpFire to origin/main and restart it behind nginx-proxy.
+# pipefail: a pipe fails when any of its commands does, so a cold copy cut short is never taken as made.
+set -euo pipefail
+cd /home/itsupport/DumpFire
+
+# 1. The way back, taken only from a server that is running and answering: the image it runs, tagged
+#    dumpfire:rollback, and the previous one kept as dumpfire:rollback-prev.
+if [ "$(docker inspect -f '{{.State.Running}}' dumpfire 2>/dev/null)" != "true" ] \
+   || ! docker exec nginx-proxy wget -q -O /dev/null http://dumpfire:3000/api/v1/openapi.json; then
+  echo "DumpFire is not running and answering: nothing changed; put it right first" >&2
+  exit 1
+fi
+if docker image inspect dumpfire:rollback >/dev/null 2>&1; then
+  docker tag dumpfire:rollback dumpfire:rollback-prev
+fi
+docker tag "$(docker inspect -f '{{.Image}}' dumpfire)" dumpfire:rollback
+
+# 2. Only a fast-forward: never a merge of histories. Note any new migration it brings.
+before=$(git rev-parse HEAD)
+git fetch origin
+git merge --ff-only origin/main
+new_migrations=$(git diff --name-only --diff-filter=A "$before" HEAD -- drizzle | grep '\.sql$' || true)
+
+docker compose -p dumpfire build
+
+# 3. A release with a new migration: stopped and copied first, because once it has run the cold copy is the way back.
+if [ -n "$new_migrations" ]; then
+  echo "New migration(s): $new_migrations"
+  docker compose -p dumpfire stop -t 30 dumpfire
+  sudo install -d -m 700 /root/dumpfire-cold
+  copy=/root/dumpfire-cold/dumpfire-data-$(date -u +%Y%m%dT%H%M%SZ).tar.gpg
+  docker run --rm --user root --entrypoint tar -v dumpfire_dumpfire-data:/app/data:ro dumpfire:rollback -C /app/data -cf - . \
+    | sudo gpg --batch --yes --symmetric --cipher-algo AES256 \
+        --passphrase-file /home/itsupport/.secrets/dumpfire_cold_pass -o "$copy"
+  # The read-back: the archive decrypts and lists to its end, and holds every file of the volume at its size.
+  listed=$(mktemp) && held=$(mktemp)
+  sudo gpg --batch --decrypt --passphrase-file /home/itsupport/.secrets/dumpfire_cold_pass "$copy" \
+    | tar -tvf - \
+    | awk '$1 ~ /^-/ { size = $3; sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +\.\//, ""); print size, $0 }' | sort > "$listed"
+  docker run --rm --user root -v dumpfire_dumpfire-data:/app/data:ro --entrypoint find dumpfire:rollback \
+    /app/data -type f -printf '%s %P\n' | sort > "$held"
+  if ! diff "$held" "$listed"; then
+    rm -f "$listed" "$held"
+    echo "The cold copy $copy does not hold the volume as it is: DumpFire is stopped and nothing else changed;" \
+      "start it again with: docker compose -p dumpfire start dumpfire" >&2
+    exit 1
+  fi
+  rm -f "$listed" "$held"
+  echo "Cold copy: $copy, read back whole (shred it once the release is known good)"
+fi
+
+# 4. Start. An unchanged image recreates nothing, so the wait is only for a new or restarted container.
+old_id=$(docker inspect -f '{{.Id}}' dumpfire)
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+docker compose -p dumpfire up -d --remove-orphans
+new_id=$(docker inspect -f '{{.Id}}' dumpfire)
+
+if [ "$new_id" != "$old_id" ] || [ -n "$new_migrations" ]; then
+  i=0
+  until docker logs --since "$started" dumpfire 2>&1 | grep -q 'Listening on'; do
+    i=$((i + 1))
+    if [ "$i" -gt 300 ] || [ "$(docker inspect -f '{{.State.Running}}' dumpfire)" != "true" ] \
+       || [ "$(docker inspect -f '{{.RestartCount}}' dumpfire)" -gt 0 ]; then
+      docker compose -p dumpfire stop dumpfire
+      echo "DumpFire did not start: read docker logs dumpfire; roll back with dumpfire:rollback (and the cold copy, if one was taken)" >&2
+      exit 1
+    fi
+    sleep 2
+  done
+fi
+
+# 5. nginx resolves the new container (harmless with N1's resolver).
+docker exec nginx-proxy nginx -t
+docker exec nginx-proxy nginx -s reload
+
+docker image prune -f
+EOF
+chmod 750 /home/itsupport/update-dumpfire.sh
+bash -n /home/itsupport/update-dumpfire.sh && echo 'script ok'
+```
+
+Why: later releases fast-forward from GitHub, keep a rollback image every time, take an encrypted cold
+copy whenever a release brings a migration, stop a failed start at once, and reload nginx. Run it as
+root. If `git fetch` asks for credentials, it is the same GitHub access question as B1.
+A release that comes with its own runbook (like this one) never uses the script.
+
+**E3.2 Retire the old checkout** (rename, never delete):
+
+```bash
+mv /home/itsupport/DumpFire-5478f58 /home/itsupport/DumpFire-5478f58.retired-$(date +%F)
+docker image ls dumpfire                 # dumpfire:rollback stays: the script moves it on each update
+```
+
+**E3.3 Keep** the nginx backups (`default.conf.bak-…`, `docker-compose.yml.bak-…`) for a month, then
+delete them.
+
+### E4. Go/no-go + 14 days
+
+```bash
+shred -u /root/dumpfire-cold/dumpfire-data-0060.tar.gpg
+ls -la /root/dumpfire-cold/                # empty
+```
+
+Also delete any VM or volume snapshot of the host taken before the release.
+
+Why: the cold copy holds every pre-release session, invite and requester link in plain, and the old
+seal key (accepted risk R14). After 14 days without a rollback it is only a liability.
+**Keep** `/home/itsupport/.secrets/dumpfire_cold_pass` (later cold copies use it) and the MFA key file
+(always).
+
+### E5. Later: the switch-on events (each its own card and notice)
+
+Nothing to do now. These turn on, one at a time, the protections the release kept dormant. Each is
+planned on its own card, with a notice first; the steps are in
+[The Compatibility Release](deployment.md#the-compatibility-release-card-3064).
+
+| Event | What it turns on | When |
+|---|---|---|
+| E1 | Checks stored images (none on live today) | Any time |
+| E2 | Renews the backup seal key | Any quiet day |
+| E3 | **Requires two-step sign-in** for everyone (Admin → Two-step sign-in; refused until every administrator has set it up on their Account page) | After every administrator has set it up |
+| E4 | API key deadline (60 days) | Within 60 days of E3 |
+| E5 | Image retention | Any time |
+| E6 | Re-keys the oldest webhooks (none on live today) | Optional |
+
+Nothing changes on its own except one thing: from 30 days after the release, the old session cookie
+name is no longer read (anyone not seen in 30 days signs in again).
