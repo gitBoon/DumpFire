@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.100
+version: 1.101
 status: As-Built
-date: 2026-11-24
+date: 2026-11-25
 tags:
   - card-2689
   - decision-webhooks
@@ -316,6 +316,7 @@ A page left open while DumpFire is updated to a new version says so within about
 
 A decision record puts a question to the people it affects: what the situation is, what is asked, the options with their pros, cons and commercial notes, and who is consulted and who is only told (card 2676, from 3 November 2026). There is drafting, previewing, a dry run, opening and the other lifecycle controls (card 2697, from 4 November 2026, [below](#opening-a-decision-and-what-follows)), the page each participant reads and answers a decision on (card 2677, [below](#reading-and-answering-a-decision)), and the results, the ruling, releasing the results, concerns and superseding (card 2679, [below](#results-the-ruling-and-what-follows)). Since card 2683 a decision can also ask its own survey questions, or be a survey alone ([below](#survey-questions)). Since card 2684 anyone included can object, or ask to talk to the decider, before the ruling ([below](#objecting-and-asking-to-talk-to-the-decider)).
 
+- **How it works, step by step** (card 3070) — **How it works** at the top of the Decisions page (Views → Decisions) opens a guided tour at `/decisions/tour`: enter a decision of your own (title, question, board, closing date, two to four options, the decider and up to five people, each Consulted or Informed), or press **Fill with an example**, and ten stops walk it from the draft to the ruling, each naming where in DumpFire it is done. Its screens are illustrative, drawn from what you typed, with made-up example responses; it reads no real decision and saves nothing on the server (your details stay in your own browser). Signed in only. Before a first real decision: the people to include must be in the people directory (Admin → People Directory), and mail must be set up (Admin → Email / SMTP), or the readability check stops **Open**
 - **Where they are** — on a board, **More → Go to → Decisions** lists the board's decisions, newest first, with each one's status, decider, closing time and last change, in UTC. Anyone who can open the board sees every decision that has been opened; a draft is seen only by its author, its decider, the board's owners and administrators. An opened decision's title opens its page, with **Edit** beside it where you may edit it; a draft's title opens its editor where you may edit it
 - **Making a draft** — **New decision**, for anyone who can edit the board, asks for a title and opens the editor. The decider starts as the board's Product Owner while they can edit the board, and as you otherwise
 - **The editor** — the sections in the order participants will read them: situation, question, what is asked, the options, how it affects each group, user stories, what is not yet known, what is already settled and technical detail. Options are cards you can add, remove and move left or right; each is given a letter (A, B, C…) when it is first saved, and a letter is never used twice on one decision, even for an option removed before anyone saw it. Beside them: the closing time (in UTC), whether people choose one option or score each from 0 to 5, the decider, the participants and the readability check. **Save** sends everything at once, and an "Unsaved changes" marker shows until you do

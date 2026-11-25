@@ -19,7 +19,9 @@
 	 * filters. Past the first page, Back to newest.
 	 *
 	 * The header links to the caller's own person record, "My record", where
-	 * their account holds a person of the directory (code review F1).
+	 * their account holds a person of the directory (code review F1), and to
+	 * the guided tour, "How it works" (card 3070), which the empty state
+	 * offers too.
 	 *
 	 * The page re-reads on a `decision` event (`connectLiveRefresh`, decision
 	 * 26), which reaches a caller only for a board they can open: a decision
@@ -101,6 +103,7 @@
 				<span class="logo-text">DumpFire</span>
 			</a>
 			<p class="crumb">Decisions</p>
+			<a class="target my-record" href="/decisions/tour" data-action="tour">How it works</a>
 			{#if data.myPersonId !== null}
 				<a class="target my-record" href="/decisions/people/{data.myPersonId}" data-action="my-record">My record</a>
 			{/if}
@@ -175,6 +178,8 @@
 				<p class="empty" data-empty="filtered">No matches. <a class="target" href={hrefWith({ tab: data.tab })}>Clear filters</a></p>
 			{:else}
 				<p class="empty" data-empty={data.tab}>{current.empty}</p>
+				<!-- Card 3070 (ruling 3): with nothing to list, the guided tour, which needs no decision of its own. -->
+				<p class="empty-tour">New to decisions? <a class="target" href="/decisions/tour" data-action="tour-empty">See how they work</a></p>
 			{/if}
 		{:else}
 			<table class="register-table">
@@ -242,7 +247,7 @@
 		font-weight: 700; font-size: 1.1rem;
 	}
 	.logo-fire { font-size: 1.4rem; }
-	.crumb { flex: 1; font-size: 0.85rem; min-width: 0; margin: 0; color: var(--text-secondary); }
+	.crumb { flex: 1; font-size: 0.85rem; min-width: 0; margin: 0; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.my-record { font-size: 0.9rem; color: var(--accent-indigo); text-decoration: none; white-space: nowrap; }
 
 	/* The page's last line stops above the user badge (card 2239). */
@@ -269,6 +274,8 @@
 	button.target { padding: 0 var(--space-lg); }
 
 	.result-count { font-size: 0.9rem; color: var(--text-secondary); margin: 0 0 var(--space-sm); }
+	.empty-tour { font-size: 0.9rem; color: var(--text-secondary); margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
+	.empty-tour a { color: var(--accent-indigo); }
 	.empty { font-size: 0.95rem; color: var(--text-tertiary); padding: var(--space-lg) 0; margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); }
 
 	.register-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
