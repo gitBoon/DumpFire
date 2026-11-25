@@ -21,6 +21,7 @@
  * exporter's name alone (T3), and `holdDrawing` at the service (E26).
  */
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { inflateSync } from 'node:zlib';
 import { isHttpError } from '@sveltejs/kit';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
@@ -50,6 +51,7 @@ import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
 import { stamp } from '$lib/timestamps';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
 import {
+	detailWords,
 	DRAFT_NOT_EXPORTED,
 	EARLIER_ROUND_HELD,
 	eventWords,
@@ -67,6 +69,7 @@ import {
 	responsesHeldWords,
 	RESULTS_NOT_RELEASED,
 	SHAREABLE_CLOSING,
+	STATUS_WORDS,
 	TEXT_CUT
 } from '$lib/decision-words';
 import type { ResultFlag, ResultRow } from '$lib/decision-view-types';
@@ -137,6 +140,51 @@ const has = (text: string, words: string) => flat(text).includes(flat(words));
 function inBlock(text: string, label: string, marker: string): boolean {
 	const lines = text.split('\n');
 	return lines.some((line, i) => line.includes(label) && lines.slice(i + 1, i + 8).some((after) => after.includes(marker)));
+}
+
+/** A fact's value (card 3077): the line after its label, which the facts grid draws first. */
+const factOf = (text: string, label: string): string | undefined => {
+	const lines = text.split('\n');
+	const at = lines.indexOf(label);
+	return at === -1 ? undefined : lines[at + 1];
+};
+
+/** A figure tile's value (card 3077): the line before its label, since a tile draws its value first. */
+const tileOf = (text: string, label: string): string | undefined => {
+	const lines = text.split('\n');
+	const at = lines.indexOf(label);
+	return at < 1 ? undefined : lines[at - 1];
+};
+
+/** Whether `cells` are drawn one after another as lines, in order: a table row's cells, or a sentence and what follows it. */
+const hasRow = (text: string, cells: string[]) => {
+	const lines = text.split('\n');
+	return lines.some((_, i) => cells.every((cell, j) => lines[i + j] === cell));
+};
+
+/**
+ * Each text showing of a PDF that `pdfkit` wrote, in drawing order, with the standard font it is shown in (card 3077's
+ * code review, M1): read as `pdfText` reads the text, each `Tf` naming the font of the showings after it, and each
+ * font's name (`/F1`) taken to its `/BaseFont` through the document's font objects.
+ */
+function shownFonts(pdf: Buffer): { text: string; font: string }[] {
+	const raw = pdf.toString('latin1');
+	const base = new Map<string, string>();
+	for (const found of raw.matchAll(/(\d+) 0 obj\s*<<\s*\/Type \/Font\s*\/BaseFont \/([\w-]+)/g)) base.set(found[1], found[2]);
+	const fonts = new Map<string, string>();
+	for (const found of raw.matchAll(/\/(F\d+) (\d+) 0 R/g)) fonts.set(found[1], base.get(found[2]) ?? 'unknown');
+	const decode = (hex: string) => Buffer.from(hex, 'hex').toString('latin1');
+	const shown: { text: string; font: string }[] = [];
+	for (const stream of raw.matchAll(/\/Length (\d+)\s*\/Filter \/FlateDecode\s*>>\s*stream\r?\n/g)) {
+		const start = stream.index! + stream[0].length;
+		const content = inflateSync(pdf.subarray(start, start + Number(stream[1]))).toString('latin1');
+		let font = 'unknown';
+		for (const op of content.matchAll(/\/(F\d+) [\d.]+ Tf|\[([^\]]*)\]\s*TJ|<([0-9a-fA-F]*)>\s*Tj/g)) {
+			if (op[1] !== undefined) font = fonts.get(op[1]) ?? 'unknown';
+			else shown.push({ text: op[2] !== undefined ? [...op[2].matchAll(/<([0-9a-fA-F]*)>/g)].map((hex) => decode(hex[1])).join('') : decode(op[3]), font });
+		}
+	}
+	return shown;
 }
 
 /** The text with the exporter's name taken out of each footer: what two exporters' copies may differ by. */
@@ -295,13 +343,14 @@ describe('the full record', () => {
 		expect(inBlock(text, 'The reply by A decider', 'REPLYMARK'), 'its reply').toBe(true);
 		expect(text).toContain('Request to talk by Quin Person');
 		expect(inBlock(text, 'The reason given by Quin Person', 'TALKMARK'), 'a request to talk').toBe(true);
-		expect(text.split('\n').some((line) => line.startsWith('GROUPMARK: ') && line.includes('consulted')), 'a group row').toBe(true);
+		// Card 3077: the group breakdown is a table; its row starts with the group's name, then its consulted count.
+		expect(hasRow(text, ['GROUPMARK', '1']), 'a group row').toBe(true);
 		expect(inBlock(text, 'A concern raised by Pat Person', 'CONCERNMARK'), 'a concern').toBe(true);
 		expect(inBlock(text, 'A question asked by Quin Person', 'ASKMARK'), 'a question with its asker').toBe(true);
 		expect(inBlock(text, 'The answer by', 'ANSWERMARK'), 'its answer').toBe(true);
-		expect(text).toContain('Ruled early: yes');
-		expect(text).toContain('Against the responses: yes');
-		expect(text).toContain("Cut off by the early ruling: Sil Person (never reached by this round's request)");
+		expect(factOf(text, 'RULED EARLY')).toBe('yes');
+		expect(factOf(text, 'AGAINST THE RESPONSES')).toBe('yes');
+		expect(factOf(text, 'CUT OFF BY THE EARLY RULING')).toBe(`Sil Person (${NOT_REACHED_WORDS})`);
 		// Card 2688's code review (E-M1): a removed participant's latest response under its own heading, in its labelled
 		// block; and one who has not responded, never reached by the round's request, said so.
 		expect(inBlock(text, 'Removed from the decision', 'Tam Person'), 'the removed participant under its heading').toBe(true);
@@ -483,12 +532,14 @@ describe('the shareable copy', () => {
 
 			const text = await textOf(readShareableExport(reader, decision.id));
 			for (const marker of ['TITLEMARK', 'SITUATIONMARK', 'QUESTIONMARK', 'PROMARK', 'AUDIENCEONE', 'AUDIENCEG', 'PROMPTMARK']) expect(text, marker).toContain(marker);
-			expect(text).toContain('Board: The board');
+			expect(factOf(text, 'BOARD')).toBe('The board');
 			if (ruled) {
-				expect(text).toContain('Option A: Plan A');
+				// The ruling: the document's own words, then the option's title in body type after them (card 3077, M1).
+				expect(text.split('\n').some((line, i, lines) => line.endsWith(': Option A: ') && lines[i + 1] === 'Plan A')).toBe(true);
 				expect(inBlock(text, 'The reason given by', 'REASONMARK')).toBe(true);
 				expect(inBlock(text, 'The conditions set by', 'CONDITIONMARK')).toBe(true);
-				expect(text).toMatch(/^Responded: withheld  ·  Abstained: withheld  ·  No concerns: 0$/m);
+				// Card 3077: the released figures as tiles, a tile's value before its label; no VOTED tile in single mode.
+				expect([tileOf(text, 'RESPONDED'), tileOf(text, 'ABSTAINED'), tileOf(text, 'NO CONCERNS'), tileOf(text, 'VOTED')]).toEqual(['withheld', 'withheld', '0', undefined]);
 				expect(inBlock(text, 'A comment, released without a name', 'PATCOMMENTMARK')).toBe(true);
 			} else {
 				expect(text).toContain(RESULTS_NOT_RELEASED);
@@ -547,6 +598,8 @@ describe('the shareable copy', () => {
 		const text = await textOf(readShareableExport(reader, decision.id));
 		expect(text).toContain(RESULTS_NOT_RELEASED);
 		expect(text).not.toMatch(/Responded|Abstained|votes|mean/);
+		// Card 3077: nor a figure tile or an options table, whose labels are drawn upper case and headings capitalised.
+		expect(text).not.toMatch(/^(RESPONDED|VOTED|ABSTAINED|NO CONCERNS|Votes|Mean)$/m);
 	});
 
 	it('shows a survey-only ruling: answers by name in the full record, the questions alone and no count in the shareable copy (E8)', async () => {
@@ -567,7 +620,10 @@ describe('the shareable copy', () => {
 		const shareable = await textOf(readShareableExport(boardReader(), made.id));
 		expect(shareable).toContain('SURVEYPROMPT');
 		expect(shareable).toContain(NO_OPTIONS_PUT);
-		expect(shareable).not.toMatch(/ANSWEROF|Responded|answered:|\b3\b/);
+		// No count of the three responses: narrowed to counts (card 3077, F2), since the footer's and the band's export
+		// day is "3 …" on the 3rd of every month; and no figure tile.
+		expect(shareable).not.toMatch(/ANSWEROF|Responded|answered:|\b3 answered\b|: 3\b|\b3 votes?\b|^3$/m);
+		expect(tileOf(shareable, 'RESPONDED')).toBeUndefined();
 	});
 
 	// Card 2688's code review (S-L2): the shareable copy never names the other decision, whoever exports it; the full
@@ -606,10 +662,10 @@ describe('the shareable copy', () => {
 		// The full record keeps its exporter's view: the decider, who may not view the later decision, is not told it; an
 		// administrator, who may, is.
 		const deciders = await textOf(readFullExport(decider, decision.id));
-		expect(deciders).toContain('Superseded by: a decision you cannot view');
+		expect(factOf(deciders, 'SUPERSEDED BY')).toBe('a decision you cannot view');
 		expect(deciders).not.toContain('LATERTITLE');
 		const admin = makeUser({ role: 'admin', username: 'supersedeadmin' });
-		expect(await textOf(readFullExport(admin, decision.id))).toContain('Superseded by: LATERTITLE');
+		expect(factOf(await textOf(readFullExport(admin, decision.id)), 'SUPERSEDED BY')).toBe('LATERTITLE');
 	});
 
 	// Card 2688's code review (S-L3, E-L6): the withdrawal as a day, as every other moment in the shareable copy.
@@ -617,7 +673,8 @@ describe('the shareable copy', () => {
 		const { decision } = plain();
 		db.update(decisions).set({ status: 'withdrawn', withdrawnAt: '2026-11-02 14:45:00', withdrawnReason: 'No longer needed.' }).where(eq(decisions.id, decision.id)).run();
 		const text = await textOf(readShareableExport(boardReader(), decision.id));
-		expect(text.split('\n').filter((line) => line.startsWith('Withdrawn'))).toEqual(['Withdrawn on 2 Nov 2026.']);
+		expect(factOf(text, 'WITHDRAWN')).toBe('2 Nov 2026');
+		expect(text.split('\n').filter((line) => /\d{1,2}:\d{2}/.test(line)), 'no time anywhere').toEqual([]);
 	});
 });
 
@@ -660,7 +717,10 @@ describe('the drawing', () => {
 
 		const fullText = pdfText(full.pdf);
 		const shareableText = pdfText(shareable.pdf);
-		for (const text of [fullText, shareableText]) {
+		// Each page's band and footer, drawn in the last pass, are read after that page's content: taken out, so that a
+		// marker a page break splits is read whole (card 3077).
+		const body = (text: string) => text.split('\n').filter((line) => !(PRIVATE_BAND as readonly string[]).includes(line) && !/ · page \d+ of \d+$/.test(line)).join('\n');
+		for (const text of [body(fullText), body(shareableText)]) {
 			for (const marker of ['TTL', 'SIT', 'UNK', 'ALR', 'TEC', 'ASK', 'QUE', 'SUA', 'SUB', 'RSN', 'CND']) {
 				expect(flat(text), `${marker} start`).toContain(`${marker}S`);
 				expect(flat(text), `${marker} end`).toContain(`${marker}E`);
@@ -887,7 +947,8 @@ describe('the drawing', () => {
 		// The footer gives the day alone, no time.
 		const [y, m, d] = day.split('-').map(Number);
 		const shown = `${d} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${y}`;
-		expect(pdfText(pdf)).toMatch(new RegExp(`exported by ${decider.username} on ${shown} · page 1 of 1$`, 'm'));
+		// Card 3077: the full record of a plain decision now runs past one page; the footer's form is what is guarded.
+		expect(pdfText(pdf)).toMatch(new RegExp(`exported by ${decider.username} on ${shown} · page 1 of \\d+$`, 'm'));
 		expect(pdfText(pdf)).not.toMatch(/exported by .* \d{2}:\d{2}/);
 	});
 
@@ -899,7 +960,7 @@ describe('the drawing', () => {
 		makeResponse(participant, { kind: 'vote', optionId: null, comment: 'WORDSONE\nWORDSTWO', round: 1, versionNumber: 1 });
 
 		const lines = pdfText((await generateDecisionPdf(readFullExport(decider, decision.id))).pdf).split('\n');
-		expect(lines).toContain('Board: BOARDONE BOARDTWO');
+		expect(factOf(lines.join('\n'), 'BOARD')).toBe('BOARDONE BOARDTWO');
 		expect(lines).toContain('NAMEONE NAMETWO (GROUPONE GROUPTWO)');
 		expect(lines).toContain('Comment by NAMEONE NAMETWO');
 		expect(lines.some((line) => /^(NAMETWO|BOARDTWO|GROUPTWO)\b/.test(line)), 'no value begins a line of its own').toBe(false);
@@ -907,7 +968,7 @@ describe('the drawing', () => {
 		expect(lines).toContain('WORDSONE');
 		expect(lines).toContain('WORDSTWO');
 		const shareable = pdfText((await generateDecisionPdf(readShareableExport(boardReader(), decision.id))).pdf).split('\n');
-		expect(shareable).toContain('Board: BOARDONE BOARDTWO');
+		expect(factOf(shareable.join('\n'), 'BOARD')).toBe('BOARDONE BOARDTWO');
 	});
 
 	// Card 2688's code review (E-L1): a piece is held to its lines as well as its characters, so the page ceiling holds.
@@ -954,6 +1015,211 @@ describe('the drawing', () => {
 		const lines = pdfText((await generateDecisionPdf(exported)).pdf).split('\n');
 		expect(lines).toContain(`Removed Person, consulted: ${REMOVED_RESPONSE_HELD}`);
 		expect(lines.filter((line) => /^Participant \d+$/.test(line))).toHaveLength(RESPONSES_MOST);
+	});
+});
+
+// ─── The layout (card 3077: N1 to N7) ────────────────────────────────────────
+
+describe('the layout (card 3077)', () => {
+	/** A day as the PDF writes it, `25 Nov 2026`. */
+	const dayWords = (day: string) => {
+		const [y, m, d] = day.split('-').map(Number);
+		return `${d} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${y}`;
+	};
+
+	/** The text page by page: each page's lines up to and including its footer. */
+	const pagesOf = (text: string) =>
+		text.split(/^.* · page \d+ of \d+$/m).slice(0, -1).map((page) => page.split('\n').filter((line) => line !== ''));
+
+	it.each([{ copy: 'full' as const }, { copy: 'shareable' as const }])(
+		'opens page 1 of the $copy copy with the header band, once whatever its pages, and gives the full record alone its author, opening and closing (N1)',
+		async ({ copy }) => {
+			const { decision, decider } = rich();
+			const exported = copy === 'full' ? readFullExport(decider, decision.id) : readShareableExport(boardReader(), decision.id);
+			const { pdf, pages } = await generateDecisionPdf(exported);
+			const text = pdfText(pdf);
+			const band = [
+				`Decision #${decision.id}`,
+				copy === 'full' ? 'Full record' : 'Shareable copy',
+				`The board  ·  ${STATUS_WORDS[exported.decision.shownStatus]}`,
+				`Exported ${dayWords(exported.exporter.date)}`
+			];
+			expect(pages).toBeGreaterThan(1);
+			expect(text.split('\n').slice(0, 4)).toEqual(band);
+			for (const line of band) expect(text.split('\n').filter((shown) => shown === line), line).toHaveLength(1);
+			for (const label of ['AUTHOR', 'OPENED', 'CLOSES']) {
+				if (copy === 'full') expect(factOf(text, label), label).toMatch(label === 'AUTHOR' ? /^author\d+$/ : / UTC$/);
+				else expect(factOf(text, label), label).toBeUndefined();
+			}
+			// R7 (card 3077's code review, M1): the ruling's own words in bold, the option's title after them, a person's
+			// words, in regular body type.
+			const fonts = shownFonts(pdf);
+			const ruling = fonts.findIndex((shown) => shown.text.startsWith('Ruled by ') && shown.text.endsWith(': Option A: '));
+			expect(ruling, 'the ruling sentence').toBeGreaterThan(-1);
+			expect(fonts[ruling].font).toBe('Helvetica-Bold');
+			expect(fonts[ruling + 1]).toEqual({ text: 'Plan A', font: 'Helvetica' });
+			expect(fonts.filter((shown) => shown.text.includes('Plan A') && shown.font !== 'Helvetica'), 'the title never in bold').toEqual([]);
+		}
+	);
+
+	it('cuts a 200-character board name with "..." on the header band’s one line, the status kept, the whole name in its fact (card 3077’s code review)', async () => {
+		const { decision, decider } = plain();
+		const name = Array.from({ length: 20 }, (_, i) => `Board${String(i).padStart(4, '0')}`).join(' ');
+		expect(name.length).toBeGreaterThanOrEqual(199);
+		db.update(decisions).set({ boardName: name }).where(eq(decisions.id, decision.id)).run();
+		for (const exported of [readFullExport(decider, decision.id), readShareableExport(boardReader(), decision.id)]) {
+			const lines = (await textOf(exported)).split('\n');
+			expect(lines[2]).toMatch(/^Board0000 .*\.\.\.  ·  Open$/);
+			expect(lines[2].length).toBeLessThan(name.length);
+			expect(lines[3]).toMatch(/^Exported /);
+			expect(has(lines.slice(lines.indexOf('BOARD') + 1, lines.indexOf('BOARD') + 5).join(' '), name), 'the whole name in its fact').toBe(true);
+		}
+	});
+
+	it('gives each option’s label, title and votes in the round’s table, and the released table the same with "withheld" (N2)', async () => {
+		const { decision, decider } = rich();
+		const text = await textOf(readFullExport(decider, decision.id));
+		expect(hasRow(text, ['Option', 'Title', 'Votes'])).toBe(true);
+		expect(hasRow(text, ['A', 'Plan A', '2']), 'the current round').toBe(true);
+		expect(hasRow(text, ['A', 'Plan A', 'withheld']), 'the release').toBe(true);
+		expect(text).not.toMatch(/withheld votes/);
+		// What a withheld cell means, once, under the released table that draws one.
+		expect(text.split('\n').filter((line) => line === 'withheld: too few to show without singling someone out')).toHaveLength(1);
+		expect(text).toContain('1 comment left out.');
+		const { decision: none, decider: noneDecider } = plain();
+		makeResponse(withAccount(none, 'Una').participant, { kind: 'vote', optionId: null, comment: '', round: 1, versionNumber: 1 });
+		makeRuling(none, { optionId: null, reason: 'Nothing fits.' });
+		release(none, noneDecider, []);
+		expect(await textOf(readFullExport(noneDecider, none.id))).toContain('no comments left out.');
+	});
+
+	it('gives a scored decision’s total and mean in a table headed Total and Mean, and its released VOTED tile and Mean (N3)', async () => {
+		const { decision, decider, a, b } = rich();
+		const base = readFullExport(decider, decision.id);
+		const exported: FullExport = {
+			...base,
+			decision: { ...base.decision, voteMode: 'score' },
+			results: {
+				...base.results,
+				current: {
+					...base.results.current,
+					scores: [
+						{ optionId: a.id, total: 17, mean: 4.3 },
+						{ optionId: b.id, total: 6, mean: null }
+					]
+				}
+			},
+			released: {
+				...base.released!,
+				voteMode: 'score',
+				voted: 4,
+				options: base.released!.options.map((option) => ({ ...option, votes: null, mean: option.label === 'A' ? 4.3 : null }))
+			}
+		};
+		const text = await textOf(exported);
+		expect(hasRow(text, ['Option', 'Title', 'Total', 'Mean'])).toBe(true);
+		expect(hasRow(text, ['A', 'Plan A', '17', '4.3'])).toBe(true);
+		expect(hasRow(text, ['B', 'Plan B', '6', 'none'])).toBe(true);
+		expect(tileOf(text, 'VOTED'), 'the released VOTED tile, the first VOTED drawn').toBe('4');
+		expect(hasRow(text, ['Option', 'Title', 'Mean'])).toBe(true);
+		expect(hasRow(text, ['A', 'Plan A', '4.3'])).toBe(true);
+		expect(hasRow(text, ['B', 'Plan B', 'withheld'])).toBe(true);
+	});
+
+	it('gives a choice question’s count for each choice and a scale question’s count for each value and its mean, in tables (N4)', async () => {
+		const { decision, decider } = rich();
+		const base = readFullExport(decider, decision.id);
+		const exported: FullExport = {
+			...base,
+			results: {
+				...base.results,
+				current: {
+					...base.results.current,
+					survey: [
+						{
+							versionNumber: 2,
+							questions: [
+								{ questionId: 1, kind: 'choice', prompt: 'CHOICEPROMPT', answered: 3, choices: [{ choice: 'Leeds', count: 2 }, { choice: 'York', count: 1 }], scale: null },
+								{
+									questionId: 2,
+									kind: 'scale',
+									prompt: 'SCALEPROMPT',
+									answered: 3,
+									choices: null,
+									scale: { max: 3, lowLabel: 'Never', highLabel: 'Always', counts: [{ value: 1, count: 0 }, { value: 2, count: 1 }, { value: 3, count: 2 }], mean: 2.7 }
+								}
+							]
+						}
+					]
+				}
+			}
+		};
+		const text = await textOf(exported);
+		expect(inBlock(text, 'Survey question 1 as version 2 asked it: 3 answered', 'CHOICEPROMPT')).toBe(true);
+		expect(hasRow(text, ['Choice', 'Count', 'Leeds', '2', 'York', '1'])).toBe(true);
+		expect(inBlock(text, 'Survey question 2 as version 2 asked it: 3 answered', 'SCALEPROMPT')).toBe(true);
+		expect(hasRow(text, ['Value', 'Count', '1', '0', '2', '1', '3', '2', 'Mean 2.7'])).toBe(true);
+	});
+
+	/** A group breakdown of `n` groups, GRP0 to GRP<n-1>, on `base`. */
+	const withGroups = (base: FullExport, n: number): FullExport => ({
+		...base,
+		results: {
+			...base.results,
+			groupBreakdown: Array.from({ length: n }, (_, i) => ({
+				name: `GRP${i}`,
+				consulted: 3,
+				responded: 2,
+				voted: 2,
+				votes: [{ optionId: base.results.options[0].optionId, count: 2 }],
+				scores: [],
+				abstained: 0,
+				noConcerns: 0,
+				mostChosen: []
+			}))
+		}
+	});
+
+	it('draws the group table’s header row again on every page it runs onto (N5)', async () => {
+		const { decision, decider } = plain();
+		const text = await textOf(withGroups(readFullExport(decider, decision.id), 120));
+		const covered = pagesOf(text).filter((page) => page.some((line) => /^GRP\d+$/.test(line)));
+		expect(covered.length).toBeGreaterThan(1);
+		for (const page of covered) {
+			const header = page.indexOf('Group');
+			expect(header, 'the header on the page').toBeGreaterThan(-1);
+			expect(page.slice(header, header + 7)).toEqual(['Group', 'Consulted', 'Responded', 'Voted', 'Abstained', 'No concerns', 'Votes by option']);
+			expect(page.findIndex((line) => /^GRP\d+$/.test(line)), 'before its rows').toBeGreaterThan(header);
+		}
+		expect(text.split('\n').filter((line) => /^GRP\d+$/.test(line))).toHaveLength(120);
+	});
+
+	it('stops a full record of 5,000 groups inside the group table at a low byte ceiling, with its line, under both ceilings, every footer drawn (N6)', { timeout: 120_000 }, async () => {
+		const { decision, decider } = plain();
+		const bytes = 160 * 1024;
+		const drawn = await generateDecisionPdf(withGroups(readFullExport(decider, decision.id), 5000), { pages: PDF_PAGE_CEILING, bytes });
+		const text = pdfText(drawn.pdf);
+		const lines = text.split('\n');
+		expect(drawn.stopped).toBe(true);
+		expect(drawn.pdf.length).toBeLessThanOrEqual(bytes);
+		expect(drawn.pages).toBeLessThan(PDF_PAGE_CEILING);
+		expect(lines).toContain('GRP0');
+		expect(lines).not.toContain('GRP4999');
+		const ceiling = lines.indexOf(PDF_CEILING_LINE);
+		expect(ceiling).toBeGreaterThan(lines.indexOf('GRP0'));
+		expect(lines, 'nothing drawn after the table').not.toContain('Responses, by name');
+		expect(has(text, FULL_RECORD_CLOSING)).toBe(true);
+		const footers = lines.filter((line) => line.startsWith(`Full record · Decision #${decision.id} · exported by`));
+		expect(footers).toHaveLength(drawn.pages);
+		footers.forEach((line, i) => expect(line).toMatch(new RegExp(` · page ${i + 1} of ${drawn.pages}$`)));
+	});
+
+	it('reads "none" for a record entry whose detail holds an empty list, as the record view does (N7, F1)', async () => {
+		const { decision, decider } = plain();
+		appendEvent({ decisionId: decision.id, kind: 'results_released', versionNumber: 1, detail: { upToResponseId: 1, omitted: [] } }, { userId: decider.id, name: decider.username, source: 'ui' });
+		const lines = (await textOf(readFullExport(decider, decision.id))).split('\n');
+		expect(lines).toContain(`${detailWords('omitted')}: none`);
+		expect(lines).not.toContain(`${detailWords('omitted')}: `);
 	});
 });
 

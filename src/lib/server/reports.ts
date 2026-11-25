@@ -7,6 +7,7 @@
  */
 
 import PDFDocument from 'pdfkit';
+import { REPORT_COLORS, drawSectionTitle, drawTable, ensureSpace } from './pdf-frame';
 import { error } from '@sveltejs/kit';
 import { db } from './db';
 import {
@@ -953,39 +954,9 @@ export function generateCardReport(cardId: number): ReportData | null {
 
 // ─── PDF Generation ──────────────────────────────────────────────────────────
 
-// Professional colour palette — clean, print-friendly
-/**
- * The report palette. Exported because the milestone plan export draws with it
- * too — these PDFs land in the same stakeholder packs, and a second look would
- * read as coming from somewhere else.
- */
-export const REPORT_COLORS = {
-	white: '#ffffff',
-	bg: '#f8f9fc',
-	headerBg: '#1e293b',
-	headerText: '#f1f5f9',
-	heading: '#0f172a',
-	text: '#334155',
-	textMuted: '#64748b',
-	textLight: '#94a3b8',
-	border: '#e2e8f0',
-	borderLight: '#f1f5f9',
-	accent: '#4f46e5',
-	accentLight: '#e0e7ff',
-	emerald: '#059669',
-	emeraldLight: '#d1fae5',
-	amber: '#d97706',
-	amberLight: '#fef3c7',
-	red: '#dc2626',
-	redLight: '#fee2e2',
-	blue: '#2563eb',
-	blueLight: '#dbeafe',
-	rowAlt: '#f8fafc',
-	critical: '#dc2626',
-	high: '#ea580c',
-	medium: '#2563eb',
-	low: '#64748b'
-};
+// The palette, the section title, the page-break check and the table are shared with the plan and decision PDFs
+// (card 3077): `pdf-frame.ts` holds them, and they are exported from here as they were.
+export { REPORT_COLORS, drawSectionTitle, ensureSpace } from './pdf-frame';
 
 const C = REPORT_COLORS;
 
@@ -997,81 +968,6 @@ export function stripTag(text: string): string {
 		.replace(/\[Claude\]\s*/gi, '')
 		.replace(/\[AI\]\s*/gi, '')
 		.trim();
-}
-
-export function drawSectionTitle(doc: PDFKit.PDFDocument, title: string, x: number, y: number): number {
-	doc.font('Helvetica-Bold').fontSize(12).fillColor(C.heading)
-		.text(title, x, y);
-	y += 18;
-	doc.rect(x, y, 40, 2).fill(C.accent);
-	return y + 10;
-}
-
-export function ensureSpace(doc: PDFKit.PDFDocument, needed: number, y: number): number {
-	if (y + needed > doc.page.height - 50) {
-		doc.addPage();
-		return 40;
-	}
-	return y;
-}
-
-function drawTable(
-	doc: PDFKit.PDFDocument,
-	headers: string[],
-	rows: string[][],
-	colWidths: number[],
-	startX: number,
-	startY: number
-): number {
-	const fontSize = 7.5;
-	const headerHeight = 20;
-	const rowPadding = 5;
-	const cellPadding = 5;
-	const tableWidth = colWidths.reduce((a, b) => a + b, 0);
-
-	let y = startY;
-
-	doc.rect(startX, y, tableWidth, headerHeight).fill(C.headerBg);
-	let x = startX;
-	doc.font('Helvetica-Bold').fontSize(fontSize).fillColor(C.headerText);
-	for (let i = 0; i < headers.length; i++) {
-		doc.text(headers[i], x + cellPadding, y + 5, {
-			width: colWidths[i] - cellPadding * 2,
-			height: headerHeight - 4,
-			lineBreak: false
-		});
-		x += colWidths[i];
-	}
-	y += headerHeight;
-
-	for (let r = 0; r < rows.length; r++) {
-		const row = rows[r];
-		let rowH = 16;
-		doc.font('Helvetica').fontSize(fontSize);
-		for (let i = 0; i < row.length; i++) {
-			const h = doc.heightOfString(row[i] || '', { width: colWidths[i] - cellPadding * 2 });
-			rowH = Math.max(rowH, h + rowPadding * 2);
-		}
-		y = ensureSpace(doc, rowH, y);
-
-		const bg = r % 2 === 0 ? C.white : C.rowAlt;
-		doc.rect(startX, y, tableWidth, rowH).fill(bg);
-		doc.rect(startX, y + rowH - 0.5, tableWidth, 0.5).fill(C.borderLight);
-
-		x = startX;
-		doc.fillColor(C.text);
-		for (let i = 0; i < row.length; i++) {
-			doc.text(row[i] || '—', x + cellPadding, y + rowPadding, {
-				width: colWidths[i] - cellPadding * 2,
-				height: rowH - rowPadding
-			});
-			x += colWidths[i];
-		}
-		y += rowH;
-	}
-
-	doc.rect(startX, y, tableWidth, 0.5).fill(C.border);
-	return y + 2;
 }
 
 /**

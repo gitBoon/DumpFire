@@ -1,8 +1,9 @@
 /**
  * milestone-report.ts — a milestone plan as a PDF.
  *
- * Deliberately drawn with the report palette and helpers from `reports.ts`
- * rather than its own look: these documents land in the same stakeholder packs
+ * Deliberately drawn with the report palette and helpers (`reports.ts`, and
+ * `pdf-frame.ts` for the header band and figure tiles, card 3077) rather than
+ * its own look: these documents land in the same stakeholder packs
  * as the board reports, and a second visual language would read as coming from
  * somewhere else.
  *
@@ -21,6 +22,7 @@ import {
 	ensureSpace,
 	formatDate
 } from './reports';
+import { drawHeaderBand, drawMetricTiles } from './pdf-frame';
 import { formatDueDate } from '$lib/utils/date-utils';
 import { STATUS_WORDS } from '$lib/decision-words';
 import type { MilestoneSummary, MilestoneNode } from './planning';
@@ -81,26 +83,20 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 		const mx = MARGIN;
 
 		// ─── Header ──────────────────────────────────────────────────────────
-		doc.rect(0, 0, doc.page.width, 80).fill(C.headerBg);
-		doc.font('Helvetica-Bold').fontSize(18).fillColor(C.headerText)
-			.text('Delivery Plan', mx, 14, { width: pw });
-		doc.font('Helvetica-Bold').fontSize(11).fillColor(C.accentLight)
-			.text(stripTag(m.name), mx, 34, { width: pw, ellipsis: true });
-
 		const scope =
 			summary.progress.boards.length === 0
 				? 'No work attached yet'
 				: summary.progress.boards.map((b) => `${b.name} (${b.cardCount})`).join('  ·  ');
-		doc.font('Helvetica').fontSize(8).fillColor(C.headerText)
-			.text(scope, mx, 54, { width: pw, ellipsis: true });
-		doc.font('Helvetica').fontSize(7.5).fillColor(C.textLight)
-			.text(
+		drawHeaderBand(doc, {
+			title: 'Delivery Plan',
+			subtitle: stripTag(m.name),
+			detail: scope,
+			footnote:
 				`Generated ${formatDate(new Date().toISOString())}` +
-					// The target is a calendar day, printed as the day set in any zone (card 2259).
-					(m.targetDate ? `   ·   Target ${formatDueDate(m.targetDate)}` : '   ·   No target date') +
-					(m.status !== 'open' ? '   ·   CLOSED' : ''),
-				mx, 66, { width: pw }
-			);
+				// The target is a calendar day, printed as the day set in any zone (card 2259).
+				(m.targetDate ? `   ·   Target ${formatDueDate(m.targetDate)}` : '   ·   No target date') +
+				(m.status !== 'open' ? '   ·   CLOSED' : '')
+		});
 
 		let y = 94;
 
@@ -125,24 +121,7 @@ export async function generateMilestonePdf(summary: MilestoneSummary): Promise<B
 			{ label: 'Waiting', value: summary.blocked.length, bg: C.amberLight, fg: C.amber },
 			{ label: 'Open steps', value: `${p.openSubtasks} of ${p.totalSubtasks}`, bg: C.blueLight, fg: C.blue }
 		];
-		const gap = 8;
-		const cw = (pw - (metrics.length - 1) * gap) / metrics.length;
-		for (let i = 0; i < metrics.length; i++) {
-			const mt = metrics[i];
-			const cx = mx + i * (cw + gap);
-			doc.roundedRect(cx, y, cw, 44, 4).fill(mt.bg);
-			// A value too wide for its box at 17pt (open steps "193 of 412") is set
-			// smaller rather than wrapped onto the label beneath it.
-			const value = String(mt.value);
-			let size = 17;
-			doc.font('Helvetica-Bold').fontSize(size);
-			while (size > 8 && doc.widthOfString(value) > cw - 6) doc.fontSize(--size);
-			doc.fillColor(mt.fg)
-				.text(value, cx, y + 7 + (17 - size) / 2, { width: cw, align: 'center' });
-			doc.font('Helvetica').fontSize(5.6).fillColor(mt.fg)
-				.text(mt.label.toUpperCase(), cx, y + 31, { width: cw, align: 'center' });
-		}
-		y += 50;
+		y = drawMetricTiles(doc, metrics, mx, y, pw);
 
 		doc.font('Helvetica').fontSize(6.5).fillColor(C.textLight).text(
 			`Items of work = the ${p.total} cards in this goal. ` +

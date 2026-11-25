@@ -1,9 +1,9 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.306
+version: 1.307
 status: Living
-date: 2026-11-24
+date: 2026-11-25
 tags:
   - card-2689
   - decision-webhooks
@@ -3029,6 +3029,19 @@ break of the source (`BREAK-2688`, none left) before it passed. Three new files:
 `tests/decision-export.svelte.test.ts` (3), each in `TEST_FILES`. 32 new cases: the plan's 28 and
 the four the S1 builder found missing, ruled into S2 (E24, E25, E26, T3). After S1: 14,852 passed,
 5 skipped; after S2: 174 files, `14882 passed | 5 skipped`, 14,887 tests.
+
+**Card 3077 (the decision PDF laid out as the other PDFs).** `tests/decision-export.test.ts` goes
+from 43 to 52 tests: N1 (the header band and facts, run once per copy; also R7: the ruling's own
+words bold, the option title in regular Helvetica, read through `shownFonts`), N2 (single-mode round
+and release tables: "A, Plan A, 2" and "A, Plan A, withheld", the withheld key once, "no comments
+left out."), the band's board name cut with "..." at 200 characters (both copies), N3 (score-mode tables), N4 (choice and
+scale survey tables), N5 (a table's header repeated on a new page), N6 (the size ceiling stopping
+inside a 5,000-row group table), N7 (an empty list in a record entry printed as "none"). Rewritten
+with their intent kept: E7 (also no tile label or options heading in a copy that must hold none),
+E8 (counts only, no longer tripped by the day "3" in the footer: F2), E17 (the private band and
+footer stripped before the both-ends check), E23 ("page 1 of \d+": the footer's day and no time).
+Two small helpers read a label and its value (`factOf`, `tileOf`). The activity and milestone
+reports were drawn before and after with fixed inputs and compared page by page: byte-identical.
 
 ```mermaid
 flowchart LR

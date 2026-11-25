@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.159
+version: 1.160
 status: As-Built
-date: 2026-11-24
+date: 2026-11-25
 tags:
   - card-2689
   - decision-webhooks
@@ -3234,6 +3234,26 @@ keeps the entry from webhooks is that webhooks fire from board **activity action
   "page n of N"), writes them out with pdfkit's `flushPages` given those pages alone, and yields.
   A 5,000-participant full record with 5,000 record entries draws in about 2 seconds, holding the
   loop at most about 50 ms (E21).
+- **The layout, as the other DumpFire PDFs** (card 3077, plan
+  `docs/planning/card-3077-decision-pdf-layout.md`). Page 1 opens with the dark header band of the
+  milestone report (the decision's number, which copy it is, the board and status, the export day;
+  never the title or the exporter's name), then on the full record the private band, 32pt, under it
+  (and at the top of every later page). The title stays in its labelled block at body size (R7: a
+  person's words never in heading type); the other facts sit in a label and value grid (the
+  shareable copy never shows a closing time). The ruling is a panel; released results and each
+  round's totals are figure tiles over tables; survey figures, versions and the group breakdown are
+  tables whose header row repeats on a new page; each response and objection is a strip; quoted
+  text has a visible rule beside it; the footer keeps its words and "page n of N" under a
+  hairline. An empty list in a record entry reads "none", as the record view does. The shareable
+  copy puts the ruling and results before the text.
+- **`pdf-frame.ts`, shared by the three PDFs.** `REPORT_COLORS`, `drawSectionTitle`,
+  `ensureSpace` and `drawTable` (moved from `reports.ts`, which still exports the first three, so no
+  caller changed), and `drawHeaderBand` and `drawMetricTiles` (moved from `milestone-report.ts`).
+  `drawTable` takes an optional `TableFrame` (`ensure`, `canDraw(y)`, `repeatHeader`, and
+  `header`, `firstRow`, `close` to draw a table in parts) that the decision PDF uses for page
+  breaks and the size ceiling; without one it draws exactly as before. The activity and milestone
+  reports draw byte-identical pages (checked at the build with fixed inputs). The decision PDF no
+  longer imports `reports.ts`, which pulled in the database and mail code for its colours.
 
 **The page.** `DecisionExport.svelte` sits in the decision page's actions bar (the bar is drawn
 where the decision is out of draft too): "Shareable copy (PDF)" (`data-action="export-shareable"`)
@@ -3302,6 +3322,7 @@ sequenceDiagram
 | `src/lib/server/decision-export-writes.ts` | `recordExport`, on `SERVICES` |
 | `src/lib/server/decision-report.ts` | `generateDecisionPdf`, `decisionPdfFilename`, `holdDrawing` (`DRAWING_KEY`), `PDF_TEXT_MOST`, `PDF_PAGE_CEILING`, `PDF_BYTE_CEILING`, `RESPONSES_MOST`, `EXPORTS_AN_HOUR`, `exportAllowanceKey`, `EXPORT_READ_DEADLINE_MS`; pdfkit pinned to the exact version installed (0.18.0, code review E-L4), an upgrade to pass E17, E22, E24 and E25 first |
 | `src/lib/server/pdf-text.ts` | `pdfSafe`, `oneLine` |
+| `src/lib/server/pdf-frame.ts` | `REPORT_COLORS`, `drawSectionTitle`, `ensureSpace`, `drawTable` (optional `TableFrame`), `drawHeaderBand`, `drawMetricTiles`: the page frame shared by the activity report, the milestone report and the decision PDF (card 3077) |
 | `src/routes/api/decisions/[id]/pdf/+server.ts` | the route |
 | `src/lib/components/decision/DecisionExport.svelte` | the two buttons |
 | `src/lib/decision-words.ts` | the refusals, the band, the closing lines, the cut and ceiling lines, `exportsSpentWords`, `exportLateWords`, `responsesHeldWords` |
