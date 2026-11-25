@@ -1,7 +1,7 @@
 ---
 title: "Release Checklist: 106ea45 to 4ce25de"
 category: "Deployment"
-version: 1.1
+version: 1.2
 status: Living
 date: 2026-11-25
 tags:
@@ -284,18 +284,145 @@ docker run --rm --user 1000:1000 --entrypoint sh \
 # 600 1000   then   64
 ```
 
-### B3. R-prod: rehearse on a copy of live
+### B3. R-prod: rehearse on a copy of live (host, after B1 and B2)
 
-Follow "R-prod" in the runbook (copy by `VACUUM INTO` as
-[Rehearsing an Update Against a Copy](deployment.md#rehearsing-an-update-against-a-copy) says, start
-`dumpfire:candidate` on it with no network and a scratch key, time it to `Listening on`, then delete the
-copy). Write down the seconds.
+Why: proves the new image migrates **live's real data** cleanly and keeps what it should, and gives
+live's real first-start time (C5 waits that long plus half, at least two minutes). Live keeps running
+throughout; the copy runs with **no network**, so it can send no mail, webhook or backup.
 
-Why: live's real first-start time; C5 waits that long plus half (at least two minutes).
+> The copy holds password hashes, session tokens and secrets: keep it in `/root`, never on shared
+> storage, and delete it at the end of this step.
 
-### B4. Go/no-go
+**B3.1 Take the copy and a scratch key.**
 
-All 12 lines of [Go/No-Go](deployment.md#gono-go) say go.
+```bash
+mkdir -p /root/dumpfire-rehearsal && chmod 700 /root/dumpfire-rehearsal && cd /root/dumpfire-rehearsal
+docker exec dumpfire node -e "
+const Database = require('better-sqlite3');
+const live = new Database(process.env.DB_PATH || 'dumpfire.db', { readonly: true });
+live.prepare('VACUUM INTO ?').run('/tmp/rehearsal.db');
+console.log(new Database('/tmp/rehearsal.db', { readonly: true }).pragma('integrity_check', { simple: true }));
+"                                                   # prints: ok
+mkdir -p r1
+docker cp dumpfire:/tmp/rehearsal.db r1/dumpfire.db
+docker exec dumpfire rm /tmp/rehearsal.db
+( umask 077 && openssl rand -hex 32 > rehearsal_mfa_key )
+chown -R 1000:1000 r1 rehearsal_mfa_key             # the new image runs as uid 1000
+```
+
+Live has no authenticators yet, so a scratch key works. Never mount the real key here.
+
+**B3.2 Helpers** (paste once, in that folder):
+
+```bash
+rehearse() {      # rehearse <container name> <image> <directory>
+  docker run -d --name "$1" --network none \
+    -v "$PWD/$3:/rehearsal" -e DB_PATH=/rehearsal/dumpfire.db -e SCHEDULERS=off \
+    --mount type=bind,source="$PWD/rehearsal_mfa_key",target=/run/secrets/dumpfire_mfa_key,readonly \
+    -e MFA_KEY_FILE=/run/secrets/dumpfire_mfa_key "$2"
+}
+counts() {        # counts <directory>: what was kept, read without starting the server
+  docker run --rm --network none -v "$PWD/$1:/rehearsal" --entrypoint node dumpfire:candidate -e "
+const db = require('better-sqlite3')('/rehearsal/dumpfire.db', { readonly: true });
+const one = (sql) => { try { return JSON.stringify(db.prepare(sql).all()); } catch (e) { return 'n/a (' + e.message + ')'; } };
+console.log('migrations      ', one('SELECT COUNT(*) AS n, MAX(hash) AS last FROM __drizzle_migrations'));
+console.log('sessions        ', one('SELECT COUNT(*) AS n FROM sessions'));
+console.log('sessions kept   ', one('SELECT COUNT(*) AS n FROM sessions WHERE kept_at_release = 1'));
+console.log('requester links ', one('SELECT COUNT(*) AS n FROM request_links'));
+console.log('api keys        ', one('SELECT COUNT(*) AS n, SUM(deadline_at IS NULL) AS no_deadline FROM api_keys'));
+console.log('two-step switch ', one(\"SELECT key FROM settings WHERE key IN ('two_step_required_at','two_step_released_at','api_key_deadline')\"));
+console.log('fk violations   ', db.pragma('foreign_key_check').length);
+"
+}
+```
+
+**B3.3 Before.**
+
+```bash
+counts r1
+```
+
+Expect `migrations … last 0060_add_upstream_options.sql`, `sessions 4`, and `n/a` for the lines whose
+tables or columns do not exist yet. Keep this output.
+
+**B3.4 First start, timed.**
+
+```bash
+t0=$(date +%s)
+rehearse df-new dumpfire:candidate r1
+until docker logs df-new 2>&1 | grep -q 'Listening on'; do
+  [ "$(docker inspect -f '{{.State.Running}}' df-new)" = true ] || { echo 'EXITED'; break; }; sleep 1
+done
+echo "R-prod: $(( $(date +%s) - t0 )) s to Listening on"           # WRITE THIS DOWN
+docker logs df-new 2>&1 | grep -E '\] \[(DB|STARTUP|AUTH|Webhooks|REPORTS|UPLOADS|BACKUP|REQUESTS)\] |^\[(STARTUP|LOGGER)\] |Listening on'
+docker logs df-new 2>&1 | grep -E '\[(ERROR|CRITICAL)\]'
+docker rm -f df-new
+```
+
+Expect:
+
+- 24 `Applied migration` lines, `0061_…` to `0084_compatibility_release.sql`, in order;
+- the `Sealed N stored secret(s)` line;
+- `[CRITICAL] [STARTUP] Key change recorded`, the seal key **"kept, sealed in place"** (the only
+  CRITICAL expected);
+- **`Scrubbed the old plain text from the database file`**;
+- one `[WARN] [SCHEDULERS]` line saying they are off (expected here only);
+- `Listening on`.
+
+Stop if: `EXITED`, any other `[ERROR]` or `[CRITICAL]`, the Scrubbed line missing, or any of these:
+`Ended N session(s)`, `Ended N invite(s)`, `Ended the links of`, `now held`, `set up before API keys`,
+`Report schedule … is on at this release`, `Checked the … images`. Send Claude the output.
+
+**B3.5 After.**
+
+```bash
+counts r1
+```
+
+Expect `migrations 84 … 0084_compatibility_release.sql`; `sessions 4` and `sessions kept 4` (nobody
+signed out); `requester links 11` (P-new-3's count: every link kept); `api keys 2` with
+`no_deadline 2`; `two-step switch []` (dormant, no deadline); `fk violations 0`. Stop if any differs.
+
+**B3.6 Second start: nothing left to do.**
+
+```bash
+rehearse df-new dumpfire:candidate r1
+sleep 15; docker logs df-new 2>&1 | grep -E '\] \[DB\] |Applied migration|Listening on'
+docker rm -f df-new
+```
+
+Expect `Listening on` and no `Applied migration` line.
+
+**B3.7 Delete the copy.**
+
+```bash
+cd /root && rm -rf /root/dumpfire-rehearsal
+```
+
+### B4. Go/no-go (the evening before; every line must be yes)
+
+- [ ] 1. B1: the build passed its tests; `dumpfire:candidate` and `dumpfire:rollback` both exist
+  (`docker image ls dumpfire`).
+- [ ] 2. B3: R-prod passed; seconds written down. (The local rehearsal on fabricated data already
+  passed.)
+- [ ] 3. P1 at `0060`; P2 one container; P3 every CRITICAL line and administrator known.
+- [ ] 4. P-new-1 one volume `dumpfire_dumpfire-data`; P-new-2 `APP_URL` unset; P-new-4 nothing in
+  front of nginx.
+- [ ] 5. P-new-3 run (counts sent to Claude for the risk register); every enabled report schedule
+  confirmed (there are none).
+- [ ] 6. P8 test mail reached the superadmin and every administrator; P16 and P17 within bounds.
+- [ ] 7. A5 notices sent at least two working days before.
+- [ ] 8. A2 nginx in: `docker exec nginx-proxy grep -c dumpfire_masked /etc/nginx/conf.d/default.conf`
+  is `8` and `nginx -t` passes.
+- [ ] 9. A3 key file `600 1000 65`, passphrase `600`, both in the password manager; B2 printed
+  `600 1000` and `64`.
+- [ ] 10. The compose file exactly as B1; `docker compose -p dumpfire config` names
+  `dumpfire_dumpfire-data`.
+- [ ] 11. This checklist's section D printed or open beside the terminal; `/home/itsupport/DumpFire-5478f58`
+  exists.
+- [ ] 12. You are free for two hours after the start and the next morning.
+
+Any "no": do not release; move the window and tell everyone.
 
 ## C. Release day
 
