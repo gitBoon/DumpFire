@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.171
+version: 1.172
 status: As-Built
-date: 2026-11-25
+date: 2026-11-26
 tags:
   - card-3080
   - backup-retry
@@ -11027,6 +11027,8 @@ port published, so that nothing else can reach DumpFire or write the address hea
 production file, as tested, is in [Releasing Everything Since 106ea45](#releasing-everything-since-106ea45-cards-3046-3064).
 
 > ⚠️ **SSE requires `proxy_buffering off`** — without this, real-time board updates will not work.
+
+> ℹ️ **nginx's header buffer needs no change.** nginx holds an answer's headers in `proxy_buffer_size`, 4 KB by default, and answers `502 Bad Gateway` itself, logging `upstream sent too big header`, when they do not fit. After the release of 2026-11-26 `/admin` did that (measured at 420bf05: 4,526 bytes of headers, 3.8 KB of them SvelteKit's `Link` preload header), until card 3086. DumpFire now drops that header from every page (see [Security Headers](authentication-security.md#security-headers)), so a page's headers are about 700 bytes. A stopgap of `proxy_buffer_size 16k;` with `proxy_buffers 8 16k;` can stay as headroom; add both lines together, since a larger `proxy_buffer_size` alone can leave nginx refusing to start over `proxy_busy_buffers_size`.
 
 > ⚠️ **Without the three `client_max_body_size` lines, nginx refuses any upload over 1 MB itself**, with a page of its own that never reaches DumpFire. The import then says the backup "was refused before it reached DumpFire, probably a size limit at the proxy in front of it (HTTP 413)", and so does an attachment. Before the page could tell the difference it said "Invalid backup file".
 

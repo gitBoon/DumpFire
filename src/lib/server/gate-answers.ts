@@ -420,9 +420,23 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
  * moved, unchanged, to `Content-Security-Policy-Report-Only`: a page is an
  * answer SvelteKit rendered, which carries `x-sveltekit-page: true`. Nothing
  * else is touched, so an attachment keeps its own `sandbox`, enforced.
+ *
+ * A page loses the `Link` header SvelteKit gives it, listing every stylesheet
+ * and script the page preloads (card 3086). It grows with every shared
+ * component, and once a page's headers passed 4 KB, nginx's default
+ * `proxy_buffer_size`, nginx refused the answer with a 502 (`upstream sent too
+ * big header`): /admin did, at 4,526 bytes. Without it, what is lost is a head
+ * start on a first, uncached visit, and nothing else: the stylesheets are
+ * <link> elements in the page's <head> as well, and the page's scripts are
+ * preloaded all at once by the app's own loader (Vite's preload helper) as it
+ * opens the page, a round trip or two later, once the app's entry scripts have
+ * loaded. Every one of those files is cached as immutable after. Only a
+ * page's: no other answer's `Link` is touched.
  */
 export function secured(response: Response, routeId: string | null, mode: CspMode = cspMode()): Response {
-	if (mode === 'report-only' && response.headers.get('x-sveltekit-page') === 'true') {
+	const page = response.headers.get('x-sveltekit-page') === 'true';
+	if (page) response.headers.delete('link');
+	if (mode === 'report-only' && page) {
 		const policy = response.headers.get('content-security-policy');
 		if (policy !== null) {
 			response.headers.delete('content-security-policy');

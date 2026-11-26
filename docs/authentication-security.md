@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.181
+version: 1.182
 status: As-Built
-date: 2026-11-25
+date: 2026-11-26
 tags:
   - card-2689
   - decision-webhooks
@@ -11897,6 +11897,15 @@ redirects, to a caller who is signed in or not.
 - **A header the answer already has is never replaced**, but those of `ROUTE_HEADERS` below. An
   attachment keeps the `X-Content-Type-Options` and `Content-Security-Policy: sandbox` it is
   served with (see [Attachments](#attachments)).
+- **A page's `Link` header is removed** (card 3086). SvelteKit lists every stylesheet and script
+  a page preloads in a `Link` header, and the list grows with every shared component. At 4,526
+  bytes of headers `/admin` passed nginx's default 4 KB `proxy_buffer_size`, and nginx answered
+  `502 Bad Gateway` (`upstream sent too big header`) though DumpFire had answered `200`. A page's
+  headers are now about 700 bytes. What is lost is a head start on a first, uncached visit: the
+  stylesheets are in the page's `<head>` as well, and the app's own loader (Vite's preload
+  helper) preloads a page's scripts all at once as it opens the page, a round trip or two later,
+  once the app's entry scripts have loaded. Every one of those files is cached as immutable
+  after. Only an answer marked `x-sveltekit-page: true` loses it.
 - **A few routes carry more, by route id, exactly** (`ROUTE_HEADERS`, card 2677). These are
   always set, replacing whatever the answer carries, before the five above are added where they
   are missing, so the route's `Referrer-Policy` is the one sent and a handler's own

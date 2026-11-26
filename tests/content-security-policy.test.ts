@@ -333,6 +333,18 @@ describe('report-only mode', () => {
 		expect(none.headers.get('content-security-policy')).toBeNull();
 		expect(none.headers.get('content-security-policy-report-only')).toBeNull();
 	});
+
+	// Card 3086: nginx's default 4 KB header buffer refused /admin (502) once the
+	// preload list in the page's Link header grew past it.
+	it('drops a page’s Link header and keeps any other answer’s', () => {
+		const preloads = '</_app/immutable/chunks/a.js>; rel="modulepreload"; nopush';
+		const page = secured(new Response('<!doctype html>', { headers: { 'x-sveltekit-page': 'true', link: preloads } }), '/admin', 'enforce');
+		expect(page.headers.get('link')).toBeNull();
+		expect(headersOf(page)).toEqual(FIVE);
+
+		const other = secured(new Response('{}', { headers: { link: '</api/v1/cards?page=2>; rel="next"' } }), '/api/v1/cards/[cardId]', 'enforce');
+		expect(other.headers.get('link')).toBe('</api/v1/cards?page=2>; rel="next"');
+	});
 });
 
 describe('the start-up line', () => {
