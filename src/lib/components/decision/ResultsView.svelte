@@ -23,8 +23,8 @@
   (`resultsQuestionsClosedWords`, code review F3).
 
   At phone width every table stacks each row as a card, each cell labelled
-  by its column (`stacked`), so that nothing scrolls sideways (F5). Plain
-  text throughout: nothing a participant wrote is read as markup.
+  by its column (the kit's `Table stack`), so that nothing scrolls sideways
+  (F5). Plain text throughout: nothing a participant wrote is read as markup.
 
   Card 2683 (R10, R11, R17, R18): a round that put no options to a vote (a
   survey) is counted as answered and abstained, with no option table. Each
@@ -41,14 +41,38 @@
   Card 2686 (R9, R11): the current round per group (`GroupBreakdown`), after
   its tally and survey figures and before each response, only where some
   group is named (`groupBreakdown` not empty). Never in a release.
+
+  Card 3087: on the UI kit. Each part is a kit `Card`: the round (its tally
+  or survey counts, survey figures and the group breakdown), each response,
+  not responded (with the removed), open questions, the concerns and the
+  ruling each a `section` named by its own heading, the same words at the
+  same level; each response and the earlier rounds, which have no heading,
+  a card that is not a section. Every table is the kit's `Table` with
+  `stack`, its caption, `data-table`, `data-question` and each cell's
+  `data-label` as before, figures at the right in tabular digits
+  (`ui-table-num`). The lists are rows divided by a line; "not reached" an
+  outline `Badge` (its brackets kept for a screen reader and a copy, not
+  drawn); in the ruling, a Yes is a warning `Badge` around the same words.
+  The only motion is the earlier rounds' chevron turning, none under
+  reduced motion.
 -->
 <script lang="ts">
 	import type { ResultRow, ResultsData, RoundTally, SurveyQuestionTally, SurveyTally } from '$lib/decision-view-types';
 	import { NOT_REACHED_WORDS, NO_OPTIONS_PUT, RESULTS_ANSWER_ELSEWHERE, resultsQuestionsClosedWords, shownMoment, surveyAnswerWords } from '$lib/decision-words';
+	import Badge from '$lib/components/ui/Badge.svelte';
+	import Button from '$lib/components/ui/Button.svelte';
+	import Card from '$lib/components/ui/Card.svelte';
+	import CardContent from '$lib/components/ui/CardContent.svelte';
+	import CardHeader from '$lib/components/ui/CardHeader.svelte';
+	import CardTitle from '$lib/components/ui/CardTitle.svelte';
+	import Table from '$lib/components/ui/Table.svelte';
 	import AgentLabel from './AgentLabel.svelte';
 	import GroupBreakdown from './GroupBreakdown.svelte';
 
 	let { results }: { results: ResultsData } = $props();
+
+	/** The headings' ids, which name their sections (card 3087). */
+	const uid = $props.id();
 
 	/** Once the decision is ruled, superseded or withdrawn, why its open questions take no answer (code review F3); null while they may. */
 	const questionsClosed = $derived(resultsQuestionsClosedWords(results.decision.shownStatus));
@@ -112,19 +136,18 @@
 
 {#snippet surveyCounts(tally: RoundTally, caption: string)}
 	<!-- Card 2683: a survey round has no option to count, and no vote or "no concerns" (R12). -->
-	<table class="results-table stacked" data-table="survey-counts">
-		<caption>{caption}: {tally.responded} responded</caption>
+	<Table region={false} caption="{caption}: {tally.responded} responded" stack class="results-table stacked" data-table="survey-counts">
 		<thead>
 			<tr>
 				<th scope="col">Answer</th>
-				<th scope="col">Count</th>
+				<th scope="col" class="ui-table-num">Count</th>
 			</tr>
 		</thead>
 		<tbody>
-			<tr><th scope="row">Answered the survey</th><td data-label="Count">{tally.responded - tally.abstained}</td></tr>
-			<tr><th scope="row">Abstained</th><td data-label="Count">{tally.abstained}</td></tr>
+			<tr><th scope="row">Answered the survey</th><td class="ui-table-num" data-label="Count">{tally.responded - tally.abstained}</td></tr>
+			<tr><th scope="row">Abstained</th><td class="ui-table-num" data-label="Count">{tally.abstained}</td></tr>
 		</tbody>
-	</table>
+	</Table>
 {/snippet}
 
 {#snippet surveyFigures(tally: RoundTally)}
@@ -133,36 +156,41 @@
 			<h4>Survey questions, as version {group.versionNumber} asked them</h4>
 			{#each group.questions as question, index (question.questionId)}
 				{#if question.kind === 'choice' && question.choices !== null}
-					<table class="results-table stacked" data-table="survey" data-question={question.questionId}>
-						<caption>{index + 1}. {question.prompt}: {question.answered} answered</caption>
+					<Table region={false} caption="{index + 1}. {question.prompt}: {question.answered} answered" stack class="results-table stacked" data-table="survey" data-question={question.questionId}>
 						<thead>
 							<tr>
 								<th scope="col">Choice</th>
-								<th scope="col">Count</th>
+								<th scope="col" class="ui-table-num">Count</th>
 							</tr>
 						</thead>
 						<tbody>
 							{#each question.choices as entry, i (i)}
-								<tr><th scope="row">{entry.choice}</th><td data-label="Count">{entry.count}</td></tr>
+								<tr><th scope="row">{entry.choice}</th><td class="ui-table-num" data-label="Count">{entry.count}</td></tr>
 							{/each}
 						</tbody>
-					</table>
+					</Table>
 				{:else if question.kind === 'scale' && question.scale !== null}
 					{@const scale = question.scale}
-					<table class="results-table stacked" data-table="survey" data-question={question.questionId}>
-						<caption>{index + 1}. {question.prompt}: {question.answered} answered, mean {scale.mean === null ? '–' : scale.mean.toFixed(1)} of {scale.max}</caption>
+					<Table
+						region={false}
+						caption="{index + 1}. {question.prompt}: {question.answered} answered, mean {scale.mean === null ? '–' : scale.mean.toFixed(1)} of {scale.max}"
+						stack
+						class="results-table stacked"
+						data-table="survey"
+						data-question={question.questionId}
+					>
 						<thead>
 							<tr>
 								<th scope="col">Value</th>
-								<th scope="col">Count</th>
+								<th scope="col" class="ui-table-num">Count</th>
 							</tr>
 						</thead>
 						<tbody>
 							{#each scale.counts as entry (entry.value)}
-								<tr><th scope="row">{scaleValueWords(scale, entry.value)}</th><td data-label="Count">{entry.count}</td></tr>
+								<tr><th scope="row">{scaleValueWords(scale, entry.value)}</th><td class="ui-table-num" data-label="Count">{entry.count}</td></tr>
 							{/each}
 						</tbody>
-					</table>
+					</Table>
 				{:else}
 					<p class="survey-text" data-question={question.questionId}>
 						{index + 1}. {question.prompt}: {question.answered} answered. Each written answer is in the responses, with its name.
@@ -174,16 +202,15 @@
 {/snippet}
 
 {#snippet tallyTable(tally: RoundTally, caption: string)}
-	<table class="results-table stacked" data-table="tally">
-		<caption>{caption}: {tally.responded} responded</caption>
+	<Table region={false} caption="{caption}: {tally.responded} responded" stack class="results-table stacked" data-table="tally">
 		<thead>
 			<tr>
 				<th scope="col">Option</th>
 				{#if score}
-					<th scope="col">Total score</th>
-					<th scope="col">Mean</th>
+					<th scope="col" class="ui-table-num">Total score</th>
+					<th scope="col" class="ui-table-num">Mean</th>
 				{:else}
-					<th scope="col">Votes</th>
+					<th scope="col" class="ui-table-num">Votes</th>
 				{/if}
 			</tr>
 		</thead>
@@ -194,48 +221,46 @@
 					<th scope="row">{option.label}{option.title ? `: ${option.title}` : ''}</th>
 					{#if score}
 						{@const entry = figure as { total: number; mean: number | null } | undefined}
-						<td data-label="Total score">{entry?.total ?? 0}</td>
-						<td data-label="Mean">{entry?.mean === null || entry?.mean === undefined ? '–' : entry.mean.toFixed(1)}</td>
+						<td class="ui-table-num" data-label="Total score">{entry?.total ?? 0}</td>
+						<td class="ui-table-num" data-label="Mean">{entry?.mean === null || entry?.mean === undefined ? '–' : entry.mean.toFixed(1)}</td>
 					{:else}
-						<td data-label="Votes">{(figure as { count: number } | undefined)?.count ?? 0}</td>
+						<td class="ui-table-num" data-label="Votes">{(figure as { count: number } | undefined)?.count ?? 0}</td>
 					{/if}
 				</tr>
 			{/each}
 			{#if !score}
 				<tr>
 					<th scope="row">Abstained</th>
-					<td data-label="Votes">{tally.abstained}</td>
+					<td class="ui-table-num" data-label="Votes">{tally.abstained}</td>
 				</tr>
 				<tr>
 					<th scope="row">No concerns</th>
-					<td data-label="Votes">{tally.noConcerns}</td>
+					<td class="ui-table-num" data-label="Votes">{tally.noConcerns}</td>
 				</tr>
 			{/if}
 		</tbody>
-	</table>
+	</Table>
 	{#if score}
 		<!-- Code review F6: how many voted, abstained and had no concerns are counts of people, not scores, so a column of their own. -->
-		<table class="results-table stacked" data-table="counts">
-			<caption>{caption}: who answered how</caption>
+		<Table region={false} caption="{caption}: who answered how" stack class="results-table stacked" data-table="counts">
 			<thead>
 				<tr>
 					<th scope="col">Answer</th>
-					<th scope="col">Count</th>
+					<th scope="col" class="ui-table-num">Count</th>
 				</tr>
 			</thead>
 			<tbody>
-				<tr><th scope="row">Voted</th><td data-label="Count">{tally.voted}</td></tr>
-				<tr><th scope="row">Abstained</th><td data-label="Count">{tally.abstained}</td></tr>
-				<tr><th scope="row">No concerns</th><td data-label="Count">{tally.noConcerns}</td></tr>
+				<tr><th scope="row">Voted</th><td class="ui-table-num" data-label="Count">{tally.voted}</td></tr>
+				<tr><th scope="row">Abstained</th><td class="ui-table-num" data-label="Count">{tally.abstained}</td></tr>
+				<tr><th scope="row">No concerns</th><td class="ui-table-num" data-label="Count">{tally.noConcerns}</td></tr>
 			</tbody>
-		</table>
+		</Table>
 	{/if}
 {/snippet}
 
 {#snippet responsesTable(rows: ResultRow[], caption: string, survey: SurveyTally[])}
 	{#if rows.length > 0}
-		<table class="results-table stacked" data-table="responses">
-			<caption>{caption}</caption>
+		<Table region={false} {caption} stack class="results-table stacked" data-table="responses">
 			<thead>
 				<tr>
 					<th scope="col">Who</th>
@@ -247,180 +272,446 @@
 			</thead>
 			<tbody>
 				{#each rows as row (row.participantId)}
-					<tr>
+					{@const comments = commentsOf(row)}
+					<tr class="response">
 						<th scope="row">{row.name}{row.groups.length > 0 ? ` (${row.groups.join(', ')})` : ''}</th>
 						<td data-label="Answer">{answerOf(row)}</td>
 						{#if survey.length > 0}
-							<!-- Card 2683 (R14): plain text, a written answer as written. -->
-							<td data-label="Survey answers">
-								{#each answersOf(row, survey) as entry, index (index)}<p class="comment" data-answer>{entry.prompt}: {entry.words}</p>{/each}
-							</td>
+							{@const answers = answersOf(row, survey)}
+							<!-- Card 2683 (R14): plain text, a written answer as written. Card 3087: the lines in one block, so the phone's label stands beside them all. -->
+							<td data-label="Survey answers"
+								>{#if answers.length > 0}<div class="lines">
+										{#each answers as entry, index (index)}<p class="comment" data-answer>{entry.prompt}: {entry.words}</p>{/each}
+									</div>{/if}</td
+							>
 						{/if}
-						<td data-label="Comments">
-							{#each commentsOf(row) as text, index (index)}<p class="comment">{text}</p>{/each}
-						</td>
-						<td data-label="Given">
+						<td data-label="Comments"
+							>{#if comments.length > 0}<div class="lines">
+									{#each comments as text, index (index)}<p class="comment">{text}</p>{/each}
+								</div>{/if}</td
+						>
+						<td data-label="Given" class="given">
 							{shownMoment(row.createdAt, '')}{row.via === 'link' ? ', by link' : ''}{row.changes > 0 ? `, changed ${row.changes} ${row.changes === 1 ? 'time' : 'times'}` : ''}
 						</td>
 					</tr>
 				{/each}
 			</tbody>
-		</table>
+		</Table>
 	{:else}
 		<p class="none">Nobody has responded in this round.</p>
 	{/if}
 {/snippet}
 
 <section class="results" aria-label="Results">
-	<h2>Round {results.round}</h2>
-	{#if surveyRound(results.current)}
-		{@render surveyCounts(results.current, `Round ${results.round}`)}
-	{:else}
-		{@render tallyTable(results.current, `Round ${results.round}`)}
-	{/if}
-	{@render surveyFigures(results.current)}
-	{#if results.groupBreakdown.length > 0}<GroupBreakdown groups={results.groupBreakdown} options={results.options} round={results.round} {score} survey={surveyRound(results.current)} />{/if}
-	{@render responsesTable(results.current.rows, 'Each response', results.current.survey)}
+	<Card as="section" aria-labelledby="{uid}-round">
+		<CardHeader><CardTitle level={2} id="{uid}-round">Round {results.round}</CardTitle></CardHeader>
+		<CardContent>
+			<div class="blocks">
+				{#if surveyRound(results.current)}
+					{@render surveyCounts(results.current, `Round ${results.round}`)}
+				{:else}
+					{@render tallyTable(results.current, `Round ${results.round}`)}
+				{/if}
+				{@render surveyFigures(results.current)}
+				{#if results.groupBreakdown.length > 0}<GroupBreakdown groups={results.groupBreakdown} options={results.options} round={results.round} {score} survey={surveyRound(results.current)} />{/if}
+			</div>
+		</CardContent>
+	</Card>
 
-	<h3>Not responded</h3>
-	{#if results.notResponded.length > 0}
-		<ul data-list="not-responded">
-			{#each results.notResponded as person (person.participantId)}
-				<li>
-					{person.name}{person.groups.length > 0 ? ` (${person.groups.join(', ')})` : ''}{#if !person.reached}{' '}<span class="not-reached" data-note="not-reached">({NOT_REACHED_WORDS})</span>{/if}
-				</li>
-			{/each}
-		</ul>
-	{:else}
-		<p class="none">Everyone consulted has responded.</p>
-	{/if}
+	<!-- No heading of its own, as before: the table's caption names it, or the line says nobody has responded. -->
+	<Card>
+		<CardContent>
+			{@render responsesTable(results.current.rows, 'Each response', results.current.survey)}
+		</CardContent>
+	</Card>
 
-	{#if results.removed.length > 0}
-		<h3>Removed</h3>
-		<ul data-list="removed">
-			{#each results.removed as person (person.participantId)}
-				<li>{person.name}: {person.latest === null ? 'no response in this round' : answerOf(person.latest)}</li>
-			{/each}
-		</ul>
-	{/if}
+	<Card as="section" aria-labelledby="{uid}-not-responded">
+		<CardHeader><CardTitle level={3} id="{uid}-not-responded">Not responded</CardTitle></CardHeader>
+		<CardContent>
+			{#if results.notResponded.length > 0}
+				<!-- svelte-ignore a11y_no_redundant_roles -->
+				<ul role="list" class="rows" data-list="not-responded">
+					{#each results.notResponded as person (person.participantId)}
+						<li>
+							<span class="who">{person.name}</span>{#if person.groups.length > 0}<span class="aside">{` (${person.groups.join(', ')})`}</span>{/if}{#if !person.reached}{' '}<Badge
+									variant="outline"
+									class="not-reached"
+									data-note="not-reached"><span class="unseen">(</span>{NOT_REACHED_WORDS}<span class="unseen">)</span></Badge
+								>{/if}
+						</li>
+					{/each}
+				</ul>
+			{:else}
+				<p class="none">Everyone consulted has responded.</p>
+			{/if}
 
-	<h3>Open questions</h3>
-	{#if results.openQuestions.length > 0}
-		<ul data-list="questions">
-			{#each results.openQuestions as question, index (index)}
-				<li data-question={index}>
-					{#if question.askerName !== undefined}
-						<span class="asked-by"><strong>{question.askerName}</strong>{question.askedAt === undefined ? '' : `, ${shownMoment(question.askedAt, '')}`}:</span>
-					{/if}
-					{#if question.agentAnswered}<AgentLabel />{/if}
-					<p class="comment" data-text="question">{question.question}</p>
-				</li>
-			{/each}
-		</ul>
-		{#if questionsClosed !== null}
-			<!-- Ruled, superseded or withdrawn (code review F3): nothing more can be answered, so no link and no pointer to the page. -->
-			<p class="none" data-note="questions-closed">{questionsClosed}</p>
-		{:else if results.mayAnswerQuestions}
-			<p class="answer-link"><a href="/decisions/{results.decision.id}#questions" data-action="answer-questions">Answer on the decision's page</a></p>
-		{:else}
-			<p class="none" data-note="answer-elsewhere">{RESULTS_ANSWER_ELSEWHERE}</p>
-		{/if}
-	{:else}
-		<p class="none">No questions are open.</p>
-	{/if}
+			{#if results.removed.length > 0}
+				<h3 class="sub-title">Removed</h3>
+				<!-- svelte-ignore a11y_no_redundant_roles -->
+				<ul role="list" class="rows" data-list="removed">
+					{#each results.removed as person (person.participantId)}
+						<li><span class="who">{person.name}</span><span class="aside">: {person.latest === null ? 'no response in this round' : answerOf(person.latest)}</span></li>
+					{/each}
+				</ul>
+			{/if}
+		</CardContent>
+	</Card>
+
+	<Card as="section" aria-labelledby="{uid}-questions">
+		<CardHeader><CardTitle level={3} id="{uid}-questions">Open questions</CardTitle></CardHeader>
+		<CardContent>
+			{#if results.openQuestions.length > 0}
+				<!-- svelte-ignore a11y_no_redundant_roles -->
+				<ul role="list" class="rows" data-list="questions">
+					{#each results.openQuestions as question, index (index)}
+						<li data-question={index}>
+							{#if question.askerName !== undefined}
+								<span class="asked-by"><strong>{question.askerName}</strong><span class="aside">{question.askedAt === undefined ? '' : `, ${shownMoment(question.askedAt, '')}`}:</span></span>
+							{/if}
+							{#if question.agentAnswered}<AgentLabel />{/if}
+							<p class="comment" data-text="question">{question.question}</p>
+						</li>
+					{/each}
+				</ul>
+				{#if questionsClosed !== null}
+					<!-- Ruled, superseded or withdrawn (code review F3): nothing more can be answered, so no link and no pointer to the page. -->
+					<p class="none after-rows" data-note="questions-closed">{questionsClosed}</p>
+				{:else if results.mayAnswerQuestions}
+					<p class="answer-link">
+						<Button variant="outline" size="sm" href="/decisions/{results.decision.id}#questions" data-action="answer-questions">Answer on the decision's page</Button>
+					</p>
+				{:else}
+					<p class="none after-rows" data-note="answer-elsewhere">{RESULTS_ANSWER_ELSEWHERE}</p>
+				{/if}
+			{:else}
+				<p class="none">No questions are open.</p>
+			{/if}
+		</CardContent>
+	</Card>
 
 	{#if results.concerns.length > 0}
-		<h3>Concerns about the ruling</h3>
-		<ul data-list="concerns">
-			{#each results.concerns as concern, index (index)}
-				<li><strong>{concern.name}</strong>, {shownMoment(concern.createdAt, '')}{concern.via === 'link' ? ', by link' : ''}: <span class="comment">{concern.comment}</span></li>
-			{/each}
-		</ul>
+		<Card as="section" aria-labelledby="{uid}-concerns">
+			<CardHeader><CardTitle level={3} id="{uid}-concerns">Concerns about the ruling</CardTitle></CardHeader>
+			<CardContent>
+				<!-- svelte-ignore a11y_no_redundant_roles -->
+				<ul role="list" class="rows" data-list="concerns">
+					{#each results.concerns as concern, index (index)}
+						<li>
+							<span class="concern-by"><strong>{concern.name}</strong><span class="aside">, {shownMoment(concern.createdAt, '')}{concern.via === 'link' ? ', by link' : ''}:</span></span>
+							<span class="comment">{concern.comment}</span>
+						</li>
+					{/each}
+				</ul>
+			</CardContent>
+		</Card>
 	{/if}
 
 	{#if results.ruling !== null}
-		<h3>The ruling</h3>
-		<dl class="ruling" data-block="ruling">
-			<dt>Ruled on</dt>
-			<dd>
-				{results.ruling.noOptions
-					? NO_OPTIONS_PUT
-					: results.ruling.optionId === null
-						? 'None of these'
-						: `Option ${results.ruling.label ?? ''}${results.ruling.title ? `: ${results.ruling.title}` : ''}`}
-			</dd>
-			<dt>By</dt>
-			<dd>{results.ruling.byName}, {shownMoment(results.ruling.at, '')}</dd>
-			<dt>Why</dt>
-			<dd class="comment">{results.ruling.reason}</dd>
-			{#if results.ruling.conditions}
-				<dt>Conditions</dt>
-				<dd class="comment">{results.ruling.conditions}</dd>
-			{/if}
-			<dt>Against the responses</dt>
-			<dd>{results.ruling.againstResponses ? 'Yes: it was not the most chosen option' : 'No'}</dd>
-			<dt>Early</dt>
-			<!-- Card 2738 (code review R6): since card 2727 an early ruling may be of a decision closed before its closing time. -->
-			<dd>{results.ruling.early ? (results.ruling.closedEarly ? 'Yes: ruled after it was closed before its closing time' : 'Yes: ruled while the decision was open') : 'No'}</dd>
-			{#if results.ruling.cutOff.length > 0}
-				<dt>Cut off</dt>
-				<!-- Card 2738: each the record says the round's request never reached is marked; one recorded before it (null) is not. -->
-				<dd>{results.ruling.cutOff.map((name, index) => (results.ruling?.cutOffReached[index] === false ? `${name} (${NOT_REACHED_WORDS})` : name)).join(', ')}</dd>
-			{/if}
-		</dl>
+		<Card as="section" aria-labelledby="{uid}-ruling">
+			<CardHeader><CardTitle level={3} id="{uid}-ruling">The ruling</CardTitle></CardHeader>
+			<CardContent>
+				<dl class="ruling" data-block="ruling">
+					<dt>Ruled on</dt>
+					<dd class="outcome">
+						{results.ruling.noOptions
+							? NO_OPTIONS_PUT
+							: results.ruling.optionId === null
+								? 'None of these'
+								: `Option ${results.ruling.label ?? ''}${results.ruling.title ? `: ${results.ruling.title}` : ''}`}
+					</dd>
+					<dt>By</dt>
+					<dd>{results.ruling.byName}, {shownMoment(results.ruling.at, '')}</dd>
+					<dt>Why</dt>
+					<dd class="comment">{results.ruling.reason}</dd>
+					{#if results.ruling.conditions}
+						<dt>Conditions</dt>
+						<dd class="comment">{results.ruling.conditions}</dd>
+					{/if}
+					<dt>Against the responses</dt>
+					<!-- Card 3087: a Yes is a warning badge around the same words, so not colour alone; a No plain text. -->
+					<dd>
+						{#if results.ruling.againstResponses}<Badge variant="warning" class="ruling-yes">Yes: it was not the most chosen option</Badge>{:else}No{/if}
+					</dd>
+					<dt>Early</dt>
+					<!-- Card 2738 (code review R6): since card 2727 an early ruling may be of a decision closed before its closing time. -->
+					<dd>
+						{#if results.ruling.early}<Badge variant="warning" class="ruling-yes"
+								>{results.ruling.closedEarly ? 'Yes: ruled after it was closed before its closing time' : 'Yes: ruled while the decision was open'}</Badge
+							>{:else}No{/if}
+					</dd>
+					{#if results.ruling.cutOff.length > 0}
+						<dt>Cut off</dt>
+						<!-- Card 2738: each the record says the round's request never reached is marked; one recorded before it (null) is not. -->
+						<dd>{results.ruling.cutOff.map((name, index) => (results.ruling?.cutOffReached[index] === false ? `${name} (${NOT_REACHED_WORDS})` : name)).join(', ')}</dd>
+					{/if}
+				</dl>
+			</CardContent>
+		</Card>
 	{/if}
 
-	{#each results.earlierRounds as tally (tally.round)}
-		<details class="earlier" data-round={tally.round}>
-			<summary>Round {tally.round}</summary>
-			{#if surveyRound(tally)}
-				{@render surveyCounts(tally, `Round ${tally.round}`)}
-			{:else}
-				{@render tallyTable(tally, `Round ${tally.round}`)}
-			{/if}
-			{@render surveyFigures(tally)}
-			{@render responsesTable(tally.rows, `Each response in round ${tally.round}`, tally.survey)}
-		</details>
-	{/each}
+	{#if results.earlierRounds.length > 0}
+		<!-- No heading of its own, as before: each round a closed disclosure, named by its summary. -->
+		<Card>
+			<CardContent>
+				{#each results.earlierRounds as tally (tally.round)}
+					<details class="earlier" data-round={tally.round}>
+						<summary
+							>Round {tally.round}<svg
+								class="chevron"
+								width="16"
+								height="16"
+								viewBox="0 0 16 16"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="1.5"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg
+							></summary
+						>
+						<div class="earlier-body">
+							{#if surveyRound(tally)}
+								{@render surveyCounts(tally, `Round ${tally.round}`)}
+							{:else}
+								{@render tallyTable(tally, `Round ${tally.round}`)}
+							{/if}
+							{@render surveyFigures(tally)}
+							{@render responsesTable(tally.rows, `Each response in round ${tally.round}`, tally.survey)}
+						</div>
+					</details>
+				{/each}
+			</CardContent>
+		</Card>
+	{/if}
 </section>
 
 <style>
-	.results { display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; }
-	.results h2 { font-size: 1.05rem; margin: 0; }
-	.results h3 { font-size: 0.95rem; margin: var(--space-md) 0 0; }
-	.results ul { margin: 0; padding-left: var(--space-lg); font-size: 0.88rem; }
-	.none { margin: 0; font-size: 0.85rem; color: var(--text-tertiary); }
-	.not-reached { color: var(--text-tertiary); }
-	.comment { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
-	[data-list='questions'] li { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-xs); margin-bottom: var(--space-xs); min-width: 0; }
-	/* A long name with no break wraps at phone width rather than pushing the page sideways (code review F8). */
-	.asked-by { overflow-wrap: anywhere; min-width: 0; }
-	.answer-link { margin: 0; font-size: 0.88rem; }
-	.answer-link a { display: inline-flex; align-items: center; min-height: 44px; }
-	.results-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; table-layout: auto; }
-	.results-table caption { text-align: left; font-weight: 600; padding-bottom: var(--space-xs); }
-	.results-table th,
-	.results-table td { text-align: left; vertical-align: top; padding: var(--space-xs) var(--space-sm); border-bottom: 1px solid var(--glass-border); overflow-wrap: anywhere; }
-	.results-table thead th { font-size: 0.75rem; color: var(--text-secondary); }
-	.ruling { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-xs) var(--space-md); margin: 0; font-size: 0.88rem; }
-	.ruling dt { color: var(--text-secondary); }
-	.ruling dd { margin: 0; min-width: 0; }
-	.earlier summary { cursor: pointer; font-weight: 600; font-size: 0.9rem; }
-	.survey-figures { display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; }
-	.survey-figures h4 { font-size: 0.9rem; margin: var(--space-sm) 0 0; }
-	.survey-text { margin: 0; font-size: 0.85rem; overflow-wrap: anywhere; }
+	.results {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-lg);
+		min-width: 0;
+	}
+	.blocks,
+	.earlier-body,
+	.survey-figures {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-md);
+		min-width: 0;
+	}
+	.survey-figures h4 {
+		margin: var(--space-xs) 0 0;
+		font-size: 0.875rem;
+		font-weight: 600;
+		color: var(--ui-foreground);
+	}
+	.survey-text {
+		margin: 0;
+		font-size: 0.875rem;
+		color: var(--ui-muted-foreground);
+		overflow-wrap: anywhere;
+	}
 
-	/* Phone width: each row a labelled card, nothing scrolling sideways (F5). */
+	/* An empty state: muted words inside the card. */
+	.none {
+		margin: 0;
+		font-size: 0.875rem;
+		color: var(--ui-muted-foreground);
+	}
+	.after-rows {
+		margin-top: var(--space-sm);
+	}
+	.comment {
+		margin: 0;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+
+	/* The lists as rows: no bullets, a line between them, the name in the foreground weight and the rest muted. With no bullets Safari and VoiceOver drop the list's role, so the `ul` says `role="list"` (code review L1). */
+	.rows {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		font-size: 0.875rem;
+		color: var(--ui-foreground);
+	}
+	.rows li {
+		padding: 0.625rem 0;
+		border-top: 1px solid var(--ui-border);
+		overflow-wrap: anywhere;
+		min-width: 0;
+	}
+	.rows li:first-child {
+		border-top: none;
+		padding-top: 0;
+	}
+	.rows li:last-child {
+		padding-bottom: 0;
+	}
+	.who,
+	.rows strong {
+		font-weight: 500;
+		color: var(--ui-foreground);
+	}
+	.aside {
+		color: var(--ui-muted-foreground);
+	}
+	/* The badge's brackets are read and copied, not drawn: the badge is the bracket. */
+	.unseen {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
+	}
+	/* A long note wraps rather than pushing a phone's page sideways. */
+	.rows :global(.ui-badge.not-reached) {
+		margin-left: var(--space-xs);
+		white-space: normal;
+	}
+	.sub-title {
+		margin: var(--space-lg) 0 var(--space-sm);
+		padding-top: var(--space-md);
+		border-top: 1px solid var(--ui-border);
+		font-size: 0.875rem;
+		font-weight: 600;
+		color: var(--ui-foreground);
+	}
+	[data-list='questions'] li,
+	[data-list='concerns'] li {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--space-xs);
+	}
+	/* A long name with no break wraps at phone width rather than pushing the page sideways (code review F8). */
+	.asked-by,
+	.concern-by {
+		overflow-wrap: anywhere;
+		min-width: 0;
+	}
+	.answer-link {
+		margin: var(--space-md) 0 0;
+	}
+
+	/* A response's lines, one under another; on a phone the label stands beside the block. */
+	.lines {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-xs);
+		min-width: 0;
+	}
+	.response > th,
+	.response > td {
+		vertical-align: top;
+	}
+	.given {
+		color: var(--ui-muted-foreground);
+	}
+
+	/* The ruling: label and value in two columns, a line between each pair; the outcome first and larger. */
+	.ruling {
+		display: grid;
+		grid-template-columns: minmax(9rem, max-content) minmax(0, 1fr);
+		margin: 0;
+		font-size: 0.875rem;
+	}
+	.ruling dt,
+	.ruling dd {
+		margin: 0;
+		padding: 0.625rem 0;
+		border-top: 1px solid var(--ui-border);
+		min-width: 0;
+	}
+	.ruling dt {
+		padding-right: var(--space-lg);
+		color: var(--ui-muted-foreground);
+	}
+	.ruling dd {
+		color: var(--ui-foreground);
+		overflow-wrap: anywhere;
+	}
+	.ruling dt:first-of-type,
+	.ruling dd:first-of-type {
+		border-top: none;
+		padding-top: 0;
+	}
+	.ruling .outcome {
+		font-size: 1rem;
+		font-weight: 600;
+	}
+	.ruling :global(.ui-badge.ruling-yes) {
+		white-space: normal;
+	}
+
+	/* The earlier rounds: each a disclosure row, a chevron that turns as it opens. */
+	.earlier {
+		border-top: 1px solid var(--ui-border);
+	}
+	.earlier:first-child {
+		border-top: none;
+	}
+	.earlier summary {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-md);
+		min-height: 2.5rem;
+		border-radius: var(--ui-radius-sm);
+		font-size: 0.875rem;
+		font-weight: 600;
+		color: var(--ui-foreground);
+		cursor: pointer;
+		list-style: none;
+	}
+	.earlier summary::-webkit-details-marker {
+		display: none;
+	}
+	.earlier summary:hover {
+		text-decoration: underline;
+		text-underline-offset: 3px;
+	}
+	.earlier summary:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
+	.chevron {
+		flex-shrink: 0;
+		color: var(--ui-muted-foreground);
+		transition: transform var(--duration-fast) var(--ease-out);
+	}
+	.earlier[open] .chevron {
+		transform: rotate(180deg);
+	}
+	.earlier[open] .earlier-body {
+		padding: var(--space-sm) 0 var(--space-md);
+	}
+
+	@media (pointer: coarse) {
+		.earlier summary {
+			min-height: 2.75rem;
+		}
+	}
+
+	/* Phone width: the ruling in one column; a cell with nothing in it is not drawn (F5). */
 	@media (max-width: 640px) {
-		.stacked thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-		.stacked,
-		.stacked tbody,
-		.stacked tr,
-		.stacked th,
-		.stacked td { display: block; width: 100%; box-sizing: border-box; }
-		.stacked tr { border: 1px solid var(--glass-border); border-radius: var(--radius-sm); margin-bottom: var(--space-xs); }
-		.stacked td::before { content: attr(data-label) ': '; color: var(--text-secondary); font-size: 0.75rem; }
-		.stacked td:empty { display: none; }
-		.ruling { grid-template-columns: 1fr; }
+		.ruling {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.ruling dd {
+			border-top: none;
+			padding-top: 0.125rem;
+		}
+		.results td:empty {
+			display: none;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.chevron {
+			transition: none;
+		}
 	}
 </style>

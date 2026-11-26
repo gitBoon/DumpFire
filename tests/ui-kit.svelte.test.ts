@@ -15,6 +15,9 @@
  * kit's Dialog frame, its name and role on the box, and its wiring of the
  * app's focus hold (`holdFocus`): the first focus, Tab held inside, Escape,
  * a press on the backdrop, and the focus handed back as it closes.
+ *
+ * Card 3087 (T1): a captioned Table's frame is a focusable region named by
+ * its caption unless `region={false}`.
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -33,6 +36,7 @@ import Badge from '$lib/components/ui/Badge.svelte';
 import Button from '$lib/components/ui/Button.svelte';
 import Dialog from '$lib/components/ui/Dialog.svelte';
 import PageShell from '$lib/components/ui/PageShell.svelte';
+import Table from '$lib/components/ui/Table.svelte';
 import { tickUp } from '$lib/components/ui/motion';
 
 const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
@@ -223,6 +227,24 @@ describe('Alert', () => {
 
 		const still = draw(Alert, { children: html('<span>Read only.</span>') });
 		expect(still.querySelector('.ui-alert')?.hasAttribute('role')).toBe(false);
+	});
+});
+
+describe('Table (card 3087)', () => {
+	const ROWS = html('<tbody><tr><th scope="row">Abstained</th><td data-label="Votes">1</td></tr></tbody>');
+
+	it('T1. a captioned table is a focusable region named by its caption by default; with region={false} its frame is neither, the caption kept', () => {
+		const framed = draw(Table, { caption: 'Round 2: 3 responded', 'data-table': 'tally', children: ROWS });
+		const frame = framed.querySelector<HTMLElement>('.ui-table-frame')!;
+		expect([frame.getAttribute('role'), frame.getAttribute('tabindex')]).toEqual(['region', '0']);
+		expect(document.getElementById(frame.getAttribute('aria-labelledby')!)!.textContent).toBe('Round 2: 3 responded');
+		expect(framed.querySelector('caption')!.closest('table')!.dataset.table).toBe('tally');
+
+		const plain = draw(Table, { caption: 'Round 2: 3 responded', region: false, stack: true, 'data-table': 'tally', children: ROWS });
+		const bare = plain.querySelector<HTMLElement>('.ui-table-frame')!;
+		expect(['role', 'tabindex', 'aria-labelledby'].map((name) => bare.getAttribute(name))).toEqual([null, null, null]);
+		const table = plain.querySelector<HTMLTableElement>('table')!;
+		expect([table.caption?.textContent, table.dataset.table, table.classList.contains('ui-table-stack')]).toEqual(['Round 2: 3 responded', 'tally', true]);
 	});
 });
 

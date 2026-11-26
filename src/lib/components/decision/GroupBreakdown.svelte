@@ -15,12 +15,22 @@
   survey question figure is given per group (R5).
 
   At phone width each row stacks as a card, each cell labelled by its column
-  (`stacked`, as the other results tables). Plain text throughout: a group
-  name is never read as markup. The note under it says how people are
-  counted and who sees it. Its words live here, not in decision-words.ts.
+  (the kit's `Table stack`, as the other results tables). Plain text
+  throughout: a group name is never read as markup. The note under it says
+  how people are counted and who sees it. Its words live here, not in
+  decision-words.ts.
+
+  Card 3087: on the UI kit's `Table`, its caption, `data-table` and each
+  cell's `data-label` as before; every figure at the right in tabular digits
+  (`ui-table-num`), Most chosen, which is words, at the left. Unlike the
+  other results tables it keeps the kit's focusable region (code review H1):
+  a column for each option, two in score mode, under headers that do not
+  wrap, can make it wider than the page above phone width, and a table that
+  scrolls sideways must be reachable from the keyboard.
 -->
 <script lang="ts">
 	import type { GroupTally } from '$lib/decision-view-types';
+	import Table from '$lib/components/ui/Table.svelte';
 
 	let {
 		groups,
@@ -71,22 +81,21 @@
 </script>
 
 <div class="group-breakdown" data-block="group-breakdown">
-	<table class="results-table stacked" data-table="groups">
-		<caption>Round {round} by group</caption>
+	<Table caption="Round {round} by group" stack class="results-table stacked" data-table="groups">
 		<thead>
 			<tr>
 				<th scope="col">Group</th>
-				<th scope="col">Consulted</th>
-				<th scope="col">Responded</th>
+				<th scope="col" class="ui-table-num">Consulted</th>
+				<th scope="col" class="ui-table-num">Responded</th>
 				{#if survey}
-					<th scope="col">Answered the survey</th>
-					<th scope="col">Abstained</th>
+					<th scope="col" class="ui-table-num">Answered the survey</th>
+					<th scope="col" class="ui-table-num">Abstained</th>
 				{:else}
 					{#each optionColumns as column, index (index)}
-						<th scope="col">{column.header}</th>
+						<th scope="col" class="ui-table-num">{column.header}</th>
 					{/each}
-					<th scope="col">Abstained</th>
-					<th scope="col">No concerns</th>
+					<th scope="col" class="ui-table-num">Abstained</th>
+					<th scope="col" class="ui-table-num">No concerns</th>
 					<th scope="col">Most chosen</th>
 				{/if}
 			</tr>
@@ -95,23 +104,23 @@
 			{#each groups as group, index (index)}
 				<tr>
 					<th scope="row">{group.name ?? NO_GROUP}</th>
-					<td data-label="Consulted">{group.consulted}</td>
-					<td data-label="Responded">{group.responded}</td>
+					<td class="ui-table-num" data-label="Consulted">{group.consulted}</td>
+					<td class="ui-table-num" data-label="Responded">{group.responded}</td>
 					{#if survey}
-						<td data-label="Answered the survey">{group.responded - group.abstained}</td>
-						<td data-label="Abstained">{group.abstained}</td>
+						<td class="ui-table-num" data-label="Answered the survey">{group.responded - group.abstained}</td>
+						<td class="ui-table-num" data-label="Abstained">{group.abstained}</td>
 					{:else}
 						{#each optionColumns as column, i (i)}
-							<td data-label={column.header}>{column.read(group)}</td>
+							<td class="ui-table-num" data-label={column.header}>{column.read(group)}</td>
 						{/each}
-						<td data-label="Abstained">{group.abstained}</td>
-						<td data-label="No concerns">{group.noConcerns}</td>
+						<td class="ui-table-num" data-label="Abstained">{group.abstained}</td>
+						<td class="ui-table-num" data-label="No concerns">{group.noConcerns}</td>
 						<td data-label="Most chosen">{mostChosenWords(group)}</td>
 					{/if}
 				</tr>
 			{/each}
 		</tbody>
-	</table>
+	</Table>
 	<p class="note" data-note="group-breakdown">
 		Each person is counted in every group they were in when they were included; people in no group are under No group, so the groups do not add up to the
 		total. Only the decider and DumpFire's administrators see this, and it is never released.
@@ -119,24 +128,16 @@
 </div>
 
 <style>
-	.group-breakdown { display: flex; flex-direction: column; gap: var(--space-xs); min-width: 0; }
-	.note { margin: 0; font-size: 0.85rem; color: var(--text-tertiary); }
-	.results-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; table-layout: auto; }
-	.results-table caption { text-align: left; font-weight: 600; padding-bottom: var(--space-xs); }
-	.results-table th,
-	.results-table td { text-align: left; vertical-align: top; padding: var(--space-xs) var(--space-sm); border-bottom: 1px solid var(--glass-border); overflow-wrap: anywhere; }
-	.results-table thead th { font-size: 0.75rem; color: var(--text-secondary); }
-
-	/* Phone width: each row a labelled card, nothing scrolling sideways, as ResultsView's tables. */
-	@media (max-width: 640px) {
-		.stacked thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-		.stacked,
-		.stacked tbody,
-		.stacked tr,
-		.stacked th,
-		.stacked td { display: block; width: 100%; box-sizing: border-box; }
-		.stacked tr { border: 1px solid var(--glass-border); border-radius: var(--radius-sm); margin-bottom: var(--space-xs); }
-		.stacked td::before { content: attr(data-label) ': '; color: var(--text-secondary); font-size: 0.75rem; }
-		.stacked td:empty { display: none; }
+	.group-breakdown {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+		min-width: 0;
+	}
+	.note {
+		margin: 0;
+		font-size: 0.8125rem;
+		line-height: 1.45;
+		color: var(--ui-muted-foreground);
 	}
 </style>

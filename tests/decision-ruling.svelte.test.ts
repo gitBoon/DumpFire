@@ -34,6 +34,7 @@
  * What the server answers, and to whom, is in `tests/decision-ruling.test.ts`.
  * The plan is `docs/planning/card-2679-results-ruling.md`.
  */
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1719,5 +1720,207 @@ describe('GroupBreakdown (card 2686)', () => {
 		expect(target.querySelector('[data-table="groups"]')).toBeNull();
 		expect(target.querySelector('[data-block="group-breakdown"]')).toBeNull();
 		expect(target.querySelector('[data-note="group-breakdown"]')).toBeNull();
+	});
+});
+
+// ─── The results and the ruling on the UI kit (card 3087, cases R1 to R5) ───
+
+describe('the results and the ruling on the kit (card 3087)', () => {
+	/**
+	 * A scored current round over four options, with a group breakdown, after a survey round where one answered and one
+	 * abstained. Four options in score mode give the groups table 14 columns: the wide case (code review H1).
+	 */
+	const FOUR = [...OPTIONS, { optionId: 13, label: 'C', title: 'Plan C' }, { optionId: 14, label: 'D', title: 'Plan D' }];
+	const scoresOf = (...totals: number[]) => FOUR.map((option, index) => ({ optionId: option.optionId, total: totals[index], mean: totals[index] / 2 }));
+	const scoredAfterSurvey = (more: Partial<ResultsData> = {}) =>
+		results({
+			decision: { ...results().decision, voteMode: 'score' },
+			options: FOUR,
+			current: tally(2, {
+				votes: [],
+				scores: scoresOf(9, 3, 4, 2)
+			}),
+			earlierRounds: [
+				tally(1, {
+					responded: 2,
+					voted: 0,
+					votes: [],
+					scores: [],
+					abstained: 1,
+					survey: [
+						{
+							versionNumber: 1,
+							questions: [{ questionId: 41, kind: 'choice', prompt: 'Where do you ship from?', answered: 1, choices: [{ choice: 'Leeds', count: 1 }, { choice: 'York', count: 0 }], scale: null }]
+						}
+					],
+					rows: []
+				})
+			],
+			groupBreakdown: [
+				{ name: 'Ops', consulted: 2, responded: 1, voted: 1, votes: [], scores: scoresOf(5, 1, 2, 0), abstained: 0, noConcerns: 0, mostChosen: [11] }
+			],
+			...more
+		});
+	const AGAINST_AND_EARLY: RulingRecord = {
+		optionId: 12,
+		label: 'B',
+		title: 'Plan B',
+		reason: 'B anyway.',
+		conditions: 'Review in a year.',
+		early: true,
+		closedEarly: false,
+		againstResponses: true,
+		cutOff: ['Sil Ent', 'Moe Ved'],
+		cutOffReached: [true, false],
+		supersededOld: null,
+		byName: 'decider',
+		at: '2026-11-04 09:00:00'
+	};
+
+	it('R1: every results table is the kit’s stacking table, its caption unchanged and every body cell labelled by its column', () => {
+		const target = draw(ResultsView, { results: scoredAfterSurvey() });
+		const tables = [...target.querySelectorAll<HTMLTableElement>('table')];
+		expect(tables.map((table) => [table.dataset.table, textOf(table.querySelector('caption')!)])).toEqual([
+			['tally', 'Round 2: 3 responded'],
+			['counts', 'Round 2: who answered how'],
+			['groups', 'Round 2 by group'],
+			['responses', 'Each response'],
+			['survey-counts', 'Round 1: 2 responded'],
+			['survey', '1. Where do you ship from?: 1 answered']
+		]);
+		expect(target.querySelector('[data-table="survey"]')!.getAttribute('data-question')).toBe('41');
+		expect(target.querySelectorAll('[data-table="groups"] thead th')).toHaveLength(14);
+		for (const table of tables) {
+			expect([table.dataset.table, table.classList.contains('ui-table'), table.classList.contains('ui-table-stack')]).toEqual([table.dataset.table, true, true]);
+			// Ruled 2026-11-26: stacked and wrapping, these never scroll sideways, so no frame is a region or a Tab stop. The
+			// groups table can (a column per option, two in score mode, headers that do not wrap), so it keeps the kit's
+			// focusable region, named by its caption (code review H1).
+			const frame = table.closest('.ui-table-frame')!;
+			const wide = table.dataset.table === 'groups';
+			expect([table.dataset.table, frame.getAttribute('role'), frame.getAttribute('tabindex'), frame.getAttribute('aria-labelledby')]).toEqual(
+				wide ? [table.dataset.table, 'region', '0', table.caption!.id] : [table.dataset.table, null, null, null]
+			);
+			const headers = [...table.querySelectorAll('thead th')].map(textOf);
+			for (const row of table.querySelectorAll('tbody tr')) {
+				const cells = [...row.querySelectorAll('td')];
+				expect(cells.length, table.dataset.table).toBeGreaterThan(0);
+				cells.forEach((cell, index) => expect(cell.getAttribute('data-label'), `${table.dataset.table}: column ${index + 2}`).toBe(headers[index + 1]));
+			}
+		}
+		// The kit's own CSS for them: none of the components' old table rules is left.
+		for (const file of ['ResultsView', 'GroupBreakdown', 'ReleasedResults']) {
+			const source = readFileSync(join(process.cwd(), `src/lib/components/decision/${file}.svelte`), 'utf8');
+			expect(source.split('<style>')[1] ?? '', file).not.toMatch(/\.results-table|\.stacked|--glass-border/);
+		}
+	});
+
+	it('R2: the ruling record says word for word what it said, the two Yes values each in a warning badge', () => {
+		const target = draw(ResultsView, { results: results({ ruling: AGAINST_AND_EARLY }) });
+		const ruling = target.querySelector<HTMLElement>('[data-block="ruling"]')!;
+		expect(ruling.tagName).toBe('DL');
+		expect(textOf(ruling)).toBe(
+			'Ruled on Option B: Plan B By decider, 2026-11-04 09:00 UTC Why B anyway. Conditions Review in a year. ' +
+				'Against the responses Yes: it was not the most chosen option Early Yes: ruled while the decision was open ' +
+				"Cut off Sil Ent, Moe Ved (never reached by this round's request)"
+		);
+		expect([...ruling.querySelectorAll('dt')].map(textOf)).toEqual(['Ruled on', 'By', 'Why', 'Conditions', 'Against the responses', 'Early', 'Cut off']);
+		expect([...ruling.querySelectorAll('.ui-badge.ui-badge-warning')].map(textOf)).toEqual(['Yes: it was not the most chosen option', 'Yes: ruled while the decision was open']);
+
+		const plain = draw(ResultsView, { results: results({ ruling: { ...AGAINST_AND_EARLY, againstResponses: false, early: false, cutOff: [], cutOffReached: [] } }) });
+		expect(plain.querySelector('[data-block="ruling"] .ui-badge'), 'a No is plain text').toBeNull();
+	});
+
+	it('R3: the ruling form’s fields are the kit’s, each label tied to its field, and the warnings are the kit’s warning alerts in the same words', () => {
+		const target = draw(RulingForm, {
+			decisionId: 7,
+			title: 'Which plan?',
+			revision: 'rev-1',
+			options: OPTIONS,
+			mostChosen: [11],
+			voted: 3,
+			early: true,
+			cutOff: [{ name: 'Sil Ent', reached: true }],
+			openQuestions: 1,
+			unansweredObjections: 1,
+			openTalks: 1,
+			onRuled: async () => {}
+		});
+		const areas = [...target.querySelectorAll<HTMLTextAreaElement>('textarea')];
+		expect(areas).toHaveLength(2);
+		for (const area of areas) {
+			expect(area.classList.contains('ui-textarea')).toBe(true);
+			const label = target.querySelector(`label[for="${area.id}"]`)!;
+			expect(label.classList.contains('ui-label')).toBe(true);
+			expect(target.querySelector(`#${area.getAttribute('aria-describedby')}`)!.classList.contains('ui-hint')).toBe(true);
+		}
+		// Each radio in its own row, the label its name.
+		const radios = [...target.querySelectorAll<HTMLInputElement>('fieldset input[type="radio"]')];
+		expect(radios.map((radio) => textOf(radio.closest('label')!))).toEqual(['Option A: Plan A', 'Option B: Plan B', 'None of these']);
+		// Each row has its tick, drawn when its radio is chosen, so the choice is not shown by colour alone (code review L3).
+		expect(radios.map((radio) => radio.closest('label')!.querySelectorAll('.choice-tick').length)).toEqual([1, 1, 1]);
+
+		choose(radios[1]);
+		const against = target.querySelector<HTMLElement>('[data-note="against"]')!;
+		expect(against.classList.contains('ui-alert-warning')).toBe(true);
+		expect(textOf(against)).toBe("This goes against the responses: it is not the most chosen option. Only you and DumpFire's administrators are shown this.");
+		expect(radios.every((radio) => radio.getAttribute('aria-describedby') === against.id)).toBe(true);
+		for (const note of ['early', 'objections']) {
+			expect(target.querySelector(`[data-note="${note}"]`)!.classList.contains('ui-alert-warning'), note).toBe(true);
+		}
+		expect(textOf(target.querySelector('[data-note="objections"]')!)).toBe('1 objection has no answer: answer it before ruling. Go to the objections');
+		expect(textOf(target.querySelector('[data-note="early"] p')!)).toBe('The decision is still open: ruling now is early, and cuts off these people who have not responded:');
+		expect(textOf(target.querySelector<HTMLInputElement>('[data-check="open-talks"]')!.closest('label')!)).toBe('1 request to talk has no outcome recorded: I rule with it open');
+	});
+
+	it('R4: the released results a participant is shown, and the preview, are on the kit’s table with their data-table kept', () => {
+		const released = draw(ReleasedResults, { released: RELEASED });
+		const table = released.querySelector<HTMLElement>('table')!;
+		expect([table.dataset.table, table.classList.contains('ui-table')]).toEqual(['released', true]);
+		expect(textOf(table.querySelector('caption')!)).toBe('Responded: withheld');
+
+		const page = draw(ResultsPage, { data: results() });
+		const preview = page.querySelector<HTMLElement>('[data-block="release"] table')!;
+		expect([preview.dataset.table, preview.classList.contains('ui-table')]).toEqual(['preview', true]);
+		for (const frame of [table, preview].map((each) => each.closest('.ui-table-frame')!)) expect([frame.getAttribute('role'), frame.getAttribute('tabindex')]).toEqual([null, null]);
+	});
+
+	it('R5: each section of the results is named by its own heading, every heading’s words and level as they were', () => {
+		const target = draw(ResultsView, {
+			results: results({
+				removed: [{ participantId: 8, name: 'Rae Moved', role: 'consulted', latest: null }],
+				openQuestions: [{ askerName: 'Ann Asker', question: 'What does B cost?', askedAt: '2026-11-03 10:00:00', agentAnswered: false }],
+				concerns: [{ name: 'Pat Person', comment: 'Too soon.', createdAt: '2026-11-05 10:00:00', via: 'session' }],
+				ruling: AGAINST_AND_EARLY
+			})
+		});
+		const results_ = target.querySelector<HTMLElement>('section[aria-label="Results"]')!;
+		expect([...results_.querySelectorAll('h1, h2, h3, h4, h5, h6')].map((heading) => [heading.tagName, textOf(heading)])).toEqual([
+			['H2', 'Round 2'],
+			['H3', 'Not responded'],
+			['H3', 'Removed'],
+			['H3', 'Open questions'],
+			['H3', 'Concerns about the ruling'],
+			['H3', 'The ruling']
+		]);
+		// Rows with no bullets keep their list role in Safari and VoiceOver (code review L1).
+		expect([...results_.querySelectorAll('ul[data-list]')].map((list) => [list.getAttribute('data-list'), list.getAttribute('role')])).toEqual([
+			['not-responded', 'list'],
+			['removed', 'list'],
+			['questions', 'list'],
+			['concerns', 'list']
+		]);
+		const sections = [...results_.querySelectorAll<HTMLElement>('section')];
+		expect(
+			sections.map((section) => {
+				const heading = document.getElementById(section.getAttribute('aria-labelledby') ?? '');
+				return heading !== null && section.contains(heading) ? [heading.tagName, textOf(heading)] : null;
+			})
+		).toEqual([
+			['H2', 'Round 2'],
+			['H3', 'Not responded'],
+			['H3', 'Open questions'],
+			['H3', 'Concerns about the ruling'],
+			['H3', 'The ruling']
+		]);
 	});
 });

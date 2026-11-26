@@ -1,9 +1,9 @@
 ---
 title: "UI Kit and Page Shell"
 category: "Architecture"
-version: 1.4
+version: 1.7
 status: As-Built
-date: 2026-11-25
+date: 2026-11-26
 tags:
   - ui
   - design-system
@@ -14,8 +14,10 @@ tags:
   - card-3075
   - card-3076
   - card-3078
+  - card-3087
   - dialogs
-description: "The shared page shell and shadcn-style component kit for the pages around the board: tokens, components, the dialog frame, motion, accessibility rules and what must never change for the board view"
+  - results
+description: "The shared page shell and shadcn-style component kit for the pages around the board: tokens, components, the dialog frame, the results and ruling on the kit, motion, accessibility rules and what must never change for the board view"
 ---
 
 # UI Kit and Page Shell
@@ -24,7 +26,7 @@ description: "The shared page shell and shadcn-style component kit for the pages
 
 **The board view never uses the kit.** The board view itself (`src/routes/board/[id]/+page.svelte`) and the Kanban components read no `--ui-*` token and no `.ui-` class. `tests/ui-kit.test.ts` (case 7) checks that the kit only adds to `src/app.css`: no existing rule, theme block or token was changed. A board's decision list, `/board/[id]/decisions`, is a list page under the board's address, not the board view, and uses the kit (card 3075).
 
-**Who uses it.** Card 3075 moved the ten decision pages onto it: `/decisions` (the register), `/decisions/[id]`, its `edit`, `results`, `record` and `preview`, `/decisions/people/[personId]`, `/decisions/tour`, `/decision-link/[token]` and `/board/[id]/decisions`, with the decision components they draw (buttons, fields and status badges). Card 3076 moved the three admin pages onto it: `/admin` (with a list of its sections in a rail), `/admin/people` and `/admin/iso-27001`, with every admin panel and the admin dialogs' fields. Card 3078 moved the dialogs of those pages and of the decision pages onto the kit's `Dialog` frame (see [Dialogs](#dialogs-card-3078)).
+**Who uses it.** Card 3075 moved the ten decision pages onto it: `/decisions` (the register), `/decisions/[id]`, its `edit`, `results`, `record` and `preview`, `/decisions/people/[personId]`, `/decisions/tour`, `/decision-link/[token]` and `/board/[id]/decisions`, with the decision components they draw (buttons, fields and status badges). Card 3076 moved the three admin pages onto it: `/admin` (with a list of its sections in a rail), `/admin/people` and `/admin/iso-27001`, with every admin panel and the admin dialogs' fields. Card 3078 moved the dialogs of those pages and of the decision pages onto the kit's `Dialog` frame (see [Dialogs](#dialogs-card-3078)). Card 3087 moved the inside of the results page (the results, the ruling form, the flag replies) and the released results participants see onto the kit's `Card`, `Table`, `Badge`, `Alert` and field styles (see [The results and ruling on the kit](#the-results-and-ruling-on-the-kit-card-3087)).
 
 ## High level
 
@@ -67,7 +69,7 @@ Defined once on `:root` in `app.css`, after the existing `:root` block. Each is 
 | `Card` (+ Header, Title, Description, Content, Footer) | Surface panel; `interactive` adds a small hover lift. `CardHeader` wraps (card 3076): the title block takes at least 16rem and the actions go under it where the card is narrower, so they never cover the title on a phone. |
 | `Badge` | Variants and `status` (draft, open, awaiting_ruling, ruled, superseded, withdrawn) with a tone dot and tint; text always in the foreground colour. |
 | `Alert` | default, info, success, warning, destructive; `live` adds `role="alert"`. |
-| `Table` | Scrolling frame, caption (named region only when captioned), `stack` for phones. |
+| `Table` | Scrolling frame, caption (named region only when captioned), `stack` for phones. `region` (default `true`): with a caption the frame is a region named by it that takes the focus, so a wide table can be scrolled from the keyboard; `region={false}` only for a table that cannot scroll sideways (stacked, few columns, its cells wrapping), whose frame is then no region, no `aria-labelledby` and no Tab stop, the caption still captioning the table (card 3087). A table that can be wider than the page keeps the default, so the keyboard can scroll it (WCAG 2.1.1). A row's own header (`<th scope="row">` in the body) is a cell in the foreground weight that heads its block when stacked; `ui-table-num` on a cell or column header is a figure, right-aligned in tabular digits (card 3087). |
 | `Tabs` / `SegmentedControl` | Link tabs with `aria-current="page"` and counts read as "(3)", the text "Open (3)" (the hidden " (" is written as an expression, as Svelte trims a leading space inside an element; card 3075); toggle buttons with `aria-pressed`. |
 | `Dialog` | The dialog frame (card 3078): a backdrop and a box with a title, an optional description, a body and an optional button row; the box is the `dialog` or `alertdialog`, held by the app's `holdFocus`. See [Dialogs](#dialogs-card-3078). |
 | `Separator`, `EmptyState`, `PageHeader`, `Stat` | Divider; empty list with a heading; the page's `h1` with description and actions; a figure that counts up. |
@@ -291,3 +293,52 @@ Both are drawn by the board view as well (a column's or a card's delete, a comme
 | New decision | `routes/board/[id]/decisions/+page.svelte` | `dialog`, sm | The title field | Escape and a press on the backdrop close; the focus back on New decision (`returnTo`) |
 
 The moved dialogs' titles and buttons have no emoji ("Connect Google Drive", "Their set-up link", "Copy", "Connect"); the row buttons that open them (🔑, 📧, 🛡️, 🔗) keep theirs.
+
+## The results and ruling on the kit (card 3087)
+
+Card 3075 put `/decisions/[id]/results` on `PageShell` and its flags, Rule and release blocks in `Card`s, but left the components inside them drawing their own tables (`.results-table`, `--glass-border`), bare headings, bulleted lists and a plain `dl`. This card moved the inside onto the kit; the page itself is unchanged. Plan: `docs/planning/card-3087-results-ruling-on-kit.md`.
+
+Nothing a reader is told changed: every word, heading text and level, `id`, `data-*` hook, `aria-*` attribute, order, condition and behaviour is as it was, and no figure was added. The board view, the decision PDF and the server are not touched.
+
+```mermaid
+flowchart TB
+    subgraph Page["/decisions/[id]/results (PageShell, unchanged)"]
+        subgraph RV["ResultsView: section aria-label=Results"]
+            Round["Card section: h2 Round N<br/>tally or survey counts, survey figures,<br/>GroupBreakdown"]
+            Each["Card: Each response (caption, no heading)"]
+            NR["Card section: h3 Not responded<br/>(h3 Removed beneath, when any)"]
+            OQ["Card section: h3 Open questions"]
+            CR["Card section: h3 Concerns about the ruling (when any)"]
+            RL["Card section: h3 The ruling<br/>dl data-block=ruling"]
+            ER["Card: earlier rounds,<br/>each a details row (no heading)"]
+        end
+        Flags["Card #flags: FlagReplies"]
+        Rule["Card Rule: RulingForm"]
+        Rel["Card release: ReleasedResults name=preview"]
+    end
+    Participant["/decisions/[id], /decision-link/[token]"] --> RR["ReleasedResults name=released"]
+    Kit["Table stack (region=false but the groups),<br/>ui-table-num, Badge, Alert, Button, ui-field.css"] --> RV
+    Kit --> Flags
+    Kit --> Rule
+    Kit --> RR
+```
+
+| Component | What moved |
+|---|---|
+| `ResultsView` | Each part is a kit `Card`. The round, Not responded, Open questions, Concerns about the ruling and The ruling are each a `section` named by its own heading (`aria-labelledby`, ids from `$props.id()`), at the level it had (`CardTitle level={2}` for the round, `3` for the rest). Each response and the earlier rounds had no heading and have none now, so their cards are not sections: the responses table is named by its caption. Every table is the kit's `Table stack` with its caption, `data-table`, `data-question` and each cell's `data-label`; the classes `results-table` and `stacked` stay on the `<table>` as hooks, with no rule behind them. Its tables are `region={false}` (few columns, wrapping cells: they cannot scroll sideways). Lists drawn without bullets say `role="list"`, which Safari and VoiceOver otherwise drop. The responses' survey answers and comments are one block per cell, so the phone's label stands beside them all; an empty cell is not drawn at phone width, as before. Not responded, Removed, Open questions and Concerns are rows divided by a line, the name in the foreground weight and the rest muted. "Not reached" is an outline `Badge`; its brackets are in the text, for a screen reader and a copy, but not drawn. The ruling is a grid of label and value with a line between pairs, the outcome first and larger, one column at phone width; a Yes for "Against the responses" or "Early" is a warning `Badge` around the same words, a No plain text. Each earlier round is a `details` row whose chevron turns as it opens (none under reduced motion); "Answer on the decision's page" is an outline `Button`, size `sm` (36px, 44px under a coarse pointer). |
+| `GroupBreakdown` | The kit's `Table stack`, every count right-aligned (`ui-table-num`), Most chosen (words) left; the note muted. It keeps the default `region`: a column per option (two in score mode) under headers that do not wrap makes it wide (score mode with four options is 14 columns, about 1,400px), so between phone width and a wide screen it scrolls sideways in its frame, which must then take the focus (code review H1). |
+| `RulingForm` | The options are rows to press: the native radio kept, drawn with the kit's tokens; the row chosen has an edge in `--ui-ring`, a faint `--ui-primary` tint, its radio filled and a tick at its end, so not by colour alone (in forced colours the system's own radio). Each textarea is `ui-textarea` under its `ui-label`, its count `ui-hint`. "This goes against the responses", the early ruling's note and the objections unanswered are warning `Alert`s with the same words and hooks (`id` and `data-note` pass through), their words in `--ui-foreground` as before rather than the kit alert's muted body (scoped to the form, code review L2); the open-questions and open-talks boxes sit inside a warning `Alert`; a survey's "no options" note is an info `Alert`. |
+| `FlagReplies` | Each flag is a bordered row on the card's surface; who raised it and when muted beside its kind; a reply set in with a line at its left; the box and its notes on `ui-field.css`. "Not answered yet" (or its talk wording) is a `Badge`: warning for an objection, which holds the ruling back, outline for a request to talk. |
+| `ReleasedResults` | The kit's `Table region={false}` (two columns, so not stacked, and never wide); the comments list says `role="list"`, figures right-aligned; the comments rows divided by a line, the results page's Leave out rows among them. The participant pages around it are unchanged. |
+
+**Rules learned.**
+
+- **A row header is the kit's.** Results tables head each row with `<th scope="row">`, which the kit's `Table` did not style; it now draws one as a body cell in the foreground weight and, stacked, as the line that heads the block. A page needs no rule of its own for it.
+- **Only a table that cannot scroll is no region.** A captioned kit table is by default a focusable region, so a table wider than the page can be scrolled from the keyboard. The results' tables of a few columns (the tally, counts, survey figures, responses, released results) are stacked and wrap, so they cannot scroll sideways, and each being a Tab stop and a landmark would only add stops (ruled 2026-11-26): they pass `region={false}`. `GroupBreakdown`'s table is the exception: its columns grow with the options, its headers do not wrap, and above phone width it can be wider than the page, so it keeps the default (code review H1). Every other kit table keeps the default too. `tests/ui-kit.svelte.test.ts` T1 holds the prop both ways; R1 holds the groups table to a region and the others to none, with four options in score mode (the wide case); R4 holds the released and preview tables to none.
+- **No bullets, still a list.** A `ul` styled `list-style: none` says `role="list"` (with `svelte-ignore a11y_no_redundant_roles`), as Safari and VoiceOver drop the list's role otherwise.
+- **Figures go right with `ui-table-num`,** on the column's header and each of its cells, in tabular digits; stacked, they go back beside their label.
+- **Hooks stay, rules go.** A class tests or other code read (`results-table`, `stacked`, `comment`, `not-reached`, `earlier`) stays on its element after its CSS is deleted; `tests/decision-ruling.svelte.test.ts` R1 checks no old table rule is left in the three components.
+- **No heading, no section.** A part that had no heading is a plain `Card`: giving it a heading or an `aria-label` would add words, and a `section` with no name is no landmark.
+- **Text kept, punctuation not drawn.** Where a badge replaces brackets around words, the brackets stay in the text and are hidden from sight only, so the words read and copy as before.
+
+Tests: `tests/decision-ruling.svelte.test.ts`, "the results and the ruling on the kit (card 3087)", R1 to R5, and `tests/ui-kit.svelte.test.ts` T1; every earlier case in that file and in `tests/decision-questions.svelte.test.ts` passes unchanged.

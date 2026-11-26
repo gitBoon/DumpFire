@@ -7,6 +7,15 @@
   takes the focus, so it can be scrolled from the keyboard. `stack`: at
   phone width each row is a block, each cell with its own label before it,
   from the cell's `data-label`.
+
+  Card 3087: a row's own header (`<th scope="row">` in the body) is drawn as
+  a cell in the foreground weight, and heads its block when stacked; a cell
+  or column header with `ui-table-num` is a figure, at the right in tabular
+  digits (at the left again once stacked, beside its label). `region`,
+  true unless given false: with a caption, the frame is the focusable region
+  above; `region={false}` for a table that never scrolls sideways (stacked,
+  its cells wrapping), whose frame is then neither a region nor a Tab stop,
+  the caption still captioning the table.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
@@ -15,6 +24,7 @@
 		caption,
 		captionHidden = false,
 		stack = false,
+		region = true,
 		class: className = '',
 		children,
 		...rest
@@ -23,6 +33,8 @@
 		/** The caption is for a screen reader alone: the page says it already. */
 		captionHidden?: boolean;
 		stack?: boolean;
+		/** With a caption, the frame is a named region that takes the focus (card 3087: false for a table that never scrolls sideways). */
+		region?: boolean;
 		class?: string;
 		children: Snippet;
 		id?: string;
@@ -34,7 +46,7 @@
 	const captionId = `ui-table-caption-${uid}`;
 </script>
 
-{#if caption}
+{#if caption && region}
 	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 	<div class="ui-table-frame" role="region" aria-labelledby={captionId} tabindex="0">
 		<table {...rest} class={['ui-table', stack && 'ui-table-stack', className]}>
@@ -45,6 +57,7 @@
 {:else}
 	<div class="ui-table-frame">
 		<table {...rest} class={['ui-table', stack && 'ui-table-stack', className]}>
+			{#if caption}<caption class={['ui-table-caption', captionHidden && 'ui-table-caption-hidden']}>{caption}</caption>{/if}
 			{@render children()}
 		</table>
 	</div>
@@ -102,7 +115,23 @@
 		border-bottom: 1px solid var(--ui-border);
 		overflow-wrap: anywhere;
 	}
-	.ui-table :global(tbody tr:last-child td) {
+	/* A row's own header (`<th scope="row">`, card 3087): a cell in the foreground weight. */
+	.ui-table :global(tbody th) {
+		padding: 0.75rem 1rem;
+		text-align: left;
+		vertical-align: middle;
+		font-weight: 500;
+		border-bottom: 1px solid var(--ui-border);
+		overflow-wrap: anywhere;
+	}
+	/* A figure (card 3087): at the right, its digits of one width so a column of them lines up. */
+	.ui-table :global(th.ui-table-num),
+	.ui-table :global(td.ui-table-num) {
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+	}
+	.ui-table :global(tbody tr:last-child td),
+	.ui-table :global(tbody tr:last-child th) {
 		border-bottom: none;
 	}
 	.ui-table :global(tbody tr) {
@@ -141,6 +170,17 @@
 			min-height: 2.75rem;
 			padding: 0.25rem 1rem;
 			border-bottom: none;
+		}
+		/* The row's header heads its block, alone on its line. */
+		.ui-table-stack :global(tbody th) {
+			display: block;
+			width: 100%;
+			padding: 0.5rem 1rem 0.25rem;
+			font-weight: 600;
+			border-bottom: none;
+		}
+		.ui-table-stack :global(td.ui-table-num) {
+			text-align: left;
 		}
 		.ui-table-stack :global(td[data-label]::before) {
 			content: attr(data-label);

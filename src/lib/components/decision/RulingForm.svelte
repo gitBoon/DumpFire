@@ -41,11 +41,20 @@
     it is unticked with the other. Any refusal of the ruling for them is said
     in the status region in the server's words, as every other. Each box is
     unticked whenever the number it speaks of changes (code review C-E-L6).
+  - Card 3087: on the UI kit. Each option is a row to press, its native radio
+    kept and drawn with the kit's tokens; the row chosen has an edge in the
+    ring's colour, a faint primary tint, its radio filled and a tick at its
+    end, so not by colour alone. The fields and their counts are
+    `ui-field.css`'s. The warnings (against the responses, an early ruling,
+    objections unanswered) are the kit's warning `Alert`, the boxes for open
+    questions and requests to talk inside one, and a survey's no options an
+    info `Alert`, all in the same words.
 -->
 <script lang="ts">
 	import { tick } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
+	import Alert from '$lib/components/ui/Alert.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { againstOf, DECISION_TEXT_MAX } from '$lib/decision-rules';
@@ -219,64 +228,75 @@
 
 <form class="ruling-form" data-form="ruling" onsubmit={ask}>
 	{#if noOptions}
-		<p class="note" data-note="no-options">{NO_OPTIONS_PUT}: the ruling chooses none, and your reason records what you concluded.</p>
+		<Alert variant="info" data-note="no-options">{NO_OPTIONS_PUT}: the ruling chooses none, and your reason records what you concluded.</Alert>
 	{:else}
 		<fieldset class="choices">
-			<legend>The ruling</legend>
+			<legend class="ui-label">The ruling</legend>
 			{#each options as option (option.optionId)}
-				<label>
+				<label class="choice">
 					<input type="radio" name="ruling-{id}" value={String(option.optionId)} bind:group={choice} aria-describedby={against ? warningId : undefined} />
-					Option {option.label}{option.title ? `: ${option.title}` : ''}
+					<span class="choice-words">Option {option.label}{option.title ? `: ${option.title}` : ''}</span>
+					{@render chosenTick()}
 				</label>
 			{/each}
-			<label>
+			<label class="choice">
 				<input type="radio" name="ruling-{id}" value={NONE} bind:group={choice} aria-describedby={against ? warningId : undefined} />
-				None of these
+				<span class="choice-words">None of these</span>
+				{@render chosenTick()}
 			</label>
 		</fieldset>
 	{/if}
 	{#if against}
-		<p class="warning" id={warningId} data-note="against">This goes against the responses: it is not the most chosen option. Only you and DumpFire's administrators are shown this.</p>
+		<Alert variant="warning" id={warningId} data-note="against">This goes against the responses: it is not the most chosen option. Only you and DumpFire's administrators are shown this.</Alert>
 	{/if}
 
-	<label class="ui-label" for="{id}-reason">Why (required; every participant is told)</label>
-	<textarea id="{id}-reason" class="ui-textarea" rows="4" maxlength={TEXT_MAX} required aria-describedby="{id}-reason-count" bind:value={reason}></textarea>
-	<p class="count" id="{id}-reason-count">{reason.length} of {TEXT_MAX.toLocaleString('en-GB')} characters</p>
+	<div class="field">
+		<label class="ui-label" for="{id}-reason">Why (required; every participant is told)</label>
+		<textarea id="{id}-reason" class="ui-textarea" rows="4" maxlength={TEXT_MAX} required aria-describedby="{id}-reason-count" bind:value={reason}></textarea>
+		<p class="ui-hint count" id="{id}-reason-count">{reason.length} of {TEXT_MAX.toLocaleString('en-GB')} characters</p>
+	</div>
 
-	<label class="ui-label" for="{id}-conditions">Conditions (optional)</label>
-	<textarea id="{id}-conditions" class="ui-textarea" rows="3" maxlength={TEXT_MAX} aria-describedby="{id}-conditions-count" bind:value={conditions}></textarea>
-	<p class="count" id="{id}-conditions-count">{conditions.length} of {TEXT_MAX.toLocaleString('en-GB')} characters</p>
+	<div class="field">
+		<label class="ui-label" for="{id}-conditions">Conditions (optional)</label>
+		<textarea id="{id}-conditions" class="ui-textarea" rows="3" maxlength={TEXT_MAX} aria-describedby="{id}-conditions-count" bind:value={conditions}></textarea>
+		<p class="ui-hint count" id="{id}-conditions-count">{conditions.length} of {TEXT_MAX.toLocaleString('en-GB')} characters</p>
+	</div>
 
 	{#if early}
-		<div class="note" data-note="early">
+		<Alert variant="warning" data-note="early">
 			<p>{closedEarly ? 'The decision was closed before its closing time' : 'The decision is still open'}: ruling now is early{cutOff.length > 0 ? ', and cuts off these people who have not responded:' : '.'}</p>
 			{#if cutOff.length > 0}
-				<ul>
+				<ul class="cut-off">
 					{#each cutOff as person, index (index)}
 						<li>{person.name}{#if !person.reached}{' '}<span class="not-reached" data-note="not-reached">({NOT_REACHED_WORDS})</span>{/if}</li>
 					{/each}
 				</ul>
 			{/if}
-		</div>
+		</Alert>
 	{/if}
 
-	{#if openQuestions > 0}
-		<label class="confirm-open">
-			<input type="checkbox" bind:checked={confirmedOpen} data-check="open-questions" />
-			{openQuestions === 1 ? '1 question is' : `${openQuestions} questions are`} still open: I rule with {openQuestions === 1 ? 'it' : 'them'} open
-		</label>
-	{/if}
-
-	{#if openTalks > 0}
-		<label class="confirm-open">
-			<input type="checkbox" bind:checked={confirmedTalks} data-check="open-talks" />
-			{talksConfirmWords(openTalks)}
-		</label>
+	{#if openQuestions > 0 || openTalks > 0}
+		<Alert variant="warning">
+			<div class="confirms">
+				{#if openQuestions > 0}
+					<label class="confirm-open">
+						<input type="checkbox" bind:checked={confirmedOpen} data-check="open-questions" />
+						<span>{openQuestions === 1 ? '1 question is' : `${openQuestions} questions are`} still open: I rule with {openQuestions === 1 ? 'it' : 'them'} open</span>
+					</label>
+				{/if}
+				{#if openTalks > 0}
+					<label class="confirm-open">
+						<input type="checkbox" bind:checked={confirmedTalks} data-check="open-talks" />
+						<span>{talksConfirmWords(openTalks)}</span>
+					</label>
+				{/if}
+			</div>
+		</Alert>
 	{/if}
 
 	{#if unansweredObjections > 0}
 		<!-- No box gets past it (R8): an objection is answered before the ruling, though the answer need not agree. -->
-		<p class="warning" data-note="objections">{objectionsUnansweredWords(unansweredObjections)}. <a href={flagsHref} data-action="answer-objections">Go to the objections</a></p>
+		<Alert variant="warning" data-note="objections">{objectionsUnansweredWords(unansweredObjections)}. <a href={flagsHref} data-action="answer-objections">Go to the objections</a></Alert>
 	{/if}
 
 	<div class="actions">
@@ -285,28 +305,198 @@
 	<p class="refused" role="status" data-said="ruling" tabindex="-1" bind:this={saidRegion}>{refused}</p>
 </form>
 
+{#snippet chosenTick()}
+	<!-- Card 3087: the row chosen is marked by a tick as well as its tint, so not by colour alone. -->
+	<svg class="choice-tick" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+		><path d="M3.5 8.5l3 3 6-7" /></svg
+	>
+{/snippet}
+
 {#if confirming}
 	<ConfirmModal kit title="Rule on this decision?" {message} confirmText="Rule" askPassword onConfirm={rule} onCancel={cancel} />
 {/if}
 
 <style>
-	.ruling-form { display: flex; flex-direction: column; gap: var(--space-sm); color: var(--ui-foreground); }
-	.choices { border: none; padding: 0; margin: 0 0 var(--space-xs); display: flex; flex-direction: column; gap: var(--space-xs); font-size: 0.875rem; }
-	.choices legend { font-weight: 600; margin-bottom: var(--space-xs); }
-	.choices label { display: flex; gap: var(--space-xs); align-items: flex-start; overflow-wrap: anywhere; }
-	/* A warning: the words in the text colour, marked by the warning tone. */
-	.warning { margin: 0; padding-left: 0.625rem; border-left: 3px solid var(--ui-warning); font-size: 0.8125rem; color: var(--ui-foreground); }
-	.warning a { color: var(--ui-foreground); text-underline-offset: 3px; border-radius: var(--ui-radius-sm); }
-	.warning a:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
-	.ui-label { margin-top: var(--space-xs); }
-	.count { margin: 0; font-size: 0.75rem; color: var(--ui-muted-foreground); text-align: right; }
-	.note { font-size: 0.8125rem; color: var(--ui-muted-foreground); }
-	.note p { margin: 0; }
-	.note ul { margin: var(--space-xs) 0 0; padding-left: var(--space-lg); }
-	.not-reached { color: var(--ui-muted-foreground); }
-	.confirm-open { display: flex; gap: var(--space-xs); align-items: flex-start; font-size: 0.875rem; }
-	.actions { display: flex; justify-content: flex-end; }
-	.refused { margin: 0; font-size: 0.8125rem; color: var(--ui-foreground); min-height: 1em; }
-	.refused:not(:empty) { padding-left: 0.625rem; border-left: 3px solid var(--ui-destructive); }
-	.refused:focus-visible { outline: 2px solid var(--ui-ring); outline-offset: 2px; }
+	.ruling-form {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-md);
+		color: var(--ui-foreground);
+	}
+
+	/* The options: a row each, the native radio drawn with the kit's tokens. */
+	.choices {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+		min-width: 0;
+		margin: 0;
+		padding: 0;
+		border: none;
+	}
+	.choices legend {
+		margin-bottom: var(--space-sm);
+		padding: 0;
+	}
+	.choice {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		min-height: 2.75rem;
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--ui-border);
+		border-radius: var(--ui-radius);
+		background: var(--ui-card);
+		font-size: 0.875rem;
+		overflow-wrap: anywhere;
+		cursor: pointer;
+		transition:
+			border-color var(--duration-fast) var(--ease-out),
+			background-color var(--duration-fast) var(--ease-out);
+	}
+	.choice:hover {
+		border-color: color-mix(in srgb, var(--ui-foreground) 35%, transparent);
+	}
+	/* The row chosen: an edge in the ring's colour and a faint primary tint; its radio filled and the tick drawn. */
+	.choice:has(input:checked) {
+		border-color: var(--ui-ring);
+		background: color-mix(in srgb, var(--ui-primary) 8%, var(--ui-card));
+	}
+	.choice-words {
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+	.choice input {
+		appearance: none;
+		-webkit-appearance: none;
+		flex-shrink: 0;
+		width: 1rem;
+		height: 1rem;
+		margin: 0;
+		border: 1px solid var(--ui-input);
+		border-radius: 50%;
+		background: var(--ui-background);
+		cursor: pointer;
+	}
+	.choice input:checked {
+		border-color: var(--ui-ring);
+		background: radial-gradient(circle, var(--ui-ring) 0 0.25rem, var(--ui-background) 0.3rem);
+	}
+	.choice input:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
+	.choice-tick {
+		flex-shrink: 0;
+		color: var(--ui-ring);
+		visibility: hidden;
+	}
+	.choice input:checked ~ .choice-tick {
+		visibility: visible;
+	}
+
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+	}
+	.count {
+		margin: 0;
+		text-align: right;
+	}
+
+	/* Inside the warnings: the words as they were, the link and the boxes in the text colour. */
+	.ruling-form p {
+		margin: 0;
+	}
+	/* The warnings' words in the text colour, as before card 3087, not the kit alert's muted body (code review L2). */
+	.ruling-form :global(.ui-alert-warning .ui-alert-body) {
+		color: var(--ui-foreground);
+	}
+	.cut-off {
+		margin: var(--space-xs) 0 0;
+		padding-left: var(--space-lg);
+	}
+	.not-reached {
+		color: var(--ui-muted-foreground);
+	}
+	.ruling-form a {
+		color: var(--ui-foreground);
+		text-decoration: underline;
+		text-underline-offset: 3px;
+		border-radius: var(--ui-radius-sm);
+	}
+	.ruling-form a:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
+	.confirms {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-xs);
+	}
+	.confirm-open {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-sm);
+		color: var(--ui-foreground);
+		cursor: pointer;
+	}
+	.confirm-open input {
+		flex-shrink: 0;
+		width: 1rem;
+		height: 1rem;
+		margin: 0.1875rem 0 0;
+		accent-color: var(--ui-primary);
+		cursor: pointer;
+	}
+	.confirm-open input:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
+
+	.actions {
+		display: flex;
+		justify-content: flex-end;
+	}
+	.refused {
+		font-size: 0.8125rem;
+		color: var(--ui-foreground);
+		min-height: 1em;
+	}
+	.refused:not(:empty) {
+		padding-left: 0.625rem;
+		border-left: 3px solid var(--ui-destructive);
+	}
+	.refused:focus-visible {
+		outline: 2px solid var(--ui-ring);
+		outline-offset: 2px;
+	}
+
+	/* A touch screen: each box's row is at least 44px. */
+	@media (pointer: coarse) {
+		.confirm-open {
+			align-items: center;
+			min-height: 2.75rem;
+		}
+		.confirm-open input {
+			width: 1.25rem;
+			height: 1.25rem;
+			margin: 0;
+		}
+	}
+
+	/* Forced colours draw no background, so the filled radio would not show: the system's own radio there. */
+	@media (forced-colors: active) {
+		.choice input {
+			appearance: auto;
+			-webkit-appearance: auto;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.choice {
+			transition: none;
+		}
+	}
 </style>
